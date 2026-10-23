@@ -94,17 +94,46 @@ describe('loadDiffContents', () => {
   })
 
   it('treats a deleted working copy as an empty new side', async () => {
+    const raw = 'handler error: {"code":"C211","message":"/r/a.ts: not found or not accessible."}'
+    // The bus rejects with the handler's error body, not an Error.
+    for (const rejection of [{ message: raw }, new Error(raw)]) {
+      const { host } = hostWith({
+        'shell::exec': () => exec({ stdout: 'old' }),
+        'coder::read-file': () => {
+          throw rejection
+        },
+      })
+      expect(await loadDiffContents(host, '/r', 'a.ts', { type: 'unstaged' }, noTurns)).toEqual({
+        oldContents: 'old',
+        newContents: '',
+        worktreeRevision: undefined,
+      })
+    }
+  })
+
+  it('does not read a protected working copy as deleted', async () => {
+    // A protected path fails its read like a missing file, though it is there.
+    const { host } = hostWith({
+      'shell::exec': () => exec({ stdout: 'TOKEN=changeme\n' }),
+      'coder::read-file': () => {
+        throw { message: 'handler error: {"code":"C211","message":"/r/.env.example: not found or not accessible."}' }
+      },
+    })
+    const isProtected = (path: string) => path === '.env.example'
+    await expect(
+      loadDiffContents(host, '/r', '.env.example', { type: 'uncommitted' }, noTurns, isProtected),
+    ).rejects.toThrow(/protected paths/)
+  })
+
+  it('fails on any other working-copy read error', async () => {
+    const rejection = { message: 'handler error: {"code":"C213","message":"permission denied"}' }
     const { host } = hostWith({
       'shell::exec': () => exec({ stdout: 'old' }),
       'coder::read-file': () => {
-        throw new Error('handler error: {"code":"C211","message":"not found or not accessible"}')
+        throw rejection
       },
     })
-    expect(await loadDiffContents(host, '/r', 'a.ts', { type: 'unstaged' }, noTurns)).toEqual({
-      oldContents: 'old',
-      newContents: '',
-      worktreeRevision: undefined,
-    })
+    await expect(loadDiffContents(host, '/r', 'a.ts', { type: 'unstaged' }, noTurns)).rejects.toBe(rejection)
   })
 
   it('flags a bad compare revision', async () => {
@@ -190,6 +219,16 @@ describe('loadTurnDiff', () => {
     const { host } = hostWith({ 'coder::read-file': () => ({ content: 'now', revision: 'r9' }) })
     const out = await loadTurnDiff(host, '/r', 'a.ts', turn([record({ before: { content: 'v1' } })]))
     expect(out).toMatchObject({ oldContents: 'v1', newContents: 'now', worktreeRevision: 'r9' })
+  })
+
+  it('reads a working copy deleted since the turn as removed', async () => {
+    const { host } = hostWith({
+      'coder::read-file': () => {
+        throw { message: 'handler error: {"code":"C211","message":"/r/a.ts: not found or not accessible."}' }
+      },
+    })
+    const out = await loadTurnDiff(host, '/r', 'a.ts', turn([record({ before: { content: 'v1' } })]))
+    expect(out).toMatchObject({ oldContents: 'v1', newContents: '' })
   })
 
   it('a watcher-observed creation has an empty before; a deletion an empty after', async () => {

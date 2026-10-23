@@ -26,7 +26,7 @@ use crate::types::event::ErrorKind;
 use crate::types::message::{empty_assistant, AgentMessage, AssistantMessage};
 use crate::types::model::AgentFunction;
 use crate::types::turn::{
-    CallCheckpoint, CallState, ExposeMode, FunctionPolicy, TurnRecord, TurnStatus,
+    CallCheckpoint, CallState, ExposeMode, FunctionPolicy, ResponseLanguage, TurnRecord, TurnStatus,
 };
 
 #[derive(Clone, Copy)]
@@ -55,6 +55,19 @@ const CONTEXT_OVERFLOW_FAILURE: FailureInfo<'static> = FailureInfo {
     phase: "context_assembly",
     retryable: false,
     kind: Some(ErrorKind::ContextOverflow),
+    detail: None,
+    provider: None,
+    model: None,
+};
+
+/// An assembly overflow on a model the router catalog does not list: the
+/// context manager fell back to conservative limits, so the overflow says
+/// nothing about the conversation.
+const UNKNOWN_MODEL_FAILURE: FailureInfo<'static> = FailureInfo {
+    code: "harness.unknown_model",
+    phase: "context_assembly",
+    retryable: false,
+    kind: None,
     detail: None,
     provider: None,
     model: None,
@@ -192,6 +205,9 @@ pub async fn enqueue_step(
             }
         }
     }
+    // The record may already say `Running` at this step: follow up once its
+    // window passes, or nothing would ever run it (inflight.rs).
+    crate::inflight::suspect_unenqueued(session_id, turn_id, step);
     Err(HarnessError::Dependency(format!(
         "enqueue harness::turn: {last_error}"
     )))
@@ -449,16 +465,22 @@ async fn generate_step(
     let cfg = deps.cfg().await;
     let session = deps.session().await;
 
-    let mut record =
-        match crate::state::get_turn(&deps.iii, &payload.session_id, cfg.session_timeout_ms).await?
-        {
-            Some(r) => r,
-            // The turn record is the authoritative recovery snapshot. A
-            // transcript alone cannot recover budgets, parent linkage, output
-            // contracts, or dispatch policy safely, so an absent record stays
-            // a stale delivery and is acknowledged without fabricating state.
-            None => return Ok(PreparedStep::Finished(skipped(&payload.session_id))),
-        };
+    // Unhydrated until the step generates: a stale, finished or stopped step
+    // needs no prompt text, so a lost prompt body cannot keep it from ending.
+    let mut record = match crate::state::get_turn_unhydrated(
+        &deps.iii,
+        &payload.session_id,
+        cfg.session_timeout_ms,
+    )
+    .await?
+    {
+        Some(r) => r,
+        // The turn record is the authoritative recovery snapshot. A
+        // transcript alone cannot recover budgets, parent linkage, output
+        // contracts, or dispatch policy safely, so an absent record stays
+        // a stale delivery and is acknowledged without fabricating state.
+        None => return Ok(PreparedStep::Finished(skipped(&payload.session_id))),
+    };
 
     // Stale guards: wrong turn or any non-current step is acked and dropped.
     if !turn_step_matches(&record.turn_id, record.step, &payload.turn_id, payload.step) {
@@ -478,6 +500,7 @@ async fn generate_step(
             .await
             .map(PreparedStep::Finished);
     }
+    crate::state::hydrate(&deps.iii, &mut record, cfg.session_timeout_ms).await?;
 
     // Deliver messages queued while the previous step streamed: append them in
     // arrival order before the context load, so this generation sees them all
@@ -596,12 +619,15 @@ async fn generate_step(
     // away is told again.
     // ponytail: judged before this step's own compaction; a notice it summarizes away is re-told next step
     let anchor = compaction_anchor(&record.session_id, &entries);
-    let window = crate::window::build(
+    let mut window = crate::window::build(
         &entries,
         anchor.window_start,
         prev_watermark.as_deref(),
         Some(&ids::assistant_entry_id(&record.turn_id, payload.step)),
     );
+    if crate::window::binds_thinking(&record.options.model) {
+        crate::window::strip_thinking_logged_before(&mut window, &entries[..anchor.record_index]);
+    }
 
     // Build every deterministic model-facing input before context assembly.
     // Everything the model is shown is append-only: the system prompt is the
@@ -611,13 +637,16 @@ async fn generate_step(
     // are persisted as `model_notice` entries where they were sent and
     // replayed there on every later step (crate::window).
     let current_generation = functions.generation;
-    // The runtime context (session id, working directory, dispatch policy,
-    // seeded contracts) is frozen into the system prompt at the session's
-    // first step; a later change reaches the model as a notice.
+    // The runtime context (session id, working directory, response language,
+    // dispatch policy, seeded contracts) is frozen into the system prompt at
+    // the session's first step; a later change reaches the model as a notice.
     let current_aid = runtime_context_aid(
         &record.session_id,
         record.options.filesystem_root(),
+        deps.filesystem_boundary("shell::exec").await,
+        record.options.response_language.as_ref(),
         record.options.functions.as_ref(),
+        cfg.co_author.then_some(record.options.model.as_str()),
         record.options.seeded_contracts.as_deref(),
     );
     let (runtime_aid, runtime_changed) = match crate::window::frozen_runtime_context(&entries) {
@@ -644,12 +673,17 @@ async fn generate_step(
     };
     let (stable_prompt, assembly_system_prompt) =
         with_runtime_context(record.options.system_prompt.clone(), &record, &runtime_aid);
-    // Registry-change notice: if the function registry changed since this
-    // session last acknowledged its generation, tell the model its cached
-    // contracts may be stale. First sighting stamps silently.
+    // Registry-change notice: if a function this session may call changed or
+    // left since it last acknowledged them, tell the model its cached
+    // contracts may be stale. First sighting stamps silently, and so does a
+    // function that only joined (no contract the session holds changed; the
+    // session's own function registering as its first step stamps hit that).
+    // ponytail: a broad policy (`*`) still hears every change to any function;
+    // judging only the contracts the session fetched (function_contract_ledger) is the upgrade.
+    let current_surface = functions.permitted_digests(&policy);
     let registry_changed = registry_notice(
-        record.functions_generation,
-        current_generation,
+        record.functions_acknowledged.as_deref(),
+        &current_surface,
         &policy,
         &functions,
     );
@@ -687,7 +721,7 @@ async fn generate_step(
     .filter_map(|(kind, notice)| Some((kind, notice_message(notice?))))
     .collect();
     let notice_prefix = ids::notice_entry_prefix(&record.turn_id, payload.step);
-    record.functions_generation = Some(current_generation);
+    record.functions_acknowledged = Some(current_surface);
 
     // Resolve the output-contract strategy and build the invocation surface:
     // the exposure-mode tools plus the synthetic submit_result schema when the
@@ -710,7 +744,11 @@ async fn generate_step(
             "native exposure matched no registry functions; the model has no tools this turn"
         );
     }
-    let mut tools = provider_tools(expose, &decision_tools);
+    let mut tools = provider_tools(
+        expose,
+        &decision_tools,
+        record.options.response_language.as_ref(),
+    );
     if let Some(submit) = strategy.submit_result_tool() {
         tools.push(submit);
     }
@@ -768,15 +806,10 @@ async fn generate_step(
         {
             Ok(assembled) => assembled,
             Err(HarnessError::ContextOverflow(reason)) => {
-                return finalize_failed(
-                    deps,
-                    &session,
-                    &mut record,
-                    &reason,
-                    CONTEXT_OVERFLOW_FAILURE,
-                )
-                .await
-                .map(PreparedStep::Finished);
+                let failure = overflow_failure(deps, &record).await;
+                return finalize_failed(deps, &session, &mut record, &reason, failure)
+                    .await
+                    .map(PreparedStep::Finished);
             }
             Err(error) => return Err(error),
         };
@@ -941,15 +974,10 @@ async fn generate_step(
                 "final model request exceeds the assembled usable budget: {final_request_tokens} tokens > {} usable (persists after re-assembly with reserved headroom)",
                 assembled.usable
             );
-            return finalize_failed(
-                deps,
-                &session,
-                &mut record,
-                &reason,
-                CONTEXT_OVERFLOW_FAILURE,
-            )
-            .await
-            .map(PreparedStep::Finished);
+            let failure = overflow_failure(deps, &record).await;
+            return finalize_failed(deps, &session, &mut record, &reason, failure)
+                .await
+                .map(PreparedStep::Finished);
         }
         // One-shot recovery: fold the measured post-assembly additions (plus
         // margin for hook variance on the retry — hooks re-run against the
@@ -1366,7 +1394,8 @@ async fn generate_step(
     // baseline remains the one used for this generation.
     let _guard = deps.locks.guard(&payload.session_id).await;
     let durable_record =
-        crate::state::get_turn(&deps.iii, &payload.session_id, cfg.session_timeout_ms).await?;
+        crate::state::get_turn_unhydrated(&deps.iii, &payload.session_id, cfg.session_timeout_ms)
+            .await?;
     let durable_abort = durable_record.as_ref().is_some_and(|record| record.abort);
     crate::skills::refresh_filter(
         &mut record.options.skill_context,
@@ -1635,7 +1664,11 @@ async fn finish_step(
             // Fail-closed glob policy first — structural and final. Hooks run
             // only after it passes (a denial never reaches a hook).
             if !policy.allows(&call.function_id) {
-                let data = trigger::denied_result(&call.function_id);
+                let functions = deps.functions().await;
+                let did_you_mean =
+                    trigger::closest_permitted(&call.function_id, &policy, &functions);
+                let data =
+                    trigger::denied_result_with_hint(&call.function_id, did_you_mean.as_deref());
                 let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
                 append_function_result(
                     &session,
@@ -1733,6 +1766,7 @@ async fn finish_step(
                     reconciled.as_ref().map(|r| r.changes.as_slice()),
                     &call.function_id,
                     call_args,
+                    crate::reconcile::contract_in_context(&record, &call.function_id),
                 )
                 .await;
                 append_function_result(
@@ -1758,12 +1792,13 @@ async fn finish_step(
             // args ALREADY carrying the filesystem scope stamp so an approver
             // reviews the fs_scope the call will actually run under; the stamp is
             // re-applied after the chain so a hook rewrite can never widen it.
+            let filesystem_boundary = deps.filesystem_boundary(&call.function_id).await;
             let trusted_call_args = crate::filesystem_scope::inject(
                 &call.function_id,
                 call_args.clone(),
                 filesystem_root.as_deref(),
                 &session_grants,
-                deps.hooks.filesystem_boundary(&call.function_id),
+                filesystem_boundary,
             );
             let (eff_args, pre_ann) = match deps
                 .hooks
@@ -1786,7 +1821,7 @@ async fn finish_step(
                         arguments,
                         filesystem_root.as_deref(),
                         &session_grants,
-                        deps.hooks.filesystem_boundary(&call.function_id),
+                        filesystem_boundary,
                     );
                     (arguments, annotations)
                 }
@@ -1865,6 +1900,7 @@ async fn finish_step(
                     reconciled.as_ref().map(|r| r.changes.as_slice()),
                     &call.function_id,
                     call_args,
+                    crate::reconcile::contract_in_context(&record, &call.function_id),
                 )
                 .await;
                 append_function_result(
@@ -2048,6 +2084,7 @@ async fn finish_step(
                 reconciled.as_ref().map(|r| r.changes.as_slice()),
                 &call.function_id,
                 call_args,
+                crate::reconcile::contract_in_context(&record, &call.function_id),
             )
             .await;
             let entry_origin = origin_with(&record.turn_id, &annotations);
@@ -2325,9 +2362,20 @@ async fn complete_validated(
     value: Value,
 ) -> Result<TurnStepResult, HarnessError> {
     match deps.hooks.run_post_turn(record, record.step, &value).await {
-        Ok(()) => finalize_completed(deps, session, record, Some(value)).await,
+        // Both tails contain large async states. Inlining them propagates
+        // through the output-contract and dispatch futures, exhausting the
+        // SDK thread's debug stack when completion reads or resolves a parent.
+        Ok(()) => Box::pin(finalize_completed(deps, session, record, Some(value))).await,
         Err(deny) => {
-            retry_or_giveup_with(deps, session, record, &deny.reason, value, deny.prompt).await
+            Box::pin(retry_or_giveup_with(
+                deps,
+                session,
+                record,
+                &deny.reason,
+                value,
+                deny.prompt,
+            ))
+            .await
         }
     }
 }
@@ -2517,6 +2565,7 @@ async fn finalize_completed(
     record.result = result.clone();
     record.result_error = None;
     record.updated_at = AgentMessage::now_ms();
+    record.slim_finished();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
     deps.cancels.clear(&record.turn_id);
     crate::session_status::project(session, record).await;
@@ -2587,7 +2636,25 @@ struct FailurePresentation {
     next_actions: Vec<&'static str>,
 }
 
+/// The failure for an assembly overflow: [`UNKNOWN_MODEL_FAILURE`] only when
+/// the router catalog confirms it does not list the turn's model. A lookup
+/// that fails keeps [`CONTEXT_OVERFLOW_FAILURE`].
+async fn overflow_failure(deps: &Deps, record: &TurnRecord) -> FailureInfo<'static> {
+    let listed = deps
+        .router()
+        .await
+        .model_listed(record.options.provider.as_deref(), &record.options.model)
+        .await;
+    match listed {
+        Some(false) => UNKNOWN_MODEL_FAILURE,
+        _ => CONTEXT_OVERFLOW_FAILURE,
+    }
+}
+
 fn failure_class(failure: FailureInfo<'_>) -> &'static str {
+    if failure.code == UNKNOWN_MODEL_FAILURE.code {
+        return "llm.unknown_model";
+    }
     match failure.kind {
         Some(ErrorKind::AuthExpired) => "llm.auth_expired",
         Some(ErrorKind::RateLimited) => "llm.rate_limited",
@@ -2595,7 +2662,7 @@ fn failure_class(failure: FailureInfo<'_>) -> &'static str {
         Some(ErrorKind::Transient) => "llm.transient",
         Some(ErrorKind::Permanent) => "llm.permanent",
         None if failure.retryable => "llm.transient",
-        None => "llm.permanent",
+        None => "llm.unknown",
     }
 }
 
@@ -2675,6 +2742,13 @@ fn failure_presentation(public_message: &str, failure: FailureInfo<'_>) -> Failu
             "The provider is busy right now.",
             &["Wait a moment, then retry the turn."],
         ),
+        "harness.unknown_model" => (
+            "The selected model is not in the model catalog.",
+            &[
+                "Choose another model.",
+                "Check the model id, or configure a provider that serves it.",
+            ],
+        ),
         "harness.context_overflow" => (
             "The conversation could not be compacted to fit the selected model.",
             &[
@@ -2752,6 +2826,7 @@ async fn finalize_failed(
     record.result_error = Some(summary.clone());
     record.updated_at = AgentMessage::now_ms();
     record_failure_telemetry(record, detail, failure);
+    record.slim_finished();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
     deps.cancels.clear(&record.turn_id);
     let _ = session
@@ -2970,6 +3045,7 @@ pub(crate) async fn finalize_cancelled(
     let cfg = deps.cfg().await;
     record.status = TurnStatus::Cancelled;
     record.updated_at = AgentMessage::now_ms();
+    record.slim_finished();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
     deps.cancels.clear(&record.turn_id);
     // Durable stop marker: without it the transcript just ends mid-thought
@@ -3062,7 +3138,10 @@ pub async fn fail_turn(
     // guard is gone. Lock-free, this finalize could interleave with
     // harness::stop's under-lock "stopping" ack and strand the session status.
     let _guard = deps.locks.guard(session_id).await;
-    let record = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
+    // Unhydrated: finalizing reads no prompt text, and a lost prompt body is
+    // the step error this most often finalizes.
+    let record =
+        crate::state::get_turn_unhydrated(&deps.iii, session_id, cfg.session_timeout_ms).await?;
     match record {
         Some(mut rec) if rec.turn_id == turn_id && !rec.status.is_terminal() => {
             finalize_failed(deps, &session, &mut rec, reason, INTERNAL_FAILURE).await
@@ -3372,7 +3451,7 @@ async fn assemble_context(
         allow_prune: crate::window::binds_thinking(&record.options.model).then_some(false),
     };
 
-    let out = match context.assemble(params).await {
+    let mut out = match context.assemble(params).await {
         Ok(out) => out,
         Err(error) if is_context_overflow_error(&error) => {
             return Err(HarnessError::ContextOverflow(error));
@@ -3394,6 +3473,38 @@ async fn assemble_context(
         )));
     }
 
+    if strip_compacted_thinking(&mut out, &record.options.model) {
+        // The assembled count still holds the stripped blocks; an unchanged
+        // request reuses it for the budget reservation and the snapshot, so
+        // measure what is actually sent. On failure the larger count stands
+        // (it only over-reserves).
+        let recount = context
+            .count_tokens(crate::clients::context::CountTokensParams {
+                messages: out
+                    .messages
+                    .iter()
+                    .map(|m| serde_json::to_value(m).unwrap_or(Value::Null))
+                    .collect(),
+                model_id: record.options.model.clone(),
+                provider: record.options.provider.clone(),
+                system_prompt: Some(out.system_prompt.clone()),
+                tools: inputs.tools.to_vec(),
+            })
+            .await;
+        match recount {
+            Ok(count) => {
+                out.token_count = count.tokens.saturating_add(inputs.request_overhead_tokens);
+                if let (Some(breakdown), Some(by_role)) = (out.breakdown.as_mut(), count.by_role) {
+                    breakdown.by_role = by_role;
+                }
+            }
+            Err(error) => tracing::warn!(
+                session_id = %record.session_id,
+                %error,
+                "recount after stripping pre-compaction thinking failed; keeping the assembled count"
+            ),
+        }
+    }
     if out.applied.compacted {
         if let Some(summary) = &out.applied.summary {
             let tail_entry = out
@@ -3451,16 +3562,36 @@ async fn assemble_context(
     })
 }
 
+/// Everything a compacting step kept was produced before its own compaction:
+/// on a binding model strip its thinking, the same strip every later step
+/// applies (crate::window::strip_thinking_logged_before). True when it
+/// stripped, so the caller re-counts.
+fn strip_compacted_thinking(
+    out: &mut crate::clients::context::AssembleOutput,
+    model: &str,
+) -> bool {
+    if !(out.applied.compacted && crate::window::binds_thinking(model)) {
+        return false;
+    }
+    out.messages
+        .iter_mut()
+        .for_each(AgentMessage::strip_thinking);
+    true
+}
+
 /// The latest `compaction` custom entry on the path, resolved to where the
 /// model-facing window opens.
 #[derive(Debug, Default, PartialEq)]
-struct CompactionAnchor {
+pub(crate) struct CompactionAnchor {
     /// The persisted summary, passed back as `previous_summary`.
-    summary: Option<String>,
+    pub(crate) summary: Option<String>,
     /// Index into the path of the first entry the window keeps.
-    window_start: usize,
+    pub(crate) window_start: usize,
     /// Size of the history the summary replaced (display only).
-    summarized_head_tokens: Option<u64>,
+    pub(crate) summarized_head_tokens: Option<u64>,
+    /// Path index of the record whose summary is in the prompt (0 when none):
+    /// the entries before it were logged under a prefix that is gone.
+    pub(crate) record_index: usize,
 }
 
 /// Resolve the window from the latest compaction entry:
@@ -3474,7 +3605,7 @@ struct CompactionAnchor {
 /// - a record without a summary, or whose boundary is missing or not a
 ///   string: the whole path too — only an explicit JSON `null` opens the
 ///   window after the record.
-fn compaction_anchor(session_id: &str, entries: &[LoadedEntry]) -> CompactionAnchor {
+pub(crate) fn compaction_anchor(session_id: &str, entries: &[LoadedEntry]) -> CompactionAnchor {
     let latest = entries.iter().enumerate().rev().find_map(|(index, entry)| {
         let custom = entry.custom.as_ref()?;
         (custom.custom_type == "compaction").then_some((index, &custom.data))
@@ -3515,6 +3646,7 @@ fn compaction_anchor(session_id: &str, entries: &[LoadedEntry]) -> CompactionAnc
         }
     };
     CompactionAnchor {
+        record_index: if summary.is_some() { index } else { 0 },
         summary,
         window_start,
         // The console's entry carries only `tokens_before` (the head size).
@@ -3632,20 +3764,43 @@ fn with_runtime_context(
 
 /// The deterministic session context appended to every model-facing prompt.
 /// Kept separate so read-only previews use the same construction as a turn.
-/// A spawned child's seeded `<preloaded_functions>` block closes it: after the
-/// cache seam, so it never forks the stable prefix sessions share.
+/// The response-language line names the session's pinned language, once one
+/// is (`crate::language`), right after the working directory, whose path must
+/// never be read as a hint of it. Under `configured_roots` the working
+/// directory only anchors relative paths, and its line says so. `co_author`
+/// names the turn's model for the commit trailer line (`co_author` config,
+/// MOT-5364); a model switch reaches the model as the usual notice. A spawned
+/// child's seeded `<preloaded_functions>` block closes it: after the cache
+/// seam, so it never forks the stable prefix sessions share.
 pub(crate) fn runtime_context_aid(
     session_id: &str,
     filesystem_root: Option<&str>,
+    boundary: crate::filesystem_scope::FilesystemBoundary,
+    response_language: Option<&ResponseLanguage>,
     functions: Option<&FunctionPolicy>,
+    co_author: Option<&str>,
     seeded_contracts: Option<&str>,
 ) -> String {
     let mut lines = vec![format!("Your session id is {session_id}.")];
     if let Some(dir) = filesystem_root {
-        lines.push(format!("Your working directory is {dir}."));
+        let note = match boundary {
+            crate::filesystem_scope::FilesystemBoundary::Workspace => "",
+            crate::filesystem_scope::FilesystemBoundary::ConfiguredRoots => {
+                " (default directory, not an access boundary)"
+            }
+        };
+        lines.push(format!("Your working directory is {dir}{note}."));
+    }
+    if let Some(language) = response_language {
+        lines.push(crate::language::runtime_line(language));
     }
     if let Some(aid) = policy_aid(functions) {
         lines.push(aid);
+    }
+    if let Some(model) = co_author {
+        lines.push(format!(
+            "End every git commit message you write with a blank line, then the trailer `Co-authored-by: iii harness ({model}) <noreply@iii.dev>`."
+        ));
     }
     let aid = lines.join("\n");
     match seeded_contracts {
@@ -3879,8 +4034,8 @@ const PRELOADED_STALE_NOTICE_KIND: &str = "preloaded-stale";
 const RUNTIME_CONTEXT_NOTICE_KIND: &str = "runtime-context";
 const HOOK_NOTICE_KIND: &str = "hook";
 
-/// The single-line notice delivered as a tail message when the registry
-/// changed under a session that had already acknowledged an earlier generation.
+/// The single-line notice delivered as a tail message when a function the
+/// session may call changed after it had acknowledged the earlier set.
 const REGISTRY_CHANGED_NOTICE: &str = "NOTE: the function registry changed during this conversation. Function contracts fetched earlier may be stale.";
 
 /// How either notice tells the model to re-check contracts: name
@@ -3911,23 +4066,29 @@ fn notice_message(text: String) -> Value {
     })
 }
 
-/// Decide the registry-change notice for a step. `None` when the record already
-/// matches the live generation, or is being stamped for the first time; `Some`
-/// only when the registry changed under a session that acknowledged an earlier
-/// generation. The caller stamps `functions_generation = current` regardless.
+/// Decide the registry-change notice for a step. `None` while every function
+/// the session acknowledged is still live and unchanged
+/// ([`FunctionsSnapshot::permitted_digests`]), or when it is being stamped for
+/// the first time; `Some` only when one it may call changed or left. A function
+/// that only joined the permitted set is no staleness: nothing the session
+/// fetched before describes it. The caller stamps the current digests regardless.
+///
+/// [`FunctionsSnapshot::permitted_digests`]: crate::discovery::FunctionsSnapshot::permitted_digests
 pub(crate) fn registry_notice(
-    record_gen: Option<u64>,
-    current: u64,
+    acknowledged: Option<&[u32]>,
+    current: &[u32],
     policy: &CompiledPolicy,
     snapshot: &crate::discovery::FunctionsSnapshot,
 ) -> Option<String> {
-    match record_gen {
-        Some(g) if g != current => Some(format!(
+    let stale = acknowledged?
+        .iter()
+        .any(|digest| current.binary_search(digest).is_err());
+    stale.then(|| {
+        format!(
             "{REGISTRY_CHANGED_NOTICE} {}",
             refetch_hint(policy, snapshot)
-        )),
-        _ => None,
-    }
+        )
+    })
 }
 
 /// The frozen preloaded ids the cached snapshot cannot vouch for: frozen
@@ -4060,13 +4221,15 @@ fn concrete_allowed_tools(
 
 /// The invocation-schema surface attached to the generate request
 /// (harness.md § Exposure modes). Default: the single `agent_trigger`
-/// schema. Native: the concrete allowed tools verbatim.
+/// schema, its `description` label naming the session's response language.
+/// Native: the concrete allowed tools verbatim.
 fn provider_tools(
     expose: ExposeMode,
     concrete: &[crate::types::model::AgentFunction],
+    response_language: Option<&ResponseLanguage>,
 ) -> Vec<crate::types::model::AgentFunction> {
     match expose {
-        ExposeMode::AgentTrigger => vec![policy::agent_trigger_schema()],
+        ExposeMode::AgentTrigger => vec![policy::agent_trigger_schema(response_language)],
         ExposeMode::Native => concrete.to_vec(),
     }
 }
@@ -4111,6 +4274,9 @@ impl Clone for SessionStreamSink {
         }
     }
 }
+
+#[cfg(test)]
+mod stack_tests;
 
 #[cfg(test)]
 mod tests {
@@ -4366,7 +4532,14 @@ mod tests {
                 summary: Some("new".into()),
                 window_start: 2,
                 summarized_head_tokens: Some(7),
+                record_index: 3,
             }
+        );
+        // The summary is in the prompt even when the boundary is off the
+        // path, so thinking logged before the record is still stale.
+        assert_eq!(
+            compaction_anchor("s", &[msg("u1"), compaction("c1", "s", json!("gone"))]).record_index,
+            1
         );
         // Null boundary: everything before the entry was summarised.
         assert_eq!(
@@ -4410,6 +4583,51 @@ mod tests {
             ),
             CompactionAnchor::default()
         );
+    }
+
+    #[test]
+    fn a_compacting_step_strips_kept_thinking_only_on_binding_models() {
+        use serde_json::json;
+        let assembled = |compacted: bool| -> crate::clients::context::AssembleOutput {
+            serde_json::from_value(json!({
+                "messages": [
+                    { "role": "user", "content": [{ "type": "text", "text": "go" }], "timestamp": 1 },
+                    { "role": "assistant", "content": [
+                        { "type": "thinking", "text": "", "signature": "sig" },
+                        { "type": "redacted_thinking", "data": "x" },
+                        { "type": "function_call", "id": "c1", "function_id": "shell::exec", "arguments": {} }
+                    ], "stop_reason": "function_call", "model": "m", "provider": "p", "timestamp": 2 }
+                ],
+                "token_count": 10, "usable": 100, "effective_max_output_tokens": 10,
+                "applied": { "compacted": compacted, "summary": "s" }
+            }))
+            .unwrap()
+        };
+        let thinking = |out: &crate::clients::context::AssembleOutput| {
+            out.messages.iter().any(|m| match m {
+                AgentMessage::Assistant(a) => a.content.iter().any(|b| {
+                    matches!(
+                        b,
+                        ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. }
+                    )
+                }),
+                _ => false,
+            })
+        };
+        let mut out = assembled(true);
+        assert!(super::strip_compacted_thinking(
+            &mut out,
+            "claude-sonnet-5-5"
+        ));
+        assert!(!thinking(&out), "stale thinking would reach the request");
+        for (compacted, model) in [(false, "claude-opus-5-5"), (true, "claude-sonnet-4-6")] {
+            let mut out = assembled(compacted);
+            assert!(!super::strip_compacted_thinking(&mut out, model));
+            assert!(
+                thinking(&out),
+                "{model} compacted={compacted} keeps its thinking"
+            );
+        }
     }
 
     #[test]
@@ -4767,6 +4985,63 @@ mod tests {
         );
     }
 
+    /// Prevents: a model guessing the response language from the username
+    /// in the working directory (an English session labelled in Spanish).
+    /// The aid names it right after the directory; pinning it later changes
+    /// the aid, so it reaches the model as a runtime-context notice.
+    #[test]
+    fn runtime_context_names_the_response_language_after_the_working_directory() {
+        let english = super::ResponseLanguage {
+            code: "eng".into(),
+            name: "English".into(),
+        };
+        let named = super::runtime_context_aid(
+            "s_1",
+            Some("/home/sergio/app"),
+            crate::filesystem_scope::FilesystemBoundary::Workspace,
+            Some(&english),
+            None,
+            None,
+            None,
+        );
+        let lines: Vec<&str> = named.lines().collect();
+        assert_eq!(lines[1], "Your working directory is /home/sergio/app.");
+        assert!(lines[2].starts_with("Response language: English (from the user's first message)."));
+        let unknown = super::runtime_context_aid(
+            "s_1",
+            Some("/home/sergio/app"),
+            crate::filesystem_scope::FilesystemBoundary::Workspace,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(
+            !unknown.contains("Response language"),
+            "an unpinned session's runtime context is unchanged"
+        );
+        let notice = super::runtime_change_notice(&unknown, &named, None).expect("pinned later");
+        assert!(notice.contains("Response language: English"));
+    }
+
+    #[test]
+    fn the_agent_trigger_tool_names_the_response_language() {
+        let english = super::ResponseLanguage {
+            code: "eng".into(),
+            name: "English".into(),
+        };
+        let label = |language: Option<&super::ResponseLanguage>| {
+            super::provider_tools(super::ExposeMode::AgentTrigger, &[], language)[0].parameters
+                ["properties"]["description"]["description"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert!(label(Some(&english)).contains("written in English."));
+        assert!(label(None).contains("named in the session context"));
+        assert!(super::provider_tools(super::ExposeMode::Native, &[], Some(&english)).is_empty());
+    }
+
     /// Prevents: a child's seeded contracts forking the stable prefix every
     /// default-identity session shares (MOT-4851) — they ride after the seam.
     #[test]
@@ -4781,7 +5056,17 @@ mod tests {
             .unwrap()
         };
         let block = "<preloaded_functions>\n### `state::get`\n</preloaded_functions>";
-        let aid = |seeded: Option<&str>| super::runtime_context_aid("s_1", None, None, seeded);
+        let aid = |seeded: Option<&str>| {
+            super::runtime_context_aid(
+                "s_1",
+                None,
+                crate::filesystem_scope::FilesystemBoundary::Workspace,
+                None,
+                None,
+                None,
+                seeded,
+            )
+        };
         let (plain_stable, plain_full) =
             super::with_runtime_context(Some("identity".into()), &record(None), &aid(None));
         let (stable, full) = super::with_runtime_context(
@@ -4799,12 +5084,59 @@ mod tests {
         assert!(rest.ends_with(&format!("\n\n{block}")));
     }
 
+    /// Prevents: the model reading its working directory as an access
+    /// boundary when the worker only uses it to anchor relative paths
+    /// (MOT-5167).
+    #[test]
+    fn working_directory_line_says_when_it_is_not_a_boundary() {
+        use crate::filesystem_scope::FilesystemBoundary::*;
+        let aid = |boundary| {
+            super::runtime_context_aid("s_1", Some("/w"), boundary, None, None, None, None)
+        };
+        assert!(aid(Workspace).contains("Your working directory is /w.\n"));
+        assert!(aid(ConfiguredRoots).contains(
+            "Your working directory is /w (default directory, not an access boundary).\n"
+        ));
+    }
+
+    /// Prevents: agent commits landing without the harness co-author trailer
+    /// naming the turn's model, or carrying it once an operator opted out
+    /// (MOT-5364).
+    #[test]
+    fn co_author_line_names_the_turn_model_only_when_enabled() {
+        let aid = |co_author| {
+            super::runtime_context_aid(
+                "s_1",
+                None,
+                crate::filesystem_scope::FilesystemBoundary::Workspace,
+                None,
+                None,
+                co_author,
+                None,
+            )
+        };
+        assert!(aid(Some("claude-opus-5-5")).ends_with(
+            "\nEnd every git commit message you write with a blank line, then the trailer `Co-authored-by: iii harness (claude-opus-5-5) <noreply@iii.dev>`."
+        ));
+        assert!(!aid(None).contains("Co-authored-by"));
+    }
+
     /// Prevents: a runtime context that changed after it was frozen into the
     /// system prompt (a re-seeded contract block included) never reaching the
     /// model, or reaching it again on every step (MOT-4845).
     #[test]
     fn runtime_change_notice_carries_the_whole_changed_aid_once() {
-        let aid = |seeded: Option<&str>| super::runtime_context_aid("s_1", None, None, seeded);
+        let aid = |seeded: Option<&str>| {
+            super::runtime_context_aid(
+                "s_1",
+                None,
+                crate::filesystem_scope::FilesystemBoundary::Workspace,
+                None,
+                None,
+                None,
+                seeded,
+            )
+        };
         let frozen = aid(None);
         assert_eq!(super::runtime_change_notice(&frozen, &frozen, None), None);
 
@@ -5001,6 +5333,30 @@ mod tests {
         assert!(presentation.next_actions[1].contains("new conversation"));
     }
 
+    /// Prevents: a model missing from the catalog reporting as a context
+    /// overflow ("could not be compacted"), which sends the user and the
+    /// usage reports after the wrong cause.
+    #[test]
+    fn an_unknown_model_has_its_own_class_and_copy() {
+        let failure = super::UNKNOWN_MODEL_FAILURE;
+        assert_eq!(super::failure_class(failure), "llm.unknown_model");
+        let presentation = super::failure_presentation("context/overflow: 9000 > 4000", failure);
+        assert_eq!(
+            presentation.summary,
+            "The selected model is not in the model catalog."
+        );
+    }
+
+    #[test]
+    fn an_unclassified_failure_is_unknown() {
+        assert_eq!(super::failure_class(super::INTERNAL_FAILURE), "llm.unknown");
+        let retryable = super::FailureInfo {
+            retryable: true,
+            ..super::INTERNAL_FAILURE
+        };
+        assert_eq!(super::failure_class(retryable), "llm.transient");
+    }
+
     #[test]
     fn generic_permanent_presentation_has_stable_copy() {
         let error = ChatError {
@@ -5183,6 +5539,14 @@ mod tests {
         ));
     }
 
+    fn exec_fn(id: &str, schema: serde_json::Value) -> crate::clients::FunctionDescriptor {
+        crate::clients::FunctionDescriptor {
+            function_id: id.into(),
+            description: Some("Run one command".into()),
+            parameters: Some(schema),
+        }
+    }
+
     #[test]
     fn registry_notice_stamps_silently_then_fires_on_mismatch() {
         let all = crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
@@ -5194,15 +5558,84 @@ mod tests {
             .internal_ids
             .insert("engine::functions::info".to_string());
         // First sighting (None): stamp, no notice.
-        assert!(super::registry_notice(None, 7, &all, &with_info).is_none());
-        // Acknowledged generation still current: no notice.
-        assert!(super::registry_notice(Some(7), 7, &all, &with_info).is_none());
-        // Registry moved on: notice fires, with the same re-fetch rule as the
-        // preloaded-stale notice.
-        let notice = super::registry_notice(Some(6), 7, &all, &with_info).unwrap();
+        assert!(super::registry_notice(None, &[7], &all, &with_info).is_none());
+        // Acknowledged functions still current: no notice.
+        assert!(super::registry_notice(Some(&[7]), &[7], &all, &with_info).is_none());
+        // An acknowledged function changed or left: notice fires, with the same
+        // re-fetch rule as the preloaded-stale notice.
+        let notice = super::registry_notice(Some(&[6]), &[7], &all, &with_info).unwrap();
         assert!(notice.contains("with engine::functions::info"), "{notice}");
-        let blind = super::registry_notice(Some(6), 7, &all, &snap(&[])).unwrap();
+        let blind = super::registry_notice(Some(&[6]), &[7], &all, &snap(&[])).unwrap();
         assert!(blind.contains("cannot re-fetch"), "{blind}");
+    }
+
+    #[test]
+    fn registry_notice_ignores_changes_to_functions_the_session_cannot_call() {
+        let exec_only =
+            crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+                allow: vec!["task::exec".into()],
+                ..Default::default()
+            }));
+        let other = crate::clients::FunctionDescriptor {
+            function_id: "other::worker".into(),
+            description: None,
+            parameters: None,
+        };
+        let acknowledged = snap(&[exec_fn("task::exec", serde_json::json!({"type": "object"}))])
+            .permitted_digests(&exec_only);
+
+        // Another worker registering a function: same permitted surface, no notice.
+        let unrelated = snap(&[
+            exec_fn("task::exec", serde_json::json!({"type": "object"})),
+            other,
+        ]);
+        let current = unrelated.permitted_digests(&exec_only);
+        assert!(
+            super::registry_notice(Some(&acknowledged), &current, &exec_only, &unrelated).is_none()
+        );
+
+        // The permitted function's contract changing: notice.
+        let changed = snap(&[exec_fn(
+            "task::exec",
+            serde_json::json!({"type": "object", "required": ["command"]}),
+        )]);
+        let current = changed.permitted_digests(&exec_only);
+        assert!(
+            super::registry_notice(Some(&acknowledged), &current, &exec_only, &changed).is_some()
+        );
+    }
+
+    /// The E2E race behind the notice that survived scoping (kanban_c1, PR
+    /// #1292 validation): the session's own function registers just before
+    /// its first step, the registry cache catches up one step late, and the
+    /// function seems to "change" at step 1. It only joined: no contract the
+    /// session holds went stale. Once acknowledged, changing or leaving does.
+    #[test]
+    fn a_function_joining_the_permitted_set_is_no_staleness() {
+        let broad =
+            crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+                allow: vec!["*".into()],
+                ..Default::default()
+            }));
+        let exec = || {
+            exec_fn(
+                "kanban_eval_ab12::exec",
+                serde_json::json!({"type": "object"}),
+            )
+        };
+        let lagging = snap(&[]).permitted_digests(&broad);
+        let caught_up = snap(&[exec()]);
+        let current = caught_up.permitted_digests(&broad);
+        assert!(super::registry_notice(Some(&lagging), &current, &broad, &caught_up).is_none());
+
+        let gone = snap(&[]);
+        assert!(super::registry_notice(
+            Some(&current),
+            &gone.permitted_digests(&broad),
+            &broad,
+            &gone
+        )
+        .is_some());
     }
 
     #[test]

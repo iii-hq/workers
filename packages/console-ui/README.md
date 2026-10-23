@@ -71,6 +71,13 @@ Use the shared contracts for repeated Console interactions:
   states, and optional free-form creation. `Select` is for small finite lists.
   `ModelPicker` is the Console-owned responsive model catalog picker for chat
   and injected profile editors; worker UIs provide the catalog and selection.
+- `WorkerConfigurationPanel` edits one worker's settings where the choice is
+  made — a picker page, a sheet — with the Settings editor (the worker's
+  registered form, validation, the save bar) and none of the Settings chrome:
+  the surface around it gives the title and the way back, and
+  `onDirtyChange` lets it guard leaving. Read it from
+  `host.components.WorkerConfigurationPanel` and fall back to
+  `WorkerConfigurationDialog` on Consoles that lack it.
 - Shared `Tooltip`, `Dialog`, `ConfirmDialog`, `DropdownMenu`, `Select`,
   `Selector`, and `BottomSheet` portals preserve an injected worker's
   `data-iii-ui` scope. `IconButton` combines an accessible label with the
@@ -94,7 +101,10 @@ Use the shared contracts for repeated Console interactions:
   remain mounted while collapsed, and instances sharing a `storageKey` stay
   synchronized. Narrow navigation is full-width by default for list/detail
   and hierarchy drill-in; `narrowMode="drawer"` is an explicit opt-in for
-  secondary navigation that overlays an unchanged main workspace.
+  secondary navigation that overlays an unchanged main workspace. A drawer
+  closes when a button, link or tab inside it is picked; a panel people keep
+  working in passes `closeDrawerOnSelect={false}`. Bump `expandRequest` (a
+  number) to expand the sidebar or open its drawer from a rail action.
 - Human-facing chrome uses sans and authored sentence/title case. Mono is only
   for machine-readable identifiers, paths, values, payloads, code, and tabular
   data. Application icons use a 16 px baseline; do not author icons below
@@ -141,7 +151,7 @@ looking at, with no bus round trip:
 if (host.panels?.openScreen) {
   host.panels.openScreen({
     screen: 'traces',
-    relativeTo: 'ext:onboarding', // beside this page, in whichever tab shows it
+    relativeTo: 'ext:learn-iii', // beside this page, in whichever tab shows it
     direction: 'right',
     sizes: [0.3, 0.4, 0.3], // the tab after placement; ignored on a mismatch
   })
@@ -159,8 +169,8 @@ Two subpaths DO bundle (React-free helpers and hooks the Console itself
 uses): `@iii-dev/console-ui/format` — `formatRelative`, `formatDuration`,
 `formatBytes`, `errorMessage`/`errorCode`, `copyText`, `unwrapEnvelope` —
 and `@iii-dev/console-ui/hooks` — `useContainerNarrow`, `usePaneState`,
-`useCopyFlash`, `useWorkerLive` (fetch + trigger bindings + visible-tab
-poll), `useDebounce`, `useSplitDrag` (pointer + arrow keys for a
+`useCopyFlash`, `useWorkerLive` (fetch + trigger bindings, re-read on tab
+focus when a binding is missing; no polling), `useDebounce`, `useSplitDrag` (pointer + arrow keys for a
 `role="separator"`).
 Newer shared components: `Eyebrow` (the mono caps label; `uiClasses.eyebrow`
 is the class form), `SearchField`, `Toolbar`/`StatusBar` (36 px raised and

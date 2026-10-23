@@ -5,6 +5,7 @@ import {
   ChevronUp,
   Loader2,
   MoreHorizontal,
+  Plus,
   Square,
 } from 'lucide-react'
 import {
@@ -35,6 +36,7 @@ import type { FileMentionRef } from '@/lib/file-mention-token'
 import type { FileSearchFn } from '@/lib/file-search'
 import type { FunctionEntry } from '@/lib/functions'
 import { formatBinding, shortcutPlatform } from '@/lib/keybindings/bindings'
+import type { MentionSearchContext } from '@/lib/mentions/types'
 import { cn } from '@/lib/utils'
 import type {
   Attachment,
@@ -217,6 +219,13 @@ interface ComposerProps {
   blocked?: boolean
   /** Prevent sending without locking the editor (e.g. transcript hydration). */
   submitBlocked?: boolean
+  /**
+   * Claims a send someone already decided for this chat's draft (see
+   * `sendDraftWhenReady`), answering the text it was decided for. Asked the
+   * first time the composer can send; the draft goes only if it still holds
+   * that text.
+   */
+  claimDraftSend?: () => string | undefined
   /** Placeholder while `blocked` is true. */
   blockedPlaceholder?: string
   /**
@@ -231,6 +240,20 @@ interface ComposerProps {
    * keyboard over the conversation, which is worse than aiming once.
    */
   autoFocus?: boolean
+  /**
+   * Take inserts, attachments and focus requests from other surfaces (on by
+   * default). A side chat's composer turns it off: those belong to the main
+   * chat.
+   */
+  externalInput?: boolean
+  /** Shown at the top of the card, above attachments: a side chat's quote. */
+  header?: ReactNode
+  /**
+   * On a phone, one row: settings (+, attachments included), the field and
+   * send. For the side chat, where every line counts; the agent and model
+   * pickers live in the settings sheet. Wider layouts are unchanged.
+   */
+  compact?: boolean
   /** Initial editor content (applied once on mount). */
   initialContent?: (editor: LexicalEditor) => void
   /**
@@ -288,6 +311,11 @@ interface ComposerProps {
    */
   searchFiles?: FileSearchFn
   /**
+   * Where worker mention searches (`@kanban:…`) are asked from: this chat's
+   * session and folder.
+   */
+  mentionContext?: MentionSearchContext
+  /**
    * Open a mentioned file where it can be read (the shell explorer, on the
    * referenced lines) when its pill is clicked. Absent = clicking a pill
    * only selects it.
@@ -342,9 +370,13 @@ export function Composer({
   queueWhileStreaming,
   blocked,
   submitBlocked,
+  claimDraftSend,
   blockedPlaceholder = 'chat unavailable…',
   idlePlaceholder = GENERIC_COMPOSER_PLACEHOLDER,
   autoFocus,
+  externalInput = true,
+  header,
+  compact = false,
   initialContent,
   initialText,
   onTextChange,
@@ -356,6 +388,7 @@ export function Composer({
   projectControls,
   functionEntries,
   searchFiles,
+  mentionContext,
   onOpenFileMention,
   queuedForEdit,
   onEditQueued,
@@ -504,6 +537,17 @@ export function Composer({
     updateAttachments,
   ])
 
+  // A draft whose send was decided before the chat opened goes the moment
+  // the composer can send it — with a model, or the send would be refused
+  // after the editor was already cleared. The editor reports no change for
+  // its seeded text, so a different text means the user edited the draft
+  // meanwhile: it is theirs to send.
+  useEffect(() => {
+    if (submitDisabled || !model) return
+    const decided = claimDraftSend?.()
+    if (decided?.trim() && decided === textRef.current) handleSubmit()
+  }, [submitDisabled, model, claimDraftSend, handleSubmit])
+
   const handleAttach = useCallback(
     (next: Attachment[]) => {
       updateAttachments([...attachmentsRef.current, ...next], {
@@ -545,8 +589,11 @@ export function Composer({
     [handleAttach],
   )
   useEffect(
-    () => onComposerAttach((files) => void attachFiles(files)),
-    [attachFiles],
+    () =>
+      externalInput
+        ? onComposerAttach((files) => void attachFiles(files))
+        : undefined,
+    [attachFiles, externalInput],
   )
 
   // A folded card can neither take the caret nor show what lands in it, so
@@ -560,6 +607,7 @@ export function Composer({
   // separate turns of the event loop.
   const pendingSubmitRef = useRef(false)
   useEffect(() => {
+    if (!externalInput) return
     const unfold = () => {
       if (!collapsedRef.current) return
       refocusAfterUnfoldRef.current = true
@@ -574,12 +622,19 @@ export function Composer({
       offFocus()
       offInsert()
     }
-  }, [setFolded])
+  }, [setFolded, externalInput])
   useEffect(() => {
     if (collapsed || !refocusAfterUnfoldRef.current) return
     refocusAfterUnfoldRef.current = false
     requestComposerFocus()
   }, [collapsed])
+  // A send that arrived while the composer could not send (a chat pane just
+  // opened again, its session still loading) goes the moment it can.
+  useEffect(() => {
+    if (submitDisabled || !model || !pendingSubmitRef.current || !textRef.current.trim()) return
+    pendingSubmitRef.current = false
+    handleSubmit()
+  }, [submitDisabled, model, handleSubmit])
 
   // The drop zone is the whole chat pane, claimed in the capture phase — see
   // `use-file-drop`. A drop onto the transcript, where people actually let go
@@ -627,13 +682,54 @@ export function Composer({
       </button>
     )
 
+  const editor = (
+    <LexicalShell
+      onChange={(text) => {
+        textRef.current = text
+        setHasText(text.trim().length > 0)
+        if (browseIdRef.current === null) onTextChange?.(text)
+        // The editor has the inserted text now, so a send that came in
+        // with it can go. Out of band: `handleSubmit` clears the editor,
+        // which must not run inside its own change.
+        if (pendingSubmitRef.current && text.trim().length > 0 && !submitDisabled && model) {
+          pendingSubmitRef.current = false
+          queueMicrotask(handleSubmit)
+        }
+      }}
+      onSubmit={handleSubmit}
+      clearToken={clearToken}
+      placeholder={
+        blocked
+          ? blockedPlaceholder
+          : isStreaming
+            ? queueWhileStreaming
+              ? 'queue a message…'
+              : 'streaming response…'
+            : idlePlaceholder
+      }
+      disabled={inputDisabled}
+      autoFocus={autoFocus}
+      externalInput={externalInput}
+      initialContent={resolvedInitialContent}
+      functionEntries={functionEntries}
+      searchFiles={searchFiles}
+      mentionContext={mentionContext}
+      onOpenFileMention={onOpenFileMention}
+      menuFrameRef={card}
+      onHistoryNav={onEditQueued ? handleHistoryNav : undefined}
+    />
+  )
+  const compactRow = compact && mobileLayout
+  const attachInputRef = useRef<HTMLInputElement>(null)
+
   return (
     <div
       ref={shell}
       data-composer-streaming={isStreaming ? 'true' : undefined}
+      data-composer-compact={compactRow ? 'true' : undefined}
       className={cn(
-        // onboarding-composer: tour anchor (workers/onboarding). Do not remove.
-        'onboarding-composer composer-shell relative',
+        // learn-iii-composer: tour anchor (workers/learn-iii). Do not remove.
+        'learn-iii-composer composer-shell relative',
         hasProjectStrip ? 'pt-8' : 'pt-0',
       )}
     >
@@ -713,6 +809,8 @@ export function Composer({
           </div>
         ) : null}
 
+        {header}
+
         {attachments.length > 0 ? (
           <div className="flex flex-wrap gap-2 border-b border-rule-2 p-3">
             {attachments.map((a) => (
@@ -725,92 +823,94 @@ export function Composer({
           </div>
         ) : null}
 
-        <div className="composer-editor-slot px-1 pt-1">
-          <LexicalShell
-            onChange={(text) => {
-              textRef.current = text
-              setHasText(text.trim().length > 0)
-              if (browseIdRef.current === null) onTextChange?.(text)
-              // The editor has the inserted text now, so a send that came in
-              // with it can go. Out of band: `handleSubmit` clears the editor,
-              // which must not run inside its own change.
-              if (pendingSubmitRef.current && text.trim().length > 0) {
-                pendingSubmitRef.current = false
-                queueMicrotask(handleSubmit)
-              }
-            }}
-            onSubmit={handleSubmit}
-            clearToken={clearToken}
-            placeholder={
-              blocked
-                ? blockedPlaceholder
-                : isStreaming
-                  ? queueWhileStreaming
-                    ? 'queue a message…'
-                    : 'streaming response…'
-                  : idlePlaceholder
-            }
-            disabled={inputDisabled}
-            autoFocus={autoFocus}
-            initialContent={resolvedInitialContent}
-            functionEntries={functionEntries}
-            searchFiles={searchFiles}
-            onOpenFileMention={onOpenFileMention}
-            menuFrameRef={card}
-            onHistoryNav={onEditQueued ? handleHistoryNav : undefined}
-          />
-        </div>
-
-        {/* Tapping a toolbar button must not take the caret: on a phone the
-            blur folds the card to one line and drops the keyboard, so the
-            tap would land on a surface that just moved. The pickers open on
-            click, which a cancelled pointerdown leaves alone. */}
-        <div
-          className="composer-mobile-toolbar flex min-w-0 items-center gap-1 px-2 pb-2 sm:hidden"
-          onPointerDown={(event) => event.preventDefault()}
-        >
-          <AttachmentButton
-            onAttach={handleAttach}
-            disabled={inputDisabled}
-            className={toolbarIconButtonClass}
-          />
-          <ComposerActionsSlot layout="narrow">
-            {composerActions}
-          </ComposerActionsSlot>
-          <button
-            type="button"
-            onClick={() => setMobileSettingsOpen(true)}
-            aria-label="chat settings"
-            className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
-          >
-            <span
-              className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-              aria-hidden="true"
+        {compactRow ? (
+          <div className="flex items-end gap-1 p-1">
+            <button
+              type="button"
+              onPointerDown={(event) => event.preventDefault()}
+              onClick={() => setMobileSettingsOpen(true)}
+              aria-label="attach files, model and settings"
+              className="relative flex size-11 shrink-0 items-center justify-center rounded-full text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+            >
+              <Plus className="size-5 shrink-0" aria-hidden />
+            </button>
+            <div className="composer-editor-slot min-w-0 flex-1">{editor}</div>
+            <div onPointerDown={(event) => event.preventDefault()}>
+              {renderActionButton()}
+            </div>
+            <input
+              ref={attachInputRef}
+              type="file"
+              multiple
+              hidden
+              onChange={async (event) => {
+                const files = Array.from(event.target.files ?? [])
+                event.target.value = ''
+                if (files.length > 0) {
+                  handleAttach(await attachmentsFromFiles(files))
+                }
+              }}
             />
-            <MoreHorizontal className="size-5 shrink-0" aria-hidden />
-          </button>
-          {composerControls}
-          <ModelPicker
-            value={model}
-            options={modelOptions}
-            openRequest={modelPickerOpenRequest}
-            thinkingLevel={thinkingLevel}
-            onChange={onModelChange}
-            onThinkingLevelChange={onThinkingLevelChange}
-            disabled={optionsDisabled || modelLocked}
-            loading={catalogLoading}
-            showRefresh={false}
-            triggerAppearance="subtle"
-            className="ml-auto min-w-0"
-          />
-          {renderActionButton()}
-        </div>
+          </div>
+        ) : (
+          <>
+            <div className="composer-editor-slot px-1 pt-1">{editor}</div>
+
+            {/* Tapping a toolbar button must not take the caret: on a phone the
+              blur folds the card to one line and drops the keyboard, so the
+              tap would land on a surface that just moved. The pickers open on
+              click, which a cancelled pointerdown leaves alone. */}
+            <div
+              className="composer-mobile-toolbar flex min-w-0 items-center gap-1 px-2 pb-2 sm:hidden"
+              onPointerDown={(event) => event.preventDefault()}
+            >
+              <AttachmentButton
+                onAttach={handleAttach}
+                disabled={inputDisabled}
+                className={toolbarIconButtonClass}
+              />
+              <ComposerActionsSlot layout="narrow">
+                {composerActions}
+              </ComposerActionsSlot>
+              <button
+                type="button"
+                onClick={() => setMobileSettingsOpen(true)}
+                aria-label="chat settings"
+                className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+              >
+                <span
+                  className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+                  aria-hidden="true"
+                />
+                <MoreHorizontal className="size-5 shrink-0" aria-hidden />
+              </button>
+              {composerControls}
+              <ModelPicker
+                value={model}
+                options={modelOptions}
+                openRequest={modelPickerOpenRequest}
+                thinkingLevel={thinkingLevel}
+                onChange={onModelChange}
+                onThinkingLevelChange={onThinkingLevelChange}
+                disabled={optionsDisabled || modelLocked}
+                loading={catalogLoading}
+                showRefresh={false}
+                triggerAppearance="subtle"
+                className="ml-auto min-w-0"
+              />
+              {renderActionButton()}
+            </div>
+          </>
+        )}
 
         {/* Desktop toolbar: attach (and the optional memory / permission
             pickers) on the left; the quiet model label and the send button
             on the right, where the eye lands after typing. */}
+        {/* In a narrow pane (a side panel, a split) the model label gives
+            way: the left group keeps its width and the send button stays
+            in view. */}
         <div className="hidden min-w-0 items-center gap-1 px-2 pb-2 sm:flex">
-          <div className="flex min-w-0 flex-1 items-center gap-1">
+          <div className="flex flex-1 items-center gap-1">
             <AttachmentButton
               onAttach={handleAttach}
               disabled={inputDisabled}
@@ -835,7 +935,7 @@ export function Composer({
             ) : null}
           </div>
 
-          <div className="flex min-w-0 shrink-0 items-center gap-1.5">
+          <div className="flex min-w-0 items-center gap-1.5">
             {composerControls}
             <ModelPicker
               value={model}
@@ -884,6 +984,15 @@ export function Composer({
         onWorkingDirChange={onWorkingDirChange}
         onThinkingLevelChange={onThinkingLevelChange}
         onPermissionModeChange={onPermissionModeChange}
+        onAttachFiles={
+          compactRow
+            ? () => {
+                // Inside the tap, so the browser lets the picker open.
+                attachInputRef.current?.click()
+                setMobileSettingsOpen(false)
+              }
+            : undefined
+        }
       />
     </div>
   )

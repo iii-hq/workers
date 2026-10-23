@@ -1,11 +1,13 @@
 """hermes::* function handlers + the inbound bridge.
 
 The agent loop (`hermes::run`) shells the documented `hermes -z` one-shot, which
-returns only the final response text -- so the translated `agent::events` view
-carries `turn_end` + `agent_end` with the final message, not per-tool frames
-(Hermes one-shot exposes no event stream). `hermes::send` is omnichannel out.
-Inbound platform/webhook deliveries land on the HTTP sink and are republished so
-iii workers can react.
+returns only the final response text -- so the normalized `hermes::agent-event`
+feed carries `turn_end` + `agent_end` with the final message, not per-tool
+frames (Hermes one-shot exposes no event stream); the raw `hermes::raw-event`
+feed carries the `result` frame. `hermes::send` is omnichannel out. Inbound
+platform/webhook deliveries land on the HTTP sink and are republished on
+`hermes::raw-event` so iii workers can react. Both feeds are owned trigger types
+(see `agent_feed.py`).
 """
 
 from __future__ import annotations
@@ -20,28 +22,11 @@ from iii import IIIClient
 from iii_helpers.http import HttpRequest, HttpResponse
 
 from . import hermes_cli
+from .agent_feed import Feeds, create_feeds
 from .iii_prompt import III_CONTEXT_PROMPT
 
 SCOPE = "hermes_sessions"
 JSON_HEADERS = {"Content-Type": "application/json"}
-
-# Per-process epoch + per-session monotonic counter so item_ids never collide,
-# including across resumed runs on the same session_id (a fixed per-call seq
-# would make turn 2's frames overwrite turn 1's). Mirrors the harness emitter.
-_PROCESS_EPOCH = uuid.uuid4().hex[:8]
-_seq_by_session: dict[str, int] = {}
-
-
-async def _emit(iii: IIIClient, stream_name: str, session_id: str, event: dict[str, Any]) -> None:
-    seq = _seq_by_session.get(session_id, 0)
-    _seq_by_session[session_id] = seq + 1
-    item_id = f"{session_id}-{_PROCESS_EPOCH}-{seq:08d}"
-    await iii.trigger_async(
-        {
-            "function_id": "stream::set",
-            "payload": {"stream_name": stream_name, "group_id": session_id, "item_id": item_id, "data": event},
-        }
-    )
 
 
 def _extract_prompt(data: dict[str, Any]) -> str:
@@ -58,7 +43,10 @@ def _extract_prompt(data: dict[str, Any]) -> str:
     return "\n".join(b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("text"))
 
 
-def create_handlers(iii: IIIClient, get_cfg, logger: logging.Logger) -> dict[str, Any]:
+def create_handlers(iii: IIIClient, get_cfg, logger: logging.Logger, feeds: Feeds | None = None) -> dict[str, Any]:
+    # main.py registers the feeds at startup and passes them in; tests may let
+    # this create them on the fake bus.
+    feeds = create_feeds(iii) if feeds is None else feeds
     live: set[str] = set()
 
     async def run(data: dict[str, Any]) -> dict[str, Any]:
@@ -111,20 +99,13 @@ def create_handlers(iii: IIIClient, get_cfg, logger: logging.Logger) -> dict[str
             )
 
             message = {"role": "assistant", "content": [{"type": "text", "text": result}], "provider": "hermes"}
-            await _emit(
-                iii, cfg["raw_events_stream"], session_id, {"type": "result", "text": result, "is_error": is_error}
-            )
-            await _emit(
-                iii,
-                cfg["events_stream"],
-                session_id,
-                {"type": "turn_end", "message": message, "function_results": []},
-            )
+            await feeds.raw.emit(session_id, {"type": "result", "text": result, "is_error": is_error})
+            await feeds.agent.emit(session_id, {"type": "turn_end", "message": message, "function_results": []})
             end_event = {"type": "agent_end", "messages": [message]}
             if usage_info:
                 end_event["usage"] = usage_info["usage"]
                 end_event["total_cost_usd"] = usage_info["total_cost_usd"]
-            await _emit(iii, cfg["events_stream"], session_id, end_event)
+            await feeds.agent.emit(session_id, end_event)
             envelope = {
                 "session_id": session_id,
                 "result": result,
@@ -189,15 +170,14 @@ def create_handlers(iii: IIIClient, get_cfg, logger: logging.Logger) -> dict[str
         return {"session_id": session_id, "stopped": False, "reason": "hermes one-shot turns are not interruptible"}
 
     async def inbound(req: HttpRequest[Any], log: logging.Logger) -> HttpResponse[Any]:
-        cfg = get_cfg()
         body = req.body or {}
-        # Republish the inbound platform/webhook delivery so iii workers can
-        # react. TODO(live-integration): the exact Hermes delivery payload shape
-        # is confirmed against a running gateway; map it onto a dedicated
-        # `hermes::message` trigger type (register_trigger_type) once verified.
-        gid = str(body.get("session_id") or body.get("chat_id") or uuid.uuid4())
-        await _emit(iii, cfg["raw_events_stream"], gid, {"type": "inbound", "body": body})
-        log.info("hermes inbound delivery: group_id=%s", gid)
+        # Republish the inbound platform/webhook delivery on `hermes::raw-event`
+        # so iii workers can react. TODO(live-integration): the exact Hermes
+        # delivery payload shape is confirmed against a running gateway; map it
+        # onto a dedicated `hermes::message` trigger type once verified.
+        session_id = str(body.get("session_id") or body.get("chat_id") or uuid.uuid4())
+        await feeds.raw.emit(session_id, {"type": "inbound", "body": body})
+        log.info("hermes inbound delivery: session_id=%s", session_id)
         return HttpResponse(statusCode=200, body={"ok": True}, headers=JSON_HEADERS)
 
     return {

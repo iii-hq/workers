@@ -8,19 +8,22 @@ afterEach(() => {
 /** Minimal document standing in for exactly the DOM the fallback touches. */
 function fakeDocument(copySucceeds: boolean) {
   const execCommand = vi.fn(() => copySucceeds)
+  const doc: { activeElement: unknown } & Record<string, unknown> = {
+    activeElement: null,
+    body: { appendChild: vi.fn() },
+    execCommand,
+  }
   const textarea = {
     value: '',
     setAttribute: vi.fn(),
     style: {} as Record<string, string>,
-    select: vi.fn(),
+    // A real select() focuses the textarea.
+    select: vi.fn(() => {
+      doc.activeElement = textarea
+    }),
     remove: vi.fn(),
   }
-  const doc = {
-    activeElement: null,
-    createElement: vi.fn(() => textarea),
-    body: { appendChild: vi.fn() },
-    execCommand,
-  }
+  doc.createElement = vi.fn(() => textarea)
   return { doc, execCommand, textarea }
 }
 
@@ -49,6 +52,16 @@ describe('copyTextToClipboard', () => {
     vi.stubGlobal('document', doc)
     await expect(copyTextToClipboard('x')).resolves.toBe(true)
     expect(execCommand).toHaveBeenCalledWith('copy')
+  })
+
+  it('fails honestly when a focus trap steals the selection', async () => {
+    vi.stubGlobal('navigator', {})
+    const { doc, execCommand, textarea } = fakeDocument(true)
+    textarea.select = vi.fn()
+    vi.stubGlobal('document', doc)
+    await expect(copyTextToClipboard('x')).resolves.toBe(false)
+    expect(execCommand).not.toHaveBeenCalled()
+    expect(textarea.remove).toHaveBeenCalled()
   })
 
   it('returns false when both strategies fail', async () => {

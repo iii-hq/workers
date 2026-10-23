@@ -1,0 +1,63 @@
+{
+  "description": "Make a window the current window of its session. Like tmux itself, every client attached to that session (your terminal included) switches to it.",
+  "function_id": "tmux::windows::select",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "WindowArg": {
+        "anyOf": [
+          {
+            "description": "Window index inside the session.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          {
+            "description": "Window id like `@3`, or an index as text.",
+            "type": "string"
+          }
+        ],
+        "description": "A window as callers name it: an id (`\"@3\"`) or an index (`2` or `\"2\"`)."
+      }
+    },
+    "properties": {
+      "session": {
+        "description": "Session id (`$5`) or exact name.",
+        "type": "string"
+      },
+      "window": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/WindowArg"
+          }
+        ],
+        "description": "Window id (`@3`) or index."
+      }
+    },
+    "required": [
+      "session",
+      "window"
+    ],
+    "title": "WindowInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "session_id": {
+        "description": "Session id.",
+        "type": "string"
+      },
+      "window_id": {
+        "description": "Window id now current.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id",
+      "window_id"
+    ],
+    "title": "SelectedWindow",
+    "type": "object"
+  }
+}

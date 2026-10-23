@@ -21,11 +21,6 @@ export function settleRetry(states, runId, error) {
   return { ...states, [runId]: { pending: false, error } }
 }
 
-/** @param {boolean} bound @param {unknown} connectionState */
-export function isStreamLive(bound, connectionState) {
-  return bound && connectionState === 'connected'
-}
-
 /** @param {number} total @param {boolean} narrow */
 export function scanHistoryDescription(total, narrow) {
   if (!narrow) return `${total} recent repository reviews`

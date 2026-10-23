@@ -1,0 +1,77 @@
+{
+  "decisions": [
+    {
+      "keep": "upd-city-new",
+      "kind": "supersede",
+      "reason": "n1 states the user moved from São Paulo to Lisbon and now lives in Arroios, replacing the earlier residence in Pinheiros, São Paulo.",
+      "retire": "upd-city-old"
+    },
+    {
+      "keep": "upd-tz-new",
+      "kind": "supersede",
+      "reason": "Both concern the user's preferred meeting time zone; n1 states she now works in Portugal's time zone and no longer in Brasília's, replacing c1.",
+      "retire": "upd-tz-old"
+    },
+    {
+      "keep": "upd-ci-new",
+      "kind": "supersede",
+      "reason": "n1 states the user migrated work CI from Jenkins to GitHub Actions and no longer uses Jenkins, replacing the earlier fact in c1 that she uses Jenkins.",
+      "retire": "upd-ci-old"
+    },
+    {
+      "keep": "upd-run-new",
+      "kind": "supersede",
+      "reason": "Both describe when the user trains with the running club, and the newer memory says she now trains on Thursday evenings instead of Tuesday mornings.",
+      "retire": "upd-run-old"
+    },
+    {
+      "keep": "upd-diet-new",
+      "kind": "supersede",
+      "reason": "n1 states the user switched from a pescatarian diet to a fully vegan one, replacing the earlier pescatarian diet in c1.",
+      "retire": "upd-diet-old"
+    },
+    {
+      "keep": "upd-manager-new",
+      "kind": "supersede",
+      "reason": "n1 states the user now reports to Camila Rocha and Ricardo Teixeira is no longer her manager, replacing the earlier fact in c1 about her direct manager.",
+      "retire": "upd-manager-old"
+    },
+    {
+      "keep": "upd-editor-new",
+      "kind": "supersede",
+      "reason": "Both describe the user's code editor, and n1 states she switched from VS Code to Neovim, replacing the earlier VS Code setup.",
+      "retire": "upd-editor-old"
+    },
+    {
+      "keep": "evt-dentist-moved",
+      "kind": "supersede",
+      "reason": "The dentist appointment was rescheduled from 2026-10-15 to 9:30 on 2026-10-20, so the earlier date is outdated.",
+      "retire": "evt-dentist-oct15"
+    },
+    {
+      "keep": "en-work-deploy-window",
+      "kind": "merge",
+      "reason": "Both state the same fact: production deploys only on Tuesdays and Thursdays between 10:00 and 15:00 local time, and the older c1 carries every detail.",
+      "retire": "dup-deploy-window"
+    },
+    {
+      "keep": "pt-life-cafe-v60",
+      "kind": "merge",
+      "reason": "Both state that the user makes V60 filter coffee every morning with light-roast beans from southern Minas, and c1 is the older one with equal detail.",
+      "retire": "dup-cafe-v60"
+    },
+    {
+      "keep": "evt-dentist-moved",
+      "kind": "merge",
+      "reason": "Both state that the dentist appointment was moved from 2026-10-15 to 9:30 on 2026-10-20, so c1 (the older one) already has every detail.",
+      "retire": "dup-dentist-moved"
+    },
+    {
+      "keep": "id-partner",
+      "kind": "merge",
+      "reason": "Both state that Rafael, a UX designer, has been the user's partner since 2019, and the older c1 contains every detail of n1.",
+      "retire": "dup-partner"
+    }
+  ],
+  "model": "claude-sonnet-5-5"
+}

@@ -56,11 +56,11 @@ export interface WorkerLiveOptions<T> {
   iii: ExtensionIii
   /**
    * Trigger types whose events re-run `fetch`; an object form carries the
-   * binding `config` (a `stream` trigger's `stream_name`/`group_id`).
+   * binding `config` (a `state` trigger's `scope`/`key`).
    */
   triggers: readonly (string | { type: string; config?: Record<string, unknown> })[]
   fetch: () => Promise<T>
-  /** Visible-tab poll cadence while the live bindings are unavailable (default 15000). */
+  /** @deprecated Ignored: without live bindings the data is re-read on tab focus, never on a timer. */
   pollMs?: number
   /** Tab-scoped handler id, e.g. `iii::<worker>-ui::events`; the host appends `::<browserId>`. */
   handlerId: string

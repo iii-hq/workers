@@ -1,0 +1,31 @@
+SQLite: 3.53.4
+
+Native receipt (current)
+SEARCH inbox_messages USING INDEX inbox_chat_order (chat_id=?)
+
+Native receipt (+ sender key candidate)
+SEARCH inbox_messages USING INDEX sqlite_autoindex_inbox_messages_1 (chat_id=? AND sender_key=? AND message_id=?)
+
+Deep messages (current)
+SEARCH inbox_messages USING INDEX inbox_chat_order (chat_id=?)
+
+Deep messages (tuple candidate)
+SEARCH inbox_messages USING INDEX inbox_chat_order (chat_id=? AND timestamp_ms<?)
+
+Cloud status reconciliation (current)
+SCAN inbox_messages
+CORRELATED SCALAR SUBQUERY 2
+SEARCH r USING INDEX sqlite_autoindex_inbox_external_receipts_1 (message_id=?)
+CORRELATED SCALAR SUBQUERY 1
+SEARCH r USING INDEX sqlite_autoindex_inbox_external_receipts_1 (message_id=?)
+
+Receipt retention (current)
+SEARCH inbox_external_receipts USING COVERING INDEX sqlite_autoindex_inbox_external_receipts_1 (message_id=?)
+LIST SUBQUERY 1
+SCAN inbox_external_receipts
+USE TEMP B-TREE FOR ORDER BY
+
+Message retention (current)
+SEARCH inbox_messages USING INTEGER PRIMARY KEY (rowid=?)
+LIST SUBQUERY 1
+SCAN inbox_messages USING COVERING INDEX inbox_retention_order

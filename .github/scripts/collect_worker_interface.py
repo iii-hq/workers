@@ -24,6 +24,11 @@ SCHEMA_DEFINING_KEYS = frozenset(
     {"type", "properties", "$ref", "allOf", "anyOf", "oneOf", "enum", "items", "const"}
 )
 
+# Gap between registration snapshots. Three equal samples must fit inside the
+# life of a worker booted without its dependencies: harness registers, then
+# exits ~5 s later when no queue worker answers.
+SAMPLE_INTERVAL_SECONDS = 0.5
+
 
 def _schema_is_typed(schema: object) -> bool:
     return isinstance(schema, dict) and any(k in schema for k in SCHEMA_DEFINING_KEYS)
@@ -212,12 +217,14 @@ def wait_for_worker(
     deadline = time.monotonic() + wait_seconds
     workers_json = run_iii("engine::workers::list", {})
     functions_json = run_iii("engine::functions::list", {"include_internal": True})
+    if wait_seconds <= 0:
+        return workers_json, functions_json
 
-    def ready() -> bool:
+    def target_registration_ids() -> frozenset[tuple[str, str]]:
         workers = workers_json.get("workers", [])
         functions = functions_json.get("functions", [])
         if not isinstance(workers, list) or not isinstance(functions, list):
-            return False
+            return frozenset()
         try:
             target_names = _resolve_target_worker_names(
                 workers=workers,
@@ -225,15 +232,59 @@ def wait_for_worker(
                 baseline_workers_json=workers_baseline_json,
             )
         except ValueError:
-            return False
-        return len(_function_ids_for_workers(functions, target_names)) > 0
+            return frozenset()
+        function_ids = _function_ids_for_workers(functions, target_names)
+        if function_ids:
+            return frozenset(("function", identifier) for identifier in function_ids)
+        trigger_types = collect_trigger_types()
+        triggers = trigger_types.get("triggers", []) if isinstance(trigger_types, dict) else []
+        if not isinstance(triggers, list):
+            return frozenset()
+        return frozenset(
+            ("trigger", trigger["id"])
+            for trigger in triggers
+            if isinstance(trigger, dict)
+            and isinstance(trigger.get("worker_name"), str)
+            and trigger["worker_name"] in target_names
+            and isinstance(trigger.get("id"), str)
+            and trigger["id"]
+            and not trigger["id"].startswith("engine::")
+        )
 
-    while not ready() and time.monotonic() < deadline:
-        time.sleep(2)
+    previous_ids: frozenset[tuple[str, str]] = frozenset()
+    current_ids: frozenset[tuple[str, str]] = frozenset()
+    stable_samples = 0
+    # SDKs can register their functions asynchronously. A connected worker with
+    # one registration is not enough: require three unchanged, non-empty snapshots
+    # so release capture does not publish the first partial batch.
+    while time.monotonic() < deadline:
+        current_ids = target_registration_ids()
+        if current_ids and current_ids == previous_ids:
+            stable_samples += 1
+        else:
+            stable_samples = 1 if current_ids else 0
+        if stable_samples >= 3 and any(kind == "function" for kind, _ in current_ids):
+            return workers_json, functions_json
+        previous_ids = current_ids
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(SAMPLE_INTERVAL_SECONDS, remaining))
+        if time.monotonic() >= deadline:
+            break
         workers_json = run_iii("engine::workers::list", {})
         functions_json = run_iii("engine::functions::list", {"include_internal": True})
 
-    return workers_json, functions_json
+    # A trigger-only worker retains the prior full wait period: triggers can
+    # register before a slow worker finishes initializing its functions.
+    if stable_samples >= 3 and current_ids and all(kind == "trigger" for kind, _ in current_ids):
+        workers_json = run_iii("engine::workers::list", {})
+        functions_json = run_iii("engine::functions::list", {"include_internal": True})
+        if target_registration_ids() == current_ids:
+            return workers_json, functions_json
+    raise TimeoutError(
+        f"{worker_name}: interface registrations did not stabilize within {wait_seconds} seconds"
+    )
 
 
 def collect_trigger_types() -> dict[str, object] | None:
@@ -326,11 +377,15 @@ def main() -> int:
         if workers_baseline_path.exists():
             workers_baseline_json = json.loads(workers_baseline_path.read_text(encoding="utf-8"))
 
-    workers_json, functions_json = wait_for_worker(
-        args.worker,
-        args.wait_seconds,
-        workers_baseline_json=workers_baseline_json,
-    )
+    try:
+        workers_json, functions_json = wait_for_worker(
+            args.worker,
+            args.wait_seconds,
+            workers_baseline_json=workers_baseline_json,
+        )
+    except TimeoutError as error:
+        print(f"::error::{error}", file=sys.stderr)
+        return 1
 
     # `engine::functions::list` carries no schemas — pull each target function's
     # typed request/response schema from `engine::functions::info` and merge it

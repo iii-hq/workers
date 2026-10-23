@@ -1,0 +1,130 @@
+{
+  "function_id": "harness::compact",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "instructions": {
+        "default": null,
+        "description": "Guidance for the summariser: what to keep, drop, or emphasise. Steers this compaction only.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "model": {
+        "default": null,
+        "description": "The model that writes the summary; omitted, the session's last turn's.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "provider": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "CompactRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Status": {
+        "oneOf": [
+          {
+            "description": "Summarised; the `compaction` record anchors every later turn.",
+            "enum": [
+              "ok"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Another compaction of the session was running.",
+            "enum": [
+              "busy"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Nothing old enough to summarise.",
+            "enum": [
+              "empty"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The summariser failed or the result could not be saved.",
+            "enum": [
+              "failed"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "How an explicit compaction ended — also what `harness::compaction` carries on completion.",
+    "properties": {
+      "compaction_id": {
+        "type": "string"
+      },
+      "entry_ids": {
+        "description": "The transcript rows it wrote, in order: the start notice (absent when it never started) and the outcome row.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "message": {
+        "description": "The outcome as every client shows it.",
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/definitions/Status"
+      },
+      "summary": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "tokens_after": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "tokens_before": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "compaction_id",
+      "entry_ids",
+      "message",
+      "session_id",
+      "status"
+    ],
+    "title": "Outcome",
+    "type": "object"
+  }
+}

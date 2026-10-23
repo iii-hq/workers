@@ -26,6 +26,7 @@ import {
   readContainingBranches,
   readLogPage,
   readRefs,
+  readSignature,
 } from '../src/page/git-log-window'
 import {
   createBranch,
@@ -178,7 +179,9 @@ describe('the log reads', () => {
     const merge = await readCommitDetails(host, repo, '', sh(repo, 'rev-parse', 'HEAD'))
     // Against its first parent, the merge brings in the side branch's file.
     expect(merge.files.map((file) => file.path)).toEqual(['side.txt'])
-    expect(merge.signature).toBe('N')
+    // The signature is a read of its own: gpg must not hold the details.
+    expect(merge).not.toHaveProperty('signature')
+    expect(await readSignature(host, repo, merge.sha)).toBe('N')
     expect(await readContainingBranches(host, repo, root)).toEqual({
       names: ['main', 'side'],
       total: 2,

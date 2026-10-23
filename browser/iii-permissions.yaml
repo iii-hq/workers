@@ -9,6 +9,11 @@
 # drives a real browser and stays at the needs_approval default, as do the
 # outbound-fetching browser::{fetch,dynamic-fetch,stealthy-fetch,screenshot-url,
 # session-*,crawl} functions (an SSRF surface).
+#
+# browser::chromium::status is the one read-only environment probe listed: it
+# reports which Chromium would launch and never starts a browser.
+# browser::chromium::install (downloads and unpacks a browser into the cache)
+# stays at needs_approval.
 version: 1
 
 rules:
@@ -22,3 +27,4 @@ rules:
   - browser::find-by-regex
   - browser::describe
   - browser::to-markdown
+  - browser::chromium::status

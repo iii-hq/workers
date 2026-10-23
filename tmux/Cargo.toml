@@ -1,0 +1,42 @@
+[workspace]
+
+[package]
+name = "tmux"
+version = "0.1.1"
+edition = "2021"
+publish = false
+description = "tmux worker for iii — sessions and windows as tmux::* functions, agent/compose/port status per pane, and a live console terminal attached as a real tmux client"
+
+[lib]
+name = "tmux"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tmux"
+path = "src/main.rs"
+
+[dependencies]
+iii-sdk = "=0.25.0"
+iii-console-ui = { path = "../crates/console-ui" }
+iii-config-client = { path = "../crates/config-client" }
+arc-swap = "1"
+async-trait = "0.1"
+base64 = "0.22"
+libc = "0.2"
+portable-pty = "0.9.0"
+regex = "1"
+# Already in every worker's graph through iii-sdk; only the process table is used.
+sysinfo = { version = "0.38", default-features = false, features = ["system"] }
+uuid = { version = "1", features = ["v4"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "signal", "time", "io-util", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+schemars = "0.8"
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }

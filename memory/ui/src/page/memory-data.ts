@@ -73,6 +73,8 @@ const recallSchema = z.object({
 export interface RecalledMemory {
   memory: MemoryItem
   score: number
+  /** The bank holding it, when not the previewed one (its layer). */
+  bank?: string
 }
 
 function parseMemory(raw: unknown): MemoryItem | null {
@@ -210,7 +212,13 @@ const previewSchema = z.object({
   rules: z.number().default(0),
   rules_truncated: z.boolean().default(false),
   memories: z
-    .array(z.object({ memory: z.unknown(), score: z.number() }))
+    .array(
+      z.object({
+        memory: z.unknown(),
+        score: z.number(),
+        bank: z.string().nullish(),
+      }),
+    )
     .default([]),
   message: z.string().nullish(),
   retrieval: z.string().default(''),
@@ -249,9 +257,11 @@ export async function preview(
     rules: parsed.data.rules,
     rulesTruncated: parsed.data.rules_truncated,
     memories: parsed.data.memories
-      .map((r) => {
+      .map((r): RecalledMemory | null => {
         const memory = parseMemory(r.memory)
-        return memory ? { memory, score: r.score } : null
+        return memory
+          ? { memory, score: r.score, bank: r.bank ?? undefined }
+          : null
       })
       .filter((r): r is RecalledMemory => r !== null),
     message: parsed.data.message ?? null,

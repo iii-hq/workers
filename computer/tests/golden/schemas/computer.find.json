@@ -1,0 +1,110 @@
+{
+  "description": "Find UI elements by selector (e.g. button[name='Save'], text_field[name='Name'][value='x']) in an app's accessibility tree, optionally waiting up to timeout_ms for one to appear. One line per match with a ref for computer::act; never picks a match for you. A find with matches replaces the previous refs. Native sessions only.",
+  "function_id": "computer::find",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "app_name": {
+        "default": null,
+        "description": "Exact, case-sensitive app name as the OS reports it (macOS: the app name; Windows: the executable name without .exe, e.g. `notepad`, or the window title when the process cannot be opened; Linux: the app's accessibility name, e.g. `gedit`). Exclusive with `app_pid` and `root_ref`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "app_pid": {
+        "default": null,
+        "description": "Process id of the app to read (default: the foreground app). Exclusive with `app_name` and `root_ref`.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "max_depth": {
+        "default": null,
+        "description": "Deepest level below the root (the root is level 0), 1-12. Default 6.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "max_nodes": {
+        "default": null,
+        "description": "Most elements to read, 1-256. Default 256.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "root_ref": {
+        "default": null,
+        "description": "A ref from the current snapshot to read beneath (single attempt). Exclusive with `app_pid` and `app_name`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "selector": {
+        "description": "CSS-like selector: snake_case role, [attr='v'] filters (=, *=, ^=, $=; name, value, description, role and states such as enabled, checked, selected), descendant (space) and child (>) combinators, :nth(n), and comma groups. Example: dialog[name='Save'] button[name='OK'].",
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "timeout_ms": {
+        "default": null,
+        "description": "Keep looking for up to this many ms until something matches, also waiting for the app itself to start (app_name) or come to the foreground (0-30000, default 0 = one attempt). Not with root_ref.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "selector",
+      "session_id"
+    ],
+    "title": "FindInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "matches": {
+        "description": "Total matches (may exceed the lines listed).",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "tree": {
+        "description": "Untrusted app text: a marker line, the `app \"name\" pid N` line, then one line per match (at most 50) with its ref and up to three named ancestors.",
+        "type": "string"
+      },
+      "truncated": {
+        "description": "The last walk stopped at its node budget or deadline: zero matches may be a false negative.",
+        "type": "boolean"
+      },
+      "waited_ms": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "matches",
+      "tree",
+      "truncated",
+      "waited_ms"
+    ],
+    "title": "FindOutput",
+    "type": "object"
+  }
+}

@@ -179,6 +179,45 @@ describe('turnEstablishedFrom', () => {
   it('a send that failed before any turn ran is not', () => {
     expect(turnEstablishedFrom([user, sendError])).toBe(false)
   })
+
+  it('a turn the harness ran and failed is: the session identity is frozen', () => {
+    // What the session log maps for a first turn that died assembling
+    // context (entry-mapper): the harness holds a turn record, so a resent
+    // options.agent would be refused.
+    const overflow: Message = {
+      id: 'e_t1_error',
+      role: 'system',
+      kind: 'turn-failure',
+      content:
+        'context/overflow: assembled context requires 5391 tokens but usable budget is 2048',
+      tone: 'error',
+      failure: {
+        summary:
+          'The conversation could not be compacted to fit the selected model.',
+      },
+      technicalDetails: {
+        code: 'harness.context_overflow',
+        class: 'llm.context_overflow',
+      },
+      createdAt: 2,
+    }
+    expect(turnEstablishedFrom([user, overflow])).toBe(true)
+    // A harness failure row without technical details still came from a turn.
+    expect(
+      turnEstablishedFrom([user, { ...overflow, technicalDetails: undefined }]),
+    ).toBe(true)
+    // The console's own stamp on a send the engine never accepted does not count.
+    const stamped: Message = {
+      ...overflow,
+      content: 'send failed — engine unreachable',
+      failure: { summary: 'The message could not be sent.' },
+      technicalDetails: {
+        code: 'console.send_failed',
+        detail: 'engine unreachable',
+      },
+    }
+    expect(turnEstablishedFrom([user, stamped])).toBe(false)
+  })
 })
 
 describe('choice codec', () => {

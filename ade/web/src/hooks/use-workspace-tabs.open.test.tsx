@@ -39,7 +39,7 @@ beforeEach(async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
   vi.clearAllMocks()
   server = {
-    tabs: [{ id: 'tab-home', columns: 2, screens: ['chat', 'ext:onboarding'] }],
+    tabs: [{ id: 'tab-home', columns: 2, screens: ['chat', 'ext:learn-iii'] }],
     activeTabId: 'tab-home',
   }
   vi.mocked(fetchWorkspaceLayout).mockImplementation(async () =>
@@ -72,18 +72,18 @@ describe('openScreen with a placement', () => {
   it('lands beside the named anchor with the requested widths', async () => {
     await act(async () =>
       api.openScreen('traces', {
-        relativeTo: 'ext:onboarding',
+        relativeTo: 'ext:learn-iii',
         direction: 'right',
         sizes: [3, 4, 3],
       }),
     )
     // React Query notifies observers on a timer tick, not inside act().
     await settle()
-    expect(api.tabs[0].screens).toEqual(['chat', 'ext:onboarding', 'traces'])
+    expect(api.tabs[0].screens).toEqual(['chat', 'ext:learn-iii', 'traces'])
     expect(api.tabs[0].sizes).toEqual([0.3, 0.4, 0.3])
     expect(server.tabs).toEqual([
       expect.objectContaining({
-        screens: ['chat', 'ext:onboarding', 'traces'],
+        screens: ['chat', 'ext:learn-iii', 'traces'],
         sizes: [0.3, 0.4, 0.3],
       }),
     ])
@@ -92,7 +92,7 @@ describe('openScreen with a placement', () => {
   it('keeps the widths of a tab whose screen it only reuses', async () => {
     await act(async () =>
       api.openScreen('traces', {
-        relativeTo: 'ext:onboarding',
+        relativeTo: 'ext:learn-iii',
         sizes: [3, 4, 3],
       }),
     )

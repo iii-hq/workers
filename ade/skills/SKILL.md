@@ -11,7 +11,8 @@ description: >-
 # console
 
 The console is a single Rust binary that serves the React SPA and proxies the
-engine WebSocket on one port (`http_port`, 3113 by default). It renders the
+engine WebSocket on one port (`http_port`, 3113 by default; `console::status`
+returns the actual `url`). It renders the
 chat (on the `harness` turn loop), the OpenTelemetry trace explorer, the worker
 catalog, and a tabbed workspace of floating panels the operator arranges. It is
 also the delivery host for **injectable UI**: any worker registers a
@@ -37,6 +38,10 @@ stack; traces need the engine's OpenTelemetry export.
   `ade/injectable-ui` (the delivery contract) first, then
   `ade/design-console-ui` (responsive UX and forms), with
   `ade/design-system` open for every visual rule and number.
+- A worker's records should be mentionable in chat (`@calendar(id="…")`:
+  composer autocomplete, pills with a hover preview, agents receiving the
+  record resolved): read `ade/mentions` — two functions and a metadata
+  descriptor, no console change.
 - You changed a worker's UI and must prove it is loadable: read
   `console::ui-manifest` and require an empty `warnings` array.
 - The user should watch something in the console: `console::workspace::open`
@@ -45,6 +50,25 @@ stack; traces need the engine's OpenTelemetry export.
   continue there: `console::working-directory::propose` (never just to inspect
   a file).
 - You need to know what the operator currently sees: `console::workspace::list`.
+
+## Chat-owned Context tracking
+
+Users can ask in chat to pin release progress, a goal, a status summary or a checklist.
+Use `console::context::list`, `console::context::save` and `console::context::remove`.
+Discover the contracts before calling; Harness stamps the current `session_id`.
+A save stores a structured snapshot, not executable code, an extension or a monitor.
+Default to `conversation`; use `project` only when the user explicitly asks. Project
+identity is the session's canonical `metadata.fs_scope.root`; other conversations
+using that directory see the same project snapshots. List first and use an existing
+id to edit or move scope. Save replaces the whole snapshot: preserve the fields not
+being edited. Include a source label/HTTP(S) URL when available, and read the source
+before saving numeric progress. Update relevant snapshots when consulting their source
+or changing the tracked work. Do not poll or fetch unrelated sources. If refresh fails,
+keep the previous snapshot and tell the user it is stale. Confirm the saved scope.
+Users may edit, change scope, refresh or remove through chat. The Context panel's
+Tracking section shows the saved progress, checklist, source and last-updated time;
+its Update/Remove actions prepare a chat draft, never send or mutate silently.
+Snapshots persist in `<data_dir>/context-tracking.json`, with atomic writes.
 
 ## Boundaries
 
@@ -74,7 +98,7 @@ stack; traces need the engine's OpenTelemetry export.
 
 ## Functions
 
-- `console::status` — runtime knobs: `http_port`, `engine_url`, `version`; use for liveness and readiness.
+- `console::status` — runtime knobs: `url`, `http_port`, `engine_url`, `version`; use for liveness and readiness, and open ADE pages on this machine (browser sessions, curl) at `url` (`<url>/#/worker/<scope>/<page-id>`) instead of assuming port 3113. `url` is loopback when the console listens on every interface: to show the operator a page, use `console::workspace::open`, not a pasted link.
 - `console::ui-manifest` — every injected asset currently loadable, with path, kind, content hash, and style-lint warnings; the authoritative check after registering UI.
 - `console::workspace::list` — the operator's workspace: tabs, columns, screens, column widths, and the active tab.
 - `console::workspace::open` — show a screen next to the conversation (`ext:<page>`, `workers`, `traces`, or a pinned `chat` by `session_id`). It lands right of the chat panel; `relative_to` names another mounted screen to sit beside and `direction` (`right`/`left`) picks the side. `sizes` sets the tab's column widths in the same write — read `workspace::list` first for the widths that are up.
@@ -82,6 +106,7 @@ stack; traces need the engine's OpenTelemetry export.
 - `console::working-directory::propose` — ask the operator to move the session (chat and paired shell) to a directory created or cloned elsewhere.
 - `console::ui-content` — the console's own content function for its injected catalog pages; internal.
 - `console::on-config-change`, `console::working-directory::inject-guidance`, `console::working-directory::stamp-session` — internal wiring; never call directly.
+- `console::mentions::trace::search`, `console::mentions::trace::get` — the `@trace(id="<trace_id>")` chat mention provider over `engine::traces::list`; internal. Agents read a mentioned trace through `engine::traces::tree` (see `ade/mentions`).
 
 ## Reactive triggers
 

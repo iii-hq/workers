@@ -36,11 +36,22 @@ export interface NumberFieldSpec extends FieldBase {
   min?: number
   max?: number
   step?: number
+  /** Shown while unset (an optional field whose worker applies its own default). */
+  placeholder?: string
+}
+
+/** Choices a bus function lists, read when the form opens (after the static `options`). */
+export interface RemoteChoices {
+  functionId: string
+  /** Map the function's reply to choices; an unreadable reply maps to none. */
+  choices(response: unknown): readonly Choice[]
 }
 
 export interface SelectFieldSpec extends FieldBase {
   kind: 'select'
   options: readonly Choice[]
+  /** More choices from a running worker; the stored value stays selectable when it lists none. */
+  optionsFrom?: RemoteChoices
   placeholder?: string
 }
 
@@ -57,6 +68,18 @@ export interface ModelFieldSpec extends FieldBase {
   thinkingDefault?: string
   /** Shown while no model is set. Defaults to `Chat default`. */
   placeholder?: string
+}
+
+/**
+ * A judge provider key (`typesafe`, `clef`…) picked from the `judge-<provider>`
+ * workers registered next to the judge hub in `owner`'s namespace; unset
+ * follows the caller's session, then the hub's default. With no usable judge
+ * the field explains why and offers to install or start one.
+ */
+export interface JudgeProviderFieldSpec extends FieldBase {
+  kind: 'judge-provider'
+  /** A function the configured worker registers, to find its namespace. */
+  owner: string
 }
 
 export interface SwitchFieldSpec extends FieldBase {
@@ -146,6 +169,7 @@ export type FormFieldSpec =
   | NumberFieldSpec
   | SelectFieldSpec
   | ModelFieldSpec
+  | JudgeProviderFieldSpec
   | SwitchFieldSpec
   | StringListFieldSpec
   | DynamicMapFieldSpec

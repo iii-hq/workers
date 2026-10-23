@@ -203,7 +203,8 @@ pub async fn handle(deps: &Deps, req: StatusRequest) -> Result<Option<StatusRepo
     // A read that observes a terminal or missing record re-derives the
     // session's coarse status in the background (see `session_status`).
     let Some(record) =
-        crate::state::get_turn(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?
+        crate::state::get_turn_unhydrated(&deps.iii, &req.session_id, cfg.session_timeout_ms)
+            .await?
     else {
         crate::session_status::spawn_reconcile(deps, &req.session_id);
         return Ok(None);
@@ -213,6 +214,20 @@ pub async fn handle(deps: &Deps, req: StatusRequest) -> Result<Option<StatusRepo
     }
     let queued = if req.verbose {
         Some(crate::state::list_queued(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?)
+    } else {
+        None
+    };
+    // An explicit compaction rewrites the stored snapshot without touching
+    // the record; the newer of the two is the window the next turn sends.
+    let context = if req.verbose {
+        let stored =
+            crate::context_snapshot::get(&deps.iii, &req.session_id, cfg.session_timeout_ms)
+                .await
+                .unwrap_or_else(|error| {
+                    tracing::warn!(session_id = %req.session_id, %error, "stored context snapshot unreadable");
+                    None
+                });
+        crate::context_snapshot::newest(record.context_snapshot.clone(), stored)
     } else {
         None
     };
@@ -255,10 +270,7 @@ pub async fn handle(deps: &Deps, req: StatusRequest) -> Result<Option<StatusRepo
         stop_reason: record.stop_reason.clone(),
         expects_wake,
         armed_wakes,
-        context: req
-            .verbose
-            .then(|| record.context_snapshot.clone())
-            .flatten(),
+        context,
     }))
 }
 

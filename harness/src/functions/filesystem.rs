@@ -37,10 +37,12 @@ pub struct FilesystemInfoRequest {}
 pub struct FilesystemInfoResponse {
     /// Working-directory root stamped onto the first turn of a session whose
     /// send carries no explicit `fs_scope.root`; `null` when defaulting is
-    /// disabled (`default_filesystem_root: "off"`) or the cwd is unreadable.
+    /// disabled (`default_filesystem_root: "off"`) or neither `III_COMPOSE_DIR`
+    /// nor the cwd is available.
     pub default_root: Option<String>,
-    /// Effective per-session boundary for shell/coder calls. `workspace` when
-    /// the filesystem approval hook can widen it, otherwise `configured_roots`.
+    /// Effective per-session boundary for shell/coder calls: the configured
+    /// `filesystem_boundary`, or under `auto`, `workspace` when the filesystem
+    /// approval hook can widen it, otherwise `configured_roots`.
     pub boundary: crate::filesystem_scope::FilesystemBoundary,
 }
 
@@ -53,7 +55,7 @@ pub async fn info(
     let cfg = deps.cfg().await;
     Ok(FilesystemInfoResponse {
         default_root: cfg.resolved_default_filesystem_root(),
-        boundary: deps.hooks.filesystem_boundary("shell::fs::ls"),
+        boundary: deps.filesystem_boundary("shell::fs::ls").await,
     })
 }
 

@@ -2,18 +2,22 @@
 //! plus trace/span observability over a root-and-descendant session tree.
 //! `complete=false` means the returned aggregates are a live partial snapshot.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::{Mutex, OnceLock};
 
+use futures_util::future::BoxFuture;
+use futures_util::stream::{self, StreamExt};
 use iii_sdk::protocol::TriggerRequest;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::clients::session::{LoadedEntry, Projection, SessionClient};
 use crate::context_snapshot::ContextSnapshotV1;
 use crate::deps::Deps;
 use crate::error::HarnessError;
 use crate::types::content::ContentBlock;
-use crate::types::message::AgentMessage;
+use crate::types::message::{AgentMessage, AssistantMessage};
 
 use super::session_tree::{self, SessionTreeNodeV1};
 
@@ -24,6 +28,21 @@ pub struct SessionMetricsRequestV1 {
     /// `harness::status` addresses the tree here too.
     #[serde(alias = "session_id")]
     pub root_session_id: String,
+    /// Leave each session's context snapshot out of `by_session` (and skip
+    /// reading it). For callers that only need the counters and cost.
+    #[serde(default)]
+    pub omit_context: bool,
+    /// Report the given session and its descendants only, instead of walking
+    /// up to the root first: the response's root is the given session (depth
+    /// 0), which keeps its own `parent_session_id`. For a caller that shows
+    /// one conversation, not the whole tree it belongs to.
+    #[serde(default)]
+    pub subtree: bool,
+    /// Skip the trace/span aggregation (`traces` stays absent). It scans the
+    /// engine's trace store and is the slowest part of a complete answer;
+    /// usage counters do not need it.
+    #[serde(default)]
+    pub omit_traces: bool,
 }
 
 // Schemars 0.8 does not publish serde aliases. Advertise both spellings and
@@ -43,12 +62,34 @@ impl JsonSchema for SessionMetricsRequestV1 {
              tree here too."
                 .into(),
         );
+        let mut omit_context = bool::json_schema(generator).into_object();
+        omit_context.metadata().description = Some(
+            "Leave each session's context snapshot out of `by_session` (and skip reading it). \
+             For callers that only need the counters and cost. Default false."
+                .into(),
+        );
+        let mut subtree = bool::json_schema(generator).into_object();
+        subtree.metadata().description = Some(
+            "Report the given session and its descendants only, instead of walking up to the \
+             root first: the response's root is the given session (depth 0), which keeps its \
+             own `parent_session_id`. Default false."
+                .into(),
+        );
+        let mut omit_traces = bool::json_schema(generator).into_object();
+        omit_traces.metadata().description = Some(
+            "Skip the trace/span aggregation (`traces` stays absent). It scans the engine's \
+             trace store and is the slowest part of a complete answer. Default false."
+                .into(),
+        );
         SchemaObject {
             instance_type: Some(InstanceType::Object.into()),
             object: Some(Box::new(ObjectValidation {
                 properties: [
                     ("root_session_id".into(), session_id.clone().into()),
                     ("session_id".into(), session_id.into()),
+                    ("omit_context".into(), omit_context.into()),
+                    ("subtree".into(), subtree.into()),
+                    ("omit_traces".into(), omit_traces.into()),
                 ]
                 .into(),
                 ..Default::default()
@@ -141,6 +182,11 @@ pub struct SessionUsageTotalsV1 {
     /// and a reader can tell the two apart.
     #[schemars(required, schema_with = "Option::<f64>::json_schema")]
     pub cost_usd: Option<f64>,
+    /// The same counters per model that generated a step, ordered by provider
+    /// then model. Absent when nothing generated, and from a harness that
+    /// predates it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub by_model: Vec<ModelUsageV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -195,11 +241,72 @@ pub struct SessionUsageV1 {
     /// and a reader can tell the two apart.
     #[schemars(required, schema_with = "Option::<f64>::json_schema")]
     pub cost_usd: Option<f64>,
+    /// The same counters per model that generated a step, ordered by provider
+    /// then model. Absent when nothing generated, and from a harness that
+    /// predates it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub by_model: Vec<ModelUsageV1>,
     /// The session's latest per-generation context snapshot (categories,
     /// budget, usage) — absent for sessions that have not generated since
     /// snapshots landed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<ContextSnapshotV1>,
+}
+
+/// What the steps one model generated used. A conversation can switch models
+/// mid-way, and providers differ in what they report (one may send tokens and
+/// no cost, another nothing), so the session's counters alone cannot say
+/// which model a gap belongs to.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ModelUsageV1 {
+    pub provider: String,
+    pub model: String,
+    /// Model steps (assistant messages) this model generated.
+    pub turns: u64,
+    pub function_calls: u64,
+    /// Summed over every generation that reported it. A single generation
+    /// without the counter (a stream the provider cut before usage came back)
+    /// is left out of the sum. `null` means no generation reported it or more
+    /// than one did not — never a measured zero, so the key is always present
+    /// and a reader can tell the two apart.
+    #[schemars(required, schema_with = "Option::<u64>::json_schema")]
+    pub input_tokens: Option<u64>,
+    /// Summed over every generation that reported it. A single generation
+    /// without the counter (a stream the provider cut before usage came back)
+    /// is left out of the sum. `null` means no generation reported it or more
+    /// than one did not — never a measured zero, so the key is always present
+    /// and a reader can tell the two apart.
+    #[schemars(required, schema_with = "Option::<u64>::json_schema")]
+    pub output_tokens: Option<u64>,
+    /// Summed over every generation that reported it. A single generation
+    /// without the counter (a stream the provider cut before usage came back)
+    /// is left out of the sum. `null` means no generation reported it or more
+    /// than one did not — never a measured zero, so the key is always present
+    /// and a reader can tell the two apart.
+    #[schemars(required, schema_with = "Option::<u64>::json_schema")]
+    pub cache_read_tokens: Option<u64>,
+    /// Summed over every generation that reported it. A single generation
+    /// without the counter (a stream the provider cut before usage came back)
+    /// is left out of the sum. `null` means no generation reported it or more
+    /// than one did not — never a measured zero, so the key is always present
+    /// and a reader can tell the two apart.
+    #[schemars(required, schema_with = "Option::<u64>::json_schema")]
+    pub cache_write_tokens: Option<u64>,
+    /// Summed over every generation that reported it. A single generation
+    /// without the counter (a stream the provider cut before usage came back)
+    /// is left out of the sum. `null` means no generation reported it or more
+    /// than one did not — never a measured zero, so the key is always present
+    /// and a reader can tell the two apart.
+    #[schemars(required, schema_with = "Option::<u64>::json_schema")]
+    pub reasoning_tokens: Option<u64>,
+    /// Summed over every generation that reported it. A single generation
+    /// without the counter (a stream the provider cut before usage came back)
+    /// is left out of the sum. `null` means no generation reported it or more
+    /// than one did not — never a measured zero, so the key is always present
+    /// and a reader can tell the two apart.
+    #[schemars(required, schema_with = "Option::<f64>::json_schema")]
+    pub cost_usd: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -244,74 +351,309 @@ struct TraceGroup {
     error_count: u64,
 }
 
+/// Sessions read at once. Each is several round trips (metadata, turn
+/// record, wake bindings, transcript pages); read one after another, a
+/// 176-session tree spent ~21 s on them, most of it between calls rather
+/// than inside them.
+const SESSION_READ_CONCURRENCY: usize = 16;
+
+/// What one session contributes to the response.
+struct SessionRead {
+    usage: UsageAccumulator,
+    context: Option<ContextSnapshotV1>,
+    /// The turn record carried no snapshot: read the durable row at the end.
+    read_back: bool,
+    /// The latest turn is terminal and nothing will wake the session.
+    settled: bool,
+}
+
+/// Usage of a session as of its last entry, kept while the session is
+/// settled: a settled session's transcript only grows past that entry (a new
+/// turn appends), so the next read asks for what came after it instead of
+/// re-reading every message. On a 179-session tree the transcripts are over
+/// 100 MB of JSON, nearly all of it content the counters never look at.
+#[derive(Debug, Clone)]
+struct CachedUsage {
+    last_entry_id: String,
+    usage: UsageAccumulator,
+}
+
+// ponytail: in-process and unbounded, one small entry per settled session
+// read (a few hundred bytes); a restart starts it empty. Make it durable or
+// bounded if harness ever serves enough sessions for that to matter.
+#[derive(Debug, Default)]
+struct UsageCache {
+    sessions: Mutex<HashMap<String, CachedUsage>>,
+}
+
+impl UsageCache {
+    /// The cached usage, for a session that is settled now.
+    fn settled(&self, session_id: &str, settled: bool) -> Option<CachedUsage> {
+        if !settled {
+            return None;
+        }
+        self.sessions.lock().ok()?.get(session_id).cloned()
+    }
+
+    /// Keep a settled session's usage; forget one that is running again,
+    /// whose latest messages can still change (usage is stamped after a
+    /// step).
+    fn remember(
+        &self,
+        session_id: &str,
+        settled: bool,
+        last_entry_id: Option<String>,
+        usage: &UsageAccumulator,
+    ) {
+        let Ok(mut sessions) = self.sessions.lock() else {
+            return;
+        };
+        match last_entry_id.filter(|_| settled) {
+            Some(last_entry_id) => {
+                sessions.insert(
+                    session_id.to_string(),
+                    CachedUsage {
+                        last_entry_id,
+                        usage: usage.clone(),
+                    },
+                );
+            }
+            None => {
+                sessions.remove(session_id);
+            }
+        }
+    }
+}
+
+fn usage_cache() -> &'static UsageCache {
+    static CACHE: OnceLock<UsageCache> = OnceLock::new();
+    CACHE.get_or_init(UsageCache::default)
+}
+
+/// Observe `entries` on top of `usage`; the last entry read becomes the new
+/// watermark (unchanged when nothing new came).
+fn fold_entries(
+    mut usage: UsageAccumulator,
+    mut last_entry_id: Option<String>,
+    entries: Vec<LoadedEntry>,
+) -> (UsageAccumulator, Option<String>) {
+    for entry in entries {
+        if let Some(message) = entry.message.as_ref() {
+            usage.observe(message);
+        }
+        last_entry_id = Some(entry.entry_id);
+    }
+    (usage, last_entry_id)
+}
+
+/// One session's usage and lifecycle; `None` when the session is gone.
+///
+/// Boxed and fed owned values: run concurrently from a stream, the unboxed
+/// future's type defeats rustc's `Send` check at the spawn sites that await
+/// this handler ("implementation of `Send` is not general enough").
+fn read_session(
+    deps: &Deps,
+    session: SessionClient,
+    timeout_ms: u64,
+    session_id: String,
+    omit_context: bool,
+    expects_wake: bool,
+) -> BoxFuture<'_, Result<Option<SessionRead>, HarnessError>> {
+    Box::pin(async move {
+        let session_id = session_id.as_str();
+        if !session.exists(session_id).await? {
+            return Ok(None);
+        }
+        let mut read = SessionRead {
+            usage: UsageAccumulator::default(),
+            context: None,
+            read_back: false,
+            settled: false,
+        };
+        // The turn that was latest, and settled, when the turn record was read.
+        let mut settled_turn: Option<String> = None;
+        if let Some(turn) =
+            crate::state::get_turn_unhydrated(&deps.iii, session_id, timeout_ms).await?
+        {
+            let (snapshot, read_back) =
+                session_context(turn.context_snapshot.clone(), omit_context);
+            read.context = snapshot;
+            read.read_back = read_back;
+            read.settled = terminal_snapshot(Some(turn.status), expects_wake);
+            if read.settled {
+                settled_turn = Some(turn.turn_id);
+            }
+        }
+        // No turn record: the transcript is durable independently of it. Keep
+        // aggregating it; the answer is partial (`settled` stays false) and the
+        // lifecycle/context data unavailable.
+        // The counters read only usage, function calls and `is_error`; the
+        // `Usage` projection leaves the rest (most of the bytes) behind.
+        let cache = usage_cache();
+        let (usage, last_entry_id) = match cache.settled(session_id, read.settled) {
+            // Settled when last read: only what came after can be new.
+            Some(hit) => match session
+                .messages_from(session_id, Some(&hit.last_entry_id), Projection::Usage)
+                .await
+            {
+                Ok(entries) => fold_entries(hit.usage, Some(hit.last_entry_id), entries),
+                // A fork moved the path (`invalid_cursor`), or the read
+                // failed: read the whole transcript.
+                Err(_) => fold_entries(
+                    UsageAccumulator::default(),
+                    None,
+                    session
+                        .messages_from(session_id, None, Projection::Usage)
+                        .await?,
+                ),
+            },
+            None => fold_entries(
+                UsageAccumulator::default(),
+                None,
+                session
+                    .messages_from(session_id, None, Projection::Usage)
+                    .await?,
+            ),
+        };
+        // The turn record was read before the transcript, seconds earlier on a
+        // big tree. A turn that started in between left its newest entry in
+        // what was just read with usage not yet stamped; caching that
+        // watermark would skip the stamp for good. Keep the usage only if the
+        // same turn is still the latest and still settled.
+        let still_settled = match settled_turn {
+            Some(turn_id) => crate::state::get_turn_unhydrated(&deps.iii, session_id, timeout_ms)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|turn| {
+                    same_settled_turn(&turn_id, &turn.turn_id, turn.status, expects_wake)
+                }),
+            None => false,
+        };
+        cache.remember(session_id, still_settled, last_entry_id, &usage);
+        read.usage = usage;
+        Ok(Some(read))
+    })
+}
+
 pub async fn handle(
     deps: &Deps,
     req: SessionMetricsRequestV1,
 ) -> Result<SessionMetricsResponseV1, HarnessError> {
-    let root_session_id = resolve_root(deps, &req.root_session_id).await?;
-    let tree = session_tree::collect(deps, &root_session_id).await?;
     let session = deps.session().await;
+    let root_session_id = if req.subtree {
+        req.root_session_id.clone()
+    } else {
+        resolve_root(deps, &req.root_session_id).await?
+    };
+    let mut tree = session_tree::collect(deps, &root_session_id).await?;
+    if req.subtree {
+        // The tree is cut below the given session, not detached from its
+        // parent: its row keeps the link a caller shows as "spawned by".
+        if let Some(start) = tree.sessions.first_mut() {
+            start.parent_session_id =
+                session
+                    .metadata_of(&root_session_id)
+                    .await?
+                    .and_then(|metadata| {
+                        metadata
+                            .get("parent_session_id")
+                            .and_then(serde_json::Value::as_str)
+                            .filter(|parent| !parent.is_empty())
+                            .map(str::to_string)
+                    });
+        }
+    }
     let cfg = deps.cfg().await;
     let mut complete = tree.complete;
     let mut total = UsageAccumulator::default();
     let mut by_session = Vec::with_capacity(tree.sessions.len());
     let mut missing_context = Vec::new();
-    for node in &tree.sessions {
-        if !session.exists(&node.session_id).await? {
+    // Read concurrently, consumed in tree order: `buffered` keeps the order,
+    // so the response is the one the sequential walk produced.
+    let timeout_ms = cfg.session_timeout_ms;
+    let omit_context = req.omit_context;
+    // The binding store is listed once for the whole tree: asked per session
+    // (`bindings::session_expects_wake`), it was listed again for each one.
+    // Same rule, failing closed the same way: an unreadable store counts every
+    // session as parked, so the answer is never reported complete.
+    let now = AgentMessage::now_ms();
+    let parked: Option<BTreeSet<String>> =
+        deps.bindings().await.list().await.ok().map(|bindings| {
+            bindings
+                .iter()
+                .filter(|binding| crate::bindings::is_armed_wake(binding, now))
+                .map(|binding| binding.owner.session_id.clone())
+                .collect()
+        });
+    let reads: Vec<_> = tree
+        .sessions
+        .iter()
+        .map(|node| {
+            let expects_wake = parked
+                .as_ref()
+                .is_none_or(|parked| parked.contains(&node.session_id));
+            read_session(
+                deps,
+                session.clone(),
+                timeout_ms,
+                node.session_id.clone(),
+                omit_context,
+                expects_wake,
+            )
+        })
+        .collect();
+    let reads = stream::iter(reads)
+        .buffered(SESSION_READ_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+    for (node, read) in tree.sessions.iter().zip(reads) {
+        let Some(read) = read? else {
             complete = false;
             continue;
-        }
-        let mut context = None;
-        if let Some(turn) =
-            crate::state::get_turn(&deps.iii, &node.session_id, cfg.session_timeout_ms).await?
-        {
-            context = turn.context_snapshot.clone();
-            if context.is_none() {
-                missing_context.push(by_session.len());
-            }
-            if !terminal_snapshot(
-                Some(turn.status),
-                crate::bindings::session_expects_wake(deps, &node.session_id).await,
-            ) {
-                complete = false;
-            }
-        } else {
-            // The transcript is durable independently of the latest harness
-            // turn record. Keep aggregating it, but make the snapshot partial
-            // and leave lifecycle/context data unavailable.
-            complete = false;
-        }
-        let entries = session.messages_strict(&node.session_id).await?;
-        let mut current = UsageAccumulator::default();
-        for entry in entries {
-            if let Some(message) = entry.message.as_ref() {
-                current.observe(message);
-                total.observe(message);
-            }
-        }
+        };
         // The turn record usually carries the session's latest snapshot for
         // free. A freshly seeded turn has not generated yet, so its record has
         // none and the durable `harness_context` row is the fallback — noted
         // here, read after the walk.
-        by_session.push(current.finish_session(node, context));
+        if read.read_back {
+            missing_context.push(by_session.len());
+        }
+        if !read.settled {
+            complete = false;
+        }
+        total.merge(&read.usage);
+        by_session.push(read.usage.finish_session(node, read.context));
     }
     // One state read per session whose record carried no snapshot — collected
     // for the final response only, so a large tree does not pay a round trip
     // per session on every poll (see the note below on partial responses).
-    if complete {
-        for index in missing_context {
-            let session_id = by_session[index].session_id.clone();
-            if let Ok(snapshot) =
-                crate::context_snapshot::get(&deps.iii, &session_id, cfg.session_timeout_ms).await
-            {
+    if complete && !missing_context.is_empty() {
+        let reads: Vec<BoxFuture<'_, _>> = missing_context
+            .iter()
+            .map(|&index| {
+                let session_id = by_session[index].session_id.clone();
+                let read: BoxFuture<'_, _> = Box::pin(async move {
+                    crate::context_snapshot::get(&deps.iii, &session_id, timeout_ms).await
+                });
+                read
+            })
+            .collect();
+        let snapshots = stream::iter(reads)
+            .buffered(SESSION_READ_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
+        for (&index, snapshot) in missing_context.iter().zip(snapshots) {
+            if let Ok(snapshot) = snapshot {
                 by_session[index].context = snapshot;
             }
         }
     }
     // Partial snapshots are polled as progress signals. Trace aggregation is
     // comparatively expensive and does not help the watchdog decide whether
-    // work advanced, so collect it only for the final complete response.
-    let traces = if complete {
+    // work advanced, so collect it only for the final complete response, and
+    // never for a caller that asked to skip it.
+    let traces = if complete && !req.omit_traces {
         collect_trace_metrics(deps, &tree.sessions, &root_session_id).await
     } else {
         None
@@ -324,6 +666,48 @@ pub async fn handle(
         by_session,
         traces,
     })
+}
+
+/// The usage a forked session copied from its source, `None` for a session
+/// `session::fork` did not create. A fork copies entries with their original
+/// timestamps, all before the fork was created; what the fork generates
+/// itself comes after.
+pub async fn forked_usage(
+    deps: &Deps,
+    session_id: &str,
+) -> Result<Option<SessionUsageV1>, HarnessError> {
+    let session = deps.session().await;
+    let Some(created_at) = session.forked_at(session_id).await? else {
+        return Ok(None);
+    };
+    let mut usage = UsageAccumulator::default();
+    for entry in session
+        .messages_from(session_id, None, Projection::Usage)
+        .await?
+    {
+        if let Some(message) = entry.message.filter(|m| m.timestamp() < created_at) {
+            usage.observe(&message);
+        }
+    }
+    let node = SessionTreeNodeV1 {
+        session_id: session_id.to_string(),
+        parent_session_id: None,
+        parent_turn_id: None,
+        depth: 0,
+    };
+    Ok(Some(usage.finish_session(&node, None)))
+}
+
+/// The context snapshot a session reports, and whether the durable
+/// `harness_context` row has to be read back for it: nothing, and no read,
+/// when the caller asked to omit context.
+fn session_context<T>(snapshot: Option<T>, omit: bool) -> (Option<T>, bool) {
+    if omit {
+        (None, false)
+    } else {
+        let read_back = snapshot.is_none();
+        (snapshot, read_back)
+    }
 }
 
 /// Walk `session_id` up to the root of its tree. Every other `harness::*`
@@ -384,6 +768,17 @@ fn terminal_status(status: Option<crate::types::turn::TurnStatus>) -> bool {
 
 fn terminal_snapshot(status: Option<crate::types::turn::TurnStatus>, expects_wake: bool) -> bool {
     terminal_status(status) && !expects_wake
+}
+
+/// Whether the turn read after a transcript is the settled turn read before
+/// it: same turn, still terminal, nothing armed to wake it.
+fn same_settled_turn(
+    before: &str,
+    after: &str,
+    status: crate::types::turn::TurnStatus,
+    expects_wake: bool,
+) -> bool {
+    before == after && terminal_snapshot(Some(status), expects_wake)
 }
 
 async fn collect_trace_metrics(
@@ -490,11 +885,12 @@ fn summarize_trace_groups(
     }
 }
 
-#[derive(Debug, Default)]
-struct UsageAccumulator {
+/// What model steps add up to: the steps, the calls they made and the usage
+/// they reported.
+#[derive(Debug, Clone, Default)]
+struct StepSums {
     turns: u64,
     function_calls: u64,
-    function_call_errors: u64,
     input: OptionalU64Sum,
     output: OptionalU64Sum,
     cache_read: OptionalU64Sum,
@@ -503,27 +899,67 @@ struct UsageAccumulator {
     cost_usd: OptionalF64Sum,
 }
 
+impl StepSums {
+    fn merge(&mut self, other: &Self) {
+        self.turns += other.turns;
+        self.function_calls += other.function_calls;
+        self.input.merge(&other.input);
+        self.output.merge(&other.output);
+        self.cache_read.merge(&other.cache_read);
+        self.cache_write.merge(&other.cache_write);
+        self.reasoning.merge(&other.reasoning);
+        self.cost_usd.merge(&other.cost_usd);
+    }
+
+    fn observe(&mut self, assistant: &AssistantMessage) {
+        self.turns += 1;
+        self.function_calls += assistant
+            .content
+            .iter()
+            .filter(|block| matches!(block, ContentBlock::FunctionCall { .. }))
+            .count() as u64;
+        let usage = assistant.usage.as_ref();
+        self.input.observe(usage.and_then(|value| value.input));
+        self.output.observe(usage.and_then(|value| value.output));
+        self.cache_read
+            .observe(usage.and_then(|value| value.cache_read));
+        self.cache_write
+            .observe(usage.and_then(|value| value.cache_write));
+        self.reasoning
+            .observe(usage.and_then(|value| value.reasoning));
+        self.cost_usd
+            .observe(usage.and_then(|value| value.cost_usd));
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct UsageAccumulator {
+    steps: StepSums,
+    function_call_errors: u64,
+    /// The same sums per (provider, model). Kept here rather than derived
+    /// later, so the settled-session cache and `merge` carry them too.
+    by_model: BTreeMap<(String, String), StepSums>,
+}
+
 impl UsageAccumulator {
+    /// Fold another accumulator in: the same as having observed its messages
+    /// here (every field is a sum, so the order does not matter).
+    fn merge(&mut self, other: &UsageAccumulator) {
+        self.steps.merge(&other.steps);
+        self.function_call_errors += other.function_call_errors;
+        for (key, steps) in &other.by_model {
+            self.by_model.entry(key.clone()).or_default().merge(steps);
+        }
+    }
+
     fn observe(&mut self, message: &AgentMessage) {
         match message {
             AgentMessage::Assistant(assistant) => {
-                self.turns += 1;
-                self.function_calls += assistant
-                    .content
-                    .iter()
-                    .filter(|block| matches!(block, ContentBlock::FunctionCall { .. }))
-                    .count() as u64;
-                let usage = assistant.usage.as_ref();
-                self.input.observe(usage.and_then(|value| value.input));
-                self.output.observe(usage.and_then(|value| value.output));
-                self.cache_read
-                    .observe(usage.and_then(|value| value.cache_read));
-                self.cache_write
-                    .observe(usage.and_then(|value| value.cache_write));
-                self.reasoning
-                    .observe(usage.and_then(|value| value.reasoning));
-                self.cost_usd
-                    .observe(usage.and_then(|value| value.cost_usd));
+                self.steps.observe(assistant);
+                self.by_model
+                    .entry((assistant.provider.clone(), assistant.model.clone()))
+                    .or_default()
+                    .observe(assistant);
             }
             AgentMessage::FunctionResult(result) if result.is_error => {
                 self.function_call_errors += 1;
@@ -532,40 +968,62 @@ impl UsageAccumulator {
         }
     }
 
+    fn finish_by_model(by_model: BTreeMap<(String, String), StepSums>) -> Vec<ModelUsageV1> {
+        by_model
+            .into_iter()
+            .map(|((provider, model), steps)| ModelUsageV1 {
+                provider,
+                model,
+                turns: steps.turns,
+                function_calls: steps.function_calls,
+                input_tokens: steps.input.finish(),
+                output_tokens: steps.output.finish(),
+                cache_read_tokens: steps.cache_read.finish(),
+                cache_write_tokens: steps.cache_write.finish(),
+                reasoning_tokens: steps.reasoning.finish(),
+                cost_usd: steps.cost_usd.finish(),
+            })
+            .collect()
+    }
+
     fn finish_session(
         self,
         node: &SessionTreeNodeV1,
         context: Option<ContextSnapshotV1>,
     ) -> SessionUsageV1 {
+        let steps = self.steps;
         SessionUsageV1 {
             session_id: node.session_id.clone(),
             parent_session_id: node.parent_session_id.clone(),
             depth: node.depth,
-            turns: self.turns,
-            function_calls: self.function_calls,
+            turns: steps.turns,
+            function_calls: steps.function_calls,
             function_call_errors: self.function_call_errors,
-            input_tokens: self.input.finish(),
-            output_tokens: self.output.finish(),
-            cache_read_tokens: self.cache_read.finish(),
-            cache_write_tokens: self.cache_write.finish(),
-            reasoning_tokens: self.reasoning.finish(),
-            cost_usd: self.cost_usd.finish(),
+            input_tokens: steps.input.finish(),
+            output_tokens: steps.output.finish(),
+            cache_read_tokens: steps.cache_read.finish(),
+            cache_write_tokens: steps.cache_write.finish(),
+            reasoning_tokens: steps.reasoning.finish(),
+            cost_usd: steps.cost_usd.finish(),
+            by_model: Self::finish_by_model(self.by_model),
             context,
         }
     }
 
     fn finish_totals(self, sessions: u64) -> SessionUsageTotalsV1 {
+        let steps = self.steps;
         SessionUsageTotalsV1 {
             sessions,
-            turns: self.turns,
-            function_calls: self.function_calls,
+            turns: steps.turns,
+            function_calls: steps.function_calls,
             function_call_errors: self.function_call_errors,
-            input_tokens: self.input.finish(),
-            output_tokens: self.output.finish(),
-            cache_read_tokens: self.cache_read.finish(),
-            cache_write_tokens: self.cache_write.finish(),
-            reasoning_tokens: self.reasoning.finish(),
-            cost_usd: self.cost_usd.finish(),
+            input_tokens: steps.input.finish(),
+            output_tokens: steps.output.finish(),
+            cache_read_tokens: steps.cache_read.finish(),
+            cache_write_tokens: steps.cache_write.finish(),
+            reasoning_tokens: steps.reasoning.finish(),
+            cost_usd: steps.cost_usd.finish(),
+            by_model: Self::finish_by_model(self.by_model),
         }
     }
 }
@@ -575,7 +1033,7 @@ impl UsageAccumulator {
 /// session still measures it. More than one missing is a gap, not a sum.
 const UNREPORTED_GENERATIONS_TOLERATED: u64 = 1;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct OptionalU64Sum {
     value: u64,
     reported: u64,
@@ -583,6 +1041,12 @@ struct OptionalU64Sum {
 }
 
 impl OptionalU64Sum {
+    fn merge(&mut self, other: &Self) {
+        self.value = self.value.saturating_add(other.value);
+        self.reported += other.reported;
+        self.unreported += other.unreported;
+    }
+
     fn observe(&mut self, value: Option<u64>) {
         match value {
             Some(value) => {
@@ -599,7 +1063,7 @@ impl OptionalU64Sum {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct OptionalF64Sum {
     value: f64,
     reported: u64,
@@ -607,6 +1071,12 @@ struct OptionalF64Sum {
 }
 
 impl OptionalF64Sum {
+    fn merge(&mut self, other: &Self) {
+        self.value += other.value;
+        self.reported += other.reported;
+        self.unreported += other.unreported;
+    }
+
     fn observe(&mut self, value: Option<f64>) {
         match value {
             Some(value) => {
@@ -782,6 +1252,300 @@ mod tests {
     }
 
     #[test]
+    fn merged_sessions_total_what_one_walk_over_all_messages_totals() {
+        // Sessions are read concurrently and folded into the total, where the
+        // sequential walk observed every message into it directly. The two
+        // must agree, the one-unreported-generation tolerance included: one
+        // gap in each of two sessions is two gaps in the tree.
+        let sessions = [
+            vec![
+                generation(json!({"input": 10, "output": 1, "cost_usd": 0.5})),
+                generation(serde_json::Value::Null),
+            ],
+            vec![
+                generation(json!({"input": 5, "output": 2, "cost_usd": 0.25})),
+                generation(json!({"output": 3})),
+            ],
+        ];
+        let mut walked = UsageAccumulator::default();
+        let mut merged = UsageAccumulator::default();
+        for messages in &sessions {
+            let mut one = UsageAccumulator::default();
+            for message in messages {
+                walked.observe(message);
+                one.observe(message);
+            }
+            merged.merge(&one);
+        }
+        let (walked, merged) = (walked.finish_totals(2), merged.finish_totals(2));
+        assert_eq!(merged, walked);
+        assert_eq!(merged.turns, 4);
+        assert_eq!(merged.output_tokens, Some(6), "one gap is tolerated");
+        assert_eq!(
+            merged.input_tokens, None,
+            "two gaps across sessions are not"
+        );
+        assert_eq!(merged.cost_usd, None);
+    }
+
+    fn generation_by(provider: &str, model: &str, usage: serde_json::Value) -> AgentMessage {
+        message(json!({
+            "role": "assistant",
+            "content": [{
+                "type": "function_call",
+                "id": "call",
+                "function_id": "state::get",
+                "arguments": {}
+            }],
+            "stop_reason": "function_call",
+            "usage": usage,
+            "model": model,
+            "provider": provider,
+            "timestamp": 1
+        }))
+    }
+
+    #[test]
+    fn usage_is_also_summed_per_model() {
+        // The shape of s_4c0733…: steps on a model that reported nothing, then
+        // a switch to one that reports tokens and no cost. The session's own
+        // counters are gaps; per model, what was reported is still there.
+        let mut usage = UsageAccumulator::default();
+        for _ in 0..2 {
+            usage.observe(&generation_by(
+                "openai",
+                "gpt-6-astra",
+                serde_json::Value::Null,
+            ));
+        }
+        for output in [10, 20, 30] {
+            usage.observe(&generation_by(
+                "claude-code",
+                "claude-code/claude-opus-5",
+                json!({"input": 1, "output": output, "cache_read": 100}),
+            ));
+        }
+        let session = usage.finish_session(&session("s", None, 0), None);
+        assert_eq!((session.turns, session.output_tokens), (5, None));
+        let by_model: Vec<_> = session
+            .by_model
+            .iter()
+            .map(|model| {
+                (
+                    model.provider.as_str(),
+                    model.turns,
+                    model.function_calls,
+                    model.output_tokens,
+                    model.cache_read_tokens,
+                    model.cost_usd,
+                )
+            })
+            .collect();
+        assert_eq!(
+            by_model,
+            [
+                ("claude-code", 3, 3, Some(60), Some(300), None),
+                ("openai", 2, 2, None, None, None),
+            ],
+            "ordered by provider, each with the session's null rule"
+        );
+    }
+
+    #[test]
+    fn per_model_sums_survive_merge_and_the_settled_cache() {
+        let a = [
+            generation_by("p", "m1", json!({"output": 1, "cost_usd": 0.5})),
+            generation_by("p", "m2", json!({"output": 2})),
+        ];
+        let b = [generation_by(
+            "p",
+            "m1",
+            json!({"output": 4, "cost_usd": 0.25}),
+        )];
+        let mut walked = UsageAccumulator::default();
+        let mut merged = UsageAccumulator::default();
+        for messages in [&a[..], &b[..]] {
+            let mut one = UsageAccumulator::default();
+            for message in messages {
+                walked.observe(message);
+                one.observe(message);
+            }
+            merged.merge(&one);
+        }
+        let merged = merged.finish_totals(2);
+        assert_eq!(merged, walked.finish_totals(2));
+        let m1 = &merged.by_model[0];
+        assert_eq!(
+            (m1.model.as_str(), m1.turns, m1.output_tokens, m1.cost_usd),
+            ("m1", 2, Some(5), Some(0.75))
+        );
+
+        // A settled session resumed from its watermark keeps counting per
+        // model on top of what the cache held.
+        let cache = UsageCache::default();
+        let (usage, last) = fold_entries(
+            UsageAccumulator::default(),
+            None,
+            vec![entry("e1", Some(a[0].clone()))],
+        );
+        cache.remember("s", true, last, &usage);
+        let hit = cache.settled("s", true).unwrap();
+        let (usage, _) = fold_entries(
+            hit.usage,
+            Some(hit.last_entry_id),
+            vec![entry("e2", Some(b[0].clone()))],
+        );
+        let totals = usage.finish_totals(1);
+        assert_eq!(
+            (
+                totals.by_model.len(),
+                totals.by_model[0].turns,
+                totals.by_model[0].output_tokens
+            ),
+            (1, 2, Some(5))
+        );
+    }
+
+    fn entry(id: &str, message: Option<AgentMessage>) -> LoadedEntry {
+        LoadedEntry {
+            entry_id: id.into(),
+            message,
+            custom: None,
+        }
+    }
+
+    #[test]
+    fn a_usage_projected_transcript_counts_what_the_full_one_does() {
+        // The same three entries as session-manager returns them by default
+        // and with `content: "usage"`. Both must parse, and count alike.
+        let full = json!([
+            {"entry_id": "e1", "origin": {"turn_id": "t1"}, "message": {
+                "role": "user", "content": [{"type": "text", "text": "q"}], "timestamp": 1}},
+            {"entry_id": "e2", "message": {
+                "role": "assistant", "stop_reason": "function_call", "model": "m",
+                "provider": "p", "timestamp": 2, "usage": {"input": 10, "output": 2},
+                "content": [
+                    {"type": "thinking", "text": "hm"},
+                    {"type": "text", "text": "looking"},
+                    {"type": "function_call", "id": "c1", "function_id": "shell::run",
+                     "arguments": {"cmd": "ls"}}
+                ]}},
+            {"entry_id": "e3", "message": {
+                "role": "function_result", "function_call_id": "c1",
+                "function_id": "shell::run", "is_error": true, "timestamp": 3,
+                "details": {"code": 1}, "content": [{"type": "text", "text": "boom"}]}}
+        ]);
+        let usage = json!([
+            {"entry_id": "e1", "message": {"role": "user", "content": [], "timestamp": 1}},
+            {"entry_id": "e2", "message": {
+                "role": "assistant", "stop_reason": "function_call", "model": "m",
+                "provider": "p", "timestamp": 2, "usage": {"input": 10, "output": 2},
+                "content": [{"type": "function_call", "id": "c1",
+                             "function_id": "shell::run", "arguments": null}]}},
+            {"entry_id": "e3", "message": {
+                "role": "function_result", "function_call_id": "c1",
+                "function_id": "shell::run", "is_error": true, "timestamp": 3,
+                "details": null, "content": []}}
+        ]);
+        let count = |entries: serde_json::Value| {
+            let entries: Vec<LoadedEntry> = serde_json::from_value(entries).unwrap();
+            assert!(entries.iter().all(|entry| entry.message.is_some()));
+            let (usage, last) = fold_entries(UsageAccumulator::default(), None, entries);
+            (usage.finish_totals(1), last)
+        };
+        let (projected, last) = count(usage);
+        assert_eq!(projected, count(full).0);
+        assert_eq!(last.as_deref(), Some("e3"));
+        assert_eq!(
+            (
+                projected.turns,
+                projected.function_calls,
+                projected.function_call_errors
+            ),
+            (1, 1, 1)
+        );
+        assert_eq!(projected.input_tokens, Some(10));
+    }
+
+    #[test]
+    fn a_settled_session_resumes_from_its_last_entry() {
+        let cache = UsageCache::default();
+        // First read: the whole transcript.
+        let (usage, last) = fold_entries(
+            UsageAccumulator::default(),
+            None,
+            vec![
+                entry("e1", Some(generation(json!({"input": 10, "output": 1})))),
+                entry("e2", None),
+            ],
+        );
+        assert_eq!(
+            last.as_deref(),
+            Some("e2"),
+            "a custom entry still moves the watermark"
+        );
+        cache.remember("s", true, last, &usage);
+
+        // Next read, still settled: start from e2 with what was counted.
+        let hit = cache.settled("s", true).expect("settled sessions are kept");
+        assert_eq!(hit.last_entry_id, "e2");
+        let (usage, last) = fold_entries(
+            hit.usage,
+            Some(hit.last_entry_id),
+            vec![entry(
+                "e3",
+                Some(generation(json!({"input": 5, "output": 2}))),
+            )],
+        );
+        let totals = usage.clone().finish_totals(1);
+        assert_eq!((totals.turns, totals.input_tokens), (2, Some(15)));
+        assert_eq!(last.as_deref(), Some("e3"));
+
+        // Nothing new: the watermark stays.
+        let (_, last) = fold_entries(usage.clone(), last, vec![]);
+        assert_eq!(last.as_deref(), Some("e3"));
+
+        // Running again: its newest messages can still change, so it is
+        // neither served from the cache nor kept in it.
+        assert!(cache.settled("s", false).is_none());
+        cache.remember("s", false, last, &usage);
+        assert!(cache.settled("s", true).is_none(), "forgotten once it ran");
+    }
+
+    #[test]
+    fn usage_is_cached_only_while_the_same_turn_stays_settled() {
+        use crate::types::turn::TurnStatus;
+        assert!(same_settled_turn("t1", "t1", TurnStatus::Completed, false));
+        // A turn started while the transcript was being read.
+        assert!(!same_settled_turn("t1", "t2", TurnStatus::Running, false));
+        assert!(!same_settled_turn("t1", "t2", TurnStatus::Completed, false));
+        // Same turn, resumed by a function result or parked on a wake.
+        assert!(!same_settled_turn(
+            "t1",
+            "t1",
+            TurnStatus::AwaitingFunctions,
+            false
+        ));
+        assert!(!same_settled_turn("t1", "t1", TurnStatus::Completed, true));
+    }
+
+    #[test]
+    fn subtree_and_omit_traces_are_opt_in() {
+        let req: SessionMetricsRequestV1 =
+            serde_json::from_value(json!({"session_id": "s_child"})).unwrap();
+        assert!(
+            !req.subtree,
+            "the tree is walked from its root unless asked"
+        );
+        assert!(!req.omit_traces, "traces are reported unless asked");
+        let req: SessionMetricsRequestV1 = serde_json::from_value(
+            json!({"session_id": "s_child", "subtree": true, "omit_traces": true}),
+        )
+        .unwrap();
+        assert!(req.subtree && req.omit_traces);
+    }
+
+    #[test]
     fn the_request_takes_either_session_id_spelling() {
         for payload in [
             json!({"root_session_id": "s_root"}),
@@ -789,7 +1553,24 @@ mod tests {
         ] {
             let req: SessionMetricsRequestV1 = serde_json::from_value(payload.clone()).unwrap();
             assert_eq!(req.root_session_id, "s_root", "{payload}");
+            assert!(!req.omit_context, "context is reported unless asked");
         }
+        let req: SessionMetricsRequestV1 =
+            serde_json::from_value(json!({"root_session_id": "s_root", "omit_context": true}))
+                .unwrap();
+        assert!(req.omit_context);
+    }
+
+    #[test]
+    fn omitted_context_is_neither_reported_nor_read_back() {
+        assert_eq!(session_context(Some(7), true), (None, false));
+        assert_eq!(session_context(None::<u8>, true), (None, false));
+        assert_eq!(session_context(Some(7), false), (Some(7), false));
+        assert_eq!(
+            session_context(None::<u8>, false),
+            (None, true),
+            "a missing snapshot is read back from state when context is reported"
+        );
     }
 
     #[test]

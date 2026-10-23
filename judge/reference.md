@@ -15,6 +15,7 @@ builds, credentials and local tests live with each provider, for example
 - [Handle results and failures](#handle-results-and-failures)
 - [List models](#list-models)
 - [Cancellation](#cancellation)
+- [Chat mentions](#chat-mentions)
 - [Limits and compatibility](#limits-and-compatibility)
 - [Provider compatibility notes](#provider-compatibility-notes)
 
@@ -26,6 +27,10 @@ Each forwards to `judge-<provider>::evaluate`, `judge-<provider>::models::list`
 and `judge-<provider>::cancel`; provider workers register exactly those ids
 (`judge_contract::provider_function_id`) as internal functions, so
 `engine::functions::list` lists them only with `include_internal: true`.
+A provider that needs a key also registers `judge-<provider>::status`, which
+the hub does not forward: it answers `{"configured": bool, "reason"?: string}`
+with no network call, and the Console's judge picker reads it to warn that a
+chosen judge has no usable key.
 The [shared Rust contract](https://github.com/iii-hq/workers/blob/main/crates/judge-contract/src/lib.rs)
 defines their request and response types. The [worker skill](skills/SKILL.md)
 describes when an agent should invoke evaluation.
@@ -50,7 +55,7 @@ with a top-level `provider` string (lowercase letters, digits and hyphens, at
 most 64 bytes). A provider that is not registered on the engine returns
 `{"status":"error","code":"provider_unavailable"}`.
 
-Local providers (`judge-decider`, `judge-semif`, `judge-laya`) always register
+Local providers (`judge-decider`, `judge-semif`, `judge-laya`, `judge-clef`) always register
 their functions and load their model on demand. The default `provider` keeps its
 model loaded; any other one loads it on the first request that names it (or
 whose session picked it) and releases it (memory and VRAM included) after 10
@@ -59,8 +64,12 @@ on the first download: a request that cannot wait that long answers `deadline`
 while the load goes on for the next one, and a failed load answers
 `provider_unavailable` with its `provider_error` and `retry_after_ms` (30 s).
 `preload_all: true` keeps every local provider loaded instead, so no request
-waits; each holds its memory (on a GPU, about 6 GB for decider or SemIf and
-1.5 GB for laya). Hosted providers such as `judge-typesafe` are unaffected.
+waits; each holds its memory (on a GPU, about 6 GB for decider or SemIf at
+its default 16384-token window, 1.3 GB for laya, and for clef about 6 GB at
+rest and 10 GB during a 16384-token evaluation). All four together need
+about 18.6 GB: on a 16 GB GPU the driver silently moves part of the last model
+loaded into system memory and it answers several times slower, so preload at
+most three there. Hosted providers (`judge-typesafe`, `judge-openai`) are unaffected.
 
 Credentials, default model and execution limits belong to the provider worker.
 For TypeSafe, open **Settings → Workers → judge-typesafe** in the Console or read
@@ -151,14 +160,20 @@ attempt, including reading its body. The whole-call `timeout_ms` /
 `expires_at_unix_ms` budget still covers validation, permit waits, every attempt
 and backoff; an attempt timeout never extends it.
 
-Retries are the provider's policy, not the caller's. `judge-typesafe` follows
-the TypeSafe SDK defaults: two retries after the first attempt on HTTP 408, 429
+Retries are the provider's policy, not the caller's. `judge-typesafe` and
+`judge-openai` follow the TypeSafe SDK defaults: two retries after the first attempt on HTTP 408, 429
 and 5xx, connection failures and attempt timeouts; exponential backoff from
 500 ms, capped at 5 s, minus up to 25% jitter; a server `retry-after-ms` or
-`Retry-After` (delta-seconds or HTTP date) up to 60 s is honored instead.
-Backoff releases the shared HTTP permit, the whole-call deadline bounds every
-wait, and exhaustion returns the final provider error. Requests never carry
-credentials, provider URLs or extra HTTP headers.
+`Retry-After` (delta-seconds or HTTP date) is honored instead. A hint longer
+than 60 s or than the remaining whole-call budget is not waited out: the call
+returns `http` at once with the `http_status` and `retry_after_ms`. A 429 that
+reports exhausted billing is final: `error.type` `insufficient_quota`, or an
+`error.code` of `insufficient_quota`, `credit_balance_exhausted`,
+`organization_spend_limit_exceeded`, `project_spend_limit_exceeded` or
+`organization_usage_limit_exceeded`. Backoff releases the shared HTTP permit,
+the whole-call deadline bounds every wait, and exhaustion returns the final
+provider error. Requests never carry credentials, provider URLs or extra HTTP
+headers.
 
 ## Handle results and failures
 
@@ -254,7 +269,9 @@ text, malformed JSON and oversized provider error bodies still report `code:
 "http"` and the HTTP status. Malformed escaped diagnostics that cannot be safely
 sanitized are omitted; `truncated` identifies clipped or omitted diagnostics.
 `retry_after_ms` is the parsed provider hint, when available, rather than a promise
-that another attempt will occur.
+that another attempt will occur. A hint that does not fit the remaining budget
+or the 60 s cap ends the call with this error immediately instead of a later
+`deadline`, so the caller can back off for that long.
 If reading an error body reaches the attempt deadline after headers arrive,
 the known HTTP status and retry hint still govern retries; incomplete diagnostics
 are marked truncated. Expiring the whole-call deadline still stops the call.
@@ -266,12 +283,13 @@ probability or legend keys, missing answers and mismatched types/IDs fail the
 whole batch. The worker returns provider scores and confidence without
 recalculating them. Choose a caller-specific decision threshold; JEV imposes
 no eligibility threshold. The local providers (`judge-decider`, `judge-semif`,
-`judge-laya`) compute `confidence` from their probabilities as TypeSafe
+`judge-laya`, `judge-clef`) compute `confidence` from their probabilities as TypeSafe
 defines it (`judge_contract::confidence`): `(n·p_max − 1) / (n − 1)` for a
 Choice, 0 for a uniform distribution and 1 for all mass on one option; for a
 Score, 1 − the expected distance from the likeliest level over the mean
-distance of the levels from the middle of the scale. A threshold therefore
-means the same whichever provider answers.
+distance of the levels from the middle of the scale. `judge-openai` returns
+OpenAI's own confidence, which matches the same definition rounded to two
+decimals (OpenAI does not document its formula). A threshold therefore means the same whichever provider answers.
 
 A complete, low-scoring evaluation can mean **no match**. A missing answer,
 deadline or service error cannot. Discard all partial answers when any evaluation
@@ -320,7 +338,9 @@ string fields `name`, `description` and `release_date`, plus an optional
 fixed window such as `laya`) and an optional `max_options` (most options one
 Choice can offer, for providers with a fixed limit below 255, such as SemIf's
 16); cards and aliases are
-returned without filtering to locally known versions. An example reply
+returned without filtering to locally known versions, except that `judge-openai`
+lists only the models it supports (`gpt-6-luna`), so a key that cannot see that
+model gets an empty `models` array. An example reply
 (illustrative values):
 
 ```json
@@ -401,9 +421,56 @@ same `provider` the call was started with; another provider answers
 and cancellation need routing affinity to the same processes: the registry is
 local to the provider process.
 
+## Chat mentions
+
+The harness always runs this worker, so the judge is where agents learn
+about worker-defined chat mentions — `@<name>(id="<id>")` tokens for a
+ticket, a session, a trace… declared by their workers (see
+[`crates/mention-contract`](../crates/mention-contract/README.md)).
+
+`judge::mentions::pre-generate` (internal) is bound to
+`harness::hook::pre-generate` with `on_error: fail_open`, so a provider
+that is down never blocks a turn. On each generation it may append:
+
+- `<mention_providers>`: the installed providers (`- @<name> — <label>:
+  <description>`), the names an agent may write in a reply. Appended once per
+  session and again only when the set of providers changes.
+- `<mentions>`: for every mention a user wrote that no earlier block
+  resolved (at most 10, newest first; text attached as `<attached-file>` or
+  `<skill>` and markdown code are skipped), the provider's one-line summary
+  and, when the session may call it, the provider's `details` function with
+  its exact payload, marked pre-verified:
+
+  ```text
+  <mentions>
+  …
+  - @kanban(id="6ac4…") — Kanban ticket KAN-12 "Fix login redirect" · status: In progress · priority: high
+    details: kanban::ticket::get {"id":"6ac4…"}
+  - @trace(id="ab12") — not found: the trace worker knows no such id
+  </mentions>
+  ```
+
+The harness persists both blocks and replays them in place, so the hook reads
+its own earlier blocks and never repeats one; a block is capped at about 600
+tokens. Each get call has 1.5 s.
+
+`judge::mentions::resolve` does the same resolution for any caller:
+
+```bash
+iii trigger judge::mentions::resolve --json '{"text":"see @kanban(id=\"KAN-12\")"}'
+```
+
+It returns `{ mentions: [{ token, name, id, status, label?, summary?,
+details?: { function_id, payload }, error? }] }` with `status` one of
+`resolved`, `not_found`, `unknown_provider` and `error`; `details` always
+carries the provider's canonical id.
+
+Start the worker with `JUDGE_MENTIONS=false` (or `--mentions false`) to leave
+both functions and the hook out.
+
 ## Limits and compatibility
 
-One `judge-typesafe` worker shares at most **four concurrent HTTP requests** across all
+One `judge-typesafe` or `judge-openai` worker shares at most **four concurrent HTTP requests** across all
 callers, including evaluation and model listing. Waiting for a
 slot, retrying and reading the response consume the same deadline. HTTP redirects
 are disabled. Generic defaults are 8 MiB per encoded request, 8 MiB per

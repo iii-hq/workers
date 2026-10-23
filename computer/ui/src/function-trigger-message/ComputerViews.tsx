@@ -2,6 +2,7 @@ import { Badge } from '@iii-dev/console-ui'
 import { z } from 'zod'
 import {
   actResultSchema,
+  captureText,
   type ComputerSessionInfo,
   decodeComputerResult,
   displayInfoSchema,
@@ -20,20 +21,26 @@ import { shortEndpoint } from '../lib/format'
 
 export function CaptureView({ output }: { output: unknown }) {
   const capture = parseCapture(output)
-  if (!capture?.dataUrl) return null
+  const tree = captureText(output)
+  if (!capture?.dataUrl && !tree) return null
   return (
-    <figure className="cp-ui-shot">
-      <img
-        src={capture.dataUrl}
-        alt={`desktop of session ${capture.sessionId}`}
-        className="cp-ui-shot-img"
-      />
-      {capture.width > 0 ? (
-        <figcaption className="cp-ui-shot-cap">
-          {capture.width}x{capture.height}
-        </figcaption>
+    <>
+      {capture?.dataUrl ? (
+        <figure className="cp-ui-shot">
+          <img
+            src={capture.dataUrl}
+            alt={`desktop of session ${capture.sessionId}`}
+            className="cp-ui-shot-img"
+          />
+          {capture.width > 0 ? (
+            <figcaption className="cp-ui-shot-cap">
+              {capture.width}x{capture.height}
+            </figcaption>
+          ) : null}
+        </figure>
       ) : null}
-    </figure>
+      {tree ? <pre className="cp-ui-json">{tree}</pre> : null}
+    </>
   )
 }
 

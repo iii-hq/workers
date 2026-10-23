@@ -111,6 +111,7 @@ async fn exec_bg_rejects_duplicate_id_before_starting_a_command() {
         finalized: true,
         child: None,
         host_pid: None,
+        owner_session_id: None,
     })
     .await;
     let result = functions::exec_bg::handle(
@@ -400,6 +401,7 @@ async fn status_handler_returns_record_for_inserted_job() {
         },
         child: None,
         host_pid: None,
+        owner_session_id: None,
     })
     .await;
     let r = resp(
@@ -471,6 +473,7 @@ async fn kill_handler_returns_killed_false_when_job_already_terminal() {
         },
         child: None,
         host_pid: None,
+        owner_session_id: None,
     })
     .await;
     let r = resp(
@@ -502,6 +505,7 @@ async fn list_handler_returns_jobs_array_and_count() {
         },
         child: None,
         host_pid: None,
+        owner_session_id: None,
     })
     .await;
     let r = resp(functions::list::handle(cfg_with_deny(&[])).await.unwrap());

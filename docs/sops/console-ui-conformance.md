@@ -66,7 +66,7 @@ migration recipe and order: `docs/plans/2026-09-16-worker-ui-migration.md`.
 
 ## Injectable worker sweep
 
-All 32 checked-in injectable UI packages (`ls -d */ui/package.json`) are
+The checked-in injectable UI packages (`ls -d */ui/package.json`) are
 listed; every one builds with strict lint since 2026-09-17. "Domain adapter" means a local component still adds information
 architecture or semantics; it must compose shared controls/tokens and is not
 permission to fork base hover, selection, tooltip, or selector behavior.
@@ -93,7 +93,7 @@ permission to fork base hover, selection, tooltip, or selector behavior.
 | `kanban` | yes | Shared page chrome, `List`/`ListItem`, `Card`, `Tabs`, `Selector`/`Select`, `ConfirmDialog`, `CodeEditor`, `Markdown`, `SettingsDeck` form; imports `usePaneState`/`useContainerNarrow`/`errorMessage`/`formatRelative`/`unwrapEnvelope` from the package, `lucide-react` | Board columns, ticket detail, function and trigger renderers |
 | `llm-router` | yes | Shared finite selects and configuration controls; tokens only | Provider/model configuration semantics |
 | `memory` | yes | Migrated: `useWorkerLive`, `usePaneState`, `useContainerNarrow`, `List`/`ListItem`, `IconButton`, `lucide-react`, `Skeleton`, `EmptyState`, `StatusPanel`, `Chip`/`Badge`/`Checkbox`, `Panel`, `CollapsibleCard`, `Card`, eyebrows, format subpath; graph canvas `<svg>` allowlisted | Memory graph and recall rules |
-| `onboarding` | yes | Migrated: Tailwind strings → scoped `ob-*` rules + `uiClasses`, `StatusDot`, `Chip`, `Input`, `Button asChild`, `StatusPanel`, `Skeleton`, `useCopyFlash`/`errorMessage`; brand-mark `<svg>` allowlisted | Guided tour spotlight over the console |
+| `onboarding` (page `learn-iii`) | yes | Migrated: Tailwind strings → scoped `learn-*` rules + `uiClasses`, `StatusDot`, `Chip`, `Input`, `Button asChild`, `StatusPanel`, `Skeleton`, `useCopyFlash`/`errorMessage`; brand-mark `<svg>` allowlisted; `host.overlays` tour card (page fallback) | Guided tour spotlight over the console |
 | `pdf` | yes | Shared tooltip and motion tokens; `unwrapEnvelope`, eyebrow recipe, 6px radii | Page rendering and document navigation |
 | `pi` | yes | Thin wrapper over the shared `@iii-workers/agent-terminal-ui` page (same page as `claude-code`); no local CSS | Agent terminal bound to a `shell::pty` session |
 | `provider-openai-codex` | yes | Shared provider-form controls; `copyText`, container query, `--color-rule-focus` | OAuth/device authentication flow |
@@ -103,9 +103,11 @@ permission to fork base hover, selection, tooltip, or selector behavior.
 | `state` | yes | Migrated: `useContainerNarrow`, `StatusDot`, `IconButton`, `lucide-react`, `Skeleton`, `List`/`ListItem`, `EmptyState` + `KeyCombo`, `StatusPanel`, `StatusBar`, `MetaRow`/`Eyebrow`, `formatBytes`/`errorMessage`/`unwrapEnvelope` | Progressive scope/key/value browser |
 | `storage` | yes | Migrated: `useContainerNarrow`, format subpath, `lucide-react`, `PageBody`/`PageMain`, `List`/`ListItem`, `IconButton`, `Eyebrow`, `Toolbar`/`StatusBar`, `Skeleton`, `StatusPanel`, `EmptyState`, `Checkbox`, `Select`, `Chip` | Bucket/object browser |
 | `tailscale` | yes | Shared page chrome with `PageSidebar`, `ListItem`, `IconButton`, `Input`/`Select`/`SegmentedControl`, `Table` family, `Badge`/`Chip`/`StatusDot`, `EmptyState`/`Skeleton`, `ConfirmDialog`; `lucide-react`, `useCopyFlash`, `errorMessage`/`formatBytes`, `uiClasses.spin` | Tailnet device table with ping paths, QR link card, netcheck and DNS facts, preference rows |
+| `tmux` | yes | Shared page chrome with `PageSidebar` (drawer when narrow), `uiClasses.tree*` session tree, `Tabs` (`forceMount` keeps the terminal alive), `Toolbar`/`Breadcrumb`/`StatusBar`, `Card`/`MetaRow`/`Table` family, `Chip`/`StatusDot`, `EmptyState`/`StatusPanel`, `Dialog` + field recipes + `Selector` (recent directories), `useConfirm`, `LiveRegion`, `SettingsDeck` config form; `usePaneState`, `useContainerNarrow`, format subpath, `lucide-react`, `@iii-workers/terminal-font`; xterm as a lazy `console:module`, `.xterm` vendor CSS allowlisted | A live tmux client (xterm) synced with every other client of the session; agent state and compose/port badges per window; listening-ports view |
 | `voice` | yes | Shared page chrome, `IconButton`, `Button`, `Badge`, `StatusPanel`, `Input`, `Table` family; chat-slot registrations; `lucide-react`, format subpath (`formatBytes`, `errorMessage`), `useCopyFlash`/`copyText`, `StatusDot pulse`, `uiClasses.spin`/`motionPanel` | Microphone capture, live partial transcript pill, segment timestamps |
 | `vscode` | yes | Shared page chrome, `List`/`ListItem`, `IconButton`, `StatusPanel`; `lucide-react` | Embedded VS Code workbench frame |
 | `web` | yes | Minimal shared renderer; container query | HTTP response payload |
+| `whatsapp` | yes | Shared page chrome, session list, controls, configuration fields, overlays, live hooks and pane navigation; instance configuration identity | Separate linked-phone and Meta Cloud API setup, local QR pairing, text/template/attachment tests, message/group archives and bounded activity feed |
 | `worktree` | yes | Migrated: `useWorkerLive`, `useContainerNarrow`, `lucide-react`, `useCopyFlash`, `IconButton`, `Skeleton`, `uiClasses.spin`, `Eyebrow`, `--color-*-strong`; graph `<svg>` and 10px edge labels allowlisted | Worktree ownership and graph semantics |
 
 ## Native Console sweep
@@ -150,8 +152,10 @@ owns; the registry refuses those at registration. See
 | browser | new session, stop, address bar, ⋮ menu (find in page, zoom, screenshot, print to PDF, device toolbar, import / copy cookies, clear browsing data, diagnostics), device toolbar (viewport presets), responsive live view (tracks the pane), read-only badge, handoff banner (confirm a paused session), Console / Network / Downloads / History panes, annotate (pin / box / arrow tools, colours, undo; pins carry the element under them), send / save / download / clear annotations, saved-sets dialog; setup: open | `N`, `X`, `L`, `Mod+F`, `Mod+=`/`Mod+-`/`Mod+0`, `C`, `Mod+Enter` | sessions, downloads (`browser::downloads::list`), history (`browser::history::list`), cookies (`browser::cookies::list`), diagnostics (`browser::doctor`), saved annotation sets (state scope `annotations`) |
 | sandbox-code-runner | new, run code, refresh; setup: open | `N`, `C`, `R` | sandboxes (`sandbox::list`) |
 | computer | start, stop; setup: open | `N`, `X` | sessions (`computer::sessions::list`) |
+| whatsapp | create session, refresh, connect, stop, focus/send message test, request pairing code; setup: open | `N`, `R`, `S`, `X`, `I` | sessions (`whatsapp::sessions::list`) |
 | worktree | refresh, close detail; setup: open | `R`, `Escape` | worktrees (`worktree::list`) |
 | tailscale | refresh, create link, copy link, open link, stop route, sections 1-7; setup: open | `R`, `N`, `C`, `O`, `X`, `1`-`7` | |
+| tmux | new session, show listening ports, show the terminal, refresh; setup: open | — (the terminal takes every key) | |
 | ade catalog (functions, triggers) | search, toggle internal, refresh, run function; setup: open | `/`, `I`, `R`, `Mod+Enter` | functions (built in) |
 | eval | new evaluation, refresh history; setup: open, new evaluation… | `N`, `R` | evaluations (`api.list`) |
 | github | toggle live, refresh, close detail; setup: open | `L`, `R`, `Escape` | (PR / issue data not wired in the UI yet) |

@@ -563,6 +563,29 @@ async fn seed_child(
             &mut provider_options,
         );
     }
+    let explicit_root = req
+        .options
+        .as_ref()
+        .and_then(|o| o.filesystem_root.as_deref());
+    // Under a `workspace` boundary the parent may write only its root and
+    // grants, so an in-turn spawn cannot root its child anywhere else.
+    let confine_to = match (
+        explicit_root,
+        parent,
+        parent_record.and_then(|r| r.options.filesystem_root()),
+    ) {
+        (Some(_), Some(p), Some(root))
+            if deps.filesystem_boundary("shell::exec").await
+                == crate::filesystem_scope::FilesystemBoundary::Workspace =>
+        {
+            let mut roots =
+                crate::filesystem_grants::roots(&deps.iii, &p.session_id, cfg.session_timeout_ms)
+                    .await?;
+            roots.push(root.to_string());
+            Some(roots)
+        }
+        _ => None,
+    };
     let mut options = TurnOptions {
         model,
         provider,
@@ -577,6 +600,7 @@ async fn seed_child(
                 identity,
             ),
         },
+        system_prompt_ref: None,
         skills_prompt: None,
         skill_context: None,
         max_turns,
@@ -599,17 +623,16 @@ async fn seed_child(
             .and_then(|o| o.output.clone())
             .unwrap_or_default(),
         functions,
-        metadata: child_filesystem_scope(
-            req.options
-                .as_ref()
-                .and_then(|o| o.filesystem_root.as_deref()),
-            parent_record,
-        )?,
+        metadata: child_filesystem_scope(explicit_root, parent_record, confine_to.as_deref())?,
         // The child's own resolved identity: the profile the spawn named, or
         // the parent's when it named none.
         agent: agent.as_ref().map(|a| a.identity.clone()),
         preloaded_contracts,
         seeded_contracts,
+        // A child writes its progress labels for the same user, in the
+        // language the root session pinned. A parentless spawn has none to
+        // copy; a reused child session keeps its own (`send::seed_new`).
+        response_language: parent_record.and_then(|p| p.options.response_language.clone()),
         max_validation_retries: req
             .options
             .as_ref()
@@ -719,8 +742,15 @@ async fn seed_child(
     } else {
         None
     };
+    // A sub-agent of a live turn keeps the folders its parent was granted, or
+    // it could not reach them under a `workspace` boundary.
+    if let Some(from) = grants_source(parent, previous_child.as_ref()) {
+        crate::filesystem_grants::copy(&deps.iii, from, &child_session_id, cfg.session_timeout_ms)
+            .await?;
+    }
     // A profile's skills are PRELOADED into its prompt (agents.rs), never a
-    // filter: only an explicit `options.skills` narrows the child's index.
+    // filter: only an explicit `options.skills` narrows the child's index, and
+    // a profile with `skills_index: false` drops it.
     let requested_skills = req
         .options
         .as_ref()
@@ -736,6 +766,7 @@ async fn seed_child(
         &mut options,
         child_skill_previous(reused, previous_child.as_ref()),
         requested_skills,
+        agent.as_ref().is_none_or(|profile| profile.skills_index),
     )
     .await?;
 
@@ -802,7 +833,7 @@ fn caller_holds_child_session_lock(
 }
 
 /// Display defaults from the agent profile: no explicit display → the
-/// profile's name (truncated to the 48-char cap), icon, and color; an explicit
+/// profile's name (cut to the 48-char cap by `normalize_display`), icon, and color; an explicit
 /// display keeps its fields and borrows profile appearance where fields are
 /// absent. Without a profile the request passes through untouched.
 fn merged_display(
@@ -819,7 +850,7 @@ fn merged_display(
             ..d.clone()
         }),
         None => Some(SubagentDisplay {
-            name: agent.name.chars().take(48).collect(),
+            name: agent.name.clone(),
             icon: agent.icon,
             color: agent.color,
         }),
@@ -838,13 +869,12 @@ fn normalize_display(
             "spawn display.name must not be empty".into(),
         ));
     }
-    if name.chars().count() > 48 {
-        return Err(HarnessError::InvalidRequest(
-            "spawn display.name must be at most 48 characters".into(),
-        ));
-    }
+    // Display-only, like the colour: a long name is cut, not refused. A
+    // refused spawn cost live orchestrators a step per lead whose
+    // `<KEY> · <title>` ran past the cap.
+    let name: String = name.chars().take(48).collect();
     Ok(Some(SubagentDisplay {
-        name: name.to_string(),
+        name: name.trim_end().to_string(),
         icon: display.icon,
         color: display.color,
     }))
@@ -939,13 +969,19 @@ fn inherit_filesystem_scope(parent: Option<&TurnRecord>) -> Option<Value> {
 }
 
 /// The child's `metadata.fs_scope`: an explicit spawn `filesystem_root`
-/// wins; absent, the parent's scope is inherited unchanged. The explicit
-/// value is deliberately not validated against any jail — the shell
-/// worker's roots and the approval gate on `harness::spawn` remain the
-/// security boundary.
+/// wins; absent, the parent's scope is inherited unchanged. With
+/// `confine_to` (the parent's root and grants under a `workspace` boundary)
+/// the explicit root must resolve inside one of them, so a spawn cannot hand
+/// its child a root the parent could not write. That holds at spawn time
+/// only: the parent can later swap the root for a symlink inside its own
+/// root (out of scope in the MOT-5167 spec; a per-call fix belongs in the
+/// ide). Without `confine_to` the value is not validated against any jail:
+/// the shell worker's roots and the approval gate on `harness::spawn` remain
+/// the security boundary.
 fn child_filesystem_scope(
     explicit_root: Option<&str>,
     parent: Option<&TurnRecord>,
+    confine_to: Option<&[String]>,
 ) -> Result<Option<Value>, HarnessError> {
     let Some(root) = explicit_root else {
         return Ok(inherit_filesystem_scope(parent));
@@ -955,7 +991,58 @@ fn child_filesystem_scope(
             "spawn filesystem_root must be an absolute path, got {root:?}"
         )));
     }
+    if let Some(allowed) = confine_to {
+        let resolve = |path: &str| resolve_confined(std::path::Path::new(path));
+        let inside = resolve(root).is_some_and(|child| {
+            allowed
+                .iter()
+                .filter_map(|a| resolve(a))
+                .any(|a| child.starts_with(a))
+        });
+        if !inside {
+            return Err(HarnessError::InvalidRequest(format!(
+                "spawn filesystem_root {root:?} is outside this session's folder and grants \
+                 ({}); under the `workspace` filesystem boundary a child is rooted inside them — \
+                 pick a folder there, or omit filesystem_root to inherit the parent's root",
+                allowed.join(", ")
+            )));
+        }
+    }
     Ok(Some(fs_scope_metadata(root)))
+}
+
+/// Where `path` leads, symlinks resolved the way the shell worker resolves
+/// them: its longest existing ancestor canonicalized, then the part that does
+/// not exist yet as written. `None` when that part could lead elsewhere once
+/// created — a `..`, or an entry that exists but does not resolve (a dangling
+/// symlink).
+fn resolve_confined(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let (mut cur, mut missing) = (path, Vec::new());
+    loop {
+        if let Ok(resolved) = std::fs::canonicalize(cur) {
+            return Some(missing.iter().rev().fold(resolved, |p, n| p.join(n)));
+        }
+        match std::fs::symlink_metadata(cur) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            _ => return None,
+        }
+        // `file_name` is None for a trailing `..`.
+        missing.push(cur.file_name()?);
+        cur = cur.parent()?;
+    }
+}
+
+/// The session a spawned child copies its filesystem grants from: the live
+/// parent, unless the child already ran a turn (a re-tasked child keeps its
+/// own). A session a failed spawn left without a turn copies on the retry;
+/// the copy is an idempotent union.
+fn grants_source<'a>(
+    parent: Option<&'a ParentLink>,
+    previous_child: Option<&TurnRecord>,
+) -> Option<&'a str> {
+    parent
+        .filter(|_| previous_child.is_none())
+        .map(|p| p.session_id.as_str())
 }
 
 /// Reuse guard for an in-turn spawn that named an EXISTING session. Reuse is
@@ -1034,11 +1121,13 @@ mod tests {
                 max_transient_resumes: 1,
                 preloaded_contracts: None,
                 seeded_contracts: None,
+                system_prompt_ref: None,
+                response_language: None,
             },
             calls: Default::default(),
             parent: None,
             display_parent_session_id: None,
-            functions_generation: None,
+            functions_acknowledged: None,
             function_contract_ledger: Default::default(),
             failed_calls: Default::default(),
             skill_ack: None,
@@ -1158,6 +1247,7 @@ mod tests {
         assert_eq!(serde_json::to_value(options).unwrap(), inherited);
 
         for requested in [
+            ThinkingLevel::Off,
             ThinkingLevel::Minimal,
             ThinkingLevel::Low,
             ThinkingLevel::Medium,
@@ -1228,10 +1318,20 @@ mod tests {
         assert_eq!(normalized.color, Some(SubagentColor::Blue));
 
         assert!(normalize_display(Some(&display(" \n\t "))).is_err());
-        assert!(normalize_display(Some(&display(&"é".repeat(48)))).is_ok());
-        let error = normalize_display(Some(&display(&"é".repeat(49)))).unwrap_err();
-        assert_eq!(error.code(), "harness/invalid_request");
-        assert!(error.to_string().contains("at most 48 characters"));
+        let exact = normalize_display(Some(&display(&"é".repeat(48))))
+            .unwrap()
+            .unwrap();
+        assert_eq!(exact.name, "é".repeat(48));
+        // Display-only: a long name is cut to 48 characters, never refused.
+        let long = normalize_display(Some(&display(&"é".repeat(49))))
+            .unwrap()
+            .unwrap();
+        assert_eq!(long.name, "é".repeat(48));
+        assert_eq!(long.icon, Some(SubagentIcon::Code));
+        // A cut that ends on a space leaves no trailing whitespace.
+        let spaced = format!("{} tail", "a".repeat(47));
+        let cut = normalize_display(Some(&display(&spaced))).unwrap().unwrap();
+        assert_eq!(cut.name, "a".repeat(47));
     }
 
     #[test]
@@ -1326,6 +1426,7 @@ mod tests {
         previous_child.options.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["child-only".into()]),
             baseline: Some("frozen child baseline".into()),
+            baseline_ref: None,
         });
 
         assert!(child_skill_previous(false, Some(&previous_child)).is_none());
@@ -1367,12 +1468,12 @@ mod tests {
             "fs_scope": { "root": "/work/project" },
         })));
         assert_eq!(
-            child_filesystem_scope(Some("/work/project/.wt/wt_1"), Some(&parent)).unwrap(),
+            child_filesystem_scope(Some("/work/project/.wt/wt_1"), Some(&parent), None).unwrap(),
             Some(json!({ "fs_scope": { "root": "/work/project/.wt/wt_1" } }))
         );
         // Without a parent the explicit root still applies.
         assert_eq!(
-            child_filesystem_scope(Some("/elsewhere"), None).unwrap(),
+            child_filesystem_scope(Some("/elsewhere"), None, None).unwrap(),
             Some(json!({ "fs_scope": { "root": "/elsewhere" } }))
         );
     }
@@ -1383,19 +1484,99 @@ mod tests {
             "fs_scope": { "root": "/work/project" },
         })));
         assert_eq!(
-            child_filesystem_scope(None, Some(&parent)).unwrap(),
+            child_filesystem_scope(None, Some(&parent), None).unwrap(),
             inherit_filesystem_scope(Some(&parent)),
         );
         // Metadata stays None when neither side scopes, so the record's wire
         // shape is unchanged (skip_serializing_if keeps it absent).
-        assert_eq!(child_filesystem_scope(None, None).unwrap(), None);
+        assert_eq!(child_filesystem_scope(None, None, None).unwrap(), None);
     }
 
     #[test]
     fn relative_filesystem_root_is_rejected() {
-        let err = child_filesystem_scope(Some("relative/dir"), None).unwrap_err();
+        let err = child_filesystem_scope(Some("relative/dir"), None, None).unwrap_err();
         assert_eq!(err.code(), "harness/invalid_request");
         assert!(err.to_string().contains("absolute path"));
+    }
+
+    #[test]
+    fn a_confined_child_root_stays_inside_the_parent_root_or_grants() {
+        let allowed = ["/work/project".to_string(), "/grant".to_string()];
+        let scope = |root| child_filesystem_scope(Some(root), None, Some(&allowed));
+        assert_eq!(
+            scope("/work/project/.wt/wt_1").unwrap(),
+            Some(json!({ "fs_scope": { "root": "/work/project/.wt/wt_1" } }))
+        );
+        assert!(scope("/grant/sub").is_ok());
+        for escape in ["/home/u/workers", "/work/projectx", "/work/project/../x"] {
+            let err = scope(escape).unwrap_err();
+            assert_eq!(err.code(), "harness/invalid_request");
+            assert!(err.to_string().contains("outside"), "{err}");
+        }
+        // A symlink inside the root is judged by where it leads.
+        let dir = tempfile::tempdir().unwrap();
+        let (root, out) = (dir.path().join("root"), dir.path().join("out"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&out).unwrap();
+        std::os::unix::fs::symlink(&out, root.join("link")).unwrap();
+        let allowed = [root.to_string_lossy().into_owned()];
+        let link = root.join("link").to_string_lossy().into_owned();
+        assert!(child_filesystem_scope(Some(&link), None, Some(&allowed)).is_err());
+    }
+
+    #[test]
+    fn a_missing_confined_root_is_judged_by_its_existing_ancestor() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, out) = (dir.path().join("root"), dir.path().join("out"));
+        std::fs::create_dir_all(root.join("real")).unwrap();
+        std::fs::create_dir_all(&out).unwrap();
+        std::os::unix::fs::symlink(&out, root.join("link")).unwrap();
+        std::os::unix::fs::symlink(out.join("future"), root.join("dangling")).unwrap();
+        let allowed = [root.to_string_lossy().into_owned()];
+        let scope = |p: std::path::PathBuf| {
+            child_filesystem_scope(Some(&p.to_string_lossy()), None, Some(&allowed))
+        };
+        assert!(scope(root.join("real/future/wt")).is_ok());
+        // Created later, each of these would lead outside the root.
+        for escape in [
+            root.join("link/future"),
+            root.join("dangling"),
+            root.join("dangling/wt"),
+            root.join("real/future/../../../out"),
+        ] {
+            assert!(scope(escape.clone()).is_err(), "{escape:?}");
+        }
+    }
+
+    /// A model-chosen root can hold ~2000 missing components under PATH_MAX:
+    /// resolving it must not take a stack frame per component.
+    #[test]
+    fn a_deep_missing_root_resolves_in_constant_stack() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        let deep = base.join("a/".repeat(1500));
+        let resolved = std::thread::Builder::new()
+            .stack_size(128 * 1024)
+            .spawn(move || resolve_confined(&deep))
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(resolved, Some(base.join("a/".repeat(1500))));
+    }
+
+    #[test]
+    fn a_child_without_a_turn_copies_the_parent_grants() {
+        let parent = ParentLink {
+            session_id: "s_parent".into(),
+            turn_id: "t_parent".into(),
+            function_call_id: "call_spawn".into(),
+        };
+        // New child, or a reused one a failed spawn left without a turn.
+        assert_eq!(grants_source(Some(&parent), None), Some("s_parent"));
+        // A child that already ran keeps its own grants.
+        let ran = parent_record(None);
+        assert_eq!(grants_source(Some(&parent), Some(&ran)), None);
+        assert_eq!(grants_source(None, None), None);
     }
 
     fn broad_policy() -> FunctionPolicy {
@@ -1851,6 +2032,7 @@ mod tests {
             functions: Vec::new(),
             model: None,
             reasoning_effort: None,
+            skills_index: true,
             name: name.to_string(),
             contract_digests: Default::default(),
             icon,
@@ -1900,9 +2082,10 @@ mod tests {
         assert_eq!(merged_display(Some(&explicit), None), Some(explicit));
         // Long profile names are truncated to the display cap, not rejected.
         let long = resolved_agent(&"x".repeat(60), None);
-        let display = merged_display(None, Some(&long)).unwrap();
+        let display = normalize_display(merged_display(None, Some(&long)).as_ref())
+            .unwrap()
+            .unwrap();
         assert_eq!(display.name.chars().count(), 48);
-        assert!(normalize_display(Some(&display)).is_ok());
     }
 
     #[tokio::test]

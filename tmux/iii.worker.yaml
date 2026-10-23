@@ -1,0 +1,29 @@
+iii: v1
+name: tmux
+language: rust
+deploy: binary
+manifest: Cargo.toml
+license: Apache-2.0
+bin: tmux
+tags: [tmux, terminal, multiplexer, sessions, agents, ports, console]
+description: tmux as an iii worker — list, create, rename and kill sessions and windows, see which pane runs Claude Code or Codex (working, waiting for you, idle), which runs `iii compose` and every listening port by process and pane, plus a Console page whose terminal is a live tmux client.
+
+# tmux is POSIX-only; the PTY and the process/port scanners are Unix code.
+targets:
+  - aarch64-apple-darwin
+  - x86_64-apple-darwin
+  - x86_64-unknown-linux-gnu
+  - x86_64-unknown-linux-musl
+  - aarch64-unknown-linux-gnu
+  - armv7-unknown-linux-gnueabihf
+
+dependencies:
+  configuration: "latest"
+  ade: "latest"
+
+runtime:
+  kind: rust
+
+scripts:
+  install: cargo build
+  start: cargo run

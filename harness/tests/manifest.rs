@@ -68,6 +68,7 @@ fn worker_manifest_uses_latest_runtime_dependencies() {
         "provider-openai",
         "ide",
         "ade",
+        "fp",
     ] {
         assert_eq!(
             dependencies.get(serde_yaml::Value::String(worker.into())),

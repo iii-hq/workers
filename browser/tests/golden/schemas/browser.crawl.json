@@ -1,6 +1,6 @@
 {
   "function_id": "browser::crawl",
-  "description": "Crawl a site from start_urls (same-domain links), extract per page, stream items.",
+  "description": "Crawl a site from start_urls (same-domain links), extract per page; all items via browser::crawl::items.",
   "request_schema": {
     "type": "object",
     "properties": {
@@ -103,9 +103,13 @@
       "impersonate": {
         "type": "string"
       },
+      "crawl_id": {
+        "type": "string",
+        "description": "id for this crawl (default: random). Bind browser::crawl-item with this crawl_id before calling to receive items live; must not match a running crawl"
+      },
       "stream_name": {
         "type": "string",
-        "description": "stream to emit items on (default browser::crawl)"
+        "description": "deprecated, ignored (adds a warning): items are no longer written to a stream; use browser::crawl::items or the browser::crawl-item trigger"
       }
     }
   },
@@ -134,7 +138,7 @@
         "items": {
           "type": "object"
         },
-        "description": "a small sample of streamed items"
+        "description": "a sample (at most 10) of the crawl's items; read all of them with browser::crawl::items"
       },
       "stream": {
         "type": "object",
@@ -146,7 +150,39 @@
             "type": "string"
           }
         },
-        "description": "read the full item stream via stream::on with this name + group_id"
+        "description": "deprecated echo kept for older callers: stream_name and the crawl id; nothing is written to a stream. Use crawl.id"
+      },
+      "crawl": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "pass to browser::crawl::items, or as the browser::crawl-item crawl_id filter"
+          },
+          "items_function": {
+            "type": "string",
+            "description": "browser::crawl::items: paginated read of every retained item"
+          },
+          "trigger_type": {
+            "type": "string",
+            "description": "browser::crawl-item: live per-item events"
+          },
+          "retained": {
+            "type": "integer",
+            "description": "items readable with browser::crawl::items (less than stats.crawled when a retention cap was hit)"
+          },
+          "dropped_events": {
+            "type": "integer",
+            "description": "live events dropped because a slow consumer filled the bounded queue; read those items back"
+          }
+        }
+      },
+      "warnings": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "present when the request used deprecated input such as stream_name"
       }
     }
   }

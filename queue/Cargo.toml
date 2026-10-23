@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-queue"
-version = "0.21.17"
+version = "0.21.24"
 edition = "2021"
 description = "Durable queue worker for iii - durable:subscriber trigger type and queue service functions"
 license = "Apache-2.0"
@@ -19,7 +19,7 @@ path = "src/main.rs"
 
 [features]
 default = ["rabbitmq"]
-rabbitmq = ["dep:lapin"]
+rabbitmq = ["dep:lapin", "dep:rustls"]
 # In-process test-only transport (`adapters::memory::MemoryAdapter`),
 # registered under the adapter name "memory". Off in normal builds; turned on
 # for this crate's own test targets via the dev-dependency self-reference
@@ -27,9 +27,9 @@ rabbitmq = ["dep:lapin"]
 test-adapters = []
 
 [dependencies]
-iii-sdk = "0.23"
+iii-sdk = "=0.24.6"
 iii-worker-paths = { path = "../crates/worker-paths" }
-iii-helpers = "0.23"
+iii-helpers = "=0.24.6"
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }
@@ -37,7 +37,7 @@ serde_json = "1"
 serde_yaml = "0.9"
 anyhow = "1"
 tracing = "0.1"
-tracing-opentelemetry = "0.32"
+tracing-opentelemetry = "0.33"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
 schemars = "0.8"
@@ -45,9 +45,17 @@ uuid = { version = "1", features = ["v4"] }
 futures = "0.3"
 redis = { version = "1.0.1", features = ["tokio-comp", "connection-manager"] }
 lapin = { version = "3", optional = true }
+# lapin pulls aws-lc-rs and the iii-sdk pulls ring, so rustls cannot pick a
+# process-level CryptoProvider by itself; the adapter installs `ring` (already
+# in the tree) before the first amqps:// connect.
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"], optional = true }
 
 [dev-dependencies]
 serial_test = "3"
+# Paused-clock tests (`start_paused`) prove consumers wake on events, not on
+# a timer: under a paused clock any periodic re-check would have to advance
+# virtual time to make progress.
+tokio = { version = "1", features = ["test-util"] }
 # Self-dependency trick: turns on `test-adapters` for this crate's own test
 # targets (the `memory` adapter the config hot-swap tests swap to) without
 # enabling it for a normal build. Mirrors `engine/Cargo.toml:168-171`.

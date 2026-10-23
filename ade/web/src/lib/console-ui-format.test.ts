@@ -149,6 +149,47 @@ describe('copyText', () => {
     expect(textarea.remove).toHaveBeenCalled()
   })
 
+  it('puts the fallback textarea inside the open dialog, not the body', async () => {
+    // A modal's focus trap steals focus from anything outside it, and the
+    // selection with it — the textarea has to live inside the dialog.
+    vi.stubGlobal('navigator', {})
+    const doc: { activeElement: unknown } & Record<string, unknown> = {
+      activeElement: null,
+    }
+    const textarea = {
+      value: '',
+      setAttribute: vi.fn(),
+      style: {} as Record<string, string>,
+      focus: vi.fn(),
+      select: vi.fn(() => {
+        doc.activeElement = textarea
+      }),
+      remove: vi.fn(),
+    }
+    const dialog = { appendChild: vi.fn() }
+    const button = {
+      closest: vi.fn((selector: string) =>
+        selector.includes('[role="dialog"]') &&
+        selector.includes('[role="alertdialog"]')
+          ? dialog
+          : null,
+      ),
+    }
+    const body = { appendChild: vi.fn() }
+    Object.assign(doc, {
+      activeElement: button,
+      createElement: vi.fn(() => textarea),
+      body,
+      execCommand: vi.fn(() => true),
+    })
+    vi.stubGlobal('document', doc)
+    await expect(copyText('kan176-178')).resolves.toBe(true)
+    expect(dialog.appendChild).toHaveBeenCalledWith(textarea)
+    expect(body.appendChild).not.toHaveBeenCalled()
+    expect(textarea.focus).toHaveBeenCalledWith({ preventScroll: true })
+    expect(textarea.remove).toHaveBeenCalled()
+  })
+
   it('returns false with no navigator and no document', async () => {
     vi.stubGlobal('navigator', undefined)
     vi.stubGlobal('document', undefined)

@@ -70,10 +70,6 @@ pub async fn spawn_engine() -> Option<Engine> {
   - name: iii-worker-manager
     config:
       port: {port}
-  - name: iii-pubsub
-    config:
-      adapter:
-        name: local
   - name: configuration
     config:
       adapter:

@@ -33,6 +33,11 @@ pub fn declaration() -> ProviderDeclaration {
         // Listing gates the router's refresh-on-config-change call, which
         // must fire so the live voices' models appear as soon as a key lands.
         supports_model_listing: Some(true),
+        // Speech only: no chat model to start with.
+        default_models: None,
+        default_thinking_level: None,
+        context_overflow_hint: None,
+        credential_optional: None,
         // A static slice so a fresh install has speech models to pick before
         // the first refresh; refresh_models replaces it with the live list.
         models: Some(static_models()),

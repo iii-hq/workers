@@ -38,8 +38,12 @@ rule; point-in-time information belongs in memories.
 - Separate contexts deserve separate banks (`blog` vs `coding`): a session
   selects its bank via session metadata `memory_bank` (`session::set-meta`)
   or the console composer's bank picker; `memory::bank::create` makes one.
+  Calls without `bank` act on your session's bank (the one named in your
+  `# Memory` header; a sub-agent shares its parent's), so leave it out unless
+  the user names another bank.
 - Memory seems absent — `memory::doctor {}` runs a real save→recall roundtrip
-  and names which sibling (router, session-manager) is degraded.
+  and names what is degraded: a sibling (router, session-manager, state),
+  embeddings, or extraction passes that keep failing.
 
 ## Boundaries
 
@@ -49,11 +53,14 @@ rule; point-in-time information belongs in memories.
   is the durable cross-session sibling.
 - Deletes are tombstones and bank deletion moves to `.trash/` — nothing is
   destroyed; `include_superseded: true` on list/recall shows history.
-- Extraction never edits or removes existing memories (ADD-only, fingerprint
-  reinforced); dedup/merge/promote hygiene belongs to the `memory-consolidate`
-  sibling worker.
+- Extraction never edits a memory in place: a restatement reinforces the
+  known memory, and a correction supersedes it (a recoverable tombstone;
+  pinned memories are never touched). Wider dedup/merge/promote hygiene
+  belongs to the `memory-consolidate` sibling worker.
 - Injection is bounded (`max_rule_chars`, `recall_budget_tokens`) — an
   over-budget rule is truncated visibly, never silently dropped.
+- Recalled memories are dated (last update); trust a newer memory over an
+  older one that contradicts it. Dated events are stored with absolute dates.
 
 ## Functions
 
@@ -65,15 +72,19 @@ rule; point-in-time information belongs in memories.
   narrows to one label.
 - `memory::preview` — the FULL injection dry-run for a hypothetical chat
   message: the system-prompt rules section, the memories a turn would be
-  handed (floor + budget applied), and the appended message verbatim.
+  handed (floor + budget applied), and the appended message verbatim;
+  naming a directory's bank (`<name>-<6 hex>`) previews it with
+  `default_bank` read under it, as its turns get it.
 - `memory::tags` — a bank's distinct tags with counts. Add `tags` on save
   when the user wants memories organized within a bank.
 - `memory::bank::create / list / delete` — named memory scopes; delete trashes.
 - `memory::rule::list / set` — always-injected markdown rules; empty content
   removes a rule.
 - `memory::supersede` — retire one memory in favor of another (tombstone +
-  pointer); the consolidation seam, agent-denied by default.
-- `memory::doctor` — end-to-end self-test plus sibling reachability.
+  pointer); the consolidation seam, agent-denied by default. `reinforce`
+  makes it a merge; `reason` rides the item-changed events.
+- `memory::doctor` — end-to-end self-test plus sibling, embeddings and
+  extraction health.
 - `memory::reload` — re-read every bank from disk after hand-editing files.
 
 ## Reactive triggers
@@ -82,7 +93,7 @@ The worker emits two trigger types; bind to them for live views instead of
 polling `memory::list` / `memory::bank::list`.
 
 1. **Why bind** — `memory::item-changed` fires on every memory create / update /
-   supersede / delete (`{ event_type, bank, memory }`); `memory::bank-changed`
+   supersede / delete (`{ event_type, bank, memory, reason? }`); `memory::bank-changed`
    fires on bank create / trash and rule changes (`{ event_type, bank }`). A
    consumer that mutates memory already has the new record in its return
    payload — bind only when you need to observe changes made by OTHERS

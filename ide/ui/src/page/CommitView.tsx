@@ -1,10 +1,12 @@
 /* The Commit tab: a toolbar (refresh, rollback, stash, view options,
    expand/collapse), the change tree with a tick per change, and the commit
-   box. Rolling back several files goes through one dialog that lists them. */
+   box. Rolling back several files goes through one dialog that lists them.
+   Every row has a right-click menu (scm-menus). */
 
 import type { Host } from '@iii-dev/console-ui'
 import {
   Button,
+  ConfirmDialog,
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
@@ -16,13 +18,17 @@ import {
   StatusPanel,
   uiClasses,
 } from '@iii-dev/console-ui'
+import { copyText } from '@iii-dev/console-ui/format'
 import { Archive, ChevronsDownUp, ChevronsUpDown, CircleAlert, Eye, RefreshCw, Undo2 } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { ChangesTree } from './ChangesTree'
 import { CommitBox } from './CommitBox'
+import { useContextMenu } from './ContextMenu'
 import { type ChangeGroup, changeRows, changeSummary, expandableKeys } from './commit-tree'
 import type { GitComparisonEntry } from './git'
+import { basename } from './paths'
 import { RollbackDialog } from './RollbackDialog'
+import { changeMenu } from './scm-menus'
 import { readScmShowUnversioned, readScmViewMode, writeScmShowUnversioned, writeScmViewMode } from './scm-view'
 import { TextDialog } from './TextDialog'
 import type { SourceControlState } from './use-source-control'
@@ -36,13 +42,43 @@ interface CommitViewProps {
   /** The change whose diff is in front. */
   activePath: string | null
   onOpenChange: (entry: GitComparisonEntry, pin: boolean) => void
+  /** The working copy, in an editor tab. */
+  onOpenFile: (path: string) => void
+  /** "Compare with…": the file beside a revision picked in the tab. */
+  onCompare: (path: string) => void
+  /** The Git window's log, narrowed to these root-relative paths. */
+  onShowHistory: (paths: string[]) => void
+  /** Deletes the file the way the Explorer does: tabs on it close, the tree updates. */
+  onDeleteFile: (path: string) => Promise<void>
+}
+
+/** Hands `text` to the browser as a file download. */
+function download(name: string, text: string): void {
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/x-patch' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = name
+  link.click()
+  // Some browsers read the blob after click() returns: free it later.
+  setTimeout(() => URL.revokeObjectURL(url), 30_000)
 }
 
 function plural(count: number, one: string, many: string): string {
   return `${count} ${count === 1 ? one : many}`
 }
 
-export function CommitView({ host, root, conversationId, scm, activePath, onOpenChange }: CommitViewProps) {
+export function CommitView({
+  host,
+  root,
+  conversationId,
+  scm,
+  activePath,
+  onOpenChange,
+  onOpenFile,
+  onCompare,
+  onShowHistory,
+  onDeleteFile,
+}: CommitViewProps) {
   // Grouped by directory until told otherwise.
   const [byDirectory, setByDirectory] = useState(() => readScmViewMode(undefined, 'tree') === 'tree')
   const [showUnversioned, setShowUnversioned] = useState(readScmShowUnversioned)
@@ -50,6 +86,11 @@ export function CommitView({ host, root, conversationId, scm, activePath, onOpen
   const [rollbackEntries, setRollbackEntries] = useState<readonly GitComparisonEntry[] | null>(null)
   const spinning = useSpin(scm.refreshing)
   const [stashEntries, setStashEntries] = useState<readonly GitComparisonEntry[] | null>(null)
+  const [deleteEntry, setDeleteEntry] = useState<GitComparisonEntry | null>(null)
+  const messageRef = useRef<HTMLTextAreaElement>(null)
+  const menu = useContextMenu()
+  // The row the open menu acts on, marked in the tree while it is open.
+  const [menuRow, setMenuRow] = useState<string | null>(null)
 
   const groups = useMemo<ChangeGroup[]>(
     () => [
@@ -199,12 +240,50 @@ export function CommitView({ host, root, conversationId, scm, activePath, onOpen
               onOpen={onOpenChange}
               onRollback={setRollbackEntries}
               onStash={setStashEntries}
+              menuTarget={menu.isOpen ? menuRow : null}
+              onMenu={(row, anchor) => {
+                setMenuRow(row.key)
+                menu.open(
+                  anchor,
+                  changeMenu(row, {
+                    root: root ?? '',
+                    busy: scm.busy,
+                    commit: (entries) => {
+                      scm.setIncluded([...scm.changes, ...scm.unversioned], false)
+                      scm.setIncluded(entries, true)
+                      messageRef.current?.focus()
+                    },
+                    rollback: setRollbackEntries,
+                    stash: setStashEntries,
+                    open: onOpenChange,
+                    jump: onOpenFile,
+                    copy: (text) => void copyText(text),
+                    remove: setDeleteEntry,
+                    add: (entries) => void scm.add(entries),
+                    ignore: (paths) => void scm.ignore(paths),
+                    savePatch: (entries) =>
+                      void scm.patch(entries, async (patch) => {
+                        download('changes.patch', patch)
+                        return `saved ${changeSummary(entries)} as changes.patch`
+                      }),
+                    copyPatch: (entries) =>
+                      void scm.patch(entries, async (patch) => {
+                        if (!(await copyText(patch))) throw new Error('the clipboard refused it')
+                        return `copied ${changeSummary(entries)} as a patch`
+                      }),
+                    refresh: scm.reload,
+                    compare: onCompare,
+                    history: onShowHistory,
+                  }),
+                )
+              }}
               busy={scm.busy}
             />
           )}
         </div>
 
-        <CommitBox host={host} root={root} conversationId={conversationId} scm={scm} />
+        <CommitBox host={host} root={root} conversationId={conversationId} scm={scm} messageRef={messageRef} />
+        {menu.element}
 
         <RollbackDialog
           entries={rollbackEntries}
@@ -213,6 +292,29 @@ export function CommitView({ host, root, conversationId, scm, activePath, onOpen
           onConfirm={(entries, options) => {
             setRollbackEntries(null)
             void scm.rollback(entries, options)
+          }}
+        />
+        <ConfirmDialog
+          open={deleteEntry !== null}
+          onOpenChange={(open) => (open ? undefined : setDeleteEntry(null))}
+          title={deleteEntry ? `Delete ${basename(deleteEntry.path)}?` : 'Delete file?'}
+          description={
+            deleteEntry?.status === 'untracked'
+              ? "It was never committed: this can't be undone."
+              : 'The deletion shows as a change until it is committed or rolled back.'
+          }
+          details={deleteEntry ? [deleteEntry.path] : undefined}
+          confirmLabel="Delete"
+          tone="danger"
+          onCancel={() => setDeleteEntry(null)}
+          onConfirm={() => {
+            const entry = deleteEntry
+            setDeleteEntry(null)
+            if (!entry) return
+            void scm.run('delete', async () => {
+              await onDeleteFile(entry.path)
+              return `deleted ${basename(entry.path)}`
+            })
           }}
         />
         <TextDialog

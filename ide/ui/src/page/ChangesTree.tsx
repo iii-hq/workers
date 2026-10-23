@@ -6,14 +6,19 @@
 
 import { Checkbox, IconButton } from '@iii-dev/console-ui'
 import { Archive, ChevronDown, ChevronRight, Folder, FolderOpen, Undo2 } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { type ReactNode, useState } from 'react'
+import { anchorFromEvent, type ContextMenuAnchor } from './ContextMenu'
 import type { ChangeRow, TreeEntry } from './commit-tree'
 import { FileTypeIcon } from './file-type-icon'
 import type { GitComparisonEntry } from './git'
 import { statusLetter, statusTitle } from './git-actions'
 import { basename } from './paths'
+import { VirtualList } from './VirtualList'
 
 type Tick = 'on' | 'off' | 'mixed'
+
+/** `.shui-ctree-row`'s height in styles.css. */
+export const ROW_HEIGHT = 28
 
 export function tickState<T extends TreeEntry>(entries: readonly T[], isIncluded: (entry: T) => boolean): Tick {
   const ticked = entries.filter(isIncluded).length
@@ -34,7 +39,19 @@ interface ChangesTreeProps<T extends TreeEntry> {
   onRollback?: (entries: readonly T[]) => void
   /** Hover action: stash these files. */
   onStash?: (entries: readonly T[]) => void
+  /** Right click (or the menu key) on a row. */
+  onMenu?: (row: ChangeRow<T>, anchor: ContextMenuAnchor) => void
+  /** The row whose menu is open: it and the rows it acts on stand out. */
+  menuTarget?: string | null
   busy?: boolean
+}
+
+/** Whether `key` is a row under the menu's target row: everything in a
+    group (`changes`), or below a folder (`changes:src/`). */
+export function inMenuScope(key: string, target: string | null): boolean {
+  if (target === null || key === target) return false
+  if (target.endsWith('/')) return key.startsWith(target)
+  return !target.includes(':') && key.startsWith(`${target}:`)
 }
 
 function plural(count: number, one: string, many: string): string {
@@ -50,20 +67,43 @@ export function ChangesTree<T extends TreeEntry = GitComparisonEntry>({
   onOpen,
   onRollback,
   onStash,
+  onMenu,
+  menuTarget = null,
   busy = false,
 }: ChangesTreeProps<T>) {
   const ticks = isIncluded !== undefined && onInclude !== undefined
+  // Windowed: thousands of unversioned files mount only the rows in view.
+  // The row holding focus stays mounted when it scrolls out, so the keys
+  // keep scrolling and focus does not drop to the page.
+  const [focusedKey, setFocusedKey] = useState<string | null>(null)
+  const focusedIndex = focusedKey === null ? null : rows.findIndex((row) => row.key === focusedKey)
   return (
-    <div className="shui-ctree">
-      {rows.map((row) => {
+    <VirtualList
+      rows={rows}
+      rowHeight={ROW_HEIGHT}
+      rowKey={(row) => row.key}
+      className="shui-ctree"
+      keepIndex={focusedIndex}
+      renderRow={(row) => {
         const indent = { paddingLeft: 4 + row.depth * 14 }
+        // Under the row, at the pointer's x: the menu leaves the row it marks in sight.
+        const menu = onMenu
+          ? (event: React.MouseEvent) => {
+              event.preventDefault()
+              const { x } = anchorFromEvent(event)
+              onMenu(row, { x, y: event.currentTarget.getBoundingClientRect().bottom })
+            }
+          : undefined
+        const menuState = row.key === menuTarget ? 'target' : inMenuScope(row.key, menuTarget) ? 'scope' : undefined
         if (row.kind === 'file') {
           const { entry } = row
           const name = basename(entry.path)
           const rollback = onRollback && entry.status !== 'untracked' ? () => onRollback([entry]) : null
           return (
             <Row
-              key={row.key}
+              onFocusChange={(on) => setFocusedKey(on ? row.key : null)}
+              onContextMenu={menu}
+              menuState={menuState}
               kind="file"
               style={indent}
               selected={activePath === entry.path}
@@ -119,7 +159,9 @@ export function ChangesTree<T extends TreeEntry = GitComparisonEntry>({
         const toggle = () => onToggleOpen(row.key)
         return (
           <Row
-            key={row.key}
+            onFocusChange={(on) => setFocusedKey(on ? row.key : null)}
+            onContextMenu={menu}
+            menuState={menuState}
             kind={row.kind}
             style={indent}
             tick={ticks ? tickState(row.entries, isIncluded) : null}
@@ -175,12 +217,15 @@ export function ChangesTree<T extends TreeEntry = GitComparisonEntry>({
             }
           />
         )
-      })}
-    </div>
+      }}
+    />
   )
 }
 
 function Row({
+  onFocusChange,
+  onContextMenu,
+  menuState,
   kind,
   style,
   selected = false,
@@ -194,6 +239,9 @@ function Row({
   actions,
   letter,
 }: {
+  onFocusChange: (focused: boolean) => void
+  onContextMenu?: (event: React.MouseEvent) => void
+  menuState?: 'target' | 'scope'
   kind: ChangeRow<TreeEntry>['kind']
   style: React.CSSProperties
   selected?: boolean
@@ -209,12 +257,22 @@ function Row({
   letter?: ReactNode
 }) {
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: focus/blur bubble up from the row's own controls
     <div
       className="shui-ctree-row"
       data-kind={kind}
       data-selected={selected || undefined}
+      data-menu={menuState}
       data-status={status}
       style={style}
+      onContextMenu={onContextMenu}
+      onFocus={() => onFocusChange(true)}
+      onBlur={(event) => {
+        // The browser window losing focus blurs the row but leaves focus in
+        // it: keep it mounted for when the window comes back.
+        const row = event.currentTarget
+        if (!row.contains(event.relatedTarget) && !row.contains(document.activeElement)) onFocusChange(false)
+      }}
     >
       {caret}
       {tick === null ? null : (

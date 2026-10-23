@@ -401,7 +401,7 @@ export function GitWorktreesTab({
                           edited
                         </span>
                       ) : null}
-                      {status ?? (wt.dirty || wt.ahead === undefined ? null : 'up to date')}
+                      {status ?? (wt.dirty !== false || wt.ahead === undefined ? null : 'up to date')}
                     </span>
                     {/* the row's actions for a mouse; the rail, keys and menu hold them all */}
                     <span className="shui-git-wt-actions" aria-hidden>

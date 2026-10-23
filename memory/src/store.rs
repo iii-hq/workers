@@ -18,7 +18,7 @@
 //! mutation flows: file, map, and index update together or not at all.
 
 use std::collections::HashMap;
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -33,11 +33,33 @@ const VECTORS_FILE: &str = "vectors.jsonl";
 const RULES_DIR: &str = "rules";
 const BANK_META: &str = "bank.yaml";
 const TRASH_DIR: &str = ".trash";
-/// Weight of the cosine similarity in the fused recall score, sized so a
-/// strong semantic match competes with a solid BM25 hit.
-const SEMANTIC_WEIGHT: f32 = 2.2;
+/// Weight of the semantic arm (cosine on an absolute scale from
+/// `SEMANTIC_ANCHOR`, never divided by the pool's best) against the
+/// max-normalized BM25 in the fused recall score.
+const SEMANTIC_WEIGHT: f32 = 16.0;
 /// Semantic candidates below this cosine are noise, not recall.
 const SEMANTIC_FLOOR: f32 = 0.25;
+/// Cosine the semantic arm counts from. Just below the floor on purpose:
+/// at the floor itself the small cosine gap between a stale fact and its
+/// update becomes a ratio past what the recency multiplier corrects (recall
+/// eval: 3-4 traps at every weight from 2 to 24, against 2).
+const SEMANTIC_ANCHOR: f32 = 0.2;
+/// iii-directory's local embedder, reported as `<name>@<revision>`.
+const MINILM_MODEL: &str = "sentence-transformers/all-MiniLM-L6-v2";
+
+/// The semantic arm's `(floor, anchor, weight)` for the model the query was
+/// embedded with; the constants above were measured on text-embedding-3-small.
+/// MiniLM spreads a stale fact and its update further apart, so from 0.2 the
+/// gap outgrew recency (recall eval: 4 traps against 2): raw cosine at a
+/// quarter of the slope keeps BM25 and recency in the vote (2 traps), and its
+/// relevant matches start lower, so the floor does too.
+fn semantic_scale(model: &str) -> (f32, f32, f32) {
+    if model.split('@').next() == Some(MINILM_MODEL) {
+        (0.2, 0.0, 5.0)
+    } else {
+        (SEMANTIC_FLOOR, SEMANTIC_ANCHOR, SEMANTIC_WEIGHT)
+    }
+}
 
 pub struct Store {
     root: PathBuf,
@@ -62,15 +84,74 @@ struct BankInner {
 }
 
 /// One sidecar line: a memory's embedding (last-wins by id on replay).
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Deserialize)]
 struct VectorRecord {
     id: String,
     model: String,
-    /// Memory revision the text was embedded at; an older revision means
-    /// the text changed since, so the vector is stale.
-    #[serde(default)]
-    revision: u64,
+    /// The exact text embedded: the vector is current while the memory
+    /// still has this text (pin/tag/reinforce bumps leave it valid).
+    text: String,
     v: Vec<f32>,
+}
+
+/// The write side of [`VectorRecord`], borrowing instead of cloning.
+#[derive(serde::Serialize)]
+struct VectorLine<'a> {
+    id: &'a str,
+    model: &'a str,
+    text: &'a str,
+    v: &'a [f32],
+}
+
+/// Serializes every vector sidecar replay+compaction with every append.
+/// During `memory::reload` (or a `data_dir` swap) the OLD store's banks can
+/// still append while the NEW store's bank compacts the same file: an
+/// append landing on the inode the rename replaces would be lost.
+static SIDECAR: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn sidecar_lock() -> std::sync::MutexGuard<'static, ()> {
+    SIDECAR.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Rewrite the sidecar to exactly the vectors `open` kept: temp file,
+/// fsync, rename over. A crash leaves the old file or the new one, never a
+/// torn one; a failed rewrite removes its temp (a partial copy would only
+/// eat the disk the authoritative memories.jsonl appends need).
+fn compact_vectors(
+    path: &Path,
+    vectors: &HashMap<String, (String, Vec<f32>)>,
+    memories: &HashMap<String, Memory>,
+) -> std::io::Result<()> {
+    // The caller holds `sidecar_lock()`, so no concurrent open writes the
+    // same temp file and no append slips in between replay and rename.
+    let tmp = path.with_extension("jsonl.tmp");
+    let rewrite = || -> std::io::Result<()> {
+        let mut out = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+        for (id, (model, v)) in vectors {
+            // Kept means it embeds the record's current text.
+            let text = memories.get(id).map_or("", |m| m.text.as_str());
+            serde_json::to_writer(&mut out, &VectorLine { id, model, text, v })?;
+            out.write_all(b"\n")?;
+        }
+        out.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+        std::fs::rename(&tmp, path)
+    };
+    rewrite().inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
+}
+
+/// Replace a small file whole: hidden temp file beside it, fsync, rename
+/// over. A crash leaves the old content or the new, never a torn file.
+fn write_atomic(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    let mut name = std::ffi::OsString::from(".");
+    name.push(path.file_name().unwrap_or_default());
+    name.push(".tmp");
+    let tmp = path.with_file_name(name);
+    let mut file = std::fs::File::create(&tmp)?;
+    file.write_all(content)?;
+    file.sync_all()?;
+    std::fs::rename(&tmp, path)
 }
 
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
@@ -84,6 +165,77 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
         return 0.0;
     }
     dot / (na * nb)
+}
+
+/// English function words dropped from QUERIES before lexical scoring (the
+/// index keeps every token), as Hindsight's lexical arm gets from Postgres's
+/// `english` tsvector. Without it a natural-language question matches every
+/// memory through "the/do/my", and that BM25 noise outscores a paraphrase's
+/// semantic match. "us" is kept (US), as Snowball's English list does.
+#[rustfmt::skip]
+pub(crate) const STOPWORDS: &[&str] = &[
+    "a", "about", "again", "all", "also", "am", "an", "and", "any", "are", "as", "at", "be",
+    "been", "being", "but", "by", "can", "could", "d", "did", "do", "does", "doing", "for",
+    "from", "had", "has", "have", "having", "he", "her", "here", "hers", "him", "his", "how",
+    "i", "if", "in", "into", "is", "it", "its", "just", "ll", "m", "me", "mine", "more", "most",
+    "my", "myself", "no", "not", "now", "of", "off", "on", "only", "or", "other", "our", "out",
+    "over", "own", "re", "s", "same", "she", "should", "so", "some", "still", "such", "t",
+    "than", "that", "the", "their", "them", "then", "there", "these", "they", "this", "those",
+    "to", "too", "under", "up", "ve", "very", "was", "we", "were", "what", "when", "where",
+    "which", "who", "whom", "whose", "why", "will", "with", "would", "you", "your", "yours",
+];
+
+/// Bytes of a recall query kept: half from its head, half from its tail.
+const QUERY_MAX_BYTES: usize = 800;
+
+/// A recall query within [`QUERY_MAX_BYTES`]: a longer one (a pasted log, a
+/// sub-agent's brief) keeps its head and tail, where a request sits around
+/// a paste. Its middle would dilute BM25 over every memory sharing a word
+/// and can overrun or time out the query embed.
+// ponytail: identifiers mid-paste that match memories are dropped; measure
+// on a long-query eval before tuning the size.
+pub(crate) fn cap_query(query: &str) -> String {
+    if query.len() <= QUERY_MAX_BYTES {
+        return query.to_string();
+    }
+    let half = QUERY_MAX_BYTES / 2;
+    let head = crate::extract::clamp_char_boundary(query, half);
+    let mut tail = query.len() - half;
+    while !query.is_char_boundary(tail) {
+        tail += 1;
+    }
+    format!("{}\n{}", &query[..head], &query[tail..])
+}
+
+/// Query tokens without stopwords (all kept when nothing else is left) or
+/// repeats (BM25 would count a pasted term once per occurrence), with
+/// first-person pronouns expanded to the `user` entity handle so identity
+/// questions reach memories phrased about the user.
+fn query_tokens(query: &str) -> Vec<String> {
+    let mut tokens = crate::index::tokenize(query);
+    let mut seen = std::collections::HashSet::new();
+    tokens.retain(|t| seen.insert(t.clone()));
+    let first_person = tokens
+        .iter()
+        .any(|t| matches!(t.as_str(), "i" | "me" | "my" | "mine" | "myself"));
+    if tokens.iter().any(|t| !STOPWORDS.contains(&t.as_str())) {
+        tokens.retain(|t| !STOPWORDS.contains(&t.as_str()));
+    }
+    if first_person && !tokens.iter().any(|t| t == "user") {
+        tokens.push("user".to_string());
+    }
+    tokens
+}
+
+/// Score descending, ties by id (HashMap iteration order would otherwise
+/// rank equal scores differently per process), then cap.
+fn rank_desc(scored: &mut Vec<(Memory, f32)>, limit: usize) {
+    scored.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.id.cmp(&b.0.id))
+    });
+    scored.truncate(limit);
 }
 
 /// Run blocking filesystem work without stalling the async worker thread:
@@ -125,6 +277,12 @@ pub fn validate_name(name: &str) -> Result<(), MemoryError> {
             "name `{name}` must match [a-z0-9][a-z0-9_-]{{0,63}}"
         )))
     }
+}
+
+/// How strongly a memory stands with no query: pinned first, then
+/// corroboration, then recency.
+pub(crate) fn strength(m: &Memory) -> (bool, u32, u64) {
+    (m.pinned, m.corroboration, m.updated_at)
 }
 
 impl Store {
@@ -199,12 +357,13 @@ impl Store {
         let bank_name = name.to_string();
         let bank = run_blocking(move || {
             std::fs::create_dir_all(dir.join(RULES_DIR))?;
-            std::fs::write(
-                dir.join(BANK_META),
+            write_atomic(
+                &dir.join(BANK_META),
                 format!(
                     "description: {}\n",
                     serde_yaml::to_string(&desc).unwrap_or_default().trim()
-                ),
+                )
+                .as_bytes(),
             )?;
             Bank::load(&bank_name, dir)
         })
@@ -230,6 +389,40 @@ impl Store {
         std::fs::rename(self.root.join(name), &dest)?;
         banks.remove(name);
         Ok(dest.display().to_string())
+    }
+
+    /// Remove the bank folder outright, skipping `.trash`. Only for a
+    /// scratch bank its caller created and nothing else wrote to.
+    pub async fn destroy_bank(&self, name: &str) -> Result<(), MemoryError> {
+        validate_name(name)?;
+        let mut banks = self.banks.write().await;
+        if !banks.contains_key(name) {
+            return Err(MemoryError::BankNotFound(name.to_string()));
+        }
+        std::fs::remove_dir_all(self.root.join(name))?;
+        banks.remove(name);
+        Ok(())
+    }
+
+    /// Deleted: no live folder, but a `.trash/<name>-<ms>` one. A path that
+    /// picks the bank implicitly (a session's bank, extraction) must not
+    /// bring it back; an explicit `bank` may.
+    pub fn is_deleted(&self, name: &str) -> bool {
+        if self.root.join(name).is_dir() {
+            return false;
+        }
+        let prefix = format!("{name}-");
+        std::fs::read_dir(self.root.join(TRASH_DIR))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .and_then(|n| n.strip_prefix(&prefix))
+                    .is_some_and(|ms| !ms.is_empty() && ms.bytes().all(|b| b.is_ascii_digit()))
+            })
     }
 
     /// Drop all in-RAM state and reload from disk (the recovery hatch after
@@ -289,10 +482,13 @@ impl Bank {
             index.add(memory);
         }
 
-        // Vector sidecar: last-wins by id, entries for unknown memories
-        // dropped (they belong to trimmed history), corrupt lines skipped.
+        // Vector sidecar: last-wins by id; entries of retired or unknown
+        // memories, of text since edited, and corrupt or pre-text-key lines
+        // are skipped (those memories are backfill work again).
         let mut vectors: HashMap<String, (String, Vec<f32>)> = HashMap::new();
         let vectors_path = dir.join(VECTORS_FILE);
+        let mut lines = 0usize;
+        let sidecar = sidecar_lock();
         if vectors_path.exists() {
             let file = std::fs::File::open(&vectors_path)?;
             for line in std::io::BufReader::new(file).lines() {
@@ -300,18 +496,30 @@ impl Bank {
                 if line.trim().is_empty() {
                     continue;
                 }
+                lines += 1;
                 if let Ok(rec) = serde_json::from_str::<VectorRecord>(&line) {
-                    // Keep only vectors embedded at the record's CURRENT
-                    // revision — an edit since the embed makes it stale.
+                    // Keep only vectors of the record's CURRENT text — a
+                    // text edit since the embed makes it stale.
                     let current = memories
                         .get(&rec.id)
-                        .is_some_and(|m| m.revision == rec.revision);
+                        .is_some_and(|m| m.is_live() && m.text == rec.text);
                     if current {
                         vectors.insert(rec.id, (rec.model, rec.v));
                     }
                 }
             }
         }
+        // Dead lines (edited text, retired records, re-embeds, pre-text-key
+        // lines, torn writes) are re-parsed every open and never reclaimed
+        // otherwise; ~19 KB each for a 1536-dim vector.
+        // ponytail: compacts at open only; a long uptime grows until the
+        // next boot or memory::reload.
+        if lines > 2 * vectors.len() {
+            if let Err(e) = compact_vectors(&vectors_path, &vectors, &memories) {
+                tracing::warn!(bank = name, error = %e, "vector sidecar compaction failed");
+            }
+        }
+        drop(sidecar);
 
         Ok(Self {
             name: name.to_string(),
@@ -325,30 +533,45 @@ impl Bank {
         })
     }
 
-    /// Persist one memory's embedding (sidecar append + RAM). Best-effort
-    /// derived data: failures cost a re-embed, never memory integrity.
-    pub async fn set_vector(&self, id: &str, model: &str, v: Vec<f32>) -> Result<(), MemoryError> {
+    /// Persist one memory's embedding of `embedded_text` (sidecar append +
+    /// RAM); false when it was discarded. Best-effort derived data: failures
+    /// cost a re-embed, never memory integrity.
+    pub async fn set_vector(
+        &self,
+        id: &str,
+        model: &str,
+        embedded_text: &str,
+        v: Vec<f32>,
+    ) -> Result<bool, MemoryError> {
         let mut inner = self.inner.write().await;
-        let revision = match inner.memories.get(id) {
-            Some(m) => m.revision,
-            // The record vanished between embed and store; nothing to attach.
-            None => return Ok(()),
-        };
-        let line = serde_json::to_string(&VectorRecord {
-            id: id.to_string(),
-            model: model.to_string(),
-            revision,
-            v: v.clone(),
+        // The record vanished, or its text was edited while the embed was
+        // in flight: this vector is of text the record no longer has, and
+        // the record stays listed by `unembedded` for the new text.
+        if !inner
+            .memories
+            .get(id)
+            .is_some_and(|m| m.is_live() && m.text == embedded_text)
+        {
+            return Ok(false);
+        }
+        let line = serde_json::to_string(&VectorLine {
+            id,
+            model,
+            text: embedded_text,
+            v: &v,
         })
         .map_err(|e| MemoryError::Storage(format!("serialize vector: {e}")))?;
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.dir.join(VECTORS_FILE))?;
-        file.write_all(line.as_bytes())?;
-        file.write_all(b"\n")?;
+        {
+            let _sidecar = sidecar_lock();
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(self.dir.join(VECTORS_FILE))?;
+            file.write_all(line.as_bytes())?;
+            file.write_all(b"\n")?;
+        }
         inner.vectors.insert(id.to_string(), (model.to_string(), v));
-        Ok(())
+        Ok(true)
     }
 
     /// Live memories that have no embedding yet (backfill work list).
@@ -361,9 +584,10 @@ impl Bank {
                 f.is_live()
                     && match inner.vectors.get(&f.id) {
                         None => true,
-                        // A vector from a different model than the active
-                        // one is due a re-embed; empty active model means
-                        // "provider default" and accepts whatever exists.
+                        // A vector from another model than the one the
+                        // provider currently reports is in another space:
+                        // due a re-embed. Empty = that model is not known
+                        // yet, so whatever exists is accepted.
                         Some((model, _)) => !active_model.is_empty() && model != active_model,
                     }
             })
@@ -379,7 +603,22 @@ impl Bank {
     /// THE single mutation choke point: append the full record (fsync),
     /// then update the map and the index together. Every save / update /
     /// pin / supersede / tombstone flows through here.
-    pub async fn commit(&self, memory: Memory) -> Result<CommitKind, MemoryError> {
+    pub async fn commit(&self, mut memory: Memory) -> Result<CommitKind, MemoryError> {
+        // The backstop for every write path: no known secret shape reaches
+        // memories.jsonl, whoever built the record (the entry points redact
+        // first, so dedup fingerprints the redacted text).
+        let mut redacted = crate::redact::redact(&memory.text);
+        redacted
+            .labels
+            .extend(crate::redact::drop_secrets(&mut memory.entities));
+        redacted
+            .labels
+            .extend(crate::redact::drop_secrets(&mut memory.tags));
+        if !redacted.labels.is_empty() {
+            tracing::warn!(bank = %self.name, id = %memory.id, labels = ?redacted.labels,
+                "redacted secrets from a memory at commit");
+            memory.text = redacted.text;
+        }
         let mut inner = self.inner.write().await;
         let line = serde_json::to_string(&memory)
             .map_err(|e| MemoryError::Storage(format!("serialize memory: {e}")))?;
@@ -392,10 +631,25 @@ impl Bank {
         run_blocking(move || -> Result<(), MemoryError> {
             let mut file = std::fs::OpenOptions::new()
                 .create(true)
+                .read(true)
                 .append(true)
                 .open(path)?;
-            file.write_all(line.as_bytes())?;
-            file.write_all(b"\n")?;
+            // A last line without its newline (a hand edit, a torn write)
+            // would fuse with this record: both unparseable on replay, and
+            // a lost tombstone brings its memory back. One buffer, one
+            // write: no kill between record and newline.
+            let mut buf = Vec::with_capacity(line.len() + 2);
+            if file.metadata()?.len() > 0 {
+                let mut last = [0u8];
+                file.seek(std::io::SeekFrom::End(-1))?;
+                file.read_exact(&mut last)?;
+                if last[0] != b'\n' {
+                    buf.push(b'\n');
+                }
+            }
+            buf.extend_from_slice(line.as_bytes());
+            buf.push(b'\n');
+            file.write_all(&buf)?;
             file.sync_data()?;
             Ok(())
         })
@@ -413,10 +667,11 @@ impl Bank {
         }
         // The text changed under this id: any stored vector embeds the old
         // text. Drop it so unembedded() re-lists the record for backfill.
-        let stale_vector = inner
-            .memories
-            .get(&memory.id)
-            .is_some_and(|prev| prev.text != memory.text);
+        let stale_vector = !memory.is_live()
+            || inner
+                .memories
+                .get(&memory.id)
+                .is_some_and(|prev| prev.text != memory.text);
         if stale_vector {
             inner.vectors.remove(&memory.id);
         }
@@ -484,22 +739,69 @@ impl Bank {
     /// caller embeds the query, if at all). First-person pronouns expand
     /// to the `user` entity handle so identity questions reach the memories
     /// phrased third-person about the user.
+    ///
+    /// `embedding_model` is the model the provider REPORTED for `query_vec`;
+    /// vectors are tagged the same way, so ones from any other model (an
+    /// earlier provider default, a previously pinned model) live in an
+    /// incomparable space and are skipped — and backfill re-embeds them.
+    /// Empty (no query vector, the ops probe) accepts any.
     pub async fn recall(
         &self,
         query: &str,
         query_vec: Option<&[f32]>,
+        embedding_model: &str,
         limit: usize,
         half_life_days: u64,
         include_superseded: bool,
     ) -> Vec<(Memory, f32)> {
-        let mut query_tokens = crate::index::tokenize(query);
-        if query_tokens
-            .iter()
-            .any(|t| matches!(t.as_str(), "i" | "me" | "my" | "mine" | "myself"))
-            && !query_tokens.iter().any(|t| t == "user")
-        {
-            query_tokens.push("user".to_string());
-        }
+        self.recall_scaled(
+            query,
+            query_vec,
+            embedding_model,
+            limit,
+            half_life_days,
+            include_superseded,
+            0.0,
+        )
+        .await
+    }
+
+    /// The best raw BM25 any live memory `keep` accepts scores for `query`
+    /// (only what the caller can rank sets the scale): what a caller
+    /// merging several banks into one ranking passes to
+    /// [`Bank::recall_scaled`] (the maximum over all of them), so every bank's
+    /// lexical arm divides by the same number.
+    pub async fn bm25_max(&self, query: &str, keep: impl Fn(&Memory) -> bool) -> f32 {
+        let inner = self.inner.read().await;
+        inner
+            .index
+            .score(&query_tokens(query))
+            .into_iter()
+            .filter(|(id, _)| {
+                inner
+                    .memories
+                    .get(id)
+                    .is_some_and(|m| m.is_live() && keep(m))
+            })
+            .map(|(_, s)| s)
+            .fold(0.0, f32::max)
+    }
+
+    /// [`Bank::recall`] with the lexical arm divided by `bm25_max` (this
+    /// bank's own best when it is 0), so hits from banks recalled with the
+    /// same `bm25_max` compare by score.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn recall_scaled(
+        &self,
+        query: &str,
+        query_vec: Option<&[f32]>,
+        embedding_model: &str,
+        limit: usize,
+        half_life_days: u64,
+        include_superseded: bool,
+        bm25_max: f32,
+    ) -> Vec<(Memory, f32)> {
+        let query_tokens = query_tokens(query);
         if query_tokens.is_empty() && query_vec.is_none() {
             return Vec::new();
         }
@@ -516,47 +818,120 @@ impl Bank {
             }
         }
         // Semantic candidates join the pool even without a lexical hit.
+        let (floor, anchor, weight) = semantic_scale(embedding_model);
         let mut sem: HashMap<String, f32> = HashMap::new();
         if let Some(qv) = query_vec {
-            for (id, (_, v)) in &inner.vectors {
+            for (id, (model, v)) in &inner.vectors {
+                if !embedding_model.is_empty() && model != embedding_model {
+                    continue;
+                }
                 let c = cosine(qv, v);
-                if c > SEMANTIC_FLOOR {
+                if c > floor {
                     sem.insert(id.clone(), c);
                     bm25.entry(id.clone()).or_insert(0.0);
                 }
             }
         }
-        let now = now_ms();
-        let mut scored: Vec<(Memory, f32)> = bm25
+        let candidates: Vec<(Memory, f32, f32)> = bm25
             .into_iter()
-            .filter_map(|(id, s)| inner.memories.get(&id).map(|f| (f.clone(), s, id)))
-            .filter(|(f, _, _)| include_superseded || f.is_live())
-            .map(|(f, s, id)| {
-                let mut fused =
-                    crate::index::fused_score(s, &f, &query_tokens, now, half_life_days);
-                if let Some(c) = sem.get(&id) {
-                    fused += SEMANTIC_WEIGHT * c;
-                }
+            .filter_map(|(id, s)| {
+                let f = inner.memories.get(&id)?;
+                (include_superseded || f.is_live())
+                    .then(|| (f.clone(), s, sem.get(&id).copied().unwrap_or(0.0)))
+            })
+            .collect();
+        // BM25 over the caller's shared maximum (computed over what it can
+        // rank), else this bank's best candidate; cosine on an absolute
+        // scale, so a weak best match stays weak.
+        let max_bm25 = if bm25_max > 0.0 {
+            bm25_max
+        } else {
+            candidates.iter().map(|c| c.1).fold(f32::EPSILON, f32::max)
+        };
+        let now = now_ms();
+        let mut scored: Vec<(Memory, f32)> = candidates
+            .into_iter()
+            .map(|(f, s, c)| {
+                // Semantic joins lexical BEFORE fusion so recency decays
+                // both alike.
+                let sem = ((c - anchor) / (1.0 - anchor)).max(0.0);
+                let relevance = s / max_bm25 + weight * sem;
+                let fused =
+                    crate::index::fused_score(relevance, &f, &query_tokens, now, half_life_days);
                 (f, fused)
             })
             .collect();
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(limit);
+        rank_desc(&mut scored, limit);
         scored
     }
 
-    /// The bank's strongest memories with no query: pinned first, then
-    /// corroboration, then recency. The injection floor for turns whose
-    /// query recalls little (identity questions, session openers).
-    pub async fn top_memories(&self, limit: usize) -> Vec<Memory> {
+    /// The raw lexical arm: plain BM25 order (entity handles are part of
+    /// the indexed text) with no recency, pin, or corroboration fusion — an
+    /// old exact twin must not sink below fresh weak matches. Consolidation
+    /// interleaves this with [`Bank::semantic`], as Hindsight's consolidator
+    /// does, because a fused rank buries the twin.
+    pub async fn lexical(
+        &self,
+        query: &str,
+        limit: usize,
+        include_superseded: bool,
+    ) -> Vec<(Memory, f32)> {
+        let tokens = query_tokens(query);
         let inner = self.inner.read().await;
-        let mut all: Vec<&Memory> = inner.memories.values().filter(|f| f.is_live()).collect();
-        all.sort_by(|a, b| {
-            b.pinned
-                .cmp(&a.pinned)
-                .then(b.corroboration.cmp(&a.corroboration))
-                .then(b.updated_at.cmp(&a.updated_at))
-        });
+        let mut bm25 = inner.index.score(&tokens);
+        // The index only holds live records; history seeds non-live ones.
+        if include_superseded {
+            for (id, m) in &inner.memories {
+                if !m.is_live() {
+                    bm25.entry(id.clone()).or_insert(0.0);
+                }
+            }
+        }
+        let mut scored: Vec<(Memory, f32)> = bm25
+            .into_iter()
+            .filter_map(|(id, s)| inner.memories.get(&id).map(|m| (m.clone(), s)))
+            .filter(|(m, _)| include_superseded || m.is_live())
+            .collect();
+        rank_desc(&mut scored, limit);
+        scored
+    }
+
+    /// The raw semantic arm: cosine against the vector sidecar, above
+    /// `SEMANTIC_FLOOR`, same model-acceptance rule as [`Bank::recall`].
+    /// Scores are the cosine itself, so callers can reason about them.
+    pub async fn semantic(
+        &self,
+        query_vec: &[f32],
+        embedding_model: &str,
+        limit: usize,
+        include_superseded: bool,
+    ) -> Vec<(Memory, f32)> {
+        let inner = self.inner.read().await;
+        let mut scored: Vec<(Memory, f32)> = inner
+            .vectors
+            .iter()
+            .filter(|(_, (model, _))| embedding_model.is_empty() || model == embedding_model)
+            .filter_map(|(id, (_, v))| {
+                let c = cosine(query_vec, v);
+                let m = inner.memories.get(id)?;
+                (c > SEMANTIC_FLOOR && (include_superseded || m.is_live())).then(|| (m.clone(), c))
+            })
+            .collect();
+        rank_desc(&mut scored, limit);
+        scored
+    }
+
+    /// The bank's strongest live memories that `keep` accepts, with no
+    /// query ([`strength`]). The injection floor for turns whose query
+    /// recalls little (identity questions, session openers).
+    pub async fn top_memories(&self, limit: usize, keep: impl Fn(&Memory) -> bool) -> Vec<Memory> {
+        let inner = self.inner.read().await;
+        let mut all: Vec<&Memory> = inner
+            .memories
+            .values()
+            .filter(|f| f.is_live() && keep(f))
+            .collect();
+        all.sort_by_key(|m| std::cmp::Reverse(strength(m)));
         all.into_iter().take(limit).cloned().collect()
     }
 
@@ -606,9 +981,16 @@ impl Bank {
         Ok(rules)
     }
 
-    /// Atomic write (tmp + rename); empty content removes the rule.
+    /// Atomic write ([`write_atomic`]); empty content removes the rule.
     pub fn set_rule(&self, name: &str, content: &str) -> Result<(), MemoryError> {
         validate_name(name)?;
+        // Rules are injected into every turn: no known secret shape is kept.
+        let redacted = crate::redact::redact(content);
+        if !redacted.labels.is_empty() {
+            tracing::warn!(bank = %self.name, rule = name, labels = ?redacted.labels,
+                "redacted secrets from a rule");
+        }
+        let content = redacted.text.as_str();
         let dir = self.rules_dir();
         std::fs::create_dir_all(&dir)?;
         let path = dir.join(format!("{name}.md"));
@@ -618,9 +1000,7 @@ impl Bank {
             }
             return Ok(());
         }
-        let tmp = dir.join(format!(".{name}.md.tmp"));
-        std::fs::write(&tmp, content)?;
-        std::fs::rename(&tmp, &path)?;
+        write_atomic(&path, content.as_bytes())?;
         Ok(())
     }
 
@@ -649,7 +1029,180 @@ mod tests {
             invalid_at: None,
             superseded_by: None,
             revision: 0,
+            stated_at: None,
         }
+    }
+
+    #[tokio::test]
+    async fn open_compacts_the_sidecar_once_dead_lines_outnumber_live() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let (mut a, mut b, c) = (memory("alpha"), memory("bravo"), memory("charlie"));
+        for (m, v) in [(&a, 0.1), (&b, 0.2), (&c, 0.3)] {
+            bank.commit(m.clone()).await.unwrap();
+            bank.set_vector(&m.id, "m", &m.text, vec![v, 1.0])
+                .await
+                .unwrap();
+        }
+        let path = bank.dir().join(VECTORS_FILE);
+        let c_line = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .find(|l| l.contains(&c.id))
+            .unwrap()
+            .to_string();
+        // a's text edited, b retired: both lines dead; c's stays live.
+        a.text = "alpha edited".into();
+        a.revision += 1;
+        bank.commit(a.clone()).await.unwrap();
+        b.invalid_at = Some(now_ms());
+        b.revision += 1;
+        bank.commit(b.clone()).await.unwrap();
+        // A crash left a torn temp file behind.
+        std::fs::write(path.with_extension("jsonl.tmp"), b"{\"torn").unwrap();
+
+        let store2 = Store::open(dir.path().to_path_buf()).unwrap();
+        let bank2 = store2.bank("main").await.unwrap();
+        assert_eq!(bank2.vector_count().await, 1);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            format!("{c_line}\n")
+        );
+        assert!(!path.with_extension("jsonl.tmp").exists());
+
+        // The re-embed appends; at 2 lines for 2 kept, nothing is rewritten.
+        bank2
+            .set_vector(&a.id, "m", &a.text, vec![0.1, 1.0])
+            .await
+            .unwrap();
+        let store3 = Store::open(dir.path().to_path_buf()).unwrap();
+        let bank3 = store3.bank("main").await.unwrap();
+        assert_eq!(bank3.vector_count().await, 2);
+        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 2);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_failed_compaction_removes_its_temp_and_still_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let m = memory("alpha");
+        bank.commit(m.clone()).await.unwrap();
+        // Three re-embeds of one text: 1 live vector, 2 dead lines.
+        for _ in 0..3 {
+            bank.set_vector(&m.id, "m", &m.text, vec![0.1; 64])
+                .await
+                .unwrap();
+        }
+        let path = bank.dir().join(VECTORS_FILE);
+        let before = std::fs::read_to_string(&path).unwrap();
+        let tmp = path.with_extension("jsonl.tmp");
+        // The compaction's writes land on /dev/full: ENOSPC mid-rewrite.
+        std::os::unix::fs::symlink("/dev/full", &tmp).unwrap();
+
+        let reopened = Store::open(dir.path().to_path_buf()).unwrap();
+        let bank2 = reopened.bank("main").await.unwrap();
+        assert_eq!(bank2.vector_count().await, 1);
+        assert!(std::fs::symlink_metadata(&tmp).is_err(), "temp removed");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "untouched");
+    }
+
+    #[tokio::test]
+    async fn no_known_secret_reaches_memories_jsonl_or_a_rule_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        // Assembled at runtime: no literal key shape in the source.
+        let key = format!("ghp_{}", &"a1B2c3D4e5".repeat(4)[..36]);
+        let key = key.as_str();
+        // Built by a path that skipped the entry-point redaction.
+        let mut m = memory(&format!("User's deploy token is {key}"));
+        m.entities = vec!["AKIAIOSFODNN7EXAMPLE".into()];
+        m.tags = vec![format!("{}://ops:S3cr3tPass@db/app", "postgres")];
+        bank.commit(m.clone()).await.unwrap();
+        bank.set_rule("deploy", &format!("Use the key {key} for CI."))
+            .unwrap();
+
+        let on_disk = std::fs::read_to_string(bank.dir().join(MEMORIES_FILE)).unwrap();
+        for secret in [key, "AKIAIOSFODNN7EXAMPLE", "S3cr3tPass"] {
+            assert!(!on_disk.contains(secret), "{secret} reached memories.jsonl");
+        }
+        let stored = bank.get(&m.id).await.unwrap();
+        assert_eq!(
+            stored.text,
+            "User's deploy token is [REDACTED:github_token]"
+        );
+        assert!(stored.entities.is_empty(), "a secret entity is dropped");
+        assert!(stored.tags.is_empty(), "a secret tag is dropped");
+        let rule = std::fs::read_to_string(bank.dir().join("rules/deploy.md")).unwrap();
+        assert_eq!(rule, "Use the key [REDACTED:github_token] for CI.");
+    }
+
+    #[tokio::test]
+    async fn retired_records_hold_no_vector_in_ram_or_on_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let m = memory("beta to retire");
+        bank.commit(m.clone()).await.unwrap();
+        bank.set_vector(&m.id, "m", &m.text, vec![0.5])
+            .await
+            .unwrap();
+        let mut gone = m.clone();
+        gone.invalid_at = Some(now_ms());
+        gone.revision += 1;
+        bank.commit(gone.clone()).await.unwrap();
+        assert_eq!(bank.vector_count().await, 0, "dropped in RAM");
+        let reopened = Store::open(dir.path().to_path_buf()).unwrap();
+        let bank2 = reopened.bank("main").await.unwrap();
+        assert_eq!(bank2.vector_count().await, 0, "and on reopen");
+
+        // A vector landing after the retirement is refused.
+        assert!(!bank
+            .set_vector(&m.id, "m", &m.text, vec![0.5])
+            .await
+            .unwrap());
+        // Revived, the record is backfill work again.
+        let mut back = gone;
+        back.invalid_at = None;
+        back.revision += 1;
+        bank.commit(back).await.unwrap();
+        assert_eq!(bank.unembedded(10, "m").await.len(), 1);
+    }
+
+    #[test]
+    fn query_tokens_drop_stopwords_but_never_empty_the_query() {
+        assert_eq!(
+            query_tokens("what is my dog's name"),
+            ["dog", "name", "user"]
+        );
+        assert_eq!(query_tokens("which OS do I use"), ["os", "use", "user"]);
+        assert_eq!(
+            query_tokens("does the user live in the US"),
+            ["user", "live", "us"]
+        );
+        // An all-stopword query keeps its tokens rather than matching nothing.
+        assert_eq!(query_tokens("what is it"), ["what", "is", "it"]);
+        // A pasted term counts once.
+        assert_eq!(
+            query_tokens("error: timeout\nerror: timeout\nwhy my error"),
+            ["error", "timeout", "user"]
+        );
+    }
+
+    #[test]
+    fn a_long_query_keeps_its_head_and_tail() {
+        assert_eq!(
+            cap_query("which db does ledgerly use"),
+            "which db does ledgerly use"
+        );
+        let paste = format!("why does this fail? {} end of the log é", "é".repeat(2_000));
+        let capped = cap_query(&paste);
+        assert!(capped.len() <= QUERY_MAX_BYTES + 1, "{}", capped.len());
+        assert!(capped.starts_with("why does this fail? "));
+        assert!(capped.ends_with(" end of the log é"));
     }
 
     #[tokio::test]
@@ -665,7 +1218,7 @@ mod tests {
         // Simulate a restart: reopen from disk only.
         let store2 = Store::open(dir.path().to_path_buf()).unwrap();
         let bank2 = store2.bank("main").await.unwrap();
-        let hits = bank2.recall("formal writing", None, 5, 30, false).await;
+        let hits = bank2.recall("formal writing", None, "", 5, 30, false).await;
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].0.text, "mike prefers formal writing");
     }
@@ -691,14 +1244,17 @@ mod tests {
         f.invalid_at = Some(now_ms());
         f.revision = 2;
         bank.commit(f.clone()).await.unwrap();
-        assert!(bank.recall("api port", None, 5, 30, false).await.is_empty());
+        assert!(bank
+            .recall("api port", None, "", 5, 30, false)
+            .await
+            .is_empty());
         assert!(bank.get(&f.id).await.unwrap().invalid_at.is_some());
 
         // And the same is true after a reopen.
         let store2 = Store::open(dir.path().to_path_buf()).unwrap();
         let bank2 = store2.bank("main").await.unwrap();
         assert!(bank2
-            .recall("api port", None, 5, 30, false)
+            .recall("api port", None, "", 5, 30, false)
             .await
             .is_empty());
         let (memories, total) = bank2.list(10, 0, true, None).await;
@@ -730,6 +1286,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_last_line_without_its_newline_is_not_fused_with_the_next() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let mut gone = memory("deleted by the user");
+        bank.commit(gone.clone()).await.unwrap();
+        bank.commit(memory("kept by hand")).await.unwrap();
+        // An editor saved the file without its final newline.
+        let path = bank.dir().join(MEMORIES_FILE);
+        let raw = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, raw.trim_end()).unwrap();
+        gone.invalid_at = Some(now_ms());
+        gone.revision += 1;
+        bank.commit(gone).await.unwrap();
+
+        let store2 = Store::open(dir.path().to_path_buf()).unwrap();
+        let bank2 = store2.bank("main").await.unwrap();
+        let (live, _) = bank2.list(10, 0, false, None).await;
+        let texts: Vec<&str> = live.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts, ["kept by hand"], "the tombstone held, the tail kept");
+    }
+
+    #[tokio::test]
     async fn rules_roundtrip_and_empty_deletes() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().to_path_buf()).unwrap();
@@ -740,6 +1319,31 @@ mod tests {
         assert_eq!(rules[0].name, "style");
         bank.set_rule("style", "").unwrap();
         assert!(bank.list_rules().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_trashed_bank_reads_as_deleted_until_recreated() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        store.ensure_bank("blog", None).await.unwrap();
+        store.ensure_bank("blog-old", None).await.unwrap();
+        store.trash_bank("blog-old").await.unwrap();
+        assert!(store.is_deleted("blog-old"));
+        assert!(
+            !store.is_deleted("blog"),
+            "another bank's trash is not this one's"
+        );
+        assert!(
+            !store.is_deleted("never"),
+            "a bank that never existed is not deleted"
+        );
+        store.trash_bank("blog").await.unwrap();
+        assert!(store.is_deleted("blog"));
+        store.ensure_bank("blog", None).await.unwrap();
+        assert!(
+            !store.is_deleted("blog"),
+            "an explicit re-create revives it"
+        );
     }
 
     #[tokio::test]
@@ -760,7 +1364,7 @@ mod tests {
         let (bank, _) = store.ensure_bank("main", None).await.unwrap();
         let mut m = memory("the port is 3000");
         bank.commit(m.clone()).await.unwrap();
-        bank.set_vector(&m.id, "test-model", vec![0.1, 0.2])
+        bank.set_vector(&m.id, "test-model", &m.text, vec![0.1, 0.2])
             .await
             .unwrap();
         assert_eq!(bank.vector_count().await, 1);
@@ -775,26 +1379,50 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reload_drops_vectors_from_older_revisions() {
+    async fn reopen_keeps_vectors_until_the_text_changes() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().to_path_buf()).unwrap();
         let (bank, _) = store.ensure_bank("main", None).await.unwrap();
         let mut m = memory("stable memory");
         bank.commit(m.clone()).await.unwrap();
-        bank.set_vector(&m.id, "test-model", vec![0.5])
+        bank.set_vector(&m.id, "test-model", &m.text, vec![0.5])
             .await
             .unwrap();
-        // Bump the record AFTER the vector was written.
+        // Reinforce / pin / tag: revision moves, text does not.
+        m.revision += 1;
+        m.pinned = true;
+        bank.commit(m.clone()).await.unwrap();
+        let reopened = Store::open(dir.path().to_path_buf()).unwrap();
+        assert_eq!(reopened.bank("main").await.unwrap().vector_count().await, 1);
+
+        // A text edit (embed not yet landed) makes the stored vector stale.
+        m.text = "edited memory".into();
         m.revision += 1;
         bank.commit(m.clone()).await.unwrap();
+        let reopened = Store::open(dir.path().to_path_buf()).unwrap();
+        let bank2 = reopened.bank("main").await.unwrap();
+        assert_eq!(bank2.vector_count().await, 0);
+        assert_eq!(bank2.unembedded(10, "").await.len(), 1);
+    }
 
-        let store2 = Store::open(dir.path().to_path_buf()).unwrap();
-        let bank2 = store2.bank("main").await.unwrap();
-        assert_eq!(
-            bank2.vector_count().await,
-            0,
-            "a vector stamped with an older revision is stale on load"
-        );
+    #[tokio::test]
+    async fn legacy_revision_stamped_vectors_are_dropped_for_re_embed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let m = memory("legacy memory");
+        bank.commit(m.clone()).await.unwrap();
+        std::fs::write(
+            bank.dir().join(VECTORS_FILE),
+            format!(
+                "{{\"id\":\"{}\",\"model\":\"\",\"revision\":0,\"v\":[0.5]}}\n",
+                m.id
+            ),
+        )
+        .unwrap();
+        let reopened = Store::open(dir.path().to_path_buf()).unwrap();
+        let bank2 = reopened.bank("main").await.unwrap();
+        assert_eq!(bank2.vector_count().await, 0);
         assert_eq!(bank2.unembedded(10, "").await.len(), 1);
     }
 
@@ -805,7 +1433,7 @@ mod tests {
         let (bank, _) = store.ensure_bank("main", None).await.unwrap();
         let m = memory("model tracked");
         bank.commit(m.clone()).await.unwrap();
-        bank.set_vector(&m.id, "old-model", vec![0.5])
+        bank.set_vector(&m.id, "old-model", &m.text, vec![0.5])
             .await
             .unwrap();
 
@@ -813,6 +1441,217 @@ mod tests {
         assert_eq!(bank.unembedded(10, "new-model").await.len(), 1);
         // Empty active model = provider default: whatever exists counts.
         assert!(bank.unembedded(10, "").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn semantic_relevance_decays_with_recency_like_lexical() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let fresh = memory("alpha beta");
+        let mut old = memory("gamma delta");
+        old.updated_at = now_ms() - 365 * 86_400_000;
+        bank.commit(fresh.clone()).await.unwrap();
+        bank.commit(old.clone()).await.unwrap();
+        for m in [&fresh, &old] {
+            bank.set_vector(&m.id, "m", &m.text, vec![1.0, 0.0])
+                .await
+                .unwrap();
+        }
+        // No lexical overlap: the identical semantic match is the only
+        // relevance, so recency alone must separate the two.
+        let hits = bank
+            .recall("zzz", Some(&[1.0, 0.0]), "m", 5, 30, false)
+            .await;
+        let score = |id: &str| {
+            hits.iter()
+                .find(|(m, _)| m.id == id)
+                .map(|(_, s)| *s)
+                .expect("both memories are semantic hits")
+        };
+        assert!(score(&fresh.id) > score(&old.id), "{hits:?}");
+    }
+
+    #[tokio::test]
+    async fn lexical_is_raw_bm25_unaffected_by_age() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        // The old exact twin must lead the raw lexical arm even though the
+        // fused recall would decay it by the recency factor.
+        let mut old = memory("kiwi mango smoothie recipe");
+        old.updated_at = now_ms() - 400 * 86_400_000;
+        bank.commit(old.clone()).await.unwrap();
+        for w in ["one", "two", "three", "four"] {
+            bank.commit(memory(&format!("kiwi {w} extra filler words")))
+                .await
+                .unwrap();
+        }
+        let hits = bank.lexical("kiwi mango smoothie recipe", 3, false).await;
+        assert_eq!(hits[0].0.id, old.id, "{hits:?}");
+        assert!(hits.len() <= 3);
+        // The SCORE is raw BM25: fusion would scale the 400-day-old twin by
+        // the recency factor (x0.8), so a fused lexical arm fails this.
+        let fused = bank
+            .recall("kiwi mango smoothie recipe", None, "", 3, 30, false)
+            .await;
+        let fused_old = fused.iter().find(|(m, _)| m.id == old.id).unwrap().1;
+        assert!(
+            hits[0].1 > 1.2 * fused_old,
+            "raw BM25, not recency-fused: {hits:?} vs {fused:?}"
+        );
+        // Tombstoned records stay out unless history is asked for.
+        let mut gone = old.clone();
+        gone.invalid_at = Some(now_ms());
+        gone.revision += 1;
+        bank.commit(gone).await.unwrap();
+        let live = bank.lexical("kiwi mango smoothie recipe", 10, false).await;
+        assert!(live.iter().all(|(m, _)| m.id != old.id));
+        let history = bank.lexical("kiwi mango smoothie recipe", 10, true).await;
+        assert!(history.iter().any(|(m, _)| m.id == old.id));
+    }
+
+    #[tokio::test]
+    async fn semantic_ranks_raw_cosine_with_floor_model_and_liveness() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let near = memory("near");
+        let mid = memory("mid");
+        let far = memory("far");
+        let other = memory("other model");
+        for m in [&near, &mid, &far, &other] {
+            bank.commit(m.clone()).await.unwrap();
+        }
+        bank.set_vector(&near.id, "m", &near.text, vec![1.0, 0.0])
+            .await
+            .unwrap();
+        bank.set_vector(&mid.id, "m", &mid.text, vec![0.6, 0.8])
+            .await
+            .unwrap();
+        bank.set_vector(&far.id, "m", &far.text, vec![0.0, 1.0])
+            .await
+            .unwrap();
+        bank.set_vector(&other.id, "x", &other.text, vec![1.0, 0.0])
+            .await
+            .unwrap();
+
+        let hits = bank.semantic(&[1.0, 0.0], "m", 10, false).await;
+        let ids: Vec<&str> = hits.iter().map(|(m, _)| m.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![near.id.as_str(), mid.id.as_str()],
+            "far is under the floor, other is another model"
+        );
+        assert!(
+            (hits[0].1 - 1.0).abs() < 1e-6 && (hits[1].1 - 0.6).abs() < 1e-6,
+            "raw cosine scores"
+        );
+
+        let mut retired = near.clone();
+        retired.invalid_at = Some(now_ms());
+        retired.revision += 1;
+        bank.commit(retired).await.unwrap();
+        let live = bank.semantic(&[1.0, 0.0], "m", 10, false).await;
+        assert!(live.iter().all(|(m, _)| m.id != near.id));
+    }
+
+    #[tokio::test]
+    async fn minilm_vectors_use_their_own_semantic_floor() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let minilm = format!("{MINILM_MODEL}@c9745ed1d9f2");
+        let a = memory("weak match a");
+        let b = memory("weak match b");
+        // Cosine 0.22 with the query: under the default floor, over MiniLM's.
+        let v = vec![0.22, (1.0f32 - 0.22 * 0.22).sqrt()];
+        for (m, model) in [(&a, minilm.as_str()), (&b, "text-embedding-3-small")] {
+            bank.commit(m.clone()).await.unwrap();
+            bank.set_vector(&m.id, model, &m.text, v.clone())
+                .await
+                .unwrap();
+        }
+        for model in [minilm.as_str(), "text-embedding-3-small"] {
+            let semantic = bank.semantic(&[1.0, 0.0], model, 10, false).await;
+            let recalled = bank
+                .recall("", Some(&[1.0, 0.0]), model, 10, 60, false)
+                .await;
+            // The raw semantic arm keeps the default floor for every model.
+            let want = usize::from(model == minilm);
+            assert_eq!((semantic.len(), recalled.len()), (0, want), "{model}");
+        }
+    }
+
+    #[tokio::test]
+    async fn tied_scores_rank_deterministically_by_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        // Same length, same age, one shared query token each: every score
+        // ties, so only the tie-break decides the order.
+        for w in ["one", "two", "three", "four", "five", "six"] {
+            let mut m = memory(&format!("kiwi {w}"));
+            m.updated_at = 1_000;
+            bank.commit(m).await.unwrap();
+        }
+        let ids: Vec<String> = bank
+            .recall("kiwi", None, "", 10, 30, false)
+            .await
+            .into_iter()
+            .map(|(m, _)| m.id)
+            .collect();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_eq!(ids.len(), 6);
+        assert_eq!(ids, sorted, "ties break by id, not HashMap order");
+    }
+
+    #[tokio::test]
+    async fn lexical_only_recall_keeps_bm25_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        // Same age, no pins or entities: normalizing the BM25 arm by its
+        // maximum must not reorder anything.
+        for text in [
+            "kiwi mango smoothie recipe",
+            "kiwi mango",
+            "kiwi with a lot of other filler words around it",
+            "mango sorbet",
+        ] {
+            let mut m = memory(text);
+            m.updated_at = 1_000;
+            bank.commit(m).await.unwrap();
+        }
+        let q = "kiwi mango smoothie";
+        let ids =
+            |hits: Vec<(Memory, f32)>| hits.into_iter().map(|(m, _)| m.id).collect::<Vec<_>>();
+        let lexical = ids(bank.lexical(q, 10, false).await);
+        assert_eq!(lexical.len(), 4);
+        assert_eq!(ids(bank.recall(q, None, "", 10, 30, false).await), lexical);
+    }
+
+    #[tokio::test]
+    async fn recall_ignores_vectors_from_another_pinned_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let m = memory("alpha beta");
+        bank.commit(m.clone()).await.unwrap();
+        bank.set_vector(&m.id, "model-a", &m.text, vec![1.0, 0.0])
+            .await
+            .unwrap();
+        let q = [1.0, 0.0];
+
+        let same = bank.recall("zzz", Some(&q), "model-a", 5, 30, false).await;
+        assert_eq!(same.len(), 1, "matching model contributes the hit");
+        let other = bank.recall("zzz", Some(&q), "model-b", 5, 30, false).await;
+        assert!(other.is_empty(), "another model's space is not comparable");
+        // Empty = provider default: whatever exists counts (mirrors
+        // `unembedded`, so nothing skipped here is left un-re-embedded).
+        let default = bank.recall("zzz", Some(&q), "", 5, 30, false).await;
+        assert_eq!(default.len(), 1);
     }
 
     #[tokio::test]
@@ -827,10 +1666,12 @@ mod tests {
         bank.commit(m.clone()).await.unwrap();
 
         assert!(bank
-            .recall("retired convention", None, 5, 30, false)
+            .recall("retired convention", None, "", 5, 30, false)
             .await
             .is_empty());
-        let hits = bank.recall("retired convention", None, 5, 30, true).await;
+        let hits = bank
+            .recall("retired convention", None, "", 5, 30, true)
+            .await;
         assert_eq!(
             hits.len(),
             1,
@@ -857,7 +1698,7 @@ mod tests {
         for m in [&a, &b, &c, &d] {
             bank.commit(m.clone()).await.unwrap();
         }
-        let top = bank.top_memories(10).await;
+        let top = bank.top_memories(10, |_| true).await;
         let texts: Vec<&str> = top.iter().map(|m| m.text.as_str()).collect();
         assert_eq!(
             texts,

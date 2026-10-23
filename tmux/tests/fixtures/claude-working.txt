@@ -1,0 +1,14 @@
+● I'll read the configuration first.
+
+● Read(src/config.rs)
+  ⎿  Read 123 lines
+
+✻ Harmonizing… (16m 46s · ↓ 110.0k tokens · thought for 4s)
+  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for agents · ↓ to manage
+  ● main
+  ◯ fork  Checking the parser

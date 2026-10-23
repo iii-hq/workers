@@ -3,9 +3,9 @@
  * seed installed as `initial_value` on first registration; the live value is
  * authoritative thereafter and hot-reloads on `configuration:updated`.
  *
- * Stream names (`events_stream` / `raw_events_stream`) are read once at boot to
- * build the emitters — a change to those needs a restart, like the path-jail
- * workers refuse a topology change. Every other field hot-reloads.
+ * Every field hot-reloads. The event feeds are fixed trigger types
+ * (`pi::agent-event`, `pi::raw-event`), not configuration; the former
+ * `events_stream` / `raw_events_stream` keys are accepted and ignored.
  */
 
 import type { IIIClient } from 'iii-sdk';
@@ -37,7 +37,7 @@ export async function registerPiConfig(iii: IIIClient, seed: Config): Promise<vo
     id: CONFIG_ID,
     name: 'Pi',
     description:
-      'Pi coding agent worker: per-turn defaults (model, thinking level, working directory, tool allowlist, agent config dir), the agent::events / pi::events stream names, and whether to inject the iii runtime context.',
+      'Pi coding agent worker: per-turn defaults (model, thinking level, working directory, tool allowlist, agent config dir) and whether to inject the iii runtime context.',
     schema: runtimeJsonSchema(),
     metadata: { ui_form: DEFAULT_CONFIG_ID },
     initial_value: toRuntime(seed),

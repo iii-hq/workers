@@ -11,6 +11,18 @@ test('a stored value keeps the keys this form never renders', () => {
   assert.equal(config.retention.cron, '0 0 3 * * *', 'and gains the defaults it lacked')
 })
 
+test('triage starts on with a five-minute wait, and keeps what was stored', () => {
+  assert.deepEqual(normalize({}).triage, { enabled: true, delay_ms: 300_000, model: '' })
+  assert.deepEqual(normalize({ triage: { enabled: false } }).triage, { enabled: false, delay_ms: 300_000, model: '' })
+})
+
+test('a negative wait before triage is refused before the round trip', () => {
+  assert.deepEqual(problems(normalize({ triage: { delay_ms: -60_000 } })), [
+    'the wait before triage cannot be negative',
+  ])
+  assert.deepEqual(problems(normalize({ triage: { delay_ms: 0 } })), [])
+})
+
 test('setting one field leaves its siblings alone', () => {
   const config = normalize({ sources: { log: { enabled: true, join_window_ms: 5000 } } })
   const next = setPath(config, 'sources.log.enabled', false)

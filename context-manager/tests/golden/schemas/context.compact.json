@@ -671,7 +671,7 @@
         "type": "object"
       },
       {
-        "description": "The summariser is unavailable or itself overflowed.",
+        "description": "The summariser is unavailable, overflowed, or returned no summary.",
         "properties": {
           "status": {
             "enum": [

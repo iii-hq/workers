@@ -34,14 +34,24 @@ const ConfigSchema = z.object({
     .boolean()
     .default(false)
     .describe('Route tool calls through the approval-gate worker'),
+  // Deprecated and ignored: the feeds are the fixed trigger types
+  // claude::agent-event / claude::raw-event. Kept as optional properties only
+  // because the published schema is closed (additionalProperties: false), so a
+  // stored configuration that still carries them keeps validating.
   events_stream: z
     .string()
-    .default('agent::events')
-    .describe('Stream carrying the translated AgentEvent frames'),
+    .optional()
+    .meta({ deprecated: true })
+    .describe(
+      'Deprecated, ignored. AgentEvent frames are published on the claude::agent-event trigger type.',
+    ),
   raw_events_stream: z
     .string()
-    .default('claude::events')
-    .describe('Stream carrying the raw Claude Code messages, verbatim'),
+    .optional()
+    .meta({ deprecated: true })
+    .describe(
+      'Deprecated, ignored. Raw Claude Code messages are published on the claude::raw-event trigger type.',
+    ),
   iii_context: z
     .boolean()
     .default(true)

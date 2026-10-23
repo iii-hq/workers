@@ -71,6 +71,12 @@ pub struct Memory {
     /// highest.
     #[serde(default)]
     pub revision: u64,
+    /// When the fact was last STATED (created, re-observed, text edited).
+    /// Unlike `updated_at`, pin/tag/entity edits never bump it, so
+    /// consolidation can order "which statement is current" by it. Legacy
+    /// records load as None.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stated_at: Option<u64>,
 }
 
 impl Memory {
@@ -111,6 +117,17 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// `ms` (epoch millis) formatted in the host's local time zone — the worker
+/// runs on the user's machine, so "amanhã" said in the evening resolves
+/// against their calendar day, not UTC's. Empty when out of range.
+pub fn local_date(ms: u64, fmt: &str) -> String {
+    i64::try_from(ms)
+        .ok()
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .map(|d| d.with_timezone(&chrono::Local).format(fmt).to_string())
+        .unwrap_or_default()
+}
+
 /// Stable 64-bit FNV-1a over the normalized text (lowercased, whitespace
 /// collapsed). Deliberately hand-rolled: the fingerprint is persisted, so it
 /// must never change across toolchains or dependency bumps.
@@ -144,6 +161,25 @@ mod tests {
     }
 
     #[test]
+    fn local_date_formats_in_local_time_and_tolerates_overflow() {
+        // 2025-10-14T12:00:00Z is the 14th from UTC-12 to UTC+11 and the
+        // 15th from UTC+12 to UTC+14 — either holds, in any host zone.
+        let noon = 1_760_443_200_000;
+        let day = local_date(noon, "%Y-%m-%d");
+        assert!(matches!(day.as_str(), "2025-10-14" | "2025-10-15"), "{day}");
+        let with_weekday = local_date(noon, "%Y-%m-%d %A");
+        assert!(
+            matches!(
+                with_weekday.as_str(),
+                "2025-10-14 Tuesday" | "2025-10-15 Wednesday"
+            ),
+            "{with_weekday}"
+        );
+        assert!(with_weekday.starts_with(&day));
+        assert_eq!(local_date(u64::MAX, "%Y-%m-%d"), "");
+    }
+
+    #[test]
     fn memory_roundtrips_json() {
         let f = Memory {
             id: fingerprint("x"),
@@ -163,6 +199,7 @@ mod tests {
             invalid_at: None,
             superseded_by: None,
             revision: 3,
+            stated_at: Some(2),
         };
         let s = serde_json::to_string(&f).unwrap();
         let back: Memory = serde_json::from_str(&s).unwrap();

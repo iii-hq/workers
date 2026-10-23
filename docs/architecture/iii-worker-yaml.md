@@ -61,8 +61,9 @@ tags:
 
 Example: [`harness/iii.worker.yaml`](../../harness/iii.worker.yaml).
 
-Engine-owned dependencies such as `configuration`, `iii-stream`, and
-`iii-observability` use npm-style major wildcards such as `0.x`. Published stable
+Engine-owned dependencies such as `configuration` and `iii-observability` use
+npm-style major wildcards such as `0.x`. `iii-stream` is deprecated: do not add
+it as a dependency of a new worker. Published stable
 worker dependencies use a caret range whose lower bound is the newest stable
 release validated with the current SDK. For example, `state: "^0.22.2"` accepts
 compatible patch releases without falling back to an older SDK build. A worker

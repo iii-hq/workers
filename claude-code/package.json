@@ -1,8 +1,8 @@
 {
   "name": "claude-code",
-  "version": "0.2.19",
+  "version": "0.2.22",
   "private": true,
-  "description": "Claude Code as an iii worker: headless turns over the iii bus and a terminal page on the console, both on one login. Raw messages on claude::events, AgentEvent frames on agent::events.",
+  "description": "Claude Code as an iii worker: headless turns over the iii bus and a terminal page on the console, both on one login. Raw messages on the claude::raw-event trigger type, AgentEvent frames on claude::agent-event.",
   "license": "Apache-2.0",
   "type": "module",
   "engines": {
@@ -26,7 +26,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.173",
     "@opentelemetry/api": "^1.9.1",
-    "iii-sdk": "0.23.0",
+    "iii-sdk": "0.24.6",
     "yaml": "^2.6.0",
     "zod": "^4.0.0"
   },

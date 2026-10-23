@@ -1,0 +1,44 @@
+{
+  "config_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "description": "Config accepted by every `computer::*` trigger binding. The only filter is an optional session-id equality match; unknown fields fail at registration so a misspelled filter key fails loudly instead of silently receiving nothing.",
+    "properties": {
+      "session_id": {
+        "description": "Only deliver events for this computer session.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "BindingConfig",
+    "type": "object"
+  },
+  "description": "A caller drove a desktop session (computer::act or computer::run); the console's live preview shows that session.",
+  "payload_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`computer::activity` — a caller drove a session: fired when a `computer::act` call reaches it, or a `computer::run` passed its checks and holds it.",
+    "properties": {
+      "function": {
+        "description": "The function called: `computer::act` or `computer::run`.",
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "timestamp": {
+        "format": "int64",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "function",
+      "session_id",
+      "timestamp"
+    ],
+    "title": "ActivityEvent",
+    "type": "object"
+  },
+  "trigger_type": "computer::activity"
+}

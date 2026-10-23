@@ -1,13 +1,16 @@
 //! `browser::handoff` and `browser::handoff::confirm` — pause a session for
 //! a step only a human can do (CAPTCHA, 2FA, payment). The handoff call
 //! parks until a human confirms in-page or a confirm call resolves it, or
-//! the timeout elapses.
+//! the timeout elapses. The in-page continue control reports itself through
+//! a CDP binding (`Runtime.addBinding` + `Runtime.bindingCalled`), so the
+//! parked call wakes on the click instead of re-reading the page.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Poll interval for the in-page continue control while parked.
-pub const POLL_INTERVAL_MS: u64 = 250;
+/// The page-global function (`Runtime.addBinding`) the continue control
+/// calls with its handoff id; each call arrives as `Runtime.bindingCalled`.
+pub const BINDING: &str = "__iiiHandoffDone";
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct HandoffInput {
@@ -51,14 +54,14 @@ pub struct HandoffConfirmOutput {
     pub handoff_id: Option<String>,
 }
 
-/// JS that mounts the in-page continue banner and exposes a global flag the
-/// worker polls. Idempotent per handoff id. `{:?}` renders both the id and
-/// the instructions as valid double-quoted JS string literals, so no manual
-/// escaping is needed and injection through the text is not possible.
+/// JS that mounts the in-page continue banner; its button reports the click
+/// through the [`BINDING`] function. Idempotent per handoff id. `{:?}`
+/// renders the id, the binding name, and the instructions as valid
+/// double-quoted JS string literals, so no manual escaping is needed and
+/// injection through the text is not possible.
 pub fn banner_script(handoff_id: &str, instructions: &str) -> String {
     format!(
         r#"(() => {{
-  window.__iiiHandoff = window.__iiiHandoff || {{}};
   const id = {handoff_id:?};
   if (document.getElementById('iii-handoff-' + id)) return;
   const bar = document.createElement('div');
@@ -76,7 +79,11 @@ pub fn banner_script(handoff_id: &str, instructions: &str) -> String {
   btn.textContent = 'Continue';
   btn.style.cssText = 'background:#10b981;color:#04231a;border:0;border-radius:6px;'
     + 'padding:8px 16px;font-weight:600;cursor:pointer';
-  btn.addEventListener('click', () => {{ window.__iiiHandoff[id] = true; bar.remove(); }});
+  btn.addEventListener('click', () => {{
+    const done = window[{BINDING:?}];
+    if (typeof done === 'function') done(id);
+    bar.remove();
+  }});
   bar.appendChild(msg);
   bar.appendChild(btn);
   (document.body || document.documentElement).appendChild(bar);
@@ -84,11 +91,10 @@ pub fn banner_script(handoff_id: &str, instructions: &str) -> String {
     )
 }
 
-/// JS that reads and clears the confirm flag for a handoff id.
-pub fn poll_script(handoff_id: &str) -> String {
-    format!(
-        "(() => {{ const f = window.__iiiHandoff && window.__iiiHandoff[{handoff_id:?}]; return !!f; }})()"
-    )
+/// Whether a `Runtime.bindingCalled` event is the continue click for this
+/// handoff (another handoff on the same page carries another id).
+pub fn is_in_page_confirm(binding: &str, payload: &str, handoff_id: &str) -> bool {
+    binding == BINDING && payload == handoff_id
 }
 
 /// JS that removes the banner for a handoff id (on confirm-call or timeout).
@@ -108,12 +114,20 @@ mod tests {
         // {:?} escapes the embedded quotes so the JS literal stays valid.
         assert!(js.contains(r#"\"here\""#), "{js}");
         assert!(js.contains("iii-handoff-"));
-        assert!(js.contains("__iiiHandoff[id] = true"));
+        // The click reports itself through the binding, with the handoff id.
+        assert!(js.contains(&format!("window[{BINDING:?}]")), "{js}");
+        assert!(js.contains("done(id)"), "{js}");
     }
 
     #[test]
-    fn poll_and_remove_reference_the_id() {
-        assert!(poll_script("h7").contains("\"h7\""));
+    fn only_this_handoffs_click_confirms_it() {
+        assert!(is_in_page_confirm(BINDING, "h7", "h7"));
+        assert!(!is_in_page_confirm(BINDING, "h8", "h7"));
+        assert!(!is_in_page_confirm("somethingElse", "h7", "h7"));
+    }
+
+    #[test]
+    fn remove_references_the_id() {
         assert!(remove_script("h7").contains("\"h7\""));
     }
 }

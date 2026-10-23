@@ -32,8 +32,5 @@ fn manifest_subcommand_emits_the_publish_fields() {
         assert!(!manifest[key].is_null(), "manifest is missing {key}");
     }
     assert_eq!(manifest["default_config"]["allow_funnel"], false);
-    assert_eq!(
-        manifest["default_config"]["console_url"],
-        "http://127.0.0.1:3113"
-    );
+    assert_eq!(manifest["default_config"]["console_url"], "");
 }

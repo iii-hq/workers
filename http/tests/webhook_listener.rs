@@ -49,6 +49,7 @@ async fn start(enabled: bool) -> (FakeEngine, BootHandle) {
         boot.hot_router.clone(),
         boot.apply_lock.clone(),
     );
+    configuration::register_status(&engine.iii, boot.control.clone(), boot.apply_lock.clone());
     (engine, boot)
 }
 
@@ -89,6 +90,7 @@ async fn bind(
     if let Some(public) = public {
         config["public_webhook"] = json!(public);
     }
+    #[allow(deprecated)] // an old consumer: binds the `http` trigger type
     let trigger = engine
         .iii
         .register_trigger(RegisterTriggerInput::new("http", id, config))
@@ -450,6 +452,7 @@ async fn brace_parameter_route_serves_and_extracts_path_params() {
         "api_path": "/users/{userId}/tasks/{tid}",
         "http_method": "GET",
     });
+    #[allow(deprecated)] // an old consumer: binds the `http` trigger type
     let _trigger = engine
         .iii
         .register_trigger(RegisterTriggerInput::new("http", id, trigger_config))
@@ -470,4 +473,23 @@ async fn brace_parameter_route_serves_and_extracts_path_params() {
 
     boot.shutdown().await;
     engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn status_reports_the_bound_port_and_a_local_url() {
+    let (engine, boot) = start(false).await;
+    let status = engine
+        .iii
+        .trigger(TriggerRequest {
+            function_id: "http::status".into(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(5000),
+        })
+        .await
+        .unwrap();
+    let port = boot.local_addr.port();
+    assert_eq!(status["port"], json!(port));
+    assert_eq!(status["url"], json!(format!("http://127.0.0.1:{port}")));
+    assert!(status["last_reload_error"].is_null());
 }

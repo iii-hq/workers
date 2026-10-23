@@ -379,7 +379,7 @@ impl LiveBus {
             next_id: 0,
         };
         let mut registered = std::collections::BTreeSet::new();
-        while registered.len() < 3 {
+        while registered.len() < 4 {
             let registration = timeout(Duration::from_secs(3), bus.incoming.recv())
                 .await
                 .expect("all JEV functions registered")
@@ -391,7 +391,8 @@ impl LiveBus {
             [
                 "judge-typesafe::evaluate",
                 "judge-typesafe::models::list",
-                "judge-typesafe::cancel"
+                "judge-typesafe::cancel",
+                "judge-typesafe::status"
             ]
             .map(str::to_owned)
             .into_iter()
@@ -625,8 +626,9 @@ async fn bus_callers_with_the_same_id_can_only_cancel_their_own_call() {
 fn provider_ids_follow_the_hub_convention() {
     use judge_contract::{
         provider_function_id, CANCEL_FUNCTION_ID, FUNCTION_ID, MODELS_FUNCTION_ID,
+        STATUS_FUNCTION_ID,
     };
-    use judge_typesafe::{CANCEL_ID, EVALUATE_ID, MODELS_ID, PROVIDER};
+    use judge_typesafe::{CANCEL_ID, EVALUATE_ID, MODELS_ID, PROVIDER, STATUS_ID};
     assert_eq!(provider_function_id(PROVIDER, FUNCTION_ID), EVALUATE_ID);
     assert_eq!(
         provider_function_id(PROVIDER, MODELS_FUNCTION_ID),
@@ -636,4 +638,37 @@ fn provider_ids_follow_the_hub_convention() {
         provider_function_id(PROVIDER, CANCEL_FUNCTION_ID),
         CANCEL_ID
     );
+    assert_eq!(
+        provider_function_id(PROVIDER, STATUS_FUNCTION_ID),
+        STATUS_ID
+    );
+}
+
+#[tokio::test]
+async fn status_says_whether_a_key_is_held_without_returning_it() {
+    // No key anywhere: not configured, and the reason names both fixes.
+    let (_, response) = invoke_function("judge-typesafe::status", json!({})).await;
+    assert_eq!(response["result"]["configured"], false);
+    let reason = response["result"]["reason"].as_str().unwrap();
+    assert!(reason.contains("TYPESAFE_API_KEY"), "{reason}");
+    // The boot key, or a key saved in the configuration, is enough.
+    for (config, boot) in [
+        (JevConfig::default(), Some("boot-env-key")),
+        (
+            JevConfig {
+                api_key: Some("saved-key".into()),
+                ..JevConfig::default()
+            },
+            None,
+        ),
+    ] {
+        let (_, response) = invoke_client(
+            "judge-typesafe::status",
+            json!({"_caller_worker_id": "engine-worker"}),
+            judge_typesafe::configuration::new_cell(config),
+            JevClient::new(boot.map(str::to_owned)),
+        )
+        .await;
+        assert_eq!(response["result"], json!({"configured": true}));
+    }
 }

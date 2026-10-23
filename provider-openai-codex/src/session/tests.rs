@@ -136,13 +136,19 @@ impl OAuthTransport for FakeOAuth {
 #[derive(Default)]
 struct FakeLegacy {
     reads: AtomicUsize,
+    /// `codex login` ran again: the CLI file holds another token.
+    signed_in_again: AtomicBool,
 }
 impl LegacySource for FakeLegacy {
     fn resolve(&self) -> BoxFuture<'_, Result<Option<ResolvedCredential>, SessionError>> {
         Box::pin(async {
             self.reads.fetch_add(1, Ordering::SeqCst);
+            let mut credential = credential("legacy", 3600);
+            if self.signed_in_again.load(Ordering::SeqCst) {
+                credential.access_token = "secret-legacy-again".into();
+            }
             Ok(Some(ResolvedCredential {
-                value: serde_json::to_value(credential("legacy", 3600)).unwrap(),
+                value: serde_json::to_value(credential).unwrap(),
                 source: CredentialSource::Local,
             }))
         })
@@ -294,6 +300,45 @@ async fn revoked_session_requires_login_and_never_uses_legacy() {
     assert!(manager.resolve(None).await.is_err());
     assert_eq!(oauth.refreshes.load(Ordering::SeqCst), 1);
     assert_eq!(legacy.reads.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_rejected_cli_credential_reads_expired_until_it_is_replaced() {
+    let (manager, _, oauth, legacy) = setup();
+    let error = manager.resolve(Some("secret-legacy")).await.err().unwrap();
+    assert_eq!(error.code, "auth_expired");
+    assert!(error.message.contains("rejected"));
+    assert_eq!(oauth.refreshes.load(Ordering::SeqCst), 0);
+    assert!(manager.resolve(None).await.is_err());
+    let status = manager.status().await.unwrap();
+    assert_eq!(status.status, AuthStatus::Expired);
+    assert_eq!(status.source, Some(CredentialSource::Local));
+    assert_eq!(status.account_id.as_deref(), Some("legacy"));
+
+    legacy.signed_in_again.store(true, Ordering::SeqCst);
+    assert_eq!(
+        manager.resolve(None).await.unwrap().unwrap().value["access_token"],
+        "secret-legacy-again"
+    );
+    assert_eq!(
+        manager.status().await.unwrap().status,
+        AuthStatus::Authenticated
+    );
+}
+
+#[tokio::test]
+async fn a_rejection_of_an_older_token_keeps_the_current_cli_credential() {
+    let (manager, ..) = setup();
+    let resolved = manager
+        .resolve(Some("secret-older"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resolved.value["access_token"], "secret-legacy");
+    assert_eq!(
+        manager.status().await.unwrap().status,
+        AuthStatus::Authenticated
+    );
 }
 
 #[tokio::test]

@@ -37,6 +37,14 @@ pub fn declaration() -> ProviderDeclaration {
         // router's refresh-on-config-change call — which must fire so the
         // curated slice appears the moment an operator adds a key.
         supports_model_listing: Some(true),
+        // Starting point for callers that name no model: the current
+        // mid-range model first, then its predecessors (router picks the
+        // first one the live catalog holds).
+        default_models: Some(vec!["glm-5.3".into(), "glm-5.2".into()]),
+        // Omitted keeps GLM thinking off; `minimal` would turn it on.
+        default_thinking_level: None,
+        context_overflow_hint: None,
+        credential_optional: None,
         // No static slice: refresh_models reconciles the curated table right
         // after registration (see declare_and_refresh), gated on a credential
         // being configured.

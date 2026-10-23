@@ -8,6 +8,7 @@ pub mod config;
 pub mod configuration;
 pub mod locks;
 pub mod manifest;
+pub mod on_tick;
 pub mod scheduler;
 pub mod trigger;
 pub mod ui;

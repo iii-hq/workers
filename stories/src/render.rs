@@ -19,7 +19,9 @@ use crate::config::Viewport;
 use crate::model::{Component, sha256_hex};
 
 /// Bump when runtime.js changes what a capture or a render looks like.
-pub const RUNTIME_VERSION: &str = "1";
+/// "2" (MOT-5356): drops renders captured from a guessed, possibly foreign,
+/// console origin.
+pub const RUNTIME_VERSION: &str = "2";
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RenderMeta {
@@ -125,6 +127,49 @@ pub fn story_url(
     )
 }
 
+/// The console origin renders navigate to: the configured `console_url`,
+/// else the ADE's own address from `console::status`. Never a guessed port:
+/// on a machine running two projects that would drive the other one's ADE.
+async fn console_origin(ctx: &Ctx) -> Result<String, String> {
+    if let Some(url) = ctx.config().console_url {
+        return Ok(url);
+    }
+    let status = ctx
+        .iii
+        .trigger(TriggerRequest {
+            function_id: "console::status".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(10_000),
+        })
+        .await
+        .map_err(|e| e.to_string());
+    origin_from_status(status)
+}
+
+/// `url` when the ADE reports one, else the loopback address of its
+/// `http_port`.
+fn origin_from_status(status: Result<Value, String>) -> Result<String, String> {
+    let status = status.map_err(|e| {
+        format!(
+            "console::status unavailable ({e}): is this project's ADE running? \
+             Set console_url only for a console this engine does not run"
+        )
+    })?;
+    if let Some(url) = status.get("url").and_then(Value::as_str) {
+        return Ok(url.to_string());
+    }
+    status
+        .get("http_port")
+        .and_then(Value::as_u64)
+        .map(|port| format!("http://127.0.0.1:{port}"))
+        .ok_or_else(|| {
+            "console::status returned no url or http_port: is this project's ADE running? \
+             Set console_url only for a console this engine does not run"
+                .to_string()
+        })
+}
+
 pub async fn render(ctx: &Ctx, req: RenderRequest<'_>) -> Result<Rendered, String> {
     let hash = render_hash(&req);
     let dir = ctx.store.renders_dir(req.workspace).join(&hash);
@@ -154,7 +199,7 @@ pub async fn render(ctx: &Ctx, req: RenderRequest<'_>) -> Result<Rendered, Strin
         )
     })?;
     let url = story_url(
-        &ctx.config().console_url,
+        &console_origin(ctx).await?,
         req.workspace,
         req.line_key,
         &html,
@@ -438,9 +483,31 @@ mod tests {
     }
 
     #[test]
+    fn console_origin_comes_from_console_status() {
+        assert_eq!(
+            origin_from_status(Ok(json!({ "url": "http://[::1]:3200", "http_port": 3200 }))),
+            Ok("http://[::1]:3200".to_string())
+        );
+        assert_eq!(
+            origin_from_status(Ok(json!({ "http_port": 3200, "version": "1.9.58" }))),
+            Ok("http://127.0.0.1:3200".to_string())
+        );
+        let error = origin_from_status(Err("function not found".into())).unwrap_err();
+        assert!(
+            error.contains("console_url") && !error.contains("3113"),
+            "{error}"
+        );
+        let error = origin_from_status(Ok(json!({}))).unwrap_err();
+        assert!(
+            error.contains("console_url") && !error.contains("3113"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn story_urls_encode_args_as_base64url() {
         let url = story_url(
-            "http://127.0.0.1:3113/",
+            "http://127.0.0.1:3200/",
             "ws",
             "worktree",
             "app/x.html",
@@ -449,7 +516,7 @@ mod tests {
             &json!({}),
             true,
         );
-        assert!(url.starts_with("http://127.0.0.1:3113/ui-files/stories/ws/worktree/app/x.html?story=ui-button--primary&args="));
+        assert!(url.starts_with("http://127.0.0.1:3200/ui-files/stories/ws/worktree/app/x.html?story=ui-button--primary&args="));
         assert!(url.ends_with("&deterministic=1"));
         let args = url
             .split("&args=")

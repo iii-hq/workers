@@ -135,7 +135,8 @@ describe('the log', () => {
         '--parents',
       ]),
     )
-    expect(args.slice(-2)).toEqual(['--', 'a/b'])
+    // Repository paths, read from the top whichever folder git runs in.
+    expect(args.slice(-2)).toEqual(['--', ':(top,literal)a/b'])
     expect(logArgs({ text: 'a.b', regex: true, caseSensitive: true }, 0, 1)).toEqual(
       expect.arrayContaining(['--extended-regexp']),
     )

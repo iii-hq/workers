@@ -126,7 +126,7 @@ pub struct PipeResponse {
 /// byte-identical, or a function the harness stamps but fp doesn't (or vice
 /// versa) becomes a scope gap. `shell::filesystem::*` is the unscoped
 /// control plane on both sides.
-fn is_scoped_step(function_id: &str) -> bool {
+pub(crate) fn is_scoped_step(function_id: &str) -> bool {
     (function_id.starts_with("shell::") && !function_id.starts_with("shell::filesystem::"))
         || function_id.starts_with("coder::")
 }
@@ -142,7 +142,10 @@ fn is_scoped_step(function_id: &str) -> bool {
 /// pipe must stay needs_approval. Residual, accepted: an rbac boundary that
 /// exposes fp::pipe while denying shell::* could launder a scope through a
 /// non-harness call; shell-side caller verification is tracked follow-up.
-fn forbidden_step(function_id: &str, approval_gate_running: bool) -> Option<&'static str> {
+pub(crate) fn forbidden_step(
+    function_id: &str,
+    approval_gate_running: bool,
+) -> Option<&'static str> {
     // Private accessors validate their scope, not the caller. A pipe must not
     // turn an agent's request into a privileged read or namespace claim.
     if function_id == "state::claim-namespace"
@@ -152,13 +155,20 @@ fn forbidden_step(function_id: &str, approval_gate_running: bool) -> Option<&'st
     }
     // Shell control-plane ids sit inside the scoped shell::* prefix but are
     // NOT session tools: config-status is agent-policy hard-denied (it can
-    // surface operator paths) and workspace::* is console picker plumbing —
-    // both ignore fs_scope, so the stamp gate below would admit them.
-    if function_id == "shell::config-status" || function_id.starts_with("shell::workspace::") {
+    // surface operator paths), kill-session-jobs is the harness::stop sweep
+    // (it reaps any session's jobs) and workspace::* is console picker
+    // plumbing — all ignore fs_scope, so the stamp gate below would admit them.
+    if function_id == "shell::config-status"
+        || function_id == "shell::kill-session-jobs"
+        || function_id.starts_with("shell::workspace::")
+    {
         return Some(
             "shell control-plane functions are not supported in a pipe — steps run with \
              worker authority, which would bypass the agent-level deny on them",
         );
+    }
+    if function_id == crate::batch::BATCH_ID {
+        return Some("a batch is not a pipe step — call fp::batch directly");
     }
     if function_id == PIPE_ID {
         return Some(
@@ -201,6 +211,8 @@ fn forbidden_step(function_id: &str, approval_gate_running: bool) -> Option<&'st
              worker authority, which would bypass the agent-level deny on them",
         );
     }
+    // `stream::*` is the deprecated iii-stream surface. Engines still host it,
+    // so keep refusing it here until the builtin is removed.
     if function_id.starts_with("stream::")
         || function_id.starts_with("hook-fanout::")
         || function_id.starts_with("iii::")
@@ -292,7 +304,7 @@ pub fn validate(req: &PipeRequest) -> Result<(), String> {
     validate_with_approval_gate(req, true)
 }
 
-async fn approval_gate_running(iii: &IIIClient) -> Result<bool, String> {
+pub(crate) async fn approval_gate_running(iii: &IIIClient) -> Result<bool, String> {
     // Presence must come from a signal RBAC cannot turn into a false
     // "absent": `functions::list` rows are RBAC-filtered per session, so a
     // gate hidden from THIS worker's session reads as unregistered and
@@ -371,7 +383,7 @@ fn inject(payload: Value, pointer: &str, value: Value) -> Result<Value, String> 
 /// on a scoped step (full key replace: subkeys can't survive either).
 /// Non-scoped steps pass through untouched — the scope must not leak to
 /// arbitrary workers.
-fn bus_step_args(
+pub(crate) fn bus_step_args(
     function_id: &str,
     args: Value,
     fs_scope: Option<&Value>,
@@ -398,7 +410,7 @@ fn preview_len(requested: Option<u32>) -> usize {
         .min(MAX_PREVIEW_CHARS)
 }
 
-fn chars_of(value: &Value) -> usize {
+pub(crate) fn chars_of(value: &Value) -> usize {
     match value {
         Value::String(s) => s.chars().count(),
         other => other.to_string().chars().count(),
@@ -643,6 +655,7 @@ mod tests {
         // (iii-permissions.yaml), state::* excepted on purpose
         for (function, needle) in [
             ("shell::config-status", "control-plane"),
+            ("shell::kill-session-jobs", "control-plane"),
             ("shell::workspace::roots", "control-plane"),
             ("fp::pipe", "nest"),
             ("engine::register_trigger", "trigger control"),

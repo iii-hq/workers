@@ -83,11 +83,12 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
 
     if wt.is_dir() && repo_available {
         if !req.force {
-            // All three probes are read-only, so they run concurrently.
-            let (st, ahead_behind, busy) = tokio::join!(
+            // Run the Git probes together, then wait for their processes to
+            // exit before checking for open files: lsof would otherwise see
+            // our own Git commands' cwd and reject an idle worktree as busy.
+            let (st, ahead_behind) = tokio::join!(
                 ops::status(wt, t),
                 ops::ahead_behind(wt, &record.base_sha, t),
-                crate::trash::dir_in_use(wt),
             );
             if !st?.clean() {
                 return Err(WError::new(
@@ -109,7 +110,7 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
                     ),
                 ));
             }
-            if busy == Some(true) {
+            if crate::trash::dir_in_use(wt).await == Some(true) {
                 return Err(WError::new(
                     codes::WORKTREE_BUSY,
                     format!(

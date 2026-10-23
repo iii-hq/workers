@@ -14,6 +14,7 @@ import tokenNames from '@iii-dev/console-ui/token-names'
 import sharedUiClasses from '@iii-dev/console-ui/ui-classes'
 import { DirectoryPicker } from '@/components/chat/DirectoryPicker'
 import { ModelPicker } from '@/components/chat/ModelPicker'
+import { SecretKeyField } from '@/components/secrets/SecretKeyField'
 import { ActionLine, MetaRow } from '@/components/ui/ActivityMetadata'
 import { AnnotationLayer, AnnotationList } from '@/components/ui/Annotations'
 import { AnsiText } from '@/components/ui/AnsiText'
@@ -131,6 +132,7 @@ import type { IiiClient } from '@/lib/iii-client'
 import { Markdown } from '@/lib/markdown'
 import { CodeHighlight, JsonHighlight } from '@/lib/syntax'
 import { WorkerConfigurationDialog } from '@/pages/Workers/components/WorkerConfigurationDialog'
+import { WorkerConfigurationPanel } from '@/pages/Workers/components/WorkerConfigurationPanel'
 import type { ConsoleApi, ExtensionIii } from '@/types/injectable-ui'
 
 /**
@@ -247,10 +249,12 @@ export const components: ConsoleApi['components'] = {
   Markdown,
   MarkdownPreview,
   ModelPicker,
+  SecretKeyField,
   // Compatibility bridge for older worker bundles. New pages set
   // `configurationId`; the Console supplies the PageHeader action and opens
   // the worker inside global Settings.
   WorkerConfigurationDialog,
+  WorkerConfigurationPanel,
   DirectoryPicker,
   Wordmark,
 }

@@ -2,8 +2,8 @@
 name: pi
 description: >-
   Run pi coding-agent turns over the iii bus — headless with `pi::run`, or as
-  a terminal page on the console a person types into — with verbatim event
-  streaming, session resume, and live steering.
+  a terminal page on the console a person types into — with a verbatim event
+  feed, session resume, and live steering.
 ---
 
 # pi
@@ -12,9 +12,10 @@ The pi worker exposes the Pi coding-agent API as iii functions. One `pi::run`
 call executes one headless Pi turn — the same in-process agent loop Pi runs in
 the terminal, with the same tools (read, bash, edit, write) — in a chosen
 working directory, and returns the final result, token usage, and cost. Every
-event Pi emits mirrors untouched onto the `pi::events` stream; a translated
-AgentEvent view lands on `agent::events`, which is what the iii console and the
-acp worker render.
+event Pi emits is published untouched on the `pi::raw-event` trigger type; a
+translated AgentEvent view is published on `pi::agent-event`, which is what the
+iii console and the acp worker render. Bind either with `{ session_id }`; frames
+are live only (not stored or replayed), ordered by `(epoch, seq)`.
 
 Pi runs the loop in-process (no CLI subprocess), so it needs model credentials
 in the worker environment (e.g. `ANTHROPIC_API_KEY`) or an existing Pi login.
@@ -24,7 +25,7 @@ bus instead of bolting anything onto this one.
 The same worker also runs pi as a terminal on the console: `pi::terminal::*`
 installs the CLI on the terminal host, equips a workspace (iii skills, engine
 notes, the iii activity extension), and opens pi in a `shell::pty` session —
-always pi, never a shell. A typed turn lands on `agent::events` in the same
+always pi, never a shell. A typed turn lands on `pi::agent-event` in the same
 shape a headless one does. `claude-code` is the same shape for Claude Code.
 
 ## When to Use
@@ -35,8 +36,8 @@ shape a headless one does. `claude-code` is the same shape for Claude Code.
 - Continue a conversation across calls: pass the same `session_id` again and
   the worker resumes the underlying Pi session file with full context.
 - Run long jobs without holding the call open: `pi::start` returns
-  `{session_id, started}` immediately; follow `pi::events` (group_id =
-  session_id) for raw progress or `agent::events` for the rendered view;
+  `{session_id, started}` immediately; bind `pi::raw-event` with
+  `{ session_id }` for raw progress or `pi::agent-event` for the rendered view;
   interrupt with `pi::stop`.
 - Steer a run while it works: `pi::steer` injects an instruction applied after
   the current tool calls finish; `pi::follow_up` queues a message processed
@@ -58,9 +59,9 @@ shape a headless one does. `claude-code` is the same shape for Claude Code.
 - One turn per session at a time: check `pi::status` (`live: true`) before
   sending another `pi::run` for the same `session_id`; parallel runs against
   one session race on the underlying session file.
-- `agent::events` carries whole-message frames (`message_complete`,
+- `pi::agent-event` carries whole-message frames (`message_complete`,
   `function_execution_start/end`, `turn_end`, `agent_end`); the raw Pi event
-  shapes (including token deltas via `message_update`) live on `pi::events`.
+  shapes (including token deltas via `message_update`) live on `pi::raw-event`.
 
 ## Functions
 
@@ -69,7 +70,7 @@ shape a headless one does. `claude-code` is the same shape for Claude Code.
   `thinking_level`, `tools`, and `iii_context`; returns `{session_id,
   pi_session_id, result, stop_reason, usage, total_cost_usd}`.
 - `pi::start` — same payload, returns `{session_id, started}` immediately;
-  progress arrives on the streams.
+  progress arrives on the event feeds.
 - `pi::steer` — inject a steering instruction into a live run.
 - `pi::follow_up` — queue a follow-up message for a live run.
 - `pi::stop` — interrupt the live run for a session.
@@ -95,4 +96,4 @@ Two boundaries worth knowing: the terminal command is fixed to pi (use the
 `shell` worker for anything else, including `shell::pty::sessions` to see what a
 terminal is doing), and sessions run with `-a` because pi loads its
 project-local extension only in a trusted directory — removing that flag costs
-a trust prompt every session and the activity stream with it.
+a trust prompt every session and the activity feed with it.

@@ -5,9 +5,10 @@ import asyncio
 import pytest
 
 from src import handlers as handlers_mod
+from src.agent_feed import AGENT_EVENT_TYPE, RAW_EVENT_TYPE
 from src.handlers import create_handlers
 from src.iii_prompt import III_CONTEXT_PROMPT
-from tests._helpers.fake_iii import FakeIii, FakeLogger, base_cfg
+from tests._helpers.fake_iii import FakeIii, FakeLogger, base_cfg, consumer_fn
 
 
 def _scripted_run_turn(result: str = "done", *, raises: Exception | None = None):
@@ -27,7 +28,7 @@ def _scripted_run_turn(result: str = "done", *, raises: Exception | None = None)
     return fake, captured
 
 
-def _make(monkeypatch, cfg=None, *, result="done", raises=None, usage=None):
+def _make(monkeypatch, cfg=None, *, result="done", raises=None, usage=None, bind=("s1",)):
     cfg = cfg or base_cfg()
     fake = FakeIii()
     logger = FakeLogger()
@@ -37,6 +38,10 @@ def _make(monkeypatch, cfg=None, *, result="done", raises=None, usage=None):
     # real reader would hit ~/.hermes/state.db). Pass `usage` to exercise it.
     monkeypatch.setattr(handlers_mod.hermes_cli, "read_latest_usage", lambda: usage)
     h = create_handlers(fake, lambda: cfg, logger)
+    # A consumer bound on both feeds for each session the test drives.
+    for session_id in bind:
+        fake.bind(AGENT_EVENT_TYPE, session_id)
+        fake.bind(RAW_EVENT_TYPE, session_id)
     return fake, logger, h, captured
 
 
@@ -65,7 +70,7 @@ def test_run_surfaces_usage_and_cost(monkeypatch):
     assert res["cost_source"] == "official_docs_snapshot"
     # also on the session record and the agent_end frame
     assert fake.state["hermes_sessions/s1"]["total_cost_usd"] == 0.1225
-    end = [f["data"] for f in fake.stream_frames("agent::events") if f["data"]["type"] == "agent_end"][0]
+    end = [e for e in fake.feed_events(AGENT_EVENT_TYPE) if e["type"] == "agent_end"][0]
     assert end["usage"]["output_tokens"] == 2245 and end["total_cost_usd"] == 0.1225
 
 
@@ -88,19 +93,40 @@ def test_run_persists_session_record_done(monkeypatch):
 def test_run_emits_translated_agent_events(monkeypatch):
     fake, _, h, _ = _make(monkeypatch, result="hi")
     asyncio.run(h["run"]({"prompt": "x", "session_id": "s1"}))
-    types = [f["data"]["type"] for f in fake.stream_frames("agent::events")]
-    assert types == ["turn_end", "agent_end"]
-    end = fake.stream_frames("agent::events")[-1]["data"]
-    assert end["messages"][0]["provider"] == "hermes"
-    assert end["messages"][0]["content"][0]["text"] == "hi"
+    events = fake.feed_events(AGENT_EVENT_TYPE)
+    assert [e["type"] for e in events] == ["turn_end", "agent_end"]
+    message = {"role": "assistant", "content": [{"type": "text", "text": "hi"}], "provider": "hermes"}
+    assert events[0] == {"type": "turn_end", "message": message, "function_results": []}
+    assert events[1] == {"type": "agent_end", "messages": [message]}
+    frames = fake.feed_frames(AGENT_EVENT_TYPE)
+    assert all(f["session_id"] == "s1" and f["source"] == "hermes" for f in frames)
 
 
 def test_run_mirrors_raw_result_event(monkeypatch):
     fake, _, h, _ = _make(monkeypatch, result="hi")
     asyncio.run(h["run"]({"prompt": "x", "session_id": "s1"}))
-    raw = fake.stream_frames("hermes::events")
-    assert raw[0]["data"] == {"type": "result", "text": "hi", "is_error": False}
-    assert raw[0]["group_id"] == "s1"
+    raw = fake.feed_frames(RAW_EVENT_TYPE)
+    assert [f["event"] for f in raw] == [{"type": "result", "text": "hi", "is_error": False}]
+    assert raw[0]["session_id"] == "s1"
+
+
+def test_run_emits_raw_frame_before_normalized_frames(monkeypatch):
+    fake, _, h, _ = _make(monkeypatch, result="hi")
+    asyncio.run(h["run"]({"prompt": "x", "session_id": "s1"}))
+    order = [(c["function_id"], c["payload"]["event"]["type"]) for c in fake.void_calls()]
+    assert order == [
+        (consumer_fn(RAW_EVENT_TYPE), "result"),
+        (consumer_fn(AGENT_EVENT_TYPE), "turn_end"),
+        (consumer_fn(AGENT_EVENT_TYPE), "agent_end"),
+    ]
+
+
+def test_run_without_bindings_makes_no_feed_calls(monkeypatch):
+    fake, _, h, _ = _make(monkeypatch, bind=())
+    res = asyncio.run(h["run"]({"prompt": "x", "session_id": "s1"}))
+    assert res["result"] == "done"
+    assert fake.void_calls() == []
+    assert {c["function_id"] for c in fake.calls} == {"state::get", "state::set"}
 
 
 def test_run_prepends_iii_context_on_fresh_session(monkeypatch):
@@ -150,7 +176,7 @@ def test_run_error_envelope_when_cli_raises(monkeypatch):
     assert res["stop_reason"] == "error"
     assert "spawn failed" in res["result"]
     assert fake.state["hermes_sessions/s1"]["status"] == "error"
-    types = [f["data"]["type"] for f in fake.stream_frames("agent::events")]
+    types = [e["type"] for e in fake.feed_events(AGENT_EVENT_TYPE)]
     assert "turn_end" in types and "agent_end" in types
 
 
@@ -163,13 +189,16 @@ def test_run_resume_increments_turns(monkeypatch):
 
 
 def test_run_resumed_turns_emit_distinct_frames(monkeypatch):
-    # Two runs on the same session_id must not collide item_ids (a fixed
-    # per-call seq would make turn 2 overwrite turn 1's stream frames).
-    fake, _, h, _ = _make(monkeypatch)
+    # Two runs on the same session_id must not collide event ids: the per-session
+    # seq keeps counting, so turn 2's frames follow turn 1's.
+    fake, _, h, _ = _make(monkeypatch, bind=("dup",))
     asyncio.run(h["run"]({"prompt": "one", "session_id": "dup"}))
     asyncio.run(h["run"]({"prompt": "two", "session_id": "dup"}))
-    ids = [f["item_id"] for f in fake.stream_frames("agent::events")]
-    assert len(ids) == len(set(ids)), "resumed run reused item_ids"
+    frames = fake.feed_frames(AGENT_EVENT_TYPE)
+    ids = [f["event_id"] for f in frames]
+    assert len(ids) == len(set(ids)) == 4, "resumed run reused event ids"
+    assert [f["seq"] for f in frames] == [0, 1, 2, 3]
+    assert [f["seq"] for f in fake.feed_frames(RAW_EVENT_TYPE)] == [0, 1]
 
 
 def test_run_generates_session_id_when_absent(monkeypatch):

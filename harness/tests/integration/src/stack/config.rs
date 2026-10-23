@@ -43,7 +43,7 @@ workers:
           directory: {config_dir}
   # iii-state deliberately absent: the standalone `state` worker owns the
   # `state` trigger type (its boot guard refuses to start beside the builtin).
-  - name: iii-stream
+  # iii-stream deliberately absent too: nothing in this stack uses streams.
 "#,
         config_dir = layout.configuration_dir().display(),
     )

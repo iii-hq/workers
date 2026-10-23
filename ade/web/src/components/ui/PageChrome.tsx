@@ -102,7 +102,7 @@ export function PageHeader({
         </h1>
       ) : null}
       {description ? (
-        <span className="min-w-0 truncate font-sans text-[12px] text-ink-ghost">
+        <span className="min-w-0 truncate font-sans text-[12px] text-ink-faint">
           {description}
         </span>
       ) : null}

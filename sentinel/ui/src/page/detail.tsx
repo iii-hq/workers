@@ -51,6 +51,7 @@ import {
   spaced,
   stamp,
   statusLook,
+  triageFact,
   versionRange,
 } from './present.js'
 import { GroupTimeline } from './timeline'
@@ -471,6 +472,7 @@ export function GroupDetailView({
           label="Worker version"
           lead={versionRange(group.first_version, group.last_version)}
         />
+        <Fact label="Triage" {...triageFact(group.triage, now)} />
       </dl>
 
       <InvestigateWith

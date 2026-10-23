@@ -5,18 +5,27 @@ import {
   gitCommitChanges,
   gitDiscard,
   gitFileAtRef,
+  gitIgnore,
+  gitLocalPatch,
   gitPush,
   gitRestoreFrom,
+  gitStashApply,
+  gitStashClear,
   gitStashPush,
   gitTags,
   gitUnstage,
+  ignorePattern,
   isIndexLocked,
   LOCK_RETRY_DELAYS_MS,
+  PATCH_UNVERSIONED_LIMIT,
   stashPushArgs,
   statusLetter,
+  withIgnored,
 } from '../git-actions'
 
-function reply(overrides: Partial<{ exit_code: number | null; stdout: string; stderr: string }> = {}) {
+function reply(
+  overrides: Partial<{ exit_code: number | null; stdout: string; stderr: string; stdout_truncated: boolean }> = {},
+) {
   return {
     exit_code: 0,
     stdout: '',
@@ -110,6 +119,14 @@ describe('gitDiscard', () => {
     const results = await gitDiscard(host, '/r', [{ path: 'new.ts', status: 'untracked', staged: false }])
     expect(results[0].error).toBeNull()
     expect(trigger).toHaveBeenCalledWith('coder::delete-file', { paths: ['/r/new.ts'], recursive: false })
+  })
+
+  it('reports a failed call by its handler message', async () => {
+    const { host, trigger } = hostWith()
+    // The bus rejects with the handler's error body, not an Error.
+    trigger.mockRejectedValueOnce({ message: 'handler error: {"code":"C210","message":"path escapes the root"}' })
+    const results = await gitDiscard(host, '/r', [{ path: 'new.ts', status: 'untracked', staged: false }])
+    expect(results).toEqual([{ path: 'new.ts', error: 'C210: path escapes the root' }])
   })
 })
 
@@ -321,5 +338,126 @@ describe('gitRestoreFrom', () => {
     const { host, calls } = hostWith(reply({ stdout: '/r\n' }), reply(), reply())
     await gitRestoreFrom(host, '/r', 'abc1234', ['src/D.ts'])
     expect(calls.map((call) => (call as { args: string[] }).args[0])).toEqual(['rev-parse', 'ls-files', 'ls-files'])
+  })
+})
+
+describe('unstash', () => {
+  it('reinstates the index only when asked', async () => {
+    const { host, calls } = hostWith(reply(), reply())
+    await gitStashApply(host, '/r', 'stash@{0}', false)
+    await gitStashApply(host, '/r', 'stash@{1}', true, true)
+    expect(calls.map((call) => (call as { args: string[] }).args)).toEqual([
+      ['stash', 'apply', 'stash@{0}'],
+      ['stash', 'pop', '--index', 'stash@{1}'],
+    ])
+  })
+
+  it('drops every stash at once', async () => {
+    const { host, calls } = hostWith(reply())
+    await gitStashClear(host, '/r')
+    expect(calls).toEqual([expect.objectContaining({ args: ['stash', 'clear'], cwd: '/r' })])
+  })
+})
+
+describe('a patch of local changes', () => {
+  it('joins the tracked diff against HEAD and each unversioned file whole, root-relative', async () => {
+    const tracked = 'diff --git a/a.ts b/a.ts\n-old\n+new\n'
+    const added = 'diff --git a/new.md b/new.md\nnew file mode 100644\n+hi\n'
+    // `git diff --no-index` exits 1 when the files differ.
+    const { host, calls } = hostWith(reply({ stdout: tracked }), reply({ exit_code: 1, stdout: added }))
+    await expect(gitLocalPatch(host, '/r', ['a.ts'], ['new.md'])).resolves.toBe(tracked + added)
+    const args = calls.map((call) => (call as { args: string[] }).args)
+    expect(args[0]).toEqual(expect.arrayContaining(['diff', 'HEAD', '--relative', '--binary', '--', 'a.ts']))
+    expect(args[1]).toEqual(expect.arrayContaining(['diff', '--no-index', '--binary', '--', '/dev/null', 'new.md']))
+  })
+
+  it("says why it can't, rather than handing back an empty or cut patch", async () => {
+    await expect(gitLocalPatch(hostWith(reply()).host, '/r', ['a.ts'], [])).rejects.toThrow('no changes')
+    await expect(
+      gitLocalPatch(hostWith(reply({ exit_code: 1, stdout: 'x', stdout_truncated: true })).host, '/r', [], ['big.bin']),
+    ).rejects.toThrow('too large')
+    await expect(
+      gitLocalPatch(hostWith(reply({ exit_code: 128, stderr: 'fatal: could not open' })).host, '/r', [], ['x']),
+    ).rejects.toThrow('fatal: could not open')
+    const many = Array.from({ length: PATCH_UNVERSIONED_LIMIT + 1 }, (_, index) => `f${index}`)
+    await expect(gitLocalPatch(hostWith().host, '/r', [], many)).rejects.toThrow('too many')
+  })
+})
+
+describe('.gitignore', () => {
+  it('anchors each path and escapes what git would read as a pattern', () => {
+    expect(ignorePattern('dist/')).toBe('/dist/')
+    expect(ignorePattern('a [1]*?.txt')).toBe('/a \\[1\\]\\*\\?.txt')
+    expect(ignorePattern('#notes ')).toBe('/#notes\\ ')
+  })
+
+  it('adds only the lines it does not list yet, after a final newline', () => {
+    expect(withIgnored('', ['out/'])).toEqual({ content: '/out/\n', added: 1 })
+    expect(withIgnored('node_modules\n/out/', ['out/', 'a.log', 'a.log'])).toEqual({
+      content: 'node_modules\n/out/\n/a.log\n',
+      added: 1,
+    })
+    expect(withIgnored('/a.log\r\n', ['a.log'])).toBeNull()
+  })
+
+  it('keeps the line endings of a CRLF file', () => {
+    expect(withIgnored('node_modules\r\n', ['out/'])).toEqual({ content: 'node_modules\r\n/out/\r\n', added: 1 })
+    expect(withIgnored('a\r\nb', ['out/', 'c'])).toEqual({ content: 'a\r\nb\r\n/out/\r\n/c\r\n', added: 2 })
+  })
+
+  it('creates the file when it is missing and writes against the revision read', async () => {
+    // The bus rejects with the handler's error body, not an Error.
+    const created = hostWith({ results: [{ path: '/r/.gitignore', success: true, bytes_written: 6 }] })
+    created.trigger.mockRejectedValueOnce({
+      message: 'handler error: {"code":"C211","message":"/r/.gitignore: not found or not accessible."}',
+    })
+    await expect(gitIgnore(created.host, '/r', ['out/'])).resolves.toBe(1)
+    expect(created.calls[0]).toEqual({ files: [{ path: '/r/.gitignore', content: '/out/\n', overwrite: true }] })
+
+    const edited = hostWith(
+      { content: 'x\n', mode: 0o644, revision: 'r1' },
+      { results: [{ path: '/r/.gitignore', success: true, bytes_written: 9 }] },
+    )
+    await expect(gitIgnore(edited.host, '/r', ['y'])).resolves.toBe(1)
+    expect(edited.calls[1]).toEqual({
+      files: [{ path: '/r/.gitignore', content: 'x\n/y\n', overwrite: true, mode: '0644', expected_revision: 'r1' }],
+    })
+  })
+
+  it('leaves the file alone when it lists them all, and fails on any other read error', async () => {
+    const listed = hostWith({ content: '/y\n', revision: 'r1' })
+    await expect(gitIgnore(listed.host, '/r', ['y'])).resolves.toBe(0)
+    expect(listed.calls).toHaveLength(1)
+    await expect(gitIgnore(hostWith(new Error('permission denied')).host, '/r', ['y'])).rejects.toThrow('permission')
+  })
+
+  it('never writes over a file it could not read whole as text', async () => {
+    // Writing the partial or mangled content back would lose the rest; a
+    // write would also hit the empty queue and fail as an unexpected call.
+    for (const read of [
+      { content: 'a\n', more_lines: true },
+      { content: 'a\n', is_utf8: false },
+    ]) {
+      const { host, calls } = hostWith(read)
+      await expect(gitIgnore(host, '/r', ['y'])).rejects.toThrow('.gitignore is too large or not text')
+      expect(calls).toHaveLength(1)
+    }
+  })
+
+  it('fails with the error of a write the worker refused', async () => {
+    const { host } = hostWith(
+      { content: 'a\n', revision: 'r1' },
+      {
+        results: [
+          {
+            path: '/r/.gitignore',
+            success: false,
+            bytes_written: 0,
+            error: { code: 'C2xx', message: 'revision mismatch' },
+          },
+        ],
+      },
+    )
+    await expect(gitIgnore(host, '/r', ['y'])).rejects.toThrow('revision mismatch')
   })
 })

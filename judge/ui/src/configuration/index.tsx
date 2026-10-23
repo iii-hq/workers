@@ -15,12 +15,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 /** What the hub uses when the entry stores no provider. */
 export const BUILT_IN_PROVIDER = 'typesafe'
-const PROVIDER_FUNCTION = /^judge-([a-z0-9-]{1,64})::(evaluate|configuration-id)$/
+const PROVIDER_FUNCTION = /^judge-([a-z0-9-]{1,64})::(evaluate|configuration-id|status)$/
 
 export interface RegisteredProvider {
   provider: string
   worker: string
   namespace: string
+  /** It answers `judge-<provider>::status` (a hosted judge saying whether it holds a key). */
+  status: boolean
 }
 interface FunctionsList {
   functions?: { function_id: string; namespace?: string; worker_name?: string }[]
@@ -41,8 +43,10 @@ export async function listProviders(iii: Engine): Promise<RegisteredProvider[]> 
   for (const fn of reply?.functions ?? []) {
     const match = PROVIDER_FUNCTION.exec(fn.function_id)
     if (!match) continue
-    const [, provider] = match
-    if (!seen.has(provider)) seen.set(provider, { provider, worker: fn.worker_name ?? `judge-${provider}`, namespace: fn.namespace ?? '' })
+    const [, provider, surface] = match
+    const entry = seen.get(provider) ?? { provider, worker: fn.worker_name ?? `judge-${provider}`, namespace: fn.namespace ?? '', status: false }
+    if (surface === 'status') entry.status = true
+    seen.set(provider, entry)
   }
   return [...seen.values()].sort((a, b) => a.provider.localeCompare(b.provider))
 }
@@ -168,7 +172,7 @@ export function JudgeRoutingForm({ iii, ...props }: ConfigFormProps & { iii: Eng
             id="judge-cfg-preload_all"
             field="preload_all"
             label="Keep every local provider loaded"
-            description="Local providers (judge-decider, judge-semif, judge-laya) keep their model loaded while they are the default; any other one loads its model on the first request that names it and releases it after 10 idle minutes, so that first request may time out while it loads. On, every local provider keeps its model loaded, so no request waits; each one holds its memory (on a GPU, about 6 GB for decider or SemIf and 1.5 GB for laya). Hosted providers are unaffected."
+            description="Local providers (judge-decider, judge-semif, judge-laya, judge-clef) keep their model loaded while they are the default; any other one loads its model on the first request that names it and releases it after 10 idle minutes, so that first request may time out while it loads. On, every local provider keeps its model loaded, so no request waits; each one holds its memory (on a GPU, about 6 GB for decider or SemIf at its default 16384-token window, 1.3 GB for laya, and for clef about 6 GB at rest and 10 GB during a 16384-token evaluation). All four together need about 18.6 GB: on a 16 GB GPU the driver silently moves part of the last model loaded into system memory and it answers several times slower. Hosted providers are unaffected."
             error={props.errors?.get('/preload_all')}
             renderControl={(controlProps) => (
               <Switch

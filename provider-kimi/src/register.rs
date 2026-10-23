@@ -33,6 +33,14 @@ pub fn declaration() -> ProviderDeclaration {
         }),
         config_schema: None, // the router's default {api_key, api_url, max_tokens}
         supports_model_listing: Some(true),
+        // Starting point for callers that name no model: the current
+        // mid-range model first, then its predecessors (router picks the
+        // first one the live catalog holds).
+        default_models: Some(vec!["kimi-k3".into()]),
+        // Moonshot has no reasoning-effort knob: omit the level.
+        default_thinking_level: None,
+        context_overflow_hint: None,
+        credential_optional: None,
         // No static slice: GET /v1/models is the source of truth, and a
         // refresh fires right after registration (see declare_and_refresh),
         // so the catalog fills from the API within seconds of boot.

@@ -194,10 +194,15 @@ function PackageSource({
         : 'Update and restart all',
     })
     if (ok)
-      await actions.track(`Updating ${declared.name} to ${selector}`, () =>
-        inPlace
-          ? api.setVersions([{ ref: declared.ref, version: selector }])
-          : api.update([`${declared.name}@${selector}`]),
+      await actions.track(
+        `Updating ${declared.name} to ${selector}`,
+        (operationId) =>
+          inPlace
+            ? api.setVersions(
+                [{ ref: declared.ref, version: selector }],
+                operationId,
+              )
+            : api.update([`${declared.name}@${selector}`], operationId),
       )
   }
   const newer = versions
@@ -378,7 +383,8 @@ function PathSource({
     if (ok)
       await actions.track(
         `Pointing ${declared.name} to ${shortPath(path)}`,
-        () => api.edit(declared.name, { worker: `path://${path}` }),
+        (operationId) =>
+          api.edit(declared.name, { worker: `path://${path}` }, operationId),
       )
   }
 

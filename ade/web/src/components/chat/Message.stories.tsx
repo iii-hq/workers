@@ -161,6 +161,28 @@ const triggerNotification: UserMessage = {
   createdAt: 1_785_948_999_879,
 }
 
+const triggerConditionWaiting: SystemMessage = {
+  id: 'e_trigskip_sub_wave_condition_0123456789abcdef0123456789abcdef',
+  role: 'system',
+  kind: 'trigger-fired',
+  tone: 'info',
+  content: 'wave 1 · held by its condition',
+  trigger: {
+    subscription_id: 'sub_wave',
+    trigger_type: 'state',
+    config: { scope: 'run-r1-w1' },
+    target: 'harness::send',
+    label: 'run r1 w1',
+    once: true,
+    retired: false,
+    fires: 0,
+    fired_at: 1_785_949_049_879,
+    outcome: 'skipped',
+    note: '`state::barrier` skipped this fire: barrier `run-r1-w1`: 1/3 arrived, waiting on ["KAN-68", "KAN-69"]',
+  },
+  createdAt: 1_785_949_049_879,
+}
+
 const triggerManuallyRemoved: SystemMessage = {
   id: 'e_trigexpired_sub_manual',
   role: 'system',
@@ -479,6 +501,11 @@ export const TriggerFiredOnceConsumed: Story = {
       },
     }),
   },
+}
+
+export const TriggerConditionWaiting: Story = {
+  name: 'system, trigger fired · condition waiting (barrier not complete)',
+  args: { message: triggerConditionWaiting },
 }
 
 export const TriggerBindingManuallyRemoved: Story = {

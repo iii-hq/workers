@@ -716,17 +716,26 @@ pub(crate) async fn invoke_target_classified(
     function_id: &str,
     arguments: &Value,
 ) -> (ResultData, bool) {
-    if let Some(denied) = project_wide_compose_denial(function_id, arguments) {
+    let (arguments, start_note) = match scaffold_start_gate(function_id, arguments, policy) {
+        StartGate::Pass => (arguments.clone(), None),
+        StartGate::Deny(denied) => return (denied, false),
+        StartGate::FilesOnly(arguments, note) => (arguments, Some(note)),
+    };
+    if let Some(denied) = project_wide_compose_denial(function_id, &arguments) {
         return (denied, false);
     }
-    match engine.dispatch(function_id, arguments.clone()).await {
+    match engine.dispatch(function_id, arguments).await {
         Ok(mut value) => {
             if function_id == "engine::functions::list" {
                 post_filter_discovery(&mut value, policy);
             } else if function_id == "engine::functions::info" {
                 post_filter_info(&mut value, policy);
             }
-            (normalized_result(value), false)
+            let mut result = normalized_result(value);
+            if let Some(note) = start_note {
+                result.content.push(ContentBlock::text(note));
+            }
+            (result, false)
         }
         Err(e) => {
             let outcome_unknown = e.outcome_unknown;
@@ -829,6 +838,71 @@ pub(crate) fn project_wide_compose_denial(
     ))
 }
 
+/// What the turn does with a `coder::scaffold-worker` call, whose `start`
+/// (default true) has the ide run compose::add under its own permissions,
+/// in its own stack.
+pub(crate) enum StartGate {
+    Pass,
+    /// An explicit `start: true` this session cannot have.
+    Deny(ResultData),
+    /// No `start` given and this session cannot start: the call goes with
+    /// `start: false`, and the note joins its result.
+    FilesOnly(Value, String),
+}
+
+/// A session may start a scaffold only if it may call compose::add itself:
+/// the flag must not widen its policy. (The ide adds to its own stack, which
+/// compose gives every container it supervises, the harness included, as
+/// the same III_COMPOSE_FILE / III_COMPOSE_NAMESPACE.)
+pub(crate) fn scaffold_start_gate(
+    function_id: &str,
+    arguments: &Value,
+    policy: &CompiledPolicy,
+) -> StartGate {
+    if function_id != crate::clients::engine::SCAFFOLD_WORKER || policy.allows("compose::add") {
+        return StartGate::Pass;
+    }
+    start_refused(
+        arguments,
+        "it runs compose::add, which this session may not call",
+        "Adding it to the stack needs compose::add: ask for it, or for someone who has it to send the compose_add.",
+    )
+}
+
+/// Whether a `coder::scaffold-worker` call would start the worker: `start`
+/// defaults to true.
+pub(crate) fn scaffold_starts(function_id: &str, arguments: &Value) -> bool {
+    function_id == crate::clients::engine::SCAFFOLD_WORKER
+        && arguments.get("start") != Some(&Value::Bool(false))
+}
+
+/// A start this session cannot have: a defaulted one goes files-only, an
+/// explicit one is refused.
+/// `next` is the step that does add the worker, for the agent to take.
+pub(crate) fn start_refused(arguments: &Value, why: &str, next: &str) -> StartGate {
+    match arguments.get("start") {
+        Some(Value::Bool(false)) => StartGate::Pass,
+        None => {
+            let mut files_only = arguments.clone();
+            if let Some(object) = files_only.as_object_mut() {
+                object.insert("start".to_string(), Value::Bool(false));
+            }
+            StartGate::FilesOnly(
+                files_only,
+                format!("[harness] Not started ({why}): only the files were written. {next}"),
+            )
+        }
+        // true, or a value the ide would refuse anyway: never dispatched.
+        Some(_) => StartGate::Deny(invocation_error_result(
+            Some("scaffold_start_denied".to_string()),
+            format!(
+                "coder::scaffold-worker with start: true is refused here: {why}. Call it with \
+                 start: false to write the files only. {next}"
+            ),
+        )),
+    }
+}
+
 pub(crate) fn invocation_error_result(code: Option<String>, message: String) -> ResultData {
     ResultData {
         content: vec![ContentBlock::text(message.clone())],
@@ -912,15 +986,75 @@ fn overlay_control_contract(item: &mut Value, id: &str) {
 
 /// The `is_error` result for a policy denial (no allow match or a deny match).
 pub fn denied_result(function_id: &str) -> ResultData {
+    denied_result_with_hint(function_id, None)
+}
+
+/// [`denied_result`] naming the permitted id the model most likely meant
+/// (see [`closest_permitted`]): a mistyped id is denied like a forbidden one,
+/// and without the hint the model reads it as a policy problem.
+pub fn denied_result_with_hint(function_id: &str, did_you_mean: Option<&str>) -> ResultData {
+    let hint = did_you_mean
+        .map(|id| format!(" No registered function has this id; did you mean {id}?"))
+        .unwrap_or_default();
     let msg = format!(
         "function {function_id} is not permitted by this agent's dispatch policy (no allow-glob \
-         match or a deny-glob match)"
+         match or a deny-glob match).{hint} Calling it again will be denied again: use a \
+         permitted function or report the blocker."
     );
     ResultData {
         content: vec![ContentBlock::text(msg.clone())],
         is_error: true,
         details: json!({ "error": "policy_denied", "function_id": function_id, "message": msg }),
     }
+}
+
+/// The permitted, registered id closest to `function_id` when `function_id`
+/// itself is not registered at all — a model retyping a long id (a hashed
+/// worker name) corrupts it. `None` for a real function the policy denies, or
+/// when nothing permitted is within an eighth of the id's length (at least 2)
+/// edits.
+pub fn closest_permitted(
+    function_id: &str,
+    policy: &CompiledPolicy,
+    snapshot: &crate::discovery::FunctionsSnapshot,
+) -> Option<String> {
+    let registered = snapshot.internal_ids.contains(function_id)
+        || snapshot
+            .functions
+            .iter()
+            .any(|f| f.function_id == function_id);
+    if registered {
+        return None;
+    }
+    let limit = (function_id.chars().count() / 8).max(2);
+    snapshot
+        .functions
+        .iter()
+        .map(|f| f.function_id.as_str())
+        .filter(|id| policy.allows(id))
+        .map(|id| (edit_distance(function_id, id), id))
+        .filter(|(distance, _)| *distance <= limit)
+        .min()
+        .map(|(_, id)| id.to_string())
+}
+
+/// Levenshtein distance over chars; ids are short and this runs only on a
+/// denial.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (above + 1)
+                .min(row[j] + 1)
+                .min(diagonal + usize::from(ca != *cb));
+            diagonal = above;
+        }
+    }
+    row[b.len()]
 }
 
 /// The `is_error` result for an `agent_trigger` call with no resolvable
@@ -944,7 +1078,7 @@ pub(crate) fn truncate_chars(s: &str, max: usize) -> String {
 }
 
 pub fn wrapper_without_target_result(arguments: &Value) -> ResultData {
-    let got = arguments_preview(arguments);
+    let got = arguments_preview(&without_salvage_markers(arguments));
     let msg = format!(
         "agent_trigger was called without a usable target (arguments were {got}); expected \
          {{\"function\": \"<function id>\", \"payload\": {{...}}}}. Re-issue the call with the \
@@ -965,37 +1099,82 @@ pub fn arguments_degraded(arguments: &Value) -> bool {
     }
 }
 
-/// Provider-degraded arguments (a stream cut by the output-token limit or
-/// arguments that never formed one valid JSON object, salvaged to a
-/// `"_partial": true` prefix or a raw `{"_raw": …}` evidence object) must
-/// never execute: the salvage preserves evidence for the transcript, not
-/// intent. Teachable local failure, mirroring [`wrapper_without_target_result`].
+/// Provider-degraded arguments (a stream cut by the output-token limit, text
+/// that stopped before the object closed, or text that is not valid JSON,
+/// salvaged to a `"_partial": true` prefix or a raw `{"_raw": …}` evidence
+/// object) must never execute: the salvage preserves evidence for the
+/// transcript, not intent. Teachable local failure, mirroring
+/// [`wrapper_without_target_result`].
 ///
-/// The wording names the real cause. Only an ok `Done` outcome reaches
-/// dispatch (a dead stream goes to transient resume instead), so this is
-/// never a transport failure: either the model ran out of output room
-/// (`stop_reason: length`) or the arguments came back incomplete/invalid.
+/// The wording names the real cause, so the model fixes the right thing:
+/// - `_invalid` (set by the router's salvage, or by `plan_calls` for a
+///   stringified payload) — the JSON has a syntax error, reported with the
+///   parser's message and the text around it. A cut stream alone never sets
+///   it, so it wins over `stop_reason: length`, which is the whole message's
+///   and may belong to another call;
+/// - `stop_reason: length` — the model ran out of output room;
+/// - otherwise — the arguments stopped before the object was complete.
+///
+/// Only an ok `Done` outcome reaches dispatch (a dead stream goes to transient
+/// resume instead), so this is never a transport failure.
 pub fn truncated_arguments_result(
     function_id: &str,
     arguments: &Value,
     stop_reason: crate::types::event::StopReason,
 ) -> ResultData {
-    let got = salvage_preview(arguments);
+    let invalid = arguments
+        .get("_invalid")
+        .filter(|invalid| invalid.is_object());
     let hit_output_limit = stop_reason == crate::types::event::StopReason::Length;
-    let msg = if hit_output_limit {
-        format!(
-            "{function_id} did not run: the model reached its maximum output length before it \
-             finished writing this call's arguments, so they arrived incomplete (received {got}). \
-             Nothing is wrong on the system side; the output was simply too long for one turn. \
-             Produce it in smaller pieces: send this call with a shorter payload and continue in \
-             follow-up calls (for example, create a file with its first part and append the rest \
-             in later calls), or split the work across several smaller calls."
+    let (msg, cause) = if invalid.is_none() && hit_output_limit {
+        let got = salvage_preview(arguments);
+        (
+            format!(
+                "{function_id} did not run: the model reached its maximum output length before \
+                 it finished writing this call's arguments, so they arrived incomplete (received \
+                 {got}). The output was too long for one turn. Produce it in smaller pieces: send \
+                 this call with a shorter payload and continue in follow-up calls (for example, \
+                 create a file with its first part and append the rest in later calls), or split \
+                 the work across several smaller calls."
+            ),
+            "max_output_tokens",
+        )
+    } else if let Some(invalid) = invalid {
+        let error = invalid
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("syntax error");
+        let near = invalid
+            .get("context")
+            .and_then(Value::as_str)
+            .map(|context| truncate_chars(context, PREVIEW_CHARS))
+            .unwrap_or_default();
+        // Text after a complete value has, in every case seen live, been an
+        // object closed too soon with its later fields one level out, not a
+        // stray bracket: deleting the last bracket would keep the wrong shape.
+        let hint = if error.contains("after the root value") {
+            " Text after a complete object usually means an object closed too soon, so the \
+             fields after it landed one level up: check where each object closes, and remove a \
+             bracket only if it is truly extra."
+        } else {
+            ""
+        };
+        (
+            format!(
+                "{function_id} did not run: its arguments are not valid JSON ({error}, near \
+                 `{near}`).{hint} Nothing ran. Re-send the call with every bracket and quote \
+                 balanced; a large edit is easier to get right as several smaller calls."
+            ),
+            "invalid_json",
         )
     } else {
-        format!(
-            "{function_id} did not run: the model ended its turn before this call's arguments \
-             formed one complete, valid JSON object (received {got}). Nothing is wrong on the \
-             system side. Re-issue the call with complete, valid JSON arguments."
+        let got = salvage_preview(arguments);
+        (
+            format!(
+                "{function_id} did not run: its arguments stopped before the JSON object was \
+                 complete (received {got}). Nothing ran. Re-send the complete call."
+            ),
+            "incomplete_json",
         )
     };
     ResultData {
@@ -1003,7 +1182,7 @@ pub fn truncated_arguments_result(
         is_error: true,
         details: json!({
             "error": "arguments_truncated",
-            "cause": if hit_output_limit { "max_output_tokens" } else { "incomplete_json" },
+            "cause": cause,
             "message": msg,
         }),
     }
@@ -1020,12 +1199,15 @@ fn salvage_preview(arguments: &Value) -> String {
     }
 }
 
-/// The salvaged fields without the `_partial`/`_raw`/`_streaming` markers.
+/// The salvaged fields without the `_partial`/`_raw`/`_streaming`/`_invalid`
+/// markers.
 fn without_salvage_markers(arguments: &Value) -> Value {
     match arguments {
         Value::Object(map) => Value::Object(
             map.iter()
-                .filter(|(k, _)| !matches!(k.as_str(), "_partial" | "_raw" | "_streaming"))
+                .filter(|(k, _)| {
+                    !matches!(k.as_str(), "_partial" | "_raw" | "_streaming" | "_invalid")
+                })
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
         ),
@@ -1119,6 +1301,41 @@ mod tests {
             deny: vec![],
             expose: Default::default(),
         }))
+    }
+
+    /// Prevents: `start: true` laundering a compose::add the session's policy
+    /// does not grant through the ide's own permissions.
+    #[test]
+    fn a_starting_scaffold_needs_compose_add() {
+        let id = "coder::scaffold-worker";
+        let explicit = json!({ "template": "worker-node-ade", "name": "orders", "start": true });
+        let default = json!({ "template": "worker-node-ade", "name": "orders" });
+        let opt_out = json!({ "template": "worker-node-ade", "name": "orders", "start": false });
+        let coder_only = pol(&["coder::*"]);
+        let allowed = pol(&["coder::*", "compose::add"]);
+
+        let StartGate::Deny(denied) = scaffold_start_gate(id, &explicit, &coder_only) else {
+            panic!("an explicit start without compose::add must be refused");
+        };
+        assert_eq!(denied.details["error"]["code"], "scaffold_start_denied");
+        // The default start degrades to the files only, with a note.
+        let StartGate::FilesOnly(sent, note) = scaffold_start_gate(id, &default, &coder_only)
+        else {
+            panic!("a defaulted start without compose::add must go files-only");
+        };
+        assert_eq!(sent, opt_out);
+        assert!(note.contains("Not started"), "{note}");
+        for args in [&opt_out, &explicit, &default] {
+            let policy = if args == &opt_out {
+                &coder_only
+            } else {
+                &allowed
+            };
+            assert!(
+                matches!(scaffold_start_gate(id, args, policy), StartGate::Pass),
+                "{args}"
+            );
+        }
     }
 
     /// Prevents: the self-inflicted restart — a project-wide `compose::restart`
@@ -1226,6 +1443,12 @@ mod tests {
         assert!(args.to_string().starts_with(&preview));
         // Both teachable results render without panicking.
         assert!(wrapper_without_target_result(&args).is_error);
+        // Salvage markers stay out of the preview: they would fill it with
+        // text the model did not write.
+        let marked = json!({ "a": 1, "_partial": true, "_invalid": { "error": "e", "offset": 7, "context": "c" } });
+        let no_target = wrapper_without_target_result(&marked);
+        let text = no_target.details["message"].as_str().unwrap();
+        assert!(text.contains("arguments were {\"a\":1})"), "{text}");
         assert!(
             truncated_arguments_result("state::set", &args, crate::types::event::StopReason::End)
                 .is_error
@@ -1259,9 +1482,67 @@ mod tests {
             ContentBlock::Text { text } => text.clone(),
             other => panic!("want text, got {other:?}"),
         };
-        assert!(text.contains("complete, valid JSON"), "{text}");
+        assert!(
+            text.contains("stopped before the JSON object was complete"),
+            "{text}"
+        );
         assert!(!text.contains("maximum output length"), "{text}");
         assert_eq!(bad.details["cause"], "incomplete_json");
+    }
+
+    #[test]
+    fn truncated_arguments_report_a_syntax_error_where_it_happened() {
+        use crate::types::event::StopReason;
+        // What the router's salvage stores for `…"path":"web/App.tsx"}]}`: the
+        // fields that parsed, plus where the text stopped being JSON.
+        let args = json!({
+            "_partial": true,
+            "files": [{ "ops": [{ "op": "replace" }] }],
+            "path": "web/App.tsx",
+            "_invalid": {
+                "error": "unexpected data after the root value",
+                "offset": 61,
+                "context": "\"path\":\"web/App.tsx\"}]}",
+            },
+        });
+        let bad = truncated_arguments_result("coder::update-file", &args, StopReason::End);
+        let text = match &bad.content[0] {
+            ContentBlock::Text { text } => text.clone(),
+            other => panic!("want text, got {other:?}"),
+        };
+        assert!(text.contains("not valid JSON"), "{text}");
+        assert!(
+            text.contains("unexpected data after the root value"),
+            "{text}"
+        );
+        assert!(text.contains(r#"near `"path":"web/App.tsx"}]}`"#), "{text}");
+        assert!(
+            !text.contains("_invalid") && !text.contains("_partial"),
+            "{text}"
+        );
+        assert!(!text.contains("stopped before"), "{text}");
+        assert!(text.contains("closed too soon"), "{text}");
+        assert_eq!(bad.details["cause"], "invalid_json");
+
+        // Any other syntax error gets no closed-too-soon hint.
+        let mut other = args.clone();
+        other["_invalid"]["error"] = json!("expected ',' or '}' in an object");
+        let other = truncated_arguments_result("kanban::project::create", &other, StopReason::End);
+        let ContentBlock::Text { text } = &other.content[0] else {
+            panic!("want text");
+        };
+        assert!(text.contains("expected ',' or '}'"), "{text}");
+        assert!(!text.contains("closed too soon"), "{text}");
+
+        // A syntax error wins over the output limit: `length` is the whole
+        // message's and may belong to another call, and a cut stream alone
+        // never sets `_invalid`.
+        let cut = truncated_arguments_result("coder::update-file", &args, StopReason::Length);
+        assert_eq!(cut.details["cause"], "invalid_json");
+        let mut only_cut = args.clone();
+        only_cut.as_object_mut().unwrap().remove("_invalid");
+        let cut = truncated_arguments_result("coder::update-file", &only_cut, StopReason::Length);
+        assert_eq!(cut.details["cause"], "max_output_tokens");
     }
 
     #[test]
@@ -2566,5 +2847,46 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_mistyped_id_is_denied_with_the_permitted_id_it_resembles() {
+        let exec =
+            "kanban_eval_598997058842fdedec266aaf02880d80b532995d651db57f24d800b6a42eac97::exec";
+        let typo = "kanban_eval_598997058842fdedec266aaf02880d02880d80b532995d651db57f24d800b6a42eac97::exec";
+        let policy = CompiledPolicy::from(Some(&FunctionPolicy {
+            allow: vec![exec.into()],
+            ..Default::default()
+        }));
+        let descriptor = |id: &str| crate::clients::FunctionDescriptor {
+            function_id: id.into(),
+            description: None,
+            parameters: None,
+        };
+        let snapshot =
+            crate::discovery::snapshot_of(vec![descriptor(exec), descriptor("auth::browser")]);
+
+        let hint = closest_permitted(typo, &policy, &snapshot);
+        assert_eq!(hint.as_deref(), Some(exec));
+        let denied = denied_result_with_hint(typo, hint.as_deref());
+        let text = denied.details["message"].as_str().unwrap();
+        assert!(
+            text.contains("not permitted by this agent's dispatch policy"),
+            "{text}"
+        );
+        assert!(text.contains(&format!("did you mean {exec}?")), "{text}");
+        assert!(
+            text.contains("Calling it again will be denied again"),
+            "{text}"
+        );
+
+        // A real function the policy denies gets no suggestion, nor does an
+        // id nothing permitted resembles.
+        assert_eq!(closest_permitted("auth::browser", &policy, &snapshot), None);
+        assert_eq!(closest_permitted("web::fetch", &policy, &snapshot), None);
+        assert!(!denied_result("web::fetch").details["message"]
+            .as_str()
+            .unwrap()
+            .contains("did you mean"));
     }
 }

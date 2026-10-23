@@ -22,8 +22,10 @@ use harness::types::event::StopReason;
 use harness::types::message::{
     empty_assistant, AgentMessage, FunctionResultMessage, FunctionResultRoleTag,
 };
+use harness::types::turn::{ResponseLanguage, TurnRecord};
 use iii_sdk::{register_worker, IIIClient, InitOptions};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 const ROOT: &str = "s_root";
 const CHILD: &str = "s_child";
@@ -3758,12 +3760,24 @@ async fn settled(h: &Harness, evaluation_id: &str, id: &str) -> ReproductionV1 {
 
 /// The Harness's turn record of `turn_id`, with fields beyond the options.
 fn turn_record(turn_id: &str) -> Value {
-    json!({"turn_id": turn_id, "session_id": ROOT, "status": "completed", "step": 7,
-        "turn_count": 3, "options": {"model": "task-model", "provider": "p",
-            "system_prompt": "You are an agent.", "functions": {"expose": "agent_trigger"}},
-        "function_contract_ledger": {"crm::profile": {"generation": 4}},
-        "context_snapshot": {"prompt_surface_digest": "sha256:x",
-            "categories": {"hook_guidance": 0}}})
+    let minimal = json!({
+        "turn_id": turn_id,
+        "session_id": ROOT,
+        "status": "completed",
+        "step": 7,
+        "turn_count": 3,
+        "depth": 0,
+        "options": {
+            "model": "task-model",
+            "provider": "p",
+            "system_prompt": "You are an agent.",
+            "max_turns": 16,
+            "functions": {"expose": "agent_trigger"}
+        },
+        "created_at": 1,
+        "updated_at": 1
+    });
+    serde_json::to_value(serde_json::from_value::<TurnRecord>(minimal).unwrap()).unwrap()
 }
 
 /// An analysis whose suggestion has a replayable decision point, made while
@@ -4027,6 +4041,47 @@ async fn a_replay_sample_without_a_cost_stays_unknown() {
 }
 
 #[tokio::test]
+async fn a_replay_keeps_the_turns_response_language_in_the_tool_schema() {
+    let language = ResponseLanguage {
+        code: "por".into(),
+        name: "Portuguese".into(),
+    };
+    let mut record = turn_record(TURN);
+    record["options"]["response_language"] = serde_json::to_value(&language).unwrap();
+    let (h, evaluation_id) = replayable(World::new(), record).await;
+
+    let preview = reproduce(
+        &h,
+        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "dry_run": true}),
+    )
+    .await
+    .unwrap();
+    assert!(preview.preview.is_some());
+
+    let id = reproduce(
+        &h,
+        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "samples": 1, "by": "ana"}),
+    )
+    .await
+    .unwrap()
+    .reproduction_id
+    .unwrap();
+    let replay = settled(&h, &evaluation_id, &id).await;
+    assert_eq!(
+        replay.state,
+        ReproductionStateV1::Completed,
+        "{:?}",
+        replay.error
+    );
+
+    let expected =
+        serde_json::to_value([harness::policy::agent_trigger_schema(Some(&language))]).unwrap();
+    let calls = h.world().calls_to("router::complete");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["tools"], expected);
+}
+
+#[tokio::test]
 async fn a_failed_replay_sample_is_unknown_not_free() {
     let mut world = World::new();
     world.samples_fail = true;
@@ -4072,6 +4127,40 @@ async fn the_capture_is_the_analyzed_turns_whole_record_even_after_another_turn_
     .preview
     .unwrap();
     assert_eq!(preview.original.signal, Some(true));
+}
+
+#[tokio::test]
+async fn the_capture_hydrates_the_harness_prompt_references() {
+    let (prompt, skills) = (
+        "You are the session's exact agent.",
+        "<available_skills>review</available_skills>",
+    );
+    let digest = |text: &str| format!("sha256:{:x}", Sha256::digest(text.as_bytes()));
+    let (prompt_ref, skills_ref) = (digest(prompt), digest(skills));
+    let mut record = turn_record(TURN);
+    record["options"]["system_prompt"] = json!({"$ref": prompt_ref});
+    record["options"]["skill_context"] = json!({
+        "filter": ["review"],
+        "baseline": {"$ref": skills_ref}
+    });
+    record["future_evidence"] = json!({"kept": true});
+    let mut world = World::new();
+    world.state.insert(
+        ("harness_prompt".into(), prompt_ref),
+        json!({"body": prompt, "created_at": 1}),
+    );
+    world.state.insert(
+        ("harness_prompt".into(), skills_ref),
+        json!({"body": skills, "created_at": 1}),
+    );
+
+    let (h, evaluation_id) = replayable(world, record).await;
+    let capture = h.result(&evaluation_id).await.assets.capture.unwrap();
+    assert_eq!(capture.options["system_prompt"], prompt);
+    assert_eq!(capture.options["skill_context"]["baseline"], skills);
+    let captured_record = capture.record.unwrap();
+    assert_eq!(captured_record["options"], capture.options);
+    assert_eq!(captured_record["future_evidence"], json!({"kept": true}));
 }
 
 #[tokio::test]

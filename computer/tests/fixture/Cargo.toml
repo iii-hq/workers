@@ -1,0 +1,14 @@
+# Accessibility fixture for computer/tests/semantic_live.rs. Its own
+# workspace and lockfile: the GUI stack never enters the worker's build.
+[workspace]
+
+[package]
+name = "computer-a11y-fixture"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+accesskit = "0.25"
+accesskit_winit = "0.34"
+winit = "0.30"

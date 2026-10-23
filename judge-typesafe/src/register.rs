@@ -3,23 +3,31 @@ use crate::{client::JevClient, configuration::SharedConfig};
 use iii_sdk::{errors::Error, IIIClient, RegisterFunction};
 use judge_contract::{
     CancelRequest, CancelResponse, ErrorCode, EvaluateRequest, EvaluateResponse, ModelsRequest,
-    ModelsResponse, Stats,
+    ModelsResponse, ProviderError, Stats, StatusResponse,
 };
+use judge_provider::secrets::{bus_fetch, SecretCache};
 use serde_json::{json, Value};
-#[cfg(feature = "console-ui")]
 use std::sync::Arc;
 
 /// Register evaluation, model listing and caller-scoped cancellation. Provider
 /// handlers snapshot config once and share this client's transport/permits.
 /// A missing key is an ordinary typed error,
 /// so schema capture and worker readiness never require provider credentials.
-pub fn register(iii: &IIIClient, config: SharedConfig, client: JevClient) {
+/// Returns the cache `secret://` keys resolve through; bind it to
+/// `secrets::changed` with [`judge_provider::secrets::register_secret_trigger`].
+pub fn register(iii: &IIIClient, config: SharedConfig, client: JevClient) -> Arc<SecretCache> {
+    let secrets = Arc::new(SecretCache::new(bus_fetch(iii.clone()), "judge-typesafe"));
     let models_config = config.clone();
     let models_client = client.clone();
+    let models_secrets = secrets.clone();
     let cancel_client = client.clone();
+    let evaluate_secrets = secrets.clone();
+    let (status_config, status_client, status_secrets) =
+        (config.clone(), client.clone(), secrets.clone());
     let registration = RegisterFunction::new_async(move |mut payload: Value| {
         let config = config.clone();
         let client = client.clone();
+        let secrets = evaluate_secrets.clone();
         async move {
             let caller = take_caller_id(&mut payload);
             let request = match serde_json::from_value::<EvaluateRequest>(payload) {
@@ -35,10 +43,22 @@ pub fn register(iii: &IIIClient, config: SharedConfig, client: JevClient) {
                 }
             };
             let snapshot = config.read().await.clone();
+            let api_key = match secrets.configured_key(snapshot.api_key.as_deref()).await {
+                Ok(api_key) => api_key,
+                Err(reason) => {
+                    return Ok(EvaluateResponse::Error {
+                        code: ErrorCode::MissingKey,
+                        http_status: None,
+                        provider_error: Some(credential_error(reason)),
+                        retry_after_ms: None,
+                        stats: Stats::default(),
+                    })
+                }
+            };
             Ok::<EvaluateResponse, Error>(
                 client
                     .with_caller_id(caller.as_deref())
-                    .with_api_key(snapshot.api_key.as_deref())
+                    .with_api_key(api_key.as_deref())
                     .with_limits(snapshot.execution_limits())
                     .evaluate(request, &snapshot.model)
                     .await,
@@ -54,6 +74,7 @@ pub fn register(iii: &IIIClient, config: SharedConfig, client: JevClient) {
     let registration = RegisterFunction::new_async(move |mut payload: Value| {
         let config = models_config.clone();
         let client = models_client.clone();
+        let secrets = models_secrets.clone();
         async move {
             let caller = take_caller_id(&mut payload);
             let request = match serde_json::from_value::<ModelsRequest>(payload) {
@@ -69,10 +90,22 @@ pub fn register(iii: &IIIClient, config: SharedConfig, client: JevClient) {
                 }
             };
             let snapshot = config.read().await.clone();
+            let api_key = match secrets.configured_key(snapshot.api_key.as_deref()).await {
+                Ok(api_key) => api_key,
+                Err(reason) => {
+                    return Ok(ModelsResponse::Error {
+                        code: ErrorCode::MissingKey,
+                        http_status: None,
+                        provider_error: Some(credential_error(reason)),
+                        retry_after_ms: None,
+                        stats: Stats::default(),
+                    })
+                }
+            };
             Ok::<ModelsResponse, Error>(
                 client
                     .with_caller_id(caller.as_deref())
-                    .with_api_key(snapshot.api_key.as_deref())
+                    .with_api_key(api_key.as_deref())
                     .with_limits(snapshot.execution_limits())
                     .list_models(request)
                     .await,
@@ -101,6 +134,49 @@ pub fn register(iii: &IIIClient, config: SharedConfig, client: JevClient) {
     let request_schema = serde_json::to_value(schemars::schema_for!(CancelRequest))
         .expect("JEV cancel request schema serializes");
     iii.register_function(crate::CANCEL_ID, registration.request_format(request_schema).description("Signal cancellation of an active evaluation or model listing owned by the calling worker. Returns whether a signal was accepted; does not roll back provider work. Requires the same worker replica as the original call.").metadata(provider_metadata()));
+    // What the Console's judge picker reads to say a chosen judge is not set up.
+    let registration = RegisterFunction::new_async(move |_payload: Value| {
+        let config = status_config.clone();
+        let client = status_client.clone();
+        let secrets = status_secrets.clone();
+        async move {
+            let snapshot = config.read().await.clone();
+            let status = match secrets.configured_key(snapshot.api_key.as_deref()).await {
+                Err(reason) => StatusResponse {
+                    configured: false,
+                    reason: Some(reason),
+                },
+                Ok(api_key) if client.with_api_key(api_key.as_deref()).has_key() => {
+                    StatusResponse {
+                        configured: true,
+                        reason: None,
+                    }
+                }
+                Ok(_) => StatusResponse {
+                    configured: false,
+                    reason: Some(MISSING_KEY.into()),
+                },
+            };
+            Ok::<StatusResponse, Error>(status)
+        }
+    });
+    iii.register_function(crate::STATUS_ID, registration.request_format(json!({"type": "object"})).description("Whether evaluations hold a usable key (api_key, a secret:// reference or TYPESAFE_API_KEY at boot), with the fix when they do not. No network call; never returns the key.").metadata(provider_metadata()));
+    secrets
+}
+
+/// `status` when neither the configuration nor the boot environment holds a key.
+const MISSING_KEY: &str =
+    "no API key: save one in the judge-typesafe settings, or export TYPESAFE_API_KEY in its process and restart it";
+
+/// `missing_key` diagnostics for a configured key that cannot be used (an unresolved
+/// `secret://` reference or an unsupported `scheme://` value): the reason names the
+/// fix, never a value.
+fn credential_error(reason: String) -> ProviderError {
+    ProviderError {
+        detail: None,
+        message: Some(reason),
+        truncated: false,
+    }
 }
 
 /// Callers go through the `judge` hub, which selects the provider and checks

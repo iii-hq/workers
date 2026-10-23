@@ -3,10 +3,16 @@ import { tickState } from '../ChangesTree'
 import { changeRows, changeSummary, defaultOpen, entryPaths, expandableKeys } from '../commit-tree'
 import type { GitComparisonEntry } from '../git'
 import { matchesCommit } from '../HistoryView'
+import { buildChangeTree } from '../scm-view'
 import { isNoModelError, modelLabel } from '../use-commit-message'
 
 // The shared components only exist inside the console; these tests read pure helpers.
 vi.mock('@iii-dev/console-ui', () => ({}))
+// Counted, to see when a group's tree is built again.
+vi.mock('../scm-view', async (original) => {
+  const actual = await original<typeof import('../scm-view')>()
+  return { ...actual, buildChangeTree: vi.fn(actual.buildChangeTree) }
+})
 
 function entry(
   path: string,
@@ -81,6 +87,21 @@ describe('changeRows', () => {
     expect(expandableKeys(groups)).toEqual(['changes', 'changes:a/', 'changes:a/b/'])
     expect(defaultOpen('folder', 'unversioned')).toBe(false)
     expect(defaultOpen('group', 'unversioned')).toBe(true)
+  })
+
+  it("builds a group's tree once per entries array: toggles and Expand all reuse it", () => {
+    const entries = [entry('a/b/c.ts'), entry('a/d.ts')]
+    const groups = [{ id: 'changes' as const, label: 'Changes', entries }]
+    vi.mocked(buildChangeTree).mockClear()
+    changeRows(groups, everythingOpen)
+    changeRows(groups, { byDirectory: true, isOpen: () => false })
+    expandableKeys(groups)
+    expect(buildChangeTree).toHaveBeenCalledTimes(1)
+    // A new status is a new array, and builds again.
+    expect(changeRows([{ ...groups[0], entries: [...entries, entry('a/e.ts')] }], everythingOpen)).toContainEqual(
+      expect.objectContaining({ key: 'changes:a/e.ts' }),
+    )
+    expect(buildChangeTree).toHaveBeenCalledTimes(2)
   })
 })
 

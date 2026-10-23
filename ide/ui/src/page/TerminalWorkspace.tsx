@@ -1,4 +1,5 @@
 import { Toolbar, Tooltip, useConfirm } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { Columns2, Pencil, Plus, Rows2, X } from 'lucide-react'
 import {
   type CSSProperties,
@@ -109,10 +110,6 @@ function activeTab(state: TerminalWorkspaceState) {
   return state.tabs.find((tab) => tab.id === state.activeTabId) ?? null
 }
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
 export async function reconcileTerminalWorkspaceLeases(
   leases: readonly LocalTerminalLease[],
   paneIds: ReadonlySet<string>,
@@ -123,7 +120,7 @@ export async function reconcileTerminalWorkspaceLeases(
     orphans.map(async (lease) => reclaim(lease)),
   )
   return results.flatMap((result) => {
-    if (result.status === 'rejected') return [errorText(result.reason)]
+    if (result.status === 'rejected') return [errorMessage(result.reason)]
     return result.value ? [result.value] : []
   })
 }
@@ -145,7 +142,7 @@ export async function closeTerminalPanes(
   const messages: string[] = []
   results.forEach((result, index) => {
     if (result.status === 'rejected') {
-      messages.push(errorText(result.reason))
+      messages.push(errorMessage(result.reason))
       return
     }
     closed.push(paneIds[index])

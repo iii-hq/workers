@@ -48,7 +48,13 @@ dev sessions).
   carry a non-`disabled` `policy.state`, and declare `/chat/completions`
   among its endpoints. The editor's internal feature models (preview rows
   with no picker category — search, compaction, exec agents) are dropped
-  too. Windows, ceilings, and capability flags come from the listing's
+  too, and so is any row whose prompt limit (`max_prompt_tokens`) is under
+  32,000 tokens: too small for a harness turn (gpt-4o-mini and gpt-3.5-turbo
+  list 12,288). Copilot lists a model beside its dated snapshots under one
+  name (`gpt-4o`, `gpt-4o-2024-11-20`, `gpt-4-o-preview`); a snapshot whose
+  name a plain id also carries is hidden (still callable by id), and twins
+  left over get their suffix in the name, `GPT-4o (2024-11-20)`.
+  Windows, ceilings, and capability flags come from the listing's
   `capabilities` tree; there is no pricing — a subscription meters in
   premium requests, so records carry no per-token cost and
   `usage.cost_usd` stays unset.

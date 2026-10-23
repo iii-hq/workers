@@ -28,6 +28,9 @@ fn configuration_delivery_preserves_compose_and_publishes_identity() {
         "service_error",
         "adapter_error",
         "schema_error",
+        "schema_null",
+        "stored_schema_error",
+        "schema_probe_error",
     ] {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
@@ -89,7 +92,8 @@ async fn exercise_delivery() {
             "other":"${UNCHANGED}",
             "workspace": legacy_layout.clone()
         })),
-        "legacy_null" => Some(Value::Null),
+        "legacy_null" | "schema_null" | "schema_probe_error" => Some(Value::Null),
+        "stored_schema_error" => Some(json!({"http_port":"invalid"})),
         "legacy_false" => Some(json!(false)),
         "legacy_zero" => Some(json!(0)),
         "legacy_empty" => Some(json!("")),
@@ -181,7 +185,19 @@ async fn exercise_delivery() {
                             });
                         }
                     } else if function == "configuration::get" {
-                        if ensure_seen
+                        if !ensure_seen
+                            && matches!(
+                                fixture_scenario.as_str(),
+                                "schema_null" | "stored_schema_error" | "schema_probe_error"
+                            )
+                            && frame["data"]["raw"] != true
+                        {
+                            reply["error"] = json!({"code":"SCHEMA_INVALID","message":"stored value fails schema validation"});
+                        } else if fixture_scenario == "schema_probe_error"
+                            && frame["data"]["raw"] == true
+                        {
+                            reply["error"] = json!({"code":"function_not_found","message":"raw read unavailable"});
+                        } else if ensure_seen
                             && frame["data"]["raw"] == true
                             && fixture_scenario == "legacy_malformed"
                         {
@@ -237,6 +253,32 @@ async fn exercise_delivery() {
         .unwrap();
     let result = ade::configuration::register_console_config(&iii, 3113, "data/ade").await;
     assert_eq!(identity_rx.await.unwrap(), json!({"id":id}));
+    if matches!(
+        scenario.as_str(),
+        "schema_null" | "stored_schema_error" | "schema_probe_error"
+    ) {
+        let snapshot = frames.lock().unwrap();
+        let reads: Vec<_> = snapshot
+            .iter()
+            .filter(|frame| frame["function_id"] == "configuration::get")
+            .map(|frame| frame["data"].clone())
+            .collect();
+        assert_eq!(
+            reads,
+            vec![
+                json!({"id":id}),
+                json!({"id":id}),
+                json!({"id":id}),
+                json!({"id":id,"raw":true}),
+            ]
+        );
+        if scenario != "schema_null" {
+            assert!(result.as_ref().unwrap_err().contains("SCHEMA_INVALID"));
+            assert!(!snapshot
+                .iter()
+                .any(|frame| frame["function_id"] == "configuration::ensure"));
+        }
+    }
     let failed = service_error || scenario.ends_with("error") || scenario == "legacy_malformed";
     if failed {
         result.expect_err("failed initialization must propagate");
@@ -305,6 +347,7 @@ async fn exercise_delivery() {
             scenario.as_str(),
             "stored"
                 | "missing"
+                | "schema_null"
                 | "legacy_stored"
                 | "legacy_missing"
                 | "legacy_null"

@@ -94,45 +94,12 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<PubSubConfig, String> {
 #[path = "../../crates/config-client/src/initialization.rs"]
 mod initialization;
 
-/// `true` for the one error that is a definitive answer rather than a
-/// failure: the configuration worker's uppercase `NOT_FOUND` entry code.
-/// Matched case-SENSITIVELY — the engine's missing-function code is the
-/// lowercase `function_not_found` and a backend lookup failure is
-/// `statement_not_found`; those must propagate as errors instead of being
-/// read as "nothing stored yet", which would seed a default over a stored
-/// operator/override value.
-fn is_not_found(error: &str) -> bool {
-    // Anchor on the SDK's own rendering instead of scanning the whole string:
-    // a remote failure prints as `remote error ({code}): {message}`, and this
-    // worker wraps a retried get as
-    // `configuration::get failed after CONFIG_RETRIES attempts: {err}`. Peel
-    // exactly that one wrapper (never a foreign one or a different attempt
-    // count) and then require the NOT_FOUND envelope at the very start, so a
-    // NOT_FOUND code buried in an unrelated message, a nested envelope, or a
-    // different wrapper stays a real failure and propagates.
-    const RETRY_WRAPPER: &str = "configuration::get failed after 3 attempts: ";
-    const _: () = assert!(CONFIG_RETRIES == 3);
-    let raw = error.trim();
-    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
-    raw == "NOT_FOUND"
-        || raw == "remote error (NOT_FOUND):"
-        || raw.starts_with("remote error (NOT_FOUND): ")
-}
-
 /// Return the stored value, distinguishing entry absence from transport or service errors.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(
-        iii,
-        "configuration::get",
-        json!({ "id": config_id() }),
-        CONFIG_BUS_TIMEOUT_MS,
-    )
+    initialization::get_value_with(config_id(), |function, payload| {
+        trigger_configuration_with_retry(iii, function, payload, CONFIG_BUS_TIMEOUT_MS)
+    })
     .await
-    {
-        Ok(resp) => Ok(resp.get("value").cloned()),
-        Err(e) if is_not_found(&e) => Ok(None),
-        Err(e) => Err(e),
-    }
 }
 
 /// Builtin parity (pubsub.rs:545): the effective `(name, config)` pair is the
@@ -286,36 +253,29 @@ mod tests {
         "/../crates/config-client/tests/support/is_not_found_cases.rs"
     ));
 
-    /// The missing-entry classifier only seeds on the configuration worker's
-    /// standalone `NOT_FOUND` envelope; every unrelated failure or compound
-    /// code propagates instead of clobbering a stored value with a default.
+    /// Only a missing entry may select defaults; unrelated service failures propagate.
     #[test]
-    fn is_not_found_matches_only_the_envelope_code() {
-        assert_missing_entry_contract(super::is_not_found);
+    fn shared_reader_matches_only_the_missing_entry_envelope_code() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        assert_missing_entry_contract(|error| {
+            runtime
+                .block_on(initialization::get_value_with(config_id(), |_, _| {
+                    std::future::ready(Err(error.to_string()))
+                }))
+                .is_ok_and(|value| value.is_none())
+        });
     }
 
-    /// A failed lookup must not silently select the default pubsub adapter.
-    #[test]
-    fn missing_entry_detection_does_not_mask_service_failures() {
-        assert!(super::is_not_found("NOT_FOUND"));
-        assert!(super::is_not_found(
-            "remote error (NOT_FOUND): configuration not found"
-        ));
-        assert!(super::is_not_found(
-            "configuration::get failed after 3 attempts: remote error (NOT_FOUND): missing"
-        ));
-        assert!(!super::is_not_found("function_not_found"));
-        assert!(!super::is_not_found("statement_not_found"));
-        assert!(!super::is_not_found("RESOURCE_NOT_FOUND"));
-        assert!(!super::is_not_found(
-            "remote error (ADAPTER_ERROR): NOT_FOUND"
-        ));
-        assert!(!super::is_not_found(
-            "remote error (OTHER): remote error (NOT_FOUND): nested"
-        ));
-        assert!(!super::is_not_found(
-            "configuration::get failed after 3 attempts: function_not_found"
-        ));
+    #[tokio::test]
+    async fn shared_reader_preserves_an_explicit_null_for_fetch_config() {
+        let stored = initialization::get_value_with(config_id(), |function, payload| {
+            assert_eq!(function, "configuration::get");
+            assert_eq!(payload, json!({ "id": config_id() }));
+            std::future::ready(Ok(json!({ "value": null })))
+        })
+        .await
+        .unwrap();
+        assert_eq!(stored, Some(Value::Null));
     }
 
     use super::*;

@@ -9,7 +9,15 @@
 //! drop the socket so every later call fails fast with a clear message rather
 //! than hanging; logical failures (`success: false`) surface as errors but
 //! keep the connection.
+//!
+//! The wire's `screenshot` takes no capture parameters, so frames are fitted
+//! here, as the native driver fits its own: decoded, downscaled to
+//! `max_dimension` and re-encoded as JPEG at `jpeg_quality`. Coordinates come
+//! in the screenshot's pixels and go out scaled back to the guest's. An idle
+//! desktop sends the same bytes capture after capture, so the last frame's fit
+//! is kept and reused while the guest's bytes do not change.
 
+use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -23,7 +31,7 @@ use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
-use super::{Driver, Screen, Shot};
+use super::{encode_jpeg, target_dims, Driver, Screen, Shot};
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -31,6 +39,13 @@ pub struct RemoteClient {
     endpoint: String,
     socket: Mutex<Option<Socket>>,
     command_timeout: Duration,
+    max_dimension: u32,
+    jpeg_quality: u8,
+    /// Guest pixels per screenshot pixel, from the last capture (or
+    /// `screen_size`); 1:1 until either has run.
+    scale: StdMutex<(f64, f64)>,
+    /// The last guest frame as the wire sent it (base64), and its fit.
+    last: StdMutex<Option<(String, Fitted)>>,
 }
 
 impl RemoteClient {
@@ -41,6 +56,8 @@ impl RemoteClient {
         endpoint: &str,
         connect_timeout_ms: u64,
         command_timeout_ms: u64,
+        max_dimension: u32,
+        jpeg_quality: u8,
     ) -> Result<Self, String> {
         let url = ws_url(endpoint)?;
         let (socket, _resp) = timeout(
@@ -54,7 +71,28 @@ impl RemoteClient {
             endpoint: url,
             socket: Mutex::new(Some(socket)),
             command_timeout: Duration::from_millis(command_timeout_ms),
+            // The native driver's floors: a smaller frame is unreadable.
+            max_dimension: max_dimension.max(320),
+            jpeg_quality: jpeg_quality.clamp(1, 100),
+            scale: StdMutex::new((1.0, 1.0)),
+            last: StdMutex::new(None),
         })
+    }
+
+    fn set_scale(&self, guest: (u32, u32), shot: (u32, u32)) {
+        *self.scale.lock().unwrap_or_else(|e| e.into_inner()) = (
+            guest.0 as f64 / shot.0.max(1) as f64,
+            guest.1 as f64 / shot.1.max(1) as f64,
+        );
+    }
+
+    /// A screenshot coordinate in the guest's pixels.
+    fn at(&self, x: i64, y: i64) -> (i64, i64) {
+        let (sx, sy) = *self.scale.lock().unwrap_or_else(|e| e.into_inner());
+        (
+            (x as f64 * sx).round() as i64,
+            (y as f64 * sy).round() as i64,
+        )
     }
 
     pub fn endpoint(&self) -> &str {
@@ -132,6 +170,27 @@ impl RemoteClient {
     }
 }
 
+/// A guest frame fitted to `max_dim` and re-encoded as JPEG.
+struct Fitted {
+    jpeg: Vec<u8>,
+    /// The guest's own frame size.
+    guest: (u32, u32),
+    /// The size sent on, what the model's coordinates are in.
+    shot: (u32, u32),
+}
+
+fn fit(bytes: &[u8], max_dim: u32, quality: u8) -> Result<Fitted, String> {
+    let img = image::load_from_memory(bytes)
+        .map_err(|e| format!("screenshot: undecodable image: {e}"))?;
+    let guest = (img.width(), img.height());
+    let shot = target_dims(guest.0, guest.1, max_dim);
+    Ok(Fitted {
+        jpeg: encode_jpeg(img, shot.0, shot.1, quality)?,
+        guest,
+        shot,
+    })
+}
+
 /// Whether a failed command left the socket usable. Transport failures drop the
 /// connection; logical `success:false` failures keep it.
 enum CommandError {
@@ -173,48 +232,69 @@ impl Driver for RemoteClient {
             .get("height")
             .and_then(Value::as_u64)
             .ok_or("get_screen_size: reply missing height")?;
+        // The size the model sees: screenshots are fitted the same way.
+        let guest = (width as u32, height as u32);
+        let (tw, th) = target_dims(guest.0, guest.1, self.max_dimension);
+        self.set_scale(guest, (tw, th));
         Ok(Screen {
-            width: width as u32,
-            height: height as u32,
+            width: tw,
+            height: th,
         })
     }
 
     async fn screenshot(&self) -> Result<Shot, String> {
-        let v = self.command("screenshot", json!({})).await?;
-        let b64 = v
-            .get("image_data")
-            .and_then(Value::as_str)
-            .ok_or("screenshot: reply missing image_data")?;
+        let mut v = self.command("screenshot", json!({})).await?;
+        let Some(Value::String(b64)) = v.get_mut("image_data").map(Value::take) else {
+            return Err("screenshot: reply missing image_data".to_string());
+        };
+        if let Some((wire, fitted)) = &*self.last.lock().unwrap_or_else(|e| e.into_inner()) {
+            if *wire == b64 {
+                self.set_scale(fitted.guest, fitted.shot);
+                return Ok(Shot::new(fitted.jpeg.clone()));
+            }
+        }
         let bytes = STANDARD
-            .decode(b64)
+            .decode(&b64)
             .map_err(|e| format!("screenshot: invalid base64: {e}"))?;
         if bytes.is_empty() {
             return Err("screenshot: driver returned an empty image".to_string());
         }
-        Ok(Shot::new(bytes))
+        let (max_dim, quality) = (self.max_dimension, self.jpeg_quality);
+        let fitted = tokio::task::spawn_blocking(move || fit(&bytes, max_dim, quality))
+            .await
+            .map_err(|e| format!("screenshot: encode task failed: {e}"))??;
+        self.set_scale(fitted.guest, fitted.shot);
+        let shot = Shot::new(fitted.jpeg.clone());
+        *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some((b64, fitted));
+        Ok(shot)
     }
 
     async fn left_click(&self, x: i64, y: i64) -> Result<(), String> {
+        let (x, y) = self.at(x, y);
         self.command_ok("left_click", json!({ "x": x, "y": y }))
             .await
     }
 
     async fn right_click(&self, x: i64, y: i64) -> Result<(), String> {
+        let (x, y) = self.at(x, y);
         self.command_ok("right_click", json!({ "x": x, "y": y }))
             .await
     }
 
     async fn double_click(&self, x: i64, y: i64) -> Result<(), String> {
+        let (x, y) = self.at(x, y);
         self.command_ok("double_click", json!({ "x": x, "y": y }))
             .await
     }
 
     async fn move_cursor(&self, x: i64, y: i64) -> Result<(), String> {
+        let (x, y) = self.at(x, y);
         self.command_ok("move_cursor", json!({ "x": x, "y": y }))
             .await
     }
 
     async fn scroll(&self, x: i64, y: i64, scroll_x: i64, scroll_y: i64) -> Result<(), String> {
+        let (x, y) = self.at(x, y);
         self.command_ok(
             "scroll",
             json!({ "x": x, "y": y, "scroll_x": scroll_x, "scroll_y": scroll_y }),
@@ -223,6 +303,7 @@ impl Driver for RemoteClient {
     }
 
     async fn drag(&self, from: (i64, i64), to: (i64, i64), button: &str) -> Result<(), String> {
+        let (from, to) = (self.at(from.0, from.1), self.at(to.0, to.1));
         self.command_ok(
             "drag",
             json!({ "path": [[from.0, from.1], [to.0, to.1]], "button": button }),
@@ -236,11 +317,6 @@ impl Driver for RemoteClient {
 
     async fn keypress(&self, keys: &[String]) -> Result<(), String> {
         self.command_ok("hotkey", json!({ "keys": keys })).await
-    }
-
-    async fn accessibility_tree(&self) -> Result<serde_json::Value, String> {
-        let v = self.command("get_accessibility_tree", json!({})).await?;
-        Ok(v.get("tree").cloned().unwrap_or(v))
     }
 
     async fn close(&self) -> Result<(), String> {
@@ -319,5 +395,111 @@ mod tests {
     #[test]
     fn parse_reply_rejects_invalid_json() {
         assert!(parse_reply("x", "not json").is_err());
+    }
+
+    /// A guest executor on a loopback port: a 2560x1600 desktop whose
+    /// screenshots are PNGs of `frames`' sizes in turn (the last repeats);
+    /// every pointer command's params are recorded.
+    async fn fake_guest(
+        frames: &[(u32, u32)],
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<Value>>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let mut shots: Vec<String> = frames
+            .iter()
+            .map(|&(w, h)| {
+                let mut png = Vec::new();
+                image::DynamicImage::ImageRgba8(image::RgbaImage::new(w, h))
+                    .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                    .unwrap();
+                STANDARD.encode(png)
+            })
+            .collect();
+        shots.reverse();
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            while let Some(Ok(Message::Text(text))) = ws.next().await {
+                let frame: Value = serde_json::from_str(&text).unwrap();
+                let reply = match frame["command"].as_str() {
+                    Some("get_screen_size") => {
+                        json!({ "success": true, "size": { "width": 2560, "height": 1600 } })
+                    }
+                    Some("screenshot") => {
+                        let shot = if shots.len() > 1 {
+                            shots.pop().unwrap()
+                        } else {
+                            shots[0].clone()
+                        };
+                        json!({ "success": true, "image_data": shot })
+                    }
+                    _ => {
+                        log.lock().unwrap().push(
+                            json!({ "command": frame["command"], "params": frame["params"] }),
+                        );
+                        json!({ "success": true })
+                    }
+                };
+                ws.send(Message::text(reply.to_string())).await.unwrap();
+            }
+        });
+        (addr, seen)
+    }
+
+    #[tokio::test]
+    async fn guest_frames_are_fitted_and_coordinates_scaled_back() {
+        let (addr, seen) = fake_guest(&[(2560, 1600)]).await;
+        let client = RemoteClient::connect(&addr, 2_000, 2_000, 1280, 60)
+            .await
+            .unwrap();
+
+        let screen = client.screen_size().await.unwrap();
+        assert_eq!(
+            (screen.width, screen.height),
+            (1280, 800),
+            "the size the model sees"
+        );
+        let shot = client.screenshot().await.unwrap();
+        assert_eq!(shot.mime, "image/jpeg");
+        let back = image::load_from_memory(&shot.bytes).unwrap();
+        assert_eq!((back.width(), back.height()), (1280, 800));
+
+        client.left_click(100, 50).await.unwrap();
+        client.drag((10, 10), (640, 400), "left").await.unwrap();
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(
+            seen[0],
+            json!({ "command": "left_click", "params": { "x": 200, "y": 100 } })
+        );
+        assert_eq!(seen[1]["params"]["path"], json!([[20, 20], [1280, 800]]));
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_guest_frame_reuses_its_fit_and_a_new_one_is_fitted_again() {
+        let (addr, seen) = fake_guest(&[(2560, 1600), (2560, 1600), (1920, 1080)]).await;
+        let client = RemoteClient::connect(&addr, 2_000, 2_000, 1280, 60)
+            .await
+            .unwrap();
+
+        client.screenshot().await.unwrap();
+        // A refit of the same frame would give the same bytes too: mark the
+        // cached fit so only a reuse can return it.
+        if let Some((_, fitted)) = &mut *client.last.lock().unwrap() {
+            fitted.jpeg = b"cached".to_vec();
+        }
+        let again = client.screenshot().await.unwrap();
+        assert_eq!(again.bytes, b"cached");
+        client.left_click(100, 50).await.unwrap();
+
+        let resized = client.screenshot().await.unwrap();
+        let back = image::load_from_memory(&resized.bytes).unwrap();
+        assert_eq!((back.width(), back.height()), (1280, 720));
+        client.left_click(100, 50).await.unwrap();
+
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen[0]["params"], json!({ "x": 200, "y": 100 }));
+        assert_eq!(seen[1]["params"], json!({ "x": 150, "y": 75 }));
     }
 }

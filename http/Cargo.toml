@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-http"
-version = "0.22.2"
+version = "0.22.7"
 edition = "2021"
 description = "HTTP server worker for iii — exposes functions as HTTP endpoints (http trigger type)"
 license = "Apache-2.0"
@@ -18,15 +18,15 @@ name = "http"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.22.1-alpha.25"
+iii-sdk = "=0.25.0"
 # Direct dep for W3C trace-context propagation helpers
 # (`observability::extract_context` + the re-exported `opentelemetry` crate).
 # Pinned to the version `iii-sdk` already resolves so the `opentelemetry` types
 # line up across both crates.
-iii-helpers = "=0.22.1-alpha.25"
+iii-helpers = "=0.25.0"
 # W3C trace-context parent propagation on `tracing::Span` (`OpenTelemetrySpanExt`).
-# 0.32 pairs with opentelemetry 0.31 (same as the engine).
-tracing-opentelemetry = "0.32"
+# 0.33 pairs with opentelemetry 0.32 (same as iii-sdk 0.25.0).
+tracing-opentelemetry = "0.33"
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }
@@ -54,5 +54,5 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 serial_test = "3"
 # trace-context propagation e2e: an in-memory OTel exporter + tracing bridge so
 # the test can observe `set_parent`/`add_event` output on the HTTP span.
-opentelemetry = "0.31"
-opentelemetry_sdk = { version = "0.31", features = ["testing"] }
+opentelemetry = "0.32"
+opentelemetry_sdk = { version = "0.32", features = ["testing"] }

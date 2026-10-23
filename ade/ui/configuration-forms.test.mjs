@@ -188,6 +188,15 @@ test('ide declares commit-message controls: a model with its thinking level, and
   }
 })
 
+test('harness declares the co-author switch, on by default like the Rust default', async () => {
+  const manifest = await loadManifest()
+  const harness = manifest.workerConfigurationSpecs.get('harness')
+  const field = harness.sections.flatMap((section) => section.fields).find((f) => f.path.join('.') === 'co_author')
+  assert.equal(field?.kind, 'switch')
+  assert.equal(field.defaultValue, true)
+  assert.ok(harness.expectedFields.includes('co_author'))
+})
+
 test('a model field declares its thinking sibling as a second leaf, and only when it has one', async () => {
   const manifest = await loadManifest()
   const helpers = await loadSpecHelpers()
@@ -197,6 +206,146 @@ test('a model field declares its thinking sibling as a second leaf, and only whe
     ['a.b.effort', 'a.b.model'],
   )
   assert.deepEqual(manifest.declaredFields(specOf(helpers.model('model', 'Model'))), ['model'])
+})
+
+async function loadModule(entry) {
+  const result = await esbuild.build({
+    entryPoints: [entry],
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    write: false,
+    logLevel: 'silent',
+  })
+  const source = result.outputFiles[0].text
+  return import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
+}
+
+test('iii-sandbox custom images become choices that show the OCI ref; presets are not desktops', async () => {
+  const { sandboxCatalogChoices } = await loadModule('src/configuration-forms/specs/sandbox-catalog.ts')
+  assert.deepEqual(
+    sandboxCatalogChoices({
+      images: [
+        { kind: 'preset', name: 'python', oci_ref: 'docker.io/iiidev/python:latest' },
+        { kind: 'custom', name: ' desktop ', oci_ref: 'ghcr.io/trycua/linux:24.04-slim' },
+        { kind: 'custom', name: 'bare' },
+        { name: '   ' },
+        null,
+      ],
+    }),
+    [
+      { value: 'desktop', label: 'desktop — ghcr.io/trycua/linux:24.04-slim' },
+      { value: 'bare', label: 'bare' },
+    ],
+  )
+  for (const unreadable of [undefined, null, {}, { images: 'nope' }, 'nope']) {
+    assert.deepEqual(sandboxCatalogChoices(unreadable), [])
+  }
+})
+
+test('remote choices follow the static ones and never hide the stored value', async () => {
+  const { mergeChoices } = await loadModule('src/configuration-forms/remote-choices.ts')
+  const fixed = [{ value: 'a', label: 'A' }]
+  const remote = [
+    { value: 'a', label: 'A again' },
+    { value: 'b', label: 'B' },
+  ]
+  assert.deepEqual(mergeChoices(fixed, remote, 'b'), [
+    { value: 'a', label: 'A' },
+    { value: 'b', label: 'B' },
+  ])
+  // The catalog is down or dropped it: the configured value stays selectable.
+  assert.deepEqual(mergeChoices(fixed, [], 'gone'), [
+    { value: 'a', label: 'A' },
+    { value: 'gone', label: 'gone', description: 'Not listed by the running worker' },
+  ])
+  assert.deepEqual(mergeChoices([], [], ''), [])
+  assert.deepEqual(mergeChoices([], [], undefined), [])
+})
+
+test('computer picks its sandbox image from the live catalog and sizes the VM', async () => {
+  const manifest = await loadManifest()
+  const fields = manifest.workerConfigurationSpecs.get('computer').sections.flatMap((section) => section.fields)
+  const byPath = (path) => fields.find((field) => field.path.join('.') === path)
+  const image = byPath('sandbox_image')
+  assert.equal(image.kind, 'select')
+  assert.equal(image.optional, true)
+  assert.equal(image.optionsFrom.functionId, 'sandbox::catalog::list')
+  assert.deepEqual(image.optionsFrom.choices({ images: [{ name: 'desktop', oci_ref: 'r' }] })[0].value, 'desktop')
+  assert.equal(byPath('sandbox_memory_mb').kind, 'number')
+  assert.equal(byPath('sandbox_cpus').kind, 'number')
+})
+
+test('computer picks its judge provider from the judges registered next to the hub in its namespace', async () => {
+  const manifest = await loadManifest()
+  const fields = manifest.workerConfigurationSpecs.get('computer').sections.flatMap((section) => section.fields)
+  const judge = fields.find((field) => field.path.join('.') === 'judge_provider')
+  assert.equal(judge.kind, 'judge-provider')
+  assert.equal(judge.optional, true)
+  assert.equal(judge.owner, 'computer::run')
+
+  const { judgeCatalog, statusProblem, judgeOptions, judgeSetup, operationNote } = await loadModule(
+    'src/configuration-forms/judge-providers.ts',
+  )
+  const row = (function_id, namespace = 'proj') => ({ function_id, namespace, metadata: { internal: true } })
+  const listed = {
+    functions: [
+      row('computer::run'),
+      row('judge::evaluate'),
+      row('judge-typesafe::evaluate'),
+      row('judge-typesafe::status'),
+      row('judge-clef::evaluate'),
+      row('judge-clef::models::list'),
+      // A provider that only registered its status is not one yet; another project's is not ours.
+      row('judge-openai::status'),
+      row('judge-decider::evaluate', 'other'),
+      row('judge::evaluate', 'other'),
+      { function_id: 7 },
+      null,
+    ],
+  }
+  assert.deepEqual(judgeCatalog(listed, 'computer::run'), {
+    namespace: 'proj',
+    hub: true,
+    providers: [
+      { key: 'clef', hosted: false },
+      { key: 'typesafe', hosted: true },
+    ],
+  })
+  // Without the owner registered, the hub's namespace stands in; without either, nothing is usable.
+  assert.equal(judgeCatalog({ functions: [row('judge::evaluate', 'x')] }, 'computer::run').namespace, 'x')
+  for (const unreadable of [undefined, null, {}, { functions: 'nope' }]) {
+    assert.deepEqual(judgeCatalog(unreadable, 'computer::run'), { namespace: '', hub: false, providers: [] })
+  }
+
+  assert.equal(statusProblem({ configured: true }), null)
+  assert.equal(statusProblem({}), null)
+  assert.equal(statusProblem({ configured: false, reason: ' TYPESAFE_API_KEY is not set ' }), 'TYPESAFE_API_KEY is not set')
+  assert.equal(statusProblem({ configured: false }), 'No usable API key')
+
+  const providers = [
+    { key: 'clef', hosted: false, problem: null },
+    { key: 'typesafe', hosted: true, problem: 'TYPESAFE_API_KEY is not set' },
+  ]
+  assert.deepEqual(judgeOptions(providers, 'semif'), [
+    { value: 'clef', label: 'clef', description: 'Local model, loads on first use', disabled: false },
+    { value: 'typesafe', label: 'typesafe', description: 'TYPESAFE_API_KEY is not set', disabled: true },
+    { value: 'semif', label: 'semif', description: 'judge-semif is not installed' },
+  ])
+  assert.equal(judgeOptions(providers, 'clef').length, 2)
+
+  const compose = { projects: [{ namespace: 'proj', containers: [{ container: 'judge', state: 'stopped' }] }] }
+  const usable = judgeCatalog(listed, 'computer::run')
+  assert.equal(judgeSetup(usable, compose), null, 'a registered hub and provider need nothing')
+  assert.deepEqual(judgeSetup({ ...usable, hub: false }, compose), { start: ['judge'], add: [] })
+  assert.deepEqual(judgeSetup({ ...usable, hub: false }, null), { start: [], add: ['judge'] })
+  assert.deepEqual(judgeSetup({ ...usable, providers: [] }, compose), { start: [], add: ['judge-typesafe'] })
+
+  assert.equal(
+    operationNote({ phase: 'installing', completed: 1, total: 3, last_event: { container: 'judge', detail: 'downloading' } }),
+    'installing · judge · downloading · 1 of 3',
+  )
+  assert.equal(operationNote({}), null)
 })
 
 test('router catalog rows become picker options the way the agent editor maps them', async () => {
@@ -467,6 +616,18 @@ test('typed controls preserve environment values and derive deliberate literal r
     ),
     'manual',
   )
+})
+
+test('the setup switch reads on by default and keeps worker_sources when set', async () => {
+  const preferences = await loadTracePreferences()
+  assert.equal(preferences.onboardingAutoOpen({}), true)
+  assert.equal(preferences.onboardingAutoOpen({ onboarding: { auto_open: true } }), true)
+  assert.equal(preferences.onboardingAutoOpen({ onboarding: { auto_open: false } }), false)
+
+  const sources = { judge: '/src/judge' }
+  const off = preferences.withOnboardingAutoOpen({ http_port: 3113, onboarding: { worker_sources: sources } }, false)
+  assert.deepEqual(off, { http_port: 3113, onboarding: { worker_sources: sources, auto_open: false } })
+  assert.equal(preferences.onboardingAutoOpen(off), false)
 })
 
 test('trace preference edits preserve opaque view and sibling fields', async () => {

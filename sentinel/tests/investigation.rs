@@ -6,12 +6,13 @@
 //! resolving a group while the agent is still typing, and a first pass that
 //! ends having said nothing.
 
-#[path = "support/sqlite.rs"]
-mod sqlite;
+#[path = "support/db.rs"]
+mod db;
 
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use db::TestDb;
 use sentinel::ingest::CheckoutVersions;
 use sentinel::investigation::record::Caller;
 use sentinel::investigation::{
@@ -26,7 +27,6 @@ use sentinel::{
     Store, TurnCompletedEventV1, WorkerConfig,
 };
 use serde_json::{json, Value};
-use sqlite::SqliteDb;
 use tokio::sync::RwLock;
 
 const NOW: i64 = 1_789_000_000_000;
@@ -76,11 +76,11 @@ struct FakeHarnessState {
 struct FakeHarness {
     state: Arc<Mutex<FakeHarnessState>>,
     /// Read by `send` so the test can look at the store mid-call.
-    store: Arc<Store<SqliteDb>>,
+    store: Arc<Store<TestDb>>,
 }
 
 impl FakeHarness {
-    fn new(store: Arc<Store<SqliteDb>>) -> Arc<Self> {
+    fn new(store: Arc<Store<TestDb>>) -> Arc<Self> {
         Arc::new(Self {
             state: Arc::new(Mutex::new(FakeHarnessState::default())),
             store,
@@ -236,10 +236,10 @@ impl TraceAvailability for NoTrace {
 // ── fixtures ─────────────────────────────────────────────────────────────
 
 struct Fixture {
-    store: Arc<Store<SqliteDb>>,
+    store: Arc<Store<TestDb>>,
     harness: Arc<FakeHarness>,
-    investigations: Investigations<SqliteDb>,
-    service: Service<SqliteDb>,
+    investigations: Investigations<TestDb>,
+    service: Service<TestDb>,
     group_id: String,
 }
 
@@ -255,7 +255,7 @@ async fn fixture(model: &str) -> Fixture {
 }
 
 async fn fixture_with(model: &str, repositories: Vec<RepositoryConfigV1>) -> Fixture {
-    let store = Arc::new(Store::new(SqliteDb::in_memory()));
+    let store = Arc::new(Store::new(db::test_db().await));
     store.migrate().await.expect("migrate");
     let group_id = seed(&store).await;
     let harness = FakeHarness::new(store.clone());
@@ -276,7 +276,7 @@ async fn fixture_with(model: &str, repositories: Vec<RepositoryConfigV1>) -> Fix
 }
 
 /// One group with one occurrence that still has its evidence.
-async fn seed(store: &Store<SqliteDb>) -> String {
+async fn seed(store: &Store<TestDb>) -> String {
     let write = OccurrenceWrite {
         fingerprint: "fp-boom".into(),
         source: ErrorSourceV1::Trace,

@@ -1,5 +1,5 @@
 /**
- * onboarding — the guided console tour.
+ * learn-iii — the guided console tour.
  *
  * Split of responsibility:
  *   - this worker owns CONTENT (src/tours.mjs) and PROGRESS (kept in the
@@ -17,10 +17,10 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { registerWorker } from 'iii-sdk'
 import { isEmailish, MAX_EMAIL_LENGTH } from './subscribe.mjs'
-import { findStep, getTour, listTours } from './tours.mjs'
+import { findStep, getTour, listTours, TOURS } from './tours.mjs'
 
 const WORKER = 'onboarding'
-const STATE_SCOPE = 'onboarding'
+const STATE_SCOPE = 'learn-iii'
 const STATE_TIMEOUT_MS = 10_000
 
 const iii = registerWorker(process.env.III_URL ?? process.env.III_ENGINE_URL, {
@@ -41,15 +41,15 @@ const integer = { type: 'integer' }
 // Content
 // ---------------------------------------------------------------------------
 
-iii.registerFunction('onboarding::tours::list', async () => ({ tours: listTours() }), {
+iii.registerFunction('learn-iii::tours::list', async () => ({ tours: listTours() }), {
   description:
-    'List every available tour in curriculum order with its id, title, description, and step count. Call this to find out what onboarding content exists.',
+    'List every available tour in curriculum order with its id, title, description, and step count. Call this to find out what learn-iii content exists.',
   request_format: object(),
   response_format: object({ tours: { type: 'array' } }, ['tours']),
 })
 
 iii.registerFunction(
-  'onboarding::tours::get',
+  'learn-iii::tours::get',
   async (input) => {
     const tour = getTour(input.id)
     if (!tour) throw new Error(`unknown tour: ${input.id}`)
@@ -94,7 +94,7 @@ const stateUpdate = (key, ops) =>
   })
 
 /** The shape the page reads, whether or not anything is stored yet. */
-const emptyProgress = () => ({ tours: {}, updated_at: null })
+const emptyProgress = () => ({ tours: {}, updated_at: null, subscribed_at: null })
 
 const readProgress = async (subject) => {
   const stored = await stateGet(progressKey(subject))
@@ -127,7 +127,7 @@ const cap = (payload) => {
 }
 
 iii.registerFunction(
-  'onboarding::progress::get',
+  'learn-iii::progress::get',
   async (input) => {
     const progress = await readProgress(input?.subject ?? 'local')
     const next = listTours().find((entry) => {
@@ -141,7 +141,11 @@ iii.registerFunction(
       'Read an operator\u2019s tour progress: per tour, the status of every step and the trigger evidence that closed it, plus which tour to offer next.',
     request_format: object({ subject: string }),
     response_format: object(
-      { tours: object(), next_tour_id: { type: ['string', 'null'] } },
+      {
+        tours: object(),
+        next_tour_id: { type: ['string', 'null'] },
+        subscribed_at: { type: ['number', 'null'] },
+      },
       ['tours', 'next_tour_id'],
     ),
   },
@@ -174,52 +178,55 @@ const publishStep = (data) =>
       console.error(`[${WORKER}] could not publish ${STEP_TOPIC}: ${cause?.message ?? cause}`)
     })
 
+/** Close one step for one subject; the body of `learn-iii::steps::complete`. */
+async function completeStep(input) {
+  const found = findStep(input.tour_id, input.step_id)
+  if (!found) throw new Error(`unknown step: ${input.tour_id}/${input.step_id}`)
+  const { tour, step } = found
+  const subject = input.subject ?? 'local'
+  // A step closes once per subject, so a reload or a second report from the
+  // agent must not announce it again.
+  // ponytail: read-then-publish, not atomic — two reports racing around this
+  // await can both announce. Move the check into `state::update` if a
+  // duplicate ever matters more than the round trip does.
+  const announced =
+    (await readProgress(subject)).tours?.[input.tour_id]?.steps?.[input.step_id]?.status ===
+    'complete'
+  const at = Date.now()
+  const record = {
+    status: 'complete',
+    at,
+    // Present only when a trigger closed the step, so the page can tell a
+    // condition apart from a step the operator closed by hand.
+    fired: input.fired
+      ? {
+          trigger_type: input.fired.trigger_type ?? step.condition?.type ?? null,
+          function_id: input.fired.function_id ?? null,
+          payload: cap(input.fired.payload),
+          at,
+        }
+      : null,
+  }
+  await stateUpdate(progressKey(subject), [
+    { type: 'merge', path: ['tours', input.tour_id, 'steps'], value: { [input.step_id]: record } },
+    { type: 'merge', path: ['tours', input.tour_id], value: { updated_at: at } },
+    { type: 'merge', value: { updated_at: at } },
+  ])
+  if (!announced) {
+    await publishStep({
+      tour_id: input.tour_id,
+      tour_title: tour.title,
+      step_number: found.number,
+      step_id: input.step_id,
+      step_title: step.title,
+    })
+  }
+  return { step: record }
+}
+
 iii.registerFunction(
-  'onboarding::steps::complete',
-  async (input) => {
-    const found = findStep(input.tour_id, input.step_id)
-    if (!found) throw new Error(`unknown step: ${input.tour_id}/${input.step_id}`)
-    const { tour, step } = found
-    const subject = input.subject ?? 'local'
-    // A step closes once per subject, so a reload or a second report from the
-    // agent must not announce it again.
-    // ponytail: read-then-publish, not atomic — two reports racing around this
-    // await can both announce. Move the check into `state::update` if a
-    // duplicate ever matters more than the round trip does.
-    const announced =
-      (await readProgress(subject)).tours?.[input.tour_id]?.steps?.[input.step_id]?.status ===
-      'complete'
-    const at = Date.now()
-    const record = {
-      status: 'complete',
-      at,
-      // Present only when a trigger closed the step, so the page can tell a
-      // condition apart from a step the operator closed by hand.
-      fired: input.fired
-        ? {
-            trigger_type: input.fired.trigger_type ?? step.condition?.type ?? null,
-            function_id: input.fired.function_id ?? null,
-            payload: cap(input.fired.payload),
-            at,
-          }
-        : null,
-    }
-    await stateUpdate(progressKey(subject), [
-      { type: 'merge', path: ['tours', input.tour_id, 'steps'], value: { [input.step_id]: record } },
-      { type: 'merge', path: ['tours', input.tour_id], value: { updated_at: at } },
-      { type: 'merge', value: { updated_at: at } },
-    ])
-    if (!announced) {
-      await publishStep({
-        tour_id: input.tour_id,
-        tour_title: tour.title,
-        step_number: found.number,
-        step_id: input.step_id,
-        step_title: step.title,
-      })
-    }
-    return { step: record }
-  },
+  'learn-iii::steps::complete',
+  completeStep,
   {
     description:
       'Mark one tour step complete. Pass `fired` when a trigger closed it \u2014 its type and payload are kept as the evidence the tour shows back.',
@@ -241,7 +248,7 @@ iii.registerFunction(
 )
 
 iii.registerFunction(
-  'onboarding::steps::reset',
+  'learn-iii::steps::reset',
   async (input) => {
     // Without this an unknown id reports success and leaves its own null key
     // under `tours` forever.
@@ -276,20 +283,20 @@ iii.registerFunction(
 const SIGNUP_TIMEOUT_MS = 10_000
 
 const SIGNUP_URL =
-  process.env.III_ONBOARDING_SIGNUP_URL ??
+  process.env.III_LEARN_III_SIGNUP_URL ??
   'https://api.mailmodo.com/api/v1/at/f/y0trGR0lfL/c6aefeeb-e66a-5c8a-9c71-4733d9ea1836'
 
 // The operator's address goes over this URL, so an override that downgrades it
 // to plain HTTP is refused rather than used.
 if (URL.parse(SIGNUP_URL)?.protocol !== 'https:') {
-  throw new Error(`III_ONBOARDING_SIGNUP_URL must be an https URL: ${SIGNUP_URL}`)
+  throw new Error(`III_LEARN_III_SIGNUP_URL must be an https URL: ${SIGNUP_URL}`)
 }
 
 // Mailmodo matches the Origin against an allowlist and this one literal is on
 // it. `localhost` and `[::1]` are refused even though they name the same host,
 // so the value is fixed rather than derived from wherever the engine happens to
 // be listening.
-const SIGNUP_ORIGIN = process.env.III_ONBOARDING_SIGNUP_ORIGIN ?? 'http://127.0.0.1'
+const SIGNUP_ORIGIN = process.env.III_LEARN_III_SIGNUP_ORIGIN ?? 'http://127.0.0.1'
 
 /**
  * The topic a captured address is announced on. The engine's telemetry worker
@@ -317,7 +324,7 @@ const publishIdentify = (email, source) =>
     })
 
 iii.registerFunction(
-  'onboarding::subscribe',
+  'learn-iii::subscribe',
   async (input) => {
     const email = String(input.email ?? '').trim()
     if (!isEmailish(email)) {
@@ -353,12 +360,20 @@ iii.registerFunction(
     }
     // Mailmodo answers 200 "added/updated" for an address already on the list,
     // so there is nothing to tell the caller apart from success.
-    await publishIdentify(email, String(input.source ?? 'onboarding'))
+    await publishIdentify(email, String(input.source ?? 'learn-iii'))
+    // Remembered beside the tour progress (the time only, never the address),
+    // so a reopened Stay in touch step says the person is on the list instead
+    // of asking again.
+    const at = Date.now()
+    await stateUpdate(progressKey(input?.subject ?? 'local'), [
+      { type: 'merge', value: { subscribed_at: at, updated_at: at } },
+    ])
     return { subscribed: true }
   },
   {
-    description: 'Add an email address to the iii product-update list.',
-    request_format: object({ email: string, source: string }, ['email']),
+    description:
+      'Add an email address to the iii product-update list, and record the signup time (not the address) on the subject\u2019s progress as `subscribed_at`.',
+    request_format: object({ email: string, source: string, subject: string }, ['email']),
     response_format: object({ subscribed: { type: 'boolean' } }, ['subscribed']),
   },
 )
@@ -368,12 +383,12 @@ iii.registerFunction(
 // ---------------------------------------------------------------------------
 
 const uiAssets = {
-  'onboarding/page.js': {
+  'learn-iii/page.js': {
     file: 'page.js',
     type: 'console:script',
     content_type: 'text/javascript',
   },
-  'onboarding/styles.css': {
+  'learn-iii/styles.css': {
     file: 'styles.css',
     type: 'console:style',
     content_type: 'text/css',
@@ -389,12 +404,12 @@ const uiAssets = {
  */
 const here = dirname(fileURLToPath(import.meta.url))
 const uiDir =
-  process.env.III_ONBOARDING_UI_DIR ??
+  process.env.III_LEARN_III_UI_DIR ??
   [here, join(here, '..', 'ui', 'dist')].find((candidate) => existsSync(join(candidate, 'page.js'))) ??
   join(here, '..', 'ui', 'dist')
 
 iii.registerFunction(
-  'onboarding::ui-content',
+  'learn-iii::ui-content',
   async (input) => {
     const asset = uiAssets[input.path]
     if (!asset) throw new Error(`unknown ui asset: ${input.path}`)
@@ -402,7 +417,7 @@ iii.registerFunction(
     return { content, content_type: asset.content_type }
   },
   {
-    description: 'Serve the injectable onboarding console page assets.',
+    description: 'Serve the injectable learn-iii console page assets.',
     metadata: { internal: true },
     request_format: object({ path: string }, ['path']),
     response_format: object({ content: string, content_type: string }, [
@@ -415,7 +430,7 @@ iii.registerFunction(
 const registerUiAsset = (path) =>
   iii.registerTrigger({
     type: uiAssets[path].type,
-    function_id: 'onboarding::ui-content',
+    function_id: 'learn-iii::ui-content',
     config: { path },
   })
 
@@ -425,7 +440,7 @@ const uiTriggers = new Map(
 
 // Re-registering a path with different bytes hot-swaps the asset in every open
 // console tab, so editing the page is one rebuild away from being visible.
-if (process.env.III_ONBOARDING_UI_WATCH) {
+if (process.env.III_LEARN_III_UI_WATCH) {
   const pending = new Map()
   watch(uiDir, (_event, file) => {
     const path = Object.keys(uiAssets).find((key) => uiAssets[key].file === file)

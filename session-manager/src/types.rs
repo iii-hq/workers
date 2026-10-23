@@ -287,6 +287,35 @@ impl AgentMessage {
         }
     }
 
+    /// Strip what a usage reader never looks at (`session::messages`
+    /// `content: "usage"`): assistant content keeps its `function_call`
+    /// blocks with `arguments` nulled, every other role's content and
+    /// `details` go. Everything else stays, so the message keeps its shape.
+    pub fn project_usage(&mut self) {
+        match self {
+            AgentMessage::Assistant { content, .. } => content.retain_mut(|block| match block {
+                ContentBlock::FunctionCall { arguments, .. } => {
+                    *arguments = Value::Null;
+                    true
+                }
+                _ => false,
+            }),
+            AgentMessage::User { content, .. } => content.clear(),
+            AgentMessage::FunctionResult {
+                content, details, ..
+            } => {
+                content.clear();
+                *details = Value::Null;
+            }
+            AgentMessage::Custom {
+                content, details, ..
+            } => {
+                content.clear();
+                *details = None;
+            }
+        }
+    }
+
     /// Set terminal usage on an assistant message. Returns false for roles
     /// that cannot carry model usage.
     pub fn set_usage(&mut self, new_usage: Usage) -> bool {

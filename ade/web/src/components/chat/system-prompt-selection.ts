@@ -13,6 +13,7 @@
  */
 
 import type { SystemPromptSelection } from '@/lib/backend/harness-send'
+import { SEND_FAILED_CODE } from '@/lib/turn-failure'
 import type { Message } from '@/types/chat'
 
 export type PromptStrategy = 'enrich' | 'override'
@@ -122,13 +123,21 @@ export function toSelection(
  *
  * An assistant text row counts, and so does a function-trigger row: a turn
  * can produce only calls (a first turn that ends on `harness::ask` shows the
- * card and nothing else). User rows and the system notices the console adds
- * when a send fails before any turn ran do not count, so that retry still
- * carries the selection.
+ * card and nothing else). A turn-failure row the harness logged counts too:
+ * a first turn that died assembling context (`harness.context_overflow`)
+ * still left a turn record behind, and the harness refuses a resent
+ * `options.agent` against it. User rows and the notices the console stamps
+ * itself when a send fails before any turn ran (`SEND_FAILED_CODE`) do not
+ * count, so that retry still carries the selection.
  */
 export function turnEstablishedFrom(messages: readonly Message[]): boolean {
   return messages.some(
-    (m) => m.role === 'assistant' || m.role === 'function-trigger',
+    (m) =>
+      m.role === 'assistant' ||
+      m.role === 'function-trigger' ||
+      (m.role === 'system' &&
+        m.kind === 'turn-failure' &&
+        m.technicalDetails?.code !== SEND_FAILED_CODE),
   )
 }
 

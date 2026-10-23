@@ -2,7 +2,7 @@
 
 [package]
 name = "sandbox-code-runner"
-version = "0.1.13"
+version = "0.1.16"
 edition = "2021"
 publish = false
 
@@ -14,8 +14,8 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.23.0"
-iii-helpers = "=0.23.0"
+iii-sdk = "=0.24.6"
+iii-helpers = "=0.24.6"
 # Worker-side injectable console UI (content function + console:script/style
 # triggers + hot-reload watcher) — direct link, never published.
 iii-console-ui = { path = "../crates/console-ui" }

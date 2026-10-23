@@ -25,8 +25,9 @@ pub struct WorkerConfig {
     #[serde(default = "default_data_dir")]
     pub data_dir: String,
 
-    /// Bank used when a session selects none (session metadata
-    /// `memory_bank` wins, then turn metadata, then this).
+    /// Bank used when nothing selects one. Turn metadata `memory_bank`
+    /// wins, then session metadata, then a sub-agent's parent session,
+    /// then the bank of the turn's repository or directory, then this — for injection, extraction, and agent calls alike.
     #[serde(default = "default_bank")]
     pub default_bank: String,
 
@@ -64,7 +65,8 @@ pub struct WorkerConfig {
     #[serde(default)]
     pub extraction_model: String,
 
-    /// How many recent user/assistant messages the extraction call reads.
+    /// How many recent non-empty user/assistant messages the extraction
+    /// call reads, plus the turn's user message when they leave it out.
     #[serde(default = "default_extraction_window")]
     pub extraction_window: usize,
 
@@ -80,7 +82,7 @@ pub struct WorkerConfig {
     /// workflow corrections) into the bank's auto-managed `learned` rule,
     /// so correcting the agent in chat updates the system prompt for every
     /// later turn. Hand-authored rules are never touched; the learned rule
-    /// only ever gains appended lines.
+    /// gains appended lines, and a line the user corrects is rewritten.
     #[serde(default = "default_true")]
     pub rule_learning_enabled: bool,
 
@@ -91,8 +93,10 @@ pub struct WorkerConfig {
     #[serde(default = "default_max_rule_chars")]
     pub max_rule_chars: usize,
 
-    /// Recency half-life in days for recall ranking. Unpinned memories
-    /// lose rank weight as they age; they never lose the data.
+    /// Recency half-life in days for recall ranking: the age at which a
+    /// memory's recency is neutral. Recency is a mild factor — a fresh memory
+    /// gains up to 20% rank weight, a very old one loses up to 20% — so
+    /// durable preferences stay recallable; the data is never lost.
     #[serde(default = "default_decay_half_life_days")]
     pub decay_half_life_days: u64,
 
@@ -104,7 +108,9 @@ pub struct WorkerConfig {
     pub embeddings_enabled: bool,
 
     /// Embedding model id passed to `router::embed`. Empty uses the
-    /// provider's default.
+    /// provider's default. Vectors are tagged with the model the provider
+    /// reports, so changing this (or the provider's default changing)
+    /// re-embeds them instead of mixing spaces.
     #[serde(default)]
     pub embedding_model: String,
 }
@@ -137,7 +143,7 @@ fn default_max_rule_chars() -> usize {
     6_000
 }
 fn default_decay_half_life_days() -> u64 {
-    30
+    60
 }
 
 impl Default for WorkerConfig {

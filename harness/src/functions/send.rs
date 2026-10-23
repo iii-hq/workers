@@ -16,11 +16,11 @@ use crate::policy;
 use crate::prompt::{self, SystemPromptStrategy};
 use crate::turn_loop;
 use crate::types::message::{AgentMessage, UserMessage, UserRoleTag};
-use crate::types::model::ThinkingLevel;
+use crate::types::model::{Model, ProviderDefaults, ThinkingLevel};
 use crate::types::output::OutputContract;
 use crate::types::turn::{
-    FunctionContractLedgerEntry, FunctionPolicy, IdemRecord, ParentLink, SkillContext, TurnOptions,
-    TurnRecord, TurnStatus,
+    FunctionContractLedgerEntry, FunctionPolicy, IdemRecord, ParentLink, ResponseLanguage,
+    SkillContext, TurnOptions, TurnRecord, TurnStatus,
 };
 
 /// `message` is either a plain string (sugar for a user text message) or a
@@ -94,6 +94,13 @@ pub struct SendOptions {
     /// Provider-native per-call options, namespaced by provider id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_options: Option<BTreeMap<String, Value>>,
+    /// Ask the harness to pick the effort from the model's catalog row
+    /// instead of naming one: `lowest` is the model's lowest reasoning effort
+    /// (never `off`), or the provider default when the model offers no effort
+    /// choices. Exclusive with `thinking_level` and `provider_options`; the
+    /// choice is returned as `reasoning` on the send response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ReasoningPreset>,
     /// The turn's deliverable; default `{ type: "text" }`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<OutputContract>,
@@ -150,6 +157,68 @@ pub struct SendRequest {
     pub options: Option<SendOptions>,
 }
 
+/// An effort the harness resolves from the model's catalog row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningPreset {
+    Lowest,
+}
+
+/// What a `reasoning` preset resolved to for this send. `reasoning_effort`
+/// is the provider-native effort (the catalog's own string); both fields are
+/// absent when the model offers no effort choices and the provider decides.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ResolvedReasoning {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_level: Option<ThinkingLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+}
+
+/// The model's lowest reasoning effort. A catalog effort list is in
+/// ascending order, so its first entry other than `none` wins; a model that
+/// only says it can reason takes the lowest shared level, `minimal`; anything
+/// else gets no effort at all.
+fn lowest_reasoning(model: &Model) -> ResolvedReasoning {
+    let native = model
+        .reasoning_efforts
+        .iter()
+        .flatten()
+        .map(|effort| effort.effort.trim())
+        .find(|effort| !effort.is_empty() && *effort != "none" && *effort != "off");
+    match native {
+        Some(effort) => ResolvedReasoning {
+            thinking_level: serde_json::from_value(Value::String(effort.to_lowercase())).ok(),
+            reasoning_effort: Some(effort.to_string()),
+        },
+        None if model.supports_thinking == Some(true)
+            && model.reasoning_efforts.as_ref().is_none_or(Vec::is_empty) =>
+        {
+            ResolvedReasoning {
+                thinking_level: Some(ThinkingLevel::Minimal),
+                reasoning_effort: None,
+            }
+        }
+        None => ResolvedReasoning::default(),
+    }
+}
+
+/// Apply a resolved preset to the turn's reasoning fields: the native effort
+/// rides under the model's provider, exactly as an explicit send would.
+fn apply_resolved_reasoning(
+    options: &mut TurnOptions,
+    provider: &str,
+    resolved: &ResolvedReasoning,
+) {
+    options.thinking_level = resolved.thinking_level;
+    options.provider_options = resolved.reasoning_effort.as_ref().map(|effort| {
+        BTreeMap::from([(
+            provider.to_string(),
+            serde_json::json!({ "reasoning_effort": effort }),
+        )])
+    });
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SendResponse {
     pub session_id: String,
@@ -165,6 +234,24 @@ pub struct SendResponse {
     /// True when `idempotency_key` matched an earlier send.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deduplicated: Option<bool>,
+    /// What `options.reasoning` resolved to; absent when the send named none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ResolvedReasoning>,
+    /// Set when the message was the `/compact` command: nothing was appended
+    /// and no turn ran. The compaction runs in the background; its start and
+    /// outcome reach every client through the transcript and
+    /// `harness::compaction`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<CompactionStarted>,
+}
+
+/// What a `/compact` send started.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CompactionStarted {
+    pub compaction_id: String,
+    /// The transcript row its start notice takes (the `idempotency_key`'s
+    /// `e_idem_` id when the send carried one).
+    pub entry_id: String,
 }
 
 /// The shared result of starting (or merging) a turn.
@@ -174,6 +261,8 @@ pub struct StartOutcome {
     pub merged: bool,
     pub queued: bool,
     pub deduplicated: bool,
+    /// What `options.reasoning` resolved to, when the send named a preset.
+    pub reasoning: Option<ResolvedReasoning>,
 }
 
 pub async fn handle(deps: &Deps, req: SendRequest) -> Result<SendResponse, HarnessError> {
@@ -201,6 +290,9 @@ async fn handle_with_delivery_lock(
     req: SendRequest,
     caller_holds_target_session_lock: bool,
 ) -> Result<SendResponse, HarnessError> {
+    if let Some(command) = compact_command(&req.message) {
+        return start_compaction(deps, req, command).await;
+    }
     let out = start_with_delivery_lock(deps, req, caller_holds_target_session_lock).await?;
     Ok(SendResponse {
         session_id: out.session_id,
@@ -209,6 +301,100 @@ async fn handle_with_delivery_lock(
         merged: out.merged.then_some(true),
         queued: out.queued.then_some(true),
         deduplicated: out.deduplicated.then_some(true),
+        reasoning: out.reasoning,
+        compaction: None,
+    })
+}
+
+/// The `/compact` command, whatever client typed it.
+fn compact_command(message: &MessageInput) -> Option<crate::compaction::Command> {
+    match message {
+        MessageInput::Text(text) => crate::compaction::parse(text),
+        MessageInput::Message(message) => crate::compaction::parse_message(message),
+    }
+}
+
+/// `/compact` is a command, not a prompt: the model never sees it (it used to
+/// answer it with a made-up "summary" and compact nothing). Starts the
+/// compaction in the background and returns at once, like any send.
+async fn start_compaction(
+    deps: &Deps,
+    req: SendRequest,
+    command: crate::compaction::Command,
+) -> Result<SendResponse, HarnessError> {
+    let session_id = req.session_id.clone().ok_or_else(|| {
+        HarnessError::InvalidRequest(
+            "nothing to compact: /compact needs an existing session (`session_id`)".into(),
+        )
+    })?;
+    let prev = super::compact::compactable_session(deps, &session_id).await?;
+    let cfg = deps.cfg().await;
+    if let Some(key) = &req.idempotency_key {
+        if let Some(existing) =
+            crate::state::get_idem(&deps.iii, key, cfg.session_timeout_ms).await?
+        {
+            return Ok(SendResponse {
+                session_id: existing.session_id,
+                turn_id: existing.turn_id,
+                accepted: true,
+                merged: None,
+                queued: None,
+                deduplicated: Some(true),
+                reasoning: None,
+                compaction: None,
+            });
+        }
+    }
+    let (model, provider) = resolve_model_route(
+        None,
+        &req,
+        prev.as_ref().map(|record| &record.options),
+        None,
+    )?;
+    let compaction_id = ids::new_compaction_id();
+    let entry_id = req
+        .idempotency_key
+        .as_deref()
+        .map(ids::idem_user_entry_id)
+        .unwrap_or_else(|| ids::compaction_started_entry_id(&compaction_id));
+    // No turn starts: answer with the session's current one.
+    let turn_id = prev
+        .map(|record| record.turn_id)
+        .unwrap_or_else(|| compaction_id.clone());
+    if let Some(key) = &req.idempotency_key {
+        let record = IdemRecord {
+            session_id: session_id.clone(),
+            turn_id: turn_id.clone(),
+            entry_id: entry_id.clone(),
+            ts: AgentMessage::now_ms(),
+        };
+        let _ = crate::state::put_idem(&deps.iii, key, &record, cfg.session_timeout_ms).await;
+    }
+    let request = crate::compaction::Request {
+        session_id: session_id.clone(),
+        model,
+        provider,
+        instructions: command.instructions,
+        entry_id: Some(entry_id.clone()),
+        mark_working: true,
+    };
+    let background = deps.clone();
+    let id = compaction_id.clone();
+    tokio::spawn(async move {
+        crate::compaction::run(&background, request, id).await;
+    });
+    Ok(SendResponse {
+        session_id,
+        turn_id,
+        accepted: true,
+        merged: None,
+        queued: None,
+        deduplicated: None,
+        reasoning: None,
+        compaction: Some(CompactionStarted {
+            compaction_id,
+            entry_id,
+        }),
     })
 }
 
@@ -293,32 +479,21 @@ async fn start_with_delivery_lock(
     let agent_route = agent
         .as_ref()
         .and_then(|profile| profile.model_and_provider());
-    let (model, provider) = match (agent_route, req.model.clone(), &prev) {
-        (Some((model, profile_provider)), _, _) => {
-            (model, profile_provider.or_else(|| req.provider.clone()))
-        }
-        (None, Some(model), _) => (model, req.provider.clone()),
-        (None, None, Some(prev)) => (
-            prev.options.model.clone(),
-            req.provider
-                .clone()
-                .or_else(|| prev.options.provider.clone()),
-        ),
-        (None, None, None) if req.session_id.is_some() => {
-            return Err(HarnessError::InvalidRequest(
-                "harness::send without `model` inherits from the session's prior \
-                 turn, but this session has none — name a `model`"
-                    .into(),
-            ))
-        }
-        (None, None, None) => {
-            return Err(HarnessError::InvalidRequest(
-                "harness::send creating a NEW session requires `model` (steering an \
-                 existing session may omit it)"
-                    .into(),
-            ))
-        }
+    // A send naming only a provider starts on that provider's declared
+    // default model (router-checked against its live catalog). One router
+    // round trip, and only on the path that would otherwise fail.
+    let provider_defaults = match (&agent_route, &req.model, &prev, &req.provider) {
+        (None, None, None, Some(provider)) => deps.router().await.provider_defaults(provider).await,
+        _ => None,
     };
+    let (model, provider) = resolve_model_route(
+        agent_route,
+        &req,
+        prev.as_ref().map(|p| &p.options),
+        provider_defaults
+            .as_ref()
+            .and_then(|d| d.default_model.clone()),
+    )?;
 
     // Freeze the per-send options before moving the message out of `req`.
     let inherits_prompt = prev.is_some() && prompt_fields_omitted(req.options.as_ref());
@@ -330,6 +505,12 @@ async fn start_with_delivery_lock(
         crate::prompt::effective_default(&deps.iii).await.identity
     };
     let mut options = build_options(&cfg, &req, model, provider, agent.as_ref(), &identity);
+    // A new session that names neither reasoning field starts on the
+    // provider's declared default level (`None` keeps today's "provider
+    // decides"). An existing session inherits its prior turn's instead.
+    if prev.is_none() && options.thinking_level.is_none() && options.provider_options.is_none() {
+        options.thinking_level = provider_default_thinking(deps, &options, provider_defaults).await;
+    }
     options.functions = functions;
     if let (true, Some(prev)) = (inherits_prompt, prev.as_ref()) {
         inherit_prior_system_prompt(&mut options, &prev.options);
@@ -340,8 +521,36 @@ async fn start_with_delivery_lock(
     ) {
         inherit_prior_reasoning(&mut options, &prev.options);
     }
+    let resolved_reasoning = match req.options.as_ref().and_then(|o| o.reasoning) {
+        Some(ReasoningPreset::Lowest) => {
+            if !reasoning_fields_omitted(req.options.as_ref()) {
+                return Err(HarnessError::InvalidRequest(
+                    "options.reasoning names the effort itself; send it without \
+                     thinking_level or provider_options"
+                        .into(),
+                ));
+            }
+            let model = deps
+                .router()
+                .await
+                .models_get(options.provider.as_deref(), &options.model)
+                .await
+                .ok_or_else(|| {
+                    HarnessError::InvalidRequest(format!(
+                        "options.reasoning: no catalog row for model {}",
+                        options.model
+                    ))
+                })?;
+            let resolved = lowest_reasoning(&model);
+            let provider = options.provider.clone().unwrap_or(model.provider);
+            apply_resolved_reasoning(&mut options, &provider, &resolved);
+            Some(resolved)
+        }
+        None => None,
+    };
     // A profile's skills are PRELOADED into its prompt (agents.rs), never a
-    // filter: only an explicit `options.skills` narrows the skills index.
+    // filter: only an explicit `options.skills` narrows the skills index, and
+    // a profile with `skills_index: false` drops it.
     prepare_skill_context(
         deps,
         &mut options,
@@ -349,12 +558,25 @@ async fn start_with_delivery_lock(
         req.options
             .as_ref()
             .and_then(|options| options.skills.as_deref()),
+        agent.as_ref().is_none_or(|profile| profile.skills_index),
     )
     .await?;
 
     // Normalise the incoming message and validate its role.
     let message = normalize_message(req.message)?;
     tag_send_span_with_message(&message);
+    options.response_language = resolve_response_language(
+        existing_metadata
+            .as_ref()
+            .or(req
+                .session
+                .as_ref()
+                .and_then(|init| init.metadata.as_ref())
+                .and_then(Value::as_object))
+            .and_then(crate::language::from_metadata),
+        prev.as_ref().map(|record| &record.options),
+        &message,
+    );
 
     // Resolve the session (ensure if id given, else create).
     let (title, metadata, kind) = req
@@ -363,6 +585,7 @@ async fn start_with_delivery_lock(
         .map(|s| (s.title.clone(), s.metadata.clone(), s.kind.clone()))
         .unwrap_or((None, None, None));
     let metadata = session_metadata_with_agent(metadata, agent.as_ref());
+    let metadata = session_metadata_with_language(metadata, options.response_language.as_ref());
     let topology = deps.topology.lock().await;
     if let Some(parent) = metadata
         .as_ref()
@@ -380,14 +603,37 @@ async fn start_with_delivery_lock(
                 .ensure(id, title.as_deref(), metadata.as_ref(), kind.as_deref())
                 .await?;
             // Console materialises its draft before calling harness::send, so
-            // ensure cannot apply the authoritative Directory snapshot on
-            // creation. Merge it into the stored whole-object metadata once.
-            if let Some(agent) = agent.as_ref() {
-                let snapshot = agent.session_metadata();
-                if ensured.metadata.get("agent_profile") != Some(&snapshot) {
-                    let mut stored = ensured.metadata;
+            // ensure cannot apply the authoritative Directory snapshot, nor a
+            // response language pinned by this send, on creation. Merge them
+            // into the stored whole-object metadata once.
+            let agent_snapshot = agent
+                .as_ref()
+                .map(|agent| agent.session_metadata())
+                .filter(|snapshot| ensured.metadata.get("agent_profile") != Some(snapshot));
+            let language = options
+                .response_language
+                .as_ref()
+                .map(crate::language::metadata_value)
+                .filter(|value| ensured.metadata.get(crate::language::METADATA_KEY) != Some(value));
+            if agent_snapshot.is_some() || language.is_some() {
+                let mut stored = ensured.metadata;
+                let agent_stale = agent_snapshot.is_some();
+                if let Some(snapshot) = agent_snapshot {
                     stored.insert("agent_profile".into(), snapshot);
-                    session.set_metadata(id, stored).await?;
+                }
+                if let Some(language) = language {
+                    stored.insert(crate::language::METADATA_KEY.into(), language);
+                }
+                match session.set_metadata(id, stored).await {
+                    Err(error) if agent_stale => return Err(error),
+                    // The turn record carries the language too; only its
+                    // durable mirror is missing, so the send goes on.
+                    Err(error) => tracing::warn!(
+                        session_id = %id,
+                        error = %error,
+                        "could not store the response language in session metadata"
+                    ),
+                    Ok(()) => {}
                 }
             }
             id.clone()
@@ -446,7 +692,10 @@ async fn start_with_delivery_lock(
         let _ = crate::state::put_idem(&deps.iii, key, &rec, cfg.session_timeout_ms).await;
     }
 
-    Ok(outcome)
+    Ok(StartOutcome {
+        reasoning: resolved_reasoning,
+        ..outcome
+    })
 }
 
 /// Label the send's own root span with the message preview. The turn step
@@ -655,6 +904,13 @@ pub async fn edit_queued(
     deps: &Deps,
     req: EditQueuedRequest,
 ) -> Result<EditQueuedResponse, HarnessError> {
+    // A queued row drains into the transcript as a prompt: an edit to `/compact`
+    // would reach the model, which answers it with a made-up summary.
+    if compact_command(&req.message).is_some() {
+        return Err(HarnessError::InvalidRequest(
+            "/compact cannot replace a queued message; send it on its own".into(),
+        ));
+    }
     let cfg = deps.cfg().await;
     let rows =
         crate::state::list_queued(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?;
@@ -727,7 +983,7 @@ async fn try_enqueue(
     let recheck = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
     let outcome = match recheck {
         Some(r) if !r.status.is_terminal() => {
-            if filesystem_root_refresh_needed(&r.options, options) {
+            if merge_refresh_needed(&r.options, options) {
                 seed_or_merge_queued(deps, cfg, session_id, options, d).await?
             } else {
                 StartOutcome {
@@ -736,6 +992,7 @@ async fn try_enqueue(
                     merged: true,
                     queued: true,
                     deduplicated: false,
+                    reasoning: None,
                 }
             }
         }
@@ -748,6 +1005,13 @@ fn filesystem_root_refresh_needed(current: &TurnOptions, incoming: &TurnOptions)
     incoming
         .filesystem_root()
         .is_some_and(|root| current.filesystem_root() != Some(root))
+}
+
+/// Whether a queued steer must still reach the running record: a new working
+/// directory, or a response language the running turn has not pinned yet.
+fn merge_refresh_needed(current: &TurnOptions, incoming: &TurnOptions) -> bool {
+    filesystem_root_refresh_needed(current, incoming)
+        || (current.response_language.is_none() && incoming.response_language.is_some())
 }
 
 async fn seed_or_merge_queued(
@@ -971,6 +1235,73 @@ pub(crate) fn message_preview(message: &AgentMessage) -> Option<String> {
     (!preview.is_empty()).then_some(preview)
 }
 
+/// The model and provider a send runs on. A profile's model is
+/// authoritative (Console locks its picker to the same value; this
+/// server-side precedence keeps other callers from running the identity on
+/// a different model, and catalog keys may carry `provider::model`, split
+/// before routing). Then an explicit `model`, then the prior turn's, then
+/// the named provider's declared default. A new session with none of those
+/// is an error: the harness never picks a provider.
+fn resolve_model_route(
+    agent_route: Option<(String, Option<String>)>,
+    req: &SendRequest,
+    prev: Option<&TurnOptions>,
+    provider_default_model: Option<String>,
+) -> Result<(String, Option<String>), HarnessError> {
+    Ok(match (agent_route, req.model.clone(), prev) {
+        (Some((model, profile_provider)), _, _) => {
+            (model, profile_provider.or_else(|| req.provider.clone()))
+        }
+        (None, Some(model), _) => (model, req.provider.clone()),
+        (None, None, Some(prev)) => (
+            prev.model.clone(),
+            req.provider.clone().or_else(|| prev.provider.clone()),
+        ),
+        (None, None, None) if provider_default_model.is_some() => (
+            provider_default_model.expect("checked by the guard"),
+            req.provider.clone(),
+        ),
+        (None, None, None) if req.session_id.is_some() => {
+            return Err(HarnessError::InvalidRequest(
+                "harness::send without `model` inherits from the session's prior \
+                 turn, but this session has none — name a `model` (or a `provider` \
+                 that declares a default model)"
+                    .into(),
+            ))
+        }
+        (None, None, None) => {
+            return Err(HarnessError::InvalidRequest(
+                "harness::send creating a NEW session requires `model`, or a `provider` \
+                 that declares a default model (steering an existing session may omit both)"
+                    .into(),
+            ))
+        }
+    })
+}
+
+/// The provider's declared default thinking level, for a new session whose
+/// send names neither reasoning field. `provider_defaults` is reused when the
+/// model resolution already fetched it; otherwise the model's catalog entry
+/// names the provider.
+async fn provider_default_thinking(
+    deps: &Deps,
+    options: &TurnOptions,
+    provider_defaults: Option<ProviderDefaults>,
+) -> Option<ThinkingLevel> {
+    if let Some(defaults) = provider_defaults {
+        return defaults.default_thinking_level;
+    }
+    let router = deps.router().await;
+    let provider = match &options.provider {
+        Some(provider) => provider.clone(),
+        None => router.models_get(None, &options.model).await?.provider,
+    };
+    router
+        .provider_defaults(&provider)
+        .await?
+        .default_thinking_level
+}
+
 fn build_options(
     cfg: &WorkerConfig,
     req: &SendRequest,
@@ -1004,6 +1335,7 @@ fn build_options(
                 identity,
             ),
         },
+        system_prompt_ref: None,
         skills_prompt: None,
         skill_context: None,
         max_turns: opts.max_turns.unwrap_or(cfg.default_max_turns),
@@ -1023,6 +1355,8 @@ fn build_options(
         max_transient_resumes: cfg.max_transient_resumes,
         preloaded_contracts: agent.map(|a| a.contract_digests.clone()),
         seeded_contracts: None,
+        // Resolved in `start` once the message is normalised.
+        response_language: None,
     }
 }
 
@@ -1040,6 +1374,41 @@ pub(crate) fn session_metadata_with_agent(
         .unwrap_or_default();
     object.insert("agent_profile".into(), agent.session_metadata());
     Some(Value::Object(object))
+}
+
+/// Mirror the pinned response language into session metadata (applied when
+/// the session is created; `start` merges it into an existing one), so it
+/// outlives the turn record and clients can read it.
+fn session_metadata_with_language(
+    metadata: Option<Value>,
+    language: Option<&ResponseLanguage>,
+) -> Option<Value> {
+    let Some(language) = language else {
+        return metadata;
+    };
+    let mut object = metadata
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    object.insert(
+        crate::language::METADATA_KEY.into(),
+        crate::language::metadata_value(language),
+    );
+    Some(Value::Object(object))
+}
+
+/// The session's response language for this send: the one its metadata pins,
+/// else the prior turn's, else detected from this message — the first one
+/// whose prose is long enough to tell (`None` waits for a later message).
+/// Once pinned it never changes here; an explicit "answer in Portuguese" is
+/// the prompt's rule to honor.
+fn resolve_response_language(
+    stored: Option<ResponseLanguage>,
+    prev: Option<&TurnOptions>,
+    message: &AgentMessage,
+) -> Option<ResponseLanguage> {
+    stored
+        .or_else(|| prev.and_then(|options| options.response_language.clone()))
+        .or_else(|| crate::language::detect(message))
 }
 
 /// The dispatch policy a send runs under — and the one its profile's
@@ -1066,18 +1435,27 @@ fn send_functions<'a>(
         })
 }
 
+/// Refusal for a `skills` change on a session that has no skill context: a
+/// legacy session, or one started as a profile with `skills_index: false`.
+const NO_SKILL_CONTEXT: &str =
+    "cannot change `skills` on a legacy session or one whose agent profile \
+     sets `skills_index: false`; start a new session to use the names-only skill index";
+
 fn select_skill_context(
     previous: Option<&TurnOptions>,
     requested: Option<&[String]>,
     view: &crate::skills::EffectiveView,
+    index: bool,
 ) -> Result<Option<SkillContext>, HarnessError> {
     match previous.and_then(|options| options.skill_context.as_ref()) {
         Some(previous) => Ok(Some(crate::skills::next_context(previous, requested))),
-        None if previous.is_some() && requested.is_some() => Err(HarnessError::InvalidRequest(
-            "cannot change `skills` on a legacy session; start a new session to use the names-only skill index"
-                .into(),
-        )),
+        None if previous.is_some() && requested.is_some() => {
+            Err(HarnessError::InvalidRequest(NO_SKILL_CONTEXT.into()))
+        }
         None if previous.is_some() => Ok(None),
+        // A `skills_index: false` profile starts with no index; the profile
+        // beats an explicit `options.skills` on the opening send.
+        None if !index => Ok(None),
         None => Ok(Some(crate::skills::new_context(requested, view))),
     }
 }
@@ -1107,6 +1485,7 @@ fn resolve_send_gate(
             merged: false,
             queued: false,
             deduplicated: true,
+            reasoning: None,
         }));
     }
     validate_active_skill_request(active, skills_explicit)?;
@@ -1121,18 +1500,14 @@ fn merge_explicit_skill_filter(
     if !explicit {
         return Ok(false);
     }
-    let requested = requested.skill_context.as_ref().ok_or_else(|| {
-        HarnessError::InvalidRequest(
-            "cannot change `skills` on a legacy session; start a new session to use the names-only skill index"
-                .into(),
-        )
-    })?;
-    let active = active.skill_context.as_mut().ok_or_else(|| {
-        HarnessError::InvalidRequest(
-            "cannot change `skills` on a legacy session; start a new session to use the names-only skill index"
-                .into(),
-        )
-    })?;
+    let requested = requested
+        .skill_context
+        .as_ref()
+        .ok_or_else(|| HarnessError::InvalidRequest(NO_SKILL_CONTEXT.into()))?;
+    let active = active
+        .skill_context
+        .as_mut()
+        .ok_or_else(|| HarnessError::InvalidRequest(NO_SKILL_CONTEXT.into()))?;
     if active.filter == requested.filter {
         return Ok(false);
     }
@@ -1145,12 +1520,13 @@ pub(crate) async fn prepare_skill_context(
     options: &mut TurnOptions,
     previous: Option<&TurnOptions>,
     requested: Option<&[String]>,
+    index: bool,
 ) -> Result<(), HarnessError> {
     let functions = deps.functions().await;
     let skills = deps.skills().await;
     let policy = policy::CompiledPolicy::from(options.functions.as_ref());
     let view = crate::skills::effective_view(&skills, requested, &policy, &functions.functions);
-    options.skill_context = select_skill_context(previous, requested, &view)?;
+    options.skill_context = select_skill_context(previous, requested, &view, index)?;
     if options.skill_context.is_none() {
         options.skills_prompt = previous.and_then(|options| options.skills_prompt.clone());
     } else {
@@ -1311,6 +1687,7 @@ async fn seed_or_merge(
             match recheck {
                 Some(mut r) if !r.status.is_terminal() => {
                     let changed = r.options.refresh_filesystem_root_from(&options)
+                        | r.options.adopt_response_language_from(&options)
                         | merge_explicit_skill_filter(&mut r.options, &options, skills_explicit)?;
                     if changed {
                         r.updated_at = AgentMessage::now_ms();
@@ -1322,6 +1699,7 @@ async fn seed_or_merge(
                         merged: true,
                         queued: false,
                         deduplicated: false,
+                        reasoning: None,
                     })
                 }
                 recheck => {
@@ -1369,12 +1747,7 @@ fn rebase_terminal_skill_options(
         return Ok(());
     };
     if skills_explicit {
-        let invalid_legacy_change = || {
-            HarnessError::InvalidRequest(
-                "cannot change `skills` on a legacy session; start a new session to use the names-only skill index"
-                    .into(),
-            )
-        };
+        let invalid_legacy_change = || HarnessError::InvalidRequest(NO_SKILL_CONTEXT.into());
         let filter = options
             .skill_context
             .as_ref()
@@ -1431,6 +1804,20 @@ fn carried_contract_ledger(
     ledger
 }
 
+/// The function digests a new turn starts from. They are only comparable
+/// under the policy they were taken with: a send that changes
+/// `options.functions` starts unstamped (the next step stamps silently)
+/// instead of reading the functions the new policy denies as gone. The policy
+/// change itself reaches the model as the runtime-context notice.
+fn carried_functions_acknowledged(
+    prior: Option<&TurnRecord>,
+    options: &TurnOptions,
+) -> Option<Vec<u32>> {
+    prior
+        .filter(|record| record.options.functions == options.functions)
+        .and_then(|record| record.functions_acknowledged.clone())
+}
+
 pub(crate) async fn seed_new(
     deps: &Deps,
     cfg: &WorkerConfig,
@@ -1443,11 +1830,16 @@ pub(crate) async fn seed_new(
     super::delete_session_tree::ensure_live(deps, session_id).await?;
     if let Some(prior) = prior {
         inherit_prior_filesystem_root(&mut options, &prior.options);
+        // A pinned language outlives every turn of its session, whichever
+        // path seeds the next one.
+        if options.response_language.is_none() {
+            options.response_language = prior.options.response_language.clone();
+        }
     }
     let lineage = lineage.for_seed(prior);
     let turn_id = ids::new_turn_id();
     let now = AgentMessage::now_ms();
-    let functions_generation = prior.and_then(|record| record.functions_generation);
+    let functions_acknowledged = carried_functions_acknowledged(prior, &options);
     let function_contract_ledger = carried_contract_ledger(prior);
     let skill_ack = prior.and_then(|record| record.skill_ack.clone());
     let skills_started = prior.is_some_and(|record| record.skills_started);
@@ -1466,7 +1858,7 @@ pub(crate) async fn seed_new(
         calls: Default::default(),
         parent: lineage.parent.clone(),
         display_parent_session_id: lineage.display_parent_session_id.clone(),
-        functions_generation,
+        functions_acknowledged,
         function_contract_ledger,
         // Per turn: a new message may have changed what failed before.
         failed_calls: Default::default(),
@@ -1509,18 +1901,170 @@ pub(crate) async fn seed_new(
         merged: false,
         queued: false,
         deduplicated: false,
+        reasoning: None,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn catalog_model(row: serde_json::Value) -> Model {
+        let mut base = serde_json::json!({
+            "id": "m", "provider": "p", "context_window": 1000, "max_output_tokens": 100
+        });
+        base.as_object_mut()
+            .unwrap()
+            .extend(row.as_object().unwrap().clone());
+        serde_json::from_value(base).unwrap()
+    }
+
+    #[test]
+    fn lowest_takes_the_first_native_effort_other_than_none() {
+        // Codex: the API rejects `minimal`, so the ladder starts at `low`.
+        let codex = catalog_model(serde_json::json!({
+            "supports_thinking": true,
+            "reasoning_efforts": [{"effort": "low"}, {"effort": "medium"}, {"effort": "max"}]
+        }));
+        assert_eq!(
+            lowest_reasoning(&codex),
+            ResolvedReasoning {
+                thinking_level: Some(ThinkingLevel::Low),
+                reasoning_effort: Some("low".into()),
+            }
+        );
+        let with_none = catalog_model(serde_json::json!({
+            "supports_thinking": true,
+            "reasoning_efforts": [{"effort": "none"}, {"effort": "minimal"}, {"effort": "low"}]
+        }));
+        assert_eq!(
+            lowest_reasoning(&with_none).reasoning_effort.as_deref(),
+            Some("minimal")
+        );
+    }
+
+    #[test]
+    fn lowest_without_a_native_list_is_minimal_and_without_reasoning_is_default() {
+        let flag_only = catalog_model(serde_json::json!({ "supports_thinking": true }));
+        assert_eq!(
+            lowest_reasoning(&flag_only),
+            ResolvedReasoning {
+                thinking_level: Some(ThinkingLevel::Minimal),
+                reasoning_effort: None,
+            }
+        );
+        let fixed = catalog_model(serde_json::json!({ "supports_thinking": false }));
+        assert_eq!(lowest_reasoning(&fixed), ResolvedReasoning::default());
+        let unknown = catalog_model(serde_json::json!({}));
+        assert_eq!(lowest_reasoning(&unknown), ResolvedReasoning::default());
+    }
+
+    #[test]
+    fn a_resolved_native_effort_rides_under_the_provider() {
+        let mut options = bare_options();
+        options.thinking_level = Some(ThinkingLevel::High);
+        let resolved = ResolvedReasoning {
+            thinking_level: Some(ThinkingLevel::Low),
+            reasoning_effort: Some("low".into()),
+        };
+        apply_resolved_reasoning(&mut options, "openai-codex", &resolved);
+        assert_eq!(options.thinking_level, Some(ThinkingLevel::Low));
+        assert_eq!(
+            options.provider_options,
+            Some(BTreeMap::from([(
+                "openai-codex".to_string(),
+                serde_json::json!({ "reasoning_effort": "low" })
+            )]))
+        );
+        apply_resolved_reasoning(&mut options, "openai-codex", &ResolvedReasoning::default());
+        assert_eq!(options.thinking_level, None);
+        assert_eq!(options.provider_options, None);
+    }
+
+    #[test]
+    fn the_reasoning_preset_reads_lowest_on_the_wire() {
+        let options: SendOptions =
+            serde_json::from_value(serde_json::json!({ "reasoning": "lowest" })).unwrap();
+        assert_eq!(options.reasoning, Some(ReasoningPreset::Lowest));
+        assert!(reasoning_fields_omitted(Some(&options)));
+    }
     use iii_helpers::observability::opentelemetry::trace::{
         TraceContextExt, Tracer, TracerProvider,
     };
     use iii_helpers::observability::opentelemetry::Context;
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SimpleSpanProcessor};
     use std::sync::Arc;
+
+    fn language(code: &str, name: &str) -> ResponseLanguage {
+        ResponseLanguage {
+            code: code.into(),
+            name: name.into(),
+        }
+    }
+
+    #[test]
+    fn the_response_language_is_pinned_once_and_then_inherited() {
+        let long = normalize_message(MessageInput::Text(
+            "Explain this project and help me decide what to work on next.".into(),
+        ))
+        .unwrap();
+        let short = normalize_message(MessageInput::Text("ok".into())).unwrap();
+        let english = language("eng", "English");
+        let portuguese = language("por", "Portuguese");
+
+        // First message with enough prose: detected.
+        assert_eq!(
+            resolve_response_language(None, None, &long),
+            Some(english.clone())
+        );
+        // Too short: left unset, to be retried on the next message.
+        assert_eq!(resolve_response_language(None, None, &short), None);
+        // Pinned on the session: never re-detected from a later message.
+        let mut prev = options_with(None);
+        prev.response_language = Some(portuguese.clone());
+        assert_eq!(
+            resolve_response_language(None, Some(&prev), &long),
+            Some(portuguese.clone())
+        );
+        // Session metadata (the durable mirror) wins over the turn record.
+        assert_eq!(
+            resolve_response_language(Some(english.clone()), Some(&prev), &short),
+            Some(english.clone())
+        );
+        // A prior turn that never pinned one still lets this message pin it.
+        assert_eq!(
+            resolve_response_language(None, Some(&options_with(None)), &long),
+            Some(english)
+        );
+    }
+
+    #[test]
+    fn the_response_language_is_mirrored_into_session_metadata() {
+        let english = language("eng", "English");
+        assert_eq!(session_metadata_with_language(None, None), None);
+        let merged = session_metadata_with_language(
+            Some(serde_json::json!({ "parent_session_id": "s_parent" })),
+            Some(&english),
+        )
+        .unwrap();
+        assert_eq!(merged["parent_session_id"], "s_parent");
+        assert_eq!(
+            crate::language::from_metadata(merged.as_object().unwrap()),
+            Some(english)
+        );
+    }
+
+    #[test]
+    fn a_queued_steer_reaches_a_running_turn_only_to_pin_a_first_language() {
+        let running = options_with(None);
+        let mut incoming = options_with(None);
+        assert!(!merge_refresh_needed(&running, &incoming));
+        incoming.response_language = Some(language("eng", "English"));
+        assert!(merge_refresh_needed(&running, &incoming));
+        let mut pinned = options_with(None);
+        pinned.response_language = Some(language("por", "Portuguese"));
+        assert!(!merge_refresh_needed(&pinned, &incoming));
+    }
 
     #[test]
     fn a_reused_session_must_be_writable() {
@@ -1687,6 +2231,7 @@ mod tests {
         stale_recheck.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["old".into()]),
             baseline: Some("frozen".into()),
+            baseline_ref: None,
         });
         stale_recheck.set_filesystem_root("/old");
         let mut incoming = stale_recheck.clone();
@@ -2009,6 +2554,8 @@ mod tests {
             max_transient_resumes: 1,
             preloaded_contracts: None,
             seeded_contracts: None,
+            system_prompt_ref: None,
+            response_language: None,
         }
     }
 
@@ -2028,7 +2575,7 @@ mod tests {
             calls: Default::default(),
             parent: None,
             display_parent_session_id: None,
-            functions_generation: Some(generation),
+            functions_acknowledged: Some(vec![generation as u32]),
             function_contract_ledger: Default::default(),
             failed_calls: Default::default(),
             skill_ack: Some(crate::types::turn::SkillAck {
@@ -2165,13 +2712,33 @@ mod tests {
     }
 
     #[test]
+    fn function_acknowledgements_carry_only_under_the_same_policy() {
+        let prior = terminal_record_with_skill_state(2, true);
+        let same = prior.options.clone();
+        assert_eq!(
+            super::carried_functions_acknowledged(Some(&prior), &same),
+            Some(vec![2])
+        );
+        let narrowed = options_with(Some(FunctionPolicy {
+            allow: vec!["state::get".into()],
+            ..Default::default()
+        }));
+        assert_ne!(narrowed.functions, prior.options.functions);
+        assert_eq!(
+            super::carried_functions_acknowledged(Some(&prior), &narrowed),
+            None
+        );
+        assert_eq!(super::carried_functions_acknowledged(None, &same), None);
+    }
+
+    #[test]
     fn terminal_recheck_is_the_seed_source_after_an_active_turn_finishes() {
         let stale = terminal_record_with_skill_state(1, false);
         let final_record = terminal_record_with_skill_state(2, true);
 
         let selected = latest_seed_record(&stale, Some(&final_record));
 
-        assert_eq!(selected.functions_generation, Some(2));
+        assert_eq!(selected.functions_acknowledged, Some(vec![2]));
         assert_eq!(selected.skill_ack.as_ref().unwrap().generation, 2);
         assert!(selected.skills_started);
         assert!(std::ptr::eq(selected, &final_record));
@@ -2184,11 +2751,13 @@ mod tests {
         initial.options.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["old".into()]),
             baseline: Some("old baseline".into()),
+            baseline_ref: None,
         });
         let mut terminal = terminal_record_with_skill_state(2, true);
         terminal.options.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["new".into()]),
             baseline: Some("new baseline".into()),
+            baseline_ref: None,
         });
         let mut prepared = initial.options.clone();
 
@@ -2208,6 +2777,7 @@ mod tests {
         prepared.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["stale".into()]),
             baseline: Some("stale baseline".into()),
+            baseline_ref: None,
         });
         prepared.skills_prompt = Some("stale legacy body".into());
 
@@ -2227,11 +2797,13 @@ mod tests {
         initial.options.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["prior".into()]),
             baseline: None,
+            baseline_ref: None,
         });
         let mut terminal = terminal_record_with_skill_state(2, true);
         terminal.options.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["prior".into()]),
             baseline: Some("baseline frozen by the completed turn".into()),
+            baseline_ref: None,
         });
         let mut prepared = initial.options.clone();
         prepared.skill_context.as_mut().unwrap().filter = None;
@@ -2244,6 +2816,7 @@ mod tests {
             Some(crate::types::turn::SkillContext {
                 filter: None,
                 baseline: Some("baseline frozen by the completed turn".into()),
+                baseline_ref: None,
             })
         );
         assert_eq!(prepared.skills_prompt, terminal.options.skills_prompt);
@@ -2257,6 +2830,7 @@ mod tests {
         prepared.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["fresh".into()]),
             baseline: Some("fresh baseline".into()),
+            baseline_ref: None,
         });
         let expected = prepared.clone();
 
@@ -2274,6 +2848,7 @@ mod tests {
         prepared.skill_context = Some(crate::types::turn::SkillContext {
             filter: None,
             baseline: None,
+            baseline_ref: None,
         });
 
         let error = rebase_terminal_skill_options(&mut prepared, Some(&terminal), true)
@@ -2292,6 +2867,7 @@ mod tests {
         prepared.skill_context = Some(crate::types::turn::SkillContext {
             filter: None,
             baseline: None,
+            baseline_ref: None,
         });
         let appended = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let append_observer = appended.clone();
@@ -2456,20 +3032,23 @@ mod tests {
     #[test]
     fn skill_context_is_new_for_fresh_sessions_inherited_when_omitted_and_rejects_legacy_changes() {
         let view = crate::skills::EffectiveView::Removed { generation: 1 };
-        let fresh = select_skill_context(None, None, &view).unwrap().unwrap();
+        let fresh = select_skill_context(None, None, &view, true)
+            .unwrap()
+            .unwrap();
         assert_eq!(fresh.filter, None);
 
         let mut previous = options_with(None);
         previous.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["one".into()]),
             baseline: Some("frozen".into()),
+            baseline_ref: None,
         });
         assert_eq!(
-            select_skill_context(Some(&previous), None, &view).unwrap(),
+            select_skill_context(Some(&previous), None, &view, true).unwrap(),
             previous.skill_context
         );
         assert_eq!(
-            select_skill_context(Some(&previous), Some(&[]), &view)
+            select_skill_context(Some(&previous), Some(&[]), &view, true)
                 .unwrap()
                 .unwrap()
                 .filter,
@@ -2479,13 +3058,40 @@ mod tests {
         previous.skill_context = None;
         previous.skills_prompt = Some("legacy body attribution".into());
         assert_eq!(
-            select_skill_context(Some(&previous), None, &view).unwrap(),
+            select_skill_context(Some(&previous), None, &view, true).unwrap(),
             None
         );
         let error =
-            select_skill_context(Some(&previous), Some(&["one".into()]), &view).unwrap_err();
+            select_skill_context(Some(&previous), Some(&["one".into()]), &view, true).unwrap_err();
         assert_eq!(error.code(), "harness/invalid_request");
         assert!(error.to_string().contains("start a new session"));
+    }
+
+    /// `skills_index: false` on the session's profile: a new session gets no
+    /// skill context (so no index), even with an explicit `options.skills`;
+    /// a reused session keeps the context it already has.
+    #[test]
+    fn skills_index_off_seeds_no_skill_context() {
+        let view = crate::skills::EffectiveView::Removed { generation: 1 };
+        assert_eq!(
+            select_skill_context(None, None, &view, false).unwrap(),
+            None
+        );
+        assert_eq!(
+            select_skill_context(None, Some(&["x".into()]), &view, false).unwrap(),
+            None
+        );
+        let mut previous = options_with(None);
+        previous.skill_context = Some(crate::types::turn::SkillContext {
+            filter: None,
+            baseline: Some("frozen".into()),
+            baseline_ref: None,
+        });
+        assert_eq!(
+            select_skill_context(Some(&previous), None, &view, false).unwrap(),
+            previous.skill_context,
+            "a reused session keeps its own context"
+        );
     }
 
     #[test]
@@ -2534,11 +3140,13 @@ mod tests {
         active.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["old".into()]),
             baseline: Some("active frozen baseline".into()),
+            baseline_ref: None,
         });
         let mut requested = options_with(None);
         requested.skill_context = Some(crate::types::turn::SkillContext {
             filter: None,
             baseline: Some("stale request baseline".into()),
+            baseline_ref: None,
         });
 
         assert!(merge_explicit_skill_filter(&mut active, &requested, true).unwrap());
@@ -2546,7 +3154,8 @@ mod tests {
             active.skill_context,
             Some(crate::types::turn::SkillContext {
                 filter: None,
-                baseline: Some("active frozen baseline".into())
+                baseline: Some("active frozen baseline".into()),
+                baseline_ref: None,
             })
         );
     }
@@ -2715,7 +3324,7 @@ mod tests {
 
     #[test]
     fn resolved_default_filesystem_root_states() {
-        // Absent → the boot cwd (the local stack's launch folder).
+        // Absent → the project directory: the boot cwd outside Compose.
         let cfg = WorkerConfig::default();
         let cwd = std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
         assert_eq!(
@@ -2753,6 +3362,7 @@ mod tests {
             model: model.map(str::to_string),
             contract_digests: Default::default(),
             reasoning_effort: None,
+            skills_index: true,
             name: "Tech Leader".into(),
             icon: None,
             color: None,
@@ -2848,6 +3458,70 @@ mod tests {
                 .unwrap_or_default()
                 .contains("# System rules"),
             "the built-in identity never rides under a profile"
+        );
+    }
+
+    fn provider_only_request(session_id: Option<&str>) -> SendRequest {
+        SendRequest {
+            session_id: session_id.map(String::from),
+            message: MessageInput::Text("hi".into()),
+            model: None,
+            provider: Some("anthropic".into()),
+            idempotency_key: None,
+            session: None,
+            options: None,
+        }
+    }
+
+    #[test]
+    fn a_provider_only_send_starts_on_the_providers_default_model() {
+        let req = provider_only_request(None);
+        let route = resolve_model_route(None, &req, None, Some("claude-sonnet-5-5".into()))
+            .expect("default model fills the gap");
+        assert_eq!(
+            route,
+            ("claude-sonnet-5-5".into(), Some("anthropic".into())),
+            "the default rides with the provider that declared it"
+        );
+        // A session with no prior turn is as new as a session-less send.
+        let req = provider_only_request(Some("s-1"));
+        let route = resolve_model_route(None, &req, None, Some("claude-sonnet-5-5".into()))
+            .expect("default model fills the gap");
+        assert_eq!(route.0, "claude-sonnet-5-5");
+    }
+
+    #[test]
+    fn explicit_and_profile_models_outrank_the_provider_default() {
+        let mut req = provider_only_request(None);
+        req.model = Some("claude-opus-5-5".into());
+        let route =
+            resolve_model_route(None, &req, None, Some("claude-sonnet-5-5".into())).unwrap();
+        assert_eq!(route.0, "claude-opus-5-5");
+        let profile = Some((
+            "codex/gpt-6.1-sol".to_string(),
+            Some("openai-codex".to_string()),
+        ));
+        let route =
+            resolve_model_route(profile, &req, None, Some("claude-sonnet-5-5".into())).unwrap();
+        assert_eq!(
+            route,
+            ("codex/gpt-6.1-sol".into(), Some("openai-codex".into())),
+            "a profile's provider wins over the request's"
+        );
+    }
+
+    #[test]
+    fn without_a_provider_default_the_old_errors_stand() {
+        let err = resolve_model_route(None, &provider_only_request(None), None, None).unwrap_err();
+        assert!(
+            matches!(&err, HarnessError::InvalidRequest(m) if m.contains("NEW session requires `model`")),
+            "{err:?}"
+        );
+        let err =
+            resolve_model_route(None, &provider_only_request(Some("s-1")), None, None).unwrap_err();
+        assert!(
+            matches!(&err, HarnessError::InvalidRequest(m) if m.contains("this session has none")),
+            "{err:?}"
         );
     }
 

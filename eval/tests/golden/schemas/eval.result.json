@@ -1728,6 +1728,95 @@
           }
         ]
       },
+      "ModelUsageV1": {
+        "additionalProperties": false,
+        "description": "What the steps one model generated used. A conversation can switch models mid-way, and providers differ in what they report (one may send tokens and no cost, another nothing), so the session's counters alone cannot say which model a gap belongs to.",
+        "properties": {
+          "cache_read_tokens": {
+            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cache_write_tokens": {
+            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cost_usd": {
+            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "function_calls": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "input_tokens": {
+            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "output_tokens": {
+            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": "string"
+          },
+          "reasoning_tokens": {
+            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "turns": {
+            "description": "Model steps (assistant messages) this model generated.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cache_read_tokens",
+          "cache_write_tokens",
+          "cost_usd",
+          "function_calls",
+          "input_tokens",
+          "model",
+          "output_tokens",
+          "provider",
+          "reasoning_tokens",
+          "turns"
+        ],
+        "type": "object"
+      },
       "MonitorModelV1": {
         "additionalProperties": false,
         "description": "The Harness model the user chose for investigations. Credentials stay in the provider worker; this request never carries a key.",
@@ -2503,6 +2592,13 @@
       "SessionUsageTotalsV1": {
         "additionalProperties": false,
         "properties": {
+          "by_model": {
+            "description": "The same counters per model that generated a step, ordered by provider then model. Absent when nothing generated, and from a harness that predates it.",
+            "items": {
+              "$ref": "#/definitions/ModelUsageV1"
+            },
+            "type": "array"
+          },
           "cache_read_tokens": {
             "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "uint64",
@@ -2594,6 +2690,13 @@
       "SessionUsageV1": {
         "additionalProperties": false,
         "properties": {
+          "by_model": {
+            "description": "The same counters per model that generated a step, ordered by provider then model. Absent when nothing generated, and from a harness that predates it.",
+            "items": {
+              "$ref": "#/definitions/ModelUsageV1"
+            },
+            "type": "array"
+          },
           "cache_read_tokens": {
             "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "uint64",
@@ -3220,14 +3323,25 @@
         "type": "object"
       },
       "ThinkingLevel": {
-        "enum": [
-          "minimal",
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ],
-        "type": "string"
+        "oneOf": [
+          {
+            "enum": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "No reasoning at all; honoured only where the model advertises `supports_thinking_off` (elsewhere the provider falls back to its own lowest setting, or omits the parameter, and warns).",
+            "enum": [
+              "off"
+            ],
+            "type": "string"
+          }
+        ]
       },
       "TriageFailureV1": {
         "additionalProperties": false,

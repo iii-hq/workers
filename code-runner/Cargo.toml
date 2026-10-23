@@ -2,7 +2,7 @@
 
 [package]
 name = "code-runner"
-version = "0.1.12"
+version = "0.1.14"
 edition = "2021"
 publish = false
 
@@ -14,8 +14,8 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.23.0"
-iii-helpers = "=0.23.0"
+iii-sdk = "=0.24.6"
+iii-helpers = "=0.24.6"
 # The two engines, as libraries. Both are bus-free: this worker owns the only
 # connection and implements `iii_node_core::engine::Engine` against it.
 iii-node-core = { path = "../crates/node-core" }

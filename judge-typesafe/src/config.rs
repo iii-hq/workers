@@ -6,7 +6,10 @@ use serde_json::Value;
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct JevConfig {
-    /// Provider credential. A nonblank value overrides TYPESAFE_API_KEY captured at boot.
+    /// Provider credential, or a secret://NAME reference (e.g. secret://TYPESAFE_API_KEY)
+    /// resolved through the secrets worker at call time. A nonblank value overrides
+    /// TYPESAFE_API_KEY captured at boot; a reference that does not resolve fails with
+    /// missing_key instead of falling back to it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
     /// Default model for requests that omit their model.

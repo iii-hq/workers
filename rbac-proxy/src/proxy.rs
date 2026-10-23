@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::ws::{CloseFrame as AxumCloseFrame, Message as AxumMessage, WebSocket};
 use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
@@ -124,9 +125,12 @@ async fn handle_connection(
     let (client_out, mut client_out_rx) = mpsc::channel::<AxumMessage>(128);
     let (engine_out, mut engine_out_rx) = mpsc::channel::<TungMessage>(128);
 
-    let client_writer = tokio::spawn(async move {
+    // The writer stops after a Close, so the proxy-initiated close below can
+    // wait for it to flush what was queued before it.
+    let mut client_writer = tokio::spawn(async move {
         while let Some(m) = client_out_rx.recv().await {
-            if client_sink.send(m).await.is_err() {
+            let is_close = matches!(m, AxumMessage::Close(_));
+            if client_sink.send(m).await.is_err() || is_close {
                 break;
             }
         }
@@ -156,6 +160,7 @@ async fn handle_connection(
     });
 
     // Direction A: downstream worker → engine (intercept Text frames).
+    // Resolves to `true` when the proxy itself closed the connection.
     let a_int = interceptor.clone();
     let a_client_out = client_out.clone();
     let a_engine_out = engine_out.clone();
@@ -176,6 +181,15 @@ async fn handle_connection(
                         }
                     }
                     DownstreamAction::Drop => {}
+                    DownstreamAction::Close(replies) => {
+                        for reply in replies {
+                            if a_client_out.send(AxumMessage::Text(reply)).await.is_err() {
+                                break;
+                            }
+                        }
+                        let _ = a_client_out.send(AxumMessage::Close(None)).await;
+                        return true;
+                    }
                 },
                 other => {
                     if let Some(out) = axum_to_tungstenite(other) {
@@ -189,6 +203,7 @@ async fn handle_connection(
                 break;
             }
         }
+        false
     };
 
     // Direction B: engine → downstream worker (rewrite Text frames).
@@ -199,12 +214,14 @@ async fn handle_connection(
             let Ok(msg) = msg else { break };
             let is_close = matches!(msg, TungMessage::Close(_));
             match msg {
-                TungMessage::Text(t) => {
-                    let UpstreamAction::Forward(out) = b_int.handle_upstream(t.as_str()).await;
-                    if b_client_out.send(AxumMessage::Text(out)).await.is_err() {
-                        break;
+                TungMessage::Text(t) => match b_int.handle_upstream(t.as_str()).await {
+                    UpstreamAction::Forward(out) => {
+                        if b_client_out.send(AxumMessage::Text(out)).await.is_err() {
+                            break;
+                        }
                     }
-                }
+                    UpstreamAction::Drop => {}
+                },
                 other => {
                     if let Some(out) = tungstenite_to_axum(other) {
                         if b_client_out.send(out).await.is_err() {
@@ -219,9 +236,15 @@ async fn handle_connection(
         }
     };
 
-    tokio::select! {
-        _ = client_to_engine => {}
-        _ = engine_to_client => {}
+    let closed_by_proxy = tokio::select! {
+        closed = client_to_engine => closed,
+        _ = engine_to_client => false,
+    };
+
+    // A proxy-initiated close queued its answer and a Close: let the writer
+    // flush them (bounded) before the sockets are dropped.
+    if closed_by_proxy {
+        let _ = tokio::time::timeout(Duration::from_secs(2), &mut client_writer).await;
     }
 
     // One side closed: tear the connection down promptly. Aborting the writers

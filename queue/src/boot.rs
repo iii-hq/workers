@@ -12,10 +12,12 @@ use crate::adapters::builtin::BuiltinAdapter;
 #[cfg(feature = "rabbitmq")]
 use crate::adapters::rabbitmq::RabbitMQAdapter;
 use crate::adapters::redis::RedisAdapter;
-use crate::config::{adapter_config_value, QueueConfig};
+use crate::config::{adapter_config_value, QueueConfig, RunJobsIn};
 use crate::runtime::FunctionQueueRuntime;
 use crate::store::{FileStore, InMemoryStore, QueueStore};
-use crate::trigger::{IiiInvoker, Invoker, QueueTriggerHandler, SubscriberSpec};
+use crate::trigger::{
+    bind_engine_events, IiiInvoker, Invoker, QueueTriggerHandler, SubscriberSpec,
+};
 use crate::TRIGGER_TYPE;
 
 const LIST_WORKERS_FUNCTION_ID: &str = "engine::workers::list";
@@ -42,7 +44,18 @@ impl BootHandle {
 pub async fn start(project_iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::Result<BootHandle> {
     guard_against_builtin_iii_queue(&project_iii).await?;
 
-    let invoker: Arc<dyn Invoker> = Arc::new(IiiInvoker::new(project_iii.clone()));
+    // Deliveries held for an unregistered target or across an engine restart
+    // re-check on engine registry changes, never on a timer.
+    let engine_events = bind_engine_events(&project_iii);
+    let mut iii_invoker = IiiInvoker::new(project_iii.clone()).with_engine_events(engine_events);
+    if config.run_jobs_in == RunJobsIn::Worker {
+        // A worker without a namespace runs in the engine's `default`.
+        let namespace = project_iii
+            .namespace()
+            .unwrap_or_else(|| "default".to_string());
+        iii_invoker = iii_invoker.with_worker_namespace(namespace);
+    }
+    let invoker: Arc<dyn Invoker> = Arc::new(iii_invoker);
     // No fallback to builtin on a bad config: an adapter that fails to build
     // at boot (e.g. redis/rabbitmq unreachable) must fail the boot itself,
     // matching the engine's `make_adapter` behavior for `iii-queue`.

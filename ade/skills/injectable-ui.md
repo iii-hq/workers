@@ -148,12 +148,13 @@ consoles: feature-detect them.
 | `host.triggerRenderers?` | Layered trigger presentation; see below. |
 | `host.configForms` | The deliberate form for one configuration entry in global Settings. There is no schema-generated fallback: every configurable worker registers one. The host owns dirty tracking, validation, save, reset and the SaveBar; honor `focusField`. `{ layout: 'full' }` only for a workbench that owns its scrolling. Form anatomy and primitives: `ade/design-console-ui` › Configuration forms. |
 | `host.providerConfigForms?` | Replace the form body for one exact `llm-router` provider id inside the model picker; provider-owned OAuth, device flow or companion login. Never solicit a plaintext API key. Props: `ProviderConfigFormProps`. |
-| `host.chat?` | `registerSessionChip`, `registerTurnSummary?`, `registerComposerAction?`, `registerComposerControl?`, `registerTranscriptRenderer?`, `compose?`, `openDraft?`, `selectConversation?`, `composerModel?`, `requestWorkingDirectoryChange?`, `requestThinkingLevelChange?`. Feature-detect each method. `registerComposerControl` puts a compact per-session setting beside the model picker; it gets the session's `metadata` and a `setMetadata(patch)` the console persists through its own writer (never call `session::set-meta` yourself), and the value applies from the next turn like the model (the judge's provider picker). With `placement: 'project'` the control sits in the working-directory strip after the folder instead, only where that strip shows, for what belongs to the folder (the ide's worktree switcher); every control also gets the session's `workingDir`, and moves it with `requestWorkingDirectoryChange`. |
+| `host.chat?` | `registerSessionChip`, `registerTurnSummary?`, `registerContextSection?`, `registerComposerAction?`, `registerComposerControl?`, `registerTranscriptRenderer?`, `compose?`, `openDraft?`, `selectConversation?`, `composerModel?`, `requestWorkingDirectoryChange?`, `requestThinkingLevelChange?`. Feature-detect each method. `registerComposerControl` puts a compact per-session setting beside the model picker; it gets the session's `metadata` and a `setMetadata(patch)` the console persists through its own writer (never call `session::set-meta` yourself), and the value applies from the next turn like the model (the judge's provider picker). With `placement: 'project'` the control sits in the working-directory strip after the folder instead, only where that strip shows, for what belongs to the folder (the ide's worktree switcher); every control also gets the session's `workingDir`, and moves it with `requestWorkingDirectoryChange`. `registerContextSection({ id, title, order?, render })` adds a section to the chat's Context side panel: the console draws the header (title, worker, count, fold, drag handle) and keeps the user's order; `render` gets `{ sessionId, workingDir?, active, isStreaming, setSummary }`, reads only while `active`, and reports `setSummary({ count, brief, tone, empty })`, where `empty: true` leaves the section out. |
 | `host.panels?` | `open({ pageId, context })` places or reuses a registered page beside chat and delivers `panelContext`. Pass opaque ids; fetch bodies from the worker. |
-| `host.overlays?` | `register({ id, render })` — a floating layer over the workspace (the browser's live preview). Fall back to the page when absent. |
+| `host.mentions?` | `registerRenderer({ provider, Preview })` draws the hover preview of the worker's own `@<provider>(id="…")` chat mentions from the mention view (`view.data`); `Preview` gets `{ provider, view, open }`. The provider itself is declared by the worker's backend, not here (`ade/mentions`). A renderer that throws falls back to the generic card. |
+| `host.overlays?` | `register({ id, render })` — a floating layer over the workspace (the browser's live preview, the learn-iii tour). `render` receives `{ conversationId }`, the active chat. A worker command registered with `host.commands` is listed whether or not its page exists, so an overlay-only worker keeps its palette row. Fall back to the page when absent. |
 | `host.palette?` | `registerSource({ id, title, kind, prefix?, minQuery?, search })` adds live rows to the command palette; `open({ query? })`. |
 | `host.commands?` | `register(pageId, commands)` — palette rows for a page that may not be open yet (`run` usually calls `panels.open`). A mounted page contributes keys through `PageRenderProps.commands`. |
-| `host.iii` | The tab's bus client: `trigger(functionId, payload?, { timeoutMs? })`, `on(functionId, handler)`, `registerTrigger({ type, function_id, config })`, `addConnectionStateListener`, `browserId`. Injected UI *acts* by invoking its own worker's functions. |
+| `host.iii` | The tab's bus client: `trigger(functionId, payload?, { timeoutMs? })`, `on(functionId, handler)`, `registerTrigger({ type, function_id, config })`, `addConnectionStateListener`, `browserId`. Injected UI *acts* by invoking its own worker's functions. A link to the worker's public pages takes its port from `http::status` at runtime, never a fixed 3111. |
 | `host.importModule?` | `importModule<T>(path)` imports one of the worker's `console:module` assets on demand and resolves to its namespace (Lazy modules below); rejects when nothing is served at `/ui/<path>`. |
 | `host.components`, `host.path`, `host.useTheme`, `host.uiClasses`, `host.workspace?`, `host.screen?` | Runtime component record, the current asset path, theme, class recipes, recent directories, visible-screen lease. |
 
@@ -242,6 +243,20 @@ Two subpaths **bundle** (React-free code the console itself uses):
   `useWorkerLive({ iii, triggers, fetch, pollMs?, handlerId })`.
 - `@iii-dev/console-ui/format` — `formatRelative`, `formatDuration`,
   `formatBytes`, `errorMessage`, `errorCode`, `copyText`.
+
+Literal shapes (`@iii-dev/console-ui/index.d.ts`, `hooks.d.mts`):
+
+```ts
+SelectOption<T extends string = string>: { value: T; label: string; title?: string; description?: string; disabled?: boolean }
+SelectGroup<T extends string = string>: { label: string; options: SelectOption<T>[] }
+SelectProps<T extends string = string>: { value: T | undefined; options?: SelectOption<T>[]; groups?: SelectGroup<T>[]; onChange: (next: T) => void; disabled?: boolean; className?: string; id?: string; name?: string; 'data-field'?: string; appearance?: 'default' | 'inline'; showChevron?: boolean; 'aria-label'?: string; 'aria-busy'?: boolean; 'aria-invalid'?: React.AriaAttributes['aria-invalid']; 'aria-describedby'?: string; placeholder?: string; sheetTitle?: React.ReactNode; sheetDescription?: React.ReactNode; allowEmpty?: boolean; emptyLabel?: string; onClear?: () => void; renderGroupHeader?: (group: SelectGroup<T>) => React.ReactNode }
+Select: <T extends string = string>(props: SelectProps<T>) => React.ReactNode
+CheckboxProps: Omit<React.InputHTMLAttributes<HTMLInputElement>, 'children' | 'className' | 'type'> & { className?: string; label?: React.ReactNode; indeterminate?: boolean }
+Checkbox: React.ComponentType<CheckboxProps & React.RefAttributes<HTMLInputElement>>
+WorkerLiveOptions<T>: { iii: ExtensionIii; triggers: readonly (string | { type: string; config?: Record<string, unknown> })[]; fetch: () => Promise<T>; pollMs?: number /* deprecated, ignored */; handlerId: string }
+WorkerLive<T>: { data: T | null; loading: boolean; error: string | null; live: boolean; refresh: () => void }
+useWorkerLive: <T>(options: WorkerLiveOptions<T>) => WorkerLive<T>
+```
 
 Import these instead of keeping a local copy; the migration plan lists the
 copies still to be replaced.
@@ -459,7 +474,7 @@ end.
 | Whole console restyled | unscoped rules reached the console — check `warnings` in the manifest |
 | Registered but absent | inspect `workers[].enabled` and `injectableUi.disabledWorkers` in the manifest |
 
-Inspect `console::ui-manifest` (or `GET <console-host>:3113/ui`),
+Inspect `console::ui-manifest` (or `GET <url>/ui`, `url` from `console::status`),
 `/ui/<path>`, registered triggers, and `[iii-ui]` browser logs in that order.
 The manifest is authoritative; its `warnings` must be empty.
 
@@ -483,7 +498,7 @@ Validate all four layers; a green build alone is not enough.
    non-interactive compact display, complete-detail lifecycle fidelity,
    action fallback, fail-closed redaction, and disable/disconnect fallback.
 
-**The page alone: `#/worker/<scope>[/<page-id>][?context=<json>]`.** The
+**The page alone: `<url>/#/worker/<scope>[/<page-id>][?context=<json>]`, with `url` from `console::status`.** The
 console renders that one page over the full viewport — no tab strip, chat or
 palette; the tab title is `iii - <scope>` — and never reads or writes the
 shared workspace layout, so a Playwright or `browser`-worker session can open

@@ -1,8 +1,9 @@
 //! The consolidation pass: deterministic near-duplicate detection over one
 //! bank's live memories, applied strictly through the memory worker's
-//! public functions — `memory::supersede` retires the duplicate with a
-//! pointer, `memory::save` reinforces the survivor. This worker never
-//! touches memory's files; the append-only store contract is the seam.
+//! public functions — `memory::supersede` with `reinforce` retires the
+//! duplicate with a pointer and lets the survivor absorb its observations
+//! in one call. This worker never touches memory's files; the append-only
+//! store contract is the seam.
 //!
 //! v1 detection is deliberately conservative and fully deterministic:
 //! automatic writes happen ONLY for normalized-text equality
@@ -36,6 +37,14 @@ pub struct MemoryRow {
     pub corroboration: u32,
     #[serde(default)]
     pub created_at: u64,
+    /// Last write (reinforcement included): the semantic tier's cursor and
+    /// its "last stated" time.
+    #[serde(default)]
+    pub updated_at: u64,
+    /// When the fact was last stated (memory's `stated_at`; pin/tag edits
+    /// do not bump it). Absent on legacy records.
+    #[serde(default)]
+    pub stated_at: Option<u64>,
 }
 
 /// One planned merge: `losers` retire in favor of `winner`.
@@ -77,8 +86,61 @@ pub struct BankReport {
     /// Work left behind by the per-run cap; the next pass picks it up.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub capped: usize,
+    /// Real failures (reads, writes). Any error keeps the pass due.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<String>,
+    /// Soft skips (an optional tier unavailable, a sibling too old) —
+    /// telemetry only: they never block the checkpoint, so an absent router
+    /// cannot re-run the whole pass on every heartbeat.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+    /// Semantic-tier decisions (applied, or planned on dry runs), each with
+    /// the judge's reason.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub semantic: Vec<crate::semantic::SemanticAction>,
+    /// Judge actions dropped by validation (unknown alias, pinned target,
+    /// wrong direction, a lost number, ...).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub semantic_rejected: usize,
+    /// New memories the judge could not decide even alone (a poison input);
+    /// skipped past the cursor so they cannot wedge the tier.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub semantic_failed: Vec<String>,
+}
+
+/// Reason carried on the `memory::item-changed` events of a deterministic
+/// merge.
+const REASON_NORMALIZED: &str = "normalized-text duplicate";
+/// Reason carried on a judge-confirmed reorder merge.
+const REASON_REORDER: &str = "LLM judge confirmed reorder equivalence";
+
+const NOTE_OLD_MEMORY: &str = "memory worker did not report reinforcement — upgrade memory; \
+                               survivors were not reinforced";
+
+/// Count a `memory::supersede{reinforce}` reply: `reinforced: true` counts,
+/// `false` is a pinned survivor (untouchable), and an ABSENT field is an
+/// older memory worker that ignored `reinforce` — noted once per bank,
+/// never counted as reinforced.
+pub(crate) fn tally_reinforcement(report: &mut BankReport, reply: &Value) {
+    match reply.get("reinforced").and_then(Value::as_bool) {
+        Some(true) => report.reinforced += 1,
+        Some(false) => {}
+        None => {
+            if !report.notes.iter().any(|n| n == NOTE_OLD_MEMORY) {
+                report.notes.push(NOTE_OLD_MEMORY.into());
+            }
+        }
+    }
+}
+
+/// The reorder groups the judge confirmed, deduplicated and bounds-checked
+/// (a repeated index would supersede twice and fail as already retired).
+fn confirmed_groups(indices: &[usize], reorder: &[&PlannedGroup]) -> Vec<PlannedGroup> {
+    let unique: std::collections::BTreeSet<usize> = indices.iter().copied().collect();
+    unique
+        .into_iter()
+        .filter_map(|i| reorder.get(i).map(|g| (*g).clone()))
+        .collect()
 }
 
 fn is_zero(n: &usize) -> bool {
@@ -170,7 +232,11 @@ fn group_by(rows: &[MemoryRow], key: fn(&str) -> String, report_only: bool) -> V
     planned
 }
 
-async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Value, String> {
+pub(crate) async fn call(
+    iii: &IIIClient,
+    function_id: &str,
+    payload: Value,
+) -> Result<Value, String> {
     iii.trigger(TriggerRequest {
         function_id: function_id.to_string(),
         payload,
@@ -198,12 +264,15 @@ pub async fn list_banks(iii: &IIIClient, allow: &[String]) -> Result<Vec<String>
 
 /// Every LIVE memory in a bank, paged. Undecodable rows are reported —
 /// a partial scan must not read as a complete one.
-async fn fetch_live(
+pub(crate) async fn fetch_live(
     iii: &IIIClient,
     bank: &str,
     errors: &mut Vec<String>,
 ) -> Result<Vec<MemoryRow>, String> {
     let mut rows = Vec::new();
+    // Offset paging over a newest-first list can repeat a row when a write
+    // lands between pages; a duplicate would break batch aliasing.
+    let mut seen = std::collections::HashSet::new();
     let mut offset = 0usize;
     loop {
         let reply = call(
@@ -219,7 +288,11 @@ async fn fetch_live(
         let got = page.len();
         for m in page {
             match serde_json::from_value::<MemoryRow>(m.clone()) {
-                Ok(row) => rows.push(row),
+                Ok(row) => {
+                    if seen.insert(row.id.clone()) {
+                        rows.push(row);
+                    }
+                }
                 Err(e) => {
                     let id = m.get("id").and_then(Value::as_str).unwrap_or("<no id>");
                     errors.push(format!("undecodable memory `{id}`: {e}"));
@@ -261,21 +334,27 @@ pub async fn run_bank(
         if dry_run || group.report_only {
             continue;
         }
-        apply_group(iii, bank, group, budget, &mut report).await;
+        apply_group(iii, bank, group, budget, &mut report, REASON_NORMALIZED).await;
     }
     report.groups = groups;
     (report, rows)
 }
 
-/// Supersede a group's losers into its winner and reinforce the winner,
-/// within the pass budget. Shared by the deterministic pass and the
-/// judge-confirmed merges.
+/// Supersede a group's losers into its winner, letting the winner absorb
+/// each loser's observations (`reinforce`), within the pass budget. Shared
+/// by the deterministic pass and the judge-confirmed merges.
+///
+/// Reinforcement rides the supersede itself: the old follow-up
+/// `memory::save(winner_text)` silently created a duplicate whenever the
+/// winner's text had been edited (`memory::update` keeps the old id, so the
+/// fingerprint no longer matches) and wrote pinned winners.
 async fn apply_group(
     iii: &IIIClient,
     bank: &str,
     group: &PlannedGroup,
     budget: &mut usize,
     report: &mut BankReport,
+    reason: &str,
 ) -> usize {
     let mut applied = 0usize;
     for loser in &group.loser_ids {
@@ -286,26 +365,21 @@ async fn apply_group(
         let superseded = call(
             iii,
             "memory::supersede",
-            json!({ "bank": bank, "id": loser, "superseded_by": group.winner_id }),
+            json!({
+                "bank": bank,
+                "id": loser,
+                "superseded_by": group.winner_id,
+                "reinforce": true,
+                "reason": reason,
+            }),
         )
         .await;
         match superseded {
-            Ok(_) => {
+            Ok(reply) => {
                 *budget -= 1;
                 applied += 1;
                 report.superseded += 1;
-                // The survivor absorbs the duplicate observation:
-                // fingerprint-matched save = corroboration + 1.
-                match call(
-                    iii,
-                    "memory::save",
-                    json!({ "bank": bank, "text": group.winner_text }),
-                )
-                .await
-                {
-                    Ok(_) => report.reinforced += 1,
-                    Err(e) => report.errors.push(e),
-                }
+                tally_reinforcement(report, &reply);
             }
             Err(e) => report.errors.push(e),
         }
@@ -313,7 +387,7 @@ async fn apply_group(
     applied
 }
 
-/// Options for the LLM-assisted tier (None = tier off).
+/// Options for the LLM-assisted tier.
 #[derive(Debug, Clone)]
 pub struct LlmOptions {
     pub model: String,
@@ -322,8 +396,8 @@ pub struct LlmOptions {
 
 /// The judge tier for one bank: confirmed reorder merges + rule
 /// promotions. Runs AFTER the deterministic pass, never on dry runs.
-/// Fail-soft — an unavailable router lands in the report's errors and the
-/// pass stays valid.
+/// Fail-soft — an unavailable router lands in the report's notes (never
+/// errors: it must not keep the pass due) and the pass stays valid.
 pub async fn run_llm_tier(
     iii: &IIIClient,
     bank: &str,
@@ -340,19 +414,18 @@ pub async fn run_llm_tier(
     let reply = match crate::llm::judge(iii, &opts.model, prompt).await {
         Ok(r) => r,
         Err(e) => {
-            report.errors.push(format!("llm tier skipped: {e}"));
+            // ponytail: this routing (notes, not errors) has no test seam
+            // until IIIClient/llm::judge can be faked; the checkpoint policy
+            // it relies on is pinned in functions.rs.
+            report.notes.push(format!("llm tier skipped: {e}"));
             return;
         }
     };
 
     // Confirmed merges: clone the groups first (report holds them).
-    let confirmed: Vec<PlannedGroup> = reply
-        .merge_groups
-        .iter()
-        .filter_map(|i| reorder.get(*i).map(|g| (*g).clone()))
-        .collect();
+    let confirmed = confirmed_groups(&reply.merge_groups, &reorder);
     for group in &confirmed {
-        let applied = apply_group(iii, bank, group, budget, report).await;
+        let applied = apply_group(iii, bank, group, budget, report, REASON_REORDER).await;
         report.llm_merged += applied;
     }
 
@@ -382,7 +455,7 @@ pub async fn run_llm_tier(
             .unwrap_or_default()
             .to_string(),
         Err(e) => {
-            report.errors.push(format!("promotion skipped: {e}"));
+            report.notes.push(format!("promotion skipped: {e}"));
             return;
         }
     };
@@ -413,7 +486,43 @@ mod tests {
             pinned,
             corroboration,
             created_at,
+            updated_at: created_at,
+            stated_at: None,
         }
+    }
+
+    #[test]
+    fn reinforcement_tally_counts_only_true_and_notes_an_old_worker_once() {
+        let mut report = BankReport::default();
+        tally_reinforcement(&mut report, &json!({"memory": {}, "reinforced": true}));
+        assert_eq!(report.reinforced, 1);
+        // Pinned survivor: untouchable, not reinforced.
+        tally_reinforcement(&mut report, &json!({"memory": {}, "reinforced": false}));
+        assert_eq!(report.reinforced, 1);
+        // An older memory worker omits the field: never papered over.
+        tally_reinforcement(&mut report, &json!({"memory": {}}));
+        tally_reinforcement(&mut report, &json!({"memory": {}}));
+        assert_eq!(report.reinforced, 1);
+        assert_eq!(report.notes, vec![NOTE_OLD_MEMORY.to_string()]);
+    }
+
+    #[test]
+    fn confirmed_groups_dedup_and_bound_the_judge_indices() {
+        let g = |w: &str| PlannedGroup {
+            winner_id: w.into(),
+            winner_text: w.into(),
+            loser_ids: vec![format!("{w}-l")],
+            loser_texts: vec![],
+            skipped_pinned: vec![],
+            report_only: true,
+        };
+        let (a, b) = (g("a"), g("b"));
+        let reorder = vec![&a, &b];
+        // A repeated index used to supersede twice ("already retired" error
+        // -> blocked checkpoint); out-of-range indices are ignored.
+        let picked = confirmed_groups(&[1, 1, 0, 7], &reorder);
+        let winners: Vec<&str> = picked.iter().map(|p| p.winner_id.as_str()).collect();
+        assert_eq!(winners, vec!["a", "b"]);
     }
 
     #[test]

@@ -1,9 +1,9 @@
 //! `coder::search` — combined path + content search.
 //!
-//! Walks the resolved folder with `walkdir`, filtering by include/exclude
-//! globs (matched against the path relative to its containing root) and
-//! skipping non-accessible files entirely so the search can't reveal
-//! their content. Noise paths matching `default_exclude_globs` are also
+//! Walks the resolved folder (or the one file `path` names) with `walkdir`,
+//! filtering by include/exclude globs (matched against the path relative to
+//! its containing root) and skipping non-accessible files entirely so the
+//! search can't reveal their content. Noise paths matching `default_exclude_globs` are also
 //! skipped by default — descent into matching directories is suppressed
 //! and matching files are omitted; opt out per call with
 //! `use_default_excludes: false`. That filter is hide-only and
@@ -28,27 +28,47 @@ use crate::code::config::CoderConfig;
 use crate::code::error::{err_to_string, CoderError};
 use crate::code::path::PathResolver;
 
-// examples are wire-contract; goldens pin them.
+// examples are wire-contract; goldens pin them. `remote = "Self"` derives
+// an inherent `deserialize` for the hand-rolled impl below to wrap; the
+// schemars rename keeps the published schema's name.
 #[derive(Debug, Deserialize, JsonSchema)]
-#[schemars(example = "example_search_input")]
+#[serde(remote = "Self")]
+#[schemars(
+    rename = "SearchInput",
+    example = "example_search_input",
+    example = "example_search_regex"
+)]
 pub struct SearchInput {
-    /// Pattern to search for. Treated as a regex when `regex: true`,
-    /// otherwise as a literal substring. May be empty only when
-    /// `search_content` is false: a path-only search with no query lists
-    /// every path (with `fuzzy_paths`, shallow and short paths first).
+    /// Text to find: a literal substring, or a regex with `regex: true`.
+    /// Always send it; `""` is allowed only when `search_content` is false,
+    /// and lists every path (with `fuzzy_paths`, shallow and short paths
+    /// first).
+    // Optional in the published schema only (serde still requires `query` or
+    // `pattern`): a required `query` lets the harness judge rename `pattern`
+    // before dispatch, skipping the pre-pass and its `regex: true`. Trade-off:
+    // with nothing required the judge renames no key to `query` and the
+    // harness adds no diagnosis; any other misnamed key reaches the ide and
+    // fails with "missing field `query`".
+    // `skip_serializing_if` keeps `"default": ""` out of the schema.
+    #[schemars(default, skip_serializing_if = "String::is_empty")]
     pub query: String,
-    /// Folder to search (default `.`); globs match relative to its root, result
-    /// paths are absolute.
+    /// Folder or file to search (default `.`); a file searches just that file.
+    /// It only narrows the walk: globs are NOT relative to it, they match paths
+    /// relative to the session root (or to the configured root that contains
+    /// them; see coder::info). Result paths are absolute.
     #[serde(default = "default_path")]
     pub path: String,
     #[serde(default)]
     pub regex: bool,
     #[serde(default)]
     pub ignore_case: bool,
-    /// Root-relative glob patterns paths must match; empty = everything.
+    /// Glob patterns paths must match, relative to the SESSION ROOT, never to
+    /// `path`: with path `ade`, write `ade/README.md` or `**/README.md`, not
+    /// `README.md`. Empty = everything.
     #[serde(default)]
     pub include_globs: Vec<String>,
-    /// Glob patterns (same relative-to-root matching) that exclude paths.
+    /// Glob patterns (relative to the session root, like include_globs) that
+    /// exclude paths.
     #[serde(default)]
     pub exclude_globs: Vec<String>,
     /// Optional explicit cap. Falls back to config when unset.
@@ -58,8 +78,9 @@ pub struct SearchInput {
     /// truncated for the match snippet.
     #[serde(default)]
     pub max_line_bytes: Option<u32>,
-    /// Lines of context before each content match (max 10, C210 above);
-    /// truncated to max_line_bytes and counted in the budget. Default 0.
+    /// Lines of context before each content match (max 10; more is clamped
+    /// to 10); truncated to max_line_bytes and counted in the budget.
+    /// Default 0.
     #[serde(default)]
     pub context_lines_before: Option<u32>,
     /// Lines of context after each content match; same rules as
@@ -87,13 +108,50 @@ pub struct SearchInput {
     #[serde(default)]
     pub fuzzy_paths: bool,
     /// Walk dot-files and dot-folders (`.github`, `.env`, …); default true.
-    /// `false` leaves them out, the way an editor's quick open does.
+    /// `false` leaves them out, the way an editor's quick open does. A `path`
+    /// that names a dot-file or dot-folder is still searched: naming it is
+    /// explicit intent.
     #[serde(default = "default_true")]
     pub include_hidden: bool,
     /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
     pub fs_scope: Option<crate::fs::FsScope>,
+    /// Set by deserialization when `pattern` stood in for `query`; the
+    /// handler returns it as the result's `notice`. Never read from the wire.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub notice: Option<String>,
+}
+
+/// `pattern` (the rg/grep name) stands in for an absent `query`. Both values
+/// seen in sessions were regexes, so `regex` defaults to true unless sent;
+/// `{query, pattern}` keeps `query`, and a non-string `pattern` is dropped
+/// (serde then names the missing `query`). The published schema keeps one
+/// name; the result's `notice` says what ran.
+impl<'de> Deserialize<'de> for SearchInput {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut value = serde_json::Value::deserialize(deserializer)?;
+        let mut notice = None;
+        if let Some(obj) = value.as_object_mut().filter(|o| !o.contains_key("query")) {
+            if let Some(pattern) = obj.remove("pattern").filter(serde_json::Value::is_string) {
+                obj.insert("query".into(), pattern);
+                let regex = if obj.contains_key("regex") {
+                    ""
+                } else {
+                    obj.insert("regex".into(), true.into());
+                    " with `regex: true`"
+                };
+                notice = Some(format!(
+                    "`pattern` was read as `query`{regex}; send `query` (and \
+                     `regex: true` for a regex)."
+                ));
+            }
+        }
+        let mut input = SearchInput::deserialize(value).map_err(serde::de::Error::custom)?;
+        input.notice = notice;
+        Ok(input)
+    }
 }
 
 fn default_true() -> bool {
@@ -113,6 +171,16 @@ fn example_search_input() -> serde_json::Value {
         "context_lines_before": 2,
         "context_lines_after": 2,
         "search_content": true,
+        "search_paths": false
+    })
+}
+
+/// Regex form: `query` is a regex only with `regex: true`.
+fn example_search_regex() -> serde_json::Value {
+    serde_json::json!({
+        "query": "registerTrigger|registerFunction",
+        "regex": true,
+        "path": "src",
         "search_paths": false
     })
 }
@@ -168,6 +236,10 @@ pub struct SearchOutput {
     /// `search_response_budget_bytes` byte budget. When true, refine the
     /// query or add include_globs rather than paginate.
     pub truncated: bool,
+    /// Set when the request was adjusted to run (a field read under its
+    /// canonical name, or a value clamped); send the canonical form.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
 }
 
 pub async fn handle(
@@ -175,11 +247,21 @@ pub async fn handle(
     cfg: Arc<CoderConfig>,
     req: SearchInput,
 ) -> Result<SearchOutput, String> {
+    // A refusal of a request read from `pattern` (bad regex, empty query)
+    // carries the notice too: the caller never sent `query` or `regex`.
+    let alias = req.notice.clone();
     // Offload the synchronous recursive content/path scan to a blocking thread
     // so a large search can't stall the shared runtime (shell::exec/jobs/reload).
-    tokio::task::spawn_blocking(move || inner(&resolver, &cfg, req).map_err(err_to_string))
-        .await
-        .map_err(|e| format!("search task join failed: {e}"))?
+    tokio::task::spawn_blocking(move || {
+        inner(&resolver, &cfg, req).map_err(|e| {
+            err_to_string(match (e, alias) {
+                (CoderError::BadInput(m), Some(n)) => CoderError::BadInput(format!("{m} ({n})")),
+                (e, _) => e,
+            })
+        })
+    })
+    .await
+    .map_err(|e| format!("search task join failed: {e}"))?
 }
 
 fn inner(
@@ -199,8 +281,14 @@ fn inner(
     let max_line_bytes = req
         .max_line_bytes
         .unwrap_or(cfg.search_default_max_line_bytes) as usize;
-    let ctx_before = validate_context_lines("context_lines_before", req.context_lines_before)?;
-    let ctx_after = validate_context_lines("context_lines_after", req.context_lines_after)?;
+    let mut notices: Vec<String> = req.notice.into_iter().collect();
+    let ctx_before = clamp_context_lines(
+        "context_lines_before",
+        req.context_lines_before,
+        &mut notices,
+    );
+    let ctx_after =
+        clamp_context_lines("context_lines_after", req.context_lines_after, &mut notices);
 
     // Use `resolve` rather than `require_writable` so a search rooted at
     // a folder that *contains* non-accessible children still works; the
@@ -210,12 +298,23 @@ fn inner(
     // message names the path the caller supplied (standardized wording —
     // REDACTION INVARIANT: identical to the glob-denied message).
     let md = std::fs::metadata(&walk_root).map_err(|e| CoderError::io_for_path(e, &req.path))?;
-    if !md.is_dir() {
+    if !md.is_dir() && !md.is_file() {
         return Err(CoderError::BadInput(format!(
-            "not a directory: {}",
+            "not a directory or file: {}",
             req.path
         )));
     }
+    // A file as `path` is searched alone, like rg/grep. A non-accessible
+    // one is refused with the C211 a missing path gets (REDACTION
+    // INVARIANT); a folder's children are filtered in the walk below.
+    if md.is_file() && resolver.is_non_accessible(&walk_root) {
+        return Err(CoderError::not_found_or_denied(&req.path));
+    }
+    // The folder searched: the walk root, or the parent of a file.
+    let searched_dir = match walk_root.parent() {
+        Some(parent) if md.is_file() => parent.to_path_buf(),
+        _ => walk_root.clone(),
+    };
 
     // Glob/path matching runs on the form relative to the CONTAINING root.
     // In unjailed mode the walk root can sit outside every configured root
@@ -223,11 +322,11 @@ fn inner(
     // root-relative form exists — every entry would be dropped and the
     // search would return a false empty. Fall back to the same anchor that
     // resolved the wire path: the session scope when it contains the walk
-    // root, else the walk root itself.
+    // root, else the folder searched.
     let match_anchor = crate::fs::scope_anchor(req.fs_scope.as_ref())
         .and_then(|root| resolver.session_root(root))
         .filter(|scope| walk_root.starts_with(scope))
-        .unwrap_or_else(|| walk_root.clone());
+        .unwrap_or_else(|| searched_dir.clone());
 
     let include = build_globset(&req.include_globs)?;
     let exclude = build_globset(&req.exclude_globs)?;
@@ -255,8 +354,9 @@ fn inner(
     // Explicitly naming an excluded folder as the walk root expresses
     // the caller's intent to see inside it: the default-exclude filter
     // is disabled for that ENTIRE walk (mirrors coder::tree's behavior).
+    // Naming a file is the same intent.
     let use_default_excludes =
-        req.use_default_excludes && !resolver.is_default_excluded_dir(&walk_root);
+        req.use_default_excludes && md.is_dir() && !resolver.is_default_excluded_dir(&walk_root);
 
     let mut content_matches: Vec<ContentMatch> = Vec::new();
     let mut path_matches: Vec<PathMatch> = Vec::new();
@@ -365,7 +465,7 @@ fn inner(
                     // then drops the leading folder for those entries only;
                     // one anchor for the whole walk keeps the ranking, and the
                     // highlight a UI derives from it, consistent.
-                    let seen = relative_to(&walk_root, abs).unwrap_or_else(|| rel.clone());
+                    let seen = relative_to(&searched_dir, abs).unwrap_or_else(|| rel.clone());
                     if let Some(score) = fuzzy_path_score(query, &seen) {
                         fuzzy_seen += 1;
                         fuzzy_candidates.push(std::cmp::Reverse(FuzzyCandidate {
@@ -473,6 +573,7 @@ fn inner(
         content_matches,
         path_matches,
         truncated,
+        notice: (!notices.is_empty()).then(|| notices.join(" ")),
     })
 }
 
@@ -794,18 +895,17 @@ pub(crate) fn fuzzy_path_score(query: &FuzzyQuery, rel: &str) -> Option<i32> {
 /// Larger windows belong to `coder::read-file` line windows, not search.
 const CONTEXT_LINES_CAP: u32 = 10;
 
-/// Validate one context-lines knob against [`CONTEXT_LINES_CAP`].
-/// `None` means 0 (no context).
-fn validate_context_lines(field: &str, value: Option<u32>) -> Result<usize, CoderError> {
+/// Clamp one context-lines knob to [`CONTEXT_LINES_CAP`], noting a clamp
+/// (without the caller's value: one notice text per field). `None` means 0.
+fn clamp_context_lines(field: &str, value: Option<u32>, notices: &mut Vec<String>) -> usize {
     let v = value.unwrap_or(0);
     if v > CONTEXT_LINES_CAP {
-        return Err(CoderError::BadInput(format!(
-            "{field} is {v} but the maximum is {CONTEXT_LINES_CAP}. \
-             Re-call with {field} <= {CONTEXT_LINES_CAP}; for a wider view \
-             read the file with coder::read-file line_from/line_to."
-        )));
+        notices.push(format!(
+            "{field} above {CONTEXT_LINES_CAP} was clamped to {CONTEXT_LINES_CAP}; \
+             for a wider view read the file with coder::read-file line_from/line_to."
+        ));
     }
-    Ok(v as usize)
+    v.min(CONTEXT_LINES_CAP) as usize
 }
 
 /// Per-line truncation to `max_line_bytes` — one rule for the matched
@@ -1018,6 +1118,7 @@ mod tests {
                 fuzzy_paths: false,
                 include_hidden: true,
                 fs_scope: None,
+                notice: None,
             },
         )
         .await
@@ -1067,6 +1168,7 @@ mod tests {
                 fuzzy_paths: false,
                 include_hidden: true,
                 fs_scope: None,
+                notice: None,
             },
         )
         .await
@@ -1115,6 +1217,7 @@ mod tests {
                 fuzzy_paths: false,
                 include_hidden: true,
                 fs_scope: None,
+                notice: None,
             },
         )
         .await
@@ -1167,6 +1270,7 @@ mod tests {
                 fuzzy_paths: false,
                 include_hidden: true,
                 fs_scope: None,
+                notice: None,
             },
         )
         .await
@@ -1201,6 +1305,7 @@ mod tests {
                 fuzzy_paths: false,
                 include_hidden: true,
                 fs_scope: None,
+                notice: None,
             },
         )
         .await
@@ -1236,6 +1341,7 @@ mod tests {
                 fuzzy_paths: false,
                 include_hidden: true,
                 fs_scope: None,
+                notice: None,
             },
         )
         .await
@@ -1277,6 +1383,7 @@ mod tests {
                 fuzzy_paths: false,
                 include_hidden: true,
                 fs_scope: None,
+                notice: None,
             },
         )
         .await
@@ -1323,6 +1430,7 @@ mod tests {
                 fuzzy_paths: false,
                 include_hidden: true,
                 fs_scope: None,
+                notice: None,
             },
         )
         .await
@@ -1355,6 +1463,7 @@ mod tests {
                 fuzzy_paths: false,
                 include_hidden: true,
                 fs_scope: None,
+                notice: None,
             },
         )
         .await
@@ -1390,6 +1499,7 @@ mod tests {
                 fuzzy_paths: false,
                 include_hidden: true,
                 fs_scope: None,
+                notice: None,
             },
         )
         .await
@@ -1422,6 +1532,7 @@ mod tests {
                 fuzzy_paths: false,
                 include_hidden: true,
                 fs_scope: None,
+                notice: None,
             },
         )
         .await
@@ -1454,6 +1565,7 @@ mod tests {
                 fuzzy_paths: false,
                 include_hidden: true,
                 fs_scope: None,
+                notice: None,
             },
         )
         .await
@@ -1487,6 +1599,7 @@ mod tests {
                 fuzzy_paths: false,
                 include_hidden: true,
                 fs_scope: None,
+                notice: None,
             },
         )
         .await
@@ -1524,6 +1637,7 @@ mod tests {
             fuzzy_paths: false,
             include_hidden: true,
             fs_scope: None,
+            notice: None,
         }
     }
 
@@ -1615,39 +1729,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn context_lines_over_cap_rejected_c210() {
+    async fn context_lines_over_cap_clamped_with_notice() {
         let (tmp, r, c) = setup();
-        write(&tmp, "a.txt", "needle\n");
-        let err = handle(
+        let body: String = (1..=31)
+            .map(|i| {
+                if i == 16 {
+                    "needle\n".into()
+                } else {
+                    format!("l{i}\n")
+                }
+            })
+            .collect();
+        write(&tmp, "a.txt", &body);
+        let out = handle(
             r.clone(),
             c.clone(),
             SearchInput {
                 context_lines_before: Some(11),
-                ..base_input("needle")
-            },
-        )
-        .await
-        .unwrap_err();
-        assert!(err.contains("C210"), "got: {err}");
-        assert!(
-            err.contains("11") && err.contains("10"),
-            "must name the actual value and the cap: {err}"
-        );
-        let err = handle(
-            r,
-            c,
-            SearchInput {
                 context_lines_after: Some(99),
                 ..base_input("needle")
             },
         )
         .await
-        .unwrap_err();
-        assert!(err.contains("C210"), "got: {err}");
-        assert!(
-            err.contains("99") && err.contains("10"),
-            "must name the actual value and the cap: {err}"
+        .unwrap();
+        let m = &out.content_matches[0];
+        assert_eq!(m.before.as_ref().map(Vec::len), Some(10));
+        assert_eq!(m.after.as_ref().map(Vec::len), Some(10));
+        assert_eq!(
+            out.notice.as_deref(),
+            Some(
+                "context_lines_before above 10 was clamped to 10; for a wider view read \
+                 the file with coder::read-file line_from/line_to. context_lines_after \
+                 above 10 was clamped to 10; for a wider view read the file with \
+                 coder::read-file line_from/line_to."
+            )
         );
+        // At the cap: no clamp, no notice, and none on the wire.
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                context_lines_before: Some(10),
+                ..base_input("needle")
+            },
+        )
+        .await
+        .unwrap();
+        assert!(out.notice.is_none());
+        assert!(serde_json::to_value(&out).unwrap().get("notice").is_none());
     }
 
     #[tokio::test]
@@ -2377,5 +2506,409 @@ mod tests {
             .to_string();
         let paths: Vec<&str> = out.path_matches.iter().map(|m| m.path.as_str()).collect();
         assert_eq!(paths, vec![expected.as_str()]);
+    }
+
+    // ------------------------------------------------------------------
+    // A file as `path`: search that one file, like rg/grep.
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn file_path_searches_that_one_file() {
+        let (tmp, r, c) = setup();
+        write(
+            &tmp,
+            "src/a.ts",
+            "one\nregisterTrigger(x)\nthree\nsubscribe()\n",
+        );
+        write(&tmp, "src/b.ts", "registerTrigger elsewhere\n");
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                path: "src/a.ts".into(),
+                regex: true,
+                context_lines_before: Some(1),
+                ..base_input("registerTrigger|subscribe")
+            },
+        )
+        .await
+        .unwrap();
+        let a = abs(&tmp, "src/a.ts");
+        let hits: Vec<_> = out
+            .content_matches
+            .iter()
+            .map(|m| (m.path.as_str(), m.line, m.text.as_str()))
+            .collect();
+        assert_eq!(
+            hits,
+            vec![
+                (a.as_str(), 2, "registerTrigger(x)"),
+                (a.as_str(), 4, "subscribe()")
+            ]
+        );
+        assert_eq!(out.content_matches[0].before, ctx(&["one"]));
+        assert!(!out.truncated);
+    }
+
+    /// The live case: a `.d.ts` under node_modules. Naming the file is
+    /// explicit intent, like naming an excluded folder as the walk root.
+    #[tokio::test]
+    async fn file_path_under_a_default_excluded_folder_is_searched() {
+        let (tmp, r, c) = setup();
+        write(
+            &tmp,
+            "node_modules/@iii-dev/console-ui/index.d.ts",
+            "export declare function registerTrigger(): void;\n",
+        );
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                path: "node_modules/@iii-dev/console-ui/index.d.ts".into(),
+                ..base_input("registerTrigger")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+        assert_eq!(out.content_matches[0].line, 1);
+    }
+
+    /// `include_hidden: false` filters what the walk finds, not what `path`
+    /// names: a named dot-file is searched like a named dot-folder, while a
+    /// dot-file inside a named folder stays out.
+    #[tokio::test]
+    async fn a_named_hidden_path_is_searched_without_include_hidden() {
+        let (tmp, r, c) = setup();
+        write(&tmp, ".notes.txt", "needle\n");
+        write(&tmp, ".config/app.toml", "needle\n");
+        write(&tmp, "src/.hidden.rs", "needle\n");
+        write(&tmp, "src/shown.rs", "needle\n");
+        let search = |path: &str| SearchInput {
+            path: path.into(),
+            include_hidden: false,
+            ..base_input("needle")
+        };
+        for (path, want) in [(".notes.txt", 1), (".config", 1), ("src", 1)] {
+            let out = handle(r.clone(), c.clone(), search(path)).await.unwrap();
+            assert_eq!(out.content_matches.len(), want, "{path}");
+        }
+        let out = handle(r.clone(), c.clone(), search("src")).await.unwrap();
+        assert!(out.content_matches[0].path.ends_with("src/shown.rs"));
+    }
+
+    /// Globs match the file's root-relative form, the same form a directory
+    /// search matches it by; path-only search returns the file when it
+    /// matches; a binary file is skipped, not an error.
+    #[tokio::test]
+    async fn file_path_globs_path_search_and_binary_match_a_directory_search() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "src/a.rs", "needle\n");
+        write(&tmp, "src/bin.dat", "needle\0\n");
+        let a = abs(&tmp, "src/a.rs");
+        for (include, exclude, want) in [
+            (vec!["**/*.rs"], vec![], 1),
+            (vec!["**/*.ts"], vec![], 0),
+            (vec![], vec!["src/**"], 0),
+        ] {
+            let input = SearchInput {
+                path: "src/a.rs".into(),
+                include_globs: include.iter().map(|g| g.to_string()).collect(),
+                exclude_globs: exclude.iter().map(|g| g.to_string()).collect(),
+                ..base_input("needle")
+            };
+            let file = handle(r.clone(), c.clone(), input).await.unwrap();
+            let dir = handle(
+                r.clone(),
+                c.clone(),
+                SearchInput {
+                    path: "src".into(),
+                    include_globs: include.iter().map(|g| g.to_string()).collect(),
+                    exclude_globs: exclude.iter().map(|g| g.to_string()).collect(),
+                    ..base_input("needle")
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(file.content_matches.len(), want, "{include:?} {exclude:?}");
+            assert_eq!(dir.content_matches.len(), want, "{include:?} {exclude:?}");
+        }
+        let path_only = |query: &str| SearchInput {
+            path: "src/a.rs".into(),
+            search_content: false,
+            search_paths: true,
+            ..base_input(query)
+        };
+        let out = handle(r.clone(), c.clone(), path_only("a.rs"))
+            .await
+            .unwrap();
+        let paths: Vec<_> = out.path_matches.iter().map(|m| m.path.as_str()).collect();
+        assert_eq!(paths, vec![a.as_str()]);
+        assert!(matches!(out.path_matches[0].kind, PathMatchKind::File));
+        let out = handle(r.clone(), c.clone(), path_only("zzz"))
+            .await
+            .unwrap();
+        assert!(out.path_matches.is_empty());
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                path: "src/bin.dat".into(),
+                ..base_input("needle")
+            },
+        )
+        .await
+        .unwrap();
+        assert!(out.content_matches.is_empty());
+    }
+
+    /// Unjailed, no session scope, file outside every root: globs and
+    /// fuzzy ranking anchor at the file's folder (a directory search anchors
+    /// at the folder it walks), so the file is not dropped as a false empty.
+    #[tokio::test]
+    async fn file_path_outside_every_root_anchors_at_its_folder() {
+        let root = tempdir().unwrap();
+        let other = tempdir().unwrap();
+        std::fs::write(other.path().join("index.d.ts"), "subscribe()\n").unwrap();
+        let cfg = Arc::new(CoderConfig {
+            base_paths: vec![root.path().to_path_buf()],
+            unjailed: true,
+            max_read_bytes: 1024 * 1024,
+            search_default_max_matches: 1000,
+            search_default_max_line_bytes: 4096,
+            ..CoderConfig::default()
+        });
+        let r = Arc::new(PathResolver::new(&cfg).unwrap());
+        let file = other.path().join("index.d.ts").display().to_string();
+        let out = handle(
+            r.clone(),
+            cfg.clone(),
+            SearchInput {
+                path: file.clone(),
+                include_globs: vec!["*.ts".into()],
+                ..base_input("subscribe")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+        let out = handle(
+            r,
+            cfg,
+            SearchInput {
+                path: file,
+                search_content: false,
+                search_paths: true,
+                fuzzy_paths: true,
+                ..base_input("index")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.path_matches.len(), 1);
+    }
+
+    /// A non-accessible file is refused with the C211 a missing path gets
+    /// (REDACTION INVARIANT); a file outside the session is refused C220
+    /// and one outside every root C215, as any path is.
+    #[tokio::test]
+    async fn file_path_refusals_match_any_other_path() {
+        let (tmp, r, c) = setup();
+        write(&tmp, ".env", "API_KEY=needle\n");
+        write(&tmp, "sub/in.txt", "needle\n");
+        write(&tmp, "other.txt", "needle\n");
+        let err = handle(
+            r.clone(),
+            c.clone(),
+            SearchInput {
+                path: ".env".into(),
+                ..base_input("needle")
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            err,
+            CoderError::not_found_or_denied(".env").to_wire_string()
+        );
+        let scoped = |path: String| SearchInput {
+            path,
+            fs_scope: Some(crate::fs::FsScope {
+                root: tmp.path().join("sub").display().to_string(),
+                grants: vec![],
+                boundary: crate::fs::FsBoundary::Workspace,
+            }),
+            ..base_input("needle")
+        };
+        let err = handle(r.clone(), c.clone(), scoped(abs(&tmp, "other.txt")))
+            .await
+            .unwrap_err();
+        assert!(err.contains("C220"), "got: {err}");
+        let out = handle(r.clone(), c.clone(), scoped("in.txt".into()))
+            .await
+            .unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+        let outside = tempdir().unwrap();
+        std::fs::write(outside.path().join("x.txt"), "needle\n").unwrap();
+        let err = handle(
+            r,
+            c,
+            SearchInput {
+                path: outside.path().join("x.txt").display().to_string(),
+                ..base_input("needle")
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("C215"), "got: {err}");
+    }
+
+    // ------------------------------------------------------------------
+    // `pattern` sent in place of `query`.
+    // ------------------------------------------------------------------
+
+    fn input(v: serde_json::Value) -> SearchInput {
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn pattern_stands_in_for_query_as_a_regex() {
+        let req = input(serde_json::json!({
+            "path": "src",
+            "pattern": "registerTrigger|subscribe"
+        }));
+        assert_eq!(req.query, "registerTrigger|subscribe");
+        assert!(req.regex);
+        assert_eq!(req.path, "src");
+        assert_eq!(
+            req.notice.as_deref(),
+            Some(
+                "`pattern` was read as `query` with `regex: true`; send `query` (and \
+                 `regex: true` for a regex)."
+            )
+        );
+    }
+
+    #[test]
+    fn pattern_keeps_an_explicit_regex_and_the_other_fields() {
+        let req = input(serde_json::json!({
+            "pattern": "a.b", "regex": false, "search_content": false
+        }));
+        assert_eq!(req.query, "a.b");
+        assert!(!req.regex);
+        assert!(!req.search_content);
+        assert_eq!(
+            req.notice.as_deref(),
+            Some("`pattern` was read as `query`; send `query` (and `regex: true` for a regex).")
+        );
+    }
+
+    #[test]
+    fn query_wins_and_other_bad_input_keeps_its_errors() {
+        let ok = input(serde_json::json!({ "query": "needle" }));
+        assert_eq!((ok.query.as_str(), ok.path.as_str()), ("needle", "."));
+        assert!(ok.notice.is_none());
+        let both = input(serde_json::json!({ "query": "a", "pattern": "b" }));
+        assert_eq!(both.query, "a");
+        assert!(!both.regex && both.notice.is_none());
+        for bad in [
+            serde_json::json!({ "path": "src" }),
+            serde_json::json!({ "pattern": 42 }),
+            serde_json::json!({ "pattern": ["a"] }),
+        ] {
+            let err = serde_json::from_value::<SearchInput>(bad)
+                .unwrap_err()
+                .to_string();
+            assert_eq!(err, "missing field `query`");
+        }
+        // `notice` is never read from the wire.
+        let forged = input(serde_json::json!({ "query": "a", "notice": "x" }));
+        assert!(forged.notice.is_none());
+    }
+
+    #[tokio::test]
+    async fn pattern_search_runs_as_regex_and_returns_the_notice() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "a.txt", "registerTrigger(x)\n");
+        write(&tmp, "b.txt", "subscribe()\n");
+        let out = handle(
+            r.clone(),
+            c.clone(),
+            input(serde_json::json!({
+                "pattern": "registerTrigger|subscribe", "search_paths": false
+            })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 2);
+        let wire = serde_json::to_value(&out).unwrap();
+        assert!(wire["notice"]
+            .as_str()
+            .unwrap()
+            .starts_with("`pattern` was read as `query` with `regex: true`"));
+        // Path-only: the regex runs against paths, notice still set.
+        let out = handle(
+            r.clone(),
+            c.clone(),
+            input(serde_json::json!({ "pattern": "a\\.txt|b\\.txt", "search_content": false })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.path_matches.len(), 2);
+        assert!(out.notice.is_some());
+        // Notices combine: the alias first, then a clamp.
+        let out = handle(
+            r.clone(),
+            c.clone(),
+            input(serde_json::json!({
+                "pattern": "subscribe", "search_paths": false, "context_lines_after": 11
+            })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            out.notice.as_deref(),
+            Some(
+                "`pattern` was read as `query` with `regex: true`; send `query` (and \
+                 `regex: true` for a regex). context_lines_after above 10 was clamped to \
+                 10; for a wider view read the file with coder::read-file line_from/line_to."
+            )
+        );
+        // A refusal of what `pattern` became says how it was read.
+        let err = handle(
+            r.clone(),
+            c.clone(),
+            input(serde_json::json!({ "pattern": "foo(" })),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.contains("bad regex")
+                && err.contains("(`pattern` was read as `query` with `regex: true`;"),
+            "got: {err}"
+        );
+        // An empty `pattern` is an empty `query`: refused for content search.
+        let err = handle(r, c, input(serde_json::json!({ "pattern": "" })))
+            .await
+            .unwrap_err();
+        assert!(err.contains("query must not be empty"), "got: {err}");
+    }
+
+    #[test]
+    fn query_is_not_required_in_the_published_schema() {
+        // A required `query` makes the harness judge rename `pattern` to
+        // `query` before dispatch (harness reconcile.rs `questions`), which
+        // skips the pre-pass and its `regex: true`: the regex then runs as a
+        // literal and silently finds nothing.
+        let schema = serde_json::to_value(schemars::schema_for!(SearchInput)).unwrap();
+        let required = schema["required"].as_array();
+        assert!(
+            !required.is_some_and(|r| r.contains(&"query".into())),
+            "{schema}"
+        );
+        assert!(
+            schema["properties"]["query"].get("default").is_none(),
+            "{schema}"
+        );
     }
 }

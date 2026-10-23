@@ -1,11 +1,38 @@
 import { describe, expect, it } from 'vitest'
 import {
+  crawlResponseSchema,
   fetchEngineLabel,
   isScraplingFunction,
   safeParseResponse,
   screenshotResponseSchema,
   SCRAPLING_FUNCTION_IDS,
 } from './parsers'
+
+describe('crawl results', () => {
+  it('parses the crawl locator and warnings, and still accepts the legacy echo', () => {
+    const parsed = safeParseResponse(crawlResponseSchema, {
+      stats: { crawled: 2, items: 1, errors: 1, stopped: 'done' },
+      items: [{ url: 'https://example.com/' }],
+      stream: { name: 'legacy', group_id: 3 },
+      crawl: {
+        id: '3',
+        items_function: 'browser::crawl::items',
+        trigger_type: 'browser::crawl-item',
+        retained: 2,
+        dropped_events: 0,
+      },
+      warnings: ['stream_name is deprecated and ignored'],
+    })
+    expect(parsed?.crawl?.id).toBe('3')
+    expect(parsed?.crawl?.retained).toBe(2)
+    expect(parsed?.warnings).toHaveLength(1)
+    const older = safeParseResponse(crawlResponseSchema, {
+      stats: { crawled: 0, items: 0, errors: 0 },
+      stream: { name: 'browser::crawl', group_id: 'g' },
+    })
+    expect(older?.crawl).toBeUndefined()
+  })
+})
 
 describe('root browser scraping ids', () => {
   it('claims all 19 scraping functions without stealing session screenshot', () => {

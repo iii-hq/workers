@@ -23,7 +23,7 @@
 import type { Host } from '@iii-dev/console-ui'
 import { ConfirmDialog, EmptyState } from '@iii-dev/console-ui'
 import { copyText, errorMessage } from '@iii-dev/console-ui/format'
-import { usePaneState, useSplitDrag } from '@iii-dev/console-ui/hooks'
+import { useDebounce, usePaneState, useSplitDrag } from '@iii-dev/console-ui/hooks'
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
@@ -182,6 +182,7 @@ export function GitLogTab({
   active,
   paneKey,
   focusBranch,
+  focusPaths = null,
   narrow = false,
   onOpenCommitFile,
   onOpenCompareFile,
@@ -196,6 +197,8 @@ export function GitLogTab({
   paneKey: string
   /** "Show in Log" from the Worktrees tab: the branch to select. */
   focusBranch: { name: string; seq: number } | null
+  /** "Show history" from the Commit panel: root-relative paths to narrow the log to. */
+  focusPaths?: { paths: string[]; seq: number } | null
   /** One pane at a time, drilled into. */
   narrow?: boolean
   onOpenCommitFile(file: CommitFile, details: CommitDetails, pin?: boolean): void
@@ -247,8 +250,16 @@ export function GitLogTab({
 
   const target = ops.list?.defaultBranch ?? null
   // A ref's node id is `ref:<full name>`: the log follows it (or HEAD); a
-  // group leaves it on every branch.
-  const tipRef = treeSel?.startsWith('ref:') ? treeSel.slice(4) : treeSel === 'head' ? 'HEAD' : null
+  // group leaves it on every branch. Once the tree selection rests: each
+  // step reads the refs, a merge-base and a page of the log, which arrow
+  // keys through the tree would only throw away (the tip commit itself is
+  // selected at once, from the refs: selectTree).
+  const picked = treeSel?.startsWith('ref:') ? treeSel.slice(4) : treeSel === 'head' ? 'HEAD' : null
+  const tipRef = useDebounce(picked, 150)
+  // Until it rests, a log that lands is the previous branch's: it must not
+  // move the commit the pick just selected.
+  const settling = useRef(false)
+  settling.current = picked !== tipRef
   const log = useGitLog(host, root, epoch, active, filter, tipRef)
   const snapshot = log.snapshot
   // Picking a branch selects its tip at once, from the refs: its page may
@@ -276,6 +287,15 @@ export function GitLogTab({
     [selectTree],
   )
   const details = useCommitDetails(host, root, snapshot, commitSel)
+  // Applied once per request, as soon as the root's place in the
+  // repository is known: the filter speaks repository paths.
+  const prefix = snapshot?.prefix ?? null
+  const historySeq = useRef<number | null>(null)
+  useEffect(() => {
+    if (focusPaths === null || prefix === null || historySeq.current === focusPaths.seq) return
+    historySeq.current = focusPaths.seq
+    setFilter((prev) => ({ ...prev, paths: focusPaths.paths.map((path) => prefix + path), upTo: undefined }))
+  }, [focusPaths, prefix])
   const working = useWorkingDiff(host, root, snapshot?.prefix ?? null, comparing?.ref ?? null, epoch)
 
   const nodes = useMemo(() => (snapshot === null ? [] : refsTree(snapshot, target)), [snapshot, target])
@@ -349,7 +369,7 @@ export function GitLogTab({
     const before = lastList.current
     const list = log.commits
     lastList.current = list
-    if (list.length === 0) return
+    if (list.length === 0 || settling.current) return
     const grew =
       before.length > 0 &&
       list.length > before.length &&
@@ -1077,6 +1097,7 @@ export function GitLogTab({
               state={working}
               prefix={snapshot?.prefix ?? ''}
               top={here?.path ?? null}
+              narrow={narrow}
               onOpen={(file) => onOpenCompareFile(file, comparing.ref, file.from)}
               onClose={() => setComparing(null)}
             />
@@ -1100,6 +1121,7 @@ export function GitLogTab({
               onCopyPatch={copyPatch}
               onHistory={showHistory}
               onOpenRevision={onOpenRevision}
+              narrow={narrow}
             />
           ) : null}
         </div>

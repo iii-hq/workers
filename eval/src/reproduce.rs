@@ -14,6 +14,7 @@ use std::time::Instant;
 use harness::clients::context::CountTokensParams;
 use harness::clients::{AssembleParams, ContextClient, LoadedEntry};
 use harness::types::model::{AgentFunction, ThinkingLevel};
+use harness::types::turn::ResponseLanguage;
 use judge_contract::{Answer, Content, EvaluateRequest, EvaluateResponse, Evaluation, Question};
 use serde_json::{json, Value};
 use tokio::task::JoinSet;
@@ -496,6 +497,8 @@ async fn rebuild(
         skills_baseline.as_deref(),
     ]);
     let mut approximations = Vec::new();
+    let response_language: Option<ResponseLanguage> =
+        serde_json::from_value(options["response_language"].clone())?;
     if capture.hook_guidance_tokens > 0 {
         approximations.push(format!(
             "pre_generate hooks added {} tokens to the system prompt, and that text is not stored",
@@ -509,7 +512,9 @@ async fn rebuild(
         aid,
         skills_baseline,
         messages,
-        tools: vec![harness::policy::agent_trigger_schema()],
+        tools: vec![harness::policy::agent_trigger_schema(
+            response_language.as_ref(),
+        )],
         thinking_level: options
             .get("thinking_level")
             .filter(|v| !v.is_null())

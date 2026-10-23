@@ -12,6 +12,7 @@ export interface CatalogModelRow {
   /** Absent when the router says nothing about it — see `ModelOption`. */
   supports_vision?: boolean
   reasoning_efforts?: ReasoningEffortOption[]
+  supports_thinking_off?: boolean
 }
 
 function parseReasoningEfforts(
@@ -59,6 +60,10 @@ export async function fetchModelsCatalog(): Promise<CatalogModelRow[]> {
       typeof o.supports_thinking === 'boolean' ? o.supports_thinking : undefined
     const supports_vision =
       typeof o.supports_vision === 'boolean' ? o.supports_vision : undefined
+    const supports_thinking_off =
+      typeof o.supports_thinking_off === 'boolean'
+        ? o.supports_thinking_off
+        : undefined
     const reasoning_efforts = parseReasoningEfforts(o.reasoning_efforts)
     if (!id || !provider) continue
     out.push({
@@ -68,10 +73,22 @@ export async function fetchModelsCatalog(): Promise<CatalogModelRow[]> {
       context_window,
       supports_thinking,
       supports_vision,
+      supports_thinking_off,
       reasoning_efforts,
     })
   }
   return out
+}
+
+/**
+ * Catalog keys in the order `router::models::list` returned them. The router
+ * keeps each provider's own order (claude-code lists Sonnet 5.5 first), a
+ * better starting model than the alphabetically first one.
+ */
+export function catalogKeysInRouterOrder(
+  rows: readonly CatalogModelRow[],
+): string[] {
+  return rows.map((row) => makeCatalogModelKey(row.provider, row.id))
 }
 
 export function catalogRowsToModelOptions(
@@ -89,6 +106,8 @@ export function catalogRowsToModelOptions(
     // to stay distinguishable from "no", or every model on an older catalog
     // would refuse images.
     supportsVision: m.supports_vision,
+    // Tri-state too: Off is offered, disabled, or hidden on true/unknown/false.
+    supportsThinkingOff: m.supports_thinking_off,
     reasoningEfforts: m.reasoning_efforts,
   }))
 }
@@ -110,6 +129,12 @@ export async function refreshProviderModels(
         .catch(() => undefined),
     ),
   )
+}
+
+/** Explicit retry keeps transport failures observable; diagnostics come from the router. */
+export async function retryXaiModels(): Promise<void> {
+  const client = await getIiiClient()
+  await client.trigger('provider::xai::refresh_models', {})
 }
 
 /** iii:: prefix → engine-internal → delivery spans stay out of the Traces view. */
@@ -200,8 +225,103 @@ export async function subscribeProviderChanges(
   )
 }
 
+/**
+ * The catalog key a new chat should start on when the person has picked
+ * nothing yet: the declared default of the first (by id) available provider
+ * that has one, whose default is in `catalogKeys`, and that is configured.
+ * A provider that owns its authentication (no `credential_env_var`: OAuth,
+ * companion apps) reports `configured: false` to the router even when it is
+ * signed in, so for those a default that reached the catalog is proof enough,
+ * the same rule the picker uses to call its catalog usable.
+ * `null` when no provider qualifies; callers fall back to the router's first
+ * model.
+ */
+export function preferredStartingModel(
+  providers: readonly ProviderListEntry[],
+  catalogKeys: ReadonlySet<string>,
+): string | null {
+  const ranked = [...providers].sort((a, b) => a.id.localeCompare(b.id))
+  for (const p of ranked) {
+    if (!p.default_model || !p.available || discoveryBlocksModels(p)) continue
+    if (p.configured === false && p.credential_env_var !== undefined) continue
+    const key = makeCatalogModelKey(p.id, p.default_model)
+    if (catalogKeys.has(key)) return key
+  }
+  return null
+}
+
+export type DiscoveryOutcome =
+  | 'success'
+  | 'empty'
+  | 'not_configured'
+  | 'billing'
+  | 'authentication'
+  | 'permission'
+  | 'rate_limit'
+  | 'unavailable'
+  | 'invalid_response'
+export interface DiscoveryStatus {
+  outcome: DiscoveryOutcome
+  http_status?: number
+  code?: string
+  stale: boolean
+  checked_at_ms: number
+}
+const DISCOVERY_OUTCOMES = new Set([
+  'success',
+  'empty',
+  'not_configured',
+  'billing',
+  'authentication',
+  'permission',
+  'rate_limit',
+  'unavailable',
+  'invalid_response',
+])
+const DISCOVERY_CODES = new Set([
+  'permission-denied',
+  'invalid-api-key',
+  'insufficient-credits',
+  'spending-limit-exceeded',
+  'rate-limit-exceeded',
+])
+function parseDiscovery(value: unknown): DiscoveryStatus | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const row = value as Record<string, unknown>
+  if (typeof row.outcome !== 'string' || !DISCOVERY_OUTCOMES.has(row.outcome))
+    return undefined
+  return {
+    outcome: row.outcome as DiscoveryOutcome,
+    http_status:
+      typeof row.http_status === 'number' &&
+      Number.isInteger(row.http_status) &&
+      row.http_status >= 100 &&
+      row.http_status <= 599
+        ? row.http_status
+        : undefined,
+    code:
+      typeof row.code === 'string' && DISCOVERY_CODES.has(row.code)
+        ? row.code
+        : undefined,
+    stale: row.stale === true,
+    checked_at_ms:
+      typeof row.checked_at_ms === 'number' ? row.checked_at_ms : 0,
+  }
+}
+export function discoveryBlocksModels(
+  provider: ProviderListEntry | undefined,
+): boolean {
+  return (
+    provider?.id === 'xai' &&
+    ['billing', 'authentication', 'permission', 'not_configured'].includes(
+      provider.discovery?.outcome ?? '',
+    )
+  )
+}
+
 /** A provider declared to the router, from `router::provider::list`. */
 export interface ProviderListEntry {
+  discovery?: DiscoveryStatus
   id: string
   display_name: string
   supports_model_listing: boolean
@@ -222,7 +342,50 @@ export interface ProviderListEntry {
    * that ship no mark and on older routers — the rail shows an initial then.
    */
   icon_svg?: string
+  /**
+   * Where the router's credential came from: `config` (a literal in the
+   * router configuration), `env` (its environment), `secret` (a
+   * `secret://` reference resolved through the secrets worker) or `none`.
+   * Absent on routers older than secret references.
+   */
+  credential_source?: 'config' | 'env' | 'secret' | 'none'
+  /** The `secret://NAME` the provider's slice points at, when it does. */
+  credential_ref?: string
+  /** Why the credential did not resolve, in the router's words. */
+  credential_error?: string
+  /**
+   * The model the provider recommends starting on, already checked by the
+   * router against its live catalog. Absent when the provider declares none,
+   * nothing in its family is listed, or the router predates defaults.
+   */
+  default_model?: string
+  /** The thinking level the provider pairs with it; absent means omit. */
+  default_thinking_level?: string
+  /**
+   * Guidance the provider declared for a context-overflow failure on one of
+   * its models (`context_overflow_hint`): the failure card shows it under the
+   * generic steps. Absent on providers that declared none and on older
+   * routers.
+   */
+  context_overflow_hint?: string
 }
+
+let lastProviderList: ReadonlyMap<string, ProviderListEntry> = new Map()
+
+/**
+ * Keep the latest provider list where message-level UI can reach it without
+ * a fetch (the turn-failure card looks up provider-declared text by id).
+ * `fetchProviderList` calls this on every successful read.
+ */
+export function rememberProviderList(entries: ProviderListEntry[]): void {
+  lastProviderList = new Map(entries.map((entry) => [entry.id, entry]))
+}
+
+export function rememberedProvider(id: string): ProviderListEntry | undefined {
+  return lastProviderList.get(id)
+}
+
+const CREDENTIAL_SOURCES = new Set(['config', 'env', 'secret', 'none'])
 
 /**
  * List providers present as worker processes (regardless of whether they have
@@ -235,7 +398,13 @@ export async function fetchProviderList(): Promise<ProviderListEntry[]> {
     'router::provider::list',
     {},
   )
-  const rows = res?.providers
+  const out = parseProviderList(res?.providers)
+  rememberProviderList(out)
+  return out
+}
+
+/** The `providers` rows of a `router::provider::list` reply, tolerant of older routers. */
+export function parseProviderList(rows: unknown): ProviderListEntry[] {
   if (!Array.isArray(rows)) return []
   const out: ProviderListEntry[] = []
   for (const raw of rows) {
@@ -245,6 +414,7 @@ export async function fetchProviderList(): Promise<ProviderListEntry[]> {
     if (!id) continue
     out.push({
       id,
+      discovery: parseDiscovery(o.discovery),
       display_name: typeof o.display_name === 'string' ? o.display_name : id,
       supports_model_listing: o.supports_model_listing === true,
       credential_env_var:
@@ -258,6 +428,32 @@ export async function fetchProviderList(): Promise<ProviderListEntry[]> {
       icon_svg:
         typeof o.icon_svg === 'string' && o.icon_svg.trim()
           ? o.icon_svg
+          : undefined,
+      credential_source:
+        typeof o.credential_source === 'string' &&
+        CREDENTIAL_SOURCES.has(o.credential_source)
+          ? (o.credential_source as ProviderListEntry['credential_source'])
+          : undefined,
+      credential_ref:
+        typeof o.credential_ref === 'string' && o.credential_ref
+          ? o.credential_ref
+          : undefined,
+      credential_error:
+        typeof o.credential_error === 'string' && o.credential_error
+          ? o.credential_error
+          : undefined,
+      default_model:
+        typeof o.default_model === 'string' && o.default_model
+          ? o.default_model
+          : undefined,
+      default_thinking_level:
+        typeof o.default_thinking_level === 'string' && o.default_thinking_level
+          ? o.default_thinking_level
+          : undefined,
+      context_overflow_hint:
+        typeof o.context_overflow_hint === 'string' &&
+        o.context_overflow_hint.trim()
+          ? o.context_overflow_hint.trim()
           : undefined,
     })
   }

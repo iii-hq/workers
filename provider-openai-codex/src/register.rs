@@ -15,6 +15,7 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use llm_router::provider_scaffold::aborts::{make_abort, StreamAborts};
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::provider_scaffold::registration::typed_async_with_bad_request;
+use llm_router::types::model::ThinkingLevel;
 use llm_router::types::router::{
     ProviderDeclaration, ProviderDefaults, ProviderReadyAck, RouterReadyEvent,
 };
@@ -39,6 +40,26 @@ pub fn declaration() -> ProviderDeclaration {
         // The authenticated Codex `/models` endpoint is reconciled after
         // registration and periodically while the worker is running.
         supports_model_listing: Some(true),
+        // Starting point for callers that name no model. The router ranks
+        // by variant in this order (Terra, then Sol, then Astra, then Luna), then the
+        // newest version within the variant.
+        default_models: Some(vec![
+            "codex/gpt-6.1-terra".into(),
+            "codex/gpt-6-terra".into(),
+            "codex/gpt-5.6-terra".into(),
+            "codex/gpt-6.1-sol".into(),
+            "codex/gpt-6-sol".into(),
+            "codex/gpt-5.6-sol".into(),
+            "codex/gpt-6.1-astra".into(),
+            "codex/gpt-6-astra".into(),
+            "codex/gpt-5.6-astra".into(),
+            "codex/gpt-6.1-luna".into(),
+            "codex/gpt-6-luna".into(),
+            "codex/gpt-5.6-luna".into(),
+        ]),
+        default_thinking_level: Some(ThinkingLevel::Minimal),
+        context_overflow_hint: None,
+        credential_optional: None,
         models: None,
         worker_id: Some("provider-openai-codex".into()),
         // The mark the console paints beside this provider's models; the

@@ -1,0 +1,582 @@
+{
+  "description": "Every tmux session with its windows and panes: foreground command, cwd, title, size, the agent CLI running in the pane (claude, codex, … with state working / waiting / idle), the `iii compose` daemon it runs and the ports its processes listen on.",
+  "function_id": "tmux::sessions::list",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "No parameters.",
+    "title": "EmptyInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "AddressFamily": {
+        "enum": [
+          "ipv4",
+          "ipv6"
+        ],
+        "type": "string"
+      },
+      "AgentState": {
+        "oneOf": [
+          {
+            "description": "The agent is running a turn.",
+            "enum": [
+              "working"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The agent shows a prompt that needs you.",
+            "enum": [
+              "waiting"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The agent waits for a new message.",
+            "enum": [
+              "idle"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "AgentStatus": {
+        "properties": {
+          "id": {
+            "description": "Matcher id from the configuration, e.g. `claude`.",
+            "type": "string"
+          },
+          "label": {
+            "description": "Display name, e.g. `Claude Code`.",
+            "type": "string"
+          },
+          "pid": {
+            "description": "Pid of the agent process.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "since_ms": {
+            "description": "When the agent entered `state`.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "state": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/AgentState"
+              }
+            ],
+            "description": "What the agent is doing."
+          },
+          "subagents": {
+            "default": [],
+            "description": "Sub-agents working right now, oldest first. Their work keeps `state` at `working` after the agent's own turn ended. Claude Code and Codex report them; other agents always list none.",
+            "items": {
+              "$ref": "#/definitions/SubagentStatus"
+            },
+            "type": "array"
+          },
+          "title": {
+            "default": null,
+            "description": "The agent's session title: the pane title without the agent's status glyph (Claude Code's ✳ or spinner). Null when the pane only shows tmux's default title (the host name) or nothing.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "pid",
+          "since_ms",
+          "state"
+        ],
+        "type": "object"
+      },
+      "ComposeRef": {
+        "properties": {
+          "namespace": {
+            "description": "Compose daemon namespace.",
+            "type": "string"
+          },
+          "pid": {
+            "description": "Compose daemon pid.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "namespace",
+          "pid"
+        ],
+        "type": "object"
+      },
+      "Listener": {
+        "description": "One TCP socket in LISTEN state.",
+        "properties": {
+          "address": {
+            "description": "Bound address, e.g. `0.0.0.0` or `::1`.",
+            "type": "string"
+          },
+          "compose": {
+            "description": "Compose namespace the process belongs to.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "family": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/AddressFamily"
+              }
+            ],
+            "description": "IPv4 or IPv6."
+          },
+          "location": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/PaneRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "tmux pane the process descends from."
+          },
+          "pid": {
+            "description": "Owning process.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "port": {
+            "description": "Port number.",
+            "format": "uint16",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "process": {
+            "description": "Owning process name.",
+            "type": "string"
+          },
+          "role": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/ListenerRole"
+              }
+            ],
+            "description": "What kind of process owns the socket."
+          },
+          "worker": {
+            "description": "iii worker name, when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "address",
+          "family",
+          "pid",
+          "port",
+          "process",
+          "role"
+        ],
+        "type": "object"
+      },
+      "ListenerRole": {
+        "oneOf": [
+          {
+            "description": "An iii engine (its WebSocket and built-in listeners).",
+            "enum": [
+              "engine"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "An iii worker.",
+            "enum": [
+              "worker"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "An `iii compose` daemon.",
+            "enum": [
+              "compose"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Anything else.",
+            "enum": [
+              "other"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "Pane": {
+        "properties": {
+          "active": {
+            "description": "The window's active pane.",
+            "type": "boolean"
+          },
+          "agent": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/AgentStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The agent CLI running in this pane, if any."
+          },
+          "command": {
+            "description": "Foreground process name.",
+            "type": "string"
+          },
+          "compose": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ComposeRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The `iii compose` daemon running in this pane, if any."
+          },
+          "cwd": {
+            "description": "Current directory.",
+            "type": "string"
+          },
+          "dead": {
+            "description": "The pane's process exited and the pane is kept.",
+            "type": "boolean"
+          },
+          "height": {
+            "description": "Height in rows.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "Pane id, e.g. `%5`.",
+            "type": "string"
+          },
+          "index": {
+            "description": "Pane index inside the window.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "pid": {
+            "description": "Pid of the process tmux started in the pane.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "ports": {
+            "description": "Listening sockets owned by processes started from this pane.",
+            "items": {
+              "$ref": "#/definitions/Listener"
+            },
+            "type": "array"
+          },
+          "title": {
+            "description": "Pane title set by the program.",
+            "type": "string"
+          },
+          "width": {
+            "description": "Width in columns.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "active",
+          "command",
+          "cwd",
+          "dead",
+          "height",
+          "id",
+          "index",
+          "pid",
+          "ports",
+          "title",
+          "width"
+        ],
+        "type": "object"
+      },
+      "PaneRef": {
+        "description": "Where a process runs in tmux.",
+        "properties": {
+          "pane_id": {
+            "description": "Pane id.",
+            "type": "string"
+          },
+          "session": {
+            "description": "Session name.",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "Session id.",
+            "type": "string"
+          },
+          "window_id": {
+            "description": "Window id.",
+            "type": "string"
+          },
+          "window_index": {
+            "description": "Window index.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pane_id",
+          "session",
+          "session_id",
+          "window_id",
+          "window_index"
+        ],
+        "type": "object"
+      },
+      "Session": {
+        "properties": {
+          "activity_at_ms": {
+            "description": "Last activity in any of its windows.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "attached": {
+            "description": "tmux clients attached, console terminals included.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "console_attached": {
+            "description": "How many attached clients are console terminals.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "created_at_ms": {
+            "description": "When the session was created.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "Session id, e.g. `$5`.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Session name.",
+            "type": "string"
+          },
+          "windows": {
+            "description": "Windows sorted by index.",
+            "items": {
+              "$ref": "#/definitions/Window"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "activity_at_ms",
+          "attached",
+          "console_attached",
+          "created_at_ms",
+          "id",
+          "name",
+          "windows"
+        ],
+        "type": "object"
+      },
+      "SubagentStatus": {
+        "description": "A sub-agent at work under an agent CLI.",
+        "properties": {
+          "depth": {
+            "description": "1 for a sub-agent of the main agent, 2 for one of its sub-agents, ….",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "description": {
+            "description": "What it was asked to do: Claude Code's task description, Codex's task path under the main agent (`review/tests`).",
+            "type": "string"
+          },
+          "id": {
+            "description": "Stable within the agent's session: Claude Code's agent id, Codex's thread id.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "Claude Code's agent type (`general-purpose`, `Explore`, `fork`) or Codex's agent role; null when the agent names none.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "since_ms": {
+            "description": "When it started its current task.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "depth",
+          "description",
+          "id",
+          "since_ms"
+        ],
+        "type": "object"
+      },
+      "TmuxInfo": {
+        "description": "Whether a usable tmux exists and which server this worker talks to.",
+        "properties": {
+          "available": {
+            "description": "A usable tmux binary was found.",
+            "type": "boolean"
+          },
+          "error": {
+            "description": "Why tmux is unavailable, or the last listing error.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "description": "Resolved tmux binary.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "server_running": {
+            "description": "A tmux server is running on that socket.",
+            "type": "boolean"
+          },
+          "socket_path": {
+            "description": "Server socket, known while the server runs.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "description": "tmux version, e.g. `3.6`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "available",
+          "server_running"
+        ],
+        "type": "object"
+      },
+      "Window": {
+        "properties": {
+          "active": {
+            "description": "This is the session's current window.",
+            "type": "boolean"
+          },
+          "activity_at_ms": {
+            "description": "Last output in the window.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "bell": {
+            "description": "A bell rang in the window.",
+            "type": "boolean"
+          },
+          "id": {
+            "description": "Window id, e.g. `@3` (unique on the server).",
+            "type": "string"
+          },
+          "index": {
+            "description": "Window index inside the session.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "name": {
+            "description": "Window name.",
+            "type": "string"
+          },
+          "panes": {
+            "description": "Panes sorted by index.",
+            "items": {
+              "$ref": "#/definitions/Pane"
+            },
+            "type": "array"
+          },
+          "zoomed": {
+            "description": "A pane is zoomed.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "active",
+          "activity_at_ms",
+          "bell",
+          "id",
+          "index",
+          "name",
+          "panes",
+          "zoomed"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "Every session with its windows and panes.",
+    "properties": {
+      "generated_at_ms": {
+        "description": "When the snapshot was taken.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "sessions": {
+        "description": "Sessions sorted by name.",
+        "items": {
+          "$ref": "#/definitions/Session"
+        },
+        "type": "array"
+      },
+      "tmux": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/TmuxInfo"
+          }
+        ],
+        "description": "tmux availability and server."
+      }
+    },
+    "required": [
+      "generated_at_ms",
+      "sessions",
+      "tmux"
+    ],
+    "title": "SessionsSnapshot",
+    "type": "object"
+  }
+}

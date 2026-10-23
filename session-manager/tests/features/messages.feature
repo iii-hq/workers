@@ -144,6 +144,51 @@ Feature: session::messages — load the active path, oldest first
       """
     Then the call fails with code "session/invalid_cursor"
 
+  # Prevents: the usage projection dropping something harness::metrics
+  # counts (usage, function calls, is_error) or keeping the bulk it exists
+  # to skip (prose, call arguments, function results, origin).
+  Scenario: content "usage" keeps the counters and drops the content
+    Given a user message "q" appended to "s_001"
+    And I call "session::append" with:
+      """
+      { "session_id": "s_001", "origin": { "turn_id": "t1" }, "message": {
+          "role": "assistant", "stop_reason": "function_call",
+          "model": "test-model", "provider": "test-provider", "timestamp": 7,
+          "usage": { "input": 10, "output": 2, "cost_usd": 0.5 },
+          "content": [
+            { "type": "thinking", "text": "let me look" },
+            { "type": "text", "text": "looking" },
+            { "type": "function_call", "id": "c1", "function_id": "shell::run", "arguments": { "cmd": "ls" } }
+          ] } }
+      """
+    And a function result for "c1" appended to "s_001"
+    When I call "session::messages" with:
+      """
+      { "session_id": "s_001", "content": "usage" }
+      """
+    Then the response field "messages" has length 3
+    And the response field "messages.0.message.role" is "user"
+    And the response field "messages.0.message.content" has length 0
+    And the response field "messages.1.message.content" has length 1
+    And the response field "messages.1.message.content.0.type" is "function_call"
+    And the response field "messages.1.message.content.0.function_id" is "shell::run"
+    And the response field "messages.1.message.content.0.arguments" is null
+    And the response field "messages.1.message.usage.input" is 10
+    And the response field "messages.1.message.usage.cost_usd" is 0.5
+    And the response field "messages.1.message.stop_reason" is "function_call"
+    And the response field "messages.1.message.timestamp" is 7
+    And the response has no field "messages.1.origin"
+    And the response field "messages.2.message.content" has length 0
+    And the response field "messages.2.message.details" is null
+    And the response field "messages.2.message.is_error" is false
+    And the response field "messages.2.message.function_id" is "shell::run"
+    When I call "session::messages" with:
+      """
+      { "session_id": "s_001" }
+      """
+    Then the response field "messages.1.message.content" has length 3
+    And the response field "messages.1.origin.turn_id" is "t1"
+
   # Prevents: accepting forged/stale cursors and returning garbage pages.
   Scenario: a malformed cursor is rejected
     Given a user message "m1" appended to "s_001"

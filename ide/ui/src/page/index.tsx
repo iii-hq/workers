@@ -74,10 +74,13 @@ import { copyText } from '@iii-dev/console-ui/format'
 import { createEntry, deleteEntry, duplicateFile, duplicateName, renameEntry } from './file-actions'
 import { createObjectUrlRegistry } from './file-bytes'
 import { type ExplorerActions, FilesTab } from './FilesTab'
+import { NewWorkerDialog } from './NewWorkerDialog'
+import { entryFile, type ScaffoldResult } from './new-worker'
 import { type GitChange, type GitState, gitChanges } from './git'
 import type { CommitDetails, CommitFile } from './git-log-window'
 import { gitDiscard } from './git-actions'
 import { EDITOR_FULL_READ_BUDGET } from './large-file'
+import { watchGit } from './git-watch'
 import { useWorkspaceChanges } from './live'
 import {
   canGoBack,
@@ -145,7 +148,7 @@ import { TimelineTab } from './TimelineTab'
 import { TurnReviewBridge } from './TurnReviewBridge'
 import type { TreeChange } from './tree-model'
 import { describeRevert, revertTurn } from './turn-revert'
-import { useHarnessTurn } from './turn'
+import { useHarnessTurn, useTurnsChanged } from './turn'
 import { fetchSessionTurns, relativeToRoot, type SessionTurnSummary, turnTitle } from './turns'
 import { useCompareRefs } from './use-compare-refs'
 import { useSourceControl } from './use-source-control'
@@ -290,6 +293,11 @@ export function ShellExplorerPage({
   if (terminalOpen && !terminalMounted) setTerminalMounted(true)
   // The Git tool window shares the docked panel with the terminal.
   const [gitOpen, setGitOpen] = useState(false)
+  // Mounted from its first opening, then hidden rather than unmounted: the
+  // terminal and the Git window trade the dock, and a remount re-read the
+  // refs, a page of the log and every worktree, and lost the selection.
+  const [gitMounted, setGitMounted] = useState(false)
+  if (gitOpen && !gitMounted) setGitMounted(true)
   const [gitTab, setGitTab] = useState<GitTab>('log')
   const gitToggleRef = useRef<HTMLButtonElement>(null)
   const [terminalDock, setTerminalDock] = useState<TerminalDock>('bottom')
@@ -338,6 +346,8 @@ export function ShellExplorerPage({
   const expandedRef = useRef(expanded)
   expandedRef.current = expanded
   const [reveal, setReveal] = useState<string | null>(null)
+  // The New worker dialog's root-relative parent folder; null keeps it closed.
+  const [newWorkerBase, setNewWorkerBase] = useState<string | null>(null)
 
   // ── tabs ──
   const [tabs, setTabs] = useState<TabsState>(EMPTY_TABS)
@@ -585,6 +595,19 @@ export function ShellExplorerPage({
     setGit(null)
     void refreshGit()
   }, [refreshGit])
+  // A stage, a commit or a switch made outside the page (a terminal, an
+  // agent) is no file change the watch reports: the worker's repository
+  // feed says so instead. The Source Control tabs read again only when the
+  // status did move.
+  useEffect(() => {
+    if (!root) return
+    return watchGit(host, root, () => {
+      const before = gitRef.current
+      void refreshGit({ quiet: true }).then((state) => {
+        if (state !== null && state !== before && scmActiveRef.current) setGitEpoch((value) => value + 1)
+      })
+    })
+  }, [host, root, refreshGit])
 
   // Folders the page expands on its own (restored state, reveals) are
   // listed the same way a click would list them.
@@ -617,8 +640,8 @@ export function ShellExplorerPage({
     void fetchSessionTurns(host, conversationId)
       .then((turns) => {
         if (sessionTurnsSeqRef.current !== seq) return
-        // A poll that finds the same list keeps the old one: a new array
-        // would re-render the whole page every tick of a running turn.
+        // A read that finds the same list keeps the old one: a new array
+        // would re-render the whole page on every change a turn records.
         const key = JSON.stringify(turns)
         if (key === sessionTurnsKeyRef.current) return
         sessionTurnsKeyRef.current = key
@@ -633,8 +656,9 @@ export function ShellExplorerPage({
         })
         // A running turn keeps gaining files. The record a diff tab cached
         // before a file landed says the turn never touched it, and a disk
-        // burst alone re-reads that same stale record; the polled list is
-        // what knows better. In the same batch as the list: one render.
+        // burst alone re-reads that same stale record; the list read on the
+        // worker's word is what knows better. In the same batch as the
+        // list: one render.
         const shape = turnsShape(turns)
         if (shape === sessionTurnsShapeRef.current) return
         sessionTurnsShapeRef.current = shape
@@ -646,18 +670,10 @@ export function ShellExplorerPage({
   // biome-ignore lint/correctness/useExhaustiveDependencies: turn boundaries are the refresh triggers
   useEffect(() => {
     refreshSessionTurns()
-    if (!harnessTurn.active) return
-    // A hidden tab skips the poll, and catches up when it shows again.
-    const tick = () => {
-      if (document.visibilityState !== 'hidden') refreshSessionTurns()
-    }
-    const timer = window.setInterval(tick, 1_500)
-    document.addEventListener('visibilitychange', tick)
-    return () => {
-      window.clearInterval(timer)
-      document.removeEventListener('visibilitychange', tick)
-    }
   }, [harnessTurn.active, harnessTurn.completedAtMs, harnessTurn.turnId, refreshSessionTurns])
+  // Between the boundaries, the worker says when the history gained a
+  // change (shell::turns::changed); the list is read then, never on a timer.
+  useTurnsChanged(host, conversationId, paneScope, refreshSessionTurns)
   // A turn that completed may have become an older turn's "after" side.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the completion stamp is the trigger
   useEffect(() => {
@@ -810,6 +826,20 @@ export function ShellExplorerPage({
     [ensurePath],
   )
   const onRevealed = useCallback(() => setReveal(null), [])
+  // A scaffolded worker: show its folder and open its entry file, when they
+  // live under the browsed root.
+  const onWorkerCreated = useCallback(
+    (result: ScaffoldResult) => {
+      const currentRoot = rootRef.current
+      if (!currentRoot) return
+      const dir = relativeToRoot(result.directory, currentRoot)
+      if (dir !== null) revealFolder(dir)
+      const entry = entryFile(result.files.map((file) => file.path))
+      const rel = entry === null ? null : relativeToRoot(entry, currentRoot)
+      if (rel !== null) openFileTab(rel, { pin: true })
+    },
+    [revealFolder, openFileTab],
+  )
 
   const onDirtyChange = useCallback((relPath: string, dirty: boolean) => {
     setDirtyPaths((prev) => {
@@ -918,11 +948,11 @@ export function ShellExplorerPage({
         else applyTreeChanges([{ rel: to, kind: 'created', dir: false }])
         afterDiskChange()
       },
-      remove: async (rel, isDir) => {
+      remove: async (rel, isDir, includeProtected) => {
         const currentRoot = rootRef.current
         if (!currentRoot) return
         const generation = rootGenerationRef.current
-        await deleteEntry(host, currentRoot, rel, isDir)
+        await deleteEntry(host, currentRoot, rel, isDir, includeProtected)
         if (rootGenerationRef.current !== generation || rootRef.current !== currentRoot) return
         const affected = tabsRef.current.tabs.filter((tab) => tab.target.kind === 'file' && isUnder(tab.target.path, rel))
         if (affected.length > 0) closeTabIds(affected.map((tab) => tab.id))
@@ -946,6 +976,7 @@ export function ShellExplorerPage({
       },
       compare: (rel) => compareFile(rel),
       findInFolder,
+      newWorker: setNewWorkerBase,
       discard: (rel) => {
         const change = gitRef.current?.kind === 'ready' ? gitRef.current.changes.find((c) => c.path === rel) : undefined
         if (change) setPendingDiscard(change)
@@ -1050,7 +1081,7 @@ export function ShellExplorerPage({
     if (previous?.phase !== 'ready') setDiffVersion((value) => value + 1)
     const generation = rootGenerationRef.current
     const target = activeDiff
-    void loadDiffContents(host, root, target.path, target.source, turnCache)
+    void loadDiffContents(host, root, target.path, target.source, turnCache, isProtected)
       .then<DiffTabState>((contents) => ({ phase: 'ready', contents }))
       .catch<DiffTabState>((error: unknown) => ({ phase: 'error', message: errorMessage(error) }))
       .then((state) => {
@@ -1064,7 +1095,7 @@ export function ShellExplorerPage({
         diffCacheRef.current.set(activeDiffId, { epoch: diskEpoch, state })
         setDiffVersion((value) => value + 1)
       })
-  }, [activeDiff, activeDiffId, root, diskEpoch, host, turnCache])
+  }, [activeDiff, activeDiffId, root, diskEpoch, host, turnCache, isProtected])
   // biome-ignore lint/correctness/useExhaustiveDependencies: diffVersion is the cache's change signal
   const activeDiffState: DiffTabState = useMemo(
     () => (activeDiffId !== null ? diffCacheRef.current.get(activeDiffId)?.state : undefined) ?? { phase: 'loading' },
@@ -1776,6 +1807,21 @@ export function ShellExplorerPage({
       setTerminalActive(true)
       return
     }
+    if (context.type === 'new-worker') {
+      appliedContextRef.current = panelContext.id
+      setNewWorkerBase('workers')
+      return
+    }
+    if (context.type === 'source-control') {
+      // A newly mounted page resolves its own root first; changing it before
+      // that would cancel the resolution and skip the restored view state.
+      if (root === null) return
+      appliedContextRef.current = panelContext.id
+      changeRoot(context.cwd)
+      setSideTab('scm')
+      setCollapsed(false)
+      return
+    }
     if (root === null) return
     appliedContextRef.current = panelContext.id
     const rel = context.path.startsWith('/') ? (relativeToRoot(context.path, root) ?? context.path) : context.path
@@ -1812,6 +1858,15 @@ export function ShellExplorerPage({
       showTab((state) => openPinned(state, compareTarget(request.ref, request.against)))
     },
     [showTab],
+  )
+  // "Show history" from a change's menu: the Git window's log, narrowed.
+  const [historyFor, setHistoryFor] = useState<{ paths: string[]; seq: number } | null>(null)
+  const showHistory = useCallback(
+    (paths: string[]) => {
+      setHistoryFor((previous) => ({ paths, seq: (previous?.seq ?? 0) + 1 }))
+      openGit('log')
+    },
+    [openGit],
   )
   const closeGit = useCallback(() => {
     // Focus inside the window would fall to the page body with it, where
@@ -1874,7 +1929,7 @@ export function ShellExplorerPage({
   // The page's verbs, for the palette and for the keyboard while this pane
   // has the focus. The keys stay clear of the console's own.
   // The commands read the page's latest verbs and state through a ref: they
-  // register once, instead of again on every poll, burst and toggle.
+  // register once, instead of again on every read, burst and toggle.
   const verbsRef = useRef({
     frameEl,
     toggleTerminal,
@@ -2378,6 +2433,7 @@ export function ShellExplorerPage({
         root={root}
         turn={newestTurn}
         turnCache={turnCache}
+        isProtected={isProtected}
         epoch={diskEpoch}
         written={summaryWritesRef.current}
         sessionId={conversationId}
@@ -2496,6 +2552,9 @@ export function ShellExplorerPage({
                     activeDiff={activeDiff ? { path: activeDiff.path, source: activeDiff.source } : null}
                     onOpenDiff={openDiffTab}
                     onOpenFile={openPinnedFile}
+                    onCompare={compareFile}
+                    onShowHistory={showHistory}
+                    onDeleteFile={(rel) => explorerActions.remove(rel, false)}
                     onChanged={afterDiskChange}
                   />
                 ) : (
@@ -2774,6 +2833,15 @@ export function ShellExplorerPage({
           recent={recentFiles}
           onOpenFile={openPinnedFile}
         />
+        {newWorkerBase !== null && root !== null ? (
+          <NewWorkerDialog
+            host={host}
+            root={root}
+            baseDir={newWorkerBase}
+            onCreated={onWorkerCreated}
+            onClose={() => setNewWorkerBase(null)}
+          />
+        ) : null}
         {confirmDialog}
         <ConfirmDialog
           open={pendingDiscard !== null}
@@ -2791,8 +2859,9 @@ export function ShellExplorerPage({
           }}
           onCancel={() => setPendingDiscard(null)}
         />
-        {gitOpen && root !== null ? (
+        {gitMounted && root !== null ? (
           <DockPanel
+            hidden={!gitOpen}
             dock="bottom"
             size={terminalBottomSize}
             narrow={narrow}
@@ -2805,6 +2874,7 @@ export function ShellExplorerPage({
               host={host}
               root={root}
               page={worktreesPage}
+              open={gitOpen}
               tab={gitTab}
               onTabChange={setGitTab}
               onHide={closeGit}
@@ -2814,6 +2884,7 @@ export function ShellExplorerPage({
               onOpenCompareFile={openCompareFile}
               onOpenWorkingFile={openWorkingFile}
               onOpenRevision={openRevision}
+              focusPaths={historyFor}
             />
           </DockPanel>
         ) : null}

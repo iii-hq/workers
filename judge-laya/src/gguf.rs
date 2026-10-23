@@ -1,7 +1,9 @@
-//! Write the checkpoint's encoder as the GGUF llama.cpp loads (`modern-bert`),
-//! the way llama.cpp's `convert_hf_to_gguf.py` does, straight from
-//! `model.safetensors`: no Python, no separate download. Matrices are f16
-//! (laya ships them in f16, so they are copied as they are), norms f32. The
+//! Write the checkpoint as the GGUF llama.cpp loads (`modern-bert` with laya's
+//! decision head: `decision.*` keys, the head blocks after the encoder's, the
+//! scorer as `cls.*`, the type embedding as `token_types`), the way llama.cpp's
+//! `convert_hf_to_gguf.py` does, straight from `model.safetensors`: no Python,
+//! no separate download. Matrices are f16 (laya ships them in f16, so they are
+//! copied as they are), norms, biases and the type embedding f32. The
 //! vocabulary only satisfies llama.cpp's loader: the worker tokenizes with the
 //! checkpoint's own tokenizer and passes ids.
 use anyhow::{anyhow, bail, Context, Result};
@@ -27,10 +29,18 @@ enum Meta {
     Strs(Vec<String>),
 }
 
-/// Convert `weights`' `encoder.*` tensors, described by `encoder_config` and
-/// `tokenizer`, into a GGUF at `out` (written through a temporary file).
-pub fn convert(weights: &Path, encoder_config: &Path, tokenizer: &Path, out: &Path) -> Result<()> {
+/// Convert `weights` (the encoder and the decision head), described by
+/// `encoder_config`, `agent_config` (`rl_agent_config.json`) and `tokenizer`,
+/// into a GGUF at `out` (written through a temporary file).
+pub fn convert(
+    weights: &Path,
+    encoder_config: &Path,
+    agent_config: &Path,
+    tokenizer: &Path,
+    out: &Path,
+) -> Result<()> {
     let cfg: Value = serde_json::from_slice(&std::fs::read(encoder_config)?)?;
+    let agent: Value = serde_json::from_slice(&std::fs::read(agent_config)?)?;
     let file = File::open(weights).with_context(|| format!("open {}", weights.display()))?;
     // SAFETY: the checkpoint is read-only for the worker's lifetime.
     let mmap = unsafe { memmap2::Mmap::map(&file)? };
@@ -43,6 +53,11 @@ pub fn convert(weights: &Path, encoder_config: &Path, tokenizer: &Path, out: &Pa
             .ok_or_else(|| anyhow!("encoder config lacks {key}"))
     };
     let layers = int("num_hidden_layers")?;
+    let hidden = int("hidden_size")?;
+    let head_layers = agent["head_layers"].as_u64().unwrap_or(2) as u32;
+    // Per block: the head blocks' MLP is a plain 4x one.
+    let mut ff = vec![int("intermediate_size")? as i32; layers as usize];
+    ff.resize((layers + head_layers) as usize, 4 * hidden as i32);
     let theta = |kind: &str, flat: &str, default: f64| {
         cfg.get(flat)
             .and_then(Value::as_f64)
@@ -57,24 +72,27 @@ pub fn convert(weights: &Path, encoder_config: &Path, tokenizer: &Path, out: &Pa
         .find_map(|key| cfg.get(*key).and_then(Value::as_f64))
         .unwrap_or(1e-5) as f32;
     let (tokens, types, merges) = vocabulary(tokenizer, int("vocab_size")? as usize)?;
+    // llama.cpp warns unless its EOS ends generation, which ModernBERT's [SEP]
+    // does not: name the vocabulary's end of text instead (the worker never
+    // generates).
+    let eos = tokens
+        .iter()
+        .position(|token| token == "<|endoftext|>" || token == "<eos>");
     let arch = "modern-bert";
     let key = |k: &str| format!("{arch}.{k}");
     let mut meta: Vec<(String, Meta)> = vec![
         ("general.architecture".into(), Meta::Str(arch.into())),
         ("general.type".into(), Meta::Str("model".into())),
-        ("general.name".into(), Meta::Str("laya encoder".into())),
+        ("general.name".into(), Meta::Str("laya".into())),
         ("general.file_type".into(), Meta::U32(1)),
         ("general.quantization_version".into(), Meta::U32(2)),
-        (key("block_count"), Meta::U32(layers)),
+        (key("block_count"), Meta::U32(layers + head_layers)),
         (
             key("context_length"),
             Meta::U32(int("max_position_embeddings")?),
         ),
-        (key("embedding_length"), Meta::U32(int("hidden_size")?)),
-        (
-            key("feed_forward_length"),
-            Meta::U32(int("intermediate_size")?),
-        ),
+        (key("embedding_length"), Meta::U32(hidden)),
+        (key("feed_forward_length"), Meta::I32s(ff)),
         (
             key("attention.head_count"),
             Meta::U32(int("num_attention_heads")?),
@@ -90,6 +108,8 @@ pub fn convert(weights: &Path, encoder_config: &Path, tokenizer: &Path, out: &Pa
         (key("attention.layer_norm_rms_epsilon"), Meta::F32(eps)),
         (key("attention.layer_norm_epsilon"), Meta::F32(eps)),
         (key("attention.causal"), Meta::Bool(false)),
+        // One row per token (llama.cpp's NONE): the worker reads the [MASK] rows.
+        (key("pooling_type"), Meta::U32(0)),
         (
             key("attention.sliding_window"),
             Meta::U32(int("local_attention")?),
@@ -106,13 +126,42 @@ pub fn convert(weights: &Path, encoder_config: &Path, tokenizer: &Path, out: &Pa
         ("tokenizer.ggml.tokens".into(), Meta::Strs(tokens)),
         ("tokenizer.ggml.token_type".into(), Meta::I32s(types)),
         ("tokenizer.ggml.merges".into(), Meta::Strs(merges)),
+        // One type embedding per question type: choice, score, noul.
+        ("tokenizer.ggml.token_type_count".into(), Meta::U32(3)),
+        (key("decision.type"), Meta::Str("laya".into())),
+        (key("decision.block_count"), Meta::U32(head_layers)),
+        (
+            key("decision.max_head_tokens"),
+            Meta::U32(agent["head_max_len"].as_u64().unwrap_or(192) as u32),
+        ),
     ];
+    // The fitted temperatures under the converter's names ("choice:11+" is
+    // `decision.temperature.choice.11`); the worker reads its own copy.
+    let by_type = ["choice", "score", "noul"]
+        .map(String::from)
+        .into_iter()
+        .zip(agent["temperature"].as_array().into_iter().flatten());
+    let by_options = agent["temperature_by_options"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(name, value)| {
+            let name = name.replace(':', ".").replace('-', "_");
+            (name.trim_end_matches('+').to_owned(), value)
+        });
+    for (name, value) in by_type.chain(by_options) {
+        if let Some(value) = value.as_f64() {
+            meta.push((
+                key(&format!("decision.temperature.{name}")),
+                Meta::F32(value as f32),
+            ));
+        }
+    }
     if let Some(act) = cfg.get("hidden_activation").and_then(Value::as_str) {
         meta.push((key("hidden_activation"), Meta::Str(act.into())));
     }
     for (field, name) in [
         ("bos_token_id", "bos"),
-        ("eos_token_id", "eos"),
         ("sep_token_id", "seperator"),
         ("pad_token_id", "padding"),
     ] {
@@ -122,6 +171,9 @@ pub fn convert(weights: &Path, encoder_config: &Path, tokenizer: &Path, out: &Pa
                 Meta::U32(id as u32),
             ));
         }
+    }
+    if let Some(eos) = eos {
+        meta.push(("tokenizer.ggml.eos_token_id".into(), Meta::U32(eos as u32)));
     }
 
     // (gguf name, checkpoint name, ggml type), in llama.cpp's order.
@@ -154,6 +206,41 @@ pub fn convert(weights: &Path, encoder_config: &Path, tokenizer: &Path, out: &Pa
         tensors.push((dst("ffn_up"), src("mlp.Wi"), GGML_F16));
         tensors.push((dst("ffn_down"), src("mlp.Wo"), GGML_F16));
         tensors.push((dst("ffn_norm"), src("mlp_norm"), GGML_F32));
+    }
+    // The decision head: pre-norm blocks with biases after the encoder's,
+    // then the scorer and the question-type embedding.
+    for i in 0..head_layers {
+        for (part, from, ggml) in [
+            ("ffn_up.bias", "linear1.bias", GGML_F32),
+            ("ffn_up.weight", "linear1.weight", GGML_F16),
+            ("ffn_down.bias", "linear2.bias", GGML_F32),
+            ("ffn_down.weight", "linear2.weight", GGML_F16),
+            ("attn_norm.bias", "norm1.bias", GGML_F32),
+            ("attn_norm.weight", "norm1.weight", GGML_F32),
+            ("ffn_norm.bias", "norm2.bias", GGML_F32),
+            ("ffn_norm.weight", "norm2.weight", GGML_F32),
+            ("attn_qkv.bias", "self_attn.in_proj_bias", GGML_F32),
+            ("attn_qkv.weight", "self_attn.in_proj_weight", GGML_F16),
+            ("attn_output.bias", "self_attn.out_proj.bias", GGML_F32),
+            ("attn_output.weight", "self_attn.out_proj.weight", GGML_F16),
+        ] {
+            tensors.push((
+                format!("blk.{}.{part}", layers + i),
+                format!("head.layers.{i}.{from}"),
+                ggml,
+            ));
+        }
+    }
+    for (name, from, ggml) in [
+        ("cls.norm.bias", "scorer.0.bias", GGML_F32),
+        ("cls.norm.weight", "scorer.0.weight", GGML_F32),
+        ("cls.bias", "scorer.1.bias", GGML_F32),
+        ("cls.weight", "scorer.1.weight", GGML_F16),
+        ("cls.output.bias", "scorer.3.bias", GGML_F32),
+        ("cls.output.weight", "scorer.3.weight", GGML_F16),
+        ("token_types.weight", "type_emb.weight", GGML_F32),
+    ] {
+        tensors.push((name.into(), from.into(), ggml));
     }
 
     // A private temporary name: concurrent workers (or tests) may convert the

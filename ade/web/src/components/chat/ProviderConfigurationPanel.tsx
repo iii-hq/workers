@@ -5,13 +5,16 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { resolveConfigurationFamily } from '@/lib/configuration-family'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
+import { fetchProviderList, type ProviderListEntry } from '@/lib/models-catalog'
+import { checkProviderKey, type ProviderKeyCheck } from '@/lib/onboarding/api'
 import { useExtProviderConfigForm } from '@/lib/ui-slots'
 import { cn } from '@/lib/utils'
 import { isObjectSchema } from '@/pages/Configuration/lib/schema/guard'
 import { validateConfig } from '@/pages/Configuration/lib/schema/validate'
-import type {
-  JsonSchema,
-  JsonValue,
+import {
+  getConfiguration,
+  type JsonSchema,
+  type JsonValue,
 } from '@/pages/Configuration/tabs/WorkersTab/api'
 import { isDirty, jsonEqual } from '@/pages/Configuration/tabs/WorkersTab/dirty'
 import { parseSetError } from '@/pages/Configuration/tabs/WorkersTab/errors'
@@ -101,6 +104,64 @@ export function mergeProviderConfigurationValue(
     ...value,
     providers: { ...providers, [providerId]: providerValue },
   }
+}
+
+type KeyCheckState =
+  | { phase: 'idle' }
+  | { phase: 'checking' }
+  | { phase: 'done'; result: ProviderKeyCheck }
+
+export interface CredentialStatus {
+  connected?: boolean
+  source?: string
+  error?: string
+  checking?: boolean
+  detail?: string
+}
+
+/**
+ * What the key field shows: the router's view, corrected by what the
+ * provider actually listed. A resolved key with no models is a key the
+ * upstream refused, not a connection.
+ */
+export function credentialStatusFor(
+  provider: ProviderListEntry | undefined,
+  check: KeyCheckState,
+  modelCount: number,
+): CredentialStatus {
+  const listing = provider?.supports_model_listing !== false
+  const models =
+    check.phase === 'done'
+      ? Math.max(check.result.models, modelCount)
+      : modelCount
+  const configured =
+    check.phase === 'done' ? check.result.configured : provider?.configured
+  const refused = Boolean(configured) && listing && models === 0
+  const error =
+    provider?.credential_error ??
+    (check.phase === 'done' ? check.result.error : undefined) ??
+    (refused && check.phase !== 'checking'
+      ? 'The provider lists no models with this key. Check that it is valid and has API access.'
+      : undefined)
+  return {
+    connected: Boolean(configured) && !refused,
+    source: provider?.credential_source,
+    error,
+    checking: check.phase === 'checking',
+    detail:
+      models > 0 ? `${models} ${models === 1 ? 'model' : 'models'}` : undefined,
+  }
+}
+
+/** The provider slice with `api_key` set to `next`, or without it. */
+export function withApiKey(
+  slice: JsonValue,
+  next: string | undefined,
+): JsonValue {
+  const copy: JsonObject = isJsonObject(slice) ? { ...slice } : {}
+  if (next === undefined) delete copy.api_key
+  else copy.api_key = next
+  return copy
 }
 
 function isJsonObject(value: unknown): value is JsonObject {
@@ -197,6 +258,21 @@ export function ProviderConfigurationPanel({
 }: ProviderConfigurationPanelProps) {
   const ctx = useConversationsCtxOptional()
   const providerFormOverride = useExtProviderConfigForm(providerId)
+  const [keyCheck, setKeyCheck] = useState<KeyCheckState>({ phase: 'idle' })
+  const [freshProvider, setFreshProvider] = useState<ProviderListEntry | null>(
+    null,
+  )
+  const keyCheckRun = useRef(0)
+  // Another provider is another check.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: resets on purpose when the provider changes
+  useEffect(() => {
+    keyCheckRun.current += 1
+    // Bail-out updates: on mount nothing changes, so nothing re-renders.
+    setKeyCheck((current) =>
+      current.phase === 'idle' ? current : { phase: 'idle' },
+    )
+    setFreshProvider((current) => (current === null ? current : null))
+  }, [providerId])
   const provider = ctx?.presentProviders.find(
     (entry) => entry.id === providerId,
   )
@@ -511,6 +587,66 @@ export function ProviderConfigurationPanel({
     valueQuery.data,
   ])
 
+  // A key change from the credential field lands at once, alone: read the
+  // authoritative value, change only this provider's `api_key`, write it, and
+  // mirror the change into the baseline and the draft — other unsaved edits
+  // in the form are neither written nor lost.
+  const applyCredential = useCallback(
+    async (next: string | undefined) => {
+      if (effectiveConfigurationId === null) {
+        throw new Error('The router configuration is not resolved yet.')
+      }
+      const current = await getConfiguration(effectiveConfigurationId, {
+        raw: true,
+      })
+      const slice = providerSliceFromValue(current, providerId)
+      if (slice.kind !== 'ready') throw new Error(slice.message)
+      const merged = mergeProviderConfigurationValue(
+        current,
+        providerId,
+        withApiKey(slice.value, next),
+      )
+      if (merged === null) {
+        throw new Error(
+          'The raw router value cannot safely preserve its shape.',
+        )
+      }
+      await setMutation.mutateAsync({
+        id: effectiveConfigurationId,
+        value: merged,
+      })
+      setBaseline((value) =>
+        value === undefined ? value : withApiKey(value, next),
+      )
+      setDraft((value) =>
+        value === undefined ? value : withApiKey(value, next),
+      )
+      // Then, in the background, what the wizard does after a key: wait for
+      // the router to resolve it and ask the provider for its models — a key
+      // the upstream refuses lists none.
+      const run = ++keyCheckRun.current
+      setKeyCheck(next ? { phase: 'checking' } : { phase: 'idle' })
+      void (async () => {
+        const result = next ? await checkProviderKey(providerId) : null
+        const providers = await fetchProviderList().catch(() => null)
+        if (keyCheckRun.current !== run) return
+        setFreshProvider(
+          providers?.find((entry) => entry.id === providerId) ?? null,
+        )
+        if (result) setKeyCheck({ phase: 'done', result })
+        if (result && result.models > 0) void ctx?.refreshModels()
+      })()
+    },
+    [ctx, effectiveConfigurationId, providerId, setMutation],
+  )
+
+  const shownProvider = freshProvider ?? provider
+  const credentialStatus = credentialStatusFor(
+    shownProvider,
+    keyCheck,
+    modelCount,
+  )
+
   const retryResolution = useCallback(() => {
     void configurationsQuery.refetch()
   }, [configurationsQuery.refetch])
@@ -610,12 +746,15 @@ export function ProviderConfigurationPanel({
           />
         ) : draft !== undefined && providerSchema && isJsonObject(draft) ? (
           <ProviderSettingsForm
+            providerId={providerId}
             schema={providerSchema}
             value={draft}
             onChange={handleChange}
             errors={errors}
-            credentialEnvVar={provider?.credential_env_var}
-            configured={provider?.configured}
+            credentialEnvVar={shownProvider?.credential_env_var}
+            configured={credentialStatus.connected}
+            credentialStatus={credentialStatus}
+            onCredentialChange={applyCredential}
           />
         ) : (
           <div className="rounded-lg bg-surface px-3 py-4 font-sans text-base text-ink-faint sm:text-sm">

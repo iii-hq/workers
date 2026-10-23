@@ -4,14 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hermes"
-version = "0.1.9"
+version = "0.1.10"
 description = "Hermes agent as an iii worker: headless turns over the iii bus, omnichannel send, and inbound platform events as iii triggers."
 authors = [{ name = "iii" }]
 license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
-    "iii-sdk==0.23.0",
-    "iii-helpers==0.23.0",
+    "iii-sdk==0.24.6",
+    "iii-helpers==0.24.6",
     "opentelemetry-api",
     "opentelemetry-sdk",
     "pyyaml",

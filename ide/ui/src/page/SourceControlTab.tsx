@@ -47,6 +47,12 @@ interface SourceControlTabProps {
   onOpenDiff: (path: string, source: DiffSource, pin: boolean) => void
   /** An image has no text diff: its row opens the file. */
   onOpenFile: (path: string) => void
+  /** "Compare with…" from a change's menu. */
+  onCompare: (path: string) => void
+  /** "Show history" from a change's menu: the Git log narrowed to these paths. */
+  onShowHistory: (paths: string[]) => void
+  /** "Delete…" from a change's menu: the Explorer's delete, so tabs on the file close. */
+  onDeleteFile: (path: string) => Promise<void>
   onChanged: () => void
 }
 
@@ -59,6 +65,9 @@ export function SourceControlTab({
   activeDiff,
   onOpenDiff,
   onOpenFile,
+  onCompare,
+  onShowHistory,
+  onDeleteFile,
   onChanged,
 }: SourceControlTabProps) {
   const [tab, setTab] = useState<ScmTab>(readTab)
@@ -105,6 +114,10 @@ export function SourceControlTab({
           onOpenChange={(entry, pin) =>
             opensFileDirectly(entry) ? onOpenFile(entry.path) : onOpenDiff(entry.path, { type: 'uncommitted' }, pin)
           }
+          onOpenFile={onOpenFile}
+          onCompare={onCompare}
+          onShowHistory={onShowHistory}
+          onDeleteFile={onDeleteFile}
         />
       </TabsContent>
       <TabsContent value="stash" className="shui-scm-panel">

@@ -1,0 +1,8 @@
+# Seed for the `tmux` configuration entry, applied only when nothing is stored
+# yet (`--config ./config.yaml`). Every key is optional; omitted keys use the
+# defaults in src/config.rs, including the built-in agent matchers.
+tmux_binary: tmux
+poll_interval_ms: 1000
+ports_interval_ms: 3000
+max_terminals: 8
+terminal_idle_timeout_ms: 30000

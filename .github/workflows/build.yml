@@ -52,6 +52,7 @@ concurrency:
 jobs:
   resolve:
     runs-on: workers-release-linux-8core
+    timeout-minutes: 20
     permissions:
       actions: read
       contents: read
@@ -187,6 +188,7 @@ jobs:
   assemble:
     needs: [resolve, build]
     runs-on: workers-release-linux-8core
+    timeout-minutes: 20
     permissions:
       actions: read
       contents: read
@@ -271,6 +273,7 @@ jobs:
 
       - name: Install OCI capture tooling
         if: steps.interface.outputs.kind == 'oci-image' && steps.interface.outputs.interface_capture == 'required'
+        timeout-minutes: 10
         run: |
           sudo apt-get update
           sudo apt-get install -y skopeo
@@ -368,6 +371,7 @@ jobs:
   upload:
     needs: [resolve, assemble]
     runs-on: workers-release-linux-8core
+    timeout-minutes: 20
     permissions:
       actions: read
       contents: write
@@ -598,6 +602,7 @@ jobs:
   manifest:
     needs: [resolve, assemble, upload]
     runs-on: workers-release-linux-8core
+    timeout-minutes: 20
     permissions:
       actions: read
       attestations: write

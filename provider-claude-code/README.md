@@ -10,8 +10,10 @@ Bearer token. It is the Claude analog of
 
 Implements the provider protocol from `tech-specs/2026-06-agentic/llm-router.md`:
 `provider::claude-code::stream` (Messages SSE → `AssistantMessageEvent` frames
-into a router-owned channel) and `provider::claude-code::refresh_models` (fetches
-and reconciles the model catalog, with a curated fallback). For **API-key**
+into a router-owned channel), `provider::claude-code::refresh_models` (fetches
+and reconciles the model catalog, with a curated fallback), and
+`provider::claude-code::count_tokens` (exact prompt token counts behind
+`router::count_tokens`). For **API-key**
 billing (teams/CI/production), use [`provider-anthropic`](../provider-anthropic/)
 instead — that provider speaks the same API with `ANTHROPIC_API_KEY`.
 
@@ -28,7 +30,7 @@ instead — that provider speaks the same API with `ANTHROPIC_API_KEY`.
 
 This worker is a **dumb token consumer** — login and refresh live out-of-band:
 
-1. **Vault (intended authority):** the [`auth-credentials`](../auth-credentials/)
+1. **Vault (intended authority):** the `auth-credentials`
    worker (`auth::get_token`), populated by an `oauth-claude-code` sign-in flow.
    A near-expiry token triggers the vault-owned refresh
    (`oauth::claude-code::refresh`); this provider never calls the OAuth token
@@ -61,10 +63,12 @@ provider id `anthropic`.
 - **Models:** attempts the authenticated `GET /v1/models` at startup, on
   explicit refresh, after router readiness, and every ~15 minutes. Picker-visible
   results become **namespaced** router ids (`claude-code/<upstream-id>`). If the
-  models endpoint rejects the subscription OAuth token (401/403) — or returns
+  models endpoint refuses the subscription OAuth token (403) — or returns
   nothing — a small **curated fallback slice** is reconciled instead of blanking
-  the catalog, so streaming still works. Transient failures preserve the
-  router's last-known-good slice. Namespacing prevents `AmbiguousModel`
+  the catalog, so streaming still works. A 401 (the token itself was rejected)
+  or an expired token fails the refresh with `auth_expired`, so setup asks for
+  a new sign-in instead of listing models a chat cannot use. Those failures and
+  transient ones preserve the router's last-known-good slice. Namespacing prevents `AmbiguousModel`
   collisions with `provider-anthropic`.
 - **Request:** Messages API — `messages`, `tools`, `max_tokens`, `stream: true`,
   optional adaptive `thinking` + `output_config.effort`, and automatic prompt
@@ -73,6 +77,14 @@ provider id `anthropic`.
   an optional router-supplied harness prompt follows as a second block. Headers:
   `authorization: Bearer`, `anthropic-version: 2023-06-01`,
   `anthropic-beta: oauth-2025-04-20`.
+- **Token counting:** `provider::claude-code::count_tokens` (behind
+  `router::count_tokens`) posts the assembled prompt (identity block included;
+  no `max_tokens`, `stream` or cache markers) to the messages endpoint's
+  `count_tokens` sibling (`/v1/messages/count_tokens`) with the same OAuth
+  credential and headers as streaming, for an exact provider-metered count
+  (`estimator: "provider"`). It never runs the model and costs nothing; a
+  non-2xx answer is returned as an error so the router can fall back to an
+  estimate.
 - **SSE:** `content_block_delta` (`text_delta` → text, `thinking_delta` →
   thinking, `input_json_delta` → tool calls), `message_delta` → usage,
   `message_stop` → terminal. Unknown event types are ignored (forward-compat).
@@ -118,7 +130,9 @@ Regenerate the wire-schema goldens with `UPDATE_GOLDENS=1 cargo test`.
 | `not configured: sign in with Claude Code …` | no vault credential and no local `claude` credential (`~/.claude/.credentials.json`, or the Keychain on macOS) | run the `oauth-claude-code` sign-in, or `claude` (login) |
 | local fallback is used on each request | `auth-credentials` vault not running | start the vault for shared/refreshing credentials, or keep relying on the local `claude` credential fallback |
 | `requires a Claude Pro/Max OAuth login … API keys belong on provider-anthropic` | credential is an API key | this provider is OAuth-only; use `provider-anthropic` for keys |
-| `auth_expired` on every request | the local `claude` token expired and no refresh worker is registered | run `claude` once to refresh it, or register the `oauth-claude-code` refresh flow |
-| catalog shows only the curated fallback models | `GET /v1/models` rejected the OAuth bearer, or the models endpoint is unreachable | expected — the subscription token may not be accepted on `/v1/models`; streaming still works, and the live list returns once the endpoint accepts the token |
+| `Your Claude Code sign-in has expired …` | the local `claude` token expired and no refresh worker is registered | run `claude` once to refresh it, or register the `oauth-claude-code` refresh flow |
+| `Claude Code rejected the current sign-in …` | Anthropic answered 401: the token was revoked, replaced, or is corrupted | run `claude` and `/login` again |
+| `Anthropic refused this request for the current Claude Code sign-in …` | Anthropic answered 403: the token is valid but not allowed this request | signing in again does not help; check the reason in parentheses, such as the plan's access to the model |
+| catalog shows only the curated fallback models | `GET /v1/models` refused the OAuth bearer (403), or returned nothing | expected — streaming still works, and the live list returns once the endpoint accepts the token |
 | upstream 401 despite a valid token | the request no longer resembles Claude Code | keep the identity system block first and the `anthropic-beta: oauth-2025-04-20` header; a future backend change may require a `user-agent` compat header |
 | model routes ambiguously | a `claude-code/*` id collided with another provider | keep ids namespaced; or pin `provider: "claude-code"` |

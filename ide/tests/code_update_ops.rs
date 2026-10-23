@@ -36,6 +36,8 @@ async fn bottom_up_application_e2e() {
         UpdateFileInput {
             files: vec![UpdateFileSpec {
                 path: "a.txt".into(),
+                inferred_ops: Vec::new(),
+                grouped_ops: Vec::new(),
                 ops: vec![
                     UpdateOp::Insert {
                         at_line: 1,
@@ -80,6 +82,8 @@ async fn batch_with_mix_of_success_and_failure_preserves_originals() {
             files: vec![
                 UpdateFileSpec {
                     path: "ok.txt".into(),
+                    inferred_ops: Vec::new(),
+                    grouped_ops: Vec::new(),
                     ops: vec![UpdateOp::Insert {
                         at_line: 1,
                         content: "P".into(),
@@ -87,6 +91,8 @@ async fn batch_with_mix_of_success_and_failure_preserves_originals() {
                 },
                 UpdateFileSpec {
                     path: "bad.txt".into(),
+                    inferred_ops: Vec::new(),
+                    grouped_ops: Vec::new(),
                     ops: vec![
                         UpdateOp::Remove {
                             from_line: 1,
@@ -101,6 +107,8 @@ async fn batch_with_mix_of_success_and_failure_preserves_originals() {
                 },
                 UpdateFileSpec {
                     path: ".env".into(),
+                    inferred_ops: Vec::new(),
+                    grouped_ops: Vec::new(),
                     ops: vec![UpdateOp::Insert {
                         at_line: 1,
                         content: "X".into(),
@@ -135,6 +143,65 @@ async fn batch_with_mix_of_success_and_failure_preserves_originals() {
 }
 
 #[tokio::test]
+async fn missing_op_is_inferred_through_the_handler() {
+    let tmp = tempdir().unwrap();
+    std::fs::write(tmp.path().join("a.txt"), "1\n2\n3\n").unwrap();
+    let (r, c) = make(tmp.path().to_path_buf(), vec![]);
+    let req: UpdateFileInput = serde_json::from_value(serde_json::json!({
+        "files": [{ "path": "a.txt", "ops": [
+            { "op": "remove", "from_line": 3, "to_line": 3 },
+            { "at_line": 1, "content": "0\n" }
+        ] }]
+    }))
+    .unwrap();
+    let out = update_handle(r, c, req).await.unwrap();
+    let result = &out.results[0];
+    assert!(result.success, "{:?}", result.error);
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
+        "0\n1\n2\n"
+    );
+    assert!(result.echoes.iter().any(|e| e.op_index == 1));
+    let wire = serde_json::to_value(result).unwrap();
+    assert_eq!(
+        wire["notice"],
+        "`op` missing, inferred from keys: ops[1] → insert. Send `op` explicitly."
+    );
+}
+
+/// The reported call grouped its ops under the op name.
+#[tokio::test]
+async fn ops_grouped_under_their_name_apply_through_the_handler() {
+    let tmp = tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("index.ts"),
+        "alarms.set(ticketId, { id: trigger.id })\nreturn trigger.id\n",
+    )
+    .unwrap();
+    let (r, c) = make(tmp.path().to_path_buf(), vec![]);
+    let req: UpdateFileInput = serde_json::from_value(serde_json::json!({
+        "files": [{ "path": "index.ts", "replace": [
+            { "pattern": "id: trigger\\.id", "replacement": "id: triggerId" },
+            { "pattern": "return trigger\\.id\\n", "replacement": "return triggerId\n" }
+        ] }]
+    }))
+    .unwrap();
+    let out = update_handle(r, c, req).await.unwrap();
+    let result = &out.results[0];
+    assert!(result.success, "{:?}", result.error);
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("index.ts")).unwrap(),
+        "alarms.set(ticketId, { id: triggerId })\nreturn triggerId\n"
+    );
+    let wire = serde_json::to_value(result).unwrap();
+    assert_eq!(
+        wire["notice"],
+        "Ops sent under their op name were read as replace[0] → ops[0], \
+         replace[1] → ops[1]. Send them in `ops`, each with its `op`."
+    );
+}
+
+#[tokio::test]
 async fn crlf_line_endings_preserved_after_update() {
     let tmp = tempdir().unwrap();
     std::fs::write(tmp.path().join("crlf.txt"), b"a\r\nb\r\nc\r\n").unwrap();
@@ -145,6 +212,8 @@ async fn crlf_line_endings_preserved_after_update() {
         UpdateFileInput {
             files: vec![UpdateFileSpec {
                 path: "crlf.txt".into(),
+                inferred_ops: Vec::new(),
+                grouped_ops: Vec::new(),
                 ops: vec![UpdateOp::UpdateLines {
                     from_line: 2,
                     to_line: 2,
@@ -171,6 +240,8 @@ async fn regex_replace_e2e() {
         UpdateFileInput {
             files: vec![UpdateFileSpec {
                 path: "a.txt".into(),
+                inferred_ops: Vec::new(),
+                grouped_ops: Vec::new(),
                 ops: vec![UpdateOp::Replace {
                     pattern: "foo".into(),
                     replacement: "baz".into(),

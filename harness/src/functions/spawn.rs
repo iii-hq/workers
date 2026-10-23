@@ -65,8 +65,9 @@ impl<'de> Deserialize<'de> for SubagentColor {
 /// title; icon and color are closed semantic tokens consumed by UIs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SubagentDisplay {
-    /// Short functional name such as `Frontend`, 1-48 characters after trimming.
-    #[schemars(length(min = 1, max = 48))]
+    /// Short functional name such as `Frontend`; trimmed, and cut to its first
+    /// 48 characters when longer.
+    #[schemars(length(min = 1))]
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<SubagentIcon>,

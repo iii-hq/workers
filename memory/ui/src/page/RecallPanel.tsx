@@ -175,7 +175,7 @@ export function RecallPanel({ host, bank, memories, tags }: RecallPanelProps) {
                 retrieval: {result.retrieval || 'bm25-entity'}
               </span>
               <ul className="mem-ui-fact-list">
-                {result.memories.map(({ memory, score }) => (
+                {result.memories.map(({ memory, score, bank }) => (
                   <li key={memory.id} className="mem-ui-recall-item">
                     <div className="mem-ui-row">
                       <span
@@ -191,6 +191,7 @@ export function RecallPanel({ host, bank, memories, tags }: RecallPanelProps) {
                       {memory.pinned ? (
                         <Badge variant="accent">Pinned</Badge>
                       ) : null}
+                      {bank ? <Badge>{bank}</Badge> : null}
                     </div>
                     <p className="mem-ui-fact-text">{memory.text}</p>
                   </li>

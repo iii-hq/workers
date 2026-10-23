@@ -124,6 +124,13 @@
         ],
         "description": "Route that remains on that listener and path after the call, if any."
       },
+      "restore_error": {
+        "description": "mode=funnel only: why the tailnet-only route was not restored after public access was removed. Call `tailscale::share` with mode=serve once it is fixed.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "stopped": {
         "description": "True when the route was changed.",
         "type": "boolean"

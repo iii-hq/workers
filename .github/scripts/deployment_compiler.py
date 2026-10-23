@@ -18,13 +18,14 @@ from pathlib import Path
 from typing import Any
 
 import build_skills_payload
+import deployment_targets
 
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 WORKER_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-ARTIFACT_KINDS = {"rust-binary", "javascript-bundle", "python-bundle", "oci-image"}
+ARTIFACT_KINDS = {"rust-binary", "go-binary", "javascript-bundle", "python-bundle", "oci-image"}
 DEPLOY_KIND = {
-    "binary": "rust-binary",
+    "binary": {"rust-binary", "go-binary"},
     "bundle": {"javascript-bundle", "python-bundle"},
     "image": "oci-image",
 }
@@ -88,8 +89,7 @@ def read_yaml(path: Path) -> Any:
         raise ValueError("PyYAML is required by the deployment compiler") from error
     if not path.is_file():
         fail(f"{path}: file does not exist")
-    value = yaml.safe_load(path.read_text(encoding="utf-8"))
-    return {} if value is None else value
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
 def safe_relative(root: Path, value: Any, field: str, *, directory: bool = False) -> Path:
@@ -132,6 +132,8 @@ def compiler_digest(script: Path, schema: Path) -> str:
     # The skills collector shapes registry_projection.skills, so it is part of the compiler identity.
     digest.update(b"\0skills-payload-builder\0")
     digest.update(Path(build_skills_payload.__file__).read_bytes())
+    digest.update(b"\0deployment-target-policy\0")
+    digest.update(Path(deployment_targets.__file__).read_bytes())
     return digest.hexdigest()
 
 
@@ -185,16 +187,20 @@ def normalize_tags(value: Any, field: str) -> list[str]:
     return sorted(dict.fromkeys(tag.strip().lower() for tag in value))
 
 
-def normalize_config(worker_dir: Path, manifest: dict[str, Any]) -> dict[str, Any]:
+def normalize_config(worker_dir: Path, manifest: dict[str, Any]) -> dict[str, Any] | None:
+    # Preserve the established precedence: a non-null inline value wins;
+    # otherwise the legacy config.yaml is the public-default source.
     if "config" in manifest and manifest["config"] is not None:
         config = manifest["config"]
     else:
         config_path = worker_dir / "config.yaml"
-        config = read_yaml(config_path) if config_path.is_file() else {}
-    if not isinstance(config, dict):
-        fail(f"{worker_dir}/iii.worker.yaml: public config must be a mapping")
+        config = read_yaml(config_path) if config_path.is_file() else None
+    if config is not None and not isinstance(config, dict):
+        fail(f"{worker_dir}/iii.worker.yaml: public config must be a mapping or null")
+    if config is None:
+        return None
     validate_public_defaults(config, f"{worker_dir.name}.config")
-    return config
+    return config or None
 
 
 def normalize_runtime(
@@ -218,7 +224,7 @@ def normalize_runtime(
     if capture_config.exists():
         if not capture_config.is_file() or capture_config.is_symlink():
             fail(f"{worker}/config.collect.yaml must be a regular file")
-        if kind != "rust-binary":
+        if kind not in {"rust-binary", "go-binary"}:
             fail(f"{worker}/config.collect.yaml is only supported for binary workers")
         result["interface_config"] = {
             "path": "config.collect.yaml",
@@ -226,7 +232,7 @@ def normalize_runtime(
         }
     else:
         result["interface_config"] = None
-    if kind == "rust-binary":
+    if kind in {"rust-binary", "go-binary"}:
         result["exec"] = [str(manifest.get("bin") or worker)]
     elif kind in {"javascript-bundle", "python-bundle"}:
         start = scripts.get("start")
@@ -257,6 +263,7 @@ def validate_artifact(
         fail(f"workers.{worker}.artifact.kind is unsupported")
     allowed_fields = {
         "rust-binary": {"kind", "toolchain", "binary", "targets", "windows_exception", "frontends", "companions"},
+        "go-binary": {"kind", "toolchain", "binary", "targets", "windows_exception"},
         "javascript-bundle": {
             "kind", "workspace_root", "runtime", "package_manager", "lockfile",
             "install_command", "build_command", "include",
@@ -275,7 +282,7 @@ def validate_artifact(
     matches = kind in expected if isinstance(expected, set) else kind == expected
     if not matches:
         fail(f"{worker}: iii.worker.yaml deploy={deploy!r} conflicts with artifact.kind={kind!r}")
-    if kind == "rust-binary":
+    if kind in {"rust-binary", "go-binary"}:
         binary = artifact.get("binary")
         if not isinstance(binary, str) or not binary:
             fail(f"workers.{worker}.artifact.binary is required")
@@ -288,6 +295,15 @@ def validate_artifact(
             fail(f"workers.{worker}.artifact.targets must be a non-empty string array")
         if len(set(targets)) != len(targets):
             fail(f"workers.{worker}.artifact.targets contains duplicate targets")
+        if kind == "go-binary":
+            for target in targets:
+                deployment_targets.go_target_env(target)
+            if manifest.get("language") != "go":
+                fail(f"{worker}: go-binary requires public language: go")
+            if manifest.get("manifest") != "package.json":
+                fail(f"{worker}: Go release version must come from package.json, not go.mod")
+            if not (worker_dir / "go.mod").is_file():
+                fail(f"{worker}: go-binary requires go.mod")
         # Every deployment builds the same matrix, so what is tested on `next`
         # is exactly what finalization promotes to `latest`. Windows is part of
         # that matrix; a worker that cannot ship it says so explicitly, because
@@ -307,8 +323,10 @@ def validate_artifact(
         toolchain = artifact.get("toolchain")
         if not isinstance(toolchain, dict) or set(toolchain) != {"name", "version"}:
             fail(f"workers.{worker}.artifact.toolchain must contain only name and version")
-        if toolchain.get("name") != "rust" or not isinstance(toolchain.get("version"), str):
-            fail(f"workers.{worker}.artifact.toolchain must pin a Rust version")
+        language = "go" if kind == "go-binary" else "rust"
+        label = "Go" if language == "go" else "Rust"
+        if toolchain.get("name") != language or not isinstance(toolchain.get("version"), str) or not toolchain["version"]:
+            fail(f"workers.{worker}.artifact.toolchain must pin a {label} version")
         # Files the binary loads at runtime from its own directory (shared
         # libraries, plugin modules): glob patterns over the release directory.
         companions = artifact.get("companions")
@@ -416,7 +434,7 @@ def validate_artifact(
 
 def build_units(worker: str, artifact: dict[str, Any]) -> list[dict[str, Any]]:
     kind = str(artifact["kind"])
-    if kind == "rust-binary":
+    if kind in {"rust-binary", "go-binary"}:
         return [
             {"id": f"{worker}-{target}", "kind": kind, "target": target}
             for target in artifact["targets"]

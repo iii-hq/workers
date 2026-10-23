@@ -514,6 +514,32 @@ pub struct FsConfig {
     /// explicitly opts in here.
     #[serde(default)]
     pub allow_special_bits: bool,
+    /// Process-level write confinement for a host `shell::exec`/`exec_bg`
+    /// that carries the harness `fs_scope`. `off` (the default) runs it
+    /// unconfined. `landlock` lets the child write only under the scope root,
+    /// its grants, `exec_writable`, and the git dir of the root's repository;
+    /// reads stay open. It fails closed: without Landlock a scoped exec is
+    /// refused (S222), never run unconfined. Unscoped execs (console
+    /// terminal, other workers) and sandbox targets are never confined.
+    #[serde(default)]
+    pub exec_confinement: ExecConfinement,
+    /// Extra paths a confined exec may write under (temp, devices, caches,
+    /// toolchains). A leading `~/` expands to `$HOME`; missing paths are
+    /// skipped.
+    #[serde(default = "default_exec_writable")]
+    pub exec_writable: Vec<String>,
+}
+
+/// How a scoped host exec is confined. Plain comments on the variants keep
+/// the published schema a flat `enum`.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecConfinement {
+    // No process-level confinement.
+    #[default]
+    Off,
+    // Landlock write confinement (Linux 5.13+).
+    Landlock,
 }
 
 /// Toggle for the `iii-sandbox` microVM exec backend.
@@ -534,6 +560,18 @@ fn default_max_write_bytes() -> usize {
 }
 fn default_sandbox_enabled() -> bool {
     true
+}
+fn default_exec_writable() -> Vec<String> {
+    [
+        "/tmp",
+        "/dev",
+        "~/.cache",
+        "~/.cargo",
+        "~/.local/share/pnpm",
+        "~/.gnupg",
+    ]
+    .map(String::from)
+    .into()
 }
 
 impl FsConfig {
@@ -559,6 +597,8 @@ impl Default for FsConfig {
             max_write_bytes: default_max_write_bytes(),
             denylist_paths: Vec::new(),
             allow_special_bits: false,
+            exec_confinement: ExecConfinement::Off,
+            exec_writable: default_exec_writable(),
         }
     }
 }
@@ -949,6 +989,30 @@ mod tests {
         assert!(err.contains("denylist"), "got: {err}");
     }
 
+    /// Exec confinement is opt-in: omitting it keeps today's unconfined exec,
+    /// and `exec_writable` falls back to the documented cache/toolchain list.
+    #[test]
+    fn exec_confinement_defaults_off_and_parses_landlock() {
+        let c: FsConfig = serde_yaml::from_str("{}").unwrap();
+        assert_eq!(c.exec_confinement, ExecConfinement::Off);
+        assert_eq!(
+            c.exec_writable,
+            [
+                "/tmp",
+                "/dev",
+                "~/.cache",
+                "~/.cargo",
+                "~/.local/share/pnpm",
+                "~/.gnupg"
+            ]
+        );
+        let c: FsConfig =
+            serde_yaml::from_str("{exec_confinement: landlock, exec_writable: [/x]}").unwrap();
+        assert_eq!(c.exec_confinement, ExecConfinement::Landlock);
+        assert_eq!(c.exec_writable, ["/x"]);
+        assert!(serde_yaml::from_str::<FsConfig>("{exec_confinement: seccomp}").is_err());
+    }
+
     /// Loads the shipped `config.yaml` and pins the permissive standard:
     /// arbitrary commands are allowed (cargo/git/bash/…) because there is no
     /// allow policy shell-side, while the catastrophic-only denylist still
@@ -1090,6 +1154,12 @@ mod tests {
             from_file.to_json(),
             ShellConfig::seed_default().to_json(),
             "config.yaml and ShellConfig::seed_default() must stay in sync"
+        );
+        // The registry publishes this file through PyYAML (YAML 1.1), which
+        // reads a bare `off` as `false`, and the enum rejects a boolean.
+        assert!(
+            content.contains("exec_confinement: \"off\""),
+            "quote exec_confinement's `off` in config.yaml"
         );
     }
 

@@ -44,9 +44,11 @@ import {
 import { uploadAttachments } from '@/lib/attachments/store'
 import { upsertHarnessProject } from '@/lib/backend/projects'
 import { ringForCompletionEvent } from '@/lib/completion-bell'
-import { requestComposerFocus } from '@/lib/composer-insert'
+import { claimDraftSend, requestComposerFocus } from '@/lib/composer-insert'
 import { errText, isFunctionNotFound } from '@/lib/errors'
 import { getIiiClient, type IIIConnectionState } from '@/lib/iii-client'
+import { findMentions } from '@/lib/mentions/token'
+import { getMentionViewState } from '@/lib/mentions/views'
 import { newSessionId } from '@/lib/session-id'
 import {
   deleteAttachment,
@@ -209,8 +211,28 @@ export function draftSaveIsRedundant(
   )
 }
 
-function deriveTitle(text: string): string {
-  const clean = text.replace(/\s+/g, ' ').trim().toLowerCase()
+/** Mention tokens read as their item (`@KAN-12`, `@fix login`) when its
+ * view is cached — it is, for one just picked from the menu — else as
+ * `@<provider>`; a raw `@kanban(id="6ac4…")` makes a useless title. */
+function mentionTitleText(text: string): string {
+  const found = findMentions(text)
+  if (found.length === 0) return text
+  let out = ''
+  let last = 0
+  for (const mention of found) {
+    out += text.slice(last, mention.index)
+    const state = getMentionViewState(mention.name, mention.id)
+    out +=
+      state.status === 'ready'
+        ? `@${state.view.hint || state.view.label}`
+        : `@${mention.name}`
+    last = mention.index + mention.token.length
+  }
+  return out + text.slice(last)
+}
+
+export function deriveTitle(text: string): string {
+  const clean = mentionTitleText(text).replace(/\s+/g, ' ').trim().toLowerCase()
   if (!clean) return 'new chat'
   return clean.length > 32 ? `${clean.slice(0, 32)}…` : clean
 }
@@ -869,10 +891,25 @@ export function applyCatalogModelFallback(
   conversations: Conversation[],
   validModels: ReadonlySet<string>,
   fallbackModel: ModelId,
+  /** The catalog pick drafts received before a provider default was known;
+      untouched drafts still on it move to `fallbackModel`. */
+  interimModel: ModelId | null = null,
 ): Conversation[] {
   let changed = false
   const next = conversations.map((c) => {
-    if (c.model && validModels.has(c.model)) return c
+    if (c.model && validModels.has(c.model)) {
+      if (
+        interimModel &&
+        interimModel !== fallbackModel &&
+        c.draft &&
+        c.model === interimModel &&
+        c.messages.length === 0
+      ) {
+        changed = true
+        return { ...c, model: fallbackModel }
+      }
+      return c
+    }
     // A profile model is authoritative even when the live catalog no longer
     // advertises it. Directory deliberately keeps retired ids loadable so
     // the send path can surface the real resolution error; silently swapping
@@ -1499,6 +1536,22 @@ let tailReaderUnavailable = false
 const HYDRATION_READ_TIMEOUT_MS = 5_000
 
 /**
+ * The model a new chat starts on: the person's last pick while the catalog
+ * still offers it, else the provider-declared default, else the router's
+ * first model. Before the catalog is known (`valid` null) the last pick is
+ * trusted; the catalog migration corrects it once the catalog lands.
+ */
+export function startingModel(
+  lastModel: ModelId | null,
+  valid: ReadonlySet<string> | null,
+  preferredModel: ModelId | null,
+  firstCatalogKey: ModelId | null,
+): ModelId | null {
+  if (lastModel && (valid === null || valid.has(lastModel))) return lastModel
+  return preferredModel ?? firstCatalogKey ?? lastModel
+}
+
+/**
  * The page a chat opens on: the newest `TRANSCRIPT_TAIL_PAGE_LIMIT` blocks.
  * A session-manager that predates `session::messages-tail` answers
  * `function_not_found`; the console then reads the whole transcript as it
@@ -1541,11 +1594,15 @@ export function useConversations(
   catalogKeysForValidation?: readonly string[],
   catalogReady?: boolean,
   serverEnabled?: boolean,
+  /** Provider-declared starting model (`provider::id`), when one is known. */
+  preferredModel: ModelId | null = null,
 ): ConversationsApi {
   const catalogSig =
     catalogKeysForValidation && catalogKeysForValidation.length > 0
       ? [...catalogKeysForValidation].sort().join('\u0001')
       : ''
+  /** The router's first model: the fallback when no provider declares one. */
+  const firstCatalogKey = catalogKeysForValidation?.[0] ?? null
 
   const [conversations, setConversations] = useState<Conversation[]>(() => {
     /* Always boot with one local draft so the chat surface has something to
@@ -1571,6 +1628,7 @@ export function useConversations(
     saveNewChatDraft('')
   }, [])
   const [activeId, setActiveId] = useState<string | null>(() => loadActiveId())
+  const interimModelRef = useRef<ModelId | null>(null)
   const [connectionState, setConnectionState] = useState<IIIConnectionState>(
     serverEnabled ? 'connecting' : 'connected',
   )
@@ -2525,15 +2583,25 @@ export function useConversations(
     if (catalogReady === false) return
     const keys = catalogSig.split('\u0001')
     const valid = new Set(keys)
-    const fallback = keys[0]
+    // A provider's declared default first, then the router's first model.
+    const preferred =
+      preferredModel && valid.has(preferredModel) ? preferredModel : null
+    const fallback =
+      preferred ??
+      (firstCatalogKey && valid.has(firstCatalogKey)
+        ? firstCatalogKey
+        : keys[0])
+    // The provider list can land after the catalog; remember the interim
+    // pick so drafts still on it follow the provider default when it arrives.
+    const interim = interimModelRef.current
+    interimModelRef.current = preferred ? null : fallback
     setConversations((prev) => {
-      return applyCatalogModelFallback(prev, valid, fallback)
+      return applyCatalogModelFallback(prev, valid, fallback, interim)
     })
-    const lastModel = loadLastModel()
-    if (lastModel && !valid.has(lastModel)) {
-      saveLastModel(fallback)
-    }
-  }, [catalogSig, catalogReady])
+    // The person's last pick is kept even when this read lacks it (a provider
+    // restarting, a key being re-entered): new chats skip it while it is
+    // missing (`startingModel`) and use it again once it is back.
+  }, [catalogSig, catalogReady, preferredModel, firstCatalogKey])
 
   useEffect(() => {
     saveActiveId(activeId)
@@ -2566,12 +2634,20 @@ export function useConversations(
       // instead of piling up invisible drafts, and put the caret in it.
       const pending = draft ? undefined : unsentDraft(conversations, activeId)
       if (pending) {
+        // Handed back as a blank new chat: a send decided for it earlier
+        // (a setup wizard example that never got to go) is void.
+        claimDraftSend(pending.id)
         setActiveId(pending.id)
         requestComposerFocus()
         return pending.id
       }
       const next = emptyConversation(
-        loadLastModel(),
+        startingModel(
+          loadLastModel(),
+          catalogSig ? new Set(catalogSig.split('\u0001')) : null,
+          preferredModel,
+          firstCatalogKey,
+        ),
         loadLastThinkingLevel() ?? DEFAULT_THINKING_LEVEL,
         draft,
       )
@@ -2579,7 +2655,7 @@ export function useConversations(
       setActiveId(next.id)
       return next.id
     },
-    [conversations, activeId],
+    [conversations, activeId, preferredModel, catalogSig, firstCatalogKey],
   )
 
   const select = useCallback((id: string) => {

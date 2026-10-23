@@ -474,6 +474,51 @@ export interface SessionTurnSummaryRegistration {
   render: React.ComponentType<SessionTurnSummaryProps>
 }
 
+/** What a worker's Context section shows in its header. */
+export interface ContextSectionSummary {
+  /** Shown beside the title. */
+  count?: number
+  /** One line kept in the header while the section is folded. */
+  brief?: string
+  /** A status dot before the brief. */
+  tone?: 'accent' | 'alert' | 'warn' | 'ok'
+  /** Nothing to show: the section is left out until this turns false. */
+  empty?: boolean
+}
+
+/** Props a worker's section in the chat's Context panel receives. */
+export interface ContextSectionProps {
+  sessionId: string
+  /** The chat's project folder, when it has one. */
+  workingDir?: string
+  /** The panel is open: read only while it is. */
+  active: boolean
+  /** A turn is running; read again when it ends. */
+  isStreaming: boolean
+  /** The header's count and brief; `empty` leaves the section out. */
+  setSummary(summary: ContextSectionSummary): void
+}
+
+/**
+ * A section of the chat's Context side panel. The console draws its header
+ * (title, worker, count, brief, fold and drag handle) and keeps where the
+ * user put it, folded or hidden; the render draws the body, and stays
+ * mounted while folded so its summary keeps up. Duplicate `id`: last
+ * registration wins.
+ */
+export interface ContextSectionRegistration {
+  /** kebab-case; convention `<worker>-<name>`. */
+  id: string
+  title: string
+  /**
+   * Its first place among the panel's sections, whose own run from 100
+   * (Project) to 700 (Links) in steps of 100; 1000 when left out. The
+   * order the user drags wins.
+   */
+  order?: number
+  render: React.ComponentType<ContextSectionProps>
+}
+
 /**
  * Props a composer action receives. The host supplies the active session
  * and its live turn state; the action owns everything else and hands text
@@ -556,7 +601,67 @@ export interface ComposerControlRegistration {
 export interface OverlayRegistration {
   /** kebab-case; convention `<worker>-<name>`. */
   id: string
-  render: React.ComponentType
+  render: React.ComponentType<OverlayRenderProps>
+}
+
+/** What the console hands an overlay on every render. */
+export interface OverlayRenderProps {
+  /** Active chat session id, as pages get it; absent on older consoles. */
+  conversationId?: string | null
+}
+
+/** One labelled value of a mention preview card. */
+export interface MentionField {
+  label: string
+  value: string
+  /** `neutral` | `info` | `success` | `warning` | `danger`. */
+  tone?: string
+}
+
+/** What clicking a mention opens: a page, a chat session or an http(s) URL. */
+export type MentionOpen =
+  | { page: string; context?: JsonValue }
+  | { session: string }
+  | { url: string }
+
+/**
+ * What a worker's mention get function answers for one id — see
+ * `crates/mention-contract` (`MentionView`).
+ */
+export interface MentionView {
+  id: string
+  label: string
+  hint?: string
+  description?: string
+  icon?: string
+  color?: string
+  fields?: MentionField[]
+  open?: MentionOpen
+  /** One line for an agent. */
+  summary?: string
+  /** The worker's domain object (what its own preview renders from). */
+  data?: unknown
+  updated_at?: string
+}
+
+export interface MentionRendererProps {
+  /** The provider's token name, e.g. `kanban`. */
+  provider: string
+  view: MentionView
+  /** Open the mention's target, as clicking its pill does. */
+  open(): void
+}
+
+/**
+ * A worker's own drawing of its mentions. The console's generic card
+ * (icon, label, description, fields) is used whenever this is absent or
+ * throws.
+ */
+export interface MentionRendererRegistration {
+  /** Token name the renderer draws: `@<provider>(id="…")`. */
+  provider: string
+  /** Replaces the preview card the pill shows on hover (about 22rem wide). */
+  Preview: React.ComponentType<MentionRendererProps>
 }
 
 /**
@@ -630,6 +735,14 @@ export interface Host {
       component: React.ComponentType<ProviderConfigFormProps>,
     ): () => void
   }
+  /**
+   * Chat mentions (`@<provider>(id="…")`). Providers are declared by the
+   * worker's backend (function metadata); this slot only lets a worker draw
+   * its own preview. Absent on older consoles; feature-detect.
+   */
+  mentions?: {
+    registerRenderer(renderer: MentionRendererRegistration): () => void
+  }
   chat: {
     /** Open a new, editable human chat draft without sending or creating a session. */
     openDraft(draft: { text: string; title?: string }): void
@@ -654,6 +767,7 @@ export interface Host {
     }): void
     registerSessionChip(chip: SessionChipRegistration): () => void
     registerTurnSummary(summary: SessionTurnSummaryRegistration): () => void
+    registerContextSection(section: ContextSectionRegistration): () => void
     registerComposerAction(action: ComposerActionRegistration): () => void
     registerComposerControl(control: ComposerControlRegistration): () => void
     /** Jump the sidebar to this session. Feature-detect on older consoles. */
@@ -680,6 +794,20 @@ export interface Host {
       sessionId: string
       level: string
     }): boolean
+    /**
+     * Start a new chat that sends `text`, the way a setup example prompt
+     * does: `agent` (a profile id; the default profile when absent) is
+     * selected, the first of `models` this machine serves is chosen with its
+     * effort (the chat's usual model when none is), and the chat is shown.
+     * A profile that is not served leaves the text as a draft to send by
+     * hand. Resolves to the chat's session id. Absent on older consoles;
+     * feature-detect.
+     */
+    startChat?(request: {
+      text: string
+      agent?: string
+      models?: { provider: string; model: string; effort?: string }[]
+    }): Promise<string>
     /** Live composer model for a conversation, including unsaved drafts. */
     composerModel?(conversationId?: string | null): string | null
   }

@@ -2,9 +2,12 @@
 //!
 //! The harness owns this control plane. When a turn carries
 //! `metadata.fs_scope.root`, the harness stamps one trusted `fs_scope` object
-//! onto every outbound `shell::*` / `coder::*` call. The worker enforces the
-//! root and grants; this module only stamps trusted metadata and strips any
-//! model-supplied scope.
+//! onto every outbound `shell::*` / `coder::*` call; this module only stamps
+//! trusted metadata and strips any model-supplied scope. What the worker does
+//! with the root depends on the stamped `boundary`
+//! ([`crate::config::WorkerConfig::filesystem_boundary`]): under `workspace`
+//! it enforces root plus grants; under `configured_roots` the root only
+//! anchors relative paths and the worker's own roots apply.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -12,10 +15,17 @@ use serde_json::{json, Value};
 
 pub const FS_SCOPE_FIELD: &str = "fs_scope";
 pub const FILESYSTEM_ACCESS_WATCH_ID: &str = "approval::filesystem-access-watch";
-/// fp::pipe runs scoped steps under fp's worker authority; the harness stamps
-/// the same trusted scope onto the pipe call and fp forwards it per scoped
-/// step (fp/src/pipe.rs `is_scoped_step` mirrors `is_scoped_function`).
+/// fp::pipe and fp::batch run scoped steps under fp's worker authority; the
+/// harness stamps the same trusted scope onto the carrier call and fp
+/// forwards it per scoped step (fp/src/pipe.rs `is_scoped_step` mirrors
+/// `is_scoped_function`).
 pub const PIPE_FUNCTION_ID: &str = "fp::pipe";
+pub const BATCH_FUNCTION_ID: &str = "fp::batch";
+
+/// True for a call that carries scoped steps inside its payload.
+pub fn carries_scoped_steps(function_id: &str) -> bool {
+    function_id == PIPE_FUNCTION_ID || function_id == BATCH_FUNCTION_ID
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -33,6 +43,47 @@ impl FilesystemBoundary {
     }
 }
 
+/// Operator choice for the boundary stamped on scoped calls
+/// ([`crate::config::WorkerConfig::filesystem_boundary`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BoundaryMode {
+    /// `workspace` iff approval-gate's access watch is bound, otherwise
+    /// `configured_roots`.
+    #[default]
+    Auto,
+    /// `fs_scope.root` plus grants are the boundary, with or without
+    /// approval-gate.
+    Workspace,
+    /// The worker's configured roots are the boundary; `fs_scope.root` only
+    /// anchors relative paths.
+    ConfiguredRoots,
+}
+
+/// `auto` keeps the hook-detected boundary; the other modes pin it.
+pub fn effective_boundary(mode: BoundaryMode, detected: FilesystemBoundary) -> FilesystemBoundary {
+    match mode {
+        BoundaryMode::Auto => detected,
+        BoundaryMode::Workspace => FilesystemBoundary::Workspace,
+        BoundaryMode::ConfiguredRoots => FilesystemBoundary::ConfiguredRoots,
+    }
+}
+
+/// The boundary a released hook-held call runs under: the stricter of the
+/// one stamped on the arguments the holding hook reviewed and the current
+/// one, so a boundary change while the call is held can never widen it.
+pub fn release_boundary(
+    held_arguments: Option<&Value>,
+    current: FilesystemBoundary,
+) -> FilesystemBoundary {
+    let reviewed = held_arguments.and_then(|a| a.get(FS_SCOPE_FIELD)?.get("boundary")?.as_str());
+    if reviewed == Some(FilesystemBoundary::Workspace.as_str()) {
+        FilesystemBoundary::Workspace
+    } else {
+        current
+    }
+}
+
 /// True when `function_id` names a filesystem-scoped worker call whose paths
 /// must be constrained by the harness-owned scope.
 fn is_scoped_function(function_id: &str) -> bool {
@@ -41,9 +92,9 @@ fn is_scoped_function(function_id: &str) -> bool {
 }
 
 /// Functions that receive the trusted stamp: scoped calls themselves, plus
-/// fp::pipe, which carries the stamp on behalf of its scoped steps.
+/// fp::pipe and fp::batch, which carry the stamp on behalf of their steps.
 fn is_stamped_function(function_id: &str) -> bool {
-    is_scoped_function(function_id) || function_id == PIPE_FUNCTION_ID
+    is_scoped_function(function_id) || carries_scoped_steps(function_id)
 }
 
 /// Stamp the trusted filesystem scope onto a scoped call's arguments.
@@ -179,6 +230,24 @@ mod tests {
     }
 
     #[test]
+    fn stamps_fs_scope_onto_batch_calls_beside_calls() {
+        let out = inject(
+            "fp::batch",
+            json!({ "calls": [{ "function": "coder::read-file", "payload": { "path": "a.ts" } }] }),
+            Some("/work/session-7"),
+            &[],
+            workspace(),
+        );
+        assert_eq!(
+            out,
+            json!({
+                "calls": [{ "function": "coder::read-file", "payload": { "path": "a.ts" } }],
+                "fs_scope": { "root": "/work/session-7", "grants": [], "boundary": "workspace" }
+            })
+        );
+    }
+
+    #[test]
     fn strips_forged_pipe_fs_scope_when_root_absent() {
         let out = inject(
             "fp::pipe",
@@ -240,6 +309,26 @@ mod tests {
     }
 
     #[test]
+    fn boundary_mode_overrides_the_detected_boundary() {
+        use FilesystemBoundary::*;
+        assert_eq!(effective_boundary(BoundaryMode::Auto, Workspace), Workspace);
+        assert_eq!(
+            effective_boundary(BoundaryMode::Auto, ConfiguredRoots),
+            ConfiguredRoots
+        );
+        for detected in [Workspace, ConfiguredRoots] {
+            assert_eq!(
+                effective_boundary(BoundaryMode::Workspace, detected),
+                Workspace
+            );
+            assert_eq!(
+                effective_boundary(BoundaryMode::ConfiguredRoots, detected),
+                ConfiguredRoots
+            );
+        }
+    }
+
+    #[test]
     fn configured_roots_boundary_preserves_the_working_directory_anchor() {
         let out = inject(
             "shell::fs::ls",
@@ -259,5 +348,27 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn a_released_call_never_runs_wider_than_the_boundary_it_was_reviewed_under() {
+        use FilesystemBoundary::*;
+        let held = |boundary: &str| json!({ "command": "ls", "fs_scope": { "root": "/w", "grants": [], "boundary": boundary } });
+        // Held under workspace, released after the config flipped.
+        assert_eq!(
+            release_boundary(Some(&held("workspace")), ConfiguredRoots),
+            Workspace
+        );
+        // A boundary tightened while the call was held applies.
+        assert_eq!(
+            release_boundary(Some(&held("configured_roots")), Workspace),
+            Workspace
+        );
+        assert_eq!(
+            release_boundary(Some(&held("configured_roots")), ConfiguredRoots),
+            ConfiguredRoots
+        );
+        // Held before arguments carried a boundary: the current one.
+        assert_eq!(release_boundary(None, ConfiguredRoots), ConfiguredRoots);
     }
 }

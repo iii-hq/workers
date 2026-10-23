@@ -1,0 +1,244 @@
+{
+  "description": "Drive one app toward a goal in one call, with the judge worker choosing each step by element (invoke, set_value, toggle or select by ref; no mouse, keyboard, scrolling or menus). Needs a native session and app_name or app_pid. State the goal as the end state and pass field text as `inputs` keyed by field label. Returns a status, the steps, and the app's tree with live refs for computer::act; `done` is the judge's reading, so confirm with computer::find. Approving a run approves every action it takes: not for destructive actions. Without a judge worker it returns judge_unavailable; drive with computer::find + computer::act.",
+  "function_id": "computer::run",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "app_name": {
+        "default": null,
+        "description": "Exact, case-sensitive app name as the OS reports it (as in computer::find). One of app_name or app_pid is required.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "app_pid": {
+        "default": null,
+        "description": "Process id of the app to drive. One of app_name or app_pid is required.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "goal": {
+        "description": "The end state to reach, as the app would show it (\"the contact Ana is saved and listed\"), not the clicks to make. Name every value the outcome needs.",
+        "type": "string"
+      },
+      "inputs": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "default": {},
+        "description": "Text for fields the goal needs filled, keyed by the field's label (case, accents and punctuation ignored: `email` for \"E-mail\"); `password` also reaches a field the OS marks as a password, and a word its description names (a slicer's `layer_height`) reaches the one text field whose description names it. Only the keys are shown to the judge, but a field that is not secret shows its typed value in later trees.",
+        "type": "object"
+      },
+      "max_steps": {
+        "default": null,
+        "description": "Most actions to execute (default 10, at most 60).",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "timeout_ms": {
+        "default": null,
+        "description": "Whole-run budget in ms (default 60000, at most 240000).",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "goal",
+      "session_id"
+    ],
+    "title": "RunInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "NeedsText": {
+        "properties": {
+          "input_keys": {
+            "description": "The `inputs` keys the run was given, none of which matched this field.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "label": {
+            "type": "string"
+          },
+          "ref": {
+            "description": "A live ref in `tree` for computer::act set_value.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "input_keys",
+          "label",
+          "ref"
+        ],
+        "type": "object"
+      },
+      "RunStatus": {
+        "oneOf": [
+          {
+            "enum": [
+              "max_steps",
+              "deadline"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The judge chose DONE and its completion check rated the goal complete in the app. It is the judge's reading, not proof: confirm with computer::find.",
+            "enum": [
+              "done"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The judge found no operation that makes progress, or was not confident enough to act (see `reason`).",
+            "enum": [
+              "blocked"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Actions changed nothing, or the judge repeated one that changed nothing.",
+            "enum": [
+              "stalled"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A field must be typed and no `inputs` entry matches it: set_value it by `needs_text.ref` (or rerun with `inputs`).",
+            "enum": [
+              "needs_text"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The run lost certainty about the app: input from outside it, the session stopped, an action whose effect is unknown, or a failed read (see `reason`). Observe again before acting; the refs in `tree` may be stale.",
+            "enum": [
+              "interrupted"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "No usable judge (not deployed, no provider, failing, or the tree too large for it). Drive with computer::find + computer::act; `tree` is current.",
+            "enum": [
+              "judge_unavailable"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "RunStep": {
+        "properties": {
+          "changed": {
+            "description": "The app's tree changed after the action.",
+            "type": "boolean"
+          },
+          "error": {
+            "description": "Why the element refused the action, or why its effect is unknown.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "judge_ms": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "operation": {
+            "description": "CLICK, TYPE_TEXT or WAIT.",
+            "type": "string"
+          },
+          "probability": {
+            "description": "The judge's probability for the executed choice.",
+            "format": "double",
+            "type": "number"
+          },
+          "target": {
+            "description": "The element acted on, as the tree printed it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "changed",
+          "judge_ms",
+          "operation",
+          "probability"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "elapsed_ms": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "judge_requests": {
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "needs_text": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/NeedsText"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "reason": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "status": {
+        "$ref": "#/definitions/RunStatus"
+      },
+      "steps": {
+        "description": "Executed actions, in order.",
+        "items": {
+          "$ref": "#/definitions/RunStep"
+        },
+        "type": "array"
+      },
+      "tree": {
+        "description": "Untrusted app text: the app's tree as the run last read it, in computer::observe's format, with refs live for computer::act (unless the status is `interrupted`).",
+        "type": "string"
+      }
+    },
+    "required": [
+      "elapsed_ms",
+      "judge_requests",
+      "status",
+      "steps",
+      "tree"
+    ],
+    "title": "RunOutput",
+    "type": "object"
+  }
+}

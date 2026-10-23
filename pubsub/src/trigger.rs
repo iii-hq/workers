@@ -48,6 +48,11 @@ impl TriggerHandler for SubscribeTriggerHandler {
             .unwrap_or("")
             .to_string();
         tracing::info!(topic = %topic, function_id = %config.function_id, "PubSub subscription registered");
+        // Deprecation warning on registration only (never per delivered
+        // event), rate-limited; `stream.events` (engine iii-stream bridge) is
+        // exempt. The engine does not hand trigger providers the registering
+        // worker's id, so the caller is "unknown".
+        crate::deprecation::warn_subscribe(&topic, None);
         self.hub
             .subscribe(&config.id, &topic, &config.function_id)
             .await;
@@ -122,5 +127,17 @@ mod tests {
         h.unregister_trigger(trigger_config("ghost", serde_json::Value::Null))
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn register_result_unchanged_for_normal_and_stream_bridge_topics() {
+        let h = handler();
+        for (id, topic) in [("t1", "orders"), ("t2", "orders"), ("t3", "stream.events")] {
+            let out = h
+                .register_trigger(trigger_config(id, serde_json::json!({"topic": topic})))
+                .await;
+            assert!(out.is_ok());
+        }
+        assert_eq!(h.hub.subscription_count().await, 3);
     }
 }

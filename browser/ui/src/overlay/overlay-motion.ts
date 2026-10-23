@@ -55,9 +55,9 @@ export function boundsFor(
 }
 
 /** The box once its width becomes `width`, before any move: it keeps its
- * aspect ratio and grows (or shrinks) from the corner the pointer layout
- * anchors it to, the bottom right. */
-export function resizedFromBottomRight(
+ * aspect ratio and grows (or shrinks) from the corner it is anchored to,
+ * the top right. */
+export function resizedFromTopRight(
   rect: { left: number; top: number; right: number; bottom: number },
   width: number,
 ): { left: number; top: number; right: number; bottom: number } {
@@ -66,9 +66,9 @@ export function resizedFromBottomRight(
   const height = ((rect.bottom - rect.top) * width) / current
   return {
     left: rect.right - width,
-    top: rect.bottom - height,
+    top: rect.top,
     right: rect.right,
-    bottom: rect.bottom,
+    bottom: rect.top + height,
   }
 }
 

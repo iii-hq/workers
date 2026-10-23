@@ -33,11 +33,12 @@ class TemplateTests(unittest.TestCase):
         cls.compose = load_yaml(TEMPLATE / "worker-compose.yaml")
         cls.containers = cls.compose["containers"]
 
-    def test_local_stack_matches_harness_and_adds_browser(self):
+    def test_local_stack_matches_harness_and_adds_browser_and_computer(self):
         """Every declared worker must build from the expected sibling source."""
         base = load_yaml(ROOT / "harness/worker-compose.yaml")
-        self.assertEqual(set(self.containers), set(base["containers"]) | {"browser"})
-        self.assertEqual(self.compose["engine"], base["engine"])
+        self.assertEqual(set(self.containers), set(base["containers"]) | {"browser", "computer"})
+        self.assertEqual(self.compose["engine"]["url"], base["engine"]["url"])
+        self.assertIn("iii-sandbox", self.compose["engine"]["workers"])
         self.assertEqual(self.compose["startup_timeout"], base["startup_timeout"])
         for name, container in self.containers.items():
             with self.subTest(worker=name):

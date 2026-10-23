@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { RevisionPane } from '../EditorPane'
 import { mount } from './bare-hooks'
 
@@ -47,6 +47,10 @@ function propsWhere(node: unknown, test: (props: Record<string, unknown>) => boo
 const editorProps = (node: unknown) => propsWhere(node, (props) => 'value' in props)
 
 describe('RevisionPane', () => {
+  beforeEach(() => {
+    reads.count = 0
+  })
+
   it('reads a version once, then shows it from the page cache', async () => {
     const cache = new Map<string, string>()
     const props = {

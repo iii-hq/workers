@@ -12,14 +12,16 @@ use crate::types::Memory;
 
 const BM25_K1: f32 = 1.2;
 const BM25_B: f32 = 0.75;
-/// Weight of one query-token hit on an entity handle.
-const ENTITY_WEIGHT: f32 = 0.6;
-/// Weight of `ln(1 + corroboration)`.
-const CORROBORATION_WEIGHT: f32 = 0.3;
-/// Flat bonus for pinned memories that matched at all.
-const PINNED_BONUS: f32 = 0.75;
-/// Recency floor so old-but-relevant memories stay reachable.
-const RECENCY_FLOOR: f32 = 0.35;
+/// Relevance multiplier per query-token hit on an entity handle.
+const ENTITY_BOOST: f32 = 0.3;
+/// Relevance multiplier per unit of `ln(1 + corroboration)`.
+const CORROBORATION_BOOST: f32 = 0.3;
+/// Relevance multiplier for pinned memories.
+const PINNED_BOOST: f32 = 0.25;
+/// How much recency can move a score: ±`RECENCY_WEIGHT / 2` around neutral
+/// (fresh ×1.2, very old ×0.8). Hindsight uses 0.2; 0.4 measured best on the
+/// recall eval (durable-old hit@1 0.5 -> 1.0) without adding traps.
+const RECENCY_WEIGHT: f32 = 0.4;
 
 /// Lowercased alphanumeric runs; CJK codepoints additionally emit character
 /// bigrams so ideographic text is retrievable without a word segmenter.
@@ -144,11 +146,12 @@ impl Bm25Index {
     }
 }
 
-/// Fused recall score for one already-BM25-matched memory: entity overlap,
-/// corroboration, and pin bonus added, then a recency multiplier with a
-/// floor. Superseded memories are excluded by the caller.
+/// Fused recall score for one candidate: its query relevance (BM25 plus the
+/// weighted semantic similarity, when any) scaled by entity overlap,
+/// corroboration, and pin boosts, then a mild recency multiplier
+/// (±`RECENCY_WEIGHT / 2`). Superseded memories are excluded by the caller.
 pub fn fused_score(
-    bm25: f32,
+    relevance: f32,
     memory: &Memory,
     query_tokens: &[String],
     now_ms: u64,
@@ -160,14 +163,23 @@ pub fn fused_score(
         .flat_map(|e| tokenize(e))
         .filter(|t| query_tokens.contains(t))
         .count() as f32;
-    let base = bm25
-        + ENTITY_WEIGHT * entity_hits
-        + CORROBORATION_WEIGHT * (1.0 + memory.corroboration as f32).ln()
-        + if memory.pinned { PINNED_BONUS } else { 0.0 };
+    // History seeds carry zero relevance; a tiny floor keeps the boosts
+    // and recency ordering them.
+    let base = relevance.max(1e-6)
+        * (1.0 + ENTITY_BOOST * entity_hits)
+        * (1.0 + CORROBORATION_BOOST * (1.0 + memory.corroboration as f32).ln())
+        * if memory.pinned {
+            1.0 + PINNED_BOOST
+        } else {
+            1.0
+        };
     let age_days = (now_ms.saturating_sub(memory.updated_at)) as f32 / 86_400_000.0;
     let half_life = half_life_days.max(1) as f32;
-    let recency = 0.5_f32.powf(age_days / half_life).max(RECENCY_FLOOR);
-    base * recency
+    // Freshness in (0, 1], neutral (0.5) at the half-life, folded in as a
+    // MILD multiplier — Hindsight's `1 + alpha * (recency - 0.5)`. A full
+    // multiplier faded durable preferences to a third of their weight.
+    let recency = 0.5_f32.powf(age_days / half_life);
+    base * (1.0 + RECENCY_WEIGHT * (recency - 0.5))
 }
 
 #[cfg(test)]
@@ -190,6 +202,7 @@ mod tests {
             invalid_at: None,
             superseded_by: None,
             revision: 0,
+            stated_at: None,
         }
     }
 
@@ -241,19 +254,23 @@ mod tests {
     }
 
     #[test]
-    fn recency_decays_but_floors() {
+    fn recency_is_a_mild_bounded_multiplier() {
         let now = now_ms();
         let recent = memory("recent memory", &[]);
         let mut ancient = memory("ancient memory", &[]);
-        ancient.updated_at = now.saturating_sub(400 * 86_400_000);
+        ancient.updated_at = now.saturating_sub(4_000 * 86_400_000);
+        let mut at_half_life = memory("half-life memory", &[]);
+        at_half_life.updated_at = now.saturating_sub(60 * 86_400_000);
         let q = tokenize("memory");
-        let s_recent = fused_score(1.0, &recent, &q, now, 30);
-        let s_ancient = fused_score(1.0, &ancient, &q, now, 30);
-        assert!(s_recent > s_ancient);
-        assert!(
-            s_ancient >= 1.0 * RECENCY_FLOOR * 0.99,
-            "floor holds: {s_ancient}"
-        );
+        let s_recent = fused_score(1.0, &recent, &q, now, 60);
+        let s_ancient = fused_score(1.0, &ancient, &q, now, 60);
+        let s_half = fused_score(1.0, &at_half_life, &q, now, 60);
+        assert!(s_recent > s_half && s_half > s_ancient);
+        // Fresh gains at most +20%, very old loses at most -20%, and the
+        // half-life is neutral: a durable preference keeps most of its weight.
+        assert!((s_recent - 1.2).abs() < 1e-3, "{s_recent}");
+        assert!(s_ancient >= 0.8 - 1e-3, "{s_ancient}");
+        assert!((s_half - 1.0).abs() < 1e-3, "{s_half}");
     }
 }
 
@@ -277,6 +294,7 @@ mod scoring_tests {
             invalid_at: None,
             superseded_by: None,
             revision: 0,
+            stated_at: None,
         }
     }
 
@@ -333,6 +351,8 @@ mod scoring_tests {
         let base = fused_score(1.0, &plain, &q, now, 30);
         assert!(fused_score(1.0, &pinned, &q, now, 30) > base);
         assert!(fused_score(1.0, &corroborated, &q, now, 30) > base);
+        // History seeds (zero relevance) still order by the boosts.
+        assert!(fused_score(0.0, &pinned, &q, now, 30) > fused_score(0.0, &plain, &q, now, 30));
     }
 
     #[test]

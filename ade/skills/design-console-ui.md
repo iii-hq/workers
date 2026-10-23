@@ -333,7 +333,7 @@ purpose-written labels, grouping, defaults, and reload semantics.
 
 Static and delivery checks (build, lint, manifest, hot reload, trigger
 renderer fallthrough): `ade/injectable-ui` › Testing. For screenshots and
-drive-through of one page, open it alone at `#/worker/<scope>[/<page-id>]`
+drive-through of one page, open it alone at `<url>/#/worker/<scope>[/<page-id>]` (`url` from `console::status`)
 (no workspace, shared layout untouched); slots outside the page need the
 full console.
 

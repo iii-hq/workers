@@ -81,16 +81,62 @@ export function databaseHandleError(current: string, names: readonly string[], d
 /** Persisted paths in DatabaseConfig, with `{name}` for the map key. */
 export const DATABASE_CONFIG_FIELD_PATHS = [
   'databases.{name}.url',
+  'databases.{name}.driver',
+  'databases.{name}.host',
+  'databases.{name}.port',
+  'databases.{name}.user',
+  'databases.{name}.password',
+  'databases.{name}.database',
   'databases.{name}.capture',
   'databases.{name}.tls.mode',
   'databases.{name}.tls.ca_cert',
+  'databases.{name}.tls.client_cert',
+  'databases.{name}.tls.client_key',
   'databases.{name}.tls.trust_native',
+  'databases.{name}.ssh.host',
+  'databases.{name}.ssh.port',
+  'databases.{name}.ssh.user',
+  'databases.{name}.ssh.password',
+  'databases.{name}.ssh.private_key',
+  'databases.{name}.ssh.passphrase',
+  'databases.{name}.ssh.host_key',
+  'databases.{name}.display.icon',
+  'databases.{name}.display.color',
+  'databases.{name}.folder',
   'databases.{name}.pool.max',
   'databases.{name}.pool.idle_timeout_ms',
   'databases.{name}.pool.acquire_timeout_ms',
   'history_max_entries',
   'history_max_bytes',
 ] as const
+
+/** TLS modes, weakest first, with what each one checks. */
+export const TLS_MODES: readonly { value: string; label: string; description: string }[] = [
+  { value: 'disable', label: 'Disable', description: 'Plaintext. Local development only.' },
+  {
+    value: 'prefer',
+    label: 'Prefer',
+    description: 'TLS when the server offers it (chain validated), plaintext when it does not.',
+  },
+  {
+    value: 'require',
+    label: 'Require',
+    description: 'TLS required and the chain validated; the host name is not checked. The default.',
+  },
+  {
+    value: 'verify-ca',
+    label: 'Verify CA',
+    description: 'TLS required and the chain validated against the trusted CAs; the host name is not checked.',
+  },
+  {
+    value: 'verify-full',
+    label: 'Verify full',
+    description: 'TLS required, chain validated, and the certificate must name the database host.',
+  },
+]
+
+/** The three modes an older worker (url-only entries) understands. */
+export const LEGACY_TLS_MODES: readonly string[] = ['disable', 'require', 'verify-full']
 
 /** Match the Rust worker's case-insensitive URL-scheme detection. */
 export function driverOf(url: string): Driver {

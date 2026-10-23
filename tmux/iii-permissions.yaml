@@ -1,0 +1,23 @@
+# Agent permissions for the tmux worker.
+# Spec: docs/sops/new-worker.md § 7. First-match-wins.
+#
+# Reading sessions, windows, agent states and ports is allowed by default.
+# `tmux::panes::select` stays unlisted (needs approval) like windows::select:
+# it moves and zooms what every client of that window sees.
+# `tmux::panes::capture` stays unlisted too: it returns what is on a pane's
+# screen, which can hold anything the person typed or a program printed.
+# `tmux::subagents::transcript` stays unlisted for the same reason: it
+# returns a sub-agent's conversation, tool calls and their output.
+# Creating, renaming, selecting and killing change the person's tmux (a
+# selected window switches their own terminal; a kill ends programs) and stay
+# at the needs_approval default. The Console terminal, the config-reload
+# callback and the Console asset function are bus-internal.
+version: 1
+
+rules:
+  - '!tmux::terminal::*'
+  - '!tmux::on-config-change'
+  - '!tmux::ui-content'
+  - tmux::status
+  - tmux::sessions::list
+  - tmux::ports::list

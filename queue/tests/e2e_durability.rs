@@ -397,6 +397,93 @@ async fn provider_functions_and_enqueue_use_the_worker_namespace() {
     iii.shutdown_async().await;
 }
 
+/// A function-queue delivery whose target is not registered yet is held —
+/// without spending retry budget — and released by the engine's registry
+/// change events (`engine::workers-available` / `engine::functions-available`,
+/// bound by `boot::start`), not by re-checking on a timer. The target's
+/// worker connects only after the enqueue.
+#[tokio::test]
+#[serial]
+async fn held_delivery_runs_once_its_target_worker_registers() {
+    // A private namespace keeps this worker's provider functions from
+    // colliding with any queue worker already attached to the engine.
+    let suffix = Uuid::new_v4();
+    let namespace = format!("queue-e2e-held-{suffix}");
+    let worker_options = |role: &str| InitOptions {
+        metadata: Some(WorkerMetadata {
+            name: format!("queue-e2e-held-{role}-{suffix}"),
+            ..WorkerMetadata::default()
+        }),
+        namespace: Some(namespace.clone()),
+        identity: WorkerIdentityMode::Explicit,
+        ..InitOptions::default()
+    };
+    let Some(iii) = engine::connect_fresh_with_options(worker_options("queue")).await else {
+        return;
+    };
+    let dir = temp_store_dir();
+    let queue_name = format!("e2e-held-{suffix}");
+    let mut config = file_config(&dir);
+    config
+        .queue_configs
+        .insert(queue_name.clone(), Default::default());
+    let boot = iii_queue::boot::start(iii.clone(), config)
+        .await
+        .expect("queue worker should boot");
+    wait_for_function(&iii, ENQUEUE_FUNCTION_FN_ID, &namespace).await;
+
+    let function_id = format!("queue::e2e::held::{}", suffix.simple());
+    trigger_in_namespace(
+        &iii,
+        ENQUEUE_FUNCTION_FN_ID,
+        json!({
+            "queue": queue_name,
+            "function_id": function_id,
+            "data": {"held": true},
+            "messageReceiptId": format!("receipt-{suffix}"),
+            "namespace": namespace,
+        }),
+        &namespace,
+    )
+    .await;
+    // Let the consumer find the target missing and park on the change feed.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let held_since = Instant::now();
+
+    // The target's worker registers its function before announcing itself,
+    // so the engine's worker announcement already sees it.
+    let target = Arc::new(iii_sdk::register_worker(
+        &engine::ws_url(),
+        worker_options("target"),
+    ));
+    let fires = Arc::new(AtomicUsize::new(0));
+    register_counting_function(
+        &target,
+        &function_id,
+        fires.clone(),
+        Arc::new(AtomicBool::new(false)),
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while fires.load(Ordering::SeqCst) == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "the held delivery was never released after its target registered"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    eprintln!(
+        "held delivery released {:?} after the target worker started connecting",
+        held_since.elapsed()
+    );
+    assert_eq!(fires.load(Ordering::SeqCst), 1, "held, not retried");
+
+    target.shutdown_async().await;
+    boot.shutdown().await;
+    iii.shutdown_async().await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 struct RestartInvoker {
     started: Notify,
     resume: AtomicBool,

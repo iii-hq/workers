@@ -2,7 +2,7 @@
 
 [package]
 name = "ade"
-version = "1.9.51"
+version = "1.9.70"
 edition = "2021"
 publish = false
 
@@ -14,13 +14,15 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "0.23"
+iii-sdk = "=0.24.6"
 # Worker-side injectable console UI (content function + console:script/style
 # triggers + hot-reload watcher) — the console dogfoods its own protocol to
 # ship the injectable-UI toggle form. Direct link, never published.
 iii-console-ui = { path = "../crates/console-ui" }
 # Project-relative `data_dir` resolution shared by every worker (III_COMPOSE_DIR).
 iii-worker-paths = { path = "../crates/worker-paths" }
+# Chat mention provider descriptor + search/get wire types (`@trace(id=…)`).
+mention-contract = { path = "../crates/mention-contract" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "net", "io-util", "time", "fs", "process"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

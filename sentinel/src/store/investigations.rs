@@ -10,7 +10,7 @@
 
 use serde_json::{json, Value};
 
-use super::{number, text, Db, Statement, Store};
+use super::{integer, is_conflict, number, text, Db, Statement, Store};
 use crate::{
     ids, lifecycle, DiagnosisRecordV1, DiagnosisSourceV1, DiagnosisV1, GroupStatusV1,
     InvestigationCountsV1, InvestigationModeV1, InvestigationStatusV1, InvestigationSummaryV1,
@@ -198,7 +198,7 @@ impl<D: Db> Store<D> {
             .await?
             .first()
             .and_then(|row| row.get("total"))
-            .and_then(Value::as_i64)
+            .and_then(integer)
             .unwrap_or(0) as u64;
         let mut page = params;
         page.push(json!(limit as i64));
@@ -244,7 +244,7 @@ impl<D: Db> Store<D> {
             .await?
             .first()
             .and_then(|row| row.get("total"))
-            .and_then(Value::as_i64)
+            .and_then(integer)
             .unwrap_or(0) as u64)
     }
 
@@ -279,7 +279,7 @@ impl<D: Db> Store<D> {
             .await?
             .first()
             .and_then(|row| row.get("total"))
-            .and_then(Value::as_i64)
+            .and_then(integer)
             .unwrap_or(0)
             .max(0) as u64;
         let rows = self
@@ -438,13 +438,6 @@ impl<D: Db> Store<D> {
         counts.open_sessions += counts.running;
         Ok(counts)
     }
-}
-
-/// Whether a write failed because a unique constraint refused it — here,
-/// always the partial index that allows one running pass per group.
-fn is_conflict(error: &SentinelError) -> bool {
-    let message = error.to_string().to_ascii_lowercase();
-    message.contains("unique") || message.contains("constraint")
 }
 
 fn investigation(row: &NamedRow) -> InvestigationSummaryV1 {

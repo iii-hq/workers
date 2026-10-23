@@ -1,0 +1,127 @@
+{
+  "description": "List the worker templates coder::scaffold-worker creates from: id, name, description, language (node | python) and requires (the compose containers the worker needs, e.g. http). source names where they come from: a local dir, or a cached git clone with ref and revision; warning means the clone could not refresh and is stale. refresh: true re-fetches it now.",
+  "function_id": "coder::list-templates",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "examples": [
+      {
+        "refresh": true
+      }
+    ],
+    "properties": {
+      "refresh": {
+        "default": false,
+        "description": "Re-fetch the cached git clone now instead of after `code.templates.refresh_secs`. No effect on a local dir.",
+        "type": "boolean"
+      }
+    },
+    "title": "ListTemplatesInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Language": {
+        "description": "Runtime of a worker template, from the template's own `requires`.",
+        "enum": [
+          "node",
+          "python"
+        ],
+        "type": "string"
+      },
+      "TemplateInfo": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "description": "Pass as `template` to coder::scaffold-worker.",
+            "type": "string"
+          },
+          "language": {
+            "$ref": "#/definitions/Language"
+          },
+          "name": {
+            "type": "string"
+          },
+          "requires": {
+            "description": "Compose containers the worker needs, e.g. `http`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "description",
+          "id",
+          "language",
+          "name",
+          "requires"
+        ],
+        "type": "object"
+      },
+      "TemplateSourceInfo": {
+        "description": "Where the templates were read from.",
+        "properties": {
+          "kind": {
+            "description": "`dir` (a local checkout) or `git` (a cached clone).",
+            "type": "string"
+          },
+          "location": {
+            "description": "The templates directory (`dir`) or the clone URL (`git`).",
+            "type": "string"
+          },
+          "ref": {
+            "description": "Branch or tag of the clone (`git` only).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "description": "Commit the clone is at (`git` only).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "warning": {
+            "description": "Set when the clone could not be refreshed and a stale copy is served.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "location"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "source": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/TemplateSourceInfo"
+          }
+        ],
+        "description": "Where the templates were read from."
+      },
+      "templates": {
+        "items": {
+          "$ref": "#/definitions/TemplateInfo"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "source",
+      "templates"
+    ],
+    "title": "ListTemplatesOutput",
+    "type": "object"
+  }
+}

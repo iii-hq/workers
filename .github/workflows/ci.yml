@@ -51,6 +51,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       rust: ${{ steps.bucket.outputs.rust }}
+      go: ${{ steps.bucket.outputs.go }}
+      binary: ${{ steps.bucket.outputs.binary }}
       node: ${{ steps.bucket.outputs.node }}
       python: ${{ steps.bucket.outputs.python }}
       crates: ${{ steps.bucket.outputs.crates }}
@@ -249,15 +251,14 @@ jobs:
             echo "ORT_PREFER_DYNAMIC_LINK=0"
           } >> "$GITHUB_ENV"
 
-      # judge-semif, judge-decider and judge-laya compile llama.cpp (cmake) and its bindings
-      # (bindgen needs libclang) through crates/llama-runtime; Linux x86_64
-      # always builds the Vulkan module (loader headers, SPIR-V headers, glslc).
-      # llama-cpp-sys-2 hard-links its shared libraries into target/ unless the
-      # name exists, and fails on a symlink the cache restore left dangling.
-      - name: Provision llama.cpp build tools (llama-runtime workers)
-        if: matrix.worker == 'judge-semif' || matrix.worker == 'judge-decider' || matrix.worker == 'judge-laya'
+      # judge-semif, judge-decider, judge-laya and judge-clef compile llama.cpp
+      # (curl, tar, patch, cmake; no libclang) through crates/llama-native.
+      # Linux x86_64 always builds the Vulkan module (loader headers, SPIR-V
+      # headers, glslc). Drop symlinks a cache restore left dangling in target/.
+      - name: Provision llama.cpp build tools (llama.cpp workers)
+        if: matrix.worker == 'judge-semif' || matrix.worker == 'judge-decider' || matrix.worker == 'judge-laya' || matrix.worker == 'judge-clef'
         run: |
-          sudo apt-get update && sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc spirv-headers
+          sudo apt-get update && sudo apt-get install -y cmake libvulkan-dev glslc spirv-headers
           find target -xtype l -print -delete 2>/dev/null || true
 
       - name: Run clippy
@@ -268,6 +269,15 @@ jobs:
         if: matrix.worker == 'browser'
         run: cargo clippy --locked --all-targets -- -D warnings
 
+      # The state worker's Redis adapter tests skip when no server answers:
+      # give them one, and make a missing one fail instead of skip.
+      - name: Start Redis for the state tests
+        if: matrix.worker == 'state'
+        run: |
+          docker run -d --name redis -p 6379:6379 valkey/valkey:8.1.10-alpine
+          for _ in $(seq 1 30); do docker exec redis valkey-cli ping 2>/dev/null | grep -q PONG && break; sleep 1; done
+          echo "III_REDIS_REQUIRE=1" >> "$GITHUB_ENV"
+
       - name: Run tests
         if: matrix.worker != 'browser'
         run: cargo test --locked --all-features
@@ -275,6 +285,21 @@ jobs:
       - name: Run tests (default features)
         if: matrix.worker == 'browser'
         run: cargo test --locked
+
+      # computer vendors xa11y-linux (AT-SPI only, patched; see
+      # computer/vendor/xa11y-linux/PATCHES.md) outside its workspace, so its
+      # tests run here. The musl build is the guard for "no system C library
+      # on Linux": any -l<system lib> fails to link there.
+      - name: Vendored xa11y-linux tests (computer)
+        if: matrix.worker == 'computer'
+        run: cargo test --locked --manifest-path vendor/xa11y-linux/Cargo.toml --lib
+
+      - name: Pure-Rust Linux build (computer, musl)
+        if: matrix.worker == 'computer'
+        run: |
+          sudo apt-get update && sudo apt-get install -y musl-tools
+          rustup target add x86_64-unknown-linux-musl
+          cargo build --locked --target x86_64-unknown-linux-musl
 
   # ──────────────────────────────────────────────────────────────
   # iii-directory links a static ONNX Runtime on five release targets; the
@@ -323,6 +348,162 @@ jobs:
           SKIP_UI_BUILD: "1"
           III_REQUIRE_MINILM: "1"
         run: cargo test --locked --test minilm_target
+
+  # ──────────────────────────────────────────────────────────────
+  # computer's native driver and accessibility layer per OS. macOS and
+  # Windows: the full suite (the ubuntu gate above never builds their code)
+  # and, on Windows (hosted runners have an interactive desktop, so UI
+  # Automation works), the semantic e2e against the AccessKit fixture. Linux:
+  # the rust job already lints and tests, so only the e2e runs here, on a
+  # private Xvfb + D-Bus + AT-SPI stack (tests/run-linux-live.sh). macOS e2e
+  # stays manual: TCC grants to cargo-hashed test binaries are not reliable on
+  # hosted runners.
+  # ──────────────────────────────────────────────────────────────
+  computer-native:
+    name: "computer: native build + semantic e2e (${{ matrix.os }})"
+    needs: discover
+    if: contains(needs.discover.outputs.rust, '"computer"')
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+        working-directory: computer
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.97.1
+          components: clippy
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: worker-computer-${{ matrix.os }}
+          save-if: ${{ github.event_name == 'push' }}
+          workspaces: |
+            computer -> target
+            computer/tests/fixture -> target
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: 'pnpm'
+          cache-dependency-path: '**/pnpm-lock.yaml'
+
+      - name: Build the console UI
+        working-directory: computer/ui
+        # Only this package and its workspace deps: a full-workspace install
+        # on Windows would let an unrelated package break this job.
+        run: pnpm --filter '@iii-workers/computer-ui...' install --frozen-lockfile && pnpm build
+
+      - name: Console UI tests
+        if: runner.os == 'Windows'
+        working-directory: computer/ui
+        run: pnpm test
+
+      - name: Clippy
+        if: runner.os != 'Linux'
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        if: runner.os != 'Linux'
+        run: cargo test --locked --all-features
+
+      # computer vendors xa11y-macos (patched; see
+      # computer/vendor/xa11y-macos/PATCHES.md) outside its workspace. Only
+      # the patch tests: the upstream ones that build a provider need TCC.
+      - name: Vendored xa11y-macos patch tests (computer)
+        if: runner.os == 'macOS'
+        run: cargo test --locked --manifest-path vendor/xa11y-macos/Cargo.toml --lib vendored_patches
+
+      - name: Linux desktop runtime (Xvfb, D-Bus, AT-SPI, the fixture's X libraries)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb dbus at-spi2-core libx11-6 libx11-xcb1 \
+            libxcursor1 libxi6 libxrandr2 libxkbcommon-x11-0
+
+      - name: Build the accessibility fixture
+        if: runner.os != 'macOS'
+        run: cargo build --locked --manifest-path tests/fixture/Cargo.toml
+
+      # Compile outside the e2e's timeout: a cold cache would spend it building.
+      - name: Build the live tests (Linux)
+        if: runner.os == 'Linux'
+        run: cargo test --locked --no-run
+
+      - name: Linux e2e (X11 driver + semantic layer against the fixture)
+        if: runner.os == 'Linux'
+        timeout-minutes: 15
+        env:
+          COMPUTER_A11Y_FIXTURE_LOG_DIR: ${{ runner.temp }}
+        run: tests/run-linux-live.sh
+
+      - name: Semantic e2e against the fixture
+        if: runner.os == 'Windows'
+        timeout-minutes: 15
+        env:
+          COMPUTER_A11Y_FIXTURE: ${{ github.workspace }}/computer/tests/fixture/target/debug/computer-a11y-fixture.exe
+          COMPUTER_A11Y_FIXTURE_LOG_DIR: ${{ runner.temp }}
+        run: cargo test --locked --test semantic_live -- --ignored --test-threads=1
+
+      - name: Upload the fixture logs
+        if: failure() && runner.os != 'macOS'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: a11y-fixture-logs-${{ runner.os }}
+          path: ${{ runner.temp }}/a11y-fixture-*.log
+          if-no-files-found: ignore
+
+  # ──────────────────────────────────────────────────────────────
+  # crates/llama-native builds llama.cpp per target: shared libraries and
+  # runtime-loaded backends on Linux x86_64 (the gates above), static Metal on
+  # macOS, a static CPU build on aarch64 Linux. Only the release pipeline
+  # compiled the last two, so build and test the crate natively on both.
+  # discover fans llama-native and llama-runtime changes into these four
+  # workers. The hosted images ship cmake, a C/C++ toolchain, curl, tar and
+  # patch; the tests load judge-clef/judge-decider/judge-laya's tiny GGUFs.
+  # No rust-cache: it purges the crate's own build dir (llama.cpp), leaving
+  # only four small build dependencies to restore.
+  # ──────────────────────────────────────────────────────────────
+  llama-native-targets:
+    name: "llama-native: llama.cpp build + test (${{ matrix.os }})"
+    needs: discover
+    if: >-
+      contains(needs.discover.outputs.rust, '"judge-clef"')
+      || contains(needs.discover.outputs.rust, '"judge-decider"')
+      || contains(needs.discover.outputs.rust, '"judge-semif"')
+      || contains(needs.discover.outputs.rust, '"judge-laya"')
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-24.04-arm]
+    defaults:
+      run:
+        working-directory: crates/llama-native
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.97.1
+
+      - name: Run tests
+        run: cargo test --locked --all-features
 
   # ──────────────────────────────────────────────────────────────
   # ios-simulator ships for macOS only: it drives Xcode's simulators through
@@ -453,13 +634,14 @@ jobs:
         working-directory: provider-openai-codex/ui
         run: pnpm install --frozen-lockfile && pnpm build
 
-      # llama-runtime compiles llama.cpp (cmake) and its bindings (bindgen
-      # needs libclang); Linux x86_64 always builds the Vulkan module (loader
-      # headers, SPIR-V headers, glslc), as for the llama-runtime workers.
-      - name: Provision llama.cpp build tools (llama-runtime)
-        if: matrix.crate == 'llama-runtime'
+      # llama-native (and llama-runtime through it) compiles llama.cpp (curl,
+      # tar, patch, cmake; no libclang). Linux x86_64 always builds the Vulkan
+      # module (loader headers, SPIR-V headers, glslc), as for the llama.cpp
+      # workers. Drop symlinks a cache restore left dangling in target/.
+      - name: Provision llama.cpp build tools (llama-runtime, llama-native)
+        if: matrix.crate == 'llama-runtime' || matrix.crate == 'llama-native'
         run: |
-          sudo apt-get update && sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc spirv-headers
+          sudo apt-get update && sudo apt-get install -y cmake libvulkan-dev glslc spirv-headers
           find target -xtype l -print -delete 2>/dev/null || true
 
       - name: Check formatting
@@ -685,7 +867,7 @@ jobs:
           }
 
   # ──────────────────────────────────────────────────────────────
-  # Interface boot smoke: build each changed Rust worker from source,
+  # Interface boot smoke: build each changed binary worker from source,
   # boot it against a live engine exactly as the registry-publish flow
   # does, and assert its interface is collectable & non-empty. This is
   # the PR-time guard for the class of failure that broke publish in
@@ -693,14 +875,14 @@ jobs:
   # liveness check but then crashed building its SQLite pool because
   # the default `sqlite:./data/iii.db` parent dir was missing — so
   # `Collect worker interface` timed out at release time, never on PRs.
-  # Scoped to Rust workers (the binary-deploy bucket where this lives);
+  # Scoped to Rust and Go workers (the binary-deploy bucket);
   # building from source means a clean checkout with no `data/` dir,
   # which is precisely the condition that triggered the crash.
   # ──────────────────────────────────────────────────────────────
   interface-smoke:
     name: "${{ matrix.worker }}: interface boot smoke"
     needs: discover
-    if: github.event_name == 'pull_request' && needs.discover.outputs.rust != '[]'
+    if: github.event_name == 'pull_request' && needs.discover.outputs.binary != '[]'
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -708,7 +890,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        worker: ${{ fromJSON(needs.discover.outputs.rust) }}
+        worker: ${{ fromJSON(needs.discover.outputs.binary) }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -732,6 +914,7 @@ jobs:
           set -euo pipefail
           skip=$(WORKER="$WORKER" python3 -c 'import os, sys; sys.path.insert(0, ".github/scripts"); import _lib; m = _lib.read_worker(os.environ["WORKER"]); print("true" if m.validation.get("interface") == "skipped" else "false")')
           echo "skip=$skip" >> "$GITHUB_OUTPUT"
+          WORKER="$WORKER" python3 -c 'import os, sys; sys.path.insert(0, ".github/scripts"); import _lib; m = _lib.read_worker(os.environ["WORKER"]); print("kind=" + m.artifact_kind); print("go_version=" + str(m.artifact.get("toolchain", {}).get("version", "")))' >> "$GITHUB_OUTPUT"
           if [[ "$skip" == "true" ]]; then
             echo "::notice::$WORKER has no static Registry interface (iii.worker.yaml registry_interface: false)"
           fi
@@ -741,28 +924,34 @@ jobs:
         run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
 
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
-        if: steps.optout.outputs.skip != 'true'
+        if: steps.optout.outputs.skip != 'true' && steps.optout.outputs.kind == 'rust-binary'
         with:
           toolchain: 1.97.1
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        if: steps.optout.outputs.skip != 'true'
+        if: steps.optout.outputs.skip != 'true' && steps.optout.outputs.kind == 'rust-binary'
         with:
           shared-key: worker-${{ matrix.worker }}
           save-if: false
           workspaces: ${{ matrix.worker }} -> target
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        if: steps.optout.outputs.skip != 'true' && steps.optout.outputs.kind == 'go-binary'
+        with:
+          go-version: ${{ steps.optout.outputs.go_version }}
+          cache-dependency-path: ${{ matrix.worker }}/go.sum
 
       # Workers that embed a Vite SPA into the binary (e.g. console) have a
       # build.rs that shells out to pnpm. Pre-build the dist so `cargo build`
       # short-circuits it — mirrors the `rust` job above. provider-opencode-go
       # embeds the llm-router UI transitively, so it needs that UI prepared too.
       - name: Setup pnpm (workers with bundled web/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go'
+        if: steps.optout.outputs.kind == 'rust-binary' && (hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go')
         # Version comes from the repo-root package.json packageManager field.
         uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
 
       - name: Setup Node (workers with bundled web/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go'
+        if: steps.optout.outputs.kind == 'rust-binary' && (hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go')
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
@@ -772,7 +961,7 @@ jobs:
           cache-dependency-path: '**/pnpm-lock.yaml'
 
       - name: Pre-build frontend bundle (web/ and/or ui/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go'
+        if: steps.optout.outputs.kind == 'rust-binary' && (hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go')
         run: |
           set -euo pipefail
           for d in "${{ matrix.worker }}/web" "${{ matrix.worker }}/ui"; do
@@ -794,20 +983,24 @@ jobs:
             echo "ORT_PREFER_DYNAMIC_LINK=0"
           } >> "$GITHUB_ENV"
 
-      # A symlink the cache restore left dangling in target/ fails
-      # llama-cpp-sys-2's hard-link step: drop them first.
-      - name: Provision llama.cpp build tools (llama-runtime workers)
-        if: steps.optout.outputs.skip != 'true' && (matrix.worker == 'judge-semif' || matrix.worker == 'judge-decider' || matrix.worker == 'judge-laya')
+      # Drop symlinks a cache restore left dangling in target/.
+      - name: Provision llama.cpp build tools (llama.cpp workers)
+        if: steps.optout.outputs.skip != 'true' && (matrix.worker == 'judge-semif' || matrix.worker == 'judge-decider' || matrix.worker == 'judge-laya' || matrix.worker == 'judge-clef')
         run: |
-          sudo apt-get update && sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc spirv-headers
+          sudo apt-get update && sudo apt-get install -y cmake libvulkan-dev glslc spirv-headers
           find "${{ matrix.worker }}/target" -xtype l -print -delete 2>/dev/null || true
 
       # Build with default features so we boot the same artifact that ships
       # in the GitHub Release (the release build uses default features).
       - name: Build worker binary
-        if: steps.optout.outputs.skip != 'true'
+        if: steps.optout.outputs.skip != 'true' && steps.optout.outputs.kind == 'rust-binary'
         working-directory: ${{ matrix.worker }}
         run: cargo build --locked
+
+      - name: Build Go worker binary
+        if: steps.optout.outputs.skip != 'true' && steps.optout.outputs.kind == 'go-binary'
+        working-directory: ${{ matrix.worker }}
+        run: make build
 
       - name: Install iii CLI + engine
         if: steps.optout.outputs.skip != 'true'
@@ -861,9 +1054,10 @@ jobs:
         if: steps.optout.outputs.skip != 'true'
         env:
           WORKER: ${{ matrix.worker }}
+          KIND: ${{ steps.optout.outputs.kind }}
         run: |
           set -euo pipefail
-          # Resolve the cargo binary from the canonical catalog.
+          # Resolve the executable from the canonical catalog.
           bin=$(WORKER="$WORKER" python3 -c 'import os, sys; sys.path.insert(0, ".github/scripts"); import _lib; m = _lib.read_worker(os.environ["WORKER"]); print(m.binary or m.catalog_id)')
 
           worker_log="worker-$WORKER.log"
@@ -880,22 +1074,28 @@ jobs:
             echo "Using interface-collection config: $WORKER/config.collect.yaml"
             collect_args+=(--config ./config.collect.yaml)
           fi
-          # The llama.cpp workers register their functions only once a model
-          # loads: boot them on their committed tiny fixtures instead of
-          # downloading gigabytes.
+          executable="./target/debug/$bin"
+          if [[ "$KIND" == go-binary ]]; then
+            executable="./bin/$bin"
+            collect_args+=(--local-config --collect-interface)
+          fi
+          # Boot the llama.cpp workers on their committed tiny fixtures so
+          # nothing can trigger a multi-gigabyte download.
           if [[ "$WORKER" == judge-semif ]]; then
             export III_SEMIF_GGUF="$PWD/judge-semif/tests/fixtures/tiny-qwen3.gguf"
           elif [[ "$WORKER" == judge-decider ]]; then
             export III_DECIDER_GGUF="$PWD/judge-decider/tests/fixtures/tiny-qwen3.gguf"
           elif [[ "$WORKER" == judge-laya ]]; then
             export III_LAYA_CHECKPOINT_DIR="$PWD/judge-laya/tests/fixtures/tiny"
+          elif [[ "$WORKER" == judge-clef ]]; then
+            export III_CLEF_CHECKPOINT_DIR="$PWD/judge-clef/tests/fixtures/tiny"
           fi
           # Run from inside the worker dir — this is what makes a relative
           # default db path (sqlite:./data/iii.db) resolve against a clean
           # checkout with no data/ dir, reproducing the publish boot exactly.
           pushd "$WORKER" >/dev/null
-          echo "Starting local worker: (cd $WORKER && ./target/debug/$bin ${collect_args[*]})"
-          "./target/debug/$bin" "${collect_args[@]}" > "../$worker_log" 2>&1 &
+          echo "Starting local worker: (cd $WORKER && $executable ${collect_args[*]})"
+          "$executable" "${collect_args[@]}" > "../$worker_log" 2>&1 &
           echo "$!" > ../worker.pid
           popd >/dev/null
 
@@ -1001,7 +1201,7 @@ jobs:
 
       - name: Run the pr suite on the workers built from this PR
         id: e2e
-        uses: iii-hq/harness-e2e/.github/actions/verify-stack@e13e884fb6c292e5796e445be67157ef4bfce04e
+        uses: iii-hq/harness-e2e/.github/actions/verify-stack@8d40a4ead930cae748b6d1d822312633583ec514
         with:
           token: ${{ steps.app.outputs.token }}
           comment-token: ${{ github.token }}
@@ -1016,6 +1216,43 @@ jobs:
         run: |
           echo "::warning::Harness E2E: ${SUMMARY:-no verdict}"
           exit 1
+
+  # ──────────────────────────────────────────────────────────────
+  # Go per-worker formatting, vet, tests, and the release build.
+  # ──────────────────────────────────────────────────────────────
+  go:
+    name: "${{ matrix.worker }}: go lint + test"
+    needs: discover
+    if: needs.discover.outputs.go != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        worker: ${{ fromJSON(needs.discover.outputs.go) }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.worker }}
+    env:
+      CGO_ENABLED: '0'
+      GOWORK: 'off'
+      GOFLAGS: '-mod=readonly'
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: ${{ matrix.worker }}/go.mod
+          cache-dependency-path: ${{ matrix.worker }}/go.sum
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - name: Run tests
+        run: go test ./...
+      - name: Build release binary
+        run: make build
 
   # ──────────────────────────────────────────────────────────────
   # Node per-worker lint (biome) + test

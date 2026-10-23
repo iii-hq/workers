@@ -2,6 +2,12 @@
 //! ticket (soft-deleted rows included) with its comments and activity inline.
 //! Reads are lock-free; every mutation runs read → mutate → atomic write
 //! under one mutex so concurrent function calls never interleave on disk.
+//!
+//! The file carries `version`. Version 1 (tickets only) loads as-is and is
+//! written back as [`BOARD_VERSION`], after a one-time copy of the original to
+//! `board.v1.json` (an older worker would drop the projects, releases and
+//! subtask links on its next write); a file written by a newer worker is
+//! refused on read, so no mutation ever overwrites it.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -49,6 +55,14 @@ pub struct Activity {
     pub comment_id: Option<String>,
 }
 
+/// One badge on a ticket: a lucide icon name (`alarm-clock`, `calendar`,
+/// `flag`) and a short text.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Pill {
+    pub icon: String,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Ticket {
     /// Internal uuid.
@@ -66,6 +80,19 @@ pub struct Ticket {
     pub assignee: Option<String>,
     #[serde(default)]
     pub labels: Vec<String>,
+    /// Small icon-and-text badges another worker pins on the ticket (a due
+    /// date, a priority, an alarm). Shown on the card and the ticket page.
+    #[serde(default)]
+    pub pills: Vec<Pill>,
+    /// Uuid of the parent ticket. One level deep: a parent has no parent.
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    /// Uuid of the project (several tickets, independent of the release).
+    #[serde(default)]
+    pub project_id: Option<String>,
+    /// Uuid of the release.
+    #[serde(default)]
+    pub release_id: Option<String>,
     /// Position inside its column.
     #[serde(default)]
     pub order: u64,
@@ -86,6 +113,54 @@ pub fn default_actor() -> String {
     "user".to_string()
 }
 
+/// A named group of tickets (a product area), independent of releases.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Project {
+    pub id: String,
+    /// Unique among projects (trimmed, ASCII case ignored).
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// Agent profile id, or `user`.
+    #[serde(default)]
+    pub lead: Option<String>,
+    /// blue | purple | teal | green | amber | rose.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// The label this project was converted from, if any.
+    #[serde(default)]
+    pub source_label: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    /// Set when archived; an archived project refuses new tickets.
+    #[serde(default)]
+    pub archived_at: Option<String>,
+}
+
+/// A deliverable that tickets are filed under. Its status is derived from the
+/// tickets; only `released_at` is stored.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Release {
+    pub id: String,
+    /// Unique among releases (trimmed, ASCII case ignored).
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// `YYYY-MM-DD`.
+    #[serde(default)]
+    pub target_at: Option<String>,
+    #[serde(default)]
+    pub released_at: Option<String>,
+    /// The label this release was converted from, if any.
+    #[serde(default)]
+    pub source_label: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// The newest board file version this worker reads and writes.
+pub const BOARD_VERSION: u32 = 2;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Board {
     #[serde(default = "one")]
@@ -94,6 +169,10 @@ pub struct Board {
     pub next_number: u64,
     #[serde(default)]
     pub tickets: IndexMap<String, Ticket>,
+    #[serde(default)]
+    pub projects: IndexMap<String, Project>,
+    #[serde(default)]
+    pub releases: IndexMap<String, Release>,
 }
 
 fn one() -> u32 {
@@ -107,9 +186,11 @@ fn one_u64() -> u64 {
 impl Default for Board {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: BOARD_VERSION,
             next_number: 1,
             tickets: IndexMap::new(),
+            projects: IndexMap::new(),
+            releases: IndexMap::new(),
         }
     }
 }
@@ -124,9 +205,17 @@ impl Board {
 /// the caller surfaces instead of silently starting a new board over a
 /// corrupt one.
 pub async fn read_board(file: &Path) -> Result<Board, String> {
+    read_stored(file).await.map(|(board, _)| board)
+}
+
+/// [`read_board`] plus the version the file was stored with (the current one
+/// for a missing file).
+async fn read_stored(file: &Path) -> Result<(Board, u32), String> {
     let raw = match tokio::fs::read_to_string(file).await {
         Ok(raw) => raw,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Board::empty()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((Board::empty(), BOARD_VERSION));
+        }
         Err(error) => {
             return Err(format!(
                 "cannot read board file {}: {error}",
@@ -134,13 +223,48 @@ pub async fn read_board(file: &Path) -> Result<Board, String> {
             ));
         }
     };
+    // Probe the version first: a newer file may not fit this worker's model,
+    // and "version 3" is a better error than whatever field failed to parse.
+    #[derive(Deserialize)]
+    struct Probe {
+        version: Option<u32>,
+    }
+    let probe: Probe = serde_json::from_str(&raw)
+        .map_err(|error| format!("board file {} is not valid JSON: {error}", file.display()))?;
+    if let Some(version) = probe.version.filter(|version| *version > BOARD_VERSION) {
+        return Err(format!(
+            "board file {} is version {version}, newer than the version {BOARD_VERSION} this worker understands; update the kanban worker (the file was left untouched)",
+            file.display()
+        ));
+    }
     let mut board: Board = serde_json::from_str(&raw)
         .map_err(|error| format!("board file {} is not valid JSON: {error}", file.display()))?;
-    board.version = 1;
+    let stored = board.version;
+    board.version = BOARD_VERSION;
     if board.next_number < 1 {
         board.next_number = 1;
     }
-    Ok(board)
+    Ok((board, stored))
+}
+
+/// Keep the file as an older worker wrote it, next to it as `board.v<N>.json`,
+/// before the first write that upgrades it. An existing copy is never replaced.
+async fn keep_old_version(file: &Path, stored: u32) -> Result<(), String> {
+    let copy = file.with_file_name(format!("board.v{stored}.json"));
+    if tokio::fs::try_exists(&copy).await.unwrap_or(false) {
+        return Ok(());
+    }
+    // Through a temp file, so a crash never leaves a truncated copy that the next write would trust.
+    let temp = PathBuf::from(format!("{}.tmp", copy.display()));
+    let failed = |error: std::io::Error| {
+        format!(
+            "cannot keep a copy of {} as {}: {error}",
+            file.display(),
+            copy.display()
+        )
+    };
+    tokio::fs::copy(file, &temp).await.map_err(failed)?;
+    tokio::fs::rename(&temp, &copy).await.map_err(failed)
 }
 
 /// Write to a sibling temp file, then rename: a crash mid-write never leaves
@@ -204,8 +328,11 @@ impl BoardStore {
         let _serialized = self.write_lock.lock().await;
         let config = self.config();
         let file = config.board_file();
-        let mut board = read_board(&file).await?;
+        let (mut board, stored) = read_stored(&file).await?;
         let result = mutate(&mut board, &config)?;
+        if stored < BOARD_VERSION {
+            keep_old_version(&file, stored).await?;
+        }
         write_board(&file, &board).await?;
         Ok(result)
     }

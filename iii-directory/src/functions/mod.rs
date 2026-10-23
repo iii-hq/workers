@@ -9,14 +9,18 @@
 //!   * `directory::system-prompts::*` — filesystem-backed identity prompts.
 //!   * `directory::agents::*` — filesystem-backed reusable agent profiles.
 //!   * `directory::registry::*` — workers registry listing and metadata.
+//!   * `directory::download-kit` / `directory::kits::*` — kit install,
+//!     update and removal through reviewed plans (see [`crate::kits`]).
 //!
 //! Engine introspection is native, with one narrow wrapper retained for
 //! restricted callers: `directory::engine::functions::info`.
 
 pub mod agents;
 pub mod download;
+pub mod embed_provider;
 pub mod engine_fn;
 pub mod error;
+pub mod kits;
 pub mod prompts;
 pub mod registry;
 pub mod search;
@@ -46,6 +50,7 @@ pub struct Subscribers {
     pub skills: SubscriberSet,
     pub system_prompts: SubscriberSet,
     pub agents: SubscriberSet,
+    pub kits: SubscriberSet,
 }
 
 impl From<&RegisteredTriggerTypes> for Subscribers {
@@ -54,6 +59,7 @@ impl From<&RegisteredTriggerTypes> for Subscribers {
             skills: t.skills.clone(),
             system_prompts: t.system_prompts.clone(),
             agents: t.agents.clone(),
+            kits: t.kits.clone(),
         }
     }
 }
@@ -72,6 +78,7 @@ pub fn register_all(
     download::register(iii, cfg, &subs);
     update::register(iii, cfg, &subs, &cache);
     agents::register(iii, cfg, &subs, &cache);
+    kits::register(iii, cfg, &subs, &cache);
     registry::register(iii, cfg);
     engine_fn::register(iii);
 }
@@ -89,6 +96,7 @@ pub fn register_all_with_cache(
     download::register(iii, cfg, &subs);
     update::register(iii, cfg, &subs, cache);
     agents::register(iii, cfg, &subs, cache);
+    kits::register(iii, cfg, &subs, cache);
     registry::register_with_cache(iii, cfg, registry_cache);
     engine_fn::register(iii);
 }

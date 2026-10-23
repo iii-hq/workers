@@ -24,6 +24,7 @@ import {
   addTraceView,
   asObject,
   newTraceViewId,
+  onboardingAutoOpen,
   removeTraceView,
   renameTraceView,
   stringList,
@@ -32,6 +33,7 @@ import {
   traceViews,
   withActiveTraceView,
   withFollowTurns,
+  withOnboardingAutoOpen,
   withTraceFilterList,
 } from './preferences'
 
@@ -262,6 +264,24 @@ export function InjectableUiConfigForm(props: ConfigFormProps & { host: Host }) 
                 placeholder={DEFAULT_DATA_DIR}
                 onChange={(next) => props.onChange({ ...value, data_dir: next })}
                 aria-label="Data directory"
+              />
+            }
+          />
+        </SettingsList>
+      </SettingsSection>
+
+      <SettingsSection data-field="onboarding" title="Setup" description="The first-run wizard that connects a model.">
+        <SettingsList>
+          <SettingsRow
+            data-field="onboarding-auto_open"
+            label="Open setup on first run"
+            description="Opens the setup wizard by itself the first time a person loads this ADE, while no model is connected. Turn it off for a deployed ADE: its fresh data directory reads as a first run."
+            meta="The command palette still opens it. III_CONSOLE_ONBOARDING_AUTO_OPEN=false in the worker's environment turns it off for one environment, whatever is set here."
+            control={
+              <Switch
+                checked={onboardingAutoOpen(props.value)}
+                onChange={(event) => props.onChange(withOnboardingAutoOpen(props.value, event.currentTarget.checked))}
+                aria-label="Open setup on first run"
               />
             }
           />

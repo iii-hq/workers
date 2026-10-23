@@ -128,8 +128,8 @@ def _baseline_worker_identities(baseline_workers_json: dict[str, Any] | None) ->
 
 # Workers the engine itself hosts (enabled via the engine config, not
 # installed from the registry). A target install can flip one on mid-boot
-# (e.g. harness enables `iii-stream` for console streaming), which lands it in
-# the workers-baseline diff even though its interface is not part of the
+# (e.g. a worker that still lists the deprecated `iii-stream` builtin as a
+# dependency), which lands it in the workers-baseline diff even though its interface is not part of the
 # released worker's surface — and its schemas are not this repo's to fix.
 ENGINE_BUILTIN_WORKERS = frozenset(
     {
@@ -300,6 +300,9 @@ def build_payload(
     }
     if not isinstance(registry_projection, dict) or set(registry_projection) != required:
         raise ValueError("registry_projection differs from the current Registry metadata contract")
+    config = registry_projection["config"]
+    if config is not None and not isinstance(config, dict):
+        raise ValueError("registry_projection.config must be an object or null")
     if interface_capture not in {"required", "skipped"}:
         raise ValueError("interface_capture must be required or skipped")
     if not isinstance(interface, dict) or set(interface) != {"functions", "triggers"}:
@@ -316,7 +319,7 @@ def build_payload(
     deploy = registry_projection["type"]
     kind = artifacts.get("kind")
     expected_kind = {
-        "binary": "rust-binary",
+        "binary": {"rust-binary", "go-binary"},
         "bundle": {"javascript-bundle", "python-bundle"},
         "image": "oci-image",
     }.get(deploy)
@@ -324,6 +327,9 @@ def build_payload(
         raise ValueError("prepared artifacts differ from the public deploy type")
     payload: dict[str, Any] = {
         **registry_projection,
+        # The Registry nullable-config rollout requires an explicit key while
+        # treating an empty public default as absent.
+        "config": config or None,
         "version": published_version,
         "repo": repo_url,
         "functions": [

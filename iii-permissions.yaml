@@ -20,6 +20,7 @@ rules:
   - '!state::set'
   - '!state::update'
   - '!state::delete'
+  # Deprecated iii-stream write; keep denied while engines still host it.
   - '!stream::set'
   - '!iii::durable::publish'
   - '!email::on-config-change'
@@ -40,6 +41,8 @@ rules:
   - '!router::abort'
   - '!router::route'
   - '!router::on_config_changed'
+  # Internal: re-reads a rotated or revoked secret:// key and nudges its providers.
+  - '!router::on_secret_changed'
   # Direct provider calls (provider::anthropic::*, provider::openai::*, …)
   # bypass the router's accounting, budgets, and retry policy. The router
   # invokes these worker-to-worker; agents never call them.
@@ -53,6 +56,24 @@ rules:
   # mutation power under a new name); deny it too so an agent cannot bypass the
   # register deny above.
   - '!configuration::ensure'
+  # secrets: credential values live in the secrets worker, referenced from
+  # configuration as secret://NAME. Agents never resolve a value, store,
+  # import or delete one, or change which workers may resolve it; the console
+  # makes those calls on the person's behalf. list/get/status/detect return
+  # metadata only (masked hints, fingerprints) and stay at the default.
+  - '!secrets::resolve'
+  - '!secrets::set'
+  - '!secrets::delete'
+  - '!secrets::access'
+  - '!secrets::import'
+  - '!secrets::on-config-change'
+  # queue's engine event handler (functions/workers available): wakes waits
+  # for a target function and the engine-restart check; engine dispatch only.
+  - '!queue::on-engine-change'
+  # judge-typesafe's and judge-openai's own secrets::changed handlers (drop a
+  # rotated key).
+  - '!judge-typesafe::on-secret-change'
+  - '!judge-openai::on-secret-change'
   - '!directory::pre-generate'
   - '!directory::on-functions-change'
   - '!directory::hint-preview'
@@ -65,6 +86,9 @@ rules:
   # build-error string (e.g. a host_root path). Operators/console reach it via
   # the privileged dispatch path that bypasses this agent gate.
   - '!shell::config-status'
+  # Harness-internal stop sweep: kills every job a session owns, so a model
+  # could reap another session's jobs. harness::stop calls it worker-to-worker.
+  - '!shell::kill-session-jobs'
   # The agent-CLI terminals (the terminal halves of claude-code and pi) are opened by
   # a person from the console: their describe/activity/ui-content surfaces are
   # plumbing, `activity` writes to the events stream on the session's behalf,
@@ -133,6 +157,18 @@ rules:
   # change cannot inadvertently re-open the injection path.
   - '!storage::on-config-change'
   - '!database::on-config-change'
+  # database: the secrets::changed sink, connection management (rewrites
+  # servers and credentials, like configuration::set; getConnection exposes
+  # the stored entry; testConnection sends referenced credentials to the
+  # server a candidate names) and the chat mention provider (console
+  # plumbing; agents use database::listTables) are never agent-callable.
+  - '!database::on-secret-change'
+  - '!database::saveConnection'
+  - '!database::deleteConnection'
+  - '!database::getConnection'
+  - '!database::testConnection'
+  - '!database::mention::search'
+  - '!database::mention::get'
   - '!judge::on-config-change'
   - '!judge-semif::on-config-change'
   - '!judge-semif::on-judge-config-change'
@@ -140,21 +176,26 @@ rules:
   - '!judge-decider::on-judge-config-change'
   - '!judge-laya::on-config-change'
   - '!judge-laya::on-judge-config-change'
+  - '!judge-clef::on-config-change'
+  - '!judge-clef::on-judge-config-change'
   - '!directory::on-judge-config-change'
   - '!judge-typesafe::on-config-change'
+  - '!judge-openai::on-config-change'
   - '!session::on-config-change'
   # (coder::on-config-change retired: the code surface folded into the shell
   # worker, whose shell::on-config-change is already denied above.)
   # harness: deny-by-default for in-run agents (harness.md § Agent exposure).
   # send/run let a model start arbitrary turns outside any max_turns guard;
+  # compact rewrites a session's history (the console's control plane);
   # turn is the internal loop step; function::trigger/resolve forge call ids
   # and parked results; stop cancels turns. harness::spawn is the only
   # model-reachable way to start new turns and is left at the needs_approval
   # default (the harness self-enforces depth/fan-out and walls spawned
   # children out of the control plane unless the spawn passes
-  # options.orchestrator). The internal config/cron hooks must never be
-  # agent-callable.
+  # options.orchestrator). The internal config/cron/session-deleted hooks
+  # must never be agent-callable.
   - '!harness::send'
+  - '!harness::compact'
   - '!harness::run'
   - '!harness::turn'
   - '!harness::function::trigger'
@@ -162,13 +203,39 @@ rules:
   - '!harness::stop'
   - '!harness::on-config-change'
   - '!harness::sweep-pending'
+  - '!harness::on-session-deleted'
+  # Engine event handlers (worker connect/disconnect, compose operations) that
+  # drive binding expiry, orphaned-turn recovery and discovery instead of
+  # timers: invoked only by the engine's trigger dispatch.
+  - '!harness::on-engine-change'
+  - '!harness::on-compose-operation'
   # kanban: console asset delivery and the configuration reload sink are
   # engine plumbing. Deleting/restoring a ticket is the human's call from the
-  # ticket screen; the ticket working loop is allowlisted below.
+  # ticket screen; the ticket working loop is allowlisted below. Planning is
+  # the human's call too: agents file tickets under a project or release but
+  # never create, rename, ship or convert them. One exception: the deepwork
+  # orchestrator files each run under its own project, so a create whose
+  # `lead` is `deepwork` is allowed. Rules cannot see the caller, so this is
+  # scoped by argument (an agent could spoof it; the worst case is a stray
+  # project). Any other create matches no rule and waits for a person.
   - '!kanban::ui-content'
   - '!kanban::on-config-change'
   - '!kanban::ticket::delete'
   - '!kanban::ticket::restore'
+  - function: kanban::project::create
+    action: allow
+    rule_id: deepwork-run-project
+    args:
+      lead: { equals: deepwork }
+  - '!kanban::project::update'
+  - '!kanban::project::archive'
+  - '!kanban::project::restore'
+  - '!kanban::release::create'
+  - '!kanban::release::update'
+  - '!kanban::release::ship'
+  - '!kanban::release::reopen'
+  - '!kanban::release::delete'
+  - '!kanban::label::convert'
   # stories: console asset delivery, the /ui-files content function and the
   # configuration reload sink are engine plumbing. Reads, comparisons,
   # renders and line builds are allowlisted below.
@@ -222,10 +289,24 @@ rules:
   - '!browser::screencast::stop'
   - '!browser::frame'
   - '!browser::on-config-change'
+  # http::status only reports where the public HTTP server listens (host,
+  # port, local base URL) and its last reload error: read-only, so agents
+  # build page URLs from it instead of assuming port 3111.
+  - http::status
+  # console::status only reports where this project's ADE listens (port,
+  # local base URL), the engine URL it proxies and its version: read-only, so
+  # agents build ADE URLs from it instead of assuming port 3113.
+  - console::status
+  # browser::chromium::status only reports which Chromium the worker would
+  # launch (path, version, where it searched) and the latest install job:
+  # read-only, never starts a browser. browser::chromium::install downloads
+  # and unpacks ~200 MB of executable code into the user's cache, so it
+  # stays at the needs_approval default (the ADE calls it as the user).
+  - browser::chromium::status
   # computer: same split as browser. screencast::*/frame exist only to feed the
   # console viewport; the desktop surface the agent actually uses (sessions,
-  # screenshot, observe, act, displays) stays at the needs_approval default,
-  # because every act is a real click on a real machine.
+  # screenshot, observe, find, act, displays) stays at the needs_approval default,
+  # because every act drives a real machine (a click, keystroke or accessibility action).
   - '!computer::screencast::start'
   - '!computer::screencast::stop'
   - '!computer::frame'
@@ -381,9 +462,12 @@ rules:
   - kanban::board::get
   - kanban::ticket::list
   - kanban::ticket::get
+  - kanban::ticket::links
   - kanban::ticket::create
   - kanban::ticket::update
   - kanban::ticket::move
+  - kanban::project::list
+  - kanban::release::list
   - kanban::comment::create
   - kanban::comment::list
   - kanban::activity::list
@@ -410,6 +494,16 @@ rules:
   - '!vscode::ui-content'
   - vscode::start
   - vscode::instances::list
+  # tmux: reading sessions, agent states and ports is safe. Creating,
+  # renaming, selecting (switches the person's own terminal) and killing stay
+  # approval-gated. The Console terminal types into the person's sessions and
+  # is driven only by the page; config reload and Console asset are internal.
+  - '!tmux::terminal::*'
+  - '!tmux::on-config-change'
+  - '!tmux::ui-content'
+  - tmux::status
+  - tmux::sessions::list
+  - tmux::ports::list
   # tailscale: read-only status/configuration are safe; share publishes the
   # Console on a new listener and stop tears a route down, so both stay
   # approval-gated. Config-reload callback and Console asset are bus-internal.
@@ -435,12 +529,16 @@ rules:
   - tailscale::accounts::list
   - tailscale::metrics
   # Read-only code surface (coder::*, now served by the shell worker).
-  # Mutating ops (create/update/move/delete-file) stay approval-gated.
+  # Mutating ops (create/update/move/delete-file) stay approval-gated, and so
+  # does coder::scaffold-worker: it writes a whole worker package, so it has
+  # no rule here and falls through to needs_approval.
   - coder::info
   - coder::read-file
   - coder::search
   - coder::list-folder
   - coder::tree
+  # Lists scaffoldable templates; a refresh only updates the IDE's own cache.
+  - coder::list-templates
   # fp: the twenty-three pure value transforms are side-effect-free reshapes (no
   # I/O, no authority). fp::pipe stays at the needs_approval default ON
   # PURPOSE: its steps run with the fp worker's authority, so the pipe

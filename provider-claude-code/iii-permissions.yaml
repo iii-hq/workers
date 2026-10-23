@@ -9,3 +9,4 @@ rules:
   - '!provider::claude-code::abort'
   - '!provider::claude-code::refresh_models'
   - '!provider::claude-code::on_router_ready'
+  - '!provider::claude-code::count_tokens'

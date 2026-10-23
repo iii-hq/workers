@@ -79,6 +79,17 @@ export interface PageSidebarProps
    * beside the main column and opens the navigation as an overlay.
    */
   narrowMode?: 'inline' | 'drawer'
+  /**
+   * Each new value expands the sidebar, or opens the drawer when narrow, so a
+   * rail action can reveal the content it points at. The first value is the
+   * baseline and does nothing.
+   */
+  expandRequest?: number
+  /**
+   * Whether picking a button, link or tab inside the open drawer closes it
+   * (default). Turn it off for a panel people keep working in.
+   */
+  closeDrawerOnSelect?: boolean
 }
 
 function clampWidth(width: number, minWidth: number, maxWidth: number): number {
@@ -168,6 +179,8 @@ export function PageSidebar({
   narrow = false,
   narrowBelow,
   narrowMode = 'inline',
+  expandRequest,
+  closeDrawerOnSelect = true,
   className,
   style,
   ...rest
@@ -503,6 +516,14 @@ export function PageSidebar({
     if (!next) toggleRef.current?.focus({ preventScroll: true })
   }, [])
 
+  const expandRequestRef = React.useRef(expandRequest)
+  React.useEffect(() => {
+    if (expandRequestRef.current === expandRequest) return
+    expandRequestRef.current = expandRequest
+    if (hostDrawer) setDrawer(true)
+    else if (effectiveCollapsed) toggle()
+  }, [expandRequest, hostDrawer, effectiveCollapsed, setDrawer, toggle])
+
   // Preserve the original zero-behavior primitive for existing consumers.
   if (!managed) {
     return (
@@ -609,7 +630,7 @@ export function PageSidebar({
           chromeFocusRef.current = false
         }}
         onClickCapture={(event) => {
-          if (!hostDrawer || !drawerOpen) return
+          if (!hostDrawer || !drawerOpen || !closeDrawerOnSelect) return
           const target = event.target
           if (
             target instanceof Element &&

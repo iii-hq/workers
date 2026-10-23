@@ -12,6 +12,7 @@ pub mod logging;
 pub mod manifest;
 pub mod middleware;
 pub mod observability;
+pub mod on_request;
 pub mod server;
 pub mod trigger;
 pub mod types;

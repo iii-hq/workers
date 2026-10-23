@@ -760,6 +760,30 @@ describe('entrySegments', () => {
     })
   })
 
+  it('reads the bank of each recalled memory from the hook annotations', () => {
+    const item = {
+      ...assistantItem('e-a', [{ type: 'text', text: 'hi' }]),
+      origin: {
+        memory_bank: 'workers-abc123',
+        memory_recalled: 2,
+        memory_ids: ['fp1', 'fp2'],
+        memory_banks: ['workers-abc123', 'main'],
+      },
+    }
+    const [reply] = entrySegments(item, 'sess-1')
+    expect(reply).toMatchObject({
+      memory: {
+        bank: 'workers-abc123',
+        memoryIds: ['fp1', 'fp2'],
+        memoryBanks: ['workers-abc123', 'main'],
+      },
+    })
+    // Recorded before the annotation: the chip falls back to `bank`.
+    const { memory_banks: _, ...older } = item.origin
+    const [old] = entrySegments({ ...item, origin: older }, 'sess-1')
+    expect(old).toMatchObject({ memory: { memoryBanks: [] } })
+  })
+
   it('renders nothing for an empty assistant placeholder', () => {
     expect(entrySegments(assistantItem('e-a', []))).toEqual([])
   })
@@ -900,14 +924,14 @@ describe('entrySegments', () => {
     })
   })
 
-  it('renders a model_notice as a quiet notice with the text collapsed', () => {
+  it('renders a model_notice as a quiet note row with the text behind it', () => {
     const live = entrySegments({
       entry_id: 'e_t1_notice_0',
       custom: {
         custom_type: 'model_notice',
         data: {
-          text: 'Functions changed: fs::read added.',
-          kind: 'registry-changed',
+          text: 'fs::read no longer matches its preloaded contract.',
+          kind: 'preloaded-stale',
         },
       },
     })
@@ -918,8 +942,8 @@ describe('entrySegments', () => {
         custom_type: 'model_notice',
         content: [],
         details: {
-          text: 'Functions changed: fs::read added.',
-          kind: 'registry-changed',
+          text: 'fs::read no longer matches its preloaded contract.',
+          kind: 'preloaded-stale',
         },
         timestamp: 7,
       },
@@ -928,10 +952,13 @@ describe('entrySegments', () => {
       expect(notice).toMatchObject({
         id: 'e_t1_notice_0',
         role: 'system',
-        kind: 'notice',
+        kind: 'model-note',
         tone: 'info',
-        content: 'Note to the model — registry changed',
-        technicalDetails: { detail: 'Functions changed: fs::read added.' },
+        content: 'Note to the model — preloaded stale',
+        note: {
+          label: 'preloaded stale',
+          text: 'fs::read no longer matches its preloaded contract.',
+        },
       })
     }
     expect(readBack[0]?.createdAt).toBe(7)
@@ -944,6 +971,87 @@ describe('entrySegments', () => {
       entrySegments({
         entry_id: 'e-empty',
         custom: { custom_type: 'model_notice', data: {} },
+      }),
+    ).toEqual([])
+  })
+
+  it('names a hook note by its wrapper tag', () => {
+    const [memory] = entrySegments({
+      entry_id: 'e-m',
+      custom: {
+        custom_type: 'model_notice',
+        data: { text: '<memory bank="m">likes tea</memory>', kind: 'hook' },
+      },
+    })
+    expect(memory).toMatchObject({
+      kind: 'model-note',
+      content: 'Note to the model — memory',
+      note: { label: 'memory' },
+    })
+  })
+
+  it('hides the mention index and reads a mentions note as its mentions', () => {
+    expect(
+      entrySegments({
+        entry_id: 'e-p',
+        custom: {
+          custom_type: 'model_notice',
+          data: {
+            kind: 'hook',
+            text: '<mention_providers>\nItems you can reference…\n- @kanban — Tickets\n</mention_providers>',
+          },
+        },
+      }),
+    ).toEqual([])
+
+    const text = [
+      '<mentions>',
+      "Items the user's message references, resolved by the workers that own them.",
+      '- @session(id="s_1") — Chat session "hello" (s_1) · status: done',
+      '  details: session::get {"session_id":"s_1"}',
+      '- @kanban(id="gone") — not found: the kanban worker knows no such id',
+      '</mentions>',
+    ].join('\n')
+    const [note] = entrySegments({
+      entry_id: 'e-n',
+      custom: { custom_type: 'model_notice', data: { kind: 'hook', text } },
+    })
+    expect(note).toMatchObject({
+      kind: 'model-note',
+      content: 'Mentions resolved for the model',
+      note: {
+        label: 'mentions',
+        text,
+        mentions: [
+          {
+            name: 'session',
+            id: 's_1',
+            status: 'resolved',
+            summary: 'Chat session "hello" (s_1) · status: done',
+            details: 'session::get {"session_id":"s_1"}',
+          },
+          {
+            name: 'kanban',
+            id: 'gone',
+            status: 'not-found',
+            summary: 'not found: the kanban worker knows no such id',
+          },
+        ],
+      },
+    })
+  })
+
+  it('hides the registry-changed model_notice from the chat', () => {
+    expect(
+      entrySegments({
+        entry_id: 'e_t1_notice_0',
+        custom: {
+          custom_type: 'model_notice',
+          data: {
+            text: 'NOTE: the function registry changed.',
+            kind: 'registry-changed',
+          },
+        },
       }),
     ).toEqual([])
   })
@@ -1000,6 +1108,29 @@ describe('entrySegments', () => {
       tone: 'info',
       content: 'max_turns (8) reached',
     })
+  })
+
+  it('lets a notice raise its own tone (a failed compaction warns)', () => {
+    const [failed] = entrySegments({
+      entry_id: 'e_cmp_1_outcome',
+      custom: {
+        custom_type: 'notice',
+        data: {
+          reason: 'compaction_failed',
+          message: 'compaction failed — the summariser timed out',
+          tone: 'warn',
+        },
+      },
+    })
+    expect(failed).toMatchObject({
+      tone: 'warn',
+      content: 'compaction failed — the summariser timed out',
+    })
+    const [odd] = entrySegments({
+      entry_id: 'e_x',
+      custom: { custom_type: 'notice', data: { message: 'm', tone: 'loud' } },
+    })
+    expect(odd).toMatchObject({ tone: 'info' })
   })
 
   it('maps a trigger_fired custom entry to a turn-less notice carrying its record', () => {
@@ -1258,6 +1389,36 @@ describe('entrySegments', () => {
 })
 
 describe('applyEntryUpsert', () => {
+  // `/compact` never becomes a user message: the harness writes its start
+  // notice under the send's entry id, so the sender's optimistic command row
+  // turns into the notice every other device shows.
+  it('turns the optimistic /compact row into the harness start notice', () => {
+    const optimistic: Message = {
+      id: 'e_idem_msg-1',
+      role: 'user',
+      content: '/compact',
+      command: true,
+      createdAt: 0,
+    }
+    const next = applyEntryUpsert([optimistic], {
+      entry_id: 'e_idem_msg-1',
+      custom: {
+        custom_type: 'notice',
+        data: {
+          reason: 'compacting',
+          message: 'compacting the conversation…',
+          tone: 'info',
+        },
+      },
+    })
+    expect(next).toHaveLength(1)
+    expect(next[0]).toMatchObject({
+      id: 'e_idem_msg-1',
+      role: 'system',
+      content: 'compacting the conversation…',
+    })
+  })
+
   it('replaces the optimistic user message in place (predicted entry id)', () => {
     const optimistic: Message = {
       id: 'msg-1-user-0',
@@ -1639,7 +1800,11 @@ describe('applyFcallPatch / clearTransientFlags', () => {
 describe('elided placeholders', () => {
   function elidedCall(
     entryId: string,
-    calls: Array<{ id: string; functionId: string }>,
+    calls: Array<{
+      id: string
+      functionId: string
+      arguments?: Record<string, unknown>
+    }>,
     text?: string,
   ): TranscriptItem {
     return {
@@ -1651,7 +1816,7 @@ describe('elided placeholders', () => {
             type: 'function_call' as const,
             id: c.id,
             function_id: c.functionId,
-            arguments: {},
+            arguments: c.arguments ?? {},
           })),
         ],
         'function_call',
@@ -1722,6 +1887,129 @@ describe('elided placeholders', () => {
       pendingApproval: false,
     })
     expect(messages[0]).not.toHaveProperty('output')
+  })
+
+  /* The page keeps an `agent_trigger` call's label (`function` +
+     `description`) and drops its payload: a reloaded collapsed run reads
+     the same as the live one did, instead of falling back to bare ids. */
+  it('labels a paged-out agent_trigger row from its kept fields', () => {
+    const segments = entrySegments(
+      elidedCall('e_a1', [
+        {
+          id: 'fc_1',
+          functionId: 'agent_trigger',
+          arguments: {
+            function: 'compose::status',
+            description: '  Check existing containers ',
+          },
+        },
+      ]),
+    )
+    expect(segments).toHaveLength(1)
+    expect(segments[0]).toMatchObject({
+      role: 'function-trigger',
+      functionId: 'compose::status',
+      description: 'Check existing containers',
+      functionTriggerId: 'fc_1',
+      unloaded: true,
+    })
+    expect(segments[0]).not.toHaveProperty('unresolvedTarget')
+    expect((segments[0] as FunctionTriggerMessage).input).toBeUndefined()
+
+    // Its elided result settles the row without touching the label.
+    const messages = transcriptToMessages([
+      elidedCall('e_a1', [
+        {
+          id: 'fc_1',
+          functionId: 'agent_trigger',
+          arguments: {
+            function: 'compose::status',
+            description: 'Check existing containers',
+          },
+        },
+      ]),
+      elidedResult('e_r1', 'fc_1', 'compose::status'),
+    ])
+    expect(messages[0]).toMatchObject({
+      functionId: 'compose::status',
+      description: 'Check existing containers',
+      unresolvedTarget: false,
+      unloaded: true,
+      running: false,
+    })
+  })
+
+  it('keeps a paged-out agent_trigger row unresolved without a target', () => {
+    const segments = entrySegments(
+      elidedCall('e_a1', [
+        {
+          id: 'fc_1',
+          functionId: 'agent_trigger',
+          arguments: { description: 'Read the config' },
+        },
+      ]),
+    )
+    expect(segments[0]).toMatchObject({
+      functionId: 'agent_trigger',
+      description: 'Read the config',
+      unresolvedTarget: true,
+      unloaded: true,
+    })
+  })
+
+  /* The whole entry replacing the placeholder keeps the label even when
+     its own arguments carry none (and swaps in its own when they do). */
+  it('keeps the placeholder description when the whole entry lands', () => {
+    const page = transcriptToMessages([
+      elidedCall('e_a1', [
+        {
+          id: 'fc_1',
+          functionId: 'agent_trigger',
+          arguments: { function: 'fs::read', description: 'Read the config' },
+        },
+      ]),
+    ])
+    const whole = applyEntryUpsert(
+      page,
+      assistantItem(
+        'e_a1',
+        [
+          {
+            type: 'function_call',
+            id: 'fc_1',
+            function_id: 'agent_trigger',
+            arguments: { function: 'fs::read', payload: { path: 'a.yaml' } },
+          },
+        ],
+        'function_call',
+      ),
+    )
+    expect(whole[0]).toMatchObject({
+      functionId: 'fs::read',
+      description: 'Read the config',
+      input: { path: 'a.yaml' },
+    })
+
+    const relabeled = applyEntryUpsert(
+      page,
+      assistantItem(
+        'e_a1',
+        [
+          {
+            type: 'function_call',
+            id: 'fc_1',
+            function_id: 'agent_trigger',
+            arguments: {
+              function: 'fs::read',
+              description: 'Read the YAML config',
+              payload: { path: 'a.yaml' },
+            },
+          },
+        ],
+        'function_call',
+      ),
+    )
+    expect(relabeled[0]).toMatchObject({ description: 'Read the YAML config' })
   })
 
   it('never marks a placeholder running while the session works', () => {

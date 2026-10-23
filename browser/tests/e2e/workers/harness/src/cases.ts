@@ -63,7 +63,11 @@ export async function expectError(
   try {
     await fn()
   } catch (e: any) {
-    const msg = e?.message ?? String(e)
+    // iii-sdk >= 0.24 prefixes InvocationError messages with the wire code
+    // (`invocation_failed: …`); the cases pin the handler's own text.
+    const raw: string = e?.message ?? String(e)
+    const prefix = typeof e?.code === 'string' ? `${e.code}: ` : ''
+    const msg = prefix && raw.startsWith(prefix) ? raw.slice(prefix.length) : raw
     if (msg !== expected) {
       throw new Error(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(msg)}`)
     }
@@ -532,7 +536,7 @@ export const CASES: TestCase[] = [
     },
   },
   {
-    name: 'crawl: local HTTP completion, sample, and one-based stream metadata',
+    name: 'crawl: local HTTP completion, sample, crawl feed metadata, and one-based items read',
     async run({ call, origin }) {
       const result = await call('browser::crawl', {
         url: `${origin}/page`,
@@ -543,17 +547,42 @@ export const CASES: TestCase[] = [
         group_id: 'e2e-crawl',
         selectors: [{ name: 'heading', css: 'h1' }],
       })
+      const stats = { crawled: 2, items: 2, errors: 0, stopped: 'done' }
+      const items = [
+        { url: `${origin}/page`, status: 200, extracted: { heading: 'initial' } },
+        { url: `${origin}/leaf`, status: 200, extracted: { heading: null } },
+      ]
       expectEqual(
         result,
         {
-          stats: { crawled: 2, items: 2, errors: 0, stopped: 'done' },
-          items: [
-            { url: `${origin}/page`, status: 200, extracted: { heading: 'initial' } },
-            { url: `${origin}/leaf`, status: 200, extracted: { heading: null } },
-          ],
+          stats,
+          items,
+          // Deprecated echo kept for older callers; nothing is written to a stream.
           stream: { name: 'browser::crawl', group_id: 'e2e-crawl' },
+          // The crawl feed: id is the requested group_id, retained == stats.items.
+          crawl: {
+            id: 'e2e-crawl',
+            items_function: 'browser::crawl::items',
+            trigger_type: 'browser::crawl-item',
+            retained: 2,
+            dropped_events: 0,
+          },
         },
         'crawl result',
+      )
+      // Every retained item is readable back by crawl.id, in crawl order, seq one-based.
+      const page = await call('browser::crawl::items', { crawl_id: result.crawl.id, limit: 100 })
+      expectEqual(
+        page,
+        {
+          crawl_id: 'e2e-crawl',
+          items: items.map((item, index) => ({ seq: index + 1, item })),
+          retained: 2,
+          running: false,
+          truncated: false,
+          stats,
+        },
+        'crawl items page',
       )
     },
   },

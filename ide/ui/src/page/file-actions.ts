@@ -10,8 +10,14 @@ export async function renameEntry(host: Host, root: string, from: string, to: st
   await coderMove(host, joinPath(root, from), joinPath(root, to))
 }
 
-export async function deleteEntry(host: Host, root: string, rel: string, isDir: boolean): Promise<void> {
-  const [result] = await coderDelete(host, [joinPath(root, rel)], isDir)
+export async function deleteEntry(
+  host: Host,
+  root: string,
+  rel: string,
+  isDir: boolean,
+  includeProtected = false,
+): Promise<void> {
+  const [result] = await coderDelete(host, [joinPath(root, rel)], isDir, includeProtected)
   if (result && !result.success) {
     throw new Error(result.error?.message ?? `could not delete ${rel}`)
   }
@@ -26,6 +32,27 @@ export async function createEntry(
   const abs = joinPath(root, rel)
   if (kind === 'folder') await shellCreateFolder(host, abs)
   else await coderCreateNewFile(host, abs)
+}
+
+/** A folder delete refused because something under it is protected
+    (`non_accessible_globs`): the user may confirm deleting it all. */
+export function isProtectedSubtreeError(message: string): boolean {
+  return message.includes('subtree contains non-accessible entries')
+}
+
+export interface DeleteRequest {
+  path: string
+  isDir: boolean
+  /** The user confirmed deleting the protected files under the folder too. */
+  protectedInside?: boolean
+}
+
+/** What a refused delete asks next: the same folder again, now naming its
+    protected files, when that was the reason and they were not included
+    yet; else null, and the refusal is the answer. */
+export function deleteAfterRefusal(request: DeleteRequest, message: string): DeleteRequest | null {
+  if (request.protectedInside === true || !request.isDir || !isProtectedSubtreeError(message)) return null
+  return { ...request, protectedInside: true }
 }
 
 /** `a/b.ts` → `a/b copy.ts`, then `a/b copy 2.ts`, … */

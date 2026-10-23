@@ -44,6 +44,7 @@
     "artifact": {
       "oneOf": [
         {"$ref": "#/$defs/rustArtifact"},
+        {"$ref": "#/$defs/goArtifact"},
         {"$ref": "#/$defs/bundleArtifact"},
         {"$ref": "#/$defs/ociArtifact"}
       ]
@@ -60,7 +61,7 @@
         "required": ["id", "kind"],
         "properties": {
           "id": {"type": "string", "minLength": 1},
-          "kind": {"enum": ["rust-binary", "javascript-bundle", "python-bundle", "oci-image"]},
+          "kind": {"enum": ["rust-binary", "go-binary", "javascript-bundle", "python-bundle", "oci-image"]},
           "target": {"type": "string"},
           "platform": {"type": "string"}
         }
@@ -85,7 +86,7 @@
             "properties": {"name": {"type": "string"}, "version": {"type": "string"}}
           }
         },
-        "config": {"type": "object"},
+        "config": {"type": ["object", "null"]},
         "experimental": {"type": "boolean"},
         "readme": {"type": "string"},
         "skills": {
@@ -139,6 +140,23 @@
         "windows_exception": {"type": "string", "minLength": 1},
         "companions": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1, "pattern": "^[^/\\\\]+$", "not": {"pattern": "\\.\\."}}},
         "frontends": {"type": "array", "items": {"$ref": "#/$defs/frontend"}}
+      }
+    },
+    "goArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "toolchain", "binary", "targets"],
+      "properties": {
+        "kind": {"const": "go-binary"},
+        "toolchain": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "version"],
+          "properties": {"name": {"const": "go"}, "version": {"type": "string", "minLength": 1}}
+        },
+        "binary": {"type": "string", "minLength": 1},
+        "targets": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "windows_exception": {"type": "string", "minLength": 1}
       }
     },
     "bundleArtifact": {

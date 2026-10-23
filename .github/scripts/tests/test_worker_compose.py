@@ -56,8 +56,8 @@ def test_rust_frontends_are_explicit_workspace_locked_builds():
         for worker in document["workers"].values()
         for frontend in worker["artifact"].get("frontends", [])
     ]
-    assert sum(bool(worker["artifact"].get("frontends")) for worker in document["workers"].values()) == 50
-    assert len(frontends) == 54
+    assert sum(bool(worker["artifact"].get("frontends")) for worker in document["workers"].values()) == 53
+    assert len(frontends) == 57
     for frontend in frontends:
         assert set(frontend) == {
             "workspace_root", "source_path", "runtime", "package_manager", "lockfile",
@@ -212,10 +212,12 @@ def test_every_rust_worker_ships_windows_or_justifies_its_absence():
         "sandbox-code-runner",
         "ide",
         "ios-simulator",  # Drives Xcode's iOS Simulators; macOS only.
+        "tmux",  # Drives the host's tmux server; tmux has no Windows build.
         # New workers, never published for Windows: llama.cpp from source.
         "judge-semif",
         "judge-decider",
         "judge-laya",
+        "judge-clef",
         "voice",
         "workflow",
     }

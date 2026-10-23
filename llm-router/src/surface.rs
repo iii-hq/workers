@@ -16,8 +16,8 @@ use crate::types::router::{
     FunctionsChangedEvent, ModelBudgetRequest, ModelBudgetResponse, ModelGetRequest,
     ModelGetResponse, ModelsListRequest, ModelsListResponse, ModelsReconcileRequest,
     ModelsReconcileResponse, ModelsSupportsRequest, ModelsSupportsResponse, ProviderListRequest,
-    ProviderListResponse, ProviderRegisterRequest, ProviderRegisterResponse,
-    ProviderResolveRequest, ProviderResolveResponse, RouteRequest, RouteResponse, RouterAck,
+    ProviderListResponse, ProviderRegisterRequest, ProviderRegisterResponse, ProviderResolveOutput,
+    ProviderResolveRequest, RouteRequest, RouteResponse, RouterAck, SecretChangedEvent,
     UpdateCredentialRequest, UpdateCredentialResponse,
 };
 
@@ -40,8 +40,8 @@ pub const ABORT_DESC: &str =
 pub const EMBED_ID: &str = "router::embed";
 pub const EMBED_DESC: &str =
     "Batch text embeddings through a provider's provider::<id>::embed surface. Names a provider \
-     or discovers the first embed-capable one from the live registry; one vector per input, \
-     order preserved.";
+     or discovers the first embed-capable one from the live registry, then from embed-only \
+     workers; one vector per input, order preserved.";
 
 pub const TRANSCRIBE_ID: &str = "router::transcribe";
 pub const TRANSCRIBE_DESC: &str =
@@ -80,7 +80,11 @@ pub const MODELS_SUPPORTS_DESC: &str =
 
 pub const PROVIDER_LIST_ID: &str = "router::provider::list";
 pub const PROVIDER_LIST_DESC: &str =
-    "List registered providers with their configured/available status.";
+    "List registered providers with their configured/available status, where each \
+     credential comes from (credential_source, credential_ref, credential_error; never a value), \
+     and the provider's starting point (default_model: the newest model of the best-ranked variant \
+     its preferences name, else its first declared preference present in the catalog, else the \
+     closest same-family model; default_thinking_level).";
 
 pub const ROUTE_ID: &str = "router::route";
 pub const ROUTE_DESC: &str = "Read-only routing preview: resolve {model, provider?} to the chosen \
@@ -92,7 +96,8 @@ pub const PROVIDER_REGISTER_DESC: &str = "Provider self-declaration at attach ti
 
 pub const PROVIDER_RESOLVE_ID: &str = "router::provider::resolve";
 pub const PROVIDER_RESOLVE_DESC: &str =
-    "Resolve a provider's effective credential + api_url + max_tokens (token-gated).";
+    "Resolve a provider's effective credential + api_url + max_tokens (token-gated); a \
+     secret://NAME or env://NAME api_key resolves through the secrets worker.";
 
 pub const UPDATE_CREDENTIAL_ID: &str = "router::provider::update_credential";
 pub const UPDATE_CREDENTIAL_DESC: &str = "OAuth write-back: store a provider credential in the \
@@ -112,6 +117,11 @@ pub const ON_CONFIG_CHANGED_ID: &str = "router::on_config_changed";
 pub const ON_CONFIG_CHANGED_DESC: &str =
     "Internal: reactively reload the in-memory configuration snapshot and \
      fan out provider model discovery after configuration changes.";
+
+pub const ON_SECRET_CHANGED_ID: &str = "router::on_secret_changed";
+pub const ON_SECRET_CHANGED_DESC: &str =
+    "Internal: a secret changed in the secrets worker — re-resolve the secret:// or \
+     env:// credential reference and refresh the providers that use it.";
 
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.
@@ -178,7 +188,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
             PROVIDER_REGISTER_ID,
             PROVIDER_REGISTER_DESC,
         ),
-        spec::<ProviderResolveRequest, ProviderResolveResponse>(
+        spec::<ProviderResolveRequest, ProviderResolveOutput>(
             PROVIDER_RESOLVE_ID,
             PROVIDER_RESOLVE_DESC,
         ),
@@ -195,5 +205,6 @@ pub fn catalog() -> Vec<FunctionSpec> {
             ON_FUNCTIONS_CHANGED_ID,
             ON_FUNCTIONS_CHANGED_DESC,
         ),
+        spec::<SecretChangedEvent, RouterAck>(ON_SECRET_CHANGED_ID, ON_SECRET_CHANGED_DESC),
     ]
 }

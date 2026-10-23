@@ -28,7 +28,7 @@ use serde_json::{json, Value};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::config::WorkerConfig;
-use crate::rbac::{self, ProxySession};
+use crate::rbac::{self, ProxySession, DEFAULT_NAMESPACE};
 
 /// The eight discovery functions whose results are rewritten. The ninth
 /// `EngineFunctions` id (`engine::workers::register`) is a carve-out write,
@@ -90,9 +90,12 @@ struct FnEntry {
     metadata: Option<Value>,
 }
 
+/// `(namespace, function_id)`: the key a function lives under in the engine.
+type FnKey = (String, String);
+
 #[derive(Default)]
 struct FnState {
-    entries: HashMap<String, FnEntry>,
+    entries: HashMap<FnKey, FnEntry>,
     fetched_at: Option<Instant>,
 }
 
@@ -105,10 +108,16 @@ struct BindState {
 
 /// Short TTL — the discovery surface tolerates seconds of staleness, and a
 /// metadata-gated function is briefly invisible (fail closed) until refresh.
+/// Kept even though `engine::functions-available` invalidates the cache: that
+/// trigger never signals binding changes (the `bindings` index), and older
+/// engines poll on an id-only hash, so they miss metadata-only changes and
+/// lag by up to 5s.
 const CACHE_TTL: Duration = Duration::from_secs(5);
 
 /// TTL caches over the control connection. Keyed by the **engine** id
-/// (prefixed where applicable, since that is what discovery results carry).
+/// (prefixed where applicable, since that is what discovery results carry),
+/// and for functions by `(namespace, function_id)`: the same id may be
+/// registered once per namespace.
 pub struct CatalogCache {
     iii: Arc<IIIClient>,
     functions: RwLock<FnState>,
@@ -127,8 +136,10 @@ impl CatalogCache {
         }
     }
 
-    /// Force a refresh on the next access (called on
-    /// `engine::functions-available`).
+    /// Force a refresh on the next access. Called from the
+    /// `engine::functions-available` handler; that event covers function
+    /// changes only, and older engines skip metadata-only re-registrations, so
+    /// `CACHE_TTL` still bounds staleness for whatever it misses.
     pub async fn invalidate(&self) {
         self.functions.write().await.fetched_at = None;
         self.bindings.write().await.fetched_at = None;
@@ -178,7 +189,7 @@ impl CatalogCache {
         }
     }
 
-    async fn fetch_functions(&self) -> Result<HashMap<String, FnEntry>, String> {
+    async fn fetch_functions(&self) -> Result<HashMap<FnKey, FnEntry>, String> {
         let resp = self
             .iii
             .trigger(TriggerRequest {
@@ -196,7 +207,7 @@ impl CatalogCache {
                     continue;
                 };
                 out.insert(
-                    id.to_string(),
+                    (entry_namespace(f).to_string(), id.to_string()),
                     FnEntry {
                         worker_name: f
                             .get("worker_name")
@@ -240,20 +251,21 @@ impl CatalogCache {
         Ok(by_type)
     }
 
-    /// The function's registered metadata (None on a cold cache → fail closed
-    /// for metadata filters, open for wildcard filters which ignore metadata).
-    pub async fn metadata_for(&self, function_id: &str) -> Option<Value> {
+    /// The registered metadata of `function_id` in `namespace` (None on a cold
+    /// cache → fail closed for metadata filters, open for wildcard filters
+    /// which ignore metadata).
+    pub async fn metadata_for(&self, namespace: &str, function_id: &str) -> Option<Value> {
         self.ensure_functions().await;
         self.functions
             .read()
             .await
             .entries
-            .get(function_id)
+            .get(&(namespace.to_string(), function_id.to_string()))
             .and_then(|e| e.metadata.clone())
     }
 
-    /// All `(function_id, metadata)` owned by `worker_name`.
-    async fn functions_of_worker(&self, worker_name: &str) -> Vec<(String, Option<Value>)> {
+    /// All `(namespace, function_id, metadata)` owned by `worker_name`.
+    async fn functions_of_worker(&self, worker_name: &str) -> Vec<(String, String, Option<Value>)> {
         self.ensure_functions().await;
         self.functions
             .read()
@@ -261,7 +273,7 @@ impl CatalogCache {
             .entries
             .iter()
             .filter(|(_, e)| e.worker_name == worker_name)
-            .map(|(id, e)| (id.clone(), e.metadata.clone()))
+            .map(|((ns, id), e)| (ns.clone(), id.clone(), e.metadata.clone()))
             .collect()
     }
 
@@ -277,6 +289,7 @@ impl CatalogCache {
             .unwrap_or_default()
     }
 
+    /// Seed `(function_id, worker_name, metadata)` entries in `default`.
     #[cfg(test)]
     pub async fn seed_functions(&self, entries: &[(&str, &str, Option<Value>)]) {
         let mut st = self.functions.write().await;
@@ -284,7 +297,7 @@ impl CatalogCache {
             .iter()
             .map(|(id, wn, md)| {
                 (
-                    id.to_string(),
+                    (DEFAULT_NAMESPACE.to_string(), id.to_string()),
                     FnEntry {
                         worker_name: wn.to_string(),
                         metadata: md.clone(),
@@ -337,27 +350,63 @@ pub async fn filter_result(
     }
 }
 
-/// `A(id, metadata)` against the live rbac config + this session.
-fn allowed(cfg: &WorkerConfig, session: &ProxySession, id: &str, metadata: Option<&Value>) -> bool {
-    rbac::access_allowed(Some(&cfg.rbac), session, id, metadata)
+/// The namespace a discovery entry names, `default` for engines that predate
+/// namespaces (and for entries that carry none, such as registered triggers).
+fn entry_namespace(entry: &Value) -> &str {
+    entry
+        .get("namespace")
+        .and_then(Value::as_str)
+        .unwrap_or(DEFAULT_NAMESPACE)
+}
+
+/// `A(namespace, id, metadata)` against the live rbac config + this session.
+fn allowed(
+    cfg: &WorkerConfig,
+    session: &ProxySession,
+    namespace: &str,
+    id: &str,
+    metadata: Option<&Value>,
+) -> bool {
+    rbac::access_allowed(Some(&cfg.rbac), session, namespace, id, metadata)
+}
+
+/// `A` for a discovery entry that carries its own `function_id`, `namespace`
+/// and `metadata` (functions list/info rows).
+fn entry_allowed(cfg: &WorkerConfig, session: &ProxySession, entry: &Value) -> bool {
+    let id = entry
+        .get("function_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    allowed(
+        cfg,
+        session,
+        entry_namespace(entry),
+        id,
+        entry.get("metadata"),
+    )
 }
 
 /// `A(id)` for an id whose metadata is not in the result (registered-triggers,
 /// trigger-type bindings). Consults the catalog **only** when a metadata filter
 /// is configured — wildcard-only configs need no round trip and a cold cache
 /// must not fail them closed.
+///
+/// Registered-trigger rows do not say which namespace their target resolves
+/// in; they are checked in `default`, where a trigger's target lands unless
+/// it names another.
 async fn allowed_via_cache(
     cfg: &WorkerConfig,
     session: &ProxySession,
+    namespace: &str,
     id: &str,
     catalog: &CatalogCache,
 ) -> bool {
     let md = if cfg.rbac.uses_metadata() {
-        catalog.metadata_for(id).await
+        catalog.metadata_for(namespace, id).await
     } else {
         None
     };
-    allowed(cfg, session, id, md.as_ref())
+    allowed(cfg, session, namespace, id, md.as_ref())
 }
 
 /// Strip the session's own `{prefix}::` from an id (a foreign id is unchanged).
@@ -388,10 +437,7 @@ fn functions_list(
         .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
-                .filter(|f| {
-                    let id = f.get("function_id").and_then(Value::as_str).unwrap_or("");
-                    allowed(cfg, session, id, f.get("metadata"))
-                })
+                .filter(|f| entry_allowed(cfg, session, f))
                 .map(|f| {
                     let mut f = f.clone();
                     if let Some(obj) = f.as_object_mut() {
@@ -412,12 +458,47 @@ fn functions_info(
     session: &ProxySession,
     cfg: &WorkerConfig,
 ) -> OverrideOutcome {
+    // `{ function_ids: [...] }` answers with a batch envelope: one entry per id,
+    // each the detail or `{ function_id, error }`. A denied detail becomes the
+    // engine's own per-id `forbidden` entry, so the batch keeps its shape.
+    if result.get("function_id").is_none() {
+        if let Some(entries) = result.get("functions").and_then(Value::as_array) {
+            let entries: Vec<Value> = entries
+                .iter()
+                .map(|entry| {
+                    let id = entry
+                        .get("function_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    if entry.get("error").is_some() {
+                        let mut entry = entry.clone();
+                        if let Some(obj) = entry.as_object_mut() {
+                            strip_str_field(obj, "function_id", session);
+                        }
+                        entry
+                    } else if !entry_allowed(cfg, session, entry) {
+                        json!({ "function_id": strip(session, id), "error": "forbidden" })
+                    } else {
+                        let mut entry = entry.clone();
+                        if let Some(obj) = entry.as_object_mut() {
+                            strip_str_field(obj, "function_id", session);
+                            strip_str_field(obj, "worker_name", session);
+                        }
+                        entry
+                    }
+                })
+                .collect();
+            result["functions"] = Value::Array(entries);
+            return OverrideOutcome::Result(result);
+        }
+    }
+
     let id = result
         .get("function_id")
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    if !allowed(cfg, session, &id, result.get("metadata")) {
+    if !entry_allowed(cfg, session, &result) {
         return OverrideOutcome::forbidden(&id);
     }
     if let Some(obj) = result.as_object_mut() {
@@ -448,7 +529,7 @@ async fn workers_list(
         let fns = catalog.functions_of_worker(name).await;
         let accessible = fns
             .iter()
-            .filter(|(id, md)| allowed(cfg, session, id, md.as_ref()))
+            .filter(|(ns, id, md)| allowed(cfg, session, ns, id, md.as_ref()))
             .count();
         if accessible == 0 {
             continue; // drop workers with zero accessible functions
@@ -486,10 +567,7 @@ async fn workers_info(
     // functions[]: this response carries them (with metadata) directly.
     let funcs: Vec<Value> = funcs_in
         .into_iter()
-        .filter(|f| {
-            let id = f.get("function_id").and_then(Value::as_str).unwrap_or("");
-            allowed(cfg, session, id, f.get("metadata"))
-        })
+        .filter(|f| entry_allowed(cfg, session, f))
         .map(|mut f| {
             if let Some(o) = f.as_object_mut() {
                 strip_str_field(o, "function_id", session);
@@ -535,7 +613,7 @@ async fn triggers_info(
     let targets = catalog.functions_for_trigger_type(&type_id).await;
     let mut accessible = 0usize;
     for fid in &targets {
-        if allowed_via_cache(cfg, session, fid, catalog).await {
+        if allowed_via_cache(cfg, session, DEFAULT_NAMESPACE, fid, catalog).await {
             accessible += 1;
         }
     }
@@ -574,7 +652,15 @@ async fn registered_triggers_info(
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    if !allowed_via_cache(cfg, session, &fid, catalog).await {
+    // The nested `function` detail, when present, names the namespace the
+    // target resolved in.
+    let namespace = result
+        .get("function")
+        .filter(|f| !f.is_null())
+        .map(entry_namespace)
+        .unwrap_or(DEFAULT_NAMESPACE)
+        .to_string();
+    if !allowed_via_cache(cfg, session, &namespace, &fid, catalog).await {
         return OverrideOutcome::forbidden(&fid);
     }
     if let Some(obj) = result.as_object_mut() {
@@ -583,12 +669,7 @@ async fn registered_triggers_info(
         // denied function (defensive — it references this allowed function).
         if let Some(func) = obj.get("function") {
             if !func.is_null() {
-                let nested_id = func
-                    .get("function_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                let nested_md = func.get("metadata");
-                if !allowed(cfg, session, nested_id, nested_md) {
+                if !entry_allowed(cfg, session, func) {
                     obj.insert("function".to_string(), Value::Null);
                 } else if let Some(f) = obj.get_mut("function").and_then(Value::as_object_mut) {
                     strip_str_field(f, "function_id", session);
@@ -611,7 +692,7 @@ async fn filter_registered_triggers(
     let mut out = Vec::new();
     for t in arr {
         let fid = t.get("function_id").and_then(Value::as_str).unwrap_or("");
-        if !allowed_via_cache(cfg, session, fid, catalog).await {
+        if !allowed_via_cache(cfg, session, entry_namespace(t), fid, catalog).await {
             continue;
         }
         let mut t = t.clone();
@@ -649,7 +730,7 @@ fn strip_worker_detail_internals(obj: &mut serde_json::Map<String, Value>, cfg: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rbac::{FunctionFilter, RbacConfig, WildcardPattern};
+    use crate::rbac::{FunctionFilter, RbacConfig};
 
     fn iii() -> Arc<IIIClient> {
         Arc::new(iii_sdk::register_worker(
@@ -664,7 +745,7 @@ mod tests {
             rbac: RbacConfig {
                 expose_functions: patterns
                     .iter()
-                    .map(|p| FunctionFilter::Match(WildcardPattern::new(p)))
+                    .map(|p| FunctionFilter::match_pattern(p))
                     .collect(),
                 ..RbacConfig::default()
             },
@@ -927,5 +1008,102 @@ mod tests {
         )
         .await;
         assert_eq!(out, OverrideOutcome::Result(result));
+    }
+
+    #[tokio::test]
+    async fn functions_list_checks_each_row_in_its_own_namespace() {
+        // The same id in two namespaces; `api::*` (no namespace) exposes only
+        // the `default` row, and a rule scoped to `orders` only the other.
+        let result = json!({
+            "functions": [
+                { "function_id": "api::a", "namespace": "default", "worker_name": "w" },
+                { "function_id": "api::a", "namespace": "orders", "worker_name": "w" },
+                { "function_id": "billing::x", "namespace": "billing", "worker_name": "w" }
+            ]
+        });
+        let mut c = cfg(&["api::*"], false);
+        c.rbac
+            .expose_functions
+            .push(FunctionFilter::match_pattern("billing::*").in_namespace("billing"));
+        let OverrideOutcome::Result(v) = filter_result(
+            "engine::functions::list",
+            result,
+            &session(None),
+            &c,
+            &CatalogCache::new(iii()),
+        )
+        .await
+        else {
+            panic!("expected result");
+        };
+        let rows: Vec<(&str, &str)> = v["functions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| {
+                (
+                    f["namespace"].as_str().unwrap(),
+                    f["function_id"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(rows, vec![("default", "api::a"), ("billing", "billing::x")]);
+    }
+
+    #[tokio::test]
+    async fn functions_info_denies_a_function_outside_the_rule_namespace() {
+        let result = json!({ "function_id": "api::a", "namespace": "orders", "worker_name": "w" });
+        let out = filter_result(
+            "engine::functions::info",
+            result,
+            &session(None),
+            &cfg(&["api::*"], false),
+            &CatalogCache::new(iii()),
+        )
+        .await;
+        assert!(matches!(out, OverrideOutcome::Error { code, .. } if code == "FORBIDDEN"));
+    }
+
+    #[tokio::test]
+    async fn functions_info_batch_marks_denied_entries_forbidden() {
+        let result = json!({
+            "functions": [
+                { "function_id": "api::a", "namespace": "default", "worker_name": "w", "registered_triggers": [] },
+                { "function_id": "secret::z", "namespace": "default", "worker_name": "w", "registered_triggers": [] },
+                { "function_id": "gone::x", "error": "not_found" }
+            ]
+        });
+        let OverrideOutcome::Result(v) = filter_result(
+            "engine::functions::info",
+            result,
+            &session(None),
+            &cfg(&["api::*"], false),
+            &CatalogCache::new(iii()),
+        )
+        .await
+        else {
+            panic!("expected result");
+        };
+        let entries = v["functions"].as_array().unwrap();
+        assert_eq!(entries[0]["function_id"], "api::a");
+        assert!(entries[0].get("error").is_none());
+        assert_eq!(
+            entries[1],
+            json!({ "function_id": "secret::z", "error": "forbidden" })
+        );
+        assert_eq!(entries[2]["error"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn metadata_lookup_is_keyed_by_namespace() {
+        let cache = CatalogCache::new(iii());
+        cache
+            .seed_functions(&[("api::a", "w", Some(json!({ "public": true })))])
+            .await;
+        assert_eq!(
+            cache.metadata_for(DEFAULT_NAMESPACE, "api::a").await,
+            Some(json!({ "public": true }))
+        );
+        assert_eq!(cache.metadata_for("orders", "api::a").await, None);
     }
 }

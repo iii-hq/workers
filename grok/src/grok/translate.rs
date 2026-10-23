@@ -1,5 +1,5 @@
 //! Pure translation of the Grok streaming-json event stream into the AgentEvent
-//! frames emitted on `agent::events`, plus the running turn state (session id,
+//! frames emitted on `grok::agent-event`, plus the running turn state (session id,
 //! result text, stop reason). Kept free of I/O so the full per-turn sequence is
 //! unit-testable without a live engine — the stream loop in `mod.rs` only does
 //! the reads/writes around `step`.
@@ -44,7 +44,7 @@ fn map_stop_reason(raw: &str) -> String {
     }
 }
 
-/// Advance the turn by one event, returning the `agent::events` frames to emit
+/// Advance the turn by one event, returning the `grok::agent-event` frames to emit
 /// (in order). Updates `state` in place.
 pub fn step(state: &mut TurnState, event: GrokEvent) -> Vec<Value> {
     match event {

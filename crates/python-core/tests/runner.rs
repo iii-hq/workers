@@ -249,7 +249,7 @@ async fn runs_are_isolated_from_each_other() {
     );
 
     // /out being writable is only half the property: `/` and `/run` must not
-    // be. That holds by construction today and is one `DirPerms::all()` typo
+    // be. That holds by construction today and is one `FsPerms::ReadWrite` typo
     // away from silently inverting, so pin it here.
     let c = r
         .run(&spec(concat!(
@@ -399,7 +399,7 @@ async fn an_honest_run_never_trips_the_out_budget() {
     assert_eq!(env["result"], "fine");
 }
 
-/// `/out` has `DirPerms::MUTATE`, which is all `path_symlink` is gated on, and
+/// `/out` has `FsPerms::ReadWrite`, which is all `path_symlink` is gated on, and
 /// only *rooted* link targets are refused — so the guest can point
 /// `result.json` at an arbitrary relative path and, with a plain
 /// `File::open`, make the host read it with the worker's own authority.

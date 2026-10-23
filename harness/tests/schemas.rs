@@ -49,6 +49,7 @@ fn catalog_lists_all_functions_in_registration_order() {
         ids,
         vec![
             "harness::send",
+            "harness::compact",
             "harness::spawn",
             "harness::ask",
             "harness::turn",
@@ -128,6 +129,25 @@ fn metrics_request_schema_accepts_exactly_one_session_id_spelling() {
         (json!({"session_id": null}), false),
         (json!({"root_session_id": 42}), false),
         (json!({"session_id": 42}), false),
+        (
+            json!({"root_session_id": "s_root", "omit_context": true}),
+            true,
+        ),
+        (
+            json!({"session_id": "s_child", "omit_context": false}),
+            true,
+        ),
+        (
+            json!({"root_session_id": "s_root", "omit_context": "yes"}),
+            false,
+        ),
+        (json!({"omit_context": true}), false),
+        (
+            json!({"session_id": "s_child", "subtree": true, "omit_traces": true}),
+            true,
+        ),
+        (json!({"session_id": "s_child", "subtree": "yes"}), false),
+        (json!({"session_id": "s_child", "omit_traces": 1}), false),
     ] {
         assert_eq!(
             validator.is_valid(&payload),

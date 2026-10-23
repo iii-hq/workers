@@ -312,6 +312,13 @@ pub struct SkillsConfig {
     #[serde(default = "default_registry_url")]
     pub registry_url: String,
 
+    /// Base URL of the registry's web app, used for the "open in registry"
+    /// links of kits and workers. Unset: derived from `registry_url` by
+    /// dropping a leading `api.` host label (`https://api.workers.iii.dev` →
+    /// `https://workers.iii.dev`).
+    #[serde(default)]
+    pub registry_web_url: Option<String>,
+
     /// Timeout for a single download operation (HTTP request OR `git clone`)
     /// in milliseconds. Also used as the request timeout for
     /// `directory::registry::*` HTTP calls.
@@ -371,6 +378,8 @@ pub struct SkillsConfig {
     /// judge for 30 s). Hybrid fuses BM25 with the local MiniLM model and
     /// needs the bundle at `function_search_model_path` (downloaded on first
     /// run by default), serving BM25 until it is ready. Lexical is BM25 only.
+    /// In every mode, a bundle already on disk loads on the first
+    /// `router::embed` call that reaches `provider::minilm::embed`.
     /// Mode changes apply without restart.
     #[serde(default)]
     pub function_search_mode: FunctionSearchMode,
@@ -429,8 +438,9 @@ pub struct SkillsConfig {
 
     /// Local semantic model directory: the pinned MiniLM bundle (embedding
     /// files at the root, reranker files under `reranker/`). Defaults to `~/.cache/iii/all-MiniLM-L6-v2-<revision>`;
-    /// `null` disables the local Hybrid lane, including the judge's Hybrid fallback.
-    /// Changing it requires a restart.
+    /// `null` disables the local Hybrid lane, including the judge's Hybrid fallback,
+    /// and `provider::minilm::embed` (`router::embed`'s local fallback), which
+    /// loads the bundle on first use in every mode. Changing it requires a restart.
     #[serde(
         default = "default_function_search_model_path",
         deserialize_with = "deserialize_model_path"
@@ -469,6 +479,7 @@ impl Default for SkillsConfig {
             agents_skills_folder: default_agents_skills_folder(),
             global_agents_skills_folder: default_global_agents_skills_folder(),
             registry_url: default_registry_url(),
+            registry_web_url: None,
             download_timeout_ms: default_download_timeout_ms(),
             registry_cache_ttl_ms: default_registry_cache_ttl_ms(),
             filter_unregistered: default_filter_unregistered(),

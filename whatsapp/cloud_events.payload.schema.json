@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://whatsapp.invalid/cloud-events/payload.schema.json",
+  "title": "WhatsApp Cloud event",
+  "description": "One verified message, delivery status, or explicitly subscribed administrative webhook event. Event delivery is best effort after durable deduplication.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["kind", "business_account_id", "phone_number_id", "message_id", "chat_id", "timestamp_ms", "data"],
+  "properties": {
+    "kind": {"enum": ["message.received", "message.status", "webhook.received"]},
+    "business_account_id": {
+      "description": "Meta WhatsApp Business Account ID that received the webhook.",
+      "type": "string",
+      "pattern": "^[0-9]{1,32}$"
+    },
+    "phone_number_id": {
+      "description": "Meta Phone Number ID; empty for account-wide administrative events without a phone ID.",
+      "type": "string",
+      "pattern": "^[0-9]{0,32}$"
+    },
+    "message_id": {"description": "Meta message ID; empty for administrative events, which use event_id.", "type": "string", "minLength": 0, "maxLength": 512},
+    "chat_id": {"type": "string", "description": "Normalized conversation identity; empty for administrative events."},
+    "sender_id": {"description": "Normalized sender; present only for message.received.", "$ref": "#/$defs/identity"},
+    "message_type": {
+      "description": "Exact raw Meta message type; present only for message.received. May include future types that the archive preview cannot render.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "text": {
+      "description": "Optional message preview, limited to 16 KiB of UTF-8 text, or 8 KiB if data must be omitted to bound the event. Omitted when empty.",
+      "type": "string",
+      "maxLength": 16384
+    },
+    "status": {"description": "Delivery state; present only for message.status.", "enum": ["sent", "delivered", "read", "failed"]},
+    "timestamp_ms": {
+      "description": "Meta Unix seconds converted to milliseconds. Administrative events without an entry timestamp use 0; this never means local receipt time.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "data": {
+      "description": "Individual Meta message/status object or sanitized administrative change value. Group/call batches are split to one item per event. If the serialized event would exceed 64 KiB, replaced with {\"content_omitted\":true}; text is also clipped to 8 KiB. This object is not the webhook envelope.",
+      "type": "object",
+      "additionalProperties": true
+    },
+    "event_id": {"type": "string", "pattern": "^[a-f0-9]{64}$", "description": "Deterministic administrative event identifier for deduplication."},
+    "field": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+    "event": {"type": "string", "maxLength": 128},
+    "group_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_+/=-]{0,255}$"},
+    "participant_id": {"$ref": "#/$defs/identity"}
+  },
+  "oneOf": [
+    {
+      "properties": {"kind": {"const": "message.received"}, "status": false, "message_id": {"minLength": 1}, "phone_number_id": {"pattern": "^[0-9]{1,32}$"}, "chat_id": {"$ref": "#/$defs/conversation"}},
+      "required": ["sender_id", "message_type"]
+    },
+    {
+      "properties": {"kind": {"const": "message.status"}, "sender_id": false, "message_type": false, "text": false, "message_id": {"minLength": 1}, "phone_number_id": {"pattern": "^[0-9]{1,32}$"}, "chat_id": {"$ref": "#/$defs/conversation"}},
+      "required": ["status"]
+    },
+    {
+      "properties": {"kind": {"const": "webhook.received"}, "message_id": {"const": ""}, "chat_id": {"const": ""}, "sender_id": false, "message_type": false, "status": false},
+      "required": ["event_id", "field"]
+    }
+  ],
+  "$defs": {
+    "identity": {"type": "string", "pattern": "^(\\+[1-9][0-9]{6,14}|[A-Z]{2}\\.(ENT\\.)?[A-Za-z0-9]{1,128})$"},
+    "conversation": {"type": "string", "pattern": "^(\\+[1-9][0-9]{6,14}|[A-Z]{2}\\.(ENT\\.)?[A-Za-z0-9]{1,128}|group:[A-Za-z0-9][A-Za-z0-9_+/=-]{0,255})$"}
+  },
+  "examples": [
+    {
+      "kind": "message.received",
+      "business_account_id": "123456789",
+      "phone_number_id": "987654321",
+      "message_id": "wamid.example",
+      "chat_id": "+15551234567",
+      "sender_id": "+15551234567",
+      "message_type": "text",
+      "text": "Hello",
+      "timestamp_ms": 1790870400000,
+      "data": {"from": "15551234567", "id": "wamid.example", "timestamp": "1790870400", "type": "text", "text": {"body": "Hello"}}
+    },
+    {
+      "kind": "message.status",
+      "business_account_id": "123456789",
+      "phone_number_id": "987654321",
+      "message_id": "wamid.example",
+      "chat_id": "+15551234567",
+      "status": "read",
+      "timestamp_ms": 1790870460000,
+      "data": {"id": "wamid.example", "recipient_id": "15551234567", "timestamp": "1790870460", "status": "read"}
+    },
+    {
+      "kind": "webhook.received",
+      "business_account_id": "123",
+      "phone_number_id": "",
+      "message_id": "",
+      "chat_id": "",
+      "timestamp_ms": 0,
+      "event_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "field": "message_template_status_update",
+      "event": "APPROVED",
+      "data": {"event": "APPROVED", "message_template_id": "999"}
+    }
+  ]
+}

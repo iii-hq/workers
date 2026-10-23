@@ -121,13 +121,15 @@ write in the scope.
 
 ```text
 Register:
-engine::register_trigger { "trigger_type": "state", "config": { "scope": "rtuc-02" } }
+engine::register_trigger { "trigger_type": "state", "config": { "scope": "rtuc-02" }, "once": false }
 Then report the `note` field verbatim and stop. Do not register anything else.
 ```
 
 *Expect:* registration SUCCEEDS and the note warns the binding has no `key`
 filter and fires for every key written in scope `rtuc-02`. Drop the `scope`
-too and the warning escalates to "EVERY state write in EVERY scope".
+too and the warning escalates to "EVERY state write in EVERY scope". Drop
+`"once": false` (a wake is one-shot by default) and the note says the FIRST
+write of ANY key in the scope fires and retires it instead.
 
 ---
 
@@ -422,8 +424,9 @@ event as its whole payload and:
 | the call **errors** (unknown id, bad payload) | handler **skipped**, silently |
 
 Supported on every builtin type except `log` and `trace`: `state`, `cron`,
-`durable:subscriber` (the queue), `subscribe` (pubsub), `stream`,
-`stream:join` / `stream:leave`, `http`, `configuration`. Note the queue trigger
+`durable:subscriber` (the queue), `subscribe` (pubsub, deprecated), `stream`
+and `stream:join` / `stream:leave` (iii-stream, deprecated), `http`,
+`configuration`. Note the queue trigger
 type string is `durable:subscriber` — `queue` is the *provider package* name,
 not a trigger type. **Silently ignored** on worker-defined types
 (`harness::turn-completed`, `storage::object-created`, …) — those are

@@ -1,6 +1,13 @@
-import type { ExtensionIii } from '@iii-dev/console-ui'
+import { Chip, type ExtensionIii, Select } from '@iii-dev/console-ui'
+import * as lucide from 'lucide-react'
+import { ChartPie, Circle, CircleCheck, CircleDashed, CircleX, Contrast, type LucideIcon, Tag } from 'lucide-react'
+import { type SyntheticEvent, useSyncExternalStore } from 'react'
+import { type StatusStep, statusStep } from './board-state'
 
 export type Column = { id: string; label: string }
+
+/** A badge another worker pins on a ticket: a lucide icon name and a short text. */
+export type Pill = { icon: string; text: string }
 
 export type TicketSummary = {
   id: string
@@ -10,11 +17,15 @@ export type TicketSummary = {
   priority: string
   assignee: string | null
   labels: string[]
+  pills: Pill[]
   order: number
   created_at: string
   updated_at: string
   deleted_at: string | null
   comment_count: number
+  parent_id: string | null
+  project_id: string | null
+  release_id: string | null
 }
 
 export type BoardColumn = { id: string; label: string; tickets: TicketSummary[] }
@@ -29,6 +40,73 @@ export type BoardData = {
   data_path_resolved: string
   board_file: string
   updated_at: string
+  /** The column that counts as done for progress, releases and subtasks. */
+  done_status: string
+  /** The column that counts as canceled: out of progress and release totals. Null when the board has none. */
+  canceled_status: string | null
+  projects: ProjectView[]
+  releases: ReleaseView[]
+}
+
+export type GlyphTone = 'blue' | 'purple' | 'teal' | 'green' | 'amber' | 'rose'
+
+export type Project = {
+  id: string
+  name: string
+  description: string
+  lead: string | null
+  color: GlyphTone | null
+  source_label: string | null
+  created_at: string
+  updated_at: string
+  archived_at: string | null
+}
+
+export type Release = {
+  id: string
+  name: string
+  description: string
+  /** `YYYY-MM-DD`. */
+  target_at: string | null
+  released_at: string | null
+  source_label: string | null
+  created_at: string
+  updated_at: string
+}
+
+/** Live tickets per column id. */
+export type ColumnCounts = Record<string, number>
+
+export type ProjectView = Project & { status: 'active' | 'archived'; total: number; done: number; counts: ColumnCounts }
+
+export type ReleaseView = Release & {
+  status: 'planned' | 'active' | 'released'
+  total: number
+  done: number
+  counts: ColumnCounts
+  /** Not-done tickets in a released release. */
+  reopened: number
+  projects: { project_id: string | null; total: number; done: number }[]
+}
+
+export type Brief = {
+  id: string
+  key: string
+  title: string
+  status: string
+  priority: string
+  assignee: string | null
+  deleted_at: string | null
+  project_id: string | null
+  release_id: string | null
+}
+
+export type ConvertResult = {
+  entity: ProjectView | ReleaseView | null
+  created: boolean
+  /** Ticket keys per outcome. */
+  buckets: { added: string[]; already_here: string[]; in_other: string[]; deleted: string[] }
+  tickets: TicketSummary[]
 }
 
 export type Change = { field: string; from: unknown; to: unknown }
@@ -62,6 +140,7 @@ export type Ticket = {
   priority: string
   assignee: string | null
   labels: string[]
+  pills?: Pill[]
   order: number
   created_at: string
   updated_at: string
@@ -69,6 +148,13 @@ export type Ticket = {
   created_by: string
   comments: Comment[]
   activity: Activity[]
+  parent_id: string | null
+  project_id: string | null
+  release_id: string | null
+  /** Every ticket the worker returns (and every change event) carries these. */
+  parent: Brief | null
+  children: Brief[]
+  progress: { done: number; total: number }
 }
 
 export type AgentProfile = {
@@ -81,6 +167,9 @@ export type AgentProfile = {
   model: string | null
 }
 
+/** 'kanban::ticket::links': tickets this one mentions by key, and tickets whose text mentions it. */
+export type TicketLinks = { mentions: TicketSummary[]; mentioned_by: TicketSummary[] }
+
 export type ConfigInfo = {
   configuration_id: string
   data_path: string
@@ -89,6 +178,8 @@ export type ConfigInfo = {
   project_root: string
   id_prefix: string
   default_status: string
+  done_status: string
+  canceled_status: string | null
   columns: Column[]
   priorities: string[]
   agents_path_resolved: string
@@ -97,16 +188,32 @@ export type ConfigInfo = {
 
 export type ChangeEvent = {
   event: string
-  ticket_id: string
-  ticket_key: string
-  ticket: Ticket
-  comment: Comment | null
+  ticket_id?: string
+  ticket_key?: string
+  /** Absent on `config.updated`: the columns or statuses changed, read again. */
+  ticket?: Ticket | null
+  comment?: Comment | null
   at: string
 }
+
+/** The 'kanban:change' event that names no ticket: the configuration was reloaded. */
+export const CONFIG_EVENT = 'config.updated'
 
 export const COLUMNS_CONFIGURATION_ID = 'kanban'
 export const BOARD_PAGE_ID = 'kanban-board'
 export const TICKET_PAGE_ID = 'kanban-ticket'
+export const RELEASES_PAGE_ID = 'kanban-releases'
+export const PROJECTS_PAGE_ID = 'kanban-projects'
+
+/**
+ * Project and release writes fire no 'kanban:change' event. Pages that make one dispatch this window event
+ * (same tab) so open boards and pickers read the plan again; other tabs catch up on their next read.
+ */
+export const PLAN_CHANGED_EVENT = 'kanban:plan-changed'
+
+export function announcePlanChange(): void {
+  window.dispatchEvent(new CustomEvent(PLAN_CHANGED_EVENT))
+}
 
 export const api = {
   board: (iii: ExtensionIii) => iii.trigger<BoardData>('kanban::board::get', {}),
@@ -118,19 +225,40 @@ export const api = {
     iii.trigger<Ticket>('kanban::ticket::create', payload),
   update: (iii: ExtensionIii, payload: Record<string, unknown>) =>
     iii.trigger<Ticket>('kanban::ticket::update', payload),
-  move: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<Ticket>('kanban::ticket::move', payload),
+  move: (iii: ExtensionIii, payload: Record<string, unknown>) => iii.trigger<Ticket>('kanban::ticket::move', payload),
   remove: (iii: ExtensionIii, payload: Record<string, unknown>) =>
     iii.trigger<Ticket>('kanban::ticket::delete', payload),
   restore: (iii: ExtensionIii, payload: Record<string, unknown>) =>
     iii.trigger<Ticket>('kanban::ticket::restore', payload),
   comment: (iii: ExtensionIii, payload: Record<string, unknown>) =>
     iii.trigger<{ comment: Comment; ticket: Ticket }>('kanban::comment::create', payload),
+  links: (iii: ExtensionIii, id: string) => iii.trigger<TicketLinks>('kanban::ticket::links', { id }),
+  projects: (iii: ExtensionIii, includeArchived = true) =>
+    iii.trigger<{ projects: ProjectView[] }>('kanban::project::list', { include_archived: includeArchived }),
+  createProject: (iii: ExtensionIii, payload: Record<string, unknown>) =>
+    iii.trigger<ProjectView>('kanban::project::create', payload),
+  updateProject: (iii: ExtensionIii, payload: Record<string, unknown>) =>
+    iii.trigger<ProjectView>('kanban::project::update', payload),
+  archiveProject: (iii: ExtensionIii, id: string) => iii.trigger<ProjectView>('kanban::project::archive', { id }),
+  restoreProject: (iii: ExtensionIii, id: string) => iii.trigger<ProjectView>('kanban::project::restore', { id }),
+  releases: (iii: ExtensionIii) => iii.trigger<{ releases: ReleaseView[] }>('kanban::release::list', {}),
+  createRelease: (iii: ExtensionIii, payload: Record<string, unknown>) =>
+    iii.trigger<ReleaseView>('kanban::release::create', payload),
+  updateRelease: (iii: ExtensionIii, payload: Record<string, unknown>) =>
+    iii.trigger<ReleaseView>('kanban::release::update', payload),
+  /** `move_open_to`: a release id, `null` to take not-done tickets out of any release; required when some aren't done. */
+  shipRelease: (iii: ExtensionIii, payload: { id: string; move_open_to?: string | null }) =>
+    iii.trigger<{ release: ReleaseView; moved: TicketSummary[] }>('kanban::release::ship', payload),
+  reopenRelease: (iii: ExtensionIii, id: string) => iii.trigger<ReleaseView>('kanban::release::reopen', { id }),
+  deleteRelease: (iii: ExtensionIii, id: string) =>
+    iii.trigger<{ deleted: boolean }>('kanban::release::delete', { id }),
+  convertLabel: (iii: ExtensionIii, payload: Record<string, unknown>) =>
+    iii.trigger<ConvertResult>('kanban::label::convert', payload),
 }
 
 type Listener = (event: ChangeEvent) => void
 
-let hubListeners = new Set<Listener>()
+const hubListeners = new Set<Listener>()
 let hubTeardown: (() => void) | null = null
 
 function hubInit(iii: ExtensionIii): void {
@@ -167,26 +295,38 @@ export function subscribeChanges(iii: ExtensionIii, listener: Listener): () => v
   }
 }
 
+/* ── own writes ───────────────────────────────────────────────────────── */
+
+const ownWrites = new Map<string, string>()
+const ownListeners = new Set<() => void>()
+let ownVersion = 0
+
 /**
- * Apply one ticket event to the board columns. The worker renumbers a whole
- * column on every move, but an event carries only the moved ticket, so the
- * card is spliced in at its 1-based `order` and both columns are renumbered
- * locally — the same layout the next `kanban::board::get` would return.
+ * The newest `updated_at` this browser tab got back from a write of its own,
+ * per ticket id. A ticket that has not changed since is the user's own edit,
+ * so it never counts as "changed since your last visit"; a later edit by an
+ * agent does.
  */
-export function upsertSummary(columns: BoardColumn[], summary: TicketSummary): BoardColumn[] {
-  const renumber = (tickets: TicketSummary[]) => tickets.map((ticket, index) => ({ ...ticket, order: index + 1 }))
-  const stripped = columns.map((column) => ({
-    ...column,
-    tickets: renumber(column.tickets.filter((ticket) => ticket.id !== summary.id)),
-  }))
-  if (summary.deleted_at) return stripped
-  return stripped.map((column) => {
-    if (column.id !== summary.status) return column
-    const tickets = [...column.tickets]
-    const position = Math.max(0, Math.min(summary.order - 1, tickets.length))
-    tickets.splice(position, 0, summary)
-    return { ...column, tickets: renumber(tickets) }
-  })
+export const OWN_WRITES: ReadonlyMap<string, string> = ownWrites
+
+/** Record a write this tab made (the ticket as the server returned it). */
+export function noteOwnWrite(ticket: { id: string; updated_at: string }): void {
+  const known = ownWrites.get(ticket.id)
+  if (known !== undefined && Date.parse(known) >= Date.parse(ticket.updated_at)) return
+  ownWrites.set(ticket.id, ticket.updated_at)
+  ownVersion += 1
+  for (const listener of ownListeners) listener()
+}
+
+/** Re-render when an own write is recorded; the value only changes to say so. */
+export function useOwnWritesVersion(): number {
+  return useSyncExternalStore(
+    (listener) => {
+      ownListeners.add(listener)
+      return () => ownListeners.delete(listener)
+    },
+    () => ownVersion,
+  )
 }
 
 export function summarizeTicket(ticket: Ticket): TicketSummary {
@@ -198,11 +338,15 @@ export function summarizeTicket(ticket: Ticket): TicketSummary {
     priority: ticket.priority,
     assignee: ticket.assignee,
     labels: ticket.labels ?? [],
+    pills: ticket.pills ?? [],
     order: ticket.order,
     created_at: ticket.created_at,
     updated_at: ticket.updated_at,
     deleted_at: ticket.deleted_at,
     comment_count: ticket.comments?.length ?? 0,
+    parent_id: ticket.parent_id ?? null,
+    project_id: ticket.project_id ?? null,
+    release_id: ticket.release_id ?? null,
   }
 }
 
@@ -221,3 +365,159 @@ export function priorityTone(priority: string): 'neutral' | 'warning' | 'danger'
   return PRIORITY_TONE[priority] ?? 'neutral'
 }
 
+/** Display text for a configured priority value (`high` → `High`). */
+export function priorityLabel(priority: string): string {
+  return priority ? priority.charAt(0).toUpperCase() + priority.slice(1) : priority
+}
+
+export type StatusTone = 'ghost' | 'faint' | 'ink' | 'warn' | 'ok'
+
+/**
+ * The glyph per step (`statusStep`): start (dashed), ready (circle), in progress (half, ink — accent is reserved
+ * for live state), review (pie, warn), done (check, ok), canceled (cross, ghost).
+ */
+const STEP_GLYPH: Record<StatusStep, { Icon: LucideIcon; tone: StatusTone }> = {
+  unknown: { Icon: Circle, tone: 'ghost' },
+  start: { Icon: CircleDashed, tone: 'ghost' },
+  ready: { Icon: Circle, tone: 'faint' },
+  progress: { Icon: Contrast, tone: 'ink' },
+  review: { Icon: ChartPie, tone: 'warn' },
+  done: { Icon: CircleCheck, tone: 'ok' },
+  canceled: { Icon: CircleX, tone: 'ghost' },
+}
+
+export function statusGlyph(columns: Column[], status: string, doneStatus: string, canceledStatus: string | null) {
+  return STEP_GLYPH[statusStep(columns, status, doneStatus, canceledStatus)]
+}
+
+export function StatusGlyph({
+  columns,
+  status,
+  doneStatus,
+  canceledStatus,
+}: {
+  columns: Column[]
+  status: string
+  doneStatus: string
+  canceledStatus: string | null
+}) {
+  const { Icon, tone } = statusGlyph(columns, status, doneStatus, canceledStatus)
+  return (
+    <span aria-hidden="true" className="kanban-status-glyph" data-tone={tone}>
+      <Icon size={16} />
+    </span>
+  )
+}
+
+/**
+ * A priority as a Chip: a tone dot on a muted tint, the word in ink. The most
+ * urgent configured priority (last in config order) is alert, the next warn,
+ * the rest neutral.
+ */
+export function PriorityChip({ priority, priorities }: { priority: string; priorities: string[] }) {
+  const index = priorities.indexOf(priority)
+  const fromTop = index < 0 ? -1 : priorities.length - 1 - index
+  const tone = fromTop === 0 ? 'alert' : fromTop === 1 ? 'warn' : 'neutral'
+  return (
+    <Chip className="kanban-priority" data-tone={tone}>
+      <span aria-hidden="true" className="kanban-priority__dot" />
+      {priorityLabel(priority)}
+    </Chip>
+  )
+}
+
+const swallow = (event: SyntheticEvent) => event.stopPropagation()
+
+/**
+ * The status as a picker: the glyph, then an inline Select over the columns. Clicks and keys stay inside it, so a
+ * card around it does not open (the menu is a portal, but React still bubbles through it).
+ */
+export function StatusPicker({
+  columns,
+  status,
+  doneStatus,
+  canceledStatus,
+  disabled,
+  onChange,
+}: {
+  columns: Column[]
+  status: string
+  doneStatus: string
+  canceledStatus: string | null
+  disabled?: boolean
+  onChange: (status: string) => void
+}) {
+  return (
+    <span className="kanban-pick kanban-pick--status" onClick={swallow} onKeyDown={swallow} title="Status">
+      <StatusGlyph canceledStatus={canceledStatus} columns={columns} doneStatus={doneStatus} status={status} />
+      <Select
+        appearance="inline"
+        aria-label="Status"
+        disabled={disabled}
+        onChange={onChange}
+        options={columns.map((column) => ({ value: column.id, label: column.label }))}
+        value={status}
+      />
+    </span>
+  )
+}
+
+/** The priority as a picker: the tone dot, then an inline Select over the configured priorities. */
+export function PriorityPicker({
+  priority,
+  priorities,
+  disabled,
+  onChange,
+}: {
+  priority: string
+  priorities: string[]
+  disabled?: boolean
+  onChange: (priority: string) => void
+}) {
+  const index = priorities.indexOf(priority)
+  const fromTop = index < 0 ? -1 : priorities.length - 1 - index
+  const tone = fromTop === 0 ? 'alert' : fromTop === 1 ? 'warn' : 'neutral'
+  const values = index < 0 && priority ? [...priorities, priority] : priorities
+  return (
+    <span className="kanban-pick kanban-priority" data-tone={tone} onClick={swallow} onKeyDown={swallow} title="Priority">
+      <span aria-hidden="true" className="kanban-priority__dot" />
+      <Select
+        appearance="inline"
+        aria-label="Priority"
+        disabled={disabled}
+        onChange={onChange}
+        options={values.map((value) => ({ value, label: priorityLabel(value) }))}
+        value={priority}
+      />
+    </span>
+  )
+}
+
+/** The lucide icon a pill names (`alarm-clock` is `AlarmClock`); a tag when the name is unknown. */
+export function pillIcon(name: string): LucideIcon {
+  const pascal = name
+    .trim()
+    .split(/[^a-z0-9]+/i)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join('')
+  const icon = (lucide as unknown as Record<string, LucideIcon | undefined>)[pascal]
+  return icon && (typeof icon === 'function' || typeof icon === 'object') ? icon : Tag
+}
+
+/** The pills of a ticket as chips, on the card and the ticket page. Nothing when there are none. */
+export function Pills({ pills }: { pills: Pill[] | undefined }) {
+  if (!pills?.length) return null
+  return (
+    <span className="kanban-pills">
+      {pills.map((pill, index) => {
+        const Icon = pillIcon(pill.icon)
+        return (
+          <Chip className="kanban-pill" key={`${pill.icon}:${pill.text}:${index}`}>
+            <Icon size={16} />
+            {pill.text}
+          </Chip>
+        )
+      })}
+    </span>
+  )
+}

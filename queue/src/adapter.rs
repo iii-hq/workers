@@ -79,7 +79,10 @@ pub struct FunctionQueueConfig {
     pub message_group_field: Option<String>,
     /// Base delay in milliseconds for the exponential retry backoff.
     pub backoff_ms: u64,
-    /// Delay between polls for adapters backed by a local store.
+    /// Deprecated and ignored. Consumers are event-driven: an enqueue wakes
+    /// an idle consumer immediately and a delayed retry fires at its due
+    /// time, so there is no poll interval. Still accepted (any value) so
+    /// existing definitions keep deserializing under `deny_unknown_fields`.
     pub poll_interval_ms: u64,
     /// Re-deliver an invocation inside the same queue attempt when the engine
     /// restarts while it is in flight. This is only safe for consumers whose
@@ -132,11 +135,6 @@ impl FunctionQueueConfig {
         if self.timeout_ms == 0 {
             return Err(format!(
                 "queue '{queue_name}' timeout_ms must be greater than zero"
-            ));
-        }
-        if self.poll_interval_ms == 0 {
-            return Err(format!(
-                "queue '{queue_name}' poll_interval_ms must be greater than zero"
             ));
         }
         if !matches!(self.r#type.as_str(), "standard" | "fifo") {
@@ -324,6 +322,17 @@ pub trait QueueAdapter: Send + Sync + 'static {
     /// Acknowledge successful processing of a message.
     async fn ack_function_queue(&self, _queue_name: &str, _delivery_id: u64) -> anyhow::Result<()> {
         Ok(()) // no-op by default
+    }
+
+    /// Give a delivery back to the broker unspent (no attempt counted), so another consumer can
+    /// take it: a worker that runs jobs in its own namespace does so with a job whose function is
+    /// not registered there.
+    async fn release_function_queue(
+        &self,
+        _queue_name: &str,
+        _delivery_id: u64,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("this queue adapter cannot give a delivery back")
     }
 
     /// Negative-acknowledge a message. When `attempt < max_retries`, the
@@ -529,6 +538,17 @@ impl QueueAdapter for SwappableAdapter {
         self.current()
             .await
             .ack_function_queue(queue_name, delivery_id)
+            .await
+    }
+
+    async fn release_function_queue(
+        &self,
+        queue_name: &str,
+        delivery_id: u64,
+    ) -> anyhow::Result<()> {
+        self.current()
+            .await
+            .release_function_queue(queue_name, delivery_id)
             .await
     }
 

@@ -25,7 +25,11 @@ import {
 } from '@/components/ui/Tooltip'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
-import type { ProviderListEntry } from '@/lib/models-catalog'
+import { getIiiClient } from '@/lib/iii-client'
+import {
+  discoveryBlocksModels,
+  type ProviderListEntry,
+} from '@/lib/models-catalog'
 import { cn } from '@/lib/utils'
 import { useUnsavedGuard } from '@/pages/Configuration/tabs/WorkersTab/useUnsavedGuard'
 import {
@@ -33,6 +37,7 @@ import {
   type ModelOption,
   type ReasoningEffortOption,
   THINKING_LEVELS,
+  THINKING_OFF,
   type ThinkingLevel,
 } from '@/types/chat'
 import { AddProviderPanel } from './AddProviderPanel'
@@ -44,6 +49,7 @@ import {
 import { ProviderConfigurationPanel } from './ProviderConfigurationPanel'
 import { ProviderIcon } from './ProviderIcon'
 import { ReasoningEffortSlider } from './ReasoningEffortSlider'
+import { XaiDiscoveryStatus } from './XaiDiscoveryStatus'
 
 // viewport: phone chrome — the sm and md utilities here are the console's
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
@@ -148,25 +154,54 @@ function groupByProvider(options: ModelOption[]): ModelGroup[] {
     .map(([label, opts]) => ({ label, options: opts }))
 }
 
-function effortOptionsFor(
+/**
+ * The Off entry sits right after Default. `supportsThinkingOff` true offers
+ * it, `false` hides it (the model always reasons or the provider has no
+ * switch), unknown shows it disabled so the gap is visible, not silent.
+ */
+function offOptionFor(model: ModelOption): ReasoningEffortOption[] {
+  if (model.supportsThinkingOff === false) return []
+  return [
+    {
+      effort: THINKING_OFF,
+      description:
+        model.supportsThinkingOff === true
+          ? 'no reasoning'
+          : 'not confirmed for this model',
+      disabled: model.supportsThinkingOff !== true,
+    },
+  ]
+}
+
+export function effortOptionsFor(
   model: ModelOption | undefined,
 ): ReasoningEffortOption[] {
   if (!model) return []
   if (model.reasoningEfforts && model.reasoningEfforts.length > 0) {
     return [
       DEFAULT_EFFORT,
-      ...model.reasoningEfforts.filter((option) => option.effort !== 'default'),
+      ...offOptionFor(model),
+      ...model.reasoningEfforts.filter(
+        (option) =>
+          option.effort !== 'default' && option.effort !== THINKING_OFF,
+      ),
     ]
   }
   if (!model.supportsThinking) return []
-  return THINKING_LEVELS.map((effort) => ({ effort }))
+  return [
+    DEFAULT_EFFORT,
+    ...offOptionFor(model),
+    ...THINKING_LEVELS.filter((effort) => effort !== 'default').map(
+      (effort) => ({ effort }),
+    ),
+  ]
 }
 
 function effortSupported(
   options: ReasoningEffortOption[],
   effort: ThinkingLevel,
 ): boolean {
-  return options.some((option) => option.effort === effort)
+  return options.some((option) => option.effort === effort && !option.disabled)
 }
 
 function providerDisplayName(
@@ -630,6 +665,52 @@ function ProviderRail({
   )
 }
 
+/**
+ * Of `candidates` — configured providers with no chat models — the ones that
+ * list no models of any modality. A speech or embedding provider lists its
+ * own; one that lists nothing has a credential the upstream refused.
+ */
+function useModellessProviders(candidates: string[]): ReadonlySet<string> {
+  const [modelless, setModelless] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  )
+  const key = candidates.slice().sort().join(' ')
+  useEffect(() => {
+    const ids = key ? key.split(' ') : []
+    if (ids.length === 0) {
+      setModelless(new Set())
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      try {
+        const client = await getIiiClient()
+        const result = await client.trigger<{ models?: unknown }>(
+          'router::models::list',
+          { modality: 'any' },
+        )
+        const listed = new Set(
+          (Array.isArray(result?.models) ? result.models : []).flatMap(
+            (row) => {
+              const provider = (row as { provider?: unknown } | null)?.provider
+              return typeof provider === 'string' ? [provider] : []
+            },
+          ),
+        )
+        if (!cancelled) {
+          setModelless(new Set(ids.filter((id) => !listed.has(id))))
+        }
+      } catch {
+        if (!cancelled) setModelless(new Set())
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [key])
+  return modelless
+}
+
 interface ModelPickerPanelProps {
   value: ModelId | null
   options: ModelOption[]
@@ -701,6 +782,12 @@ export function ModelPickerPanel({
   )
   const modelGroups = groupByProvider(options)
   const grouped = new Set(modelGroups.map((group) => group.label))
+  const modelless = useModellessProviders(
+    presentProviders
+      .filter((provider) => provider.configured === true)
+      .map((provider) => provider.id)
+      .filter((id) => !grouped.has(id)),
+  )
   const filterWords = filter.toLowerCase().split(/\s+/).filter(Boolean)
   const matchesFilter = (option: ModelOption, provider: string) => {
     if (filterWords.length === 0) return true
@@ -716,14 +803,29 @@ export function ModelPickerPanel({
       ),
     })),
     // A provider with no chat models is listed only while it still needs
-    // setup: a configured one without chat models serves another modality
-    // (speech, embeddings) and has nothing to offer this picker.
+    // setup: a configured one without chat models usually serves another
+    // modality (speech, embeddings) and has nothing to offer this picker.
+    // One that lists no models at all, or whose credential failed, is broken
+    // rather than elsewhere — it stays, so its key can be fixed from here.
     ...presentIds
       .filter((id) => !grouped.has(id))
-      .filter((id) => providerById.get(id)?.configured !== true)
+      .filter(
+        (id) =>
+          providerById.get(id)?.configured !== true ||
+          providerById.get(id)?.credential_error !== undefined ||
+          (id === 'xai' && providerById.get(id)?.discovery !== undefined) ||
+          modelless.has(id),
+      )
       .map((id) => ({ label: id, options: [] })),
   ]
-    .filter((group) => filterWords.length === 0 || group.options.length > 0)
+    .filter(
+      (group) =>
+        filterWords.length === 0 ||
+        group.options.length > 0 ||
+        (group.label === 'xai' &&
+          providerById.get('xai')?.discovery !== undefined &&
+          filterWords.every((word) => 'xai'.includes(word))),
+    )
     .sort((a, b) => a.label.localeCompare(b.label))
   const groupsKey = groups.map((group) => group.label).join(' ')
   const visibleIds = groups.flatMap((group) =>
@@ -858,6 +960,8 @@ export function ModelPickerPanel({
 
   function selectModel(next: ModelId) {
     if (disabled || loading) return
+    const provider = providerById.get(providerForModel(next) ?? '')
+    if (provider?.available === false || discoveryBlocksModels(provider)) return
     const nextModel = optionsById.get(next)
     const nextEfforts = effortOptionsFor(nextModel)
     const remembered = effortByModel.current.get(next) ?? 'default'
@@ -947,7 +1051,8 @@ export function ModelPickerPanel({
             groups.map((group) => {
               const provider = providerById.get(group.label)
               const providerLabel = providerDisplayName(provider, group.label)
-              const unavailable = provider?.available === false
+              const unavailable =
+                provider?.available === false || discoveryBlocksModels(provider)
               const hasModels = group.options.length > 0
               const configured = provider?.configured ?? hasModels
               // OAuth/companion-app providers can be authenticated even though
@@ -983,6 +1088,13 @@ export function ModelPickerPanel({
                       </button>
                     ) : null}
                   </div>
+                  {group.label === 'xai' && provider?.discovery ? (
+                    <XaiDiscoveryStatus
+                      status={provider.discovery}
+                      onRetry={ctx ? () => ctx.refreshModels('xai') : undefined}
+                      unavailable={provider.available === false}
+                    />
+                  ) : null}
                   <div className="divide-y divide-edge overflow-hidden rounded-lg bg-surface ring-1 ring-inset ring-edge">
                     {!catalogIsUsable && !configured && onConfigureProvider ? (
                       <button
@@ -1042,11 +1154,14 @@ export function ModelPickerPanel({
                           </button>
                         )
                       })
-                    ) : (
+                    ) : group.label === 'xai' && provider?.discovery ? null : (
                       <div className="px-3 py-4 font-sans text-base text-ink-faint sm:text-sm">
                         {unavailable
                           ? 'Provider not loaded.'
-                          : 'No models available.'}
+                          : (provider?.credential_error ??
+                            (configured
+                              ? 'No models with this key. Configure to check it.'
+                              : 'No models available.'))}
                       </div>
                     )}
                   </div>

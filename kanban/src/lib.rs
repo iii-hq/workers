@@ -4,10 +4,12 @@
 //!
 //! - [`config`] — the `kanban` configuration entry and its repair rules.
 //! - [`store`] — the board file and the serialized read/mutate/write path.
-//! - [`board`] — pure ticket/comment/activity operations.
+//! - [`board`] — pure ticket/comment/activity operations and the ticket views.
+//! - [`plan`] — projects, releases, shipping and the label conversion.
 //! - [`events`] — the two trigger types and their fan-out.
 //! - [`functions`] — the typed `kanban::*` function catalog.
 //! - [`agents`] — assignable profiles via iii-directory or the agents folder.
+//! - [`mentions`] — the `@kanban(id=…)` chat mention provider.
 
 pub mod agents;
 pub mod board;
@@ -15,5 +17,7 @@ pub mod config;
 pub mod configuration;
 pub mod events;
 pub mod functions;
+pub mod mentions;
+pub mod plan;
 pub mod store;
 pub mod ui;

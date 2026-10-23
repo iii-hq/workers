@@ -1,26 +1,26 @@
 //! Typed evaluations over the in-process laya checkpoints, with the judge
 //! contract's deadlines, atomic results, usage accounting and caller-scoped
 //! cancellation. Each evaluation routes to a loaded checkpoint like laya's
-//! `Router` (explicit `model`, typed-decisions workflow, state language).
+//! `Router` (explicit `model`, typed-decisions workflow, state language), and
+//! with `choice_tournament` on, a choice wider than 16 options plays laya's
+//! `predict_tournament`.
 use crate::{
-    cancellation::{CallGuard, CancellationRegistry},
     download::Checkpoint,
-    encode::{render_options, serialize_state, Encoder, QType, Question as Rendered},
-    engine::{self, Engine, States, Stop},
+    encode::{render_options, Encoder, QType, Question as Rendered, Sequence, State},
+    engine::{self, Engine, Stop},
     lang,
-    model::LayaModel,
 };
 use anyhow::{anyhow, Result};
-use candle_core::Device;
 use judge_contract::{
     confidence, validate_answer, validate_request_with_limits, Answer, CancelRequest,
     CancelResponse, Content, ErrorCode, EvaluateRequest, EvaluateResponse, Evaluation,
     EvaluationResult, ModelCard, ModelsRequest, ModelsResponse, Question, ScoreLevel, Stats, Usage,
     DEFAULT_MAX_REQUEST_BYTES, DEFAULT_MAX_TIMEOUT_MS,
 };
-use serde_json::Value;
+use judge_provider::cancellation::{CallGuard, CancellationRegistry};
+use serde::Deserialize;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -28,6 +28,16 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::time::{timeout_at, Instant};
+
+/// With `Routing::choice_tournament`, choices wider than this play laya's
+/// `predict_tournament` (#950) instead of being asked as one row. A row's options share the head's budget: past ~20
+/// options every label is cut (to 3 tokens from 44 options on `laya`, and the
+/// instructions to 8 from 46), and from 127 the markers overflow the window.
+/// Groups of at most 16 keep a 16-option question's budget; upstream measured
+/// +5 to +25 points of accuracy, and calibration error down from 0.30–0.37 to
+/// 0.06–0.14, on 60–150-label intent sets. 16 is its default group size: the
+/// contract's 255 options take one round, so a wide choice costs one more pass.
+const TOURNAMENT_GROUP: usize = 16;
 
 /// Operator limits. `max_request_bytes` bounds the encoded request; the model
 /// itself truncates each sequence to its context window.
@@ -60,24 +70,67 @@ impl Limits {
     }
 }
 
-/// Which loaded checkpoint answers an evaluation without an explicit `model`,
-/// and the opt-in option shortlist (laya's `Router` and `predict_shortlist`).
+/// Which loaded checkpoint answers an evaluation without an explicit `model`
+/// (laya's `Router`), and how a wide choice is asked.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Routing {
     pub auto_route: bool,
     pub auto_task_detection: bool,
-    pub shortlist_k: Option<usize>,
+    /// Ask a choice wider than `TOURNAMENT_GROUP` as a tournament (opt-in, as
+    /// upstream): more accurate on wide label sets, at one more pass and
+    /// `confidence` over the finalists only.
+    pub choice_tournament: bool,
 }
 
-/// Tokens per text when embedding for the shortlist (laya's default).
-const SHORTLIST_MAX_TOKENS: usize = 512;
+/// `rl_agent_config.json`: only what inference needs.
+#[derive(Debug, Clone, Deserialize)]
+struct AgentConfig {
+    encoder: String,
+    #[serde(default = "d512")]
+    max_len: usize,
+    #[serde(default = "d192")]
+    head_max_len: usize,
+    #[serde(default)]
+    temperature: Vec<f64>,
+    #[serde(default)]
+    temperature_by_options: HashMap<String, f64>,
+}
+fn d512() -> usize {
+    512
+}
+fn d192() -> usize {
+    192
+}
+
+impl AgentConfig {
+    /// laya's `temp_bucket` lookup, clamped to [0.5, 5] like `clamp_temperature`.
+    fn temperature(&self, qtype: QType, k: usize) -> f64 {
+        let size = match k {
+            0..=2 => "2",
+            3..=5 => "3-5",
+            6..=10 => "6-10",
+            _ => "11+",
+        };
+        let raw = self
+            .temperature_by_options
+            .get(&format!("{}:{size}", qtype.name()))
+            .copied()
+            .or_else(|| self.temperature.get(qtype as usize).copied())
+            .unwrap_or(1.0);
+        if raw.is_finite() {
+            raw.clamp(0.5, 5.0)
+        } else {
+            1.0
+        }
+    }
+}
 
 struct Loaded {
     name: Arc<str>,
     revision: Arc<str>,
-    model: Arc<LayaModel>,
+    agent: AgentConfig,
     encoder: Arc<Encoder>,
-    /// The checkpoint's encoder in llama.cpp.
+    /// The checkpoint (encoder and decision head) in llama.cpp.
     engine: Engine,
 }
 
@@ -107,29 +160,46 @@ struct Row {
     qid: String,
     qtype: QType,
     keys: Vec<String>,
-    /// Choice labels the shortlist dropped: they answer with probability 0.
-    dropped: Vec<String>,
     legend: BTreeMap<String, ScoreLevel>,
     ids: Vec<u32>,
     markers: Vec<usize>,
+    /// State tokens the window could not hold.
+    dropped: usize,
+    /// A tournament group: its winner goes through to the next round of
+    /// this tournament instead of answering the question.
+    tournament: Option<usize>,
+}
+
+/// A choice wider than `TOURNAMENT_GROUP`, between rounds.
+struct Tournament {
+    evaluation: usize,
+    model: usize,
+    qid: String,
+    instructions: String,
+    state: Arc<State>,
+    /// Every option's rendered text, by key.
+    options: BTreeMap<String, String>,
+    /// The keys still in play, in criteria order: all of them, then the
+    /// winners of the last round; empty once the final is cut.
+    labels: Vec<String>,
 }
 
 impl LayaClient {
-    /// Load checkpoints synchronously (seconds each: the head is mmapped, the
-    /// encoder GGUF loads on its runtime thread); the first one is the default.
+    /// Load checkpoints synchronously (seconds each: the GGUF loads on its
+    /// engine thread); the first one is the default.
     pub fn load(checkpoints: &[Checkpoint], options: engine::Options) -> Result<Self> {
         let mut models = Vec::with_capacity(checkpoints.len());
         for checkpoint in checkpoints {
-            // The head is small: it stays on the CPU whatever runs the encoder.
-            let model = LayaModel::load(checkpoint, Device::Cpu)?;
-            let engine = Engine::spawn(&checkpoint.encoder_gguf, model.agent.max_len, options)?;
+            let agent: AgentConfig =
+                serde_json::from_slice(&std::fs::read(&checkpoint.agent_config)?)?;
+            let engine = Engine::spawn(&checkpoint.gguf, agent.max_len, options)?;
             let tokenizer = tokenizers::Tokenizer::from_file(&checkpoint.tokenizer)
                 .map_err(|e| anyhow!("tokenizer: {e}"))?;
-            let encoder = Encoder::new(tokenizer, model.agent.max_len, model.agent.head_max_len)?;
+            let encoder = Encoder::new(tokenizer, agent.max_len, agent.head_max_len)?;
             models.push(Loaded {
                 name: checkpoint.model.as_str().into(),
                 revision: checkpoint.revision.as_str().into(),
-                model: Arc::new(model),
+                agent,
                 encoder: Arc::new(encoder),
                 engine,
             });
@@ -167,7 +237,7 @@ impl LayaClient {
         }
     }
 
-    /// The device running the default checkpoint's encoder.
+    /// The device running the default checkpoint.
     pub fn device(&self) -> &str {
         &self.models[0].engine.device
     }
@@ -244,7 +314,7 @@ impl LayaClient {
             })
             .collect();
         let outcome: Result<usize, ErrorCode> = async {
-            let rows = self.rows(&request, explicit, deadline, &mut guard).await?;
+            let (mut rows, mut tournaments) = self.rows(&request, explicit)?;
             // The reported model: the one every row used, else the default.
             let reported = rows
                 .first()
@@ -252,53 +322,70 @@ impl LayaClient {
                 .filter(|&model| rows.iter().all(|row| row.model == model))
                 .unwrap_or(0);
             let mut per_row = Duration::ZERO;
-            for group in rows.chunk_by(|a, b| a.model == b.model) {
-                let loaded = &self.models[group[0].model];
-                let rows_per_batch = self.limits.batch_questions.min(loaded.engine.batch_rows);
-                for batch in group.chunks(rows_per_batch) {
-                    let inputs: Vec<(Vec<u32>, Vec<usize>, u32)> = batch
-                        .iter()
-                        .map(|row| (row.ids.clone(), row.markers.clone(), row.qtype as u32))
-                        .collect();
-                    stats.attempts += 1;
-                    let batch_started = Instant::now();
-                    let logits = self
-                        .forward(
-                            loaded,
-                            inputs,
-                            deadline,
-                            &mut guard,
-                            per_row * batch.len() as u32,
-                        )
-                        .await?;
-                    per_row = batch_started.elapsed() / batch.len() as u32;
-                    for (row, z) in batch.iter().zip(logits) {
-                        let question = &request.evaluations[row.evaluation].questions[&row.qid];
-                        let answer = Self::answer(&loaded.model, row, &z)?;
-                        validate_answer(question, &answer)
-                            .map_err(|_| ErrorCode::InvalidResponse)?;
-                        let result = results
-                            .get_mut(&request.evaluations[row.evaluation].id)
-                            .expect("every evaluation has a result slot");
-                        result.answers.insert(row.qid.clone(), answer);
-                        if let Some(usage) = &mut result.usage {
-                            usage.input_tokens =
-                                usage.input_tokens.map(|n| n + row.ids.len() as u64);
-                        }
-                        // The contract's unit of a "request" is one evaluation (one
-                        // upstream POST for hosted providers): count usage when an
-                        // evaluation completes, so failures keep only whole ones.
-                        let questions = request.evaluations[row.evaluation].questions.len();
-                        if result.answers.len() == questions {
-                            stats.requests += 1;
-                            stats.questions += questions;
-                            stats.input_tokens += result
-                                .usage
-                                .as_ref()
-                                .and_then(|usage| usage.input_tokens)
-                                .unwrap_or(0);
+            // The first round holds every question; later ones only the
+            // tournaments' next rounds, each cut once the last one is answered.
+            while !rows.is_empty() {
+                for group in rows.chunk_by(|a, b| a.model == b.model) {
+                    let loaded = &self.models[group[0].model];
+                    let rows_per_batch = self.limits.batch_questions.min(loaded.engine.batch_rows);
+                    for batch in group.chunks(rows_per_batch) {
+                        let inputs: Vec<engine::Row> = batch
+                            .iter()
+                            .map(|row| (row.ids.clone(), row.markers.clone(), row.qtype as u32))
+                            .collect();
+                        stats.attempts += 1;
+                        let batch_started = Instant::now();
+                        let logits = self
+                            .forward(
+                                loaded,
+                                inputs,
+                                deadline,
+                                &mut guard,
+                                per_row * batch.len() as u32,
+                            )
+                            .await?;
+                        per_row = batch_started.elapsed() / batch.len() as u32;
+                        for (row, z) in batch.iter().zip(logits) {
+                            let evaluation = &request.evaluations[row.evaluation];
+                            let result = results
+                                .get_mut(&evaluation.id)
+                                .expect("every evaluation has a result slot");
+                            // Every row the encoder read counts, a group's too.
+                            if let Some(usage) = &mut result.usage {
+                                usage.input_tokens =
+                                    usage.input_tokens.map(|n| n + row.ids.len() as u64);
+                            }
+                            let answer = Self::answer(&loaded.agent, row, &z)?;
+                            if let Some(tournament) = row.tournament {
+                                if let Answer::Choice { choice, .. } = answer {
+                                    tournaments[tournament].labels.push(choice);
+                                }
+                                continue;
+                            }
+                            let question = &evaluation.questions[&row.qid];
+                            let answer = Self::complete(question, answer);
+                            validate_answer(question, &answer)
+                                .map_err(|_| ErrorCode::InvalidResponse)?;
+                            result.answers.insert(row.qid.clone(), answer);
+                            // The contract's unit of a "request" is one evaluation (one
+                            // upstream POST for hosted providers): count usage when an
+                            // evaluation completes, so failures keep only whole ones.
+                            let questions = evaluation.questions.len();
+                            if result.answers.len() == questions {
+                                stats.requests += 1;
+                                stats.questions += questions;
+                                stats.input_tokens += result
+                                    .usage
+                                    .as_ref()
+                                    .and_then(|usage| usage.input_tokens)
+                                    .unwrap_or(0);
+                            }
                         }
                     }
+                }
+                rows = self.round(&mut tournaments)?;
+                if !rows.is_empty() {
+                    tracing::debug!(rows = rows.len(), "choice tournament round");
                 }
             }
             Ok(reported)
@@ -345,11 +432,12 @@ impl LayaClient {
                     name: loaded.name.to_string(),
                     description: format!(
                         "laya {} checkpoint ({}), running in-process",
-                        loaded.name, loaded.model.agent.encoder
+                        loaded.name, loaded.agent.encoder
                     ),
                     release_date: loaded.revision.to_string(),
-                    context_window: Some(loaded.model.agent.max_len as u32),
-                    // Options are bounded by the window, not by a count.
+                    context_window: Some(loaded.agent.max_len as u32),
+                    // A choice wider than a row holds plays a tournament, and
+                    // ten score levels always fit: no limit below the contract's.
                     max_options: None,
                 })
                 .collect(),
@@ -380,8 +468,12 @@ impl LayaClient {
             let detection = lang::analyse(&evaluation.state);
             let wanted = match (detection.script, detection.is_english) {
                 ("unknown", _) => None,
-                (_, true) => Some("laya"),
                 (_, false) => Some("laya-multilingual"),
+                // Latin text no word list identifies ("Quero cancelar", "ok
+                // thanks") is no evidence of English either: like a state
+                // without letters, it takes the default (laya #203).
+                _ if detection.language_undecided => None,
+                (_, true) => Some("laya"),
             };
             if let Some(index) = wanted.and_then(|name| self.find(name)) {
                 tracing::debug!(
@@ -397,30 +489,31 @@ impl LayaClient {
         0
     }
 
-    /// Encode `rows` on the checkpoint's engine within the deadline. Results
-    /// are atomic: work predicted (`estimate`) to miss the deadline is skipped,
-    /// and the engine job is cancelled when this future ends or is dropped.
-    async fn states(
+    /// Option scores for `rows` on the checkpoint's engine within the deadline.
+    /// Results are atomic: work predicted (`estimate`) to miss the deadline is
+    /// skipped, and the engine job is cancelled when this future ends or is
+    /// dropped.
+    async fn forward(
         &self,
         loaded: &Loaded,
-        rows: Vec<Vec<u32>>,
+        rows: Vec<engine::Row>,
         deadline: Instant,
         guard: &mut CallGuard,
         estimate: Duration,
-    ) -> Result<States, ErrorCode> {
+    ) -> Result<Vec<Vec<f32>>, ErrorCode> {
         if Instant::now() + estimate >= deadline {
             return Err(ErrorCode::Deadline);
         }
         let cancel = Arc::new(AtomicBool::new(false));
         let _stop = CancelOnDrop(cancel.clone());
-        let reply = loaded.engine.states(rows, deadline.into_std(), cancel);
+        let reply = loaded.engine.scores(rows, deadline.into_std(), cancel);
         tokio::select! {
             biased;
             _ = guard.cancelled() => Err(ErrorCode::Cancelled),
             joined = timeout_at(deadline, reply) => match joined {
                 Err(_) => Err(ErrorCode::Deadline),
                 Ok(Err(_)) => Err(ErrorCode::Transport),
-                Ok(Ok(Ok(states))) => Ok(states),
+                Ok(Ok(Ok(scores))) => Ok(scores),
                 Ok(Ok(Err(Stop::Deadline))) => Err(ErrorCode::Deadline),
                 Ok(Ok(Err(Stop::Cancelled))) => Err(ErrorCode::Cancelled),
                 Ok(Ok(Err(Stop::Failed))) => Err(ErrorCode::InvalidResponse),
@@ -428,114 +521,26 @@ impl LayaClient {
         }
     }
 
-    /// Option logits for `rows`: encoder states, then the head on the blocking pool.
-    async fn forward(
-        &self,
-        loaded: &Loaded,
-        rows: Vec<(Vec<u32>, Vec<usize>, u32)>,
-        deadline: Instant,
-        guard: &mut CallGuard,
-        estimate: Duration,
-    ) -> Result<Vec<Vec<f32>>, ErrorCode> {
-        let ids = rows.iter().map(|row| row.0.clone()).collect();
-        let states = self.states(loaded, ids, deadline, guard, estimate).await?;
-        let model = loaded.model.clone();
-        tokio::task::spawn_blocking(move || {
-            let (mask, _) = LayaModel::mask(rows.iter().map(|row| row.0.as_slice()));
-            let h = model.states(states)?;
-            model.logits_from_states(&h, &mask, &rows)
-        })
-        .await
-        .map_err(|_| ErrorCode::Transport)?
-        .map_err(|_| ErrorCode::InvalidResponse)
-    }
-
-    /// laya's `predict_shortlist` ranking: cosine similarity between the
-    /// mean-pooled encoder states of `instructions + state` and of each
-    /// rendered option; the top `k` labels win, ties keeping label order.
-    #[allow(clippy::too_many_arguments)]
-    async fn shortlist(
-        &self,
-        loaded: &Loaded,
-        state: &Value,
-        instructions: &str,
-        criteria: &Value,
-        k: usize,
-        deadline: Instant,
-        guard: &mut CallGuard,
-    ) -> Result<Vec<String>, ErrorCode> {
-        let labels: Vec<String> = criteria
-            .as_object()
-            .map(|c| c.keys().cloned().collect())
-            .unwrap_or_default();
-        let options =
-            render_options(QType::Choice, Some(criteria)).map_err(|_| ErrorCode::InvalidRequest)?;
-        let body = serialize_state(state);
-        let query = if instructions.is_empty() {
-            body
-        } else {
-            format!("{instructions}\n{body}")
-        };
-        let texts = std::iter::once(query)
-            .chain(options)
-            .map(|text| loaded.encoder.encode_text(&text, SHORTLIST_MAX_TOKENS))
-            .collect::<Result<Vec<_>>>()
-            .map_err(|_| ErrorCode::InvalidRequest)?;
-        let mut vectors = Vec::with_capacity(texts.len());
-        for chunk in texts.chunks(loaded.engine.batch_rows) {
-            let (mask, _) = LayaModel::mask(chunk.iter().map(Vec::as_slice));
-            let states = self
-                .states(loaded, chunk.to_vec(), deadline, guard, Duration::ZERO)
-                .await?;
-            let model = loaded.model.clone();
-            vectors.extend(
-                tokio::task::spawn_blocking(move || model.pooled(&model.states(states)?, &mask))
-                    .await
-                    .map_err(|_| ErrorCode::Transport)?
-                    .map_err(|_| ErrorCode::InvalidResponse)?,
-            );
-        }
-        let (query, docs) = vectors.split_first().ok_or(ErrorCode::InvalidResponse)?;
-        let norm = |v: &[f32]| v.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>().sqrt();
-        let qn = norm(query);
-        let sims: Vec<f64> = docs
-            .iter()
-            .map(|doc| {
-                let dn = norm(doc);
-                if qn == 0.0 || dn == 0.0 {
-                    0.0
-                } else {
-                    doc.iter()
-                        .zip(query)
-                        .map(|(a, b)| f64::from(*a) * f64::from(*b))
-                        .sum::<f64>()
-                        / (dn * qn)
-                }
-            })
-            .collect();
-        let mut order: Vec<usize> = (0..sims.len()).collect();
-        order.sort_by(|&a, &b| sims[b].total_cmp(&sims[a]));
-        Ok(order
-            .into_iter()
-            .take(k)
-            .map(|i| labels[i].clone())
-            .collect())
-    }
-
-    async fn rows(
+    /// The first round: a row per question, and the first round of every
+    /// tournament.
+    fn rows(
         &self,
         request: &EvaluateRequest,
         explicit: Option<usize>,
-        deadline: Instant,
-        guard: &mut CallGuard,
-    ) -> Result<Vec<Row>, ErrorCode> {
+    ) -> Result<(Vec<Row>, Vec<Tournament>), ErrorCode> {
         let mut rows = Vec::new();
-        let (mut truncated, mut dropped_tokens) = (0usize, 0usize);
+        let mut tournaments = Vec::new();
         for (index, evaluation) in request.evaluations.iter().enumerate() {
             let model = self.route(explicit, evaluation);
             let loaded = &self.models[model];
+            let state = Arc::new(
+                loaded
+                    .encoder
+                    .state(&evaluation.state)
+                    .map_err(|_| ErrorCode::InvalidRequest)?,
+            );
             for (qid, question) in &evaluation.questions {
-                let (qtype, instructions, mut criteria, mut keys, legend) = match question {
+                let (qtype, instructions, criteria, keys, legend) = match question {
                     Question::Noul {
                         instructions,
                         criteria,
@@ -580,71 +585,47 @@ impl LayaClient {
                         crate::encode::python_json(&serde_json::to_value(other).unwrap_or_default())
                     }
                 };
-                let mut dropped = Vec::new();
-                if let (QType::Choice, Some(k), Some(all)) =
-                    (qtype, self.routing.shortlist_k, criteria.as_ref())
+                let options = render_options(qtype, criteria.as_ref())
+                    .map_err(|_| ErrorCode::InvalidRequest)?;
+                if self.routing.choice_tournament
+                    && qtype == QType::Choice
+                    && keys.len() > TOURNAMENT_GROUP
                 {
-                    if keys.len() > k {
-                        let kept = self
-                            .shortlist(
-                                loaded,
-                                &evaluation.state,
-                                &instructions,
-                                all,
-                                k,
-                                deadline,
-                                guard,
-                            )
-                            .await?;
-                        // Kept options stay in the contract's key order (laya
-                        // reorders them by rank); the rest answer 0.
-                        dropped = keys
-                            .iter()
-                            .filter(|key| !kept.contains(key))
-                            .cloned()
-                            .collect();
-                        keys.retain(|key| kept.contains(key));
-                        criteria = all.as_object().map(|object| {
-                            Value::Object(
-                                object
-                                    .iter()
-                                    .filter(|(key, _)| kept.contains(key))
-                                    .map(|(key, value)| (key.clone(), value.clone()))
-                                    .collect(),
-                            )
-                        });
-                    }
+                    tournaments.push(Tournament {
+                        evaluation: index,
+                        model,
+                        qid: qid.clone(),
+                        instructions,
+                        state: state.clone(),
+                        options: keys.iter().cloned().zip(options).collect(),
+                        labels: keys,
+                    });
+                    continue;
                 }
                 let rendered = Rendered {
                     qtype,
                     instructions,
-                    options: render_options(qtype, criteria.as_ref())
-                        .map_err(|_| ErrorCode::InvalidRequest)?,
+                    options,
                 };
-                let sequence = loaded
-                    .encoder
-                    .build(&evaluation.state, &rendered)
-                    .map_err(|_| ErrorCode::InvalidRequest)?;
-                // Every option needs its marker inside the window, like laya's own check.
-                if sequence.markers.len() != rendered.options.len() {
-                    return Err(ErrorCode::PayloadTooLarge);
-                }
-                truncated += usize::from(sequence.state_dropped > 0);
-                dropped_tokens += sequence.state_dropped;
+                let sequence = self.sequence(model, &state, &rendered)?;
                 rows.push(Row {
                     evaluation: index,
                     model,
                     qid: qid.clone(),
                     qtype,
                     keys,
-                    dropped,
                     legend,
                     ids: sequence.ids,
                     markers: sequence.markers,
+                    dropped: sequence.state_dropped,
+                    tournament: None,
                 });
             }
         }
+        rows.extend(self.round(&mut tournaments)?);
+        let truncated = rows.iter().filter(|row| row.dropped > 0).count();
         if truncated > 0 {
+            let dropped_tokens: usize = rows.iter().map(|row| row.dropped).sum();
             // The model answers about state it never saw: callers sending big
             // states (registry searches) need a long-window provider instead.
             tracing::warn!(
@@ -657,16 +638,85 @@ impl LayaClient {
         // One forward serves one checkpoint: group rows by model, keeping the
         // request order within each group.
         rows.sort_by_key(|row| row.model);
+        Ok((rows, tournaments))
+    }
+
+    /// `rendered` over `state` on checkpoint `model`.
+    fn sequence(
+        &self,
+        model: usize,
+        state: &State,
+        rendered: &Rendered,
+    ) -> Result<Sequence, ErrorCode> {
+        let sequence = self.models[model]
+            .encoder
+            .build(state, rendered)
+            .map_err(|_| ErrorCode::InvalidRequest)?;
+        // Every option needs its marker inside the window, like laya's own check.
+        if sequence.markers.len() != rendered.options.len() {
+            return Err(ErrorCode::PayloadTooLarge);
+        }
+        Ok(sequence)
+    }
+
+    /// The next round of every tournament still playing, like laya's
+    /// `predict_tournament`: the keys in play are cut into groups, each asked
+    /// as its own row with the question's instructions, and once they fit in
+    /// one group, the final row, whose answer is the question's.
+    fn round(&self, tournaments: &mut [Tournament]) -> Result<Vec<Row>, ErrorCode> {
+        let mut rows = Vec::new();
+        for (index, tournament) in tournaments.iter_mut().enumerate() {
+            let labels = std::mem::take(&mut tournament.labels);
+            let groups = groups(&labels);
+            for keys in &groups {
+                let rendered = Rendered {
+                    qtype: QType::Choice,
+                    instructions: tournament.instructions.clone(),
+                    options: keys
+                        .iter()
+                        .map(|key| tournament.options[key].clone())
+                        .collect(),
+                };
+                let sequence = self.sequence(tournament.model, &tournament.state, &rendered)?;
+                rows.push(Row {
+                    evaluation: tournament.evaluation,
+                    model: tournament.model,
+                    qid: tournament.qid.clone(),
+                    qtype: QType::Choice,
+                    keys: keys.to_vec(),
+                    legend: BTreeMap::new(),
+                    ids: sequence.ids,
+                    markers: sequence.markers,
+                    dropped: sequence.state_dropped,
+                    tournament: (groups.len() > 1).then_some(index),
+                });
+            }
+        }
+        rows.sort_by_key(|row| row.model);
         Ok(rows)
     }
 
+    /// A tournament's final reads its finalists only, and laya reports only
+    /// theirs (its confidence included); the contract wants every option, so
+    /// the eliminated ones answer 0. Any other answer is already whole.
+    fn complete(question: &Question, mut answer: Answer) -> Answer {
+        if let (Question::Choice { criteria, .. }, Answer::Choice { probabilities, .. }) =
+            (question, &mut answer)
+        {
+            for key in criteria.keys() {
+                probabilities.entry(key.clone()).or_insert(0.0);
+            }
+        }
+        answer
+    }
+
     /// laya's readout: temperature-scaled softmax, TypeSafe's confidence.
-    fn answer(model: &LayaModel, row: &Row, z: &[f32]) -> Result<Answer, ErrorCode> {
+    fn answer(agent: &AgentConfig, row: &Row, z: &[f32]) -> Result<Answer, ErrorCode> {
         let k = row.keys.len();
         if z.len() != k || z.iter().any(|v| !v.is_finite()) {
             return Err(ErrorCode::InvalidResponse);
         }
-        let t = model.temperature(row.qtype as u32, k);
+        let t = agent.temperature(row.qtype, k);
         let max = z
             .iter()
             .cloned()
@@ -674,10 +724,11 @@ impl LayaClient {
         let exp: Vec<f64> = z.iter().map(|&v| ((v as f64 - max) / t).exp()).collect();
         let sum: f64 = exp.iter().sum();
         let p: Vec<f64> = exp.iter().map(|v| v / sum).collect();
-        let mut probabilities: BTreeMap<String, f64> =
+        let probabilities: BTreeMap<String, f64> =
             row.keys.iter().cloned().zip(p.iter().cloned()).collect();
-        probabilities.extend(row.dropped.iter().map(|label| (label.clone(), 0.0)));
-        let best = (0..k).max_by(|&a, &b| p[a].total_cmp(&p[b])).unwrap_or(0);
+        // The first of equal maxima, like laya's `argmax` and
+        // `confidence::likeliest` (`max_by` would keep the last).
+        let best = (0..k).fold(0, |best, i| if p[i] > p[best] { i } else { best });
         Ok(match row.qtype {
             QType::Noul => Answer::Noul { noul: p[1] },
             QType::Choice => Answer::Choice {
@@ -719,5 +770,98 @@ impl LayaClient {
         started
             .checked_add(Duration::from_millis(budget_ms))
             .ok_or(ErrorCode::InvalidRequest)
+    }
+}
+
+/// `labels` in near-equal groups of at most `TOURNAMENT_GROUP`, in order
+/// (laya's `labels[i * n // parts:(i + 1) * n // parts]`): one group when
+/// they fit, none when there are none.
+fn groups<T>(labels: &[T]) -> Vec<&[T]> {
+    let n = labels.len();
+    let parts = n.div_ceil(TOURNAMENT_GROUP);
+    (0..parts)
+        .map(|i| &labels[i * n / parts..(i + 1) * n / parts])
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(keys: &[&str]) -> Row {
+        Row {
+            evaluation: 0,
+            model: 0,
+            qid: "pick".into(),
+            qtype: QType::Choice,
+            keys: keys.iter().map(|key| key.to_string()).collect(),
+            legend: BTreeMap::new(),
+            ids: Vec::new(),
+            markers: Vec::new(),
+            dropped: 0,
+            tournament: None,
+        }
+    }
+
+    #[test]
+    fn a_choice_tie_answers_the_first_tied_option() {
+        let agent: AgentConfig =
+            serde_json::from_value(serde_json::json!({"encoder": "tiny"})).expect("agent config");
+        let answer =
+            LayaClient::answer(&agent, &row(&["x", "y", "z"]), &[0.0, 2.0, 2.0]).expect("answer");
+        assert!(
+            matches!(&answer, Answer::Choice { choice, .. } if choice == "y"),
+            "{answer:?}"
+        );
+    }
+
+    #[test]
+    fn a_tied_final_keeps_the_first_finalist_and_answers_eliminated_options_zero() {
+        let agent: AgentConfig =
+            serde_json::from_value(serde_json::json!({"encoder": "tiny"})).expect("agent config");
+        let question: Question = serde_json::from_value(serde_json::json!({
+            "type": "choice", "criteria": {"a": null, "b": null, "c": null}
+        }))
+        .expect("question");
+        let finalists = LayaClient::answer(&agent, &row(&["a", "c"]), &[1.0, 1.0]).expect("answer");
+        let answer = LayaClient::complete(&question, finalists);
+        validate_answer(&question, &answer).expect("a whole, valid answer");
+        let Answer::Choice {
+            choice,
+            probabilities,
+            confidence,
+        } = answer
+        else {
+            panic!("{answer:?}")
+        };
+        assert_eq!(choice, "a");
+        assert_eq!(
+            probabilities.into_iter().collect::<Vec<_>>(),
+            [("a".into(), 0.5), ("b".into(), 0.0), ("c".into(), 0.5)]
+        );
+        // Over the two finalists, like laya's final call: an even split is
+        // no confidence at all, not 0.25 over three options.
+        assert_eq!(confidence, 0.0);
+    }
+
+    #[test]
+    fn tournament_groups_are_near_equal_runs_in_criteria_order() {
+        let sizes = |n: usize| {
+            let labels: Vec<usize> = (0..n).collect();
+            let groups = groups(&labels);
+            assert_eq!(groups.concat(), labels, "{n} labels keep their order");
+            groups.iter().map(|group| group.len()).collect::<Vec<_>>()
+        };
+        assert_eq!(sizes(0), Vec::<usize>::new());
+        assert_eq!(sizes(3), [3]);
+        assert_eq!(sizes(16), [16]);
+        assert_eq!(sizes(17), [8, 9]);
+        // laya's own check: 77 labels play as 15/15/16/15/16.
+        assert_eq!(sizes(77), [15, 15, 16, 15, 16]);
+        assert_eq!(sizes(256), [16; 16]);
+        // The contract's widest choice still finishes in one round.
+        let widest = sizes(255);
+        assert_eq!(widest.len(), TOURNAMENT_GROUP);
+        assert!(widest.iter().all(|&size| size == 15 || size == 16));
     }
 }

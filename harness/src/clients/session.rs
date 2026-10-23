@@ -23,6 +23,17 @@ pub struct LoadedEntry {
     pub custom: Option<LoadedCustom>,
 }
 
+/// How much of each message [`SessionClient::messages_from`] asks for.
+/// `Usage` keeps the message shapes but not their bulk: assistant content
+/// is only its `function_call` blocks (no arguments), other roles' content
+/// is empty — enough for usage counters. A session-manager that predates
+/// the option ignores it and returns full content, which reads the same.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Projection {
+    Full,
+    Usage,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct LoadedCustom {
     pub custom_type: String,
@@ -51,6 +62,12 @@ struct LoadedSessionMeta {
     /// carries it from a parent onto the children it creates.
     #[serde(default)]
     kind: Option<String>,
+    /// Source session id when `session::fork` created this one.
+    #[serde(default)]
+    forked_from: Option<String>,
+    /// Milliseconds since epoch.
+    #[serde(default)]
+    created_at: i64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -172,6 +189,16 @@ impl SessionClient {
             .meta(session_id)
             .await?
             .map(|meta| meta.metadata.unwrap_or_default()))
+    }
+
+    /// When `session::fork` created this session — `Ok(None)` for a session
+    /// it did not create, or one that does not exist.
+    pub async fn forked_at(&self, session_id: &str) -> Result<Option<i64>, HarnessError> {
+        Ok(self
+            .meta(session_id)
+            .await?
+            .filter(|meta| meta.forked_from.is_some())
+            .map(|meta| meta.created_at))
     }
 
     /// The coarse status the store holds (`idle` / `working` / `done` /
@@ -516,6 +543,19 @@ impl SessionClient {
         &self,
         session_id: &str,
     ) -> Result<Vec<LoadedEntry>, HarnessError> {
+        self.messages_from(session_id, None, Projection::Full).await
+    }
+
+    /// The active path's messages, every page, all of them or only those
+    /// strictly after `after_entry_id` (an incremental read from a known
+    /// watermark). A watermark no longer on the path — a fork moved the
+    /// leaf — is an error (`session/invalid_cursor`): read it all instead.
+    pub async fn messages_from(
+        &self,
+        session_id: &str,
+        after_entry_id: Option<&str>,
+        projection: Projection,
+    ) -> Result<Vec<LoadedEntry>, HarnessError> {
         const PAGE_LIMIT: u64 = 500;
         let mut out = Vec::new();
         let mut cursor: Option<String> = None;
@@ -527,6 +567,14 @@ impl SessionClient {
                 "include_custom": false,
                 "limit": PAGE_LIMIT,
             });
+            // Ignored by session-manager once a cursor is set: the cursor
+            // already carries the position.
+            if let Some(after) = after_entry_id {
+                payload["after_entry_id"] = json!(after);
+            }
+            if projection == Projection::Usage {
+                payload["content"] = json!("usage");
+            }
             if let Some(value) = &cursor {
                 payload["cursor"] = json!(value);
             }

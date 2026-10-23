@@ -1,5 +1,5 @@
 {
-  "description": "Self-test memory end to end: data-dir writability, a scratch-bank write/read/trash roundtrip, and sibling reachability (router, session-manager). Reports degraded states explicitly, not a bare process-up health.",
+  "description": "Self-test memory end to end: data-dir writability, a scratch-bank write/read/delete roundtrip, sibling reachability (router, session-manager, state), whether embeddings answer, and whether recent extraction passes failed. Reports degraded states explicitly, not a bare process-up health.",
   "function_id": "memory::doctor",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -37,7 +37,7 @@
         "type": "array"
       },
       "ok": {
-        "description": "True only when every REQUIRED check passed (sibling reachability is reported but advisory).",
+        "description": "True only when every REQUIRED check passed (the store roundtrip; the rest are reported but advisory).",
         "type": "boolean"
       }
     },

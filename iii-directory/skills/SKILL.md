@@ -4,8 +4,9 @@ description: >-
   Discovery entry point for the engine — search the live function catalog,
   read the skills, system prompts, and agent profiles that installed workers
   ship off local disk, browse the public iii workers registry over HTTP, and
-  install new worker bundles. Reach for it first to find out which workers
-  exist and how to call them.
+  install new worker bundles and kits (published bundles of agent profiles,
+  skills and workers). Reach for it first to find out which workers exist and
+  how to call them.
 ---
 
 # iii-directory
@@ -51,6 +52,7 @@ never appear in `index` and `update`/`delete` refuse them.
 - You need a reusable agent profile (display name, emoji logo, skill selection, and its system prompt) — `directory::agents::list` / `get`.
 - You are deciding whether to install a worker — `directory::registry::workers::info` is the pre-install card: public function/trigger names with descriptions, config, dependencies, skill paths (no schemas; `readme: true` adds the README). Contracts come from `engine::functions::info` after install.
 - You need to install a published worker's skills — `directory::skills::download_from_registry`.
+- You were asked to install or update a kit (`<author>/<kit>`: agent profiles, skills and workers published together) — `directory::download-kit` plans it; a human reviews the plan in the ADE (Directory → Kits) or you apply it with `directory::kits::apply`.
 - You can only reach the `directory::` namespace but need one engine function's exact schema — `directory::engine::functions::info`.
 
 ## Boundaries
@@ -83,7 +85,7 @@ never appear in `index` and `update`/`delete` refuse them.
 - `directory::system-prompts::update` — overwrite one EXISTING system prompt; the frontmatter must keep a non-empty `description` (a declared `name` renames it).
 - `directory::system-prompts::delete` — permanently remove one EXISTING system prompt by name.
 - `directory::agents::list` — list agent profiles (id, display name, description, emoji logo, `extends`, `skill_count` where null means every skill, `function_count` of preloaded functions; `model`/`reasoning_effort` are resolved through `extends`; `skill_count`/`function_count` count the additive union of the chain's lists). The bundled profiles `default` (the compact directory-first identity, shown as "Default"), `iii` (the harness default identity, hidden from the gallery), and `iii-minimal` (a hidden alias that extends `default`) are always listed with `builtin: true`; `composer_placeholder`, when present, is the profile's own example for the empty chat composer and never inherits; a row with `inheritance_error` has a broken `extends` chain.
-- `directory::agents::get` — read one agent profile by id: its RESOLVED system prompt (ancestors' bodies root-first via `extends`, then its own; blank bodies are skipped, so a prompt-less profile serves its parent chain, or `""` when it has no parent), preloaded `skills` (skill ids whose bodies the harness pre-loads into the session prompt) + `unknown_skills`, preloaded `functions` (engine function ids whose contracts the harness pre-loads into the system prompt of every session running as this profile) + `unknown_functions` (ids the engine does not know right now — a warning), and `model` (the profile's default model id — use it when spawning/sending with this profile; `null` = caller decides); `raw: true` returns the profile's OWN file for editing. `inheritance_error` set = fix `extends` before running it.
+- `directory::agents::get` — read one agent profile by id (`skills_index: false`, resolved through `extends`, means sessions running as it start without the skills index): its RESOLVED system prompt (ancestors' bodies root-first via `extends`, then its own; blank bodies are skipped, so a prompt-less profile serves its parent chain, or `""` when it has no parent), preloaded `skills` (skill ids whose bodies the harness pre-loads into the session prompt) + `unknown_skills`, preloaded `functions` (engine function ids whose contracts the harness pre-loads into the system prompt of every session running as this profile) + `unknown_functions` (ids the engine does not know right now — a warning), and `model` (the profile's default model id — use it when spawning/sending with this profile; `null` = caller decides); `raw: true` returns the profile's OWN file for editing. `inheritance_error` set = fix `extends` before running it.
 - `directory::agents::create` — create a NEW agent profile at `<agents_folder>/<id>.md` from full-file content; frontmatter needs a non-empty `name`, `logo` is emoji-only, `skills:` and `functions:` (preloaded function ids, e.g. `coder::tree`) are optional lists, and the body — the system prompt — may be empty; an `extends: <id>` that does not resolve is not a write error — `get` reports it as `inheritance_error`.
 - `directory::agents::update` — overwrite one EXISTING agent profile (same scanner rules; the id stays the file stem, frontmatter `name` is display-only). Updating the bundled `iii` creates the local file that shadows it.
 - `directory::agents::delete` — permanently remove one EXISTING agent profile by id; running sessions are unaffected, profiles extending it stop resolving until fixed. Deleting a local `iii` falls back to the bundled copy.
@@ -91,14 +93,20 @@ never appear in `index` and `update`/`delete` refuse them.
 - `directory::registry::workers::list` — page through published workers in the public registry (`pagination.next_cursor` feeds the next page's `cursor`).
 - `directory::registry::workers::info` — pre-install card for one worker, including ones not installed: envelope, `api_reference` (public functions + triggers, names and descriptions only) and `skills_tree`; `readme: true` adds the README.
 - `directory::engine::functions::info` — thin proxy to the engine's `engine::functions::info`; returns request/response schema, metadata, and registered triggers for one function id.
+- `directory::download-kit` — `{ kit: "<author>/<kit>[@version|tag|range]" }`: plans the install of a kit (or the update of an installed one) WITHOUT writing anything and returns the plan (files, collisions with existing profiles, workers Compose would add, preloaded functions, warnings, blocks) plus its `plan_id`. Tell the user to review it in the ADE (Directory → Kits). `apply: true` applies at once only when the plan has no warnings, blocks or pending decisions.
+- `directory::kits::apply` — `{ plan_id, decisions?, remove_workers? }`: executes a plan. `decisions` maps install paths to `overwrite|keep|kit|mine|merged|remove` (or `{ choice: "merged", content }`); files left out take the plan's default. A plan made before the project changed comes back re-planned (`status: replanned`) instead of applied.
+- `directory::kits::plan-update` / `directory::kits::remove` — plan an update (`version?`) or a removal of an installed kit; apply with `directory::kits::apply`.
+- `directory::kits::list` / `directory::kits::get` — installed kits, their files' states (intact / edited / missing / skipped), workers and available updates; plans waiting for review.
+- `directory::kits::check-updates`, `directory::kits::ignore`, `directory::kits::discard`, `directory::kits::plan`, `directory::kits::diff` — check the registry for updates, skip one version, drop a pending plan, read a plan with its file bodies, read a kit file's installed and local sides.
 
-A failed call returns one plain sentence carrying a `Did you mean:` suggestion and a `Next:` function to call (codes `D110`/`D112`/`D210`/`D310`/`D311`, `D410` for a missing agent profile, `D416` for an agent `functions::add`/`remove` request with no valid function ids, `D320` when the registry is unreachable, and on the write paths `D213` for content the next scan would skip, `D214`/`D114`/`D414` for a create whose name/id or target path is already taken, `D115` for a skill id the visibility filter or an agents namespace reserves, and `D116` for a write to a read-only system-installed skill) — follow it instead of retrying the same input. Downloads overwrite file-by-file, so hand-edited extra files survive a re-pull.
+A failed call returns one plain sentence carrying a `Did you mean:` suggestion and a `Next:` function to call (codes `D110`/`D112`/`D210`/`D310`/`D311`, `D410` for a missing agent profile, `D416` for an agent `functions::add`/`remove` request with no valid function ids, `D320` when the registry is unreachable, and on the write paths `D213` for content the next scan would skip, `D214`/`D114`/`D414` for a create whose name/id or target path is already taken, `D115` for a skill id the visibility filter or an agents namespace reserves, and `D116` for a write to a read-only system-installed skill; for kits `D510` unknown kit/version, `D511` a malformed kit ref, `D512` an expired or unknown plan, `D513` a missing or invalid file decision, `D514` a blocked plan, `D515` a Compose failure, `D516` content that changed since the plan) — follow it instead of retrying the same input. Downloads overwrite file-by-file, so hand-edited extra files survive a re-pull.
 
 ## Reactive triggers
 
-The worker publishes three custom trigger types, one per kind —
+The worker publishes four custom trigger types — one per file kind,
 `directory::skills::on-change`,
-`directory::system-prompts::on-change`, and `directory::agents::on-change`. Each fires for its own kind only, on any
+`directory::system-prompts::on-change`, and `directory::agents::on-change`, plus
+`directory::kits::on-change` for kit plans, apply progress and update checks. Each fires for its own kind only, on any
 of: a download that wrote at least one file of that kind (`op: "download"`), that
 family's `update`, `create`, or `delete` (`op: "update"` / `"create"` /
 `"delete"`), or a change made to

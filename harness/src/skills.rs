@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
@@ -19,7 +18,6 @@ pub(crate) const SKILLS_GET_ID: &str = "directory::skills::get";
 const SKILLS_LIST_ID: &str = "directory::skills::list";
 const SKILLS_CHANGE_FN_ID: &str = "harness::on-skills-change";
 const SKILLS_CHANGE_TRIGGER: &str = "directory::skills::on-change";
-const SAFETY_RELOAD_SECS: u64 = 300;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Skill {
@@ -148,6 +146,7 @@ pub(crate) fn new_context(requested: Option<&[String]>, view: &EffectiveView) ->
             EffectiveView::Available(view) => Some(view.body.clone()),
             EffectiveView::Unavailable | EffectiveView::Removed { .. } => None,
         },
+        baseline_ref: None,
     }
 }
 
@@ -156,7 +155,7 @@ pub(crate) fn next_context(previous: &SkillContext, requested: Option<&[String]>
         None => previous.clone(),
         Some(requested) => SkillContext {
             filter: canonical_filter(Some(requested)),
-            baseline: previous.baseline.clone(),
+            ..previous.clone()
         },
     }
 }
@@ -422,18 +421,14 @@ pub(crate) struct OnSkillsChangeResponse {
     ok: bool,
 }
 
-pub fn register_trigger(iii: &Arc<IIIClient>, cell: SkillsCell, timeout_ms: u64) {
-    let reload_iii = iii.clone();
-    let reload_cell = cell.clone();
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(Duration::from_secs(SAFETY_RELOAD_SECS));
-        ticker.tick().await;
-        loop {
-            ticker.tick().await;
-            reload(&reload_iii, &reload_cell, timeout_ms).await;
-        }
-    });
+/// Re-read the catalog outside `directory::skills::on-change` — on every
+/// engine worker announce ([`crate::engine_events`]): the directory coming
+/// back, or this harness reconnecting, may have missed a change event.
+pub async fn refresh(iii: &Arc<IIIClient>, cell: &SkillsCell, timeout_ms: u64) {
+    reload(iii, cell, timeout_ms).await;
+}
 
+pub fn register_trigger(iii: &Arc<IIIClient>, cell: SkillsCell, timeout_ms: u64) {
     let handler_iii = iii.clone();
     iii.register_function(
         SKILLS_CHANGE_FN_ID,
@@ -455,12 +450,14 @@ pub fn register_trigger(iii: &Arc<IIIClient>, cell: SkillsCell, timeout_ms: u64)
         SKILLS_CHANGE_FN_ID.to_string(),
         json!({}),
     )) {
-        tracing::warn!(error = %error, "binding directory::skills::on-change failed; relying on safety reloads");
+        tracing::warn!(error = %error, "binding directory::skills::on-change failed; relying on worker-announce refreshes");
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use serde_json::json;
 
     use super::*;
@@ -830,7 +827,8 @@ mod tests {
             new_context(None, &view),
             SkillContext {
                 filter: None,
-                baseline: Some("baseline all".into())
+                baseline: Some("baseline all".into()),
+                baseline_ref: None,
             }
         );
         assert_eq!(
@@ -841,20 +839,23 @@ mod tests {
         let previous = SkillContext {
             filter: Some(vec!["one".into()]),
             baseline: Some("frozen first view".into()),
+            baseline_ref: None,
         };
         assert_eq!(next_context(&previous, None), previous);
         assert_eq!(
             next_context(&previous, Some(&[])),
             SkillContext {
                 filter: None,
-                baseline: Some("frozen first view".into())
+                baseline: Some("frozen first view".into()),
+                baseline_ref: None,
             }
         );
         assert_eq!(
             next_context(&previous, Some(&["two".into()])),
             SkillContext {
                 filter: Some(vec!["two".into()]),
-                baseline: Some("frozen first view".into())
+                baseline: Some("frozen first view".into()),
+                baseline_ref: None,
             }
         );
     }
@@ -864,6 +865,7 @@ mod tests {
         let context = SkillContext {
             filter: None,
             baseline: Some("names only".into()),
+            baseline_ref: None,
         };
         assert_eq!(
             attribution(Some(&context), Some("legacy body")),
@@ -878,10 +880,12 @@ mod tests {
         let mut local = Some(SkillContext {
             filter: Some(vec!["old".into()]),
             baseline: Some("generation baseline".into()),
+            baseline_ref: None,
         });
         let durable = SkillContext {
             filter: Some(vec!["new".into()]),
             baseline: Some("must not replace baseline".into()),
+            baseline_ref: None,
         };
 
         refresh_filter(&mut local, Some(&durable));
@@ -890,7 +894,8 @@ mod tests {
             local,
             Some(SkillContext {
                 filter: Some(vec!["new".into()]),
-                baseline: Some("generation baseline".into())
+                baseline: Some("generation baseline".into()),
+                baseline_ref: None,
             })
         );
     }

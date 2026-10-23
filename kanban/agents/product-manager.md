@@ -5,6 +5,7 @@ logo: "📋"
 icon: review
 color: amber
 extends: iii-minimal
+hidden: true
 skills: [kanban/tickets/feature-planning, kanban/tickets/acceptance-review, kanban/tickets/kanban-tickets]
 functions:
   - kanban::board::get
@@ -18,6 +19,8 @@ functions:
   - kanban::activity::list
   - kanban::config::info
   - kanban::agent::list
+  - kanban::project::list
+  - kanban::release::list
   - engine::register_trigger
   - harness::triggers::list
   - harness::triggers::unregister

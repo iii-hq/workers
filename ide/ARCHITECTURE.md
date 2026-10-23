@@ -67,7 +67,7 @@ Its structure, one module per concern under `ui/src/page/`:
 Building the worker therefore needs Node + pnpm on PATH: `build.rs` runs
 `pnpm install && pnpm build` in `ui/` when `ui/dist/` is missing or stale and
 `include_str!`s the outputs (`SKIP_UI_BUILD=1` uses existing `ui/dist/`
-as-is). Dev loop: `cd ui && pnpm watch` plus `III_SHELL_UI_WATCH=1` on the
+as-is). Dev loop: `cd ui && pnpm watch` plus `III_IDE_UI_WATCH=1` on the
 worker — open console tabs hot-swap the assets. UI parser/format tests:
 `cd ui && pnpm test`.
 
@@ -119,6 +119,8 @@ denylist.
 | `fs.max_write_bytes` | `0` (unlimited) | mid-stream cap during write (`S218`) |
 | `fs.denylist_paths` | `[]` | absolute-prefix denylist; rejected with `S215` |
 | `fs.allow_special_bits` | `false` | setuid/setgid/sticky bits in `mkdir`/`chmod`/`write` modes are rejected with `S210` unless `true` |
+| `fs.exec_confinement` | `off` | `landlock`: a host `exec`/`exec_bg` carrying `fs_scope` may write only under its root, grants, the root's git dir and `fs.exec_writable` (Landlock in `pre_exec`); fails closed with `S222` without Landlock |
+| `fs.exec_writable` | `[/tmp, /dev, ~/.cache, ~/.cargo, ~/.local/share/pnpm, ~/.gnupg]` | extra writable paths for a confined exec; `~/` = `$HOME`, missing paths skipped |
 | `sandbox.enabled` | `true` | `false` → every sandbox-target call returns `S210` |
 
 ## Threat model

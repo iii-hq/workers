@@ -68,9 +68,13 @@ pub struct SubscribeRequest {
     /// Trigger type to listen on: `cron`, `state`, `stream`, `timer`, or
     /// another worker's custom type (e.g. `database::row-changed`).
     pub trigger_type: String,
-    /// Trigger config passed verbatim to the engine: cron `{ "expression" }`,
-    /// state scope/key, timer `{ "in_ms" }` or `{ "at" }` (epoch ms).
+    /// Trigger config passed verbatim to the engine, a JSON object: cron
+    /// `{ "expression" }`, state scope/key, timer `{ "in_ms" }` or `{ "at" }`
+    /// (epoch ms).
+    // Published as an object so call reconciliation parses a stringified one
+    // like it does `conditions` and `lifecycle`.
     #[serde(default)]
+    #[schemars(with = "Option<serde_json::Map<String, Value>>")]
     pub config: Value,
     /// A short human label echoed back in the notification text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -258,6 +262,18 @@ pub async fn invoke(
     if function_id == REGISTER_TRIGGER_ID {
         return intercept_register(deps, arguments, session_id, caller, policy).await;
     }
+    let files_only;
+    let mut start_note = None;
+    let arguments =
+        match scaffold_start_approval(deps, policy, function_id, arguments, session_id).await {
+            trigger::StartGate::Pass => arguments,
+            trigger::StartGate::Deny(denied) => return denied,
+            trigger::StartGate::FilesOnly(args, note) => {
+                files_only = args;
+                start_note = Some(note);
+                &files_only
+            }
+        };
     let witness = match super::delete_session_tree::begin_dispatch(deps, session_id, function_id)
         .await
     {
@@ -272,7 +288,7 @@ pub async fn invoke(
         session_id,
         caller_holds_session_lock,
     );
-    let (result, outcome_unknown) = if let Some(request) = send {
+    let (mut result, outcome_unknown) = if let Some(request) = send {
         (intercept_send(deps, request, session_id).await, false)
     } else {
         match function_id {
@@ -291,6 +307,12 @@ pub async fn invoke(
                 let args = with_caller_session_id(arguments, session_id);
                 trigger::invoke_target_classified(engine, policy, function_id, &args).await
             }
+            // Tag the job with its owner so `harness::stop` can reap it
+            // (`shell::kill-session-jobs`); the stamp overwrites a forged one.
+            "shell::exec_bg" => {
+                let args = with_caller_session_id(arguments, session_id);
+                trigger::invoke_target_classified(engine, policy, function_id, &args).await
+            }
             internal if agent_call_forbidden(internal) => (trigger::denied_result(internal), false),
             _ => trigger::invoke_target_classified(engine, policy, function_id, arguments).await,
         }
@@ -304,6 +326,9 @@ pub async fn invoke(
         if let Err(error) = super::delete_session_tree::end_dispatch(deps, &witness).await {
             return trigger::invocation_error_result(Some(error.code().into()), error.to_string());
         }
+    }
+    if let (Some(note), false) = (start_note, result.is_error) {
+        result.content.push(ContentBlock::text(note));
     }
     trigger::cap_result(result, deps.cfg().await.max_result_bytes)
 }
@@ -477,9 +502,29 @@ fn resolve_timer_request(req: &mut SubscribeRequest) -> Result<(), HarnessError>
 /// with NO lifecycle bound fires forever, and every live run that registered
 /// one meant it as a deadline or a bounded sweep (rctest7's 69 fires; both
 /// discovery runs left one firing past their own teardown claim).
+///
+/// A wake is one-shot by default, so a standing one was asked for with
+/// `once: false`: it has no call to re-run, and the cost is a new paid turn
+/// in the registering session per event (MOT-5449).
 fn standing_binding_advisory(req: &SubscribeRequest, once: bool) -> Option<String> {
     if once {
         return None;
+    }
+    if is_wake_shape(req) && req.trigger_type != "cron" {
+        let bounded = req
+            .lifecycle
+            .as_ref()
+            .is_some_and(|l| l.max_fires.is_some() || l.expires_in_ms.is_some());
+        if bounded {
+            return None;
+        }
+        return Some(
+            "note: this WAKE is STANDING (`once: false`) — every future matching event wakes \
+             this session with a new paid turn until unregistered. Bound it with lifecycle \
+             { max_fires | expires_in_ms } or unregister it in your teardown so it cannot wake \
+             you forever."
+                .to_string(),
+        );
     }
     if req.trigger_type == "cron" {
         let bounded = req
@@ -559,30 +604,69 @@ async fn prewritten_key_advisory(deps: &Deps, req: &SubscribeRequest) -> Option<
 /// a keyed binding it double-fires every event, and every fire delivers its
 /// own unthrottled paid reaction (rctest-k7m3 postmortem). Purely informative —
 /// a deliberate catch-all watcher ignores it.
-fn state_catchall_advisory(req: &SubscribeRequest) -> Option<String> {
+fn state_catchall_advisory(req: &SubscribeRequest, once: bool) -> Option<String> {
     if req.trigger_type != "state" || req.config.get("key").is_some() {
         return None;
     }
-    // Scope-only is CORRECT for the per-event-unique-key shape (producers
-    // writing `item-1`, `item-2`, … so nothing overwrites) — discovery run 7
-    // registered exactly that, read the old "add a `key`" push as an
-    // instruction, pinned `key: "shipment"`, and its producers' unique keys
-    // then matched nothing at all. State the trade-off; do not pick a side.
-    match req.config.get("scope").and_then(Value::as_str) {
-        Some(scope) => Some(format!(
+    let scope = req.config.get("scope").and_then(Value::as_str);
+    let gated = if req.conditions.is_empty() {
+        ""
+    } else {
+        " that passes its conditions"
+    };
+    match (scope, once) {
+        // The fan-in wave (MOT-5408): a one-shot gated by a barrier that
+        // names its arrivals wakes once, on the writes it names, so no stray
+        // key wins and nothing fans out.
+        (Some(_), true) if names_its_arrivals(req) => None,
+        // Any other one-shot retires on the FIRST write that fires it, so the
+        // risk is the wrong write winning (a count barrier counts any key).
+        (Some(scope), true) => Some(format!(
+            "note: this one-shot state wake has no `key` filter, so the FIRST write of ANY key \
+             in scope \"{scope}\"{gated} (a progress or done marker included) fires it and \
+             retires it. If only specific writes should wake it, add that `key`, or list their \
+             keys in a state::barrier `expect` array."
+        )),
+        // No scope: every state write anywhere (the harness's own records
+        // included) reaches it, conditions or not.
+        (None, true) => Some(format!(
+            "warning: this one-shot state wake has neither `scope` nor `key`, so the first \
+             state write in ANY scope{gated}, other runs' traffic included, fires it. Scope it \
+             to this run at minimum."
+        )),
+        // Scope-only is CORRECT for the per-event-unique-key shape (producers
+        // writing `item-1`, `item-2`, … so nothing overwrites) — discovery
+        // run 7 registered exactly that, read the old "add a `key`" push as
+        // an instruction, pinned `key: "shipment"`, and its producers' unique
+        // keys then matched nothing at all. State the trade-off; do not pick
+        // a side.
+        (Some(scope), false) => Some(format!(
             "note: this state binding has no `key` filter, so it fires for EVERY key written in \
              scope \"{scope}\" — done markers and progress keys included — and every matching \
-             write dispatches its own unthrottled paid reaction. That is the RIGHT shape when \
-             producers write one unique key per event (item-1, item-2, …); keep this scope \
+             write{gated} dispatches its own unthrottled paid reaction. That is the RIGHT shape \
+             when producers write one unique key per event (item-1, item-2, …); keep this scope \
              private to those events. Add a `key` ONLY if every producer writes that exact key."
         )),
-        None => Some(
+        (None, false) => Some(format!(
             "warning: this state binding has neither `scope` nor `key` — it fires for EVERY \
-             state write in EVERY scope, including other runs' traffic, and each one dispatches \
-             its own unthrottled paid reaction. Scope it to this run at minimum."
-                .to_string(),
-        ),
+             state write in EVERY scope, including other runs' traffic, and each one{gated} \
+             dispatches its own unthrottled paid reaction. Scope it to this run at minimum."
+        )),
     }
+}
+
+/// Whether a condition picks the writes that fire the binding: a
+/// `state::barrier` whose `expect` is a list accepts only those arrivals,
+/// while a count accepts any key.
+fn names_its_arrivals(req: &SubscribeRequest) -> bool {
+    req.conditions.iter().any(|condition| {
+        condition.function_id == "state::barrier"
+            && condition
+                .config
+                .as_ref()
+                .and_then(|config| config.get("expect"))
+                .is_some_and(Value::is_array)
+    })
 }
 
 async fn intercept_register(
@@ -656,6 +740,7 @@ async fn handle(
     caller: Option<CallerModel<'_>>,
     policy: &CompiledPolicy,
 ) -> Result<SubscribeResponse, HarnessError> {
+    validate_config(&req.config)?;
     // The one harness-internal type an agent MAY bind: a post-turn validator
     // for ITS OWN session. The session scope is force-stamped, so an agent
     // can gate its own completions but never anyone else's.
@@ -756,6 +841,9 @@ async fn handle(
     // per-owner capacity check are one CAS-backed operation; a deadline that
     // lapsed since resolution surfaces as `ReserveOutcome::Exhausted`.
     require_reserved(store.reserve(&binding).await?)?;
+    // The deadline is a timer from the moment the record is durable; every
+    // later delete of the record (rollback below included) cancels it.
+    crate::bindings::expiry::arm(deps, &binding);
 
     let trigger_id =
         match register_delivery_trigger(deps, &req.trigger_type, &req.config, &binding.id) {
@@ -787,15 +875,16 @@ async fn handle(
     }
 
     // A preflight snapshot cannot close the provider's asynchronous activation
-    // window. Recover a missed terminal event now and through the durable sweep.
+    // window. Recover a missed terminal event now; the harness's own terminal
+    // Compose watch and every engine worker change retry it from the record.
     crate::bindings::compose::schedule(deps, &binding);
 
     let notes: Vec<String> = [
         provider_presence_note(deps, &req.trigger_type).await,
         prewritten_key_advisory(deps, &req).await,
         standing_binding_advisory(&req, once),
-        state_catchall_advisory(&req),
-        armed_wake_advisory(&req, once),
+        state_catchall_advisory(&req, once),
+        armed_wake_advisory(&req, once, expires_at.is_some()),
     ]
     .into_iter()
     .flatten()
@@ -806,6 +895,20 @@ async fn handle(
         once,
         note: compose_note(notes),
     })
+}
+
+/// A non-object `config` (above all a stringified `"{\"scope\":…}"` that
+/// reconciliation was off for) reaches the provider, which rejects it only
+/// after this call answered success: the binding parks and never fires.
+fn validate_config(config: &Value) -> Result<(), HarnessError> {
+    if config.is_object() || config.is_null() {
+        return Ok(());
+    }
+    Err(HarnessError::InvalidRequest(
+        "`config` must be a JSON object such as {\"scope\": \"run\"}, not a JSON-encoded string \
+         or any other type"
+            .into(),
+    ))
 }
 
 fn validate_lifecycle(lifecycle: Option<&LifecycleRequest>) -> Result<(), HarnessError> {
@@ -902,10 +1005,14 @@ async fn reject_settled_compose_operation(
     if !is_settled_operation(status) {
         return Ok(());
     }
+    // Ids are daemon-global, so a settled op may be another session's that
+    // reused the same fixed name (MOT-5334): say both readings.
     Err(HarnessError::InvalidRequest(format!(
-        "operation `{operation_id}` already reached `{status}`. Read the result with \
-         `compose::operation` now instead of arming a wake, and register the wake BEFORE \
-         starting the operation next time, in the same message."
+        "operation `{operation_id}` already reached `{status}`. If you started it, read the \
+         result with `compose::operation` now instead of arming a wake, and register the wake \
+         BEFORE starting the operation next time, in the same message. If you have NOT started \
+         it yet, the id belongs to an earlier operation: pick a fresh id that starts with your \
+         session id and register again."
     )))
 }
 
@@ -1025,6 +1132,13 @@ async fn resolve_target(
             approval_allows_unattended(deps, &target.function_id, session_id, &arguments)
                 .await
                 .map_err(HarnessError::InvalidRequest)?;
+            // A fired scaffold can start (its payload is projected only then),
+            // running a compose::add no approval hook sees.
+            if target.function_id == crate::clients::engine::SCAFFOLD_WORKER {
+                approval_allows_unattended(deps, COMPOSE_ADD_ID, session_id, &json!({}))
+                    .await
+                    .map_err(HarnessError::InvalidRequest)?;
+            }
             Ok(target)
         }
     }
@@ -1112,8 +1226,11 @@ fn validate_event_into(pointer: Option<&str>) -> Result<(), HarnessError> {
 /// `report_ready` while its finalizer's task never mentioned the key — every
 /// row landed correctly and the orchestrator still slept forever, leaving
 /// the run's teardown permanently pending. Purely informative.
-fn armed_wake_advisory(req: &SubscribeRequest, once: bool) -> Option<String> {
-    if !once || req.trigger_type != "state" {
+fn armed_wake_advisory(req: &SubscribeRequest, once: bool, has_deadline: bool) -> Option<String> {
+    // A deadline (the caller's `expires_in_ms`, or a leaf's capped wake)
+    // turns a write that never comes into an expiry notice: the park-forever
+    // risk this note exists for is already handled.
+    if !once || has_deadline || req.trigger_type != "state" {
         return None;
     }
     let scope = req
@@ -1122,17 +1239,24 @@ fn armed_wake_advisory(req: &SubscribeRequest, once: bool) -> Option<String> {
         .and_then(Value::as_str)
         .unwrap_or("*");
     let key = req.config.get("key").and_then(Value::as_str).unwrap_or("*");
+    // With a condition (a `state::barrier`), only a write that passes it
+    // wakes the session.
+    let gated = if req.conditions.is_empty() {
+        ""
+    } else {
+        " that passes its conditions"
+    };
     // The two observed park-forever shapes, named in order: the medium
     // mismatch (a finisher wrote a DATABASE table named like the state scope
     // — same word, disjoint worlds, the wake never fired), and the missing
     // deadline (no lifecycle, so nothing could ever convert the silence into
     // a notice).
     Some(format!(
-        "note: one-shot WAKE — this session stays parked until state {scope}/{key} is \
-         written, and nothing fires it automatically. Only a state write (state::set / \
-         state::delete) on that exact scope/key fires it — a database table or row with the \
-         same name does NOT. Double-check that a task you spawned (worker/finalizer) \
-         EXPLICITLY sets that exact scope/key when its condition is met, or this session \
+        "note: one-shot WAKE — this session stays parked until a state write on \
+         {scope}/{key}{gated} fires it, and nothing fires it automatically. Only a state \
+         write (state::set, state::update, a swapping state::compare-and-set or state::delete) on that \
+         exact scope/key fires it — a database table or row with the same name does NOT. \
+         Double-check that a task you spawned (worker/finalizer) EXPLICITLY sets that exact scope/key when its condition is met, or this session \
          sleeps forever and its cleanup never runs. Set lifecycle \
          {{ expires_in_ms: <relative ms> }} to be woken with an expiry notice instead if the \
          write never comes."
@@ -1301,6 +1425,15 @@ fn validate_call_target(target: &str, policy: &CompiledPolicy) -> Result<(), Str
              only call functions you can call yourself"
         ));
     }
+    // A reaction's payload is fixed or projected only at fire time, where
+    // `start: true` would run compose::add with the ide's authority; so the
+    // target needs compose::add whatever the payload says now.
+    if target == crate::clients::engine::SCAFFOLD_WORKER && !policy.allows("compose::add") {
+        return Err(format!(
+            "`{target}` as a reaction needs compose::add as well: its `start: true` runs \
+             compose::add, and a fired payload can set it. Call it from a turn instead"
+        ));
+    }
     Ok(())
 }
 
@@ -1325,6 +1458,41 @@ pub(crate) async fn approval_allows_unattended(
     session_id: &str,
     arguments: &Value,
 ) -> Result<(), String> {
+    match approval_verdict(deps, target, session_id, arguments).await {
+        Ok(Verdict::Allow) => Ok(()),
+        Ok(Verdict::Withheld { verdict, reason }) => Err(format!(
+            "`{target}` is `{verdict}` for this session: {reason}. A trigger-fired call runs \
+             outside any turn and cannot ask for approval, so it cannot be bound. Call it \
+             yourself on a woken turn, or have an operator allow it."
+        )),
+        Err(problem) => {
+            tracing::warn!(target, error = %problem, "approval probe failed; refusing the binding");
+            Err(format!(
+                "could not check whether `{target}` needs approval ({problem}); refusing to \
+                 bind a reaction that would run unattended"
+            ))
+        }
+    }
+}
+
+/// What the approval gate would decide, without a pending record.
+enum Verdict {
+    /// `allow`, or no approval gate on the bus.
+    Allow,
+    Withheld {
+        verdict: String,
+        reason: String,
+    },
+}
+
+/// Ask `approval::evaluate` (side-effect-free). Open ONLY when the gate is
+/// absent; an undetermined verdict is an `Err`, which callers fail closed.
+async fn approval_verdict(
+    deps: &Deps,
+    target: &str,
+    session_id: &str,
+    arguments: &Value,
+) -> Result<Verdict, String> {
     let resp = deps
         .iii
         .trigger(TriggerRequest {
@@ -1334,45 +1502,73 @@ pub(crate) async fn approval_allows_unattended(
             timeout_ms: Some(deps.cfg().await.dispatch_timeout_ms),
         })
         .await;
-
     let resp = match resp {
         Ok(v) => v,
         Err(e) => {
             let msg = e.to_string();
             if is_function_absent(&msg) {
-                tracing::debug!(
-                    target,
-                    "approval-gate absent; binding a call reaction without an approval probe"
-                );
-                return Ok(());
+                tracing::debug!(target, "approval-gate absent; no approval probe");
+                return Ok(Verdict::Allow);
             }
-            tracing::warn!(target, error = %msg, "approval probe failed; refusing the binding");
-            return Err(format!(
-                "could not check whether `{target}` needs approval ({msg}); refusing to bind a \
-                 reaction that would run unattended"
-            ));
+            return Err(msg);
         }
     };
-
     match resp.get("verdict").and_then(Value::as_str) {
-        Some("allow") => Ok(()),
-        Some(other) => {
-            let reason = resp
+        Some("allow") => Ok(Verdict::Allow),
+        Some(other) => Ok(Verdict::Withheld {
+            verdict: other.to_string(),
+            reason: resp
                 .get("reason")
                 .and_then(Value::as_str)
-                .unwrap_or("no reason given");
-            Err(format!(
-                "`{target}` is `{other}` for this session: {reason}. A trigger-fired call runs \
-                 outside any turn and cannot ask for approval, so it cannot be bound. Call it \
-                 yourself on a woken turn, or have an operator allow it."
-            ))
-        }
-        None => Err(format!(
-            "the approval gate returned no verdict for `{target}`; refusing to bind a reaction \
-             that would run unattended"
-        )),
+                .unwrap_or("no reason given")
+                .to_string(),
+        }),
+        None => Err("the approval gate returned no verdict".to_string()),
     }
 }
+
+/// A scaffold that starts runs compose::add inside the ide, where no approval
+/// hook sees it. So the turn asks the approval gate about compose::add for
+/// this session first; anything but `allow` is a start this turn cannot have
+/// (files only, or refused), and the agent's own compose::add then goes
+/// through the gate, held for a human like any other. Policy is the
+/// dispatch gate's (`trigger::scaffold_start_gate`).
+pub(crate) async fn scaffold_start_approval(
+    deps: &Deps,
+    policy: &CompiledPolicy,
+    function_id: &str,
+    arguments: &Value,
+    session_id: &str,
+) -> trigger::StartGate {
+    if !trigger::scaffold_starts(function_id, arguments) || !policy.allows(COMPOSE_ADD_ID) {
+        return trigger::StartGate::Pass;
+    }
+    let verdict = approval_verdict(deps, COMPOSE_ADD_ID, session_id, &json!({})).await;
+    start_after_approval(arguments, verdict)
+}
+
+/// The turn's decision on a starting scaffold, given what the approval gate
+/// said about its compose::add.
+fn start_after_approval(arguments: &Value, verdict: Result<Verdict, String>) -> trigger::StartGate {
+    let why = match verdict {
+        Ok(Verdict::Allow) => return trigger::StartGate::Pass,
+        Ok(Verdict::Withheld { verdict, reason }) => {
+            format!("its compose::add is `{verdict}` for this session ({reason})")
+        }
+        Err(problem) => {
+            format!("the approval gate could not be asked about its compose::add ({problem})")
+        }
+    };
+    trigger::start_refused(
+        arguments,
+        &why,
+        "Then send its compose_add to compose::add yourself: that call goes through approval, \
+         where a human can allow it.",
+    )
+}
+
+/// The function a starting `coder::scaffold-worker` runs inside the ide.
+pub(crate) const COMPOSE_ADD_ID: &str = "compose::add";
 
 fn approval_probe_payload(session_id: &str, target: &str, arguments: &Value) -> Value {
     json!({
@@ -1434,6 +1630,14 @@ fn delivery_registration_input_for_namespace(
         Some(namespace) => input.in_trigger_namespace(namespace),
         None => input,
     }
+}
+
+/// The provider namespace a `compose-operation` registration must name
+/// (`III_COMPOSE_NAMESPACE`), if the supervisor set one.
+pub(crate) fn compose_operation_trigger_namespace() -> Option<String> {
+    let compose_namespace = std::env::var(COMPOSE_NAMESPACE_ENV).ok();
+    compose_provider_namespace(COMPOSE_OPERATION_TRIGGER, compose_namespace.as_deref())
+        .map(str::to_string)
 }
 
 fn compose_provider_namespace<'a>(
@@ -1774,7 +1978,7 @@ pub(crate) mod tests {
         // Scope without key: the trade-off, naming the scope — NOT a push to
         // add a key. Run 7 read the old push as an instruction, pinned an
         // exact key, and its per-event unique keys then matched nothing.
-        let note = state_catchall_advisory(&mk("state", json!({ "scope": "run-1" })));
+        let note = state_catchall_advisory(&mk("state", json!({ "scope": "run-1" })), false);
         let note = note.as_deref().unwrap_or("");
         assert!(note.contains("run-1"), "got: {note}");
         assert!(note.contains("no `key` filter"), "got: {note}");
@@ -1787,17 +1991,101 @@ pub(crate) mod tests {
             "adding a key must be conditioned on the producers: {note}"
         );
         // No scope AND no key: the global catch-all, still warned hard.
-        let note = state_catchall_advisory(&mk("state", json!({})));
+        let note = state_catchall_advisory(&mk("state", json!({})), false);
         assert!(note.as_deref().unwrap_or("").contains("EVERY scope"));
         // A key filter silences it, with or without scope.
-        assert!(state_catchall_advisory(&mk(
-            "state",
-            json!({ "scope": "run-1", "key": "change" })
-        ))
-        .is_none());
-        assert!(state_catchall_advisory(&mk("state", json!({ "key": "change" }))).is_none());
-        // Non-state trigger types are not advised on.
-        assert!(state_catchall_advisory(&mk("cron", json!({}))).is_none());
+        for once in [false, true] {
+            assert!(state_catchall_advisory(
+                &mk("state", json!({ "scope": "run-1", "key": "change" })),
+                once
+            )
+            .is_none());
+            assert!(
+                state_catchall_advisory(&mk("state", json!({ "key": "change" })), once).is_none()
+            );
+            // Non-state trigger types are not advised on.
+            assert!(state_catchall_advisory(&mk("cron", json!({})), once).is_none());
+        }
+    }
+
+    /// The fan-in wave shape (MOT-5408): a scope-only one-shot wake gated by
+    /// `state::barrier` with a lifecycle deadline. It delivers one reaction,
+    /// on the write the barrier allows, and the deadline already turns
+    /// silence into a notice, so neither advisory has anything true to say.
+    #[test]
+    fn a_barrier_gated_one_shot_wake_with_a_deadline_gets_no_advisory() {
+        let wave: SubscribeRequest = serde_json::from_value(json!({
+            "trigger_type": "state",
+            "config": { "scope": "run-r1-w1" },
+            "conditions": [{
+                "function_id": "state::barrier",
+                "config": { "id": "run-r1-w1", "expect": ["KAN-12", "KAN-13"], "carry": "/event_type" }
+            }],
+            "lifecycle": { "expires_in_ms": 1_260_000 }
+        }))
+        .unwrap();
+        let once = effective_once(&wave);
+        assert!(once, "a wake defaults to one-shot");
+        let has_deadline = resolved_expires_at(wave.lifecycle.as_ref(), 0).is_some();
+        assert!(has_deadline, "expires_in_ms resolves to a deadline");
+        assert!(state_catchall_advisory(&wave, once).is_none());
+        assert!(armed_wake_advisory(&wave, once, has_deadline).is_none());
+    }
+
+    #[test]
+    fn a_keyless_one_shot_state_wake_is_told_which_write_wins() {
+        let mk =
+            |body: serde_json::Value| -> SubscribeRequest { serde_json::from_value(body).unwrap() };
+        let barrier = |expect: serde_json::Value| json!([{ "function_id": "state::barrier", "config": { "id": "b", "expect": expect } }]);
+        // No condition: the first write of any key retires it.
+        let note = state_catchall_advisory(
+            &mk(json!({ "trigger_type": "state", "config": { "scope": "run-1" } })),
+            true,
+        );
+        let note = note.as_deref().unwrap_or("");
+        assert!(note.contains("FIRST write of ANY key"), "got: {note}");
+        assert!(note.contains("run-1"), "got: {note}");
+        assert!(
+            !note.contains("every matching write"),
+            "a one-shot retires on its first fire: {note}"
+        );
+        assert!(!note.contains("passes its conditions"), "got: {note}");
+        // A count barrier counts ANY key, so a stray write can still complete
+        // it: the note stays, naming the gate.
+        let note = state_catchall_advisory(
+            &mk(json!({
+                "trigger_type": "state",
+                "config": { "scope": "run-1" },
+                "conditions": barrier(json!(3))
+            })),
+            true,
+        );
+        let note = note.as_deref().unwrap_or("");
+        assert!(note.contains("that passes its conditions"), "got: {note}");
+        assert!(note.contains("`expect` array"), "got: {note}");
+        // No scope: conditions or not, every write anywhere reaches it.
+        for conditions in [json!([]), barrier(json!(["a"]))] {
+            let note = state_catchall_advisory(
+                &mk(json!({ "trigger_type": "state", "config": {}, "conditions": conditions })),
+                true,
+            );
+            assert!(note.as_deref().unwrap_or("").contains("ANY scope"));
+        }
+        // Standing: a named barrier does not silence it, and the reaction is
+        // per write the conditions allow.
+        let note = state_catchall_advisory(
+            &mk(json!({
+                "trigger_type": "state",
+                "config": { "scope": "run-1" },
+                "conditions": barrier(json!(["a"]))
+            })),
+            false,
+        );
+        let note = note.as_deref().unwrap_or("");
+        assert!(
+            note.contains("every matching write that passes its conditions"),
+            "got: {note}"
+        );
     }
 
     #[test]
@@ -1810,6 +2098,7 @@ pub(crate) mod tests {
         let note = armed_wake_advisory(
             &mk("state", json!({ "scope": "run-1", "key": "report_ready" })),
             true,
+            false,
         );
         let note = note.as_deref().unwrap_or("");
         assert!(note.contains("run-1/report_ready"), "got: {note}");
@@ -1823,9 +2112,50 @@ pub(crate) mod tests {
         );
         assert!(note.contains("expires_in_ms"), "got: {note}");
         assert!(note.contains("expiry notice"), "got: {note}");
+        // Every state write fires a state wake, compare-and-set and update
+        // included (the state worker emits the same event for them).
+        for write in [
+            "state::set",
+            "state::update",
+            "state::compare-and-set",
+            "state::delete",
+        ] {
+            assert!(note.contains(write), "{write} missing: {note}");
+        }
+        assert!(
+            !note.contains("passes its conditions"),
+            "no condition, no gate: {note}"
+        );
+        // A condition gates the wake: say so.
+        let gated: SubscribeRequest = serde_json::from_value(json!({
+            "trigger_type": "state",
+            "config": { "scope": "run-1", "key": "report_ready" },
+            "conditions": [{ "function_id": "state::barrier", "config": { "id": "b", "expect": ["a"] } }]
+        }))
+        .unwrap();
+        let note = armed_wake_advisory(&gated, true, false);
+        assert!(note
+            .as_deref()
+            .unwrap_or("")
+            .contains("that passes its conditions"));
+        // A deadline (expires_in_ms, or a leaf's capped wake) already
+        // converts silence into a notice.
+        let keyed = mk("state", json!({ "scope": "run-1", "key": "report_ready" }));
+        assert!(armed_wake_advisory(&keyed, true, true).is_none());
+        // A lifecycle without a deadline does not: still warned.
+        for lifecycle in [json!({ "once": true }), json!({ "max_fires": 1 })] {
+            let req: SubscribeRequest = serde_json::from_value(json!({
+                "trigger_type": "state",
+                "config": { "scope": "run-1", "key": "report_ready" },
+                "lifecycle": lifecycle
+            }))
+            .unwrap();
+            let has_deadline = resolved_expires_at(req.lifecycle.as_ref(), 0).is_some();
+            assert!(armed_wake_advisory(&req, true, has_deadline).is_some());
+        }
         // Standing notifies and non-state types are not wakes.
-        assert!(armed_wake_advisory(&mk("state", json!({ "key": "k" })), false).is_none());
-        assert!(armed_wake_advisory(&mk("cron", json!({})), true).is_none());
+        assert!(armed_wake_advisory(&mk("state", json!({ "key": "k" })), false, false).is_none());
+        assert!(armed_wake_advisory(&mk("cron", json!({})), true, false).is_none());
     }
 
     #[test]
@@ -1844,6 +2174,30 @@ pub(crate) mod tests {
         // once retires itself.
         assert!(standing_binding_advisory(&mk("state"), true).is_none());
         assert!(standing_binding_advisory(&mk("cron"), true).is_none());
+    }
+
+    /// MOT-5449: a wake asked to stand (`once: false`) has no call to re-run;
+    /// its cost is a paid turn per event, and one-shot is its default, not
+    /// something to tell it to pass.
+    #[test]
+    fn a_standing_wake_is_not_told_it_is_a_call_binding() {
+        let mk = |lifecycle: Value| -> SubscribeRequest {
+            let mut v = json!({ "trigger_type": "state", "config": { "scope": "run-1" } });
+            if !lifecycle.is_null() {
+                v["lifecycle"] = lifecycle;
+            }
+            serde_json::from_value(v).unwrap()
+        };
+        let note = standing_binding_advisory(&mk(Value::Null), false);
+        let note = note.as_deref().unwrap_or("");
+        assert!(note.contains("WAKE is STANDING"), "got: {note}");
+        assert!(note.contains("paid turn"), "got: {note}");
+        assert!(!note.contains("call"), "a wake has no call: {note}");
+        // A lifecycle bound already stops it waking forever.
+        assert!(standing_binding_advisory(&mk(json!({ "max_fires": 3 })), false).is_none());
+        assert!(
+            standing_binding_advisory(&mk(json!({ "expires_in_ms": 60_000 })), false).is_none()
+        );
     }
 
     /// Both discovery runs registered a recurring cron with no lifecycle and
@@ -2539,6 +2893,74 @@ pub(crate) mod tests {
             .contains("must name the function"));
     }
 
+    /// Prevents: a binding or post-turn validator on coder::scaffold-worker
+    /// whose fired payload sets `start: true`, running compose::add with the
+    /// ide's authority for a session that may not call it (both fire paths
+    /// dispatch raw, outside the turn's scaffold_start_denial).
+    #[test]
+    fn a_scaffold_reaction_needs_compose_add() {
+        let coder_only = policy_allowing(&["coder::*"]);
+        let err = validate_call_target("coder::scaffold-worker", &coder_only).unwrap_err();
+        assert!(err.contains("needs compose::add"), "unhelpful error: {err}");
+        assert!(validate_call_target("coder::read-file", &coder_only).is_ok());
+        let with_add = policy_allowing(&["coder::*", "compose::add"]);
+        assert!(validate_call_target("coder::scaffold-worker", &with_add).is_ok());
+    }
+
+    /// Prevents: a starting scaffold whose compose::add the approval gate
+    /// would hold running unseen inside the ide. Only `allow` (or no gate)
+    /// lets the start through; otherwise the agent's own compose::add goes
+    /// through the gate.
+    #[test]
+    fn a_scaffold_starts_only_when_its_compose_add_is_approved() {
+        let default = json!({ "template": "worker-node-ade", "name": "orders" });
+        let explicit = json!({ "template": "worker-node-ade", "name": "orders", "start": true });
+        let held = || {
+            Ok(Verdict::Withheld {
+                verdict: "hold".into(),
+                reason: "no rule matched".into(),
+            })
+        };
+
+        assert!(matches!(
+            start_after_approval(&default, Ok(Verdict::Allow)),
+            trigger::StartGate::Pass
+        ));
+        let trigger::StartGate::FilesOnly(sent, note) = start_after_approval(&default, held())
+        else {
+            panic!("a held compose::add must leave a defaulted start files-only");
+        };
+        assert_eq!(sent["start"], json!(false));
+        assert!(
+            note.contains("`hold`") && note.contains("Not started"),
+            "{note}"
+        );
+        let trigger::StartGate::Deny(denied) = start_after_approval(&explicit, held()) else {
+            panic!("an explicit start with a held compose::add must be refused");
+        };
+        assert_eq!(denied.details["error"]["code"], "scaffold_start_denied");
+        // An undetermined verdict fails closed.
+        assert!(matches!(
+            start_after_approval(&default, Err("timeout".into())),
+            trigger::StartGate::FilesOnly(..)
+        ));
+    }
+
+    #[test]
+    fn only_a_scaffold_without_start_false_starts() {
+        let id = "coder::scaffold-worker";
+        assert!(trigger::scaffold_starts(id, &json!({ "name": "a" })));
+        assert!(trigger::scaffold_starts(
+            id,
+            &json!({ "name": "a", "start": true })
+        ));
+        assert!(!trigger::scaffold_starts(
+            id,
+            &json!({ "name": "a", "start": false })
+        ));
+        assert!(!trigger::scaffold_starts("coder::create-file", &json!({})));
+    }
+
     /// A call re-entering the harness's control plane is refused even when the
     /// policy would allow it — a binding can wake its owner or call a plain
     /// function, never start an agent. `harness::spawn` lands here too, with
@@ -2701,5 +3123,30 @@ pub(crate) mod tests {
         }))
         .unwrap();
         assert!(req.config.get("condition_function_id").is_some());
+    }
+
+    #[test]
+    fn a_stringified_config_is_parsed_back_into_an_object() {
+        // deepwork leads sent `config` as a JSON string; the old `Value` schema
+        // accepted it, the state worker refused it, and the wake never fired.
+        let (_, schema) = control_contract(REGISTER_TRIGGER_ID).unwrap();
+        let reconciled = crate::reconcile::coerce(
+            &schema,
+            &json!({ "trigger_type": "state", "config": "{\"scope\":\"run-r1\"}" }),
+        )
+        .expect("a stringified config is repairable");
+        assert_eq!(reconciled.arguments["config"], json!({ "scope": "run-r1" }));
+    }
+
+    #[test]
+    fn only_an_object_or_absent_config_is_accepted() {
+        assert!(validate_config(&json!({ "scope": "run" })).is_ok());
+        assert!(validate_config(&Value::Null).is_ok());
+        for bad in [json!("{\"scope\":\"run\"}"), json!(["run"]), json!(7)] {
+            let Err(HarnessError::InvalidRequest(msg)) = validate_config(&bad) else {
+                panic!("{bad} must be refused");
+            };
+            assert!(msg.contains("must be a JSON object"), "{msg}");
+        }
     }
 }

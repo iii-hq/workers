@@ -83,7 +83,6 @@ const details: CommitDetails = {
   committerEmail: 'a@a',
   committerDate: 0,
   message: 'move index.ts',
-  signature: 'N',
   files: [renamed],
   truncated: false,
 }
@@ -92,7 +91,7 @@ function render(view: FilesView, onCommitFiles: Props['onCommitFiles'] = () => {
   const props = {
     host: {},
     root: '/r',
-    state: { details, loading: false, error: null, branches: null },
+    state: { details, loading: false, error: null, branches: null, signature: null },
     selected: details.sha,
     prefix: '',
     top: '/r',

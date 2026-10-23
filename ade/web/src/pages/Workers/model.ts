@@ -1,3 +1,4 @@
+import { parseDocument } from 'yaml'
 import type {
   Checkout,
   Container,
@@ -5,11 +6,14 @@ import type {
   DeclaredContainer,
   EditPatch,
 } from './compose-api'
+import { validateSettingsDraft } from './settings-validation'
 import {
   MANAGEMENT_LABEL,
   type WorkerConnectionStatus,
   type WorkerRow,
 } from './types'
+
+export { validateSettingsDraft } from './settings-validation'
 
 export type Tone = 'accent' | 'alert' | 'warn' | 'ink'
 export type BadgeTone = 'ok' | 'warn' | 'alert' | 'default'
@@ -74,7 +78,7 @@ export function groupContainers(
       : d?.source === 'package'
         ? (d.version ?? 'unpinned')
         : d?.source === 'path'
-          ? basename(dirname(d.ref))
+          ? shortPath(d.ref)
           : c.state
     const item = {
       name: c.container,
@@ -253,6 +257,18 @@ export function usualParent(paths: readonly string[]): string | null {
 
 export const MASK = '••••••••'
 
+/** Matches the compose entry reader's literal-credential classification. */
+export function isSecretValue(key: string, value: string): boolean {
+  const upper = key.replace(/[a-z]/g, (letter) => letter.toUpperCase())
+  return (
+    ['KEY', 'TOKEN', 'SECRET', 'PASSWORD', 'CREDENTIAL'].some((word) =>
+      upper.includes(word),
+    ) &&
+    value !== '' &&
+    !(value.startsWith('${') && value.endsWith('}'))
+  )
+}
+
 export type EnvDraft = {
   key: string
   value: string
@@ -285,13 +301,106 @@ export function draftFrom(entry: ContainerEntry): SettingsDraft {
   }
 }
 
+/** Explains the new cycle before a dependency can be selected or submitted. */
+export function dependencyBlockReason(
+  containers: readonly Pick<DeclaredContainer, 'name' | 'start_after'>[],
+  name: string,
+  candidate: string,
+): string | null {
+  const graph = new Map(
+    containers.map((container) => [container.name, container.start_after]),
+  )
+  const visited = new Set<string>()
+  const findPath = (current: string, path: string[]): string[] | null => {
+    if (current === name) return path
+    if (visited.has(current)) return null
+    visited.add(current)
+    for (const dependency of graph.get(current) ?? []) {
+      const found = findPath(dependency, [...path, dependency])
+      if (found) return found
+    }
+    return null
+  }
+  const path = findPath(candidate, [name, candidate])
+  return path ? `Would create a startup cycle: ${path.join(' → ')}.` : null
+}
+
+/** Stages known previous values; masked credentials always keep their current state. */
+export function restoreSettingsDraft(
+  current: ContainerEntry,
+  previous: ContainerEntry,
+): { draft: SettingsDraft; unavailableSecrets: string[] } {
+  const unavailable = (variable: ContainerEntry['environment'][number]) =>
+    variable.secret ||
+    variable.value === MASK ||
+    isSecretValue(variable.key, variable.value ?? '')
+  const previousEnv = new Map(
+    previous.environment.map((variable) => [variable.key, variable]),
+  )
+  const currentKeys = new Set(
+    current.environment.map((variable) => variable.key),
+  )
+  const draft = draftFrom(current)
+  draft.run = previous.run ?? ''
+  draft.startAfter = [...previous.start_after]
+  draft.config = previous.config_override ?? ''
+  draft.env = draft.env.map((row, index) => {
+    if (unavailable(current.environment[index])) return row
+    const original = previousEnv.get(row.key)
+    if (!original) return { ...row, removed: true }
+    return unavailable(original) ? row : { ...row, value: original.value ?? '' }
+  })
+  for (const variable of previous.environment) {
+    if (currentKeys.has(variable.key) || unavailable(variable)) continue
+    draft.env.push({
+      key: variable.key,
+      value: variable.value ?? '',
+      secret: false,
+      replacing: false,
+      removed: false,
+      isNew: true,
+    })
+  }
+  return {
+    draft,
+    unavailableSecrets: previous.environment
+      .filter(unavailable)
+      .map((variable) => variable.key),
+  }
+}
+
 const sameList = (a: readonly string[], b: readonly string[]) =>
   a.length === b.length && [...a].sort().every((v, i) => v === [...b].sort()[i])
+
+/** Includes unfinished edits that cannot yet be submitted as a patch. */
+export function hasSettingsChanges(
+  entry: ContainerEntry,
+  draft: SettingsDraft,
+): boolean {
+  return (
+    draft.run.trim() !== (entry.run ?? '') ||
+    !sameList(draft.startAfter, entry.start_after) ||
+    draft.config.trim() !== (entry.config_override ?? '').trim() ||
+    draft.env.some((row, index) => {
+      if (row.isNew) return !row.removed
+      const original = entry.environment[index]
+      return (
+        row.removed ||
+        row.key !== original?.key ||
+        (row.secret ? row.replacing : row.value !== (original?.value ?? ''))
+      )
+    })
+  )
+}
 
 export function settingsPatch(
   entry: ContainerEntry,
   draft: SettingsDraft,
 ): { patch: EditPatch; changes: number } {
+  const validation = validateSettingsDraft(entry, draft)
+  if (!validation.valid) {
+    throw new Error(Object.values(validation.env)[0] ?? validation.config ?? '')
+  }
   const patch: EditPatch = {}
   let changes = 0
   if (draft.run.trim() !== (entry.run ?? '')) {
@@ -302,12 +411,12 @@ export function settingsPatch(
     patch.start_after = draft.startAfter
     changes += 1
   }
-  const set: Record<string, string> = {}
+  const set: Record<string, string> = Object.create(null)
   const unset: string[] = []
   draft.env.forEach((row, i) => {
     const original = entry.environment[i]
     if (row.isNew) {
-      if (row.key.trim()) set[row.key.trim()] = row.value
+      if (!row.removed) set[row.key] = row.value
     } else if (row.removed) {
       unset.push(row.key)
     } else if (
@@ -328,6 +437,157 @@ export function settingsPatch(
     changes += 1
   }
   return { patch, changes }
+}
+
+/** A confirmed write becomes a masked baseline while its actual readback is unavailable. */
+export function submittedSettingsEntry(
+  entry: ContainerEntry,
+  patch: EditPatch,
+): ContainerEntry {
+  const safeVariable = (key: string, value: string | null, secret = false) => {
+    const masked = secret || value === MASK || isSecretValue(key, value ?? '')
+    return { key, value: masked || value === '' ? null : value, secret: masked }
+  }
+  const environment = new Map(
+    entry.environment.map((variable) => [
+      variable.key,
+      safeVariable(variable.key, variable.value, variable.secret),
+    ]),
+  )
+  if (patch.environment) {
+    for (const key of patch.environment.unset) environment.delete(key)
+    for (const [key, value] of Object.entries(patch.environment.set))
+      environment.set(key, safeVariable(key, value))
+  }
+  return {
+    ...entry,
+    worker: patch.worker ?? entry.worker,
+    run: patch.run ?? entry.run,
+    start_after: [...(patch.start_after ?? entry.start_after)],
+    env_file: [...entry.env_file],
+    config_override: patch.config_override ?? entry.config_override,
+    environment: [...environment.values()],
+  }
+}
+
+/** Keeps newer edits across readback, with existing environment rows aligned to that read. */
+export function rebaseSettingsDraft(
+  baseline: ContainerEntry,
+  draft: SettingsDraft,
+  loaded: ContainerEntry,
+): SettingsDraft {
+  const next = draftFrom(loaded)
+  if (draft.run.trim() !== (baseline.run ?? '')) next.run = draft.run
+  if (!sameList(draft.startAfter, baseline.start_after))
+    next.startAfter = [...draft.startAfter]
+  if (draft.config.trim() !== (baseline.config_override ?? '').trim())
+    next.config = draft.config
+  const pending = new Map<string, EnvDraft>()
+  const added: EnvDraft[] = []
+  draft.env.forEach((row, index) => {
+    if (row.isNew) {
+      added.push({ ...row })
+      return
+    }
+    const original = baseline.environment[index]
+    if (
+      original &&
+      (row.removed ||
+        row.key !== original.key ||
+        (row.secret ? row.replacing : row.value !== (original.value ?? '')))
+    )
+      pending.set(original.key, { ...row })
+  })
+  next.env = next.env.map((row) => {
+    const edit = pending.get(row.key)
+    if (!edit) return row
+    pending.delete(row.key)
+    return {
+      ...edit,
+      secret: row.secret || edit.secret,
+      replacing: edit.replacing || (row.secret && !edit.removed),
+      isNew: false,
+    }
+  })
+  for (const row of pending.values()) {
+    if (!row.removed) next.env.push({ ...row, isNew: true })
+  }
+  const baselineKeys = new Set(baseline.environment.map((row) => row.key))
+  const loadedIndexes = new Map(
+    loaded.environment.map((row, index) => [row.key, index]),
+  )
+  const addedCounts = new Map<string, number>()
+  for (const row of added) {
+    if (!row.removed)
+      addedCounts.set(row.key, (addedCounts.get(row.key) ?? 0) + 1)
+  }
+  for (const row of added) {
+    const index = loadedIndexes.get(row.key)
+    if (
+      index !== undefined &&
+      !row.removed &&
+      !baselineKeys.has(row.key) &&
+      addedCounts.get(row.key) === 1
+    ) {
+      const loadedRow = next.env[index]
+      next.env[index] = {
+        ...loadedRow,
+        value: row.value,
+        secret: loadedRow.secret || row.secret,
+        replacing: loadedRow.secret || row.replacing,
+      }
+    } else next.env.push(row)
+  }
+  return next
+}
+
+const comparableConfig = (source: string) => {
+  const document = parseDocument(source, { uniqueKeys: true, merge: true })
+  if (document.errors.length) throw document.errors[0]
+  return JSON.stringify(document.toJS(), (_key, value) =>
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? Object.fromEntries(
+          Object.entries(value).sort(([a], [b]) => a.localeCompare(b)),
+        )
+      : value,
+  )
+}
+
+/** A masked secret cannot prove a write; observable mismatches always win. */
+export function confirmStoredPatch(
+  entry: ContainerEntry,
+  patch: EditPatch,
+): boolean | null {
+  if (patch.worker !== undefined && patch.worker !== entry.worker) return false
+  if (patch.run !== undefined && patch.run.trim() !== (entry.run ?? '').trim())
+    return false
+  if (patch.start_after && !sameList(patch.start_after, entry.start_after))
+    return false
+  if (patch.config_override !== undefined) {
+    try {
+      if (
+        comparableConfig(patch.config_override) !==
+        comparableConfig(entry.config_override ?? '')
+      )
+        return false
+    } catch {
+      return false
+    }
+  }
+  let masked = false
+  if (patch.environment) {
+    const { set, unset } = patch.environment
+    const environment = new Map(entry.environment.map((row) => [row.key, row]))
+    if (unset.some((key) => !Object.hasOwn(set, key) && environment.has(key)))
+      return false
+    for (const [key, value] of Object.entries(set)) {
+      const row = environment.get(key)
+      if (!row) return false
+      if (row.secret && row.value === null) masked = true
+      else if ((row.value ?? '') !== value) return false
+    }
+  }
+  return masked ? null : true
 }
 
 /* ── Preview YAML ────────────────────────────────────────────────────── */
@@ -385,15 +645,19 @@ export function entryShape(
         .map((row) => ({
           key: row.key.trim(),
           // A typed secret still never shows: the preview only marks it replaced.
-          value: row.secret
-            ? row.replacing && row.value
-              ? `${MASK}  # new value`
-              : MASK
-            : row.value,
+          value:
+            row.secret || isSecretValue(row.key, row.value)
+              ? row.replacing && row.value
+                ? `${MASK}  # new value`
+                : MASK
+              : row.value,
         }))
     : entry.environment.map((v) => ({
         key: v.key,
-        value: v.secret ? MASK : (v.value ?? ''),
+        value:
+          v.secret || isSecretValue(v.key, v.value ?? '')
+            ? MASK
+            : (v.value ?? ''),
       }))
   return {
     name: entry.name,

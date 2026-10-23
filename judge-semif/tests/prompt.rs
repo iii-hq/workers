@@ -21,20 +21,13 @@ fn prompts_match_semif() {
 #[test]
 #[ignore]
 fn gguf_tokens_match_the_reference_tokenizer() {
-    use iii_llama_runtime::llama_cpp_2::{
-        llama_backend::LlamaBackend,
-        model::{params::LlamaModelParams, AddBos, LlamaModel},
-    };
+    use iii_llama_runtime::iii_llama_native::Model;
     let gguf = std::env::var("SEMIF_GGUF").expect("SEMIF_GGUF points at the Qwen3.5-4B GGUF");
-    let backend = LlamaBackend::init().unwrap();
-    let model = LlamaModel::load_from_file(&backend, gguf, &LlamaModelParams::default()).unwrap();
+    let model = Model::load(gguf.as_ref(), Some(0), 1, false).unwrap();
     for case in fixtures() {
-        let ids: Vec<i32> = model
-            .str_to_token(case["prompt"].as_str().unwrap(), AddBos::Never)
-            .unwrap()
-            .into_iter()
-            .map(|t| t.0)
-            .collect();
+        let ids = model
+            .tokenize(case["prompt"].as_str().unwrap(), false)
+            .unwrap();
         assert_eq!(
             ids,
             serde_json::from_value::<Vec<i32>>(case["token_ids"].clone()).unwrap()

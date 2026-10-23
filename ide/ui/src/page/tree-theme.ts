@@ -73,6 +73,18 @@ export const TREE_UNSAFE_CSS = `
     color: var(--shui-tree-file-muted, var(--color-ink-faint));
   }
 
+  /* The row a context menu was opened on, and the rows a folder's actions
+     reach, while the menu is open (FilesTab marks them). */
+  [data-type='item'][data-shui-menu='target'] {
+    background-color: color-mix(in oklab, var(--color-accent) 14%, transparent);
+    outline: 1px solid color-mix(in oklab, var(--color-accent) 55%, transparent);
+    outline-offset: -1px;
+  }
+
+  [data-type='item'][data-shui-menu='scope'] {
+    background-color: color-mix(in oklab, var(--color-accent) 7%, transparent);
+  }
+
   [data-item-type='file']:hover,
   [data-item-type='file'][aria-selected='true'] {
     color: var(--color-ink);

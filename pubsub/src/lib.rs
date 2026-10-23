@@ -13,6 +13,7 @@ pub mod adapters;
 pub mod boot;
 pub mod config;
 pub mod configuration;
+pub mod deprecation;
 pub mod hub;
 pub mod manifest;
 pub mod trigger;

@@ -187,6 +187,19 @@ function fireCountFromEntryId(
   return Number(ordinal)
 }
 
+/** A skipped fire whose condition answered "not yet" on a binding that stays
+ * armed (a barrier still waiting on keys): nothing failed. The harness puts the
+ * skip's gate in the record id, `e_trigskip_<binding>_<gate>_<uuid>`; a failed
+ * condition call uses `condition-error`, `condition-policy` or
+ * `condition-approval` instead of `condition`. */
+export function isConditionWait(activity: TriggerActivityMessage): boolean {
+  return (
+    activity.outcome === 'skipped' &&
+    activity.lifecycle.state === 'active' &&
+    /^e_trigskip_.+_condition_[0-9a-f]{32}$/.test(activity.id)
+  )
+}
+
 /** Combine a durable fire/retirement record with recovered registration data. */
 export function activityFromTriggerRecord(
   message: SystemMessage,

@@ -135,7 +135,9 @@ async fn main() -> Result<()> {
         Arc::new(IiiDeliverer::new(iii.clone())),
     ));
 
-    let sessions = Sessions::new(shared.clone(), emitter, iii.clone());
+    let frames = computer::frames::register_frame_trigger_type(&iii);
+
+    let sessions = Sessions::new(shared.clone(), emitter, frames, iii.clone());
 
     // Durable sessions: reconnect anything persisted on a previous run BEFORE
     // the functions go live, so a start arriving at boot cannot take an id a

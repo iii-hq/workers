@@ -170,6 +170,20 @@ fn fn_pill_syntax() {
     assert!(out.contains("@fn(engine::functions::info)"));
 }
 
+/// Worker mentions: the token shape, the two blocks the judge's mention hook
+/// appends (`judge/src/mentions/render.rs` writes exactly these tags), that
+/// their details calls count as pre-verified, and the no-hook fallback.
+#[test]
+fn worker_mention_syntax() {
+    let out = default_prompt();
+    assert!(out.contains("`@<name>(id=\"<id>\")` in a message is a mention"));
+    assert!(out.contains("A `<mentions>` block"));
+    assert!(out.contains("pre-verified with its exact id and payload"));
+    assert!(out.contains("A `<mention_providers>` block lists the names"));
+    assert!(out.contains("never a guessed one"));
+    assert!(out.contains("With no `<mentions>` block, find the owning worker's get-by-id"));
+}
+
 #[test]
 fn runtime_model() {
     let out = default_prompt();
@@ -278,6 +292,8 @@ fn observable_compose_mutations_register_a_terminal_wake_before_starting() {
         .expect("compose::add with correlated operation id");
 
     assert!(registration < add);
+    // Ids are daemon-global: a fixed name collides with an earlier session's op (MOT-5334).
+    assert!(out.contains("start with your session id, e.g. `<session-id>:add-<name>-1`"));
     assert!(out.contains("operation_id: \"<operation-id>\", terminal_only: true"));
     assert!(
         out.contains("compose::update { worker: \"<name>\", operation_id: \"<operation-id>\" }")

@@ -1,5 +1,6 @@
-import { number, object, password, select, stringList, text, toggle } from '../spec-helpers'
+import { judgeProvider, number, object, password, select, stringList, text, toggle } from '../spec-helpers'
 import { choice, type WorkerConfigurationSpec } from '../types'
+import { sandboxCatalogChoices } from './sandbox-catalog'
 
 const actionable = { path: 'profile', in: ['agent_actionable'] } as const
 const reviewAssistant = { path: 'profile', in: ['review_assistant'] } as const
@@ -119,12 +120,17 @@ export const scalarWorkerSpecs: readonly WorkerConfigurationSpec[] = [
       {
         title: 'Capture',
         fields: [
-          number('screencast_fps', 'Screencast FPS', undefined, { min: 1 }),
-          number('max_screenshot_dimension', 'Maximum screenshot dimension', 'Longest image edge in pixels.', {
-            min: 320,
-            max: 4096,
+          number('screencast_fps', 'Screencast FPS', 'Live view frame-rate cap, for every desktop.', { min: 1 }),
+          number(
+            'max_screenshot_dimension',
+            'Maximum screenshot dimension',
+            "Longest image edge in pixels, for this machine and remote desktops. A sandbox's images are its display width and height.",
+            { min: 320, max: 4096 },
+          ),
+          number('screenshot_quality', 'JPEG quality', 'For this machine, sandbox and remote desktops.', {
+            min: 1,
+            max: 100,
           }),
-          number('screenshot_quality', 'JPEG quality', undefined, { min: 1, max: 100 }),
           toggle(
             'screen_capture_preflight',
             'Screen capture preflight',
@@ -136,13 +142,45 @@ export const scalarWorkerSpecs: readonly WorkerConfigurationSpec[] = [
       {
         title: 'Sandbox desktop',
         fields: [
-          text('sandbox_image', 'Image', 'Default iii-sandbox image or preset.'),
+          select(
+            'sandbox_image',
+            'Image',
+            [],
+            "Booted when a session names no image. The list is iii-sandbox's custom_images (name — OCI ref); add an OCI image there, in iii-sandbox's own configuration.",
+            {
+              optional: true,
+              placeholder: 'Every session names its image',
+              optionsFrom: { functionId: 'sandbox::catalog::list', choices: sandboxCatalogChoices },
+            },
+          ),
+          number(
+            'sandbox_memory_mb',
+            'Memory (MB)',
+            "RAM of the desktop's VM; unset is 2048, enough for a browser. 0 uses iii-sandbox's default (512).",
+            { min: 0, optional: true, placeholder: '2048' },
+          ),
+          number('sandbox_cpus', 'CPUs', "vCPUs of the desktop's VM; unset is 2. 0 uses iii-sandbox's default (1).", {
+            min: 0,
+            optional: true,
+            placeholder: '2',
+          }),
           number('sandbox_width', 'Display width', undefined, { min: 1 }),
           number('sandbox_height', 'Display height', undefined, { min: 1 }),
           toggle('sandbox_network', 'Network access', 'Allow sandbox-backed desktops to reach the network.', {
             defaultValue: true,
           }),
           number('sandbox_idle_timeout_secs', 'Sandbox idle timeout (seconds)', undefined, { min: 1 }),
+        ],
+      },
+      {
+        title: 'Run',
+        fields: [
+          judgeProvider(
+            'judge_provider',
+            'Judge provider',
+            'computer::run',
+            "The judge computer::run asks to pick each step. Judge default follows the caller's session, then the judge hub's own provider.",
+          ),
         ],
       },
     ],
@@ -157,11 +195,14 @@ export const scalarWorkerSpecs: readonly WorkerConfigurationSpec[] = [
       'command_timeout_ms',
       'connect_timeout_ms',
       'sandbox_image',
+      'sandbox_memory_mb',
+      'sandbox_cpus',
       'sandbox_width',
       'sandbox_height',
       'sandbox_network',
       'sandbox_idle_timeout_secs',
       'screen_capture_preflight',
+      'judge_provider',
     ],
   },
   {
@@ -563,7 +604,7 @@ export const scalarWorkerSpecs: readonly WorkerConfigurationSpec[] = [
         title: 'Connection',
         fields: [
           text('tailscale_binary', 'Tailscale executable'),
-          text('console_url', 'ADE URL', 'Must point to a loopback HTTP(S) ADE root.'),
+          text('console_url', 'ADE URL', "Leave empty to use this project's ADE (console::status). Otherwise a loopback HTTP(S) ADE root."),
           number('default_https_port', 'Default HTTPS port', undefined, { min: 1, max: 65535 }),
           number('command_timeout_ms', 'Command timeout (ms)', undefined, { min: 1 }),
         ],

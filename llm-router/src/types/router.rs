@@ -121,6 +121,7 @@ pub struct AbortResponse {
     pub aborted: bool,
 }
 
+/// One `router::provider::list` entry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderInfo {
     pub id: String,
@@ -131,10 +132,35 @@ pub struct ProviderInfo {
     pub configured: bool,
     pub available: bool,
     pub supports_model_listing: bool,
+    /// Last completed discovery, independent of configuration and availability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<DiscoveryStatus>,
     /// The provider's mark as inline SVG, copied from its declaration. Absent
     /// when the provider declared none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon_svg: Option<String>,
+    /// The model a consumer should start with when nothing else names one:
+    /// the newest model of the best-ranked variant its declared
+    /// `default_models` name (Terra, Sol, Astra, Luna for GPT providers;
+    /// Sonnet, Opus, Fable, Haiku for Claude providers), else the first declared id
+    /// in its catalog slice, else the closest same-family model, else absent
+    /// (see
+    /// `registry::availability::resolve_default_model`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    /// The thinking level a consumer should start with when nothing else
+    /// names one; copied from the declaration. Absent means omit the level
+    /// and let the provider apply its own default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_thinking_level: Option<ThinkingLevel>,
+    /// Provider-specific guidance a console appends to a context-overflow
+    /// failure on one of this provider's models; copied from the
+    /// declaration. Absent when the provider declared none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_overflow_hint: Option<String>,
+    /// Where the credential comes from and why it is unusable, if it is.
+    #[serde(flatten)]
+    pub credential: CredentialStatus,
 }
 /// Input of `router::provider::list` — takes no arguments. A struct (rather
 /// than `Value`) keeps the request schema concrete; unknown fields (e.g. the
@@ -185,6 +211,30 @@ pub struct ProviderDeclaration {
     /// the router drops anything larger or not starting with `<svg`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon_svg: Option<String>,
+    /// Chat model ids the provider recommends as a starting point. The order
+    /// in which the list first names each variant sets the variant rank.
+    /// `router::provider::list` reports the newest catalog model of the
+    /// best-ranked variant as `default_model` (see
+    /// `registry::availability::resolve_default_model`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_models: Option<Vec<String>>,
+    /// The thinking level to use with the default model when a caller names
+    /// none. Absent means omit the level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_thinking_level: Option<ThinkingLevel>,
+    /// Guidance a console shows under a context-overflow failure on one of
+    /// this provider's models, for causes the console cannot fix by
+    /// compacting (a self-hosted server started with a small window, say).
+    /// One or two plain sentences, optionally with a link to the provider's
+    /// docs. `router::provider::list` carries it verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_overflow_hint: Option<String>,
+    /// `true` when the provider works without a credential (a local server
+    /// started without a key): the router then reports it `configured` with
+    /// no key. A key that is set is still resolved and sent. Absent means a
+    /// key is required.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_optional: Option<bool>,
 }
 
 /// Upper bound the router accepts for [`ProviderDeclaration::icon_svg`].
@@ -209,6 +259,10 @@ pub struct ProviderRegisterResponse {
     pub registration_token: String,
 }
 
+/// Where the resolved credential came from, as providers read it. A resolved
+/// `secret://` or `env://` reference reports `config` (the reference lives
+/// in the configuration entry); `credential_source` tells them apart.
+// Kept to three values: provider builds deserialize this enum strictly.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum CredentialSource {
@@ -217,7 +271,38 @@ pub enum CredentialSource {
     None,
 }
 
-/// Output of the `router::provider::resolve` iii function.
+/// `credential_source`: where the precedence found the provider's credential.
+/// `secret` is a `secret://NAME` or `env://NAME` reference in the slice,
+/// resolved through the `secrets` worker; `configured` says whether it
+/// actually yielded one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CredentialOrigin {
+    Config,
+    Env,
+    Secret,
+    None,
+}
+
+/// Credential diagnostics carried by `router::provider::list` entries and the
+/// `router::provider::resolve` response. Every field is optional on the wire,
+/// so older consumers and older routers interoperate. Never carries a value.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct CredentialStatus {
+    /// Where the credential comes from: `config`, `env`, `secret` or `none`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_source: Option<CredentialOrigin>,
+    /// The slice's `secret://NAME` or `env://NAME` reference, when it uses one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_ref: Option<String>,
+    /// Why the configured credential cannot be used, in words an operator
+    /// can act on (e.g. the secret is missing or this worker may not read it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_error: Option<String>,
+}
+
+/// The provider-facing part of `router::provider::resolve`'s output
+/// ([`ProviderResolveOutput`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderResolveResponse {
     pub configured: bool,
@@ -227,6 +312,22 @@ pub struct ProviderResolveResponse {
     pub api_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u64>,
+}
+
+/// Output of the `router::provider::resolve` iii function: the effective
+/// credential and settings plus the credential diagnostics.
+// A flattening wrapper rather than new `ProviderResolveResponse` fields: the
+// provider crates build that struct as literals and deserialize it, ignoring
+// the extra keys.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderResolveOutput {
+    #[serde(flatten)]
+    pub resolved: ProviderResolveResponse,
+    #[serde(flatten)]
+    pub status: CredentialStatus,
+    /// Opaque lease returned only to a token-authenticated discovery caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery_attempt: Option<String>,
 }
 
 /// Output of the `router::models::reconcile` iii function.
@@ -289,6 +390,81 @@ pub struct RefreshModelsRequest {}
 pub struct RefreshModelsResponse {
     pub ok: bool,
     pub count: usize,
+}
+
+/// Safe discovery categories. No upstream message, team id or URL is retained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryOutcome {
+    Success,
+    Empty,
+    NotConfigured,
+    Billing,
+    Authentication,
+    Permission,
+    RateLimit,
+    Unavailable,
+    InvalidResponse,
+}
+
+impl DiscoveryOutcome {
+    pub fn is_success(self) -> bool {
+        matches!(self, Self::Success | Self::Empty)
+    }
+
+    pub fn preserves_catalog(self) -> bool {
+        !self.is_success() && self != Self::NotConfigured
+    }
+
+    pub fn blocks_catalog(self) -> bool {
+        matches!(
+            self,
+            Self::Billing | Self::Authentication | Self::Permission | Self::NotConfigured
+        )
+    }
+}
+
+/// Explicit allowlist: arbitrary error strings cannot cross the router boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum DiscoveryCode {
+    PermissionDenied,
+    InvalidApiKey,
+    InsufficientCredits,
+    SpendingLimitExceeded,
+    RateLimitExceeded,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DiscoveryReport {
+    pub attempt: String,
+    pub outcome: DiscoveryOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<DiscoveryCode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DiscoveryStatus {
+    pub outcome: DiscoveryOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<DiscoveryCode>,
+    /// A transient failure left a previous catalog in place.
+    pub stale: bool,
+    pub checked_at_ms: i64,
+}
+
+/// Extended refresh acknowledgement. The legacy {ok,count} stays unchanged.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DiscoveryRefreshResponse {
+    #[serde(flatten)]
+    pub refreshed: RefreshModelsResponse,
+    pub discovery: DiscoveryOutcome,
 }
 
 /// Input of a provider's `provider::<id>::abort`: actively cancel the
@@ -453,6 +629,9 @@ pub struct ProviderRegisterRequest {
 /// Input of `router::provider::resolve`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderResolveRequest {
+    /// Begin a latest-wins discovery attempt. Older providers omit this.
+    #[serde(default)]
+    pub begin_discovery: bool,
     /// Provider id to resolve credentials/config for.
     #[serde(default)]
     pub id: String,
@@ -484,6 +663,9 @@ pub struct UpdateCredentialResponse {
 /// Input of `router::models::reconcile` — the only catalog write path.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ModelsReconcileRequest {
+    /// Optional token-gated discovery completion. Failures preserve the slice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<DiscoveryReport>,
     /// Provider whose catalog slice is being replaced.
     #[serde(default)]
     pub provider: String,
@@ -505,17 +687,35 @@ pub struct ConfigChangedEvent {
     pub id: Option<String>,
 }
 
-/// Advisory function-registry change event delivered to
-/// `router::on_functions_changed`. The handler ignores event values and
+/// Advisory `engine::functions-available` event delivered to
+/// `router::on_functions_changed`. The engine sends
+/// `{ event: "functions_changed", functions: [...] }` with the full current
+/// function list; it does not say which worker or function changed. The
+/// handler ignores event values (the `functions` list is not deserialized) and
 /// re-fetches the authoritative registry before nudging live providers.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct FunctionsChangedEvent {
-    /// Engine event tag (advisory).
+    /// Engine event tag, `"functions_changed"` (advisory).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event: Option<String>,
-    /// Worker whose registered functions changed (advisory).
+}
+
+/// Advisory `secrets::changed` event delivered to `router::on_secret_changed`.
+/// It never carries a value; the handler re-reads the reference through
+/// `secrets::resolve`. Other payload fields (`fingerprint`, `updated_at`) are
+/// ignored.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SecretChangedEvent {
+    /// Secret name (advisory).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worker_id: Option<String>,
+    pub name: Option<String>,
+    /// The same secret as a `secret://NAME` or `env://NAME` reference; it
+    /// names the store (advisory).
+    #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+    /// `created`, `rotated`, `deleted` or `access_changed` (advisory).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
 }
 
 /// Generic acknowledgement returned by trigger-bound handlers whose result is

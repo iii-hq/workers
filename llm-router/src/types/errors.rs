@@ -91,6 +91,18 @@ pub fn is_function_not_found(err: &iii_sdk::errors::Error) -> bool {
     matches!(err, iii_sdk::errors::Error::Remote { code, .. } if code.eq_ignore_ascii_case("function_not_found"))
 }
 
+/// A provider that failed on its own configuration (`provider/not_configured`,
+/// `provider/config`, e.g. no api key): it cannot serve anyone until someone
+/// reconfigures it, unlike a transient `provider/upstream*` failure.
+pub fn is_provider_unconfigured(err: &iii_sdk::errors::Error) -> bool {
+    let message = match err {
+        iii_sdk::errors::Error::Remote { message, .. } => message.as_str(),
+        iii_sdk::errors::Error::Handler(message) => message.as_str(),
+        _ => return false,
+    };
+    message.contains("provider/not_configured:") || message.contains("provider/config:")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

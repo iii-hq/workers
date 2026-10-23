@@ -1,5 +1,5 @@
 //! Pure translation of the Codex JSONL event stream into the AgentEvent frames
-//! emitted on `agent::events`, plus the running turn state (thread id, usage,
+//! emitted on `codex::agent-event`, plus the running turn state (thread id, usage,
 //! result text, stop reason). Kept free of I/O so the full per-turn sequence is
 //! unit-testable without a live engine — the stream loop in `mod.rs` only does
 //! the reads/writes around `step`.
@@ -34,7 +34,7 @@ impl TurnState {
     }
 }
 
-/// Advance the turn by one event, returning the `agent::events` frames to emit
+/// Advance the turn by one event, returning the `codex::agent-event` frames to emit
 /// (in order). Updates `state` in place.
 pub fn step(state: &mut TurnState, event: ThreadEvent) -> Vec<Value> {
     match event {

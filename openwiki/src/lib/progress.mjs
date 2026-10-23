@@ -1,7 +1,7 @@
 // In-process progress bus. Generation runs in this worker; the SSE handler
 // (openwiki::http::events) subscribes per wiki id and pushes frames to the
 // browser over the HTTP response channel. Single-process worker; if openwiki
-// ever runs multiple instances, swap this for stream::send + a stream trigger.
+// ever runs multiple instances, swap this for a worker-owned trigger type.
 import { EventEmitter } from 'node:events';
 
 const bus = new EventEmitter();

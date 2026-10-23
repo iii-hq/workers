@@ -19,10 +19,14 @@ use crate::configuration::{
 };
 use crate::functions::{
     append, append_many, create, delete, delete_attachment, ensure, fork, get, get_attachment,
-    get_message, list, list_attachments, messages, messages_range, messages_tail, put_attachment,
-    set_active_leaf, set_draft, set_meta, set_status, store_protocol, update_message,
+    get_message, list, list_attachments, mention, messages, messages_range, messages_tail,
+    put_attachment, set_active_leaf, set_draft, set_meta, set_status, store_protocol,
+    update_message,
 };
 use crate::types::{SessionEntry, SessionMeta};
+use mention_contract::{
+    MentionGetRequest, MentionSearchRequest, MentionSearchResponse, MentionView,
+};
 
 /// One function's wire surface: id plus the schemars-derived request/response
 /// schemas.
@@ -117,6 +121,8 @@ pub fn catalog() -> Vec<FunctionSpec> {
             delete_attachment::DeleteAttachmentRequest,
             delete_attachment::DeleteAttachmentResponse,
         >("session::delete-attachment"),
+        spec::<MentionSearchRequest, MentionSearchResponse>(mention::SEARCH_FN),
+        spec::<MentionGetRequest, Option<MentionView>>(mention::GET_FN),
         // 3. configuration handlers (register_config_trigger, then register_config_status)
         spec::<OnConfigChangeEvent, OnConfigChangeResponse>("session::on-config-change"),
         spec::<ConfigStatusRequest, ReloadStatus>("session::config-status"),

@@ -1,0 +1,17 @@
+name: Mini worker
+description: Fixture worker template for the ide template tests.
+requires:
+  - typescript
+files:
+  - README.md
+  - worker-compose.yaml
+  - workers/my-worker/package.json
+  - workers/my-worker/src/index.ts
+  - workers/my-worker/scripts/dev.sh
+next_steps:
+  - 'Call it: iii trigger my-worker::hello'
+worker:
+  dir: workers/my-worker
+  name: my-worker
+  compose: my-worker
+  requires: [http]

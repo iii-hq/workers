@@ -1,5 +1,5 @@
 {
-  "description": "Run one consolidation pass now (all configured banks, or one bank). Deterministic near-duplicate dedup applied strictly through memory::supersede + memory::save; pinned memories are untouchable. dry_run plans without writing.",
+  "description": "Run one consolidation pass now (all configured banks, or one bank). Deterministic near-duplicate dedup, plus the optional LLM tiers when enabled (reorder judge; semantic merge/supersede of new memories, each with a reason), applied strictly through memory::supersede; pinned memories are untouchable. dry_run plans without writing.",
   "function_id": "memory-consolidate::run",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -27,6 +27,13 @@
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
+      "ActionKind": {
+        "enum": [
+          "merge",
+          "supersede"
+        ],
+        "type": "string"
+      },
       "BankReport": {
         "properties": {
           "bank": {
@@ -39,6 +46,7 @@
             "type": "integer"
           },
           "errors": {
+            "description": "Real failures (reads, writes). Any error keeps the pass due.",
             "items": {
               "type": "string"
             },
@@ -56,6 +64,13 @@
             "minimum": 0.0,
             "type": "integer"
           },
+          "notes": {
+            "description": "Soft skips (an optional tier unavailable, a sibling too old) — telemetry only: they never block the checkpoint, so an absent router cannot re-run the whole pass on every heartbeat.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "promoted": {
             "description": "Standing-instruction lines the judge promoted into the bank's `learned` rule.",
             "format": "uint",
@@ -70,6 +85,26 @@
           },
           "scanned": {
             "description": "Live memories scanned.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "semantic": {
+            "description": "Semantic-tier decisions (applied, or planned on dry runs), each with the judge's reason.",
+            "items": {
+              "$ref": "#/definitions/SemanticAction"
+            },
+            "type": "array"
+          },
+          "semantic_failed": {
+            "description": "New memories the judge could not decide even alone (a poison input); skipped past the cursor so they cannot wedge the tier.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "semantic_rejected": {
+            "description": "Judge actions dropped by validation (unknown alias, pinned target, wrong direction, a lost number, ...).",
             "format": "uint",
             "minimum": 0.0,
             "type": "integer"
@@ -129,6 +164,45 @@
           "loser_texts",
           "winner_id",
           "winner_text"
+        ],
+        "type": "object"
+      },
+      "SemanticAction": {
+        "description": "One semantic-tier decision as reported (and kept in `last_report`).",
+        "properties": {
+          "applied": {
+            "description": "False on dry runs. Actions dropped by the pre-write freshness check are not listed here; they count in `semantic_rejected` with a note.",
+            "type": "boolean"
+          },
+          "keep_id": {
+            "description": "Merge survivor / supersede replacement.",
+            "type": "string"
+          },
+          "keep_text": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/definitions/ActionKind"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "retire_id": {
+            "description": "Merge duplicate / supersede outdated record.",
+            "type": "string"
+          },
+          "retire_text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "applied",
+          "keep_id",
+          "keep_text",
+          "kind",
+          "reason",
+          "retire_id",
+          "retire_text"
         ],
         "type": "object"
       }

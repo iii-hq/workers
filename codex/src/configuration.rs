@@ -1,6 +1,6 @@
 //! Integration with the `configuration` worker — register the codex config
 //! schema, fetch the live value, and hot-reload it on change. Every field is a
-//! runtime tuning knob (model/sandbox defaults, stream names, executable path,
+//! runtime tuning knob (model/sandbox defaults, executable path, base URL,
 //! iii-context toggle), so a change hot-swaps the whole snapshot — there is no
 //! security topology to refuse like the path-jail workers.
 
@@ -50,7 +50,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&Config>) -> Result<(
     let mut payload = json!({
         "id": config_id(),
         "name": "Codex",
-        "description": "OpenAI Codex worker: per-turn defaults (model, sandbox mode, approval policy, reasoning effort, working directory), the agent::events / codex::events stream names, the codex CLI path, an optional API base URL, and whether to inject the iii runtime context as developer_instructions.",
+        "description": "OpenAI Codex worker: per-turn defaults (model, sandbox mode, approval policy, reasoning effort, working directory), the codex CLI path, an optional API base URL, and whether to inject the iii runtime context as developer_instructions.",
         "schema": Config::json_schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });

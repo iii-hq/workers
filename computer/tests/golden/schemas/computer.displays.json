@@ -1,5 +1,5 @@
 {
-  "description": "List the local displays (index, name, primary, size). Pass the chosen index as `monitor` to computer::sessions::start to drive that display; omit it to use the display under the cursor. Native host only.",
+  "description": "List the local displays (index, name, primary, size). Pass the chosen index as `monitor` to computer::sessions::start to drive that display; omit it to use the display under the cursor. Native host only; empty on a Wayland desktop.",
   "function_id": "computer::displays",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -16,7 +16,7 @@
             "type": "boolean"
           },
           "height": {
-            "description": "Logical height in points.",
+            "description": "Height, in the same unit.",
             "format": "uint32",
             "minimum": 0.0,
             "type": "integer"
@@ -34,7 +34,7 @@
             "type": "boolean"
           },
           "width": {
-            "description": "Logical width in points.",
+            "description": "Width: points on macOS, pixels on Windows and Linux.",
             "format": "uint32",
             "minimum": 0.0,
             "type": "integer"

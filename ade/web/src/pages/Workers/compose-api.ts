@@ -77,6 +77,7 @@ export type OperationSnapshot = {
   phase: string
   completed: number
   total: number
+  last_sequence?: number
   last_event?: {
     detail: string
     container?: string | null
@@ -172,6 +173,9 @@ export function composeApi(iii: ExtensionIii, file: () => string | undefined) {
     const current = file()
     return current ? { file: current, ...payload } : payload
   }
+  // A caller-selected id: the page binds its progress before submitting.
+  const operation = (operationId?: string) =>
+    operationId ? { operation_id: operationId } : {}
   return {
     /**
      * The compose project and the engine's connected workers. Either may be
@@ -209,16 +213,30 @@ export function composeApi(iii: ExtensionIii, file: () => string | undefined) {
         deferred_packages: string[]
       }>('compose::validate', withFile()),
     stopDaemon: () => call<{ stopping: string[] }>('compose::stop', {}, 30_000),
-    add: (workers: (string | Record<string, unknown>)[]) =>
-      call<Accepted>('compose::add', withFile({ workers }), 60_000),
-    update: (workers: string[]) =>
-      call<Accepted>('compose::update', withFile({ workers }), 60_000),
+    add: (
+      workers: (string | Record<string, unknown>)[],
+      operationId?: string,
+    ) =>
+      call<Accepted>(
+        'compose::add',
+        withFile({ workers, ...operation(operationId) }),
+        60_000,
+      ),
+    update: (workers: string[], operationId?: string) =>
+      call<Accepted>(
+        'compose::update',
+        withFile({ workers, ...operation(operationId) }),
+        60_000,
+      ),
     /**
      * New versions for declared packages, through `compose::add`: it rewrites
      * only `version` and restarts only the containers whose package changed,
      * where `compose::update` restarts the whole project.
      */
-    setVersions: (changes: { ref: string; version: string }[]) =>
+    setVersions: (
+      changes: { ref: string; version: string }[],
+      operationId?: string,
+    ) =>
       call<Accepted>(
         'compose::add',
         withFile({
@@ -226,11 +244,16 @@ export function composeApi(iii: ExtensionIii, file: () => string | undefined) {
             worker: `package://${change.ref}`,
             version: change.version,
           })),
+          ...operation(operationId),
         }),
         60_000,
       ),
-    remove: (workers: string[]) =>
-      call<Accepted>('compose::remove', withFile({ workers }), 60_000),
+    remove: (workers: string[], operationId?: string) =>
+      call<Accepted>(
+        'compose::remove',
+        withFile({ workers, ...operation(operationId) }),
+        60_000,
+      ),
     operation: (operation_id: string) =>
       call<OperationSnapshot>('compose::operation', { operation_id }, 10_000),
     cancel: (operation_id: string) =>
@@ -268,10 +291,10 @@ export function composeApi(iii: ExtensionIii, file: () => string | undefined) {
         'console::compose::container',
         withFile({ container }),
       ),
-    edit: (container: string, patch: EditPatch) =>
+    edit: (container: string, patch: EditPatch, operationId?: string) =>
       call<Accepted>(
         'console::compose::edit',
-        withFile({ container, ...patch }),
+        withFile({ container, ...patch, ...operation(operationId) }),
         60_000,
       ),
   }

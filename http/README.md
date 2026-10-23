@@ -1,7 +1,9 @@
 # http
 
 Exposes registered functions as HTTP endpoints. Any function bound to an
-`http` trigger becomes a route — external clients call it with a plain HTTP
+`http` trigger, or observing `http::on-request` on an iii 0.25 engine (see
+[Observable function](#observable-function-httpon-request)), becomes a
+route — external clients call it with a plain HTTP
 request instead of going through the iii SDK, which is what you want for
 webhooks, browser clients, or any caller outside the engine's WebSocket
 protocol. Routing, path params, per-route/global middleware, conditional
@@ -89,6 +91,68 @@ old listeners and their live configuration remain unchanged. Set
 `webhook_listener: null` to disable it live. Shutdown drains both listeners
 and serializes with reload; a late reload cannot restart a stopped server.
 
+`http::status` reports where the server actually listens: `{ host, port,
+url, last_reload_error }`, where `url` is the base URL to open from this
+machine (`http://127.0.0.1:<port>` when it listens on every interface). It
+is read-only and open to agents, so code and agents build page URLs from it
+instead of assuming port 3111.
+
+## Observable function: `http::on-request`
+
+On iii 0.25 engines a route can also be declared by observing
+`http::on-request`, next to the `http` trigger type (which stays, so
+`registerTrigger` consumers keep working on 0.24 and 0.25 engines):
+
+```typescript
+iii.registerFunction('orders::get', async (req: HttpRequest) =>
+  ({ status_code: 200, body: { order_id: req.path_params.id } }))
+
+const route = iii.observe(
+  { function_id: 'http::on-request', args: { method: 'GET', path: '/orders/:id' } },
+  'orders::get',
+)
+await route.ready()   // rejected with HTTP_ROUTE_CONFLICT if the shape is taken
+// later: route.dispose() removes the route
+```
+
+| Arg | Required | Default | Description |
+|---|---|---|---|
+| `method` | yes | — | HTTP method to match (case insensitive). |
+| `path` | yes | — | Route path, e.g. `/orders/:id` (or `/orders/{id}`). |
+| `public_webhook` | no | `false` | Also expose this route on the restricted listener. |
+| `middleware_function_ids` | no | `[]` | Per-route middleware, as for the trigger. |
+| `condition_function_id` | no | — | Deprecated: prefer filters. As for the trigger. |
+
+Unknown args are refused with `INVALID_ARGS`. The target receives the same
+`HttpRequest` an `http` trigger's function receives, and its return value (or
+its writes to the response channel) is the response, exactly as for a trigger:
+both kinds of route share one route table and one request pipeline (global and
+route middleware, condition, body limit, channels, timeouts, error mapping,
+spans and logs). Only the call differs: the target is invoked through the
+engine as the observer's activation. The observer's `filters` are evaluated
+in-process against the request as `input`, before the condition and the
+route middleware; a request they reject gets the same `422
+CONDITION_NOT_MET` as an unmet condition, without calling anything:
+
+```typescript
+iii.observe({
+  function_id: 'http::on-request',
+  args: { method: 'POST', path: '/webhooks/stripe', public_webhook: true },
+  filters: { 'input.headers.stripe-signature': { $exists: true } },
+}, 'billing::on-stripe-event')
+```
+
+A trigger binding and an observer cannot claim the same method and path shape
+(`/a/:x` and `/a/:y` are one shape): whichever registers later is refused, the
+observer with `HTTP_ROUTE_CONFLICT`, the trigger registration with today's
+conflict error. The engine keeps a refused trigger binding and offers it again
+when this worker restarts; which of the two then takes the route depends on
+the order they are replayed in, as between two conflicting triggers today.
+`http::on-request` is never invoked directly: requests reach
+its observers through the server, and a direct invocation is refused with
+`FORBIDDEN`. On a 0.24 engine `observe` fails with `UNSUPPORTED`; bind the
+`http` trigger type there.
+
 ## Trigger type
 
 This worker always registers the `http` trigger type. Bind a function to it
@@ -172,7 +236,12 @@ cargo fmt --all -- --check
 CARGO_TARGET_DIR=target-http-local cargo clippy --all-targets --all-features --locked -- -D warnings
 ```
 
+`tests/on_request.rs` covers `http::on-request` the same way, with the fake
+engine playing the observer lifecycle.
+
 Other `e2e_*` suites retain their existing connect-or-skip engine requirement.
+They connect to `III_ENGINE_WS_URL` (default `ws://127.0.0.1:49134`): point it
+at a disposable engine, or at a closed port to skip them.
 
 ### Requires removing the legacy built-in HTTP service
 

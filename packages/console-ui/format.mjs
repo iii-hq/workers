@@ -182,9 +182,20 @@ function execCommandFallback(text) {
   textarea.setAttribute('readonly', '')
   textarea.style.position = 'fixed'
   textarea.style.left = '-9999px'
-  document.body.appendChild(textarea)
+  // Inside an open modal (Radix Dialog / BottomSheet) the focus trap pulls
+  // focus back from anything outside it, the selection goes with it and
+  // nothing is copied — so the textarea goes into the modal itself.
+  const modal =
+    typeof prior?.closest === 'function'
+      ? prior.closest('[role="dialog"], [role="alertdialog"]')
+      : null
+  ;(modal ?? document.body).appendChild(textarea)
   try {
+    textarea.focus?.({ preventScroll: true })
     textarea.select()
+    // Another focus trap (a modal menu, say) took focus back: the selection
+    // went with it, and execCommand would report a copy of nothing.
+    if (document.activeElement !== textarea) return false
     return document.execCommand('copy')
   } catch {
     return false

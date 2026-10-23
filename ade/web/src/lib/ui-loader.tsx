@@ -36,6 +36,8 @@ import {
   registerExtComposerAction,
   registerExtComposerControl,
   registerExtConfigForm,
+  registerExtContextSection,
+  registerExtMentionRenderer,
   registerExtOverlay,
   registerExtPage,
   registerExtProviderConfigForm,
@@ -52,6 +54,7 @@ import type {
   ComposerControlProps,
   ConfigFormProps,
   ConsoleApi,
+  ContextSectionProps,
   Host,
   ProviderConfigFormProps,
   SessionChipProps,
@@ -96,6 +99,18 @@ export interface ConversationAdapter {
   selectConversation(sessionId: string): void
   openDraft(draft: { text: string; title?: string }): void
   composerModel(conversationId?: string | null): string | null
+  /**
+   * A new chat that sends `text` the way a setup example prompt does: the
+   * agent profile selected (the default one when absent or not served; an
+   * unserved profile leaves the text as a draft), the first listed model
+   * this machine has chosen, then the chat shown. Resolves to its id.
+   */
+  startChat(request: {
+    text: string
+    agent?: string
+    models?: { provider: string; model: string; effort?: string }[]
+    effort?: string
+  }): Promise<string>
 }
 
 /**
@@ -274,9 +289,9 @@ function makeHost(
             ...overlay,
             scope,
             path,
-            render: () => (
+            render: (renderProps) => (
               <ScopedExtension scope={scope} path={path}>
-                <Overlay />
+                <Overlay {...renderProps} />
               </ScopedExtension>
             ),
           }),
@@ -318,6 +333,27 @@ function makeHost(
         )
       },
     },
+    mentions: {
+      registerRenderer(renderer) {
+        if (
+          !renderer ||
+          typeof renderer.provider !== 'string' ||
+          !renderer.Preview
+        ) {
+          throw new Error(
+            'mentions.registerRenderer: provider and Preview are required',
+          )
+        }
+        return track(
+          registerExtMentionRenderer({
+            provider: renderer.provider,
+            Preview: renderer.Preview,
+            scope,
+            path,
+          }),
+        )
+      },
+    },
     chat: {
       openDraft(draft) {
         conversationAdapter.openDraft(draft)
@@ -347,6 +383,21 @@ function makeHost(
             render: (props: SessionTurnSummaryProps) => (
               <ScopedExtension scope={scope} path={path}>
                 <Summary {...props} />
+              </ScopedExtension>
+            ),
+          }),
+        )
+      },
+      registerContextSection(section) {
+        const Body = section.render
+        return track(
+          registerExtContextSection({
+            ...section,
+            scope,
+            path,
+            render: (props: ContextSectionProps) => (
+              <ScopedExtension scope={scope} path={path}>
+                <Body {...props} />
               </ScopedExtension>
             ),
           }),
@@ -403,6 +454,9 @@ function makeHost(
       },
       composerModel(conversationId) {
         return conversationAdapter.composerModel(conversationId)
+      },
+      startChat(request) {
+        return conversationAdapter.startChat(request)
       },
     },
   }

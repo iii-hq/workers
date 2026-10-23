@@ -13,7 +13,9 @@ pub async fn query(
     pool: &SqlitePool,
     sql: &str,
     params: &[JsonParam],
-    _timeout_ms: u64, // SQLite has no per-query timeout; honored via spawn_blocking budget upstream
+    // SQLite has no per-query timeout; `timeout_ms` is honored via the
+    // spawn_blocking budget upstream.
+    opts: crate::driver::ReadOptions,
 ) -> Result<QueryResult, DbError> {
     let conn = pool.acquire().await?;
     let sql = sql.to_string();
@@ -21,52 +23,22 @@ pub async fn query(
 
     tokio::task::spawn_blocking(move || -> Result<QueryResult, DbError> {
         conn.with(|c| {
-            let mut stmt = c
-                .prepare(&sql)
-                .map_err(|e| enrich_schema_err(c, &sql, map_err(e)))?;
-            // `database::query` is the READ surface a narrowed agent policy
-            // grants; enforcement must live here, not in the docs — live
-            // testing showed agents running raw INSERTs through it.
-            // sqlite3_stmt_readonly is authoritative: it also catches
-            // data-modifying CTEs (`WITH ... INSERT`) and writing PRAGMAs
-            // that keyword classification misses.
-            if !stmt.readonly() {
-                return Err(DbError::DriverError {
-                    driver: "sqlite".into(),
-                    code: Some("READ_ONLY".into()),
-                    message: "database::query only runs read-only SQL; this statement writes — \
-                              use database::execute"
-                        .into(),
-                    failed_index: None,
-                });
+            let started = std::time::Instant::now();
+            if !opts.query_only {
+                return read(c, &sql, &params, opts.max_rows, started);
             }
-            let columns: Vec<ColumnMeta> = stmt
-                .columns()
-                .into_iter()
-                .map(|col| ColumnMeta {
-                    name: col.name().to_string(),
-                    ty: col.decl_type().unwrap_or("").to_string(),
-                })
-                .collect();
-
-            let bound: Vec<SqlValue> = params.iter().map(json_param_to_sql).collect();
-            let bound_refs: Vec<&dyn rusqlite::ToSql> =
-                bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-
-            let n = columns.len();
-            let mut rows_out: Vec<Row> = Vec::new();
-            let mut rows = stmt.query(bound_refs.as_slice()).map_err(map_err)?;
-            while let Some(row) = rows.next().map_err(map_err)? {
-                let mut vals = Vec::with_capacity(n);
-                for i in 0..n {
-                    vals.push(row_value_at(row, i)?);
-                }
-                rows_out.push(Row(vals));
+            // Belt and braces for reads built from caller text: with
+            // query_only on, nothing on this connection can write — not even
+            // a function with side effects — whatever `readonly()` says.
+            c.pragma_update(None, "query_only", true).map_err(map_err)?;
+            let result = read(c, &sql, &params, opts.max_rows, started);
+            if let Err(e) = c.pragma_update(None, "query_only", false) {
+                // A connection left read-only would fail every later write
+                // drawn from the pool; say so loudly.
+                tracing::error!(error = %e, "sqlite: could not turn query_only back off");
+                return Err(map_err(e));
             }
-            Ok(QueryResult {
-                columns,
-                rows: rows_out,
-            })
+            result
         })
     })
     .await
@@ -76,6 +48,81 @@ pub async fn query(
         message: format!("spawn_blocking join: {e}"),
         failed_index: None,
     })?
+}
+
+fn read(
+    c: &rusqlite::Connection,
+    sql: &str,
+    params: &[JsonParam],
+    max_rows: Option<u64>,
+    started: std::time::Instant,
+) -> Result<QueryResult, DbError> {
+    // rusqlite's `prepare` compiles the first statement and ignores the
+    // rest; refuse a second one instead of silently dropping it.
+    if has_second_statement(sql) {
+        return Err(DbError::DriverError {
+            driver: "sqlite".into(),
+            code: Some("MULTI_STATEMENT".into()),
+            message: "database::query runs one statement; send each statement separately".into(),
+            failed_index: None,
+        });
+    }
+    let mut stmt = c
+        .prepare(sql)
+        .map_err(|e| enrich_schema_err(c, sql, map_err(e)))?;
+    // `database::query` is the READ surface a narrowed agent policy
+    // grants; enforcement must live here, not in the docs — live
+    // testing showed agents running raw INSERTs through it.
+    // sqlite3_stmt_readonly is authoritative: it also catches
+    // data-modifying CTEs (`WITH ... INSERT`) and writing PRAGMAs
+    // that keyword classification misses.
+    if !stmt.readonly() {
+        return Err(DbError::DriverError {
+            driver: "sqlite".into(),
+            code: Some("READ_ONLY".into()),
+            message: "database::query only runs read-only SQL; this statement writes — \
+                      use database::execute"
+                .into(),
+            failed_index: None,
+        });
+    }
+    let columns: Vec<ColumnMeta> = stmt
+        .columns()
+        .into_iter()
+        .map(|col| ColumnMeta {
+            name: col.name().to_string(),
+            ty: col.decl_type().unwrap_or("").to_string(),
+        })
+        .collect();
+
+    let bound: Vec<SqlValue> = params.iter().map(json_param_to_sql).collect();
+    let bound_refs: Vec<&dyn rusqlite::ToSql> =
+        bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+
+    let n = columns.len();
+    let mut rows_out: Vec<Row> = Vec::new();
+    let mut truncated = false;
+    let mut rows = stmt.query(bound_refs.as_slice()).map_err(map_err)?;
+    while let Some(row) = rows.next().map_err(map_err)? {
+        // SQLite steps lazily: stopping here computes nothing further.
+        if max_rows.is_some_and(|max| rows_out.len() as u64 >= max) {
+            truncated = true;
+            break;
+        }
+        let mut vals = Vec::with_capacity(n);
+        for i in 0..n {
+            vals.push(row_value_at(row, i)?);
+        }
+        rows_out.push(Row(vals));
+    }
+    drop(rows);
+    json_columns(&columns, &mut rows_out);
+    Ok(QueryResult {
+        columns,
+        rows: rows_out,
+        truncated,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    })
 }
 
 fn json_param_to_sql(p: &JsonParam) -> SqlValue {
@@ -98,6 +145,32 @@ fn row_value_at(row: &rusqlite::Row<'_>, idx: usize) -> Result<RowValue, DbError
         ValueRef::Text(t) => RowValue::Text(String::from_utf8_lossy(t).into_owned()),
         ValueRef::Blob(b) => RowValue::Bytes(b.to_vec()),
     })
+}
+
+/// SQLite stores JSON as TEXT; a column declared `JSON`/`JSONB` hands its
+/// documents back as JSON values (objects and arrays; anything else stays
+/// the text it is), the shape postgres and mysql json columns have.
+fn json_columns(columns: &[ColumnMeta], rows: &mut [Row]) {
+    let json_idx: Vec<usize> = columns
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| matches!(c.ty.to_ascii_uppercase().as_str(), "JSON" | "JSONB"))
+        .map(|(i, _)| i)
+        .collect();
+    if json_idx.is_empty() {
+        return;
+    }
+    for row in rows.iter_mut() {
+        for &i in &json_idx {
+            if let Some(RowValue::Text(text)) = row.0.get(i) {
+                if let Ok(v @ (serde_json::Value::Object(_) | serde_json::Value::Array(_))) =
+                    serde_json::from_str::<serde_json::Value>(text)
+                {
+                    row.0[i] = RowValue::Json(v);
+                }
+            }
+        }
+    }
 }
 
 pub(crate) fn map_err(e: rusqlite::Error) -> DbError {
@@ -283,6 +356,69 @@ fn with_failed_index(e: DbError, idx: usize) -> DbError {
 /// String-literal edge cases (e.g. a `;` inside a quoted string) are not
 /// handled — for v1.0, false positives are an acceptable price for
 /// preventing silent statement-drop in `Connection::execute`.
+/// Whether SQL holds anything but whitespace and comments after its first
+/// top-level `;` — lexed like sqlite (quotes, brackets, comments), so a `;`
+/// inside a literal does not count.
+pub(crate) fn has_second_statement(sql: &str) -> bool {
+    let b = sql.as_bytes();
+    let mut i = 0usize;
+    let mut ended = false;
+    while i < b.len() {
+        let c = b[i];
+        let skip_to = |close: &[u8], from: usize| -> usize {
+            sql[from..]
+                .find(std::str::from_utf8(close).unwrap_or(""))
+                .map_or(b.len(), |p| from + p + close.len())
+        };
+        match c {
+            b'-' if b.get(i + 1) == Some(&b'-') => {
+                i = sql[i..].find('\n').map_or(b.len(), |p| i + p + 1);
+                continue;
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                i = skip_to(b"*/", i + 2);
+                continue;
+            }
+            c if c.is_ascii_whitespace() => {
+                i += 1;
+                continue;
+            }
+            _ => {}
+        }
+        if ended {
+            if c == b';' {
+                i += 1;
+                continue;
+            }
+            return true;
+        }
+        match c {
+            b'\'' | b'"' | b'`' => {
+                // Doubled quotes stay inside.
+                let mut j = i + 1;
+                while j < b.len() {
+                    if b[j] == c {
+                        if b.get(j + 1) == Some(&c) {
+                            j += 2;
+                            continue;
+                        }
+                        break;
+                    }
+                    j += 1;
+                }
+                i = j + 1;
+            }
+            b'[' => i = skip_to(b"]", i + 1),
+            b';' => {
+                ended = true;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    false
+}
+
 fn looks_like_multi_statement(sql: &str) -> bool {
     let trimmed = sql.trim_end_matches(|c: char| c.is_whitespace() || c == ';');
     trimmed.contains(';')
@@ -343,6 +479,7 @@ pub async fn execute(
     let sql = sql.to_string();
     let params = params.to_vec();
     let returning = returning.to_vec();
+    let started = std::time::Instant::now();
 
     tokio::task::spawn_blocking(move || -> Result<ExecuteResult, DbError> {
         conn.with(|c| {
@@ -390,6 +527,7 @@ pub async fn execute(
                         }
                         returned.push(Row(vals));
                     }
+                    json_columns(&columns, &mut returned);
                     (returned.len() as u64, returned, columns)
                 } else {
                     let affected = stmt.execute(bound_refs.as_slice()).map_err(map_err)?;
@@ -418,6 +556,7 @@ pub async fn execute(
                 last_insert_id,
                 returned_rows,
                 returned_columns,
+                elapsed_ms: started.elapsed().as_millis() as u64,
             })
         })
     })
@@ -736,6 +875,7 @@ pub async fn tx_execute(
                     last_insert_id,
                     returned_rows,
                     returned_columns,
+                    elapsed_ms: 0,
                 })
             });
             (result, owned)
@@ -810,6 +950,8 @@ pub async fn run_prepared(
                 Ok(QueryResult {
                     columns,
                     rows: rows_out,
+                    truncated: false,
+                    elapsed_ms: 0,
                 })
             });
             (result, owned)
@@ -825,6 +967,22 @@ pub async fn run_prepared(
 
     *conn_slot = Some(returned);
     result
+}
+
+#[cfg(test)]
+mod second_statement_tests {
+    use super::has_second_statement;
+
+    #[test]
+    fn only_a_real_second_statement_counts() {
+        assert!(has_second_statement("SELECT 1; ATTACH 'x' AS y"));
+        assert!(has_second_statement("SELECT 1;SELECT 2"));
+        assert!(has_second_statement("SELECT 1; ; SELECT 2"));
+        assert!(!has_second_statement("SELECT 1;"));
+        assert!(!has_second_statement("SELECT 1; -- done\n ;; /* end */"));
+        assert!(!has_second_statement("SELECT 'a;b', \"c;d\", [e;f] FROM t"));
+        assert!(!has_second_statement("SELECT 'it''s; fine'"));
+    }
 }
 
 #[cfg(test)]
@@ -853,9 +1011,17 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        let result = query(&p, "SELECT id, name FROM t ORDER BY id", &[], 30_000)
-            .await
-            .unwrap();
+        let result = query(
+            &p,
+            "SELECT id, name FROM t ORDER BY id",
+            &[],
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(result.columns.len(), 2);
         assert_eq!(result.columns[0].name, "id");
         assert_eq!(result.columns[1].name, "name");
@@ -885,24 +1051,48 @@ mod tests {
             "WITH src(n) AS (VALUES ('x')) INSERT INTO t (name) SELECT n FROM src",
             "PRAGMA journal_mode = WAL",
         ] {
-            let err = query(&p, sql, &[], 30_000).await.unwrap_err();
+            let err = query(
+                &p,
+                sql,
+                &[],
+                crate::driver::ReadOptions {
+                    timeout_ms: 30_000,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
             assert!(
                 err.to_string().contains("read-only"),
                 "{sql:?} must be rejected as non-read-only, got: {err}"
             );
         }
         // Reads still pass, including read-only PRAGMA-free CTEs.
-        assert!(
-            query(&p, "WITH x(n) AS (VALUES (1)) SELECT n FROM x", &[], 30_000)
-                .await
-                .is_ok()
-        );
+        assert!(query(
+            &p,
+            "WITH x(n) AS (VALUES (1)) SELECT n FROM x",
+            &[],
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            }
+        )
+        .await
+        .is_ok());
         assert_eq!(
-            query(&p, "SELECT COUNT(*) AS n FROM t", &[], 30_000)
-                .await
-                .unwrap()
-                .rows
-                .len(),
+            query(
+                &p,
+                "SELECT COUNT(*) AS n FROM t",
+                &[],
+                crate::driver::ReadOptions {
+                    timeout_ms: 30_000,
+                    ..Default::default()
+                }
+            )
+            .await
+            .unwrap()
+            .rows
+            .len(),
             1
         );
     }
@@ -924,7 +1114,10 @@ mod tests {
             &p,
             "SELECT n FROM t WHERE n > ? ORDER BY n",
             &[JsonParam::Int(1)],
-            30_000,
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -942,7 +1135,17 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        let r = query(&p, "SELECT x FROM t", &[], 30_000).await.unwrap();
+        let r = query(
+            &p,
+            "SELECT x FROM t",
+            &[],
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(r.rows.len(), 1);
         assert!(matches!(r.rows[0].0[0], RowValue::Null));
     }
@@ -950,7 +1153,17 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn malformed_sql_returns_driver_error() {
         let p = pool().await;
-        let err = query(&p, "SELEKT 1", &[], 30_000).await.unwrap_err();
+        let err = query(
+            &p,
+            "SELEKT 1",
+            &[],
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
         match err {
             DbError::DriverError { driver, .. } => assert_eq!(driver, "sqlite"),
             other => panic!("expected DriverError, got {other:?}"),
@@ -1120,9 +1333,17 @@ mod tests {
         }
 
         // Verify rollback: step 0's INSERT must have been undone — no rows.
-        let r = query(&p, "SELECT COUNT(*) AS c FROM t", &[], 30_000)
-            .await
-            .unwrap();
+        let r = query(
+            &p,
+            "SELECT COUNT(*) AS c FROM t",
+            &[],
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert!(matches!(
             &r.rows[0].0[0],
             RowValue::Int(0) | RowValue::BigInt(0)
@@ -1304,9 +1525,17 @@ mod tests {
         }
 
         // Verify rollback: table should be empty.
-        let r = query(&p, "SELECT COUNT(*) FROM t", &[], 30_000)
-            .await
-            .unwrap();
+        let r = query(
+            &p,
+            "SELECT COUNT(*) FROM t",
+            &[],
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert!(matches!(&r.rows[0].0[0], RowValue::Int(0)));
     }
 
@@ -1407,9 +1636,17 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("RETURNING id, n"), "must name the fix: {msg}");
         // Nothing was inserted by the refused call.
-        let q = query(&pool, "SELECT COUNT(*) AS c FROM t", &[], 5_000)
-            .await
-            .unwrap();
+        let q = query(
+            &pool,
+            "SELECT COUNT(*) AS c FROM t",
+            &[],
+            crate::driver::ReadOptions {
+                timeout_ms: 5_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(q.rows[0].0[0].clone().into_json(), serde_json::json!(0));
 
         // The same statement WITH the clause works and reports real rows.
@@ -1488,9 +1725,17 @@ mod tests {
         );
 
         // SELECT against a wrong column: the table comes off the FROM clause.
-        let err = query(&p, "SELECT value FROM receiving", &[], 1_000)
-            .await
-            .unwrap_err();
+        let err = query(
+            &p,
+            "SELECT value FROM receiving",
+            &[],
+            crate::driver::ReadOptions {
+                timeout_ms: 1_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
         let msg = format!("{err:?}");
         assert!(msg.contains("no such column"), "{msg}");
         assert!(msg.contains("shipment_value NUMERIC"), "{msg}");
@@ -1515,7 +1760,10 @@ mod tests {
             &p,
             "SELECT b.missing FROM a JOIN b ON a.id = b.id",
             &[],
-            1_000,
+            crate::driver::ReadOptions {
+                timeout_ms: 1_000,
+                ..Default::default()
+            },
         )
         .await
         .unwrap_err();
@@ -1532,7 +1780,10 @@ mod tests {
             &p,
             "SELECT missing FROM a JOIN b ON a.id = b.id",
             &[],
-            1_000,
+            crate::driver::ReadOptions {
+                timeout_ms: 1_000,
+                ..Default::default()
+            },
         )
         .await
         .unwrap_err();
@@ -1540,9 +1791,17 @@ mod tests {
         assert!(!msg.contains("columns: ("), "{msg}");
 
         // Missing table: the existing tables are named.
-        let err = query(&p, "SELECT * FROM receiving_shipments", &[], 1_000)
-            .await
-            .unwrap_err();
+        let err = query(
+            &p,
+            "SELECT * FROM receiving_shipments",
+            &[],
+            crate::driver::ReadOptions {
+                timeout_ms: 1_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
         let msg = format!("{err:?}");
         assert!(msg.contains("no such table"), "{msg}");
         assert!(msg.contains("existing tables: (a, b, receiving)"), "{msg}");
@@ -1600,7 +1859,10 @@ mod tests {
             &p,
             "WITH ids AS (SELECT id FROM t) SELECT COUNT(*) c FROM ids",
             &[],
-            1_000,
+            crate::driver::ReadOptions {
+                timeout_ms: 1_000,
+                ..Default::default()
+            },
         )
         .await
         .expect("a read-only CTE is ordinary SQLite");

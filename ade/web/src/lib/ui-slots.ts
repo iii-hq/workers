@@ -12,7 +12,9 @@ import type {
   ComposerControlRegistration,
   ConfigFormLayout,
   ConfigFormProps,
+  ContextSectionRegistration,
   FunctionTriggerRenderer,
+  MentionRendererRegistration,
   OverlayRegistration,
   PageRegistration,
   ProviderConfigFormProps,
@@ -71,6 +73,25 @@ export interface RegisteredSessionTurnSummary
   path: string
 }
 
+export interface RegisteredContextSection extends ContextSectionRegistration {
+  scope: string
+  path: string
+  /** Numbers each registration, so a replaced one renders afresh. */
+  registrationId: number
+}
+
+/** The Context panel's own sections, in their default order. */
+export const CONTEXT_PANEL_GROUPS = [
+  'project',
+  'tickets',
+  'prs',
+  'assets',
+  'subagents',
+  'triggers',
+  'links',
+  'tracking',
+] as const
+
 export interface RegisteredComposerAction extends ComposerActionRegistration {
   scope: string
   path: string
@@ -82,6 +103,12 @@ export interface RegisteredComposerControl extends ComposerControlRegistration {
 }
 
 export interface RegisteredOverlay extends OverlayRegistration {
+  scope: string
+  path: string
+}
+
+/** Unwrapped: the preview card scopes it and falls back to the generic card. */
+export interface RegisteredMentionRenderer extends MentionRendererRegistration {
   scope: string
   path: string
 }
@@ -156,9 +183,12 @@ const configFormsStore = createStore<RegisteredConfigForm>()
 const providerConfigFormsStore = createStore<RegisteredProviderConfigForm>()
 const sessionChipsStore = createStore<RegisteredSessionChip>()
 const sessionTurnSummariesStore = createStore<RegisteredSessionTurnSummary>()
+const contextSectionsStore = createStore<RegisteredContextSection>()
+let lastContextSectionRegistration = 0
 const composerActionsStore = createStore<RegisteredComposerAction>()
 const composerControlsStore = createStore<RegisteredComposerControl>()
 const overlaysStore = createStore<RegisteredOverlay>()
+const mentionRenderersStore = createStore<RegisteredMentionRenderer>()
 const uiAssetsStatusStore = createValueStore<UiAssetsStatus>('unavailable')
 
 /**
@@ -291,12 +321,48 @@ export function registerExtOverlay(entry: RegisteredOverlay): () => void {
   return overlaysStore.add(entry)
 }
 
+/** Duplicate provider: last registration wins in lookups. */
+export function registerExtMentionRenderer(
+  entry: RegisteredMentionRenderer,
+): () => void {
+  const duplicate = mentionRenderersStore
+    .get()
+    .find((renderer) => renderer.provider === entry.provider)
+  if (duplicate && duplicate.path !== entry.path) {
+    console.warn(
+      `[iii-ui] duplicate mention renderer for '@${entry.provider}' - ` +
+        `'${entry.path}' overrides '${duplicate.path}'`,
+    )
+  }
+  return mentionRenderersStore.add(entry)
+}
+
 export function getExtPages(): readonly RegisteredPage[] {
   return pagesStore.get()
 }
 
 export function getExtTriggerActivityRenderers(): readonly RegisteredTriggerActivityRenderer[] {
   return triggerActivityRenderersStore.get()
+}
+
+/**
+ * Resolves `true` once a page with `id` is registered — at once when it
+ * already is — or `false` after `timeoutMs`. A worker that just connected
+ * registers its pages only when the console has loaded its script.
+ */
+export function whenExtPage(id: string, timeoutMs: number): Promise<boolean> {
+  if (getExtPage(id)) return Promise.resolve(true)
+  return new Promise((resolve) => {
+    const finish = (found: boolean) => {
+      clearTimeout(timer)
+      unsubscribe()
+      resolve(found)
+    }
+    const unsubscribe = pagesStore.subscribe(() => {
+      if (getExtPage(id)) finish(true)
+    })
+    const timer = setTimeout(() => finish(false), timeoutMs)
+  })
 }
 
 /** Last registration wins for duplicate ids. */
@@ -372,6 +438,23 @@ export function isExtConfigFormPending(
 }
 
 const EMPTY: readonly never[] = []
+
+/** The renderer a worker registered for `@<provider>` (the latest wins). */
+export function useExtMentionRenderer(
+  provider: string,
+): RegisteredMentionRenderer | undefined {
+  const renderers = useSyncExternalStore(
+    mentionRenderersStore.subscribe,
+    mentionRenderersStore.get,
+    () => EMPTY,
+  )
+  return useMemo(() => {
+    for (let i = renderers.length - 1; i >= 0; i--) {
+      if (renderers[i].provider === provider) return renderers[i]
+    }
+    return undefined
+  }, [renderers, provider])
+}
 
 export function useExtPages(): readonly RegisteredPage[] {
   return useSyncExternalStore(pagesStore.subscribe, pagesStore.get, () => EMPTY)
@@ -450,6 +533,50 @@ export function useExtSessionTurnSummaries(): readonly RegisteredSessionTurnSumm
     () => EMPTY,
   )
   return useMemo(() => dedupeSessionTurnSummaries(summaries), [summaries])
+}
+
+/**
+ * Duplicate section id: last registration wins in the Context panel. The
+ * panel's own ids are refused: a worker cannot replace them.
+ */
+export function registerExtContextSection(
+  entry: Omit<RegisteredContextSection, 'registrationId'>,
+): () => void {
+  if ((CONTEXT_PANEL_GROUPS as readonly string[]).includes(entry.id)) {
+    console.warn(
+      `[iii-ui] context section id '${entry.id}' from '${entry.path}' is ` +
+        "one of the panel's own; it is ignored",
+    )
+    return () => {}
+  }
+  const duplicate = contextSectionsStore
+    .get()
+    .find((section) => section.id === entry.id)
+  if (duplicate && duplicate.path !== entry.path) {
+    console.warn(
+      `[iii-ui] duplicate context section id '${entry.id}' - ` +
+        `'${entry.path}' overrides '${duplicate.path}'`,
+    )
+  }
+  lastContextSectionRegistration += 1
+  return contextSectionsStore.add({
+    ...entry,
+    registrationId: lastContextSectionRegistration,
+  })
+}
+
+/** Workers' Context panel sections deduplicated by id; last registration wins. */
+export function useExtContextSections(): readonly RegisteredContextSection[] {
+  const sections = useSyncExternalStore(
+    contextSectionsStore.subscribe,
+    contextSectionsStore.get,
+    () => EMPTY,
+  )
+  return useMemo(() => {
+    const byId = new Map<string, RegisteredContextSection>()
+    for (const section of sections) byId.set(section.id, section)
+    return [...byId.values()]
+  }, [sections])
 }
 
 function dedupeComposerActions(

@@ -1,0 +1,70 @@
+{
+  "description": "The visible screen of one pane as text with its colour and style escapes (capture-pane -e), plus the pane's size, cursor position and whether a full-screen program has the alternate screen. Read-only.",
+  "function_id": "tmux::panes::capture",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "pane": {
+        "description": "Pane id, e.g. `%5`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "pane"
+    ],
+    "title": "PaneInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "alternate": {
+        "description": "The pane shows its alternate screen (a full-screen program).",
+        "type": "boolean"
+      },
+      "cursor_x": {
+        "description": "Cursor column, from 0.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "cursor_y": {
+        "description": "Cursor row, from 0.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "height": {
+        "description": "Height in rows.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "pane_id": {
+        "description": "Pane id.",
+        "type": "string"
+      },
+      "text": {
+        "description": "The visible screen, one line per row separated by `\\n`, with SGR escapes.",
+        "type": "string"
+      },
+      "width": {
+        "description": "Width in columns.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "alternate",
+      "cursor_x",
+      "cursor_y",
+      "height",
+      "pane_id",
+      "text",
+      "width"
+    ],
+    "title": "PaneCapture",
+    "type": "object"
+  }
+}

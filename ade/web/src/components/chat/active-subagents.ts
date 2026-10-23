@@ -1,3 +1,4 @@
+import { isSideChat } from '@/lib/chat-aside'
 import type { IIIConnectionState } from '@/lib/iii-client'
 import type {
   Conversation,
@@ -149,7 +150,8 @@ export function collectSubagentDescendants(
 
   for (let index = 0; index < scannedCount; index += 1) {
     const conversation = conversations[index]
-    if (!conversation?.parentId) continue
+    // A side chat of a sub-agent copies its parent link; it is not a sibling.
+    if (!conversation?.parentId || isSideChat(conversation)) continue
     const siblings = childrenByParent.get(conversation.parentId)
     if (siblings) siblings.push(conversation)
     else childrenByParent.set(conversation.parentId, [conversation])

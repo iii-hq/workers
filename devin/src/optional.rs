@@ -1,8 +1,8 @@
-//! Optional bus dependencies. The `stream::set` builtin (the `iii-stream`
-//! worker) and the `session::*` surface (the `session-manager` worker) are
-//! observability, not requirements: a Devin run must still work on an engine
-//! that has neither. Without a guard, every stdout line of every run fires a
-//! `stream::set` that fails with `function_not_found` and logs a warning.
+//! Optional bus dependencies. The `session::*` surface (the `session-manager`
+//! worker) is observability, not a requirement: a Devin run must still work on
+//! an engine without it. Without a guard, every streamed stdout line of every
+//! run fires a `session::update-message` that fails with `function_not_found`
+//! and logs a warning.
 //!
 //! An [`OptionalDependency`] remembers that a function is not registered, logs
 //! that ONCE, and skips further calls. It re-probes once per
@@ -24,7 +24,7 @@ pub fn is_function_not_found(error: &Error) -> bool {
 }
 
 pub struct OptionalDependency {
-    /// What the log lines name, e.g. `stream::set`.
+    /// What the log lines name, e.g. `session::append`.
     what: &'static str,
     /// Epoch ms at which the dependency was last found missing; 0 = present.
     missing_since_ms: AtomicU64,
@@ -98,7 +98,7 @@ mod tests {
     fn not_found() -> Error {
         Error::Remote {
             code: "function_not_found".into(),
-            message: "Function stream::set not found in namespace default.".into(),
+            message: "Function session::append not found in namespace default.".into(),
             stacktrace: None,
         }
     }
@@ -115,10 +115,10 @@ mod tests {
     }
 
     // Prevents: one warning (and one failed bus call) per stdout line when the
-    // stream worker is not installed.
+    // session-manager worker is not installed.
     #[test]
     fn a_missing_function_is_skipped_until_the_retry_window() {
-        let dep = OptionalDependency::new("stream::set");
+        let dep = OptionalDependency::new("session::append");
         assert!(dep.should_try(1_000));
         assert!(dep.observe(Some(&not_found()), 1_000));
         assert!(dep.is_missing());
@@ -131,7 +131,7 @@ mod tests {
 
     #[test]
     fn a_later_install_is_picked_up_on_the_re_probe() {
-        let dep = OptionalDependency::new("stream::set");
+        let dep = OptionalDependency::new("session::append");
         dep.observe(Some(&not_found()), 5);
         assert!(dep.should_try(5 + RETRY_AFTER_MS));
         assert!(!dep.observe(None, 5 + RETRY_AFTER_MS));

@@ -1,4 +1,4 @@
-import type { ISdk } from 'iii-sdk'
+import type { IIIClient } from 'iii-sdk'
 import type { DriverKey, Dialect } from './dialect.ts'
 
 export interface CaseContext {
@@ -7,7 +7,7 @@ export interface CaseContext {
   /** Calls a database worker function; returns parsed JSON or throws on engine error. */
   call: (functionId: string, payload: unknown) => Promise<any>
   /** Direct SDK access for trigger-config edge-case tests. */
-  iii: ISdk
+  iii: IIIClient
   /**
    * Asserts that `fn()` rejects and the rejection message contains `expectedCode`.
    * The worker wraps DbError as `IIIError::Handler(json_string)`, which the engine

@@ -530,7 +530,8 @@ mod tests {
     // Local models misquote JSON args; the malformed text must survive as
     // `{"_raw": …}` evidence (a null would erase what the model actually
     // sent, leaving an undiagnosable empty call — and the harness turns
-    // null wrapper args into a literal `agent_trigger` dispatch).
+    // null wrapper args into a literal `agent_trigger` dispatch). Text that
+    // stops being JSON also carries llm-router's `_invalid` diagnosis.
     #[test]
     fn malformed_args_survive_as_raw_evidence() {
         let (state, _) = run(&[
@@ -543,7 +544,11 @@ mod tests {
         let final_msg = build_final(&state, "llama-test");
         match &final_msg.content[0] {
             ContentBlock::FunctionCall { arguments, .. } => {
-                assert_eq!(arguments, &json!({ "_raw": "{'key':'v'}" }));
+                assert_eq!(arguments["_raw"], json!("{'key':'v'}"));
+                assert!(
+                    arguments["_invalid"]["error"].is_string(),
+                    "malformed args carry the parser diagnosis: {arguments}"
+                );
             }
             other => panic!("want function_call, got {other:?}"),
         }

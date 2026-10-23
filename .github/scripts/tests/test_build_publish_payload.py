@@ -1,4 +1,6 @@
 """Tests for projecting prepared deployments onto the current Registry API."""
+import json
+
 import pytest
 
 from build_publish_payload import build_payload
@@ -16,7 +18,7 @@ NON_EMPTY_INTERFACE = {
 }
 
 
-def build_binary_payload() -> dict[str, object]:
+def build_binary_payload(config: object = None) -> dict[str, object]:
     projection = {
         "worker_name": "smoke",
         "type": "binary",
@@ -24,7 +26,7 @@ def build_binary_payload() -> dict[str, object]:
         "license": "Apache-2.0",
         "tags": [],
         "dependencies": [],
-        "config": {},
+        "config": config,
         "experimental": False,
         "readme": "# Smoke\n",
     }
@@ -52,6 +54,26 @@ def test_payload_contains_only_current_registry_contract() -> None:
     assert "channel" not in payload
     assert "tag" not in payload
     assert payload["version"] == "1.0.0-beta"
+
+
+@pytest.mark.parametrize("config", [None, {}], ids=["null", "empty-mapping"])
+def test_payload_emits_explicit_null_for_absent_public_defaults(config: object) -> None:
+    payload = build_binary_payload(config)
+
+    assert "config" in payload
+    assert payload["config"] is None
+    assert json.loads(json.dumps(payload))["config"] is None
+
+
+def test_payload_preserves_nonempty_public_defaults() -> None:
+    config = {"defaults": {"enabled": False, "retries": 3}}
+
+    assert build_binary_payload(config)["config"] == config
+
+
+def test_payload_rejects_invalid_config_shape() -> None:
+    with pytest.raises(ValueError, match="config must be an object or null"):
+        build_binary_payload(["invalid"])
 
 
 def test_target_version_is_independent_from_manifest_metadata_and_has_no_implicit_channel() -> None:
@@ -148,8 +170,8 @@ def test_skipped_interface_capture_allows_explicit_empty_surface(worker_name: st
 
 
 def test_engine_builtins_are_not_deployment_targets() -> None:
-    """A target install can enable an engine-hosted worker mid-boot (harness
-    turns on `iii-stream`), which lands it in the workers-baseline diff. Its
+    """A target install can enable an engine-hosted worker mid-boot (e.g. a
+    worker that still depends on the deprecated `iii-stream`), which lands it in the workers-baseline diff. Its
     interface is not part of the released worker's surface and must not reach
     the typed-schema gate."""
     from build_publish_payload import _resolve_target_worker_names

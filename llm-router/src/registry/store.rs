@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use crate::state::{state_get, state_set};
 use crate::types::errors::{is_function_not_found, RouterCode, RouterError};
-use crate::types::router::ProviderDeclaration;
+use crate::types::router::{DiscoveryStatus, ProviderDeclaration};
 use iii_sdk::{errors::Error, IIIClient};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -18,6 +18,14 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 const REGISTRY_KEY: &str = "registry";
+/// How long an embedder callers may hold vectors from stays awaited after
+/// it was last seen live (see [`ProviderRecord::awaited_embedder`]).
+const EMBEDDER_GRACE_MS: i64 = 15 * 60 * 1000;
+/// What a restored record gets of that window at router start: enough for a
+/// provider restarting with the router to re-declare (which renews the full
+/// window), short enough that a long-removed embedder holds the fallback
+/// only briefly on each boot.
+const BOOT_GRACE_MS: i64 = 3 * 60 * 1000;
 
 fn hash_token(token: &str) -> String {
     format!("{:x}", Sha256::digest(token.as_bytes()))
@@ -42,6 +50,21 @@ pub struct ProviderRecord {
     /// re-registration advances to one.
     #[serde(default)]
     pub generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<DiscoveryStatus>,
+    /// Its `provider::<id>::embed` has answered once, so callers may hold
+    /// its vectors (see [`Self::awaited_embedder`]). Older snapshots load as
+    /// false.
+    #[serde(default)]
+    pub embeds: bool,
+    /// When this router last saw it live: its last registration, its last
+    /// answered `::embed`; a restored record keeps only [`BOOT_GRACE_MS`] of
+    /// the window from boot. Memory-only.
+    #[serde(skip)]
+    pub last_live_ms: i64,
+    // Leases deliberately do not survive restart; never persist resolved inputs.
+    #[serde(skip)]
+    pub discovery_lease: Option<(String, String)>,
 }
 
 pub struct RegistryStore {
@@ -81,6 +104,15 @@ impl PreparedUpsert {
     }
 }
 
+/// Records restored at router start: DOWN until they re-declare, and seen
+/// live only [`BOOT_GRACE_MS`] of the embedder window ago.
+fn restore<'a>(records: impl Iterator<Item = &'a mut ProviderRecord>, booted: i64) {
+    for rec in records {
+        rec.available = false;
+        rec.last_live_ms = booted - EMBEDDER_GRACE_MS + BOOT_GRACE_MS;
+    }
+}
+
 /// Pure record assembly for upsert (no I/O — persistence is the caller's job).
 /// Token hash and registered_at are preserved across a re-register; the rest
 /// is recomposed from the new declaration.
@@ -103,7 +135,23 @@ fn build_record(
         generation: existing
             .map(|e| e.generation.wrapping_add(1).max(1))
             .unwrap_or(1),
+        discovery: existing.and_then(|e| e.discovery.clone()),
+        // Carried over in `commit_upsert`, where the flag is current.
+        embeds: false,
+        last_live_ms: now_ms(),
+        discovery_lease: None,
         declaration,
+    }
+}
+
+impl ProviderRecord {
+    /// A flagged embedder seen live within [`EMBEDDER_GRACE_MS`]: when its
+    /// `embed` is not found, `router::embed` waits for it instead of falling
+    /// back (embed.rs), whatever else of it is live (restarting, partly
+    /// re-registered, or this router just restarted). One gone for longer
+    /// (removed, say) no longer holds the fallback.
+    pub fn awaited_embedder(&self, now_ms: i64) -> bool {
+        self.embeds && now_ms - self.last_live_ms <= EMBEDDER_GRACE_MS
     }
 }
 
@@ -160,6 +208,7 @@ impl RegistryStore {
         };
         let mut records = self.records.lock().await;
         *records = serde_json::from_value(stored).unwrap_or_default();
+        let booted = now_ms();
         // Persisted availability is stale across a router restart: a provider
         // that died while the router was down would be restored as "up" and
         // stay wrongly listed until a dispatch burned on it (F9: topology
@@ -168,9 +217,7 @@ impl RegistryStore {
         // `router::ready` (upsert emits the op:"available" recovery), and a
         // successful dispatch heals it too (chat.rs `Done` arm). Not persisted
         // here — flags re-persist on their next real change.
-        for rec in records.values_mut() {
-            rec.available = false;
-        }
+        restore(records.values_mut(), booted);
         Ok(())
     }
 
@@ -191,6 +238,17 @@ impl RegistryStore {
     }
     pub async fn ids(&self) -> Vec<String> {
         self.records.lock().await.keys().cloned().collect()
+    }
+    /// Ids that are [`ProviderRecord::awaited_embedder`] now.
+    pub async fn awaited_embedders(&self) -> Vec<String> {
+        let now = now_ms();
+        self.records
+            .lock()
+            .await
+            .values()
+            .filter(|r| r.awaited_embedder(now))
+            .map(|r| r.declaration.id.clone())
+            .collect()
     }
     /// First register binds (mints a token, persists its hash); later
     /// registers must present the raw token. Returns the raw token — it
@@ -238,8 +296,11 @@ impl RegistryStore {
             ));
         }
         let recovered = availability_recovered(existing);
+        // `mark_embeds` may have set it since `prepare_upsert`.
+        let mut record = prepared.record;
+        record.embeds |= existing.is_some_and(|e| e.embeds);
         let mut next_records = records.clone();
-        next_records.insert(id, prepared.record.clone());
+        next_records.insert(id, record.clone());
         self.persist(&next_records).await.map_err(|e| {
             RouterError::new(
                 RouterCode::InvalidRequest,
@@ -251,7 +312,7 @@ impl RegistryStore {
         // that the caller never received.
         *records = next_records;
         Ok(Upserted {
-            record: prepared.record,
+            record,
             token: prepared.token,
             availability_recovered: recovered,
         })
@@ -287,6 +348,48 @@ impl RegistryStore {
                 format!("provider {id}: registration token mismatch"),
             )),
         }
+    }
+
+    /// Called under the entry transaction lock shared with resolve/reconcile/config.
+    pub async fn begin_discovery(&self, id: &str, fingerprint: String) -> String {
+        let attempt = Uuid::new_v4().to_string();
+        if let Some(record) = self.records.lock().await.get_mut(id) {
+            record.discovery_lease = Some((attempt.clone(), fingerprint));
+        }
+        attempt
+    }
+
+    /// Publish only after the durable write succeeds. Caller owns the entry lock.
+    pub async fn complete_discovery(&self, id: &str, status: DiscoveryStatus) -> Result<(), Error> {
+        let mut records = self.records.lock().await;
+        let mut next = records.clone();
+        let record = next
+            .get_mut(id)
+            .ok_or_else(|| Error::Handler("unknown discovery provider".into()))?;
+        record.discovery = Some(status);
+        record.discovery_lease = None;
+        self.persist(&next).await?;
+        *records = next;
+        Ok(())
+    }
+
+    /// A registered id's `::embed` answered: refresh `last_live_ms`, and the
+    /// first time set `embeds` with one durable write, never one per call
+    /// (true only then). Published before the write, so a state outage costs
+    /// one failed attempt; the next persist of any kind carries it.
+    pub async fn mark_embeds(&self, id: &str) -> bool {
+        let mut records = self.records.lock().await;
+        let Some(record) = records.get_mut(id) else {
+            return false;
+        };
+        record.last_live_ms = now_ms();
+        if std::mem::replace(&mut record.embeds, true) {
+            return false;
+        }
+        if let Err(e) = self.persist(&records).await {
+            tracing::warn!(provider = id, error = %e, "persisting the embeds flag failed");
+        }
+        true
     }
 
     /// Change availability only for the registration that originated an
@@ -392,6 +495,7 @@ mod tests {
         }))
         .expect("legacy registry snapshot remains readable");
         assert_eq!(record.generation, 0);
+        assert!(!record.embeds, "never seen embedding");
         let next = build_record(
             Some(&record),
             decl("anthropic"),
@@ -509,6 +613,89 @@ mod tests {
         let current = store.get("anthropic").await.expect("provider remains");
         assert_eq!(current.generation, second.record.generation);
         assert!(current.available);
+    }
+
+    #[tokio::test]
+    async fn the_embeds_flag_is_written_once_and_kept_across_reregistration() {
+        for persisted in [Ok(()), Err(Error::Timeout)] {
+            let store = store_with_persistence(persisted);
+            let record = build_record(None, decl("openai"), Some("w-1".into()), "tok");
+            store.records.lock().await.insert("openai".into(), record);
+
+            assert!(store.mark_embeds("openai").await, "first answer writes");
+            store
+                .records
+                .lock()
+                .await
+                .get_mut("openai")
+                .unwrap()
+                .last_live_ms = 0;
+            assert!(!store.mark_embeds("openai").await, "no write per call");
+            assert!(!store.mark_embeds("minilm").await, "unregistered: no-op");
+            let marked = store.get("openai").await.expect("provider remains");
+            assert!(marked.last_live_ms > 0, "every answer refreshes it");
+            let stored = serde_json::to_value(&marked).unwrap();
+            assert_eq!(stored["embeds"], true);
+            assert!(stored.get("last_live_ms").is_none(), "memory-only");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_embeds_flag_survives_a_registration_prepared_before_it() {
+        let store = store_with_persistence(Ok(()));
+        let first = store
+            .upsert(decl("openai"), Some("w-1".into()), None)
+            .await
+            .expect("first registration");
+        let prepared = store
+            .prepare_upsert(
+                decl("openai"),
+                Some("w-1".into()),
+                Some(first.token.clone()),
+            )
+            .await
+            .expect("re-registration prepared");
+        assert!(store.mark_embeds("openai").await);
+        let committed = store.commit_upsert(prepared).await.expect("commits");
+        assert!(committed.record.embeds);
+        assert!(store.get("openai").await.unwrap().embeds);
+
+        let again = store
+            .upsert(decl("openai"), None, Some(first.token))
+            .await
+            .expect("re-registration");
+        assert!(again.record.embeds, "kept across re-registration");
+    }
+
+    #[test]
+    fn an_embedder_is_awaited_only_within_the_grace_window() {
+        let mut record = build_record(None, decl("openai"), None, "tok");
+        let seen = record.last_live_ms;
+        assert!(!record.awaited_embedder(seen), "never seen embedding");
+        record.embeds = true;
+        assert!(record.awaited_embedder(seen));
+        assert!(record.awaited_embedder(seen + EMBEDDER_GRACE_MS));
+        assert!(
+            !record.awaited_embedder(seen + EMBEDDER_GRACE_MS + 1),
+            "gone longer (removed): no longer holds the fallback"
+        );
+    }
+
+    #[test]
+    fn a_restored_embedder_is_awaited_only_briefly_after_boot() {
+        let mut record = build_record(None, decl("openai"), None, "tok");
+        record.embeds = true;
+        let booted = 1_000_000_000;
+        restore(std::iter::once(&mut record), booted);
+        assert!(!record.available);
+        assert!(
+            record.awaited_embedder(booted),
+            "restarting with the router"
+        );
+        assert!(
+            !record.awaited_embedder(booted + BOOT_GRACE_MS + 1),
+            "removed long ago: holds the fallback only briefly on each boot"
+        );
     }
 
     #[tokio::test]

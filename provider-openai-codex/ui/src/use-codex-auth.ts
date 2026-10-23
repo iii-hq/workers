@@ -1,6 +1,10 @@
 import type { Host } from '@iii-dev/console-ui'
 import { useEffect, useRef, useState } from 'react'
 
+/** What to do when ChatGPT refuses device code sign-in for this account. */
+export const DEVICE_LOGIN_HINT =
+  'Enable device code login in ChatGPT security settings or ask your workspace administrator.'
+
 export interface LoginStartResponse {
   login_id: string
   verification_uri: string
@@ -205,8 +209,17 @@ export function useCodexAuth(iii: Host['iii']) {
           finishedLogin = null
           update({ login, retry: false, pollError: null })
         }
-      } catch {
-        if (current(version)) update({ actionError: 'Could not start sign-in. Try again.' })
+      } catch (error) {
+        // The one failure the operator fixes elsewhere gets its fix named;
+        // the text is ours, never the server's.
+        const disabled = (error as { code?: unknown } | null)?.code === 'device_login_disabled'
+        if (current(version)) {
+          update({
+            actionError: disabled
+              ? `Could not start sign-in. ${DEVICE_LOGIN_HINT}`
+              : 'Could not start sign-in. Try again.',
+          })
+        }
       } finally {
         if (current(version)) {
           update({ busy: null })

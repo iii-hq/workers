@@ -88,7 +88,7 @@ pub fn enrich(id: &str) -> Model {
     let display_name = Some(display_for(id));
     // Only grok-4.3 accepts `reasoning_effort: xhigh` (verified against api.x.ai);
     // every other family rejects it or takes low/high only.
-    let supports_xhigh = base.to_ascii_lowercase().starts_with("grok-4.3");
+    let supports_xhigh = crate::reasoning::accepts_xhigh(base);
     match family_meta(base) {
         Some((context_window, max_output_tokens, reasoning, vision, pricing)) => Model {
             id: id.into(),
@@ -99,6 +99,11 @@ pub fn enrich(id: &str) -> Model {
             input_limit: None,
             supports_thinking: Some(reasoning),
             supports_xhigh: Some(supports_xhigh),
+            supports_thinking_off: if reasoning {
+                Some(crate::reasoning::can_disable(base))
+            } else {
+                None
+            },
             reasoning_efforts: None,
             supports_tools: Some(true),
             supports_vision: Some(vision),
@@ -117,6 +122,7 @@ pub fn enrich(id: &str) -> Model {
             input_limit: None,
             supports_thinking: None,
             supports_xhigh: None,
+            supports_thinking_off: None,
             reasoning_efforts: None,
             supports_tools: Some(true),
             supports_vision: None,

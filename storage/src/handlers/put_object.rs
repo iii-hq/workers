@@ -1,6 +1,6 @@
 //! `storage::putObject` — write an object to a configured bucket.
 
-use super::{err_to_str, AppState, INLINE_BODY_CAP};
+use super::{err_to_str, validate_key, AppState, INLINE_BODY_CAP};
 use crate::backend::PutReq as BackendPutReq;
 use crate::error::{backend_error_to_storage, StorageError};
 use base64::engine::general_purpose::STANDARD as B64;
@@ -34,11 +34,7 @@ pub struct PutResp {
 }
 
 pub async fn handle(state: &AppState, req: PutReq) -> Result<PutResp, String> {
-    if req.key.is_empty() {
-        return Err(err_to_str(StorageError::ConfigError {
-            message: "key must not be empty".into(),
-        }));
-    }
+    validate_key(&req.key).map_err(err_to_str)?;
     let backend = state.backend(&req.bucket).await.map_err(err_to_str)?;
     // Reject before allocating: a base64 string of length L decodes to at
     // most (L*3)/4 bytes. If even the upper bound exceeds the cap, refuse

@@ -86,6 +86,7 @@ export const componentNames = [
   'PanelHeader',
   'RawValueInput',
   'SearchField',
+  'SecretKeyField',
   'Select',
   'SegmentedControl',
   'Selector',
@@ -120,6 +121,7 @@ export const componentNames = [
   'TooltipContent',
   'TooltipTrigger',
   'WorkerConfigurationDialog',
+  'WorkerConfigurationPanel',
   'Wordmark',
 ]
 

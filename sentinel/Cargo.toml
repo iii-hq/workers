@@ -2,7 +2,7 @@
 
 [package]
 name = "sentinel"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 publish = false
 
@@ -21,8 +21,8 @@ clap = { version = "4", features = ["derive", "env"] }
 cron = "0.12"
 iii-config-client = { path = "../crates/config-client" }
 iii-console-ui = { path = "../crates/console-ui" }
-iii-helpers = "=0.23.0"
-iii-sdk = "=0.23.0"
+iii-helpers = "=0.24.6"
+iii-sdk = "=0.24.6"
 regex = "1"
 schemars = "0.8"
 serde = { version = "1", features = ["derive"] }
@@ -45,6 +45,10 @@ uuid = { version = "1", features = ["v7"] }
 # The same driver the `database` worker runs SQLite on, so the store's
 # statements are tested against the engine they will actually meet.
 rusqlite = { version = "0.31", features = ["bundled"] }
+# The same statements against Postgres, when `SENTINEL_TEST_POSTGRES_URL`
+# names one (see tests/support/postgres.rs).
+tokio-postgres = "0.7"
+bytes = "1"
 serde_yaml = "0.9"
 # `test-util` lets a boot test run its retry backoff instantly instead of
 # sleeping through it.

@@ -8,7 +8,12 @@
 
 /** A bus that holds what it cannot deliver yet, and drains on subscribe.
  * The buffer is bounded: with no listener the oldest entries fall off, so
- * a page publishing into a never-opened composer cannot grow memory. */
+ * a page publishing into a never-opened composer cannot grow memory.
+ *
+ * The drain waits a microtask, so every listener a mounting composer adds
+ * in the same effect flush (the editor shell's and the composer's own) gets
+ * what was held; drained to the first one alone, a held send request would
+ * reach the editor as text and never reach the composer that sends it. */
 const PENDING_CAP = 16
 
 function bufferedBus<T>() {
@@ -26,9 +31,12 @@ function bufferedBus<T>() {
     subscribe(listener: (value: T) => void): () => void {
       listeners.add(listener)
       if (pending.length > 0) {
-        const drained = pending
-        pending = []
-        for (const value of drained) listener(value)
+        queueMicrotask(() => {
+          if (listeners.size === 0) return
+          const drained = pending
+          pending = []
+          for (const value of drained) for (const each of listeners) each(value)
+        })
       }
       return () => {
         listeners.delete(listener)
@@ -70,6 +78,27 @@ export function insertIntoComposer(
 
 export function onComposerInsert(listener: ComposerInsertListener): () => void {
   return inserts.subscribe(listener)
+}
+
+const draftSends = new Map<string, string>()
+
+/**
+ * Send a chat's draft as soon as its composer can (session ready, working
+ * directory resolved, a model chosen) — for a surface whose click WAS the
+ * decision to send, such as an example prompt in the setup wizard. Keyed by
+ * chat, unlike an insert, so it reaches that chat's composer and no other;
+ * `text` is the draft the decision was made for, so a draft the user has
+ * edited since is theirs again and stays unsent.
+ */
+export function sendDraftWhenReady(conversationId: string, text: string): void {
+  draftSends.set(conversationId, text)
+}
+
+/** Claim the send asked for this chat, once: the text it was asked for. */
+export function claimDraftSend(conversationId: string): string | undefined {
+  const text = draftSends.get(conversationId)
+  draftSends.delete(conversationId)
+  return text
 }
 
 type ComposerAttachListener = (files: File[]) => void

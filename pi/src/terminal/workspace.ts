@@ -24,7 +24,7 @@ export type Prepared = {
   /**
    * The `iii` CLI on the terminal host, which is how the extension reaches the
    * bus. Empty means the extension is installed but mute: the terminal works
-   * and nothing reaches `agent::events`. Worth knowing, because it is what
+   * and nothing reaches `pi::agent-event`. Worth knowing, because it is what
    * breaks first if the worker that owns the terminal moves into a guest of
    * its own.
    */
@@ -60,7 +60,7 @@ export async function prepareWorkspace(iii: IIIClient, config: TerminalConfig): 
       bridge = await writeExtension(iii, workspace);
       if (!bridge) {
         const mute =
-          'the `iii` CLI is not on the terminal host, so the activity extension cannot reach the bus: the terminal works, but no run will reach agent::events';
+          'the `iii` CLI is not on the terminal host, so the activity extension cannot reach the bus: the terminal works, but no run will reach pi::agent-event';
         console.warn(`pi terminal: ${mute}`);
         detail = detail ? `${detail}; ${mute}` : mute;
       }

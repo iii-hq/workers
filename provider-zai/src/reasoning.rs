@@ -25,11 +25,17 @@ pub fn thinking_type(level: Option<ThinkingLevel>, reasoning: bool) -> Option<&'
     if !reasoning {
         return None;
     }
-    Some(if level.is_some() {
-        "enabled"
-    } else {
-        "disabled"
+    Some(match level {
+        Some(ThinkingLevel::Off) | None => "disabled",
+        Some(_) => "enabled",
     })
+}
+
+/// GLM-5.3 and GLM-5.3-Flash always reason: `thinking.type` takes
+/// `enabled` only, and the migration note maps a former `disabled` to
+/// `enabled` at `reasoning_effort: low` (guides/llm/glm-5.3).
+pub fn always_reasons(model: &str) -> bool {
+    model.to_ascii_lowercase().starts_with("glm-5.3")
 }
 
 /// Only GLM-5.2 and newer document `reasoning_effort`: parse the numeric
@@ -61,6 +67,7 @@ pub fn reasoning_effort_for(level: Option<ThinkingLevel>, model: &str) -> Option
         return None;
     }
     Some(match level? {
+        ThinkingLevel::Off => return None,
         ThinkingLevel::Minimal => "minimal",
         ThinkingLevel::Low => "low",
         ThinkingLevel::Medium => "medium",
@@ -72,6 +79,21 @@ pub fn reasoning_effort_for(level: Option<ThinkingLevel>, model: &str) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn off_disables_thinking_except_where_glm_always_reasons() {
+        assert_eq!(
+            thinking_type(Some(ThinkingLevel::Off), true),
+            Some("disabled")
+        );
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Off), "glm-5.2"),
+            None
+        );
+        assert!(always_reasons("glm-5.3"));
+        assert!(always_reasons("glm-5.3-flash"));
+        assert!(!always_reasons("glm-5.2"));
+    }
 
     #[test]
     fn catalog_flag_wins_over_id_pattern() {

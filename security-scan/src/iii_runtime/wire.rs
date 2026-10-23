@@ -984,16 +984,22 @@ fn harness_request(plan: &AnalysisPlan) -> Value {
         }),
         None => json!({ "security_scan": true }),
     };
+    let mut session = json!({
+        "title": "Security review",
+        "metadata": session_metadata,
+    });
+    // An unattended scan is never the person's own session: memory skips it.
+    // Issue/fix sessions wait on a human approval, so they stay visible user roots.
+    if plan.unattended {
+        session["kind"] = json!("automation");
+    }
     json!({
         "session_id": plan.session_id,
         "message": plan.message,
         "model": plan.model,
         "provider": plan.provider,
         "idempotency_key": plan.idempotency_key,
-        "session": {
-            "title": "Security review",
-            "metadata": session_metadata,
-        },
+        "session": session,
         "options": {
             "system_prompt": plan.system_prompt,
             "system_prompt_strategy": "override",
@@ -1072,45 +1078,6 @@ fn action_queue_definition() -> Value {
             "backoff_ms": 1_000,
             "poll_interval_ms": 100,
             "redeliver_on_engine_restart": true,
-        },
-    })
-}
-
-fn run_update_payload(run: &RunRecordV1) -> Value {
-    json!({
-        "stream_name": RUN_STREAM_NAME,
-        "group_id": RUN_STREAM_GROUP,
-        "type": RUN_UPDATED_EVENT_TYPE,
-        "data": {
-            "run_id": run.run_id,
-            "repository": run.repository,
-            "status": run.status,
-            "attempt": run.attempt,
-            "updated_at": run.updated_at,
-            "completed_at": run.completed_at,
-        },
-    })
-}
-
-fn reconciliation_update_payload(run_id: &str) -> Value {
-    json!({
-        "stream_name": RUN_STREAM_NAME,
-        "group_id": RUN_STREAM_GROUP,
-        "type": RECONCILIATION_UPDATED_EVENT_TYPE,
-        "data": { "run_id": run_id },
-    })
-}
-
-fn action_update_payload(action: &crate::SecurityActionRecordV1) -> Value {
-    json!({
-        "stream_name": RUN_STREAM_NAME,
-        "group_id": RUN_STREAM_GROUP,
-        "type": "security-scan:action-updated",
-        "data": {
-            "action_id": action.action_id,
-            "run_id": action.run_id,
-            "status": action.status,
-            "updated_at": action.updated_at,
         },
     })
 }

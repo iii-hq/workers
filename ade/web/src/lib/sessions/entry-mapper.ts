@@ -33,6 +33,7 @@
  */
 
 import { attachedFileLabel, parseAttachedFileHeader } from '@/lib/file-mentions'
+import { isProvidersNote, parseMentionsNote } from '@/lib/mentions/notes'
 import { parseSkillUpdate } from '@/lib/skill-update'
 import { parseSlashBlockHeader, slashChip } from '@/lib/slash-commands'
 import type {
@@ -99,8 +100,16 @@ function customSegments(
   }
 }
 
-/** One quiet line ("Note to the model — <kind>"); the note itself sits in
- * the collapsed technical details, like a failed turn's raw reason. */
+/** A reader's name for a note: the wrapper tag a hook put around it
+ * (`<memory …>` → "memory"), else the harness's kind. */
+function noteLabel(text: string, kind: unknown): string {
+  const tag = text.trimStart().match(/^<([a-z][a-z0-9_-]*)[\s>]/i)?.[1]
+  const raw = tag ?? (typeof kind === 'string' ? kind.trim() : '')
+  return raw.replace(/[-_]+/g, ' ')
+}
+
+/** One quiet activity row ("Note to the model · <label>") with the note
+ * behind its disclosure; the judge's mention notes read as the mentions. */
 function modelNotice(
   entryId: string,
   data: unknown,
@@ -108,18 +117,29 @@ function modelNotice(
 ): SystemMessage[] {
   const d = (data ?? {}) as { text?: unknown; kind?: unknown }
   if (typeof d.text !== 'string' || !d.text.trim()) return []
-  const kind =
-    typeof d.kind === 'string' && d.kind.trim()
-      ? d.kind.trim().replace(/[-_]+/g, ' ')
-      : ''
+  // Under the console's broad policy any worker restart fires it: noise to
+  // the person reading the chat. The model still gets the note.
+  if (d.kind === 'registry-changed') return []
+  // The list of mention names an agent may write: bookkeeping, every session.
+  if (isProvidersNote(d.text)) return []
+  const mentions = parseMentionsNote(d.text)
+  const label = mentions ? 'mentions' : noteLabel(d.text, d.kind)
   return [
     {
       id: entryId,
       role: 'system',
-      kind: 'notice',
+      kind: 'model-note',
       tone: 'info',
-      content: kind ? `Note to the model — ${kind}` : 'Note to the model',
-      technicalDetails: { detail: d.text },
+      content: mentions
+        ? 'Mentions resolved for the model'
+        : label
+          ? `Note to the model — ${label}`
+          : 'Note to the model',
+      note: {
+        label,
+        text: d.text,
+        ...(mentions ? { mentions } : {}),
+      },
       createdAt: timestamp,
     },
   ]
@@ -132,7 +152,11 @@ function customNotice(
   fallback: string,
   timestamp: number,
 ): SystemMessage {
-  const d = (data ?? {}) as { reason?: unknown; message?: unknown }
+  const d = (data ?? {}) as {
+    reason?: unknown
+    message?: unknown
+    tone?: unknown
+  }
   const content =
     typeof d.message === 'string'
       ? d.message
@@ -146,7 +170,8 @@ function customNotice(
     role: 'system',
     kind: 'notice',
     content,
-    tone,
+    // A record may raise its own tone (a compaction that failed warns).
+    tone: d.tone === 'warn' || d.tone === 'error' ? d.tone : tone,
     createdAt: timestamp,
   }
 }
@@ -787,6 +812,7 @@ export function entrySegments(
             memory_bank?: unknown
             memory_recalled?: unknown
             memory_ids?: unknown
+            memory_banks?: unknown
             memory_rules?: unknown
             memory_rules_truncated?: unknown
             memory_retrieval?: unknown
@@ -801,6 +827,11 @@ export function entrySegments(
               typeof md.memory_recalled === 'number' ? md.memory_recalled : 0,
             memoryIds: Array.isArray(md.memory_ids)
               ? md.memory_ids.filter((v): v is string => typeof v === 'string')
+              : [],
+            memoryBanks: Array.isArray(md.memory_banks)
+              ? md.memory_banks.filter(
+                  (v): v is string => typeof v === 'string',
+                )
               : [],
             ...(typeof md.memory_rules === 'number'
               ? { rules: md.memory_rules }
@@ -872,6 +903,31 @@ export function notificationBindingId(
   return undefined
 }
 
+/**
+ * The label an elided call keeps. `session::messages-tail` drops every call's
+ * arguments except an `agent_trigger` wrapper's string `function` and
+ * `description`, so the placeholder row reads the same before and after the
+ * whole entry is fetched.
+ */
+function elidedTriggerLabel(
+  block: Extract<ContentBlock, { type: 'function_call' }>,
+): { functionId: string; description?: string; unresolvedTarget: boolean } {
+  if (block.function_id !== 'agent_trigger') {
+    return { functionId: block.function_id, unresolvedTarget: false }
+  }
+  const args =
+    block.arguments && typeof block.arguments === 'object'
+      ? (block.arguments as { function?: unknown; description?: unknown })
+      : {}
+  const description =
+    typeof args.description === 'string' && args.description.trim().length > 0
+      ? args.description.trim()
+      : undefined
+  return typeof args.function === 'string' && args.function.length > 0
+    ? { functionId: args.function, description, unresolvedTarget: false }
+    : { functionId: block.function_id, description, unresolvedTarget: true }
+}
+
 function assistantSegments(
   entryId: string,
   message: Extract<AgentMessage, { role: 'assistant' }>,
@@ -882,19 +938,21 @@ function assistantSegments(
   for (const [i, block] of message.content.entries()) {
     const id = `${entryId}:${i}`
     // A placeholder call: the page kept the block's id and function id and
-    // emptied the arguments. Not unwrapped — with `arguments: {}` an
-    // `agent_trigger` wrapper has no target to unwrap to, so the row keeps
-    // the wrapper name until its (elided) result names the real function.
+    // dropped the arguments — except an `agent_trigger` wrapper's label
+    // (`function` + `description`), which the row shows exactly as a whole
+    // entry would. A wrapper whose target did not survive keeps the wrapper
+    // name until its (elided) result names the real function.
     if (block.type === 'function_call' && elided) {
+      const { functionId, description, unresolvedTarget } =
+        elidedTriggerLabel(block)
       const msg: FunctionTriggerMessage = {
         id,
         role: 'function-trigger',
-        functionId: block.function_id,
+        functionId,
+        ...(description ? { description } : {}),
         input: undefined,
         unloaded: true,
-        ...(block.function_id === 'agent_trigger'
-          ? { unresolvedTarget: true }
-          : {}),
+        ...(unresolvedTarget ? { unresolvedTarget: true } : {}),
         functionTriggerId: block.id,
         sessionId,
         createdAt: message.timestamp,
@@ -1150,11 +1208,12 @@ export function applyEntryUpsert(
       filesystemAccess: existing.filesystemAccess ?? segment.filesystemAccess,
       resultEntryId: existing.resultEntryId ?? segment.resultEntryId,
       ...(stillUnloaded ? { unloaded: true } : {}),
-      // A re-read placeholder keeps the label its result already resolved;
-      // the page itself still only knows the wrapper name.
+      // A re-read placeholder keeps the label its result already resolved
+      // when the page itself only knows the wrapper name.
       ...(segment.unloaded && existing.functionId !== 'agent_trigger'
         ? { functionId: existing.functionId, unresolvedTarget: false }
         : {}),
+      description: segment.description ?? existing.description,
     }
   })
 

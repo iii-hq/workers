@@ -3,8 +3,10 @@
 //! surface. The binary (`src/main.rs`) is a thin boot sequence; everything
 //! testable lives here.
 
+pub mod chromium;
 pub mod config;
 pub mod configuration;
+pub mod deadline;
 pub mod events;
 pub mod functions;
 pub mod judge;

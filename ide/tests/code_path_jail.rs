@@ -208,6 +208,7 @@ async fn scoped_scope_root_blocks_sibling_escape_across_handlers() {
         DeleteFileInput {
             paths: vec!["../sibling.txt".into()],
             recursive: false,
+            include_protected: false,
             fs_scope: Some(ide::fs::FsScope {
                 root: scope_root,
                 grants: Vec::new(),

@@ -70,6 +70,11 @@ jobs:
       # Version comes from the repo-root package.json `packageManager` field.
       - name: Setup pnpm
         uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+      # No other job runs ide/ui's vitest suite: ide is a Rust worker.
+      - name: IDE UI tests
+        run: |
+          pnpm --filter '@iii-workers/shell-ui...' install --frozen-lockfile
+          pnpm --dir ide/ui test
       - name: Install iii engine (latest from main)
         env:
           GITHUB_TOKEN: ${{ github.token }}

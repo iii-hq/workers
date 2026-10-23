@@ -35,7 +35,7 @@ def validate_public_manifest(worker: str, spec: _lib.WorkerSpec, hard) -> None:
             hard(f"{worker}/iii.worker.yaml is missing key: {key}")
     if manifest.name != worker:
         hard(f"{worker}/iii.worker.yaml name={manifest.name!r} does not match folder")
-    if manifest.language not in {"rust", "node", "python", "javascript"}:
+    if manifest.language not in {"rust", "go", "node", "python", "javascript"}:
         hard(f"{worker}/iii.worker.yaml has unsupported language={manifest.language!r}")
     if manifest.deploy not in {"binary", "image", "bundle"}:
         hard(f"{worker}/iii.worker.yaml has unsupported deploy={manifest.deploy!r}")
@@ -46,7 +46,7 @@ def validate_public_manifest(worker: str, spec: _lib.WorkerSpec, hard) -> None:
         )
 
     expected_kinds = {
-        "binary": {"rust-binary"},
+        "binary": {"rust-binary", "go-binary"},
         "image": {"oci-image"},
         "bundle": {"javascript-bundle", "python-bundle"},
     }
@@ -148,7 +148,7 @@ def main(argv: list[str] | None = None) -> int:
         elif spec.validation.get("interface") == "required" and not tags:
             hard(f"{worker}/iii.worker.yaml tags must be non-empty when the PR interface smoke is enabled")
 
-        if spec.artifact_kind == "rust-binary":
+        if spec.artifact_kind in {"rust-binary", "go-binary"}:
             executable = spec.binary or worker
             if executable != worker and worker not in BINARY_NAME_EXCEPTIONS:
                 hard(
@@ -199,9 +199,10 @@ def main(argv: list[str] | None = None) -> int:
                         )
 
         tests = spec.path / "tests"
-        if not tests.exists():
+        go_tests = spec.artifact_kind == "go-binary" and any(spec.path.rglob("*_test.go"))
+        if not go_tests and not tests.exists():
             soft(f"{worker}/tests/ is missing")
-        elif not any(tests.iterdir()):
+        elif not go_tests and not any(tests.iterdir()):
             soft(f"{worker}/tests/ is empty")
 
     for error in errors:

@@ -1,0 +1,172 @@
+{
+  "function_id": "session::mention::get",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Input of a provider's get function.",
+    "properties": {
+      "id": {
+        "description": "The id from the token.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "title": "MentionGetRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "anyOf": [
+      {
+        "$ref": "#/definitions/MentionView"
+      },
+      {
+        "type": "null"
+      }
+    ],
+    "definitions": {
+      "MentionField": {
+        "description": "One labelled value of a preview card.",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "tone": {
+            "description": "`neutral`, `info`, `success`, `warning` or `danger`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "value"
+        ],
+        "type": "object"
+      },
+      "MentionOpen": {
+        "anyOf": [
+          {
+            "properties": {
+              "context": true,
+              "page": {
+                "description": "Console page id (as registered with `host.pages`).",
+                "type": "string"
+              }
+            },
+            "required": [
+              "page"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "session": {
+                "description": "Session id to select.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "url"
+            ],
+            "type": "object"
+          }
+        ],
+        "description": "What clicking a mention opens: an injected console page, a chat session, or an http(s) URL."
+      },
+      "MentionView": {
+        "description": "What a chat surface renders for one mention, and what an agent reads. A get function answers `null` for an id it does not know.",
+        "properties": {
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "data": {
+            "description": "The domain object, for a worker's own preview renderer."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fields": {
+            "description": "Labelled values for the preview card (status, assignee, …).",
+            "items": {
+              "$ref": "#/definitions/MentionField"
+            },
+            "type": "array"
+          },
+          "hint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "icon": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "The canonical id (may differ from the one asked for, e.g. a key resolved to a uuid).",
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "open": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/MentionOpen"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What clicking the mention opens."
+          },
+          "summary": {
+            "description": "One line for an agent: what the item is and its state. Defaults to the label, hint, description and fields.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "description": "RFC 3339 time of the item's last change.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ],
+        "type": "object"
+      }
+    },
+    "title": "Nullable_MentionView"
+  }
+}

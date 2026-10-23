@@ -46,6 +46,12 @@ export interface TurnFailurePresentation {
   ownership: string
   /** Remediation steps, most useful first. */
   actions: string[]
+  /**
+   * Provider-declared guidance for a context overflow (`context_overflow_hint`
+   * on `router::provider::list`), shown under the steps. Only set for the
+   * `context` category.
+   */
+  providerNote?: string
 }
 
 /** Technical-details code the console stamps on a send the engine never accepted. */
@@ -312,6 +318,7 @@ export function classifyTurnFailure(
   message: Pick<SystemMessage, 'content' | 'technicalDetails' | 'failure'> & {
     nextActions?: string[]
   },
+  options: { providerHint?: string } = {},
 ): TurnFailurePresentation {
   const details = message.technicalDetails
   const code = details?.code ?? ''
@@ -332,6 +339,11 @@ export function classifyTurnFailure(
     !PREFER_CONSOLE_ACTIONS.has(category) && harnessActions?.length
       ? harnessActions
       : defaultActionsFor(category, provider)
+  // Provider-declared add-on: only meaningful under a context overflow.
+  const providerNote =
+    category === 'context'
+      ? options.providerHint?.trim() || undefined
+      : undefined
   return {
     category,
     owner,
@@ -339,5 +351,6 @@ export function classifyTurnFailure(
     title: titleFor(category, code),
     ownership: ownershipFor(category, provider),
     actions,
+    ...(providerNote ? { providerNote } : {}),
   }
 }

@@ -1,4 +1,6 @@
+use crate::completions::{is_deprecated_trigger_type, DEPRECATED_TRIGGER_NOTE};
 use crate::engine_client::EngineClient;
+use crate::engine_introspection::TriggerTypeInfo;
 use std::sync::Arc;
 use tower_lsp_server::ls_types::*;
 
@@ -47,18 +49,10 @@ pub fn get_hover(word: &str, engine: &Arc<EngineClient>) -> Option<Hover> {
 
     // Try trigger type
     if let Some(tt) = engine.get_trigger_type(word) {
-        let mut content = format!("**Trigger type:** `{}`\n\n{}", tt.id, tt.description);
-
-        if let Some(config) = &tt.trigger_request_format {
-            if let Ok(pretty) = serde_json::to_string_pretty(config) {
-                content.push_str(&format!("\n\n**Config format:**\n```json\n{}\n```", pretty));
-            }
-        }
-
         return Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: content,
+                value: trigger_type_hover_markdown(&tt),
             }),
             range: None,
         });
@@ -67,8 +61,46 @@ pub fn get_hover(word: &str, engine: &Arc<EngineClient>) -> Option<Hover> {
     None
 }
 
+fn trigger_type_hover_markdown(tt: &TriggerTypeInfo) -> String {
+    let mut content = format!("**Trigger type:** `{}`\n\n{}", tt.id, tt.description);
+
+    if is_deprecated_trigger_type(&tt.id) {
+        content.push_str(&format!(
+            "\n\n**Deprecated** ({DEPRECATED_TRIGGER_NOTE}): do not use in new code; \
+             see the guide \"Migrate from iii-stream and pubsub\"."
+        ));
+    }
+
+    if let Some(config) = &tt.trigger_request_format {
+        if let Ok(pretty) = serde_json::to_string_pretty(config) {
+            content.push_str(&format!("\n\n**Config format:**\n```json\n{}\n```", pretty));
+        }
+    }
+
+    content
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stream_trigger_type_hover_is_marked_deprecated() {
+        let tt = super::TriggerTypeInfo {
+            id: "stream:join".to_string(),
+            description: "Stream join trigger".to_string(),
+            trigger_request_format: None,
+            call_request_format: None,
+        };
+        let content = super::trigger_type_hover_markdown(&tt);
+        assert!(content.contains("**Deprecated** (deprecated: iii-stream)"));
+        assert!(content.contains("Migrate from iii-stream and pubsub"));
+
+        let http = super::TriggerTypeInfo {
+            id: "http".to_string(),
+            ..tt
+        };
+        assert!(!super::trigger_type_hover_markdown(&http).contains("Deprecated"));
+    }
+
     #[test]
     fn format_function_hover() {
         // Test the markdown formatting logic directly

@@ -138,12 +138,35 @@ fn review_key(evaluation_id: &str, suggestion_index: usize) -> String {
     format!("{evaluation_id}:{suggestion_index}")
 }
 
-/// The Harness's record of a session's latest turn, as stored.
+/// The Harness's record of a session's latest turn, with its content-addressed
+/// prompt bodies restored.
 pub async fn get_turn_record(
     iii: &IIIClient,
     session_id: &str,
 ) -> Result<Option<Value>, EvalError> {
-    get(iii, HARNESS_TURN_SCOPE, session_id).await
+    let Some(mut stored): Option<Value> = get(iii, HARNESS_TURN_SCOPE, session_id).await? else {
+        return Ok(None);
+    };
+    let Some(hydrated) = harness::state::get_turn(iii, session_id, DISPATCH_TIMEOUT_MS)
+        .await
+        .map_err(|error| EvalError::State(format!("read harness turn {session_id}: {error}")))?
+    else {
+        return Ok(None);
+    };
+    if stored["turn_id"].as_str() != Some(hydrated.turn_id.as_str()) {
+        return Ok(None);
+    }
+    if let Some(prompt) = hydrated.options.system_prompt {
+        stored["options"]["system_prompt"] = Value::String(prompt);
+    }
+    if let Some(baseline) = hydrated
+        .options
+        .skill_context
+        .and_then(|context| context.baseline)
+    {
+        stored["options"]["skill_context"]["baseline"] = Value::String(baseline);
+    }
+    Ok(Some(stored))
 }
 
 pub async fn get_review(

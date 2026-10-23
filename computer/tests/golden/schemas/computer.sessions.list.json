@@ -31,6 +31,14 @@
       },
       "SessionInfo": {
         "properties": {
+          "coordinates": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/Support"
+              }
+            ],
+            "description": "Screenshots and coordinate actions (pointer, keyboard) on this session."
+          },
           "created_ms": {
             "format": "int64",
             "type": "integer"
@@ -52,18 +60,47 @@
             "description": "True while a live screen stream is running for this session.",
             "type": "boolean"
           },
+          "semantic": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/Support"
+              }
+            ],
+            "description": "Accessibility (ref-based) actions on this session."
+          },
           "session_id": {
             "type": "string"
           }
         },
         "required": [
+          "coordinates",
           "created_ms",
           "endpoint",
           "last_used_ms",
           "os",
           "screen",
           "screencast_active",
+          "semantic",
           "session_id"
+        ],
+        "type": "object"
+      },
+      "Support": {
+        "description": "Whether the session takes one kind of action, and why not.",
+        "properties": {
+          "reason": {
+            "description": "Why not, when unsupported. On a supported `semantic` it is a warning instead: on Linux, accessibility is off and only GTK apps expose a tree.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "supported": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "supported"
         ],
         "type": "object"
       }

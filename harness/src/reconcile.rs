@@ -21,7 +21,15 @@
 //!
 //! A decision is applied only above [`JUDGE_THRESHOLD`], and the judge's
 //! repairs are kept only when the result validates: a partial repair would
-//! still fail at the target.
+//! still fail at the target. So a call no set of answers can make valid (a
+//! shape the target accepts but does not publish) is never put to the judge.
+//!
+//! Layer C (`diagnose`): a call the target rejected as malformed gets its
+//! schema violations named by path, unless the target's own error names a
+//! missing field the schema does not flag, which means the target read a
+//! shape its schema does not publish. When the model does not have the
+//! target's contract in context, the compacted request schema rides along so
+//! the retry needs no `engine::functions::info` step first.
 //!
 //! Fail-open throughout: no known schema, valid arguments, an unavailable or
 //! failing judge, or a call nothing here can fix dispatch exactly as the
@@ -39,6 +47,7 @@ use crate::config::{CallReconciliation, WorkerConfig};
 use crate::deps::Deps;
 use crate::trigger::ResultData;
 use crate::types::content::ContentBlock;
+use crate::types::turn::{ExposeMode, TurnRecord};
 
 /// Validator passes; each pass can unwrap one more nesting level (a parsed
 /// object whose own fields are stringified).
@@ -63,6 +72,9 @@ const NONE_OPTION: &str = "none";
 const MAX_ENUM_OPTIONS: usize = 254;
 /// Largest evaluation sent to the judge (the directory's calibration).
 const MAX_EVALUATION_BYTES: usize = 48 * 1024;
+/// Largest compacted request schema a diagnosis carries; a bigger one is
+/// left to `engine::functions::info`.
+const MAX_ATTACHED_SCHEMA_BYTES: usize = 8 * 1024;
 
 /// One repair applied to the arguments.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -110,14 +122,48 @@ pub async fn reconcile(
     }
     let schema = schema_for(deps, function_id).await?;
     let compiled = JSONSchema::compile(&schema).ok()?;
-    if compiled.is_valid(arguments) || unresolvable(&compiled, arguments) {
+    let untyped = parse_untyped(&schema, &compiled, arguments);
+    let base = untyped.as_ref().map_or(arguments, |r| &r.arguments);
+    let repaired = repair(
+        deps,
+        cfg,
+        &compiled,
+        &schema,
+        function_id,
+        base,
+        description,
+    )
+    .await;
+    match (untyped, repaired) {
+        (Some(mut first), Some(rest)) => {
+            first.changes.extend(rest.changes);
+            Some(Reconciled {
+                arguments: rest.arguments,
+                changes: first.changes,
+            })
+        }
+        (untyped, repaired) => repaired.or(untyped),
+    }
+}
+
+/// Layers A and B on arguments the schema rejects.
+async fn repair(
+    deps: &Deps,
+    cfg: &WorkerConfig,
+    compiled: &JSONSchema,
+    schema: &Value,
+    function_id: &str,
+    arguments: &Value,
+    description: Option<&str>,
+) -> Option<Reconciled> {
+    if compiled.is_valid(arguments) || unresolvable(compiled, arguments) {
         return None;
     }
-    let coerced = coerce_compiled(&compiled, arguments);
+    let coerced = coerce_compiled(compiled, arguments);
     let current = coerced.as_ref().map_or(arguments, |r| &r.arguments);
     if cfg.call_reconciliation == CallReconciliation::Judge && !compiled.is_valid(current) {
         if let Some(judged) =
-            judge_layer(deps, &compiled, &schema, function_id, current, description).await
+            judge_layer(deps, compiled, schema, function_id, current, description).await
         {
             let mut changes = coerced.map(|r| r.changes).unwrap_or_default();
             changes.extend(judged.changes);
@@ -150,6 +196,59 @@ async fn schema_for(deps: &Deps, function_id: &str) -> Option<Value> {
         .find(|f| f.function_id == function_id)?
         .parameters
         .clone()
+}
+
+/// A top-level argument whose schema puts no constraint on it (`true`, or
+/// only annotations such as `description`) and that is a string holding a
+/// JSON object or array is parsed in place. The validator cannot flag it —
+/// any value passes — but a model calling a native tool with no type hint
+/// writes objects that way. A scalar string is left alone: `"5"` may be
+/// meant as a string. A call the parse would turn from valid to invalid
+/// (an `allOf` that still wants a string) keeps its arguments.
+// ponytail: top-level properties only; walk nested untyped fields if a
+// target ever needs it.
+pub fn parse_untyped(
+    schema: &Value,
+    compiled: &JSONSchema,
+    arguments: &Value,
+) -> Option<Reconciled> {
+    const ANNOTATIONS: [&str; 5] = ["description", "title", "default", "examples", "$comment"];
+    let properties = schema.get("properties")?.as_object()?;
+    let mut changes = Vec::new();
+    for (name, value) in arguments.as_object()? {
+        let untyped = match properties.get(name) {
+            Some(Value::Bool(true)) => true,
+            Some(Value::Object(keys)) => keys.keys().all(|k| ANNOTATIONS.contains(&k.as_str())),
+            _ => false,
+        };
+        let Some(parsed) = untyped.then(|| parse_embedded(value)).flatten() else {
+            continue;
+        };
+        if parsed.is_object() || parsed.is_array() {
+            changes.push(Change {
+                path: format!("/{}", name.replace('~', "~0").replace('/', "~1")),
+                kind: ChangeKind::Parsed,
+                from: value.clone(),
+                to: parsed,
+            });
+        }
+    }
+    if changes.is_empty() {
+        return None;
+    }
+    let mut current = arguments.clone();
+    for change in &changes {
+        if let Some(slot) = current.pointer_mut(&change.path) {
+            *slot = change.to.clone();
+        }
+    }
+    if !compiled.is_valid(&current) && compiled.is_valid(arguments) {
+        return None;
+    }
+    Some(Reconciled {
+        arguments: current,
+        changes,
+    })
 }
 
 /// Layer A: parse stringified JSON wherever the schema rejects the string.
@@ -264,8 +363,11 @@ pub fn note_result(
 
 /// Finish the result of a dispatched call: note the repairs applied before
 /// dispatch and, when the target rejected the arguments as malformed, name
-/// the schema violations by path. Every path that appends a target's result
-/// (turn loop, spawn, deferred release) goes through here.
+/// the schema violations by path (with the schema itself unless
+/// `contract_in_context`, see [`contract_in_context`]). Every path that
+/// appends a target's result (turn loop, spawn, deferred release) goes
+/// through here.
+#[allow(clippy::too_many_arguments)]
 pub async fn settle_result(
     deps: &Deps,
     cfg: &WorkerConfig,
@@ -274,15 +376,45 @@ pub async fn settle_result(
     changes: Option<&[Change]>,
     function_id: &str,
     arguments: &Value,
+    contract_in_context: bool,
 ) {
     if let Some(changes) = changes {
         note_result(data, annotations, changes, function_id);
     }
     if function_id != FUNCTIONS_INFO_ID && looks_like_argument_error(data) {
-        if let Some(diagnosis) = diagnose(deps, cfg, function_id, arguments).await {
+        let target_error = ContentBlock::join_text(&data.content);
+        if let Some(diagnosis) = diagnose(
+            deps,
+            cfg,
+            function_id,
+            arguments,
+            &target_error,
+            contract_in_context,
+        )
+        .await
+        {
             data.content.push(ContentBlock::text(diagnosis));
         }
     }
+}
+
+/// Whether the model already holds `function_id`'s request schema: every
+/// tool carries its own under native exposure, and a contract fetched with
+/// `engine::functions::info` (the ledger) or preloaded by a profile or spawn
+/// stays in context. Native mode counts as known even for a dispatch-only
+/// grant called through `agent_trigger`: that call just gets today's pointer.
+pub fn contract_in_context(record: &TurnRecord, function_id: &str) -> bool {
+    record
+        .options
+        .functions
+        .as_ref()
+        .is_some_and(|functions| functions.expose == ExposeMode::Native)
+        || record.function_contract_ledger.contains_key(function_id)
+        || record
+            .options
+            .preloaded_contracts
+            .as_ref()
+            .is_some_and(|preloaded| preloaded.contains_key(function_id))
 }
 
 /// A string that parses as JSON of a non-string type.
@@ -630,6 +762,9 @@ async fn judge_layer(
         return None;
     }
     let asked = questions(compiled, schema, arguments);
+    if !answerable(compiled, arguments, &asked) {
+        return None;
+    }
     let evaluation = evaluation(function_id, description, arguments, schema, &asked)?;
     let answers = match crate::judge::evaluate(deps, evaluation, JUDGE_TIMEOUT_MS).await {
         Ok(answers) => answers,
@@ -647,6 +782,56 @@ async fn judge_layer(
     compiled.is_valid(&judged.arguments).then_some(judged)
 }
 
+/// Answer sets [`answerable`] tries; above it the judge is asked anyway.
+const MAX_DRY_RUNS: usize = 256;
+
+/// Whether some set of answers to `asked` repairs `arguments` into a valid
+/// call. Only such a repair is kept (`judge_layer`), so when none exists — a
+/// shape the target accepts but its schema does not publish, like the ide's
+/// flat `{path, ops}` entry — asking the judge would only cost the round trip.
+fn answerable(schema: &JSONSchema, arguments: &Value, asked: &[Question]) -> bool {
+    // Each question's confident replies, then "no change" (`Null`).
+    let replies: Vec<Vec<Value>> = asked
+        .iter()
+        .map(|question| {
+            let mut replies: Vec<Value> = match question {
+                Question::Rename { candidates, .. } => (0..candidates.len()).collect(),
+                Question::Enum { options, .. } => (0..options.len()).collect(),
+                Question::Drop { .. } => Vec::new(),
+            }
+            .into_iter()
+            .map(
+                |i| json!({ "choice": format!("o{i}"), "probabilities": { format!("o{i}"): 1.0 } }),
+            )
+            .collect();
+            if matches!(question, Question::Drop { .. }) {
+                replies.push(json!({ "noul": 1.0 }));
+            }
+            replies.push(Value::Null);
+            replies
+        })
+        .collect();
+    let Some(runs) = replies.iter().try_fold(1usize, |runs, replies| {
+        runs.checked_mul(replies.len())
+            .filter(|runs| *runs <= MAX_DRY_RUNS)
+    }) else {
+        return true;
+    };
+    (0..runs).any(|mut run| {
+        let answers: Map<String, Value> = replies
+            .iter()
+            .enumerate()
+            .map(|(index, replies)| {
+                let reply = replies[run % replies.len()].clone();
+                run /= replies.len();
+                (format!("q{index}"), reply)
+            })
+            .collect();
+        apply_answers(arguments, asked, &Value::Object(answers), JUDGE_THRESHOLD)
+            .is_some_and(|judged| schema.is_valid(&judged.arguments))
+    })
+}
+
 /// Layer C: when a call failed and its arguments still violate the target's
 /// schema, name each violation by path. The SDK's serde error names no field
 /// (`invalid type: string "x", expected a boolean`), so the model otherwise
@@ -656,12 +841,49 @@ async fn diagnose(
     cfg: &WorkerConfig,
     function_id: &str,
     arguments: &Value,
+    target_error: &str,
+    contract_in_context: bool,
 ) -> Option<String> {
     if cfg.call_reconciliation == CallReconciliation::Off {
         return None;
     }
     let schema = schema_for(deps, function_id).await?;
-    diagnosis(&JSONSchema::compile(&schema).ok()?, function_id, arguments)
+    let violations = diagnosis(
+        &JSONSchema::compile(&schema).ok()?,
+        function_id,
+        arguments,
+        target_error,
+    )?;
+    Some(conclude(violations, &schema, contract_in_context))
+}
+
+/// End a diagnosis with where the contract is: the compacted request schema
+/// itself when the model does not hold it and it is small enough, else a
+/// pointer to `engine::functions::info`. The attached schema is not recorded
+/// in the contract ledger, so a later info call still sends it in full.
+fn conclude(violations: String, schema: &Value, contract_in_context: bool) -> String {
+    let mut compact = schema.clone();
+    crate::trigger::compact_schema(&mut compact);
+    let compact = compact.to_string();
+    if contract_in_context || compact.len() > MAX_ATTACHED_SCHEMA_BYTES {
+        format!(
+            "{violations} Fix them and call again; engine::functions::info shows the full \
+             contract."
+        )
+    } else {
+        format!(
+            "{violations} Fix them and call again with arguments matching this request \
+             schema (no need to fetch the contract): {compact}"
+        )
+    }
+}
+
+/// The fields a serde error reports missing (`missing field `x``).
+fn missing_fields(text: &str) -> Vec<&str> {
+    text.split("missing field `")
+        .skip(1)
+        .filter_map(|rest| rest.split('`').next())
+        .collect()
 }
 
 /// Violations named in the diagnosis; the rest are counted.
@@ -678,30 +900,62 @@ fn unresolvable(schema: &JSONSchema, value: &Value) -> bool {
     })
 }
 
-fn diagnosis(schema: &JSONSchema, function_id: &str, arguments: &Value) -> Option<String> {
+fn diagnosis(
+    schema: &JSONSchema,
+    function_id: &str,
+    arguments: &Value,
+    target_error: &str,
+) -> Option<String> {
     if unresolvable(schema, arguments) {
         return None;
     }
-    let errors: Vec<String> = match schema.validate(arguments) {
-        Ok(()) => return None,
-        Err(errors) => errors
-            .map(|error| {
-                let message = ellipsis(&error.to_string(), MAX_DIAGNOSIS_CHARS);
-                format!(
-                    "`{}`: {message}",
-                    display_path(&error.instance_path.to_string())
-                )
-            })
-            .collect(),
+    let Err(errors) = schema.validate(arguments) else {
+        return None;
     };
+    let errors: Vec<_> = errors.collect();
+    // The target named a missing field the schema does not flag: it read the
+    // call as a shape the schema does not publish (the ide's flat single
+    // entry), so the schema's violations would point the model elsewhere.
+    // Not when an `anyOf`/`oneOf` failed (an `Option<Struct>`, a tagged
+    // enum): it reports no nested `Required`, so the field may be flagged
+    // inside it. Nor when the phrase is the caller's own value echoed back.
+    let spelled = arguments.to_string();
+    let mut reported = missing_fields(target_error);
+    reported.retain(|name| !spelled.contains(&format!("missing field `{name}`")));
+    let opaque = errors.iter().any(|error| {
+        matches!(
+            error.kind,
+            ValidationErrorKind::AnyOf
+                | ValidationErrorKind::OneOfNotValid
+                | ValidationErrorKind::OneOfMultipleValid
+        )
+    });
+    let flagged = |name: &str| {
+        errors.iter().any(|error| {
+            matches!(&error.kind, ValidationErrorKind::Required { property }
+                if property.as_str() == Some(name))
+        })
+    };
+    if !reported.is_empty() && !opaque && !reported.iter().any(|name| flagged(name)) {
+        return None;
+    }
+    let errors: Vec<String> = errors
+        .iter()
+        .map(|error| {
+            let message = ellipsis(&error.to_string(), MAX_DIAGNOSIS_CHARS);
+            format!(
+                "`{}`: {message}",
+                display_path(&error.instance_path.to_string())
+            )
+        })
+        .collect();
     let more = errors.len().saturating_sub(MAX_DIAGNOSES);
     let mut listed = errors.into_iter().take(MAX_DIAGNOSES).collect::<Vec<_>>();
     if more > 0 {
         listed.push(format!("{more} more"));
     }
     Some(format!(
-        "[harness] These arguments do not match {function_id}'s request schema: {}. Fix them and \
-         call again; engine::functions::info shows the full contract.",
+        "[harness] These arguments do not match {function_id}'s request schema: {}.",
         listed.join("; ")
     ))
 }
@@ -790,6 +1044,74 @@ mod tests {
         let paths: Vec<&str> = reconciled.changes.iter().map(|c| c.path.as_str()).collect();
         assert_eq!(paths.len(), 3);
         assert!(paths.contains(&"/regex") && paths.contains(&"/max_depth"));
+    }
+
+    #[test]
+    fn parses_json_strings_in_untyped_properties_only() {
+        // state::compare-and-set as registered: `value` is `true`, `expected`
+        // carries only annotations.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "scope": { "type": "string" },
+                "key": { "type": "string" },
+                "expected": { "default": null, "description": "what is there" },
+                "value": true
+            },
+            "required": ["key", "scope", "value"]
+        });
+        let compiled = compile(&schema);
+        let reconciled = parse_untyped(
+            &schema,
+            &compiled,
+            &json!({ "scope": "s", "key": "{\"a\":1}", "value": "{\"item\":\"KAN-1\"}", "expected": "[1]" }),
+        )
+        .expect("untyped strings parsed");
+        assert_eq!(
+            reconciled.arguments,
+            json!({ "scope": "s", "key": "{\"a\":1}", "value": { "item": "KAN-1" }, "expected": [1] })
+        );
+        assert_eq!(reconciled.changes.len(), 2);
+
+        // Scalars and plain strings stay strings; typed properties are untouched.
+        assert_eq!(
+            parse_untyped(
+                &schema,
+                &compiled,
+                &json!({ "scope": "s", "key": "k", "value": "5" })
+            ),
+            None
+        );
+        assert_eq!(
+            parse_untyped(
+                &schema,
+                &compiled,
+                &json!({ "scope": "s", "key": "k", "value": "hello" })
+            ),
+            None
+        );
+        assert_eq!(
+            parse_untyped(
+                &schema,
+                &compiled,
+                &json!({ "scope": "s", "key": "k", "value": { "a": 1 } })
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn keeps_a_valid_call_the_parse_would_break() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "value": true },
+            "allOf": [{ "properties": { "value": { "type": "string" } } }]
+        });
+        let compiled = compile(&schema);
+        assert_eq!(
+            parse_untyped(&schema, &compiled, &json!({ "value": "{\"a\":1}" })),
+            None
+        );
     }
 
     #[test]
@@ -885,7 +1207,11 @@ mod tests {
 
     /// The 25 argument-shape errors from real sessions (85 sessions, 3,496
     /// calls; paths anonymised) with the live request schemas: every
-    /// stringified-JSON mistake is repaired, nothing else is touched.
+    /// stringified-JSON mistake is repaired, nothing else is touched. Plus
+    /// MOT-5170's coder::search `pattern` cases (one real, one constructed
+    /// `{query, pattern}`): `asks` pins the questions layer B would put to
+    /// the judge, and `[]` means the call reaches the target untouched, so
+    /// the ide's own `pattern` reading decides.
     #[test]
     fn replays_the_corpus_argument_mistakes() {
         let corpus: Value = serde_json::from_str(include_str!(
@@ -901,6 +1227,14 @@ mod tests {
                 corpus["schemas"][function_id].clone()
             };
             let result = coerce(&schema, &case["arguments"]);
+            if let Some(asks) = case.get("asks") {
+                let current = result.as_ref().map_or(&case["arguments"], |r| &r.arguments);
+                let asked: Vec<String> = questions(&compile(&schema), &schema, current)
+                    .iter()
+                    .map(|q| format!("{q:?}"))
+                    .collect();
+                assert_eq!(json!(asked), *asks, "{function_id}: {}", case["arguments"]);
+            }
             if case["stringified"] == json!(true) {
                 let reconciled = result.unwrap_or_else(|| panic!("{function_id} not repaired"));
                 for change in &reconciled.changes {
@@ -1200,13 +1534,14 @@ mod tests {
             &schema,
             "coder::search",
             &json!({ "regex": "yes", "extra": 1 }),
+            "",
         )
         .expect("invalid arguments are diagnosed");
         assert!(text.contains("coder::search"), "{text}");
         assert!(text.contains("`regex`"), "{text}");
         assert!(text.contains("query"), "{text}");
         assert_eq!(
-            diagnosis(&schema, "coder::search", &json!({ "query": "x" })),
+            diagnosis(&schema, "coder::search", &json!({ "query": "x" }), ""),
             None
         );
     }
@@ -1320,6 +1655,126 @@ mod tests {
         assert!(coerce(&schema, &arguments).is_none());
     }
 
+    fn corpus_schema(function_id: &str) -> Value {
+        let corpus: Value = serde_json::from_str(include_str!(
+            "../tests/support/call_reconciliation_corpus.json"
+        ))
+        .expect("corpus fixture parses");
+        corpus["schemas"][function_id].clone()
+    }
+
+    /// The ide accepts a flat `{path, ops}` entry its published schema does
+    /// not describe (the schema lists only `files`). Renaming `path` or `ops`
+    /// to `files` never validates, so the judge is not asked at all.
+    #[test]
+    fn the_judge_is_not_asked_when_no_answer_can_make_the_call_valid() {
+        let raw = corpus_schema("coder::update-file");
+        let schema = compile(&raw);
+        for flat in [
+            json!({ "path": "a.rs", "ops": [{ "op": "remove", "from_line": 1, "to_line": 1 }] }),
+            json!({ "path": "a.rs", "content": "x" }),
+        ] {
+            let asked = questions(&schema, &raw, &flat);
+            assert_eq!(asked.len(), 2, "{flat}");
+            assert!(!answerable(&schema, &flat, &asked), "{flat}");
+        }
+
+        // A rename that validates is still asked, and so is a drop.
+        let raw = search_schema();
+        let schema = compile(&raw);
+        let arguments = json!({ "pattern": "x" });
+        let asked = questions(&schema, &raw, &arguments);
+        assert!(matches!(asked[..], [Question::Rename { .. }]));
+        assert!(answerable(&schema, &arguments, &asked));
+        let arguments = json!({ "query": "x", "seed": 7 });
+        let asked = questions(&schema, &raw, &arguments);
+        assert!(matches!(asked[..], [Question::Drop { .. }]));
+        assert!(answerable(&schema, &arguments, &asked));
+
+        // Too many combinations to try: ask (fail-open).
+        let options: Vec<Value> = (0..10).map(|i| json!(format!("v{i}"))).collect();
+        let raw = json!({
+            "type": "object",
+            "properties": {
+                "a": { "enum": options }, "b": { "enum": options }, "c": { "enum": options },
+                "d": { "type": "integer" }
+            },
+            "required": ["d"]
+        });
+        let schema = compile(&raw);
+        let arguments = json!({ "a": "x", "b": "x", "c": "x" });
+        let asked = questions(&schema, &raw, &arguments);
+        assert_eq!(asked.len(), 3);
+        assert!(answerable(&schema, &arguments, &asked));
+    }
+
+    #[test]
+    fn a_target_naming_a_field_the_schema_does_not_flag_gets_no_diagnosis() {
+        let schema = compile(&corpus_schema("coder::update-file"));
+        let flat = json!({ "path": "a.rs", "content": "x" });
+        // The ide read a flat entry (a shape the schema does not publish) and
+        // named its missing `ops`: "`files` is required" would point elsewhere.
+        let target = "coder::update-file: invalid file entry: missing field `ops`; to rewrite \
+                      a whole file use coder::create-file with `overwrite: true`. Each `files` \
+                      entry is { \"path\", \"ops\", ... }.";
+        assert_eq!(
+            diagnosis(&schema, "coder::update-file", &flat, target),
+            None
+        );
+
+        // A field the schema flags too keeps the diagnosis.
+        let batched = json!({ "files": [{ "path": "a.rs", "content": "x" }] });
+        let text = diagnosis(
+            &schema,
+            "coder::update-file",
+            &batched,
+            "coder::update-file: invalid `files[0]`: missing field `ops`",
+        )
+        .expect("diagnosed");
+        assert!(text.contains("`files/0`"), "{text}");
+
+        // An error that names no field is diagnosed as before.
+        assert!(diagnosis(
+            &schema,
+            "coder::update-file",
+            &flat,
+            "serialization error: invalid type: string \"x\", expected a sequence"
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn a_composite_violation_or_an_echoed_phrase_keeps_the_diagnosis() {
+        // `display` is an `Option<SubagentDisplay>` (anyOf): its missing
+        // `name` shows up as one opaque anyOf error, never a nested Required.
+        let schema = compile(&crate::surface::schema_value::<
+            crate::functions::spawn::SpawnRequest,
+        >());
+        let text = diagnosis(
+            &schema,
+            crate::functions::SPAWN_ID,
+            &json!({ "task": "x", "display": { "icon": "code" } }),
+            "invalid spawn arguments: missing field `name`",
+        )
+        .expect("diagnosed");
+        assert!(text.contains("`display`"), "{text}");
+
+        // The caller's own value spells the phrase and the target echoes it.
+        let schema = compile(&corpus_schema("coder::update-file"));
+        let ops = "assert!(err.contains(\"missing field `questions`\"))";
+        let text = diagnosis(
+            &schema,
+            "coder::update-file",
+            &json!({ "files": [{ "path": "a.rs", "ops": ops }] }),
+            &format!(
+                "coder::update-file: invalid `files[0]`: invalid type: string {ops:?}, \
+                 expected a sequence"
+            ),
+        )
+        .expect("diagnosed");
+        assert!(text.contains("`files/0/ops`"), "{text}");
+    }
+
     #[test]
     fn an_unfetchable_ref_is_treated_as_an_unknown_schema() {
         let schema = compile(&json!({
@@ -1327,7 +1782,70 @@ mod tests {
             "properties": { "a": { "$ref": "https://example.com/x.json#/A" } }
         }));
         assert!(unresolvable(&schema, &json!({ "a": 1 })));
-        assert_eq!(diagnosis(&schema, "remote::fn", &json!({ "a": 1 })), None);
+        assert_eq!(
+            diagnosis(&schema, "remote::fn", &json!({ "a": 1 }), ""),
+            None
+        );
         assert!(!unresolvable(&schema, &json!({ "b": 1 })));
+    }
+
+    #[test]
+    fn a_contract_is_in_context_when_fetched_preloaded_or_native() {
+        let mut record = crate::types::turn::tests::record();
+        assert!(!contract_in_context(&record, "coder::update-file"));
+
+        record.function_contract_ledger.insert(
+            "coder::update-file".into(),
+            crate::types::turn::FunctionContractLedgerEntry {
+                contract_digest: "d".into(),
+                source_function_call_id: "c".into(),
+                source_content_digest: "s".into(),
+                eligible: true,
+                repeats: 0,
+            },
+        );
+        assert!(contract_in_context(&record, "coder::update-file"));
+        assert!(!contract_in_context(&record, "state::get"));
+
+        record.options.preloaded_contracts = Some(BTreeMap::from([("state::get".into(), None)]));
+        assert!(contract_in_context(&record, "state::get"));
+        assert!(!contract_in_context(&record, "shell::exec"));
+
+        record
+            .options
+            .functions
+            .get_or_insert_with(Default::default)
+            .expose = ExposeMode::Native;
+        assert!(contract_in_context(&record, "shell::exec"));
+    }
+
+    #[test]
+    fn a_diagnosis_carries_the_schema_only_when_the_model_lacks_it() {
+        let schema = corpus_schema("coder::update-file");
+        let violations = diagnosis(
+            &compile(&schema),
+            "coder::update-file",
+            &json!({ "files": [{ "path": "a.rs", "replace": [] }] }),
+            "coder::update-file: invalid `files[0]`: missing field `ops`",
+        )
+        .expect("diagnosed");
+
+        let attached = conclude(violations.clone(), &schema, false);
+        assert!(attached.starts_with(&violations), "{attached}");
+        assert!(!attached.contains("engine::functions::info"), "{attached}");
+        let (_, json) = attached.split_once("contract): ").expect("schema follows");
+        let mut compact = schema.clone();
+        crate::trigger::compact_schema(&mut compact);
+        assert_eq!(serde_json::from_str::<Value>(json).unwrap(), compact);
+
+        let pointed = conclude(violations.clone(), &schema, true);
+        assert!(
+            pointed.ends_with("engine::functions::info shows the full contract."),
+            "{pointed}"
+        );
+
+        let huge =
+            json!({ "type": "object", "description": "x".repeat(MAX_ATTACHED_SCHEMA_BYTES) });
+        assert!(conclude(violations, &huge, false).ends_with("shows the full contract."));
     }
 }

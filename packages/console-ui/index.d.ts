@@ -410,6 +410,51 @@ export interface SessionTurnSummaryRegistration {
   render: React.ComponentType<SessionTurnSummaryProps>
 }
 
+/** What a worker's Context section shows in its header. */
+export interface ContextSectionSummary {
+  /** Shown beside the title. */
+  count?: number
+  /** One line kept in the header while the section is folded. */
+  brief?: string
+  /** A status dot before the brief. */
+  tone?: 'accent' | 'alert' | 'warn' | 'ok'
+  /** Nothing to show: the section is left out until this turns false. */
+  empty?: boolean
+}
+
+/** Props a worker's section in the chat's Context panel receives. */
+export interface ContextSectionProps {
+  sessionId: string
+  /** The chat's project folder, when it has one. */
+  workingDir?: string
+  /** The panel is open: read only while it is. */
+  active: boolean
+  /** A turn is running; read again when it ends. */
+  isStreaming: boolean
+  /** The header's count and brief; `empty` leaves the section out. */
+  setSummary(summary: ContextSectionSummary): void
+}
+
+/**
+ * A section of the chat's Context side panel. The console draws its header
+ * (title, worker, count, brief, fold and drag handle) and keeps where the
+ * user put it, folded or hidden; the render draws the body, and stays
+ * mounted while folded so its summary keeps up. Duplicate `id`: last
+ * registration wins.
+ */
+export interface ContextSectionRegistration {
+  /** kebab-case; convention `<worker>-<name>`. */
+  id: string
+  title: string
+  /**
+   * Its first place among the panel's sections, whose own run from 100
+   * (Project) to 700 (Links) in steps of 100; 1000 when left out. The
+   * order the user drags wins.
+   */
+  order?: number
+  render: React.ComponentType<ContextSectionProps>
+}
+
 /** Props a composer toolbar action receives. */
 export interface ComposerActionProps {
   /** Active session id, or `null` while the conversation has none yet. */
@@ -502,13 +547,66 @@ export interface TranscriptRendererRegistration {
 export interface OverlayRegistration {
   /** kebab-case; convention `<worker>-<name>`. */
   id: string
-  render: React.ComponentType
+  render: React.ComponentType<OverlayRenderProps>
+}
+
+/** What the console hands an overlay on every render. */
+export interface OverlayRenderProps {
+  /** Active chat session id, as pages get it; absent on older consoles. */
+  conversationId?: string | null
 }
 
 /**
  * What `setup(host)` receives. Every registrar returns an unregister fn AND
  * is auto-tracked: the loader runs all of them on dispose.
  */
+/** One labelled value of a mention preview card. */
+export interface MentionField {
+  label: string
+  value: string
+  /** `neutral` | `info` | `success` | `warning` | `danger`. */
+  tone?: string
+}
+
+/** What clicking a mention opens: a page, a chat session or an http(s) URL. */
+export type MentionOpen =
+  | { page: string; context?: JsonValue }
+  | { session: string }
+  | { url: string }
+
+/** What a worker's mention get function answers for one id. */
+export interface MentionView {
+  id: string
+  label: string
+  hint?: string
+  description?: string
+  icon?: string
+  color?: string
+  fields?: MentionField[]
+  open?: MentionOpen
+  summary?: string
+  /** The worker's domain object — what its own preview renders from. */
+  data?: unknown
+  updated_at?: string
+}
+
+export interface MentionRendererProps {
+  /** The provider's token name, e.g. `kanban`. */
+  provider: string
+  view: MentionView
+  /** Open the mention's target, as clicking its pill does. */
+  open(): void
+}
+
+/**
+ * A worker's own drawing of its mentions: the preview card a pill shows on
+ * hover (about 22rem wide). The generic card covers the rest.
+ */
+export interface MentionRendererRegistration {
+  provider: string
+  Preview: React.ComponentType<MentionRendererProps>
+}
+
 export interface Host {
   iii: ExtensionIii
   /** The curated component record — same components as the named exports below. */
@@ -598,6 +696,15 @@ export interface Host {
     register(providerId: string, component: React.ComponentType<ProviderConfigFormProps>): () => void
   }
   /**
+   * Chat mentions (`@<provider>(id="…")`). The provider itself is declared by
+   * the worker's backend (`metadata.mention` on its get function, see
+   * `crates/mention-contract`); this slot only draws its preview. Optional:
+   * absent on consoles that predate worker mentions.
+   */
+  mentions?: {
+    registerRenderer(renderer: MentionRendererRegistration): () => void
+  }
+  /**
    * Optional: absent on consoles that predate session chips. Feature-detect
    * with `host.chat?.registerSessionChip` — newer slot namespaces are always
    * declared optional so worker scripts degrade without casts.
@@ -625,6 +732,8 @@ export interface Host {
     registerSessionChip(chip: SessionChipRegistration): () => void
     /** Optional on consoles that predate the footer turn-summary slot. */
     registerTurnSummary?(summary: SessionTurnSummaryRegistration): () => void
+    /** Optional on consoles that predate the chat's Context panel sections. */
+    registerContextSection?(section: ContextSectionRegistration): () => void
     /** Optional on consoles that predate the composer toolbar slot. */
     registerComposerAction?(action: ComposerActionRegistration): () => void
     /** Optional on consoles that predate the composer footer control slot. */
@@ -648,6 +757,20 @@ export interface Host {
      * consoles; feature-detect.
      */
     requestThinkingLevelChange?(request: { sessionId: string; level: string }): boolean
+    /**
+     * Start a new chat that sends `text`, the way a setup example prompt
+     * does: `agent` (a profile id; the default profile when absent) is
+     * selected, the first of `models` this machine serves is chosen with its
+     * effort (the chat's usual model when none is), and the chat is shown.
+     * A profile that is not served leaves the text as a
+     * draft to send by hand. Resolves to the chat's session id. Absent on
+     * older consoles; feature-detect.
+     */
+    startChat?(request: {
+      text: string
+      agent?: string
+      models?: { provider: string; model: string; effort?: string }[]
+    }): Promise<string>
     /** Live composer model for a conversation, including unsaved drafts. */
     composerModel?(conversationId?: string | null): string | null
   }
@@ -752,6 +875,8 @@ export interface UiClasses {
   readonly motionControl: 'iii-ui-motion-control'
   readonly motionPanel: 'iii-ui-motion-panel'
   readonly motionOverlay: 'iii-ui-motion-overlay'
+  /** A page of a picker that slides between pages: `data-active`, `--picker-page-offset`. */
+  readonly motionPickerPage: 'iii-ui-motion-picker-page'
   readonly eyebrow: 'iii-ui-eyebrow'
   readonly toolbar: 'iii-ui-toolbar'
   readonly toolbarEnd: 'iii-ui-toolbar__end'
@@ -1283,6 +1408,10 @@ export interface PageSidebarProps extends React.HTMLAttributes<HTMLElement> {
   narrowBelow?: number
   /** `inline` (default) makes narrow navigation full-width for drill-in flows; `drawer` keeps a rail beside the main column and opens navigation as an overlay. */
   narrowMode?: 'inline' | 'drawer'
+  /** Each new value expands the sidebar (opens the drawer when narrow); the first value is the baseline. Lets a rail action reveal its content. */
+  expandRequest?: number
+  /** Whether picking a button, link or tab inside the open drawer closes it (default `true`). */
+  closeDrawerOnSelect?: boolean
 }
 /** Shared host-owned navigation column; fixed by default, optionally collapsible/resizable. */
 export declare const PageSidebar: React.ComponentType<PageSidebarProps>
@@ -1740,6 +1869,40 @@ export interface ModelPickerProps {
 /** The Console's responsive searchable model catalog picker. */
 export declare const ModelPicker: React.ComponentType<ModelPickerProps>
 
+export interface SecretKeyFieldProps {
+  /** Secret name — also the environment variable the key is looked up under. */
+  name: string
+  /** The field's configuration value: `secret://NAME`, `env://NAME`, `${VAR}`, a literal, or empty. */
+  value: string | undefined
+  /** Write the field: a `secret://` or `env://` reference, or `undefined` to clear it. */
+  onChange: (next: string | undefined) => unknown
+  /** Workers allowed to read the key. */
+  consumers: readonly string[]
+  label?: string
+  /** What the consumer reports about the credential (llm-router's provider status). */
+  status?: { connected?: boolean; source?: string; error?: string; checking?: boolean; detail?: string }
+  keysUrl?: string
+  /**
+   * The consumer also resolves `env://NAME` through the secrets worker (as
+   * llm-router does): offer keeping the key as an environment variable in the
+   * project's `.env`. Consoles before it ignore the prop and offer the
+   * encrypted store only.
+   */
+  environment?: boolean
+  disabled?: boolean
+  className?: string
+}
+/**
+ * One credential, kept by the `secrets` worker: encrypted, with only
+ * `secret://NAME` in configuration, or — with `environment` — as a variable
+ * in the project's `.env`, with `env://NAME`. Reuses a key found on the
+ * machine, keeps a stored one or takes a pasted one; moves a plain-text or
+ * `${VAR}` value into the secrets worker; starts the secrets worker when it
+ * is not running. Read it from `host.components.SecretKeyField` and fall back
+ * to a plain input when absent: Consoles before it do not have it.
+ */
+export declare const SecretKeyField: React.ComponentType<SecretKeyFieldProps>
+
 export interface WorkerConfigurationDialogProps {
   /** Which worker to open in global Settings; `null` does nothing. */
   configurationId: string | null
@@ -1751,6 +1914,25 @@ export interface WorkerConfigurationDialogProps {
  * `configurationId` in `host.pages.register` instead.
  */
 export declare const WorkerConfigurationDialog: React.ComponentType<WorkerConfigurationDialogProps>
+
+export interface WorkerConfigurationPanelProps {
+  /** The configuration entry to edit (a worker's `<worker>::configuration-id`); `null` renders nothing. */
+  configurationId: string | null
+  /** Unsaved edits appeared or went away: guard leaving the panel. */
+  onDirtyChange?: (dirty: boolean) => void
+  /** A save landed; receives the stored value. */
+  onSaved?: (value: JsonValue) => void
+  className?: string
+}
+/**
+ * One worker's settings inline, where the choice is made (a picker page):
+ * the Settings editor — the worker's registered form, validation and the
+ * save bar — without the Settings chrome; the surface gives the title and
+ * the way back. It fills a flex column and scrolls inside. Read it from
+ * `host.components.WorkerConfigurationPanel` and fall back to
+ * `WorkerConfigurationDialog` when absent: Consoles before it lack it.
+ */
+export declare const WorkerConfigurationPanel: React.ComponentType<WorkerConfigurationPanelProps>
 
 export interface DirectoryPickerProps {
   /** The chosen directory (absolute, as the shell worker echoed it). */

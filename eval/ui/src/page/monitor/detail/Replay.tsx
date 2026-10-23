@@ -54,7 +54,7 @@ const SHOWN_REPLIES = 3
 
 function FidelityLine({ fidelity }: { fidelity: Fidelity }) {
   if (fidelity.level === 'exact') {
-    return <Pill tone="ok">Reconstruction matches the original</Pill>
+    return <Pill tone="ok">Token counts match the original</Pill>
   }
   const off = fidelity.off_ratio === undefined ? '' : ` · ${(fidelity.off_ratio * 100).toFixed(1)}% off`
   return (

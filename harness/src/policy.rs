@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use crate::types::content::ContentBlock;
 use crate::types::message::AssistantMessage;
 use crate::types::model::AgentFunction;
-use crate::types::turn::{ExposeMode, FunctionPolicy};
+use crate::types::turn::{ExposeMode, FunctionPolicy, ResponseLanguage};
 
 /// The single generic invocation surface name (default exposure).
 pub const AGENT_TRIGGER_NAME: &str = "agent_trigger";
@@ -183,8 +183,10 @@ fn build_set(patterns: &[String]) -> Option<GlobSet> {
 }
 
 /// The single `agent_trigger` schema attached by default — the model triggers
-/// any allowed function via `{ function, description, payload }`.
-pub fn agent_trigger_schema() -> AgentFunction {
+/// any allowed function via `{ function, description, payload }`. The
+/// `description` label names the session's response language (unknown: the
+/// one the session context names), so a model never guesses one.
+pub fn agent_trigger_schema(language: Option<&ResponseLanguage>) -> AgentFunction {
     AgentFunction {
         name: AGENT_TRIGGER_NAME.to_string(),
         description:
@@ -204,7 +206,7 @@ pub fn agent_trigger_schema() -> AgentFunction {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 120,
-                    "description": "Short user-facing description of the action in the user's language. Describe the work, not the function id."
+                    "description": crate::language::description_field_text(language)
                 },
                 "payload": { "type": "object", "description": "Arguments for the target function." }
             },
@@ -282,16 +284,13 @@ pub fn plan_calls(message: &AssistantMessage, expose: ExposeMode) -> Vec<Planned
                         .to_string();
                     let payload = match arguments.get("payload") {
                         // A stringified payload is always wrong (the schema says
-                        // object): recover the object when the text starts with
-                        // one. Leading-value parse, not from_str — models that
-                        // stringify also tend to append stray closing braces,
-                        // which a strict parse rejects as trailing data.
-                        Some(Value::String(s)) => serde_json::Deserializer::from_str(s)
-                            .into_iter::<Value>()
-                            .next()
-                            .and_then(Result::ok)
-                            .filter(Value::is_object)
-                            .unwrap_or_else(|| Value::String(s.clone())),
+                        // object): recover the object when the text is one.
+                        // Text after it is marked, not dropped: like the
+                        // router's top-level salvage, an object followed by
+                        // more text is most often one closed too soon, its
+                        // later fields cut off, and the turn loop refuses a
+                        // `_partial` call so the model re-sends it.
+                        Some(Value::String(s)) => recover_stringified_payload(s),
                         Some(v) => v.clone(),
                         // No `payload` key: the model flattened the target's
                         // arguments beside `function` (or called the target name
@@ -316,13 +315,15 @@ pub fn plan_calls(message: &AssistantMessage, expose: ExposeMode) -> Vec<Planned
                 } else {
                     (function_id.clone(), arguments.clone())
                 };
-            // Truncation markers on the wrapper must survive the unwrap: a
+            // Degradation markers on the wrapper must survive the unwrap: a
             // max_tokens cut landing after a complete `payload` salvages to
-            // `{function, payload, _partial: true}`, and unwrapping the
-            // payload verbatim would shed the marker — bypassing the turn
-            // loop's refusal to execute provider-degraded arguments.
+            // `{function, payload, _partial: true}`, and arguments that were
+            // not valid JSON carry `_invalid: {error, offset, context}`.
+            // Unwrapping the payload verbatim would shed the marker —
+            // bypassing the turn loop's refusal to execute provider-degraded
+            // arguments.
             if let Value::Object(p) = &mut payload {
-                for marker in ["_partial", "_raw"] {
+                for marker in ["_partial", "_raw", "_invalid"] {
                     if let Some(v) = arguments.get(marker) {
                         if !p.contains_key(marker) {
                             p.insert(marker.to_string(), v.clone());
@@ -339,6 +340,45 @@ pub fn plan_calls(message: &AssistantMessage, expose: ExposeMode) -> Vec<Planned
         }
     }
     out
+}
+
+/// The object a stringified `payload` holds. Anything after it but JSON
+/// whitespace marks it `_partial` + `_invalid` (the router's markers for the
+/// same text at the top level), so the turn loop refuses it as invalid JSON.
+/// Text that does not start with an object stays a string, which the turn
+/// loop refuses too.
+fn recover_stringified_payload(s: &str) -> Value {
+    let mut values = serde_json::Deserializer::from_str(s).into_iter::<Value>();
+    let Some(Ok(Value::Object(mut map))) = values.next() else {
+        return Value::String(s.to_owned());
+    };
+    let end = values.byte_offset();
+    let rest = &s[end..];
+    let after = end + (rest.len() - rest.trim_start_matches([' ', '\t', '\n', '\r']).len());
+    if after < s.len() {
+        // A window around the first byte that is not JSON, like the router's
+        // `_invalid.context`: the object's tail and the text that follows it.
+        let from = s[..after]
+            .char_indices()
+            .rev()
+            .nth(39)
+            .map_or(0, |(i, _)| i);
+        let to = s[after..]
+            .char_indices()
+            .nth(60)
+            .map_or(s.len(), |(i, _)| after + i);
+        map.insert("_partial".into(), Value::Bool(true));
+        map.insert(
+            "_invalid".into(),
+            json!({
+                "error": "unexpected data after the root value of the payload string \
+                          (send payload as an object)",
+                "offset": after,
+                "context": &s[from..to],
+            }),
+        );
+    }
+    Value::Object(map)
 }
 
 #[cfg(test)]
@@ -501,19 +541,29 @@ mod tests {
         // Salvage of a max_tokens-cut wrapper can keep a complete `payload`
         // beside the `_partial` marker; the unwrapped call must still carry
         // it so the dispatch loop refuses to execute possibly-partial intent.
+        // Text that was not valid JSON also carries `_invalid`, which picks
+        // the refusal's wording.
+        let invalid = json!({
+            "error": "unexpected data after the root value",
+            "offset": 40,
+            "context": "]}}}"
+        });
         let msg = assistant_with(vec![ContentBlock::FunctionCall {
             id: "fc_1".into(),
             function_id: AGENT_TRIGGER_NAME.into(),
             arguments: json!({
                 "function": "state::set",
                 "payload": { "scope": "s", "key": "k" },
-                "_partial": true
+                "_partial": true,
+                "_invalid": invalid
             }),
         }]);
         let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
         assert_eq!(calls[0].function_id, "state::set");
         assert_eq!(calls[0].arguments["_partial"], true);
+        assert_eq!(calls[0].arguments["_invalid"], invalid);
         assert_eq!(calls[0].arguments["scope"], "s");
+        assert!(crate::trigger::arguments_degraded(&calls[0].arguments));
     }
 
     #[test]
@@ -540,7 +590,7 @@ mod tests {
 
     #[test]
     fn agent_trigger_schema_requires_a_bounded_user_facing_description() {
-        let schema = agent_trigger_schema();
+        let schema = agent_trigger_schema(None);
         let description = &schema.parameters["properties"]["description"];
         assert_eq!(description["type"], "string");
         assert_eq!(description["minLength"], 1);
@@ -551,8 +601,31 @@ mod tests {
     }
 
     #[test]
+    fn agent_trigger_schema_names_the_response_language() {
+        let english = ResponseLanguage {
+            code: "eng".into(),
+            name: "English".into(),
+        };
+        let named = agent_trigger_schema(Some(&english));
+        assert_eq!(
+            named.parameters["properties"]["description"]["description"],
+            "Short user-facing description of the action, written in English. Describe the \
+             work, not the function id."
+        );
+        let unknown = agent_trigger_schema(None);
+        let text = unknown.parameters["properties"]["description"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(text.contains(
+            "in the response language named in the session context (else the language of the \
+             user's own prose); never inferred from names, paths or locale"
+        ));
+        assert!(!text.contains("user's language"));
+    }
+
+    #[test]
     fn agent_trigger_schema_explains_serial_and_bulk_dispatch() {
-        let description = agent_trigger_schema().description;
+        let description = agent_trigger_schema(None).description;
         assert!(
             description.contains("one assistant response execute sequentially in content order")
         );
@@ -562,7 +635,7 @@ mod tests {
 
     #[test]
     fn agent_trigger_schema_defaults_discovery_to_directory_search() {
-        let description = agent_trigger_schema().description;
+        let description = agent_trigger_schema(None).description;
         let primary = description
             .find("Discover task-capability IDs with directory::search_functions")
             .expect("tool description makes directory search the default discovery path");
@@ -603,12 +676,66 @@ mod tests {
     }
 
     #[test]
-    fn stringified_payload_with_trailing_garbage_is_recovered() {
-        // The live failure shape: a valid stringified object plus a stray `}`.
+    fn stringified_payload_with_trailing_text_is_refused() {
+        // An object closed too soon: `loose_ends` belonged inside `value`.
+        // Keeping the leading object would dispatch it without the rest.
+        let payload = "{\"key\":\"a\",\"value\":{\"x\":1}},\"loose_ends\":[\"l\"]}";
+        let msg = assistant_with(vec![ContentBlock::FunctionCall {
+            id: "fc_1".into(),
+            function_id: AGENT_TRIGGER_NAME.into(),
+            arguments: json!({ "function": "state::set", "payload": payload }),
+        }]);
+        let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
+        let args = &calls[0].arguments;
+        assert_eq!(args["key"], "a");
+        assert_eq!(args["_partial"], true);
+        assert!(args["_invalid"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("after the root value"));
+        assert_eq!(
+            args["_invalid"]["offset"],
+            payload.find("},\"loose").unwrap() + 1
+        );
+        assert!(args["_invalid"]["context"]
+            .as_str()
+            .unwrap()
+            .ends_with("\"loose_ends\":[\"l\"]}"));
+        assert!(crate::trigger::arguments_degraded(args));
+
+        // Whitespace between the object and the text: the offset and the
+        // window point at the text, not at the end of the object.
+        let gap = " ".repeat(300);
+        let payload = format!("{{\"key\":\"a\"}}{gap}}}");
+        let msg = assistant_with(vec![ContentBlock::FunctionCall {
+            id: "fc_1".into(),
+            function_id: AGENT_TRIGGER_NAME.into(),
+            arguments: json!({ "function": "state::set", "payload": payload }),
+        }]);
+        let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
+        let invalid = &calls[0].arguments["_invalid"];
+        assert_eq!(invalid["offset"], payload.len() - 1);
+        let context = invalid["context"].as_str().unwrap();
+        assert!(context.ends_with(" }"), "{context:?}");
+        assert!(context.chars().count() <= 41, "{context:?}");
+
+        // A single stray closer is refused the same way: from the text alone
+        // it cannot be told apart from an object closed too soon.
         let msg = assistant_with(vec![ContentBlock::FunctionCall {
             id: "fc_1".into(),
             function_id: AGENT_TRIGGER_NAME.into(),
             arguments: json!({ "function": "state::set", "payload": "{\"key\":\"a\",\"value\":{\"x\":1}}}" }),
+        }]);
+        let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
+        assert!(crate::trigger::arguments_degraded(&calls[0].arguments));
+    }
+
+    #[test]
+    fn stringified_payload_with_only_whitespace_around_is_recovered() {
+        let msg = assistant_with(vec![ContentBlock::FunctionCall {
+            id: "fc_1".into(),
+            function_id: AGENT_TRIGGER_NAME.into(),
+            arguments: json!({ "function": "state::set", "payload": " {\"key\":\"a\",\"value\":{\"x\":1}}\n\t " }),
         }]);
         let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
         assert_eq!(

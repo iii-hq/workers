@@ -8,8 +8,10 @@ through six functions — `state::set`, `state::get`, `state::delete`,
 `state::update`, `state::list`, `state::list_groups` — and this worker also
 registers the `state` trigger type, which fires `state:created`,
 `state:updated`, or `state:deleted` after every successful mutation so
-downstream functions can react to data changes without polling. This worker
-is the standalone migration of the engine's legacy built-in state service.
+downstream functions can react to data changes without polling. On iii 0.25
+engines the same events can also be observed through the `state::on-changed`
+function. This worker is the standalone migration of the engine's legacy
+built-in state service.
 
 ## Install
 
@@ -32,6 +34,7 @@ exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 | `state::list_keys` | `{ scope }` | `{ keys }` — the keys stored in the scope, adapter order (additive; no builtin counterpart — added for the console state UI, whose per-item navigation `state::list`'s values-only shape cannot drive) | — |
 | `state::list_groups` | `{}` | `{ groups }` — sorted, deduplicated scope names | — |
 | `state::ui-content` | `{ path }` | `{ content, content_type }` — content function for the injected console UI (internal; see [Console UI](#console-ui)) | — |
+| `state::on-changed` | the change event (see [Observing changes](#observing-changes-iii-025)) | `null` | — (observe it; only this worker may invoke it) |
 
 The `harness_binding` and `harness_binding_owner` scopes are reserved
 control-plane state: public functions reject direct access, omit them from
@@ -116,12 +119,58 @@ The handler receives the event payload:
 `old_value` is `null` for created keys and `new_value` is `null` for deleted
 keys.
 
+## Observing changes (iii 0.25)
+
+On an engine with observe (iii 0.25 and later) the same events are the input
+of `state::on-changed`, an auto-delivered function: observe it with no args
+and select with filters instead of a trigger config.
+
+```typescript
+iii.registerFunction('orders::on-status-change', ({ input, caller }) => {
+  // input: { type, event_type, scope, key, old_value, new_value }
+})
+
+const observer = iii.observe(
+  {
+    function_id: 'state::on-changed',
+    filters: { 'input.scope': { $eq: 'orders' }, 'input.key': { $eq: 'status' } },
+  },
+  'orders::on-status-change',
+)
+await observer.ready()
+```
+
+- The input is the document a `state` trigger handler receives (above), so
+  filters read `input.scope`, `input.key`, `input.event_type`,
+  `input.old_value.*` and `input.new_value.*`. `deliver: 'input'` hands the
+  target that document alone instead of the `Observed` envelope.
+- The envelope's `caller` is this worker; `caller.function_id` is the
+  `state::*` function that made the write and `caller.parent` the worker
+  (and function) that called it.
+- Every committed write emits, as for the trigger type: `state::set`,
+  `state::update`, `state::delete` and a swapped `state::compare-and-set`.
+  Private namespaces never emit, and `triggers_enabled: false` silences
+  both paths.
+- The worker calls the function in-process after each write, which is what
+  activates its observers. With nobody observing it, nothing is built or
+  sent.
+- Only this worker emits it. Any other invocation (another worker, `iii
+  trigger`, an observer activation) is refused with `FORBIDDEN`, so an
+  observer with the default `on: 'success'` sees real changes only;
+  `on: 'error'` / `'complete'` observers see refused invocations as errors.
+- `condition_function_id` has no counterpart: filters replace it.
+- The `state` trigger type keeps working next to it, on 0.24 and 0.25
+  engines. The two paths are independent: a function both bound with
+  `registerTrigger` and targeted by an observer runs twice per change. On a
+  0.24 engine `observe()` fails with `UNSUPPORTED`; bind the trigger type
+  there.
+
 ## Configuration
 
 | Field | Default | Description |
 |---|---|---|
 | `adapter` | `kv` | Storage adapter: `kv` (in-process; `store_method: file_based` — the default, persisting under `file_path`, default `data/state` relative to `III_COMPOSE_DIR` — or `in_memory`, volatile) or `redis` (`redis_url`, default `redis://localhost:6379`). Restart-tier: a runtime change is logged and takes effect at the next worker start. |
-| `triggers_enabled` | `true` | Globally enable/disable state change-trigger fan-out. Applied live. |
+| `triggers_enabled` | `true` | Globally enable/disable state change-trigger fan-out, and `state::on-changed` emission. Applied live. |
 | `max_value_bytes` | unset (no limit) | Reject `state::set` writes whose JSON-serialized value exceeds this many bytes (`VALUE_TOO_LARGE`). Minimum `1`. Applied live. |
 | `save_interval_ms` | `5000` | Persistence flush cadence (ms) for the file-backed `kv` adapter. `100`–`3600000`. Applied live by respawning the adapter's save loop (hot-retune; no-op for in-memory/redis). |
 

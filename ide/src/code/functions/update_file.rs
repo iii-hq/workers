@@ -44,21 +44,229 @@ pub struct UpdateFileInput {
 
 /// Hand-rolled (not `#[serde(try_from)]`, which would swap the published
 /// schema for the raw type): accepts the canonical batch AND a flat single
-/// `{ path, content }` — see [`super::files_batch_or_single`].
+/// `{ path, ops }` — see [`super::files_batch_or_single`].
 impl<'de> Deserialize<'de> for UpdateFileInput {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = serde_json::Value::deserialize(deserializer)?;
-        let (files, fs_scope) = super::files_batch_or_single(value, "coder::update-file")
-            .map_err(serde::de::Error::custom)?;
+        let (files, fs_scope) =
+            super::files_batch_or_single(value, "coder::update-file", "\"path\", \"ops\"")
+                .map_err(serde::de::Error::custom)?;
         Ok(Self { files, fs_scope })
     }
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, JsonSchema)]
 pub struct UpdateFileSpec {
     /// File to edit.
     pub path: String,
     pub ops: Vec<UpdateOp>,
+    /// `ops[i] → tag` for each op sent without `op` (see [`parse_op`]).
+    #[schemars(skip)]
+    pub inferred_ops: Vec<String>,
+    /// `tag[j] → ops[i]` for each op sent under its op name (see [`grouped_ops`]).
+    #[schemars(skip)]
+    pub grouped_ops: Vec<String>,
+}
+
+/// Hand-rolled so a missing `op` tag can be inferred per op (see
+/// [`parse_op`]) and ops sent under their op name are read (see
+/// [`grouped_ops`]); the published schema keeps `op` required. An entry of only
+/// `path` + `content` (plus create-file's own keys) is a whole-file write: the
+/// error points at coder::create-file with `overwrite: true`. Any other key
+/// beside `content` (`to_line`, `line_from`, an op's keys, ...) marks a partial
+/// edit, which keeps the plain error: never steer an edit to an overwrite.
+impl<'de> Deserialize<'de> for UpdateFileSpec {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Raw {
+            path: String,
+            ops: Option<Vec<serde_json::Value>>,
+            content: Option<serde::de::IgnoredAny>,
+            #[serde(flatten)]
+            rest: std::collections::BTreeMap<String, serde_json::Value>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        let grouped = grouped_ops(&raw.rest).map_err(serde::de::Error::custom)?;
+        let Some(ops) = raw.ops.or_else(|| (!grouped.is_empty()).then(Vec::new)) else {
+            let whole_file = raw.content.is_some()
+                && raw.rest.keys().all(|k| {
+                    matches!(
+                        k.as_str(),
+                        "fs_scope" | "overwrite" | "expected_revision" | "mode" | "parents"
+                    )
+                });
+            return Err(if whole_file {
+                serde::de::Error::custom(
+                    "missing field `ops`; to rewrite a whole file use coder::create-file \
+                     with `overwrite: true`",
+                )
+            } else {
+                serde::de::Error::missing_field("ops")
+            });
+        };
+        let mut inferred_ops = Vec::new();
+        let mut ops: Vec<UpdateOp> = ops
+            .into_iter()
+            .enumerate()
+            .map(|(i, v)| parse_op(i, v, &mut inferred_ops))
+            .collect::<Result<_, _>>()
+            .map_err(serde::de::Error::custom)?;
+        let grouped_ops = grouped
+            .into_iter()
+            .map(|(label, op)| {
+                ops.push(op);
+                format!("{label} → ops[{}]", ops.len() - 1)
+            })
+            .collect();
+        Ok(Self {
+            path: raw.path,
+            ops,
+            inferred_ops,
+            grouped_ops,
+        })
+    }
+}
+
+/// Models also send ops under their op name instead of in `ops`
+/// (`"replace": [{ "pattern", "replacement" }]`). The key names the
+/// op, so nothing is inferred: each body (one, or an array of them) is read as
+/// that op, and a body whose own `op` differs fails. Line ops are position-
+/// ordered and replaces keep their array order, so grouping loses nothing.
+fn grouped_ops(
+    rest: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> Result<Vec<(String, UpdateOp)>, String> {
+    let mut grouped = Vec::new();
+    for shape in op_shapes() {
+        let bodies = match rest.get(&shape.tag) {
+            None => continue,
+            Some(serde_json::Value::Array(items)) => items
+                .iter()
+                .enumerate()
+                .map(|(j, body)| (format!("{}[{j}]", shape.tag), body.clone()))
+                .collect(),
+            Some(body) => vec![(shape.tag.clone(), body.clone())],
+        };
+        for (label, mut body) in bodies {
+            if let Some(obj) = body.as_object_mut() {
+                if obj.get("op").is_some_and(|op| op != shape.tag.as_str()) {
+                    return Err(format!(
+                        "`{label}`: `op` must be `{}` or left out",
+                        shape.tag
+                    ));
+                }
+                obj.insert("op".into(), shape.tag.as_str().into());
+            }
+            let op = serde_json::from_value(body).map_err(|e| format!("`{label}`: {e}"))?;
+            grouped.push((label, op));
+        }
+    }
+    Ok(grouped)
+}
+
+/// One `UpdateOp` variant's keys, read from the derived schema so inference
+/// cannot drift from the enum.
+struct OpShape {
+    tag: String,
+    required: Vec<String>,
+    allowed: Vec<String>,
+}
+
+fn op_shapes() -> &'static [OpShape] {
+    static SHAPES: std::sync::OnceLock<Vec<OpShape>> = std::sync::OnceLock::new();
+    SHAPES.get_or_init(|| {
+        let schema =
+            serde_json::to_value(schemars::schema_for!(UpdateOp)).expect("UpdateOp schema");
+        let keys = |v: Vec<String>| v.into_iter().filter(|k| k != "op").collect::<Vec<_>>();
+        schema["oneOf"]
+            .as_array()
+            .expect("UpdateOp is an internally tagged enum")
+            .iter()
+            .map(|variant| OpShape {
+                tag: variant["properties"]["op"]["enum"][0]
+                    .as_str()
+                    .expect("op tag")
+                    .to_owned(),
+                required: keys(serde_json::from_value(variant["required"].clone()).unwrap()),
+                allowed: keys(
+                    variant["properties"]
+                        .as_object()
+                        .unwrap()
+                        .keys()
+                        .cloned()
+                        .collect(),
+                ),
+            })
+            .collect()
+    })
+}
+
+/// Models sometimes drop the `op` tag (sentinel group
+/// grp_01a1117435f774a682d478a7810dbc51). It is inferred only when the keys
+/// fit exactly one variant (required ⊆ keys ⊆ allowed): an unknown or
+/// misspelled key never turns into a different edit.
+fn parse_op(
+    i: usize,
+    mut v: serde_json::Value,
+    inferred: &mut Vec<String>,
+) -> Result<UpdateOp, String> {
+    let mut tag = None;
+    if let Some(obj) = v.as_object().filter(|o| !o.contains_key("op")) {
+        let fits = |s: &&OpShape| {
+            s.required.iter().all(|k| obj.contains_key(k))
+                && obj.keys().all(|k| s.allowed.contains(k))
+        };
+        let mut fitting = op_shapes().iter().filter(fits);
+        match (fitting.next(), fitting.next()) {
+            (Some(shape), None) => tag = Some(shape.tag.as_str()),
+            _ => {
+                let keys: Vec<&String> = obj.keys().collect();
+                let unknown: Vec<&String> = obj
+                    .keys()
+                    .filter(|k| !op_shapes().iter().any(|s| s.allowed.contains(k)))
+                    .collect();
+                let unknown = if unknown.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({unknown:?} belong to no op)")
+                };
+                let shapes = op_shapes()
+                    .iter()
+                    .map(|s| {
+                        let optional: Vec<&str> = s
+                            .allowed
+                            .iter()
+                            .filter(|k| !s.required.contains(k))
+                            .map(String::as_str)
+                            .collect();
+                        let optional = if optional.is_empty() {
+                            String::new()
+                        } else {
+                            format!("[, {}]", optional.join(", "))
+                        };
+                        format!("{}({}{optional})", s.tag, s.required.join(", "))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                return Err(format!(
+                    "ops[{i}]: missing `op`, and keys {keys:?} fit no single op{unknown}. Ops: \
+                     {shapes}. Add `op`; fields of different ops go in separate entries."
+                ));
+            }
+        }
+    }
+    if let Some(tag) = tag {
+        v["op"] = tag.into();
+        tracing::info!(
+            op_index = i,
+            inferred = tag,
+            "coder::update-file: inferred missing `op`"
+        );
+        inferred.push(format!("ops[{i}] → {tag}"));
+    }
+    serde_json::from_value(v).map_err(|e| match tag {
+        Some(tag) => format!("ops[{i}] (no `op`; inferred `{tag}`): {e}"),
+        None => format!("ops[{i}]: {e}"),
+    })
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -193,6 +401,11 @@ pub struct UpdateFileResult {
     /// action an LLM agent needs to make a successful second call.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<WireError>,
+    /// Set when ops were sent without `op` and it was inferred from their
+    /// keys, or sent under their op name instead of in `ops`; send each op in
+    /// `ops` with its `op`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
 }
 
 struct AppliedUpdate {
@@ -243,7 +456,30 @@ async fn handle_impl(
     }
     let results = entries
         .into_iter()
-        .map(|(spec, resolved)| update_one(&cfg, journal, spec, resolved))
+        .map(|(spec, resolved)| {
+            let notice = [
+                (!spec.inferred_ops.is_empty()).then(|| {
+                    format!(
+                        "`op` missing, inferred from keys: {}. Send `op` explicitly.",
+                        spec.inferred_ops.join(", ")
+                    )
+                }),
+                (!spec.grouped_ops.is_empty()).then(|| {
+                    format!(
+                        "Ops sent under their op name were read as {}. Send them in `ops`, \
+                         each with its `op`.",
+                        spec.grouped_ops.join(", ")
+                    )
+                }),
+            ]
+            .into_iter()
+            .flatten()
+            .reduce(|a, b| format!("{a} {b}"));
+            UpdateFileResult {
+                notice,
+                ..update_one(&cfg, journal, spec, resolved)
+            }
+        })
         .collect();
     Ok(UpdateFileOutput { results })
 }
@@ -270,6 +506,7 @@ fn update_one(
                 echoes_truncated: false,
                 change_id: None,
                 error: Some((&e).into()),
+                notice: None,
             }
         }
     };
@@ -284,6 +521,7 @@ fn update_one(
             echoes_truncated: applied.echoes_truncated,
             change_id: applied.change_id,
             error: None,
+            notice: None,
         },
         Err(e) => UpdateFileResult {
             path: wire_path,
@@ -294,6 +532,7 @@ fn update_one(
             echoes_truncated: false,
             change_id: None,
             error: Some((&e).into()),
+            notice: None,
         },
     }
 }
@@ -340,7 +579,7 @@ fn try_update_one(
 
     let line_ops: Vec<&UpdateOp> = spec.ops.iter().filter(|op| is_line_op(op)).collect();
 
-    validate_line_ops(&line_ops, original_len)?;
+    validate_line_ops(&spec.ops, original_len)?;
     apply_line_ops(&mut lines, &line_ops)?;
 
     // Mutation-event timeline: every line-count-changing mutation is
@@ -1072,7 +1311,7 @@ pub fn apply_ops(
         ));
     }
     let refs: Vec<&UpdateOp> = ops.iter().collect();
-    validate_line_ops(&refs, original_len)?;
+    validate_line_ops(ops, original_len)?;
     apply_line_ops(lines, &refs)?;
     Ok(ops.len() as u32)
 }
@@ -1086,14 +1325,21 @@ fn anchor(op: &UpdateOp) -> u32 {
     }
 }
 
-fn validate_line_ops(ops: &[&UpdateOp], original_len: usize) -> Result<(), CoderError> {
+/// Checks the line ops in `ops`; errors name each op by its index in the
+/// request (`ops[i]`, 0-based like `OpEcho::op_index`).
+fn validate_line_ops(ops: &[UpdateOp], original_len: usize) -> Result<(), CoderError> {
     let len = original_len as u32;
-    for op in ops {
+    let line_ops: Vec<(usize, &UpdateOp)> = ops
+        .iter()
+        .enumerate()
+        .filter(|(_, op)| is_line_op(op))
+        .collect();
+    for &(i, op) in &line_ops {
         match op {
             UpdateOp::Insert { at_line, .. } => {
                 if *at_line == 0 || *at_line > len + 1 {
                     return Err(CoderError::BadInput(format!(
-                        "insert.at_line {at_line} out of range (1..={})",
+                        "ops[{i}]: insert.at_line {at_line} out of range (1..={})",
                         len + 1
                     )));
                 }
@@ -1104,20 +1350,18 @@ fn validate_line_ops(ops: &[&UpdateOp], original_len: usize) -> Result<(), Coder
             } => {
                 if *from_line == 0 || *from_line > *to_line || *to_line > len {
                     return Err(CoderError::BadInput(format!(
-                        "range {from_line}-{to_line} invalid for file with {len} lines"
+                        "ops[{i}]: range {from_line}-{to_line} invalid for file with {len} lines"
                     )));
                 }
             }
             UpdateOp::Replace { .. } => unreachable!("line ops only"),
         }
     }
-    for i in 0..ops.len() {
-        for j in (i + 1)..ops.len() {
-            if covers_overlap(ops[i], ops[j]) {
+    for (n, &(i, a)) in line_ops.iter().enumerate() {
+        for &(j, b) in &line_ops[n + 1..] {
+            if covers_overlap(a, b) {
                 return Err(CoderError::BadInput(format!(
-                    "ops #{} and #{} overlap in original-line space",
-                    i + 1,
-                    j + 1
+                    "ops[{i}] and ops[{j}] overlap in original-line space"
                 )));
             }
         }
@@ -1227,6 +1471,345 @@ mod tests {
 
     fn lines_of(s: &str) -> Vec<String> {
         s.lines().map(|l| l.to_string()).collect()
+    }
+    fn spec_err(ops: serde_json::Value) -> String {
+        serde_json::from_value::<UpdateFileSpec>(serde_json::json!({ "path": "a.rs", "ops": ops }))
+            .unwrap_err()
+            .to_string()
+    }
+
+    #[test]
+    fn missing_op_insert_is_inferred() {
+        // Payload from span 3f447dda78db9dac: `op` dropped on an insert.
+        let spec: UpdateFileSpec = serde_json::from_value(serde_json::json!({
+            "path": "a.rs",
+            "ops": [{ "at_line": 259, "content": "x\n" }]
+        }))
+        .unwrap();
+        assert!(matches!(
+            &spec.ops[0],
+            UpdateOp::Insert { at_line: 259, content } if content == "x\n"
+        ));
+        assert_eq!(spec.inferred_ops, ["ops[0] → insert"]);
+    }
+
+    #[test]
+    fn missing_op_other_variants_are_inferred() {
+        let spec: UpdateFileSpec = serde_json::from_value(serde_json::json!({
+            "path": "a.rs",
+            "ops": [
+                { "op": "insert", "at_line": 1, "content": "a" },
+                { "from_line": 1, "to_line": 2 },
+                { "from_line": 1, "to_line": 2, "content": "y" },
+                { "pattern": "a", "replacement": "b", "ignore_case": true,
+                  "dot_matches_newline": true, "expect_matches": 1 }
+            ]
+        }))
+        .unwrap();
+        assert!(matches!(
+            spec.ops[1],
+            UpdateOp::Remove {
+                from_line: 1,
+                to_line: 2
+            }
+        ));
+        assert!(matches!(
+            &spec.ops[2],
+            UpdateOp::UpdateLines { from_line: 1, to_line: 2, content } if content == "y"
+        ));
+        assert!(matches!(
+            &spec.ops[3],
+            UpdateOp::Replace {
+                pattern,
+                replacement,
+                ignore_case: true,
+                dot_matches_newline: true,
+                expect_matches: Some(1),
+            } if pattern == "a" && replacement == "b"
+        ));
+        assert_eq!(
+            spec.inferred_ops,
+            [
+                "ops[1] → remove",
+                "ops[2] → update_lines",
+                "ops[3] → replace"
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_op_with_unknown_or_mixed_keys_is_rejected() {
+        for op in [
+            // A misspelled content field must not become a `remove`.
+            serde_json::json!({ "from_line": 10, "to_line": 12, "new_content": "fn x() {}" }),
+            serde_json::json!({ "from_line": 10, "to_line": 12, "contents": "x" }),
+            serde_json::json!({ "from_line": 1, "to_line": 2, "type": "update_lines" }),
+            // ...nor an extra range key an `insert`.
+            serde_json::json!({ "at_line": 10, "end_line": 12, "content": "X" }),
+            serde_json::json!({ "at_line": 10, "content": "x", "mode": "replace" }),
+            serde_json::json!({ "Op": "remove", "from_line": 1, "to_line": 9, "content": "x" }),
+            serde_json::json!({
+                "at_line": 1, "content": "HEADER\n", "pattern": "a", "replacement": "b"
+            }),
+            serde_json::json!({ "at_line": 1, "content": "x", "from_line": 1, "to_line": 2 }),
+            serde_json::json!({
+                "from_line": 1, "to_line": 2, "content": "x", "pattern": "a", "replacement": "b"
+            }),
+            serde_json::json!({ "from_line": 1, "to_line": 2, "pattern": "a", "replacement": "b" }),
+            serde_json::json!({ "at_line": 1, "content": "x", "to_line": 2 }),
+            serde_json::json!({ "from_line": 1, "to_line": 2, "at_line": 1 }),
+            serde_json::json!({ "at_line": 1, "content": "x", "pattern": "a" }),
+            serde_json::json!({ "from_line": 1, "to_line": 2, "replacement": "b" }),
+            serde_json::json!({ "at_line": 1, "content": "x", "ignore_case": true }),
+            serde_json::json!({ "from_line": 1, "to_line": 2, "dot_matches_newline": true }),
+            serde_json::json!({ "from_line": 1, "to_line": 2, "expect_matches": 1 }),
+            serde_json::json!({ "pattern": "a", "replacement": "b", "content": "x" }),
+            serde_json::json!({ "content": "x" }),
+        ] {
+            let err = spec_err(serde_json::json!([op.clone()]));
+            assert!(
+                err.contains("ops[0]: missing `op`") && err.contains("fit no single op"),
+                "{op}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn uninferable_op_names_keys_and_op_shapes() {
+        let err =
+            spec_err(serde_json::json!([{ "from_line": 1, "to_line": 2, "new_content": "x" }]));
+        assert!(err.contains(r#"["new_content"] belong to no op"#), "{err}");
+        // Shapes come from the `UpdateOp` schema, so this pins the derivation.
+        assert!(
+            err.contains(
+                "insert(at_line, content) | remove(from_line, to_line) | \
+                 update_lines(content, from_line, to_line) | \
+                 replace(pattern, replacement[, dot_matches_newline, expect_matches, ignore_case])"
+            ),
+            "{err}"
+        );
+        assert!(err.contains("separate entries"), "{err}");
+    }
+
+    #[test]
+    fn op_errors_name_index_and_only_an_inferred_tag() {
+        let err = spec_err(serde_json::json!([{ "op": "bogus" }]));
+        assert!(err.starts_with("ops[0]: unknown variant `bogus`"), "{err}");
+        let err = spec_err(serde_json::json!([
+            { "op": "insert", "at_line": 1, "content": "a" },
+            { "op": "update_lines", "from_line": 1, "to_line": 2, "contents": "x" }
+        ]));
+        assert!(err.starts_with("ops[1]: missing field `content`"), "{err}");
+        assert!(!err.contains("inferred"), "{err}");
+        let err = spec_err(serde_json::json!([{ "from_line": "1", "to_line": 2 }]));
+        assert!(
+            err.starts_with("ops[0] (no `op`; inferred `remove`): invalid type"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn explicit_ops_unchanged() {
+        let spec: UpdateFileSpec = serde_json::from_value(serde_json::json!({
+            "path": "a.rs",
+            "ops": [
+                { "op": "insert", "at_line": 1, "content": "a" },
+                { "op": "remove", "from_line": 1, "to_line": 1 },
+                { "op": "update_lines", "from_line": 1, "to_line": 1, "content": "b" },
+                { "op": "replace", "pattern": "a", "replacement": "b", "expect_matches": 1 }
+            ]
+        }))
+        .unwrap();
+        assert!(matches!(spec.ops[0], UpdateOp::Insert { at_line: 1, .. }));
+        assert!(matches!(spec.ops[1], UpdateOp::Remove { .. }));
+        assert!(matches!(spec.ops[2], UpdateOp::UpdateLines { .. }));
+        assert!(matches!(
+            spec.ops[3],
+            UpdateOp::Replace {
+                expect_matches: Some(1),
+                ..
+            }
+        ));
+        assert!(spec.inferred_ops.is_empty());
+    }
+
+    #[test]
+    fn batch_errors_name_file_and_op_index() {
+        let input_err = |v: serde_json::Value| {
+            serde_json::from_value::<UpdateFileInput>(v)
+                .unwrap_err()
+                .to_string()
+        };
+        let err = input_err(serde_json::json!({
+            "files": [
+                { "path": "a.rs", "ops": [{ "op": "remove", "from_line": 1, "to_line": 1 }] },
+                { "path": "b.rs", "ops": [{ "content": "x" }] }
+            ]
+        }));
+        assert!(err.contains("`files[1]`: ops[0]: missing `op`"), "{err}");
+        // No caller path in the text: one error class stays one sentinel group.
+        assert!(!err.contains("b.rs"), "{err}");
+        // The canonical entry shape closes every per-entry error, once.
+        assert!(
+            err.ends_with(r#"separate entries. Each `files` entry is { "path", "ops", ... }."#),
+            "{err}"
+        );
+        // Corpus case 20: an entry with no `path` anywhere.
+        let err = input_err(serde_json::json!({
+            "files": [{ "ops": [{ "op": "remove", "from_line": 1, "to_line": 1 }] }]
+        }));
+        assert_eq!(
+            err,
+            r#"coder::update-file: invalid `files[0]`: missing field `path`. Each `files` entry is { "path", "ops", ... }."#
+        );
+        let err = input_err(serde_json::json!({ "files": "[{\"path\":\"a.rs\"}]" }));
+        assert!(
+            err.ends_with("`files` must be an array, got string"),
+            "{err}"
+        );
+        let err = input_err(serde_json::json!({ "file": "a.rs", "ops": [] }));
+        assert!(err.contains(r#"flat as { "path", "ops" }"#), "{err}");
+    }
+
+    /// Corpus case 24: `{ path, content }` meant as a whole-file rewrite is
+    /// pointed at create-file + overwrite, flat or batched, never converted.
+    #[test]
+    fn content_without_ops_points_to_create_file_overwrite() {
+        let input_err = |v: serde_json::Value| {
+            serde_json::from_value::<UpdateFileInput>(v)
+                .unwrap_err()
+                .to_string()
+        };
+        let hint = "missing field `ops`; to rewrite a whole file use coder::create-file \
+                    with `overwrite: true`. Each `files` entry is { \"path\", \"ops\", ... }.";
+        let err = input_err(serde_json::json!({ "path": "a.rs", "content": "x" }));
+        assert_eq!(
+            err,
+            format!("coder::update-file: invalid file entry: {hint}")
+        );
+        // create-file's own keys beside `content` still read as a whole-file write.
+        for v in [
+            serde_json::json!({ "files": [{ "path": "a.rs", "content": "x" }] }),
+            serde_json::json!({ "files": [{ "path": "a.rs", "content": "x", "overwrite": true }] }),
+            serde_json::json!({
+                "files": [{ "path": "a.rs", "content": "x", "expected_revision": "r1" }]
+            }),
+        ] {
+            assert_eq!(
+                input_err(v),
+                format!("coder::update-file: invalid `files[0]`: {hint}")
+            );
+        }
+        // Without `content`, or with any edit key beside it, the plain serde
+        // text stays: a partial edit must not be steered to an overwrite.
+        for v in [
+            serde_json::json!({ "path": "a.rs" }),
+            serde_json::json!({ "path": "a.rs", "op": "insert", "content": "x" }),
+            serde_json::json!({ "path": "a.rs", "at_line": 3, "content": "x" }),
+            serde_json::json!({ "path": "a.rs", "from_line": 1, "to_line": 2, "content": "x" }),
+            serde_json::json!({ "path": "a.rs", "to_line": 2, "content": "x" }),
+            serde_json::json!({ "path": "a.rs", "line_from": 3, "line_to": 4, "content": "x" }),
+            serde_json::json!({
+                "path": "a.rs", "content": "x", "pattern": "a", "replacement": "b"
+            }),
+        ] {
+            assert_eq!(
+                input_err(v),
+                r#"coder::update-file: invalid file entry: missing field `ops`. Each `files` entry is { "path", "ops", ... }."#
+            );
+        }
+        // `ops` present: `content` is ignored, as before.
+        let spec: UpdateFileSpec = serde_json::from_value(serde_json::json!({
+            "path": "a.rs", "content": "x",
+            "ops": [{ "op": "remove", "from_line": 1, "to_line": 1 }]
+        }))
+        .unwrap();
+        assert_eq!(spec.ops.len(), 1);
+    }
+
+    /// The reported entry grouped its ops under the op name.
+    #[test]
+    fn ops_grouped_under_their_name_are_read_as_those_ops() {
+        let input: UpdateFileInput = serde_json::from_value(serde_json::json!({
+            "_caller_worker_id": "w",
+            "files": [{
+                "path": "workers/todo/src/index.ts",
+                "replace": [
+                    { "pattern": "a\\.b", "replacement": "c" },
+                    { "pattern": "d\\n", "replacement": "e\n", "expect_matches": 1 }
+                ]
+            }]
+        }))
+        .unwrap();
+        let spec = &input.files[0];
+        assert!(matches!(
+            &spec.ops[..],
+            [
+                UpdateOp::Replace { pattern: p0, expect_matches: None, .. },
+                UpdateOp::Replace { pattern: p1, expect_matches: Some(1), .. },
+            ] if p0 == "a\\.b" && p1 == "d\\n"
+        ));
+        assert_eq!(
+            spec.grouped_ops,
+            ["replace[0] → ops[0]", "replace[1] → ops[1]"]
+        );
+        assert!(spec.inferred_ops.is_empty());
+
+        // One body without an array, a matching `op`, and `ops` sent too: the
+        // grouped ops follow `ops`, in op-schema order.
+        let spec: UpdateFileSpec = serde_json::from_value(serde_json::json!({
+            "path": "a.rs",
+            "ops": [{ "from_line": 9, "to_line": 9 }],
+            "update_lines": [{ "op": "update_lines", "from_line": 1, "to_line": 2, "content": "x" }],
+            "insert": { "at_line": 1, "content": "h" }
+        }))
+        .unwrap();
+        assert!(matches!(
+            &spec.ops[..],
+            [
+                UpdateOp::Remove {
+                    from_line: 9,
+                    to_line: 9
+                },
+                UpdateOp::Insert { at_line: 1, .. },
+                UpdateOp::UpdateLines {
+                    from_line: 1,
+                    to_line: 2,
+                    ..
+                },
+            ]
+        ));
+        assert_eq!(spec.inferred_ops, ["ops[0] → remove"]);
+        assert_eq!(
+            spec.grouped_ops,
+            ["insert → ops[1]", "update_lines[0] → ops[2]"]
+        );
+    }
+
+    #[test]
+    fn grouped_op_errors_name_the_key() {
+        let err = |v: serde_json::Value| {
+            serde_json::from_value::<UpdateFileSpec>(v)
+                .unwrap_err()
+                .to_string()
+        };
+        // A body's own `op` never overrides its key.
+        assert_eq!(
+            err(serde_json::json!({
+                "path": "a.rs",
+                "replace": [{ "op": "insert", "at_line": 1, "content": "x" }]
+            })),
+            "`replace[0]`: `op` must be `replace` or left out"
+        );
+        let e = err(serde_json::json!({ "path": "a.rs", "replace": [{ "pattern": "secret" }] }));
+        assert_eq!(e, "`replace[0]`: missing field `replacement`");
+        let e = err(serde_json::json!({ "path": "a.rs", "remove": "1-2" }));
+        assert!(e.starts_with("`remove`: invalid type: string"), "{e}");
+        // An empty group is no op: the plain missing-`ops` error stays.
+        assert_eq!(
+            err(serde_json::json!({ "path": "a.rs", "replace": [] })),
+            "missing field `ops`"
+        );
     }
 
     #[test]
@@ -1936,6 +2519,8 @@ mod handler_tests {
             UpdateFileInput {
                 files: vec![UpdateFileSpec {
                     path: "../escape.txt".into(),
+                    inferred_ops: Vec::new(),
+                    grouped_ops: Vec::new(),
                     ops: vec![UpdateOp::Insert {
                         at_line: 1,
                         content: "x".into(),
@@ -1961,6 +2546,8 @@ mod handler_tests {
             UpdateFileInput {
                 files: vec![UpdateFileSpec {
                     path: "a.txt".into(),
+                    inferred_ops: Vec::new(),
+                    grouped_ops: Vec::new(),
                     ops: vec![UpdateOp::UpdateLines {
                         from_line: 2,
                         to_line: 2,
@@ -1992,6 +2579,8 @@ mod handler_tests {
             UpdateFileInput {
                 files: vec![UpdateFileSpec {
                     path: "a.txt".into(),
+                    inferred_ops: Vec::new(),
+                    grouped_ops: Vec::new(),
                     ops: vec![UpdateOp::Replace {
                         pattern: "foo".into(),
                         replacement: "baz".into(),
@@ -2022,6 +2611,8 @@ mod handler_tests {
             UpdateFileInput {
                 files: vec![UpdateFileSpec {
                     path: "a.txt".into(),
+                    inferred_ops: Vec::new(),
+                    grouped_ops: Vec::new(),
                     ops: vec![
                         UpdateOp::Remove {
                             from_line: 2,
@@ -2059,6 +2650,8 @@ mod handler_tests {
             UpdateFileInput {
                 files: vec![UpdateFileSpec {
                     path: "a.txt".into(),
+                    inferred_ops: Vec::new(),
+                    grouped_ops: Vec::new(),
                     ops: vec![UpdateOp::Replace {
                         pattern: "=".into(),
                         replacement: "=\n".into(),
@@ -2091,6 +2684,8 @@ mod handler_tests {
             UpdateFileInput {
                 files: vec![UpdateFileSpec {
                     path: "a.txt".into(),
+                    inferred_ops: Vec::new(),
+                    grouped_ops: Vec::new(),
                     ops: vec![UpdateOp::UpdateLines {
                         from_line: 1,
                         to_line: 1,
@@ -2119,6 +2714,8 @@ mod handler_tests {
             UpdateFileInput {
                 files: vec![UpdateFileSpec {
                     path: "a.txt".into(),
+                    inferred_ops: Vec::new(),
+                    grouped_ops: Vec::new(),
                     ops: vec![UpdateOp::Insert {
                         at_line: 2,
                         content: "inserted".into(),
@@ -2153,6 +2750,8 @@ mod handler_tests {
             UpdateFileInput {
                 files: vec![UpdateFileSpec {
                     path: "a.txt".into(),
+                    inferred_ops: Vec::new(),
+                    grouped_ops: Vec::new(),
                     ops: vec![UpdateOp::Replace {
                         pattern: "hello".into(),
                         replacement: "HI".into(),
@@ -2193,6 +2792,8 @@ mod handler_tests {
                 files: vec![
                     UpdateFileSpec {
                         path: ".env".into(),
+                        inferred_ops: Vec::new(),
+                        grouped_ops: Vec::new(),
                         ops: vec![UpdateOp::Remove {
                             from_line: 1,
                             to_line: 1,
@@ -2200,6 +2801,8 @@ mod handler_tests {
                     },
                     UpdateFileSpec {
                         path: "a.txt".into(),
+                        inferred_ops: Vec::new(),
+                        grouped_ops: Vec::new(),
                         ops: vec![UpdateOp::Insert {
                             at_line: 1,
                             content: "X".into(),
@@ -2233,6 +2836,8 @@ mod handler_tests {
         std::fs::write(tmp.path().join(".env"), "secret").unwrap();
         let spec = |path: &str| UpdateFileSpec {
             path: path.into(),
+            inferred_ops: Vec::new(),
+            grouped_ops: Vec::new(),
             ops: vec![UpdateOp::Insert {
                 at_line: 1,
                 content: "x".into(),
@@ -2286,6 +2891,8 @@ mod handler_tests {
             UpdateFileInput {
                 files: vec![UpdateFileSpec {
                     path: "a.txt".into(),
+                    inferred_ops: Vec::new(),
+                    grouped_ops: Vec::new(),
                     ops: vec![
                         UpdateOp::Remove {
                             from_line: 1,
@@ -2340,6 +2947,8 @@ mod handler_tests {
             UpdateFileInput {
                 files: vec![UpdateFileSpec {
                     path: "f.txt".into(),
+                    inferred_ops: Vec::new(),
+                    grouped_ops: Vec::new(),
                     ops,
                 }],
                 fs_scope: None,
@@ -2348,6 +2957,34 @@ mod handler_tests {
         .await
         .unwrap();
         out.results.remove(0)
+    }
+
+    #[tokio::test]
+    async fn overlap_error_names_request_op_indices() {
+        // A replace between the line ops must not shift their numbering.
+        let r = run_ops(
+            "a\nb\nc\n",
+            vec![
+                UpdateOp::Insert {
+                    at_line: 2,
+                    content: "X".into(),
+                },
+                UpdateOp::Replace {
+                    pattern: "a".into(),
+                    replacement: "b".into(),
+                    ignore_case: false,
+                    dot_matches_newline: false,
+                    expect_matches: None,
+                },
+                UpdateOp::Remove {
+                    from_line: 2,
+                    to_line: 3,
+                },
+            ],
+        )
+        .await;
+        let message = r.error.expect("overlap must fail").message;
+        assert!(message.contains("ops[0] and ops[2] overlap"), "{message}");
     }
 
     #[tokio::test]
@@ -2695,6 +3332,8 @@ mod handler_tests {
             UpdateFileInput {
                 files: vec![UpdateFileSpec {
                     path: "a.txt".into(),
+                    inferred_ops: Vec::new(),
+                    grouped_ops: Vec::new(),
                     ops: vec![UpdateOp::Replace {
                         pattern: "start.*?end".into(),
                         replacement: "X".into(),
@@ -2740,6 +3379,8 @@ mod handler_tests {
             UpdateFileInput {
                 files: vec![UpdateFileSpec {
                     path: "a.txt".into(),
+                    inferred_ops: Vec::new(),
+                    grouped_ops: Vec::new(),
                     ops: vec![
                         UpdateOp::Insert {
                             at_line: 7,
@@ -2797,6 +3438,8 @@ mod handler_tests {
             UpdateFileInput {
                 files: vec![UpdateFileSpec {
                     path: "a.txt".into(),
+                    inferred_ops: Vec::new(),
+                    grouped_ops: Vec::new(),
                     ops: vec![UpdateOp::Replace {
                         pattern: "foo".into(),
                         replacement: "X".into(),
@@ -2843,10 +3486,14 @@ mod handler_tests {
                 files: vec![
                     UpdateFileSpec {
                         path: "a.txt".into(),
+                        inferred_ops: Vec::new(),
+                        grouped_ops: Vec::new(),
                         ops: vec![replace(Some(1))],
                     },
                     UpdateFileSpec {
                         path: "b.txt".into(),
+                        inferred_ops: Vec::new(),
+                        grouped_ops: Vec::new(),
                         ops: vec![replace(None)],
                     },
                 ],
@@ -2897,6 +3544,8 @@ mod handler_tests {
             UpdateFileInput {
                 files: vec![UpdateFileSpec {
                     path: "a.txt".into(),
+                    inferred_ops: Vec::new(),
+                    grouped_ops: Vec::new(),
                     ops: vec![UpdateOp::Replace {
                         pattern: "missing".into(),
                         replacement: "x".into(),
@@ -2950,6 +3599,8 @@ mod handler_tests {
             UpdateFileInput {
                 files: vec![UpdateFileSpec {
                     path: "a.txt".into(),
+                    inferred_ops: Vec::new(),
+                    grouped_ops: Vec::new(),
                     ops: vec![UpdateOp::Replace {
                         pattern: "legacy_api".into(),
                         replacement: "x".into(),
@@ -3032,6 +3683,8 @@ mod handler_tests {
             UpdateFileInput {
                 files: vec![UpdateFileSpec {
                     path: "a.txt".into(),
+                    inferred_ops: Vec::new(),
+                    grouped_ops: Vec::new(),
                     ops: vec![
                         UpdateOp::Replace {
                             pattern: "alpha".into(),
@@ -3098,6 +3751,8 @@ mod handler_tests {
                 files: vec![
                     UpdateFileSpec {
                         path: "handler.js".into(),
+                        inferred_ops: Vec::new(),
+                        grouped_ops: Vec::new(),
                         ops: vec![UpdateOp::Replace {
                             pattern: r"iii\.registerFunction\(.*".into(),
                             replacement: replacement.into(),
@@ -3108,6 +3763,8 @@ mod handler_tests {
                     },
                     UpdateFileSpec {
                         path: "other.txt".into(),
+                        inferred_ops: Vec::new(),
+                        grouped_ops: Vec::new(),
                         ops: vec![UpdateOp::Replace {
                             pattern: "foo".into(),
                             replacement: "bar".into(),
@@ -3173,6 +3830,8 @@ mod handler_tests {
             UpdateFileInput {
                 files: vec![UpdateFileSpec {
                     path: "a.js".into(),
+                    inferred_ops: Vec::new(),
+                    grouped_ops: Vec::new(),
                     ops: vec![UpdateOp::Replace {
                         pattern: "MSG".into(),
                         replacement: "`Hello, $${name}!`".into(),
@@ -3216,6 +3875,8 @@ mod handler_tests {
             UpdateFileInput {
                 files: vec![UpdateFileSpec {
                     path: "a.txt".into(),
+                    inferred_ops: Vec::new(),
+                    grouped_ops: Vec::new(),
                     ops: vec![op("$1a")],
                 }],
                 fs_scope: None,
@@ -3243,6 +3904,8 @@ mod handler_tests {
             UpdateFileInput {
                 files: vec![UpdateFileSpec {
                     path: "a.txt".into(),
+                    inferred_ops: Vec::new(),
+                    grouped_ops: Vec::new(),
                     ops: vec![op("${1}a")],
                 }],
                 fs_scope: None,
@@ -3269,6 +3932,8 @@ mod handler_tests {
             UpdateFileInput {
                 files: vec![UpdateFileSpec {
                     path: "a.txt".into(),
+                    inferred_ops: Vec::new(),
+                    grouped_ops: Vec::new(),
                     ops: vec![UpdateOp::Replace {
                         pattern: r"(?P<key>\w+)=(\d+)".into(),
                         replacement: "$key: $2 (was $0)".into(),
@@ -3306,6 +3971,8 @@ mod handler_tests {
             UpdateFileInput {
                 files: vec![UpdateFileSpec {
                     path: "a.txt".into(),
+                    inferred_ops: Vec::new(),
+                    grouped_ops: Vec::new(),
                     ops: vec![UpdateOp::Replace {
                         // Matches nothing: expect_matches: 0 alone would
                         // succeed without ever using the replacement.

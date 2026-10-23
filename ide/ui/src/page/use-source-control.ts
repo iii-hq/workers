@@ -11,7 +11,7 @@ import { errorMessage } from '@iii-dev/console-ui/format'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { changeSummary, entryPaths } from './commit-tree'
 import { type GitComparisonEntry, type GitState, gitUncommittedFrom } from './git'
-import { gitCommitChanges, gitDiscard, gitPush, gitStashPush } from './git-actions'
+import { gitCommitChanges, gitDiscard, gitIgnore, gitLocalPatch, gitPush, gitStage, gitStashPush } from './git-actions'
 
 export type SourceControlPhase = 'idle' | 'loading' | 'ready' | 'not-a-repo' | 'error'
 
@@ -48,6 +48,46 @@ export interface SourceControlState {
   commit: (options: CommitOptions) => Promise<boolean>
   /** Set these entries aside in a new stash; the rest of the working tree stays. */
   stash: (entries: readonly GitComparisonEntry[], message: string) => Promise<boolean>
+  /** `git add` these unversioned entries. */
+  add: (entries: readonly GitComparisonEntry[]) => Promise<boolean>
+  /** List root-relative paths (a folder ending in `/`) in the root's .gitignore. */
+  ignore: (paths: readonly string[]) => Promise<boolean>
+  /** Runs `action` with the panel's busy state; what it resolves to (or
+      `label failed: …`) is the status line, and the page reads its status
+      again afterwards. Resolves true on success. */
+  run: (label: string, action: () => Promise<string>) => Promise<boolean>
+  /** These entries' changes as one patch, handed to `use`; what it resolves
+      to is the status line. Nothing in the working tree moves. */
+  patch: (entries: readonly GitComparisonEntry[], use: (patch: string) => Promise<string>) => Promise<void>
+}
+
+const files = (count: number) => `${count} ${count === 1 ? 'file' : 'files'}`
+
+/** The fields a derive can change; the content sources follow from them. */
+function sameEntries(a: readonly GitComparisonEntry[], b: readonly GitComparisonEntry[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((entry, index) => {
+      const other = b[index]
+      return (
+        entry.path === other.path &&
+        entry.status === other.status &&
+        entry.from === other.from &&
+        entry.renameFrom === other.renameFrom &&
+        entry.staged === other.staged &&
+        entry.x === other.x &&
+        entry.y === other.y &&
+        entry.before.kind === other.before.kind &&
+        entry.after.kind === other.after.kind
+      )
+    })
+  )
+}
+
+/** `paths` without the ones no longer changed; the same set when none left. */
+function onlyLive(paths: ReadonlySet<string>, live: ReadonlySet<string>): ReadonlySet<string> {
+  for (const path of paths) if (!live.has(path)) return new Set([...paths].filter((kept) => live.has(kept)))
+  return paths
 }
 
 /** `page` is the page's own git status from `gitChanges` and the call that
@@ -105,11 +145,13 @@ export function useSourceControl(
           return
         }
         if (pageGit.kind === 'ready') setBranch(pageGit.status.branch)
-        setAll(state.changes)
+        // An unchanged derive keeps every identity, so a refresh that moved
+        // nothing renders nothing: thousands of rows would redraw otherwise.
+        setAll((current) => (sameEntries(current, state.changes) ? current : state.changes))
         // Forget ticks for paths that are no longer changed.
         const live = new Set(state.changes.map((change) => change.path))
-        setExcluded((current) => new Set([...current].filter((path) => live.has(path))))
-        setAdopted((current) => new Set([...current].filter((path) => live.has(path))))
+        setExcluded((current) => onlyLive(current, live))
+        setAdopted((current) => onlyLive(current, live))
         setError(null)
         setPhase('ready')
       })
@@ -248,6 +290,41 @@ export function useSourceControl(
     [host, root, perform],
   )
 
+  const add = useCallback(
+    (entries: readonly GitComparisonEntry[]) =>
+      perform('add', async () => {
+        await gitStage(host, root ?? '', entryPaths(entries))
+        return `added ${files(entries.length)} to git`
+      }),
+    [host, root, perform],
+  )
+
+  const ignore = useCallback(
+    (paths: readonly string[]) =>
+      perform('ignore', async () => {
+        const added = await gitIgnore(host, root ?? '', paths)
+        return added === 0
+          ? '.gitignore already lists them'
+          : `added ${added} ${added === 1 ? 'line' : 'lines'} to .gitignore`
+      }),
+    [host, root, perform],
+  )
+
+  const patch = useCallback(
+    async (entries: readonly GitComparisonEntry[], use: (patch: string) => Promise<string>) => {
+      if (root === null) return
+      setNote(null)
+      try {
+        const tracked = entries.filter((entry) => entry.status !== 'untracked')
+        const untracked = entries.filter((entry) => entry.status === 'untracked').map((entry) => entry.path)
+        setNote({ text: await use(await gitLocalPatch(host, root, entryPaths(tracked), untracked)), failed: false })
+      } catch (err: unknown) {
+        setNote({ text: `patch failed: ${errorMessage(err)}`, failed: true })
+      }
+    },
+    [host, root],
+  )
+
   return useMemo(
     () => ({
       phase,
@@ -265,6 +342,10 @@ export function useSourceControl(
       rollback,
       commit,
       stash,
+      add,
+      ignore,
+      run: perform,
+      patch,
     }),
     [
       phase,
@@ -282,6 +363,10 @@ export function useSourceControl(
       rollback,
       commit,
       stash,
+      add,
+      ignore,
+      perform,
+      patch,
     ],
   )
 }

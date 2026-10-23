@@ -2,6 +2,7 @@ import uiClasses from '@iii-dev/console-ui/ui-classes'
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
+import { hideSideChats } from '@/lib/chat-aside'
 import { filterConversations } from '@/lib/conversation-filter'
 import {
   countConversations,
@@ -143,7 +144,9 @@ export function ConversationSidebar({
      list before the tree is built, judging each row by its root's kind, so
      hiding a kind hides whole subtrees and search matches inside them alike. */
   const started = useMemo(
-    () => conversations.filter((c) => !c.draft),
+    // A side chat (and what it spawned) lives in its conversation's side
+    // panel until it is kept.
+    () => hideSideChats(conversations.filter((c) => !c.draft)),
     [conversations],
   )
   const visible = useMemo(
@@ -191,6 +194,11 @@ export function ConversationSidebar({
   )
   /* The flat list has one section and no header to collapse it by. */
   const headers = view.grouping !== 'none'
+  /* Once any row carries a sub-agent caret at its end, every row keeps that
+     column so timestamps and actions line up down the list. */
+  const caretColumn = sections.some((section) =>
+    section.rows.some((row) => row.hasChildren),
+  )
 
   /* The 8px gutter plus the tree row's own 10px inset puts every glyph,
      the heading and the empty copy on one 18px column. */
@@ -266,6 +274,7 @@ export function ConversationSidebar({
                     active={c.id === activeId}
                     depth={depth}
                     hasChildren={hasChildren}
+                    caretColumn={caretColumn}
                     kind={
                       tagKinds ? effectiveConversationKind(c, byId) : undefined
                     }

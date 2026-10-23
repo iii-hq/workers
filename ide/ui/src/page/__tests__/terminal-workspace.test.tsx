@@ -179,11 +179,11 @@ describe('TerminalWorkspace', () => {
       string,
       {
         resolve: (warning: string | null) => void
-        reject: (error: Error) => void
+        reject: (error: unknown) => void
       }
     >()
     const closing = closeTerminalPanes(
-      ['pane-1', 'pane-2', 'pane-3'],
+      ['pane-1', 'pane-2', 'pane-3', 'pane-4'],
       (paneId) => {
         started.push(paneId)
         return new Promise((resolve, reject) => {
@@ -193,14 +193,16 @@ describe('TerminalWorkspace', () => {
     )
 
     // No close waits for another's shell to die.
-    expect(started).toEqual(['pane-1', 'pane-2', 'pane-3'])
+    expect(started).toEqual(['pane-1', 'pane-2', 'pane-3', 'pane-4'])
     settle.get('pane-3')?.resolve(null)
     settle.get('pane-2')?.reject(new Error('terminal close failed'))
     settle.get('pane-1')?.resolve('lease storage is full')
+    // The bus rejects with the handler's error body, not an Error.
+    settle.get('pane-4')?.reject({ message: 'handler error: {"code":"S300","message":"pty close timed out"}' })
 
     await expect(closing).resolves.toEqual({
       closed: ['pane-1', 'pane-3'],
-      messages: ['lease storage is full', 'terminal close failed'],
+      messages: ['lease storage is full', 'terminal close failed', 'S300: pty close timed out'],
     })
   })
 

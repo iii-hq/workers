@@ -224,6 +224,8 @@ async fn main() -> Result<()> {
         iii: Some(iii.clone()),
     };
     functions::search::register(&iii, &search_deps);
+    // The same model, as router::embed's local embedder.
+    functions::embed_provider::register(&iii, &semantic);
     functions::search::bind_best_effort(&iii);
     // The judge's context window (compact options, tournament) follows the
     // hub's default provider: re-read it as soon as the hub's configuration
@@ -361,6 +363,7 @@ async fn main() -> Result<()> {
         skills: registered.skills.clone(),
         system_prompts: registered.system_prompts.clone(),
         agents: registered.agents.clone(),
+        kits: registered.kits.clone(),
     };
     let rt = tokio::runtime::Handle::current();
     let _fs_watch = match iii_directory::watch::spawn_fs_watch(watch_roots, move |kind| {

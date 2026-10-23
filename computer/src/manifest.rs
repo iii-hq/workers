@@ -16,7 +16,8 @@ pub fn build_manifest() -> ModuleManifest {
         name: env!("CARGO_PKG_NAME").to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         description: "Drive a full desktop on the iii bus. Screenshot, click and type by \
-                      coordinate, and stream the live screen from a computer-use session."
+                      coordinate, act on app elements by reference (native sessions), and \
+                      stream the live screen from a computer-use session."
             .to_string(),
         default_config: WorkerConfig::default().to_json(),
         supported_targets: vec![env!("TARGET").to_string()],

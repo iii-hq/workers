@@ -45,6 +45,7 @@ import {
   shouldAcceptReconnectDirectoryRow,
   shouldQueueCompletionBell,
   shouldReplayQueuedCompletion,
+  startingModel,
   unsentDraft,
 } from './use-conversations'
 
@@ -121,6 +122,29 @@ describe('applyCatalogModelFallback', () => {
 
     expect(next.map((c) => c.model)).toEqual([fallback, fallback])
     expect(next.map((c) => c.updatedAt)).toEqual([2_000, 3_000])
+  })
+
+  it('moves an untouched draft off the interim catalog pick once the provider default is known', () => {
+    const interim = 'provider::aaa-first-key'
+    const preferred = 'provider::sonnet'
+    const valid = new Set([interim, preferred])
+    const sessions = [
+      conversation({ id: 'fresh-draft', model: interim, draft: true }),
+      conversation({
+        id: 'typed-draft',
+        model: interim,
+        draft: true,
+        messages: [{ id: 'm1', role: 'user', content: 'hi' } as never],
+      }),
+      conversation({ id: 'session', model: interim, draft: false }),
+    ]
+
+    const next = applyCatalogModelFallback(sessions, valid, preferred, interim)
+
+    expect(next.map((c) => c.model)).toEqual([preferred, interim, interim])
+    expect(applyCatalogModelFallback(sessions, valid, preferred, null)).toBe(
+      sessions,
+    )
   })
 
   it('never invents a model for a discovered session (sub-agents)', () => {
@@ -2305,5 +2329,26 @@ it('keeps imported provenance separate while allowing normal session edits', () 
     external_source: 'claude-code',
     source_cwd: '/source',
     fs_scope: { root: '/ade' },
+  })
+})
+
+describe('startingModel', () => {
+  const sonnet = 'claude-code::claude-code/claude-sonnet-5-5'
+  const opus = 'claude-code::claude-code/claude-opus-5-5'
+  const gone = 'openai::gpt-old'
+  const valid = new Set([sonnet, opus])
+
+  it("keeps the person's last pick while the catalog offers it", () => {
+    expect(startingModel(opus, valid, sonnet, sonnet)).toBe(opus)
+  })
+
+  it('trusts the last pick before the catalog is known', () => {
+    expect(startingModel(gone, null, sonnet, null)).toBe(gone)
+  })
+
+  it("skips a missing pick for the provider default, then the router's first model", () => {
+    expect(startingModel(gone, valid, opus, sonnet)).toBe(opus)
+    expect(startingModel(gone, valid, null, sonnet)).toBe(sonnet)
+    expect(startingModel(null, valid, null, sonnet)).toBe(sonnet)
   })
 })

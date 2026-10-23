@@ -59,17 +59,33 @@ impl RedisAdapter {
 
 #[async_trait]
 impl PubSubAdapter for RedisAdapter {
+    /// Failures here are NOT surfaced to the caller: `publish` keeps returning
+    /// its success (null) result, unchanged for compatibility. Each failure is
+    /// therefore logged at error level, with entry point and reason only
+    /// (never the event data).
     async fn publish(&self, topic: &str, data: Value) {
         let event_json = match serde_json::to_string(&data) {
             Ok(json) => json,
             Err(e) => {
-                tracing::error!(error = %e, topic = %topic, "Failed to serialize event data");
+                tracing::error!(
+                    entry_point = "publish",
+                    adapter = "redis",
+                    error = %e,
+                    topic = %topic,
+                    "Failed to serialize event data; event dropped, publish still reports success"
+                );
                 return;
             }
         };
         let mut conn = self.publisher.lock().await;
         if let Err(e) = conn.publish::<_, _, ()>(topic, &event_json).await {
-            tracing::error!(error = %e, topic = %topic, "Failed to publish event to Redis");
+            tracing::error!(
+                entry_point = "publish",
+                adapter = "redis",
+                error = %e,
+                topic = %topic,
+                "Failed to publish event to Redis; event dropped, publish still reports success"
+            );
         }
     }
 

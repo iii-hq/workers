@@ -1,5 +1,5 @@
 import type { Host } from '@iii-dev/console-ui'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CommitDetails, LogFilter, RefsSnapshot } from '../git-log-window'
 import { detailsFor, useCommitDetails, useGitLog } from '../use-git-log'
 import { mount } from './bare-hooks'
@@ -9,16 +9,23 @@ vi.mock('react', async (original) => ({
   ...(await import('./bare-hooks')).hooks,
 }))
 
-// What the mocked reads saw: the refs' listing a read finds, how many ran,
-// and the author filter of each first page of the log.
-const git = vi.hoisted(() => ({
-  signature: 'a',
-  refs: 0,
-  fail: false,
-  notRepo: false,
-  hold: false,
-  pages: [] as Array<string | undefined>,
-}))
+// What the mocked reads saw since the test began: the refs' listing a read
+// finds, how many ran, and the author filter of each first page of the log.
+const { git, fresh } = vi.hoisted(() => {
+  const fresh = () => ({
+    signature: 'a',
+    refs: 0,
+    fail: false,
+    notRepo: false,
+    hold: false,
+    pages: [] as Array<string | undefined>,
+    branchReads: 0,
+  })
+  return { git: fresh(), fresh }
+})
+beforeEach(() => {
+  Object.assign(git, fresh())
+})
 vi.mock('../git-log-window', async (original) => ({
   ...(await original<typeof import('../git-log-window')>()),
   readRefs: async () => {
@@ -33,10 +40,36 @@ vi.mock('../git-log-window', async (original) => ({
     return { commits: [], done: true }
   },
   readCommitDetails: async (_host: Host, _root: string, _prefix: string, sha: string) => commit(sha),
-  readContainingBranches: async () => ({ names: ['main'], total: 1, partial: false }),
+  readContainingBranches: async () => {
+    git.branchReads += 1
+    return { names: ['main'], total: 1, partial: false }
+  },
+  // gpg wedged (a stale keyboxd lock) for one commit: its check never ends.
+  readSignature: async (_host: Host, _root: string, sha: string) =>
+    sha === 'wedged' ? new Promise<never>(() => {}) : 'G',
 }))
 
-const host = {} as Host
+// The log binds the worker's repository feed; `fire` sends it an event.
+const feed = new Map<string, (payload: unknown) => void>()
+const bindings: Array<{ type: string; function_id: string; config: Record<string, unknown> }> = []
+const host = {
+  iii: {
+    browserId: 'tab',
+    on: (functionId: string, handler: (payload: unknown) => void) => {
+      feed.set(functionId, handler)
+      return () => feed.delete(functionId)
+    },
+    registerTrigger: (input: (typeof bindings)[number]) => {
+      bindings.push(input)
+      return () => bindings.splice(bindings.indexOf(input), 1)
+    },
+  },
+} as unknown as Host
+const fire = (changes: string[]) => {
+  for (const binding of bindings.filter((b) => b.type === 'shell::git-changed')) {
+    feed.get(binding.function_id.replace(/::tab$/, ''))?.({ path: binding.config.path, changes })
+  }
+}
 const snapshot = (signature: string): RefsSnapshot => ({
   refs: [],
   head: 'h',
@@ -56,7 +89,6 @@ const commit = (sha: string): CommitDetails => ({
   committerEmail: 'a@x',
   committerDate: 0,
   message: 'm',
-  signature: 'N',
   files: [],
   truncated: false,
 })
@@ -103,8 +135,6 @@ describe('the log', () => {
   })
 
   it('reads the refs on a new filter, then the log once from what they say', async () => {
-    vi.stubGlobal('window', new EventTarget())
-    vi.stubGlobal('document', new EventTarget())
     const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
     const log = mount((filter: LogFilter) => useGitLog(host, '/log', 0, true, filter, null), {})
     await settle()
@@ -140,8 +170,6 @@ describe('the log', () => {
   })
 
   it('stops loading when the folder stops being a repository mid-read', async () => {
-    vi.stubGlobal('window', new EventTarget())
-    vi.stubGlobal('document', new EventTarget())
     const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
     git.hold = true
     const log = mount(() => useGitLog(host, '/gone', 0, true, {}, null), undefined)
@@ -155,6 +183,32 @@ describe('the log', () => {
     expect(log.result.loading).toBe(false)
     git.hold = false
     git.notRepo = false
+    log.unmount()
+  })
+
+  it('reads the refs again when the worker reports they moved, and only while it shows', async () => {
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+    let active = true
+    const log = mount(() => useGitLog(host, '/watched', 0, active, {}, null), undefined)
+    await settle()
+    expect(git.refs).toBe(1)
+    expect(bindings.map((b) => [b.type, b.config])).toEqual([['shell::git-changed', { path: '/watched' }]])
+
+    // A commit in a terminal: a ref moved.
+    git.signature = 'b'
+    fire(['index', 'refs'])
+    await settle()
+    expect(git.refs).toBe(2)
+    expect(log.result.snapshot?.signature).toBe('b')
+    // Staging alone moves no ref.
+    fire(['index'])
+    await settle()
+    expect(git.refs).toBe(2)
+
+    // Hidden, the log lets go of the feed.
+    active = false
+    log.rerender(undefined)
+    expect(bindings).toEqual([])
     log.unmount()
   })
 })
@@ -185,5 +239,41 @@ describe('useCommitDetails', () => {
     expect(second.result).toMatchObject({ details: { sha: 'x' }, loading: false, branches: { names: ['main'] } })
     first.unmount()
     second.unmount()
+  })
+
+  it('shows the details without waiting for the signature check, which comes after', async () => {
+    vi.useFakeTimers()
+    const pane = mount((sha: string) => useCommitDetails(host, '/signed', snapshot('s'), sha), 'wedged')
+    await vi.advanceTimersByTimeAsync(300)
+    expect(pane.result).toMatchObject({ details: { sha: 'wedged' }, loading: false, signature: null })
+    pane.rerender('signed')
+    await vi.advanceTimersByTimeAsync(300)
+    expect(pane.result).toMatchObject({ details: { sha: 'signed' }, signature: 'G' })
+    pane.unmount()
+  })
+
+  it('reads the branches again only when the refs moved, and nothing before the refs are read', async () => {
+    vi.useFakeTimers()
+    const pane = mount(
+      ({ refs, sha }: { refs: RefsSnapshot | null; sha: string }) => useCommitDetails(host, '/branches', refs, sha),
+      { refs: null, sha: 'b1' },
+    )
+    // A Git window hidden across a root switch has no refs: it reads nothing.
+    await vi.advanceTimersByTimeAsync(300)
+    const before = git.branchReads
+    expect(pane.result).toMatchObject({ details: null, branches: null, signature: null })
+    pane.rerender({ refs: snapshot('listing'), sha: 'b1' })
+    await vi.advanceTimersByTimeAsync(300)
+    expect(git.branchReads).toBe(before + 1)
+    // Refresh reads an equal listing into a new snapshot: the same branches.
+    pane.rerender({ refs: snapshot('listing'), sha: 'b1' })
+    expect(pane.result.branches).toMatchObject({ names: ['main'] })
+    await vi.advanceTimersByTimeAsync(300)
+    expect(git.branchReads).toBe(before + 1)
+    // The refs moved: read again.
+    pane.rerender({ refs: snapshot('moved'), sha: 'b1' })
+    await vi.advanceTimersByTimeAsync(300)
+    expect(git.branchReads).toBe(before + 2)
+    pane.unmount()
   })
 })

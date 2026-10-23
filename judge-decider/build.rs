@@ -1,5 +1,5 @@
 //! Build script for the judge-decider worker: the injectable console UI
-//! (llama.cpp's runtime pieces come from crates/llama-runtime).
+//! (llama.cpp's runtime pieces come from crates/llama-native).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -7,7 +7,7 @@ use std::time::SystemTime;
 
 fn main() {
     // Linux finds llama.cpp's shared libraries (laid beside the binary by
-    // crates/llama-runtime) through the binary's own runpath; a dependency's
+    // crates/llama-native) through the binary's own runpath; a dependency's
     // build script cannot add linker arguments to this binary.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
         println!("cargo:rustc-link-arg-bins=-Wl,-rpath,$ORIGIN");

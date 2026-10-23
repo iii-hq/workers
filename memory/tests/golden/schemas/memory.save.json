@@ -6,7 +6,7 @@
     "properties": {
       "bank": {
         "default": null,
-        "description": "Target bank; the configured default when omitted.",
+        "description": "Target bank; omitted: the calling session's bank, else the configured default.",
         "type": [
           "string",
           "null"
@@ -14,7 +14,7 @@
       },
       "entities": {
         "default": [],
-        "description": "Entity handles (people/projects/tools) used as a retrieval signal.",
+        "description": "Entity handles (people/projects/tools) used as a retrieval signal. None into the default bank: `user`, read under every repository's bank.",
         "items": {
           "type": "string"
         },
@@ -140,6 +140,15 @@
               {
                 "type": "null"
               }
+            ]
+          },
+          "stated_at": {
+            "description": "When the fact was last STATED (created, re-observed, text edited). Unlike `updated_at`, pin/tag/entity edits never bump it, so consolidation can order \"which statement is current\" by it. Legacy records load as None.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
             ]
           },
           "superseded_by": {

@@ -110,6 +110,7 @@ export const GitCommitDetails = memo(function GitCommitDetails({
   onCopyPatch,
   onHistory,
   onOpenRevision,
+  narrow = false,
 }: {
   host: Host
   root: string
@@ -139,8 +140,10 @@ export const GitCommitDetails = memo(function GitCommitDetails({
   onHistory(paths: string[], sha: string): void
   /** The file as commit `sha` left it, read-only. */
   onOpenRevision(file: CommitFile, sha: string): void
+  /** Touch-sized file rows. */
+  narrow?: boolean
 }) {
-  const { details, loading, error, branches } = state
+  const { details, loading, error, branches, signature: signed } = state
   // The file picked in this commit, and how its folders were last set open.
   const [picked, setPicked] = useState<{ sha: string; path: string } | null>(null)
   const [folders, setFolders] = useState<{ sha: string; seq: number; open: boolean } | null>(null)
@@ -192,7 +195,7 @@ export const GitCommitDetails = memo(function GitCommitDetails({
   }
   const [subject, ...rest] = details.message.split('\n')
   const body = rest.join('\n').trim()
-  const signature = SIGNATURES[details.signature]
+  const signature = signed === null ? undefined : SIGNATURES[signed]
   const committedByOther = details.committer !== details.author || details.committerEmail !== details.authorEmail
   const file = picked?.sha === details.sha ? (details.files.find((each) => each.path === picked.path) ?? null) : null
   const ours = folders?.sha === details.sha ? folders : null
@@ -387,6 +390,7 @@ export const GitCommitDetails = memo(function GitCommitDetails({
           top={top}
           grouped={view.grouped}
           open={ours?.open ?? true}
+          narrow={narrow}
           selected={file?.path ?? null}
           onSelect={(each) => setPicked({ sha, path: each.path })}
           onMenu={(each, anchor) => {

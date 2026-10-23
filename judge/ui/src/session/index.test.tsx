@@ -1,45 +1,27 @@
 // @vitest-environment jsdom
 
-import type { ExtensionIii } from '@iii-dev/console-ui'
-import { act, forwardRef, type ReactNode, useEffect } from 'react'
+import type { WorkerConfigurationPanelProps } from '@iii-dev/console-ui'
+import { act, type ReactNode, useEffect } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { Engine } from './engine'
 import { JudgeSessionPicker, SESSION_PROVIDER_KEY } from './index'
 
-// The console provides these via its import map; the menu opens on mount.
+// The console provides these via its import map; the menu opens on mount,
+// and a hidden control asks it to close the way an outside click would.
 vi.mock('@iii-dev/console-ui', () => ({
   DropdownMenu: ({ children, onOpenChange }: { children: ReactNode; onOpenChange?(open: boolean): void }) => {
-    // Open once, on mount (the real menu opens on a click).
     // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only open
     useEffect(() => onOpenChange?.(true), [])
-    return <div>{children}</div>
+    return (
+      <div>
+        <button type="button" data-close-menu onClick={() => onOpenChange?.(false)} />
+        {children}
+      </div>
+    )
   },
   DropdownMenuTrigger: ({ children, ...props }: { children: ReactNode }) => <button {...props}>{children}</button>,
   DropdownMenuContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  SearchField: ({ value, onChange, onKeyDown, ...props }: {
-    value: string
-    onChange(next: string): void
-    onKeyDown?(event: unknown): void
-  }) => <input {...props} value={value} onKeyDown={onKeyDown} onChange={(event) => onChange(event.target.value)} />,
-  List: forwardRef<HTMLDivElement, { children: ReactNode }>(({ children }, ref) => <div ref={ref}>{children}</div>),
-  ListGroupLabel: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  ListItem: ({ label, description, selected, trailing, leading: _l, as, ...props }: {
-    label: ReactNode
-    description?: ReactNode
-    selected?: boolean
-    trailing?: ReactNode
-    leading?: ReactNode
-    as?: 'button' | 'div'
-  }) => {
-    const Row = as === 'div' ? 'div' : 'button'
-    return (
-      <Row data-list-item="" data-selected={selected || undefined} {...props}>
-        <span data-label>{label}</span>
-        {description ? <small>{description}</small> : null}
-        {trailing}
-      </Row>
-    )
-  },
   Button: ({ children, variant: _v, size: _s, ...props }: { children: ReactNode; variant?: string; size?: string }) => (
     <button type="button" {...props}>
       {children}
@@ -59,11 +41,14 @@ vi.mock('@iii-dev/console-ui', () => ({
       {tooltip ? <div role="tooltip">{tooltip}</div> : null}
     </>
   ),
-  uiClasses: { spin: 'spin', motionPanel: 'motion-panel' },
+  Skeleton: () => <span data-skeleton />,
+  uiClasses: { spin: 'spin', motionPickerPage: 'picker-page' },
   StatusBar: ({ children }: { children: ReactNode }) => <footer>{children}</footer>,
   WorkerConfigurationDialog: ({ configurationId }: { configurationId: string | null }) =>
-    configurationId ? <output data-configuring={configurationId} /> : null,
+    configurationId ? <output data-settings-dialog={configurationId} /> : null,
 }))
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 let root: Root | null = null
 let host: HTMLElement | null = null
@@ -76,30 +61,95 @@ afterEach(() => {
   host = null
 })
 
+const MODELS: Record<string, string> = {
+  'judge-typesafe': 'jev-latest',
+  'judge-semif': 'qwen3.5-4b',
+  'judge-decider': 'decider-4b-v2',
+}
+
 function engine(registered = ['typesafe', 'semif']) {
   const state = {
     registered: [...registered],
+    models: { ...MODELS },
+    /** `judge-<provider>::status` replies; a provider absent here registers none. */
+    status: {} as Record<string, unknown>,
     addReply: { status: 'accepted' } as unknown,
     operation: { status: 'running' } as unknown,
   }
-  const trigger = vi.fn(async (id: string) => {
+  const trigger = vi.fn(async (id: string, payload?: Record<string, unknown>) => {
     if (id === 'engine::functions::list') {
       return {
-        functions: state.registered.map((p) => ({ function_id: `judge-${p}::evaluate`, worker_name: `judge-${p}` })),
+        functions: state.registered.flatMap((p) => [
+          { function_id: `judge-${p}::evaluate`, worker_name: `judge-${p}` },
+          ...(p in state.status ? [{ function_id: `judge-${p}::status`, worker_name: `judge-${p}` }] : []),
+        ]),
       }
     }
     if (id === 'judge::configuration-id') return { id: 'judge' }
-    if (id === 'configuration::get') return { value: { provider: 'typesafe' } }
-    if (id === 'engine::workers::list') return { workers: [] }
+    const identity = /^(judge-[a-z0-9-]+)::configuration-id$/.exec(id)
+    if (identity) return { id: identity[1] }
+    const status = /^judge-([a-z0-9-]+)::status$/.exec(id)
+    if (status) return state.status[status[1]]
+    if (id === 'configuration::get') {
+      return payload?.id === 'judge' ? { value: { provider: 'typesafe' } } : { value: { model: state.models[String(payload?.id)] } }
+    }
     if (id === 'compose::add') {
       if (state.addReply instanceof Error) throw state.addReply
-      return state.addReply
+      // The daemon runs it under the caller's id.
+      return state.addReply &&
+        typeof state.addReply === 'object' &&
+        (state.addReply as { status?: string }).status === 'accepted'
+        ? { ...state.addReply, operation_id: payload?.operation_id }
+        : state.addReply
     }
     if (id === 'compose::operation') return state.operation
     return {}
   })
-  return Object.assign({ trigger }, { state })
+  // The bus: handlers the page registers and the bindings that route to them.
+  const handlers = new Map<string, (payload: unknown) => void>()
+  const bindings: { type: string; function_id: string; config: Record<string, unknown> }[] = []
+  const on = vi.fn((id: string, handler: (payload: unknown) => void) => {
+    handlers.set(id, handler)
+    return () => handlers.delete(id)
+  })
+  const registerTrigger = vi.fn((input: { type: string; function_id: string; config: Record<string, unknown> }) => {
+    bindings.push(input)
+    return () => {
+      const at = bindings.indexOf(input)
+      if (at >= 0) bindings.splice(at, 1)
+    }
+  })
+  /** Deliver `payload` to every binding of `type` whose config `match` accepts. */
+  const emit = (type: string, payload: unknown, match: (config: Record<string, unknown>) => boolean = () => true) => {
+    for (const binding of [...bindings]) {
+      if (binding.type !== type || !match(binding.config)) continue
+      handlers.get(binding.function_id.replace(/::console-test$/, ''))?.(payload)
+    }
+  }
+  return Object.assign({ trigger, on, registerTrigger, browserId: 'console-test' }, { state, bindings, handlers, emit })
 }
+
+/** The operation id the page bound its `compose-operation` progress to. */
+function boundOperation(iii: ReturnType<typeof engine>): string {
+  const binding = iii.bindings.find((entry) => entry.type === 'compose-operation')
+  if (!binding) throw new Error('no compose-operation binding')
+  return String(binding.config.operation_id)
+}
+
+/** Compose ends the operation: its terminal event reaches the page. */
+function endOperation(iii: ReturnType<typeof engine>, operationId: string) {
+  iii.emit(
+    'compose-operation',
+    { operation_id: operationId, sequence: 9, phase: 'complete', detail: '', terminal: true },
+    (config) => config.operation_id === operationId,
+  )
+}
+
+/** Past the live list's debounce. */
+const settle = (ms = 350) =>
+  act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, ms))
+  })
 
 /** The registry's `tag=evaluation` page: judges plus unrelated workers. */
 function registry(ok = true) {
@@ -119,14 +169,36 @@ function registry(ok = true) {
   })
 }
 
-async function mount(metadata: Record<string, unknown>, setMetadata = vi.fn(), iii = engine()) {
+/** The Console's inline editor, reduced to what the picker relies on. */
+function FakePanel({ configurationId, onDirtyChange, onSaved }: WorkerConfigurationPanelProps) {
+  return (
+    <section data-panel={configurationId}>
+      <button type="button" onClick={() => onDirtyChange?.(true)}>
+        edit
+      </button>
+      <button type="button" onClick={() => onSaved?.({})}>
+        save
+      </button>
+    </section>
+  )
+}
+
+async function mount(
+  metadata: Record<string, unknown>,
+  {
+    iii = engine(),
+    setMetadata = vi.fn<(patch: Record<string, unknown>) => void>(),
+    panel = FakePanel as typeof FakePanel | null,
+  }: { iii?: ReturnType<typeof engine>; setMetadata?: ReturnType<typeof vi.fn<(patch: Record<string, unknown>) => void>>; panel?: typeof FakePanel | null } = {},
+) {
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
   await act(async () => {
     root!.render(
       <JudgeSessionPicker
-        iii={iii as unknown as Pick<ExtensionIii, 'trigger'>}
+        iii={iii as unknown as Engine}
+        configurationPanel={panel ?? undefined}
         sessionId="s1"
         isStreaming={false}
         metadata={metadata}
@@ -134,13 +206,26 @@ async function mount(metadata: Record<string, unknown>, setMetadata = vi.fn(), i
       />,
     )
   })
+  // Let the listing (functions, then each judge's settings) settle.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
   const view = host
-  const row = (label: string) =>
-    [...view.querySelectorAll<HTMLElement>('[data-list-item]')].find(
-      (item) => item.querySelector('[data-label]')?.textContent === label,
-    )
-  const labels = () => [...view.querySelectorAll('[data-list-item] [data-label]')].map((item) => item.textContent)
-  return { view, iii, setMetadata, row, labels }
+  const option = (id: string) => view.querySelector<HTMLButtonElement>(`[data-judge-option="${id}"]`)
+  const options = () => [...view.querySelectorAll<HTMLElement>('[data-judge-option]')].map((row) => row.dataset.judgeOption)
+  const labels = () =>
+    [...view.querySelectorAll('[data-judge-option] .judge-ui-session-option-label')].map((label) => label.textContent)
+  // On the page on screen first: every page stays mounted, the others inert.
+  const button = (name: string) => {
+    const scopes = [view.querySelector('[data-page][data-active="true"]'), view]
+    const found = scopes
+      .flatMap((scope) => [...(scope?.querySelectorAll<HTMLButtonElement>('button') ?? [])])
+      .find((candidate) => (candidate.getAttribute('aria-label') ?? candidate.textContent?.trim()) === name)
+    if (!found) throw new Error(`no button ${name}: ${view.textContent}`)
+    return found
+  }
+  const activePage = () => view.querySelector<HTMLElement>('[data-page][data-active="true"]')?.dataset.page
+  return { view, iii, setMetadata, option, options, labels, button, activePage }
 }
 
 async function type(input: HTMLInputElement, text: string) {
@@ -151,14 +236,31 @@ async function type(input: HTMLInputElement, text: string) {
   })
 }
 
+async function press(input: HTMLInputElement, key: string) {
+  await act(async () => {
+    input.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
+  })
+}
+
 describe('per-session judge provider', () => {
-  it("lists Default and the running judges, and writes only this session's metadata key", async () => {
-    const { view, iii, setMetadata, row, labels } = await mount({ [SESSION_PROVIDER_KEY]: 'typesafe', model: 'm' })
-    expect(view.querySelector('button[aria-label]')?.textContent).toBe('judge · typesafe')
-    expect(labels()).toEqual(['Default', 'semif', 'typesafe'])
-    expect(row('Default')?.textContent).toContain('typesafe, from judge settings')
-    expect(row('typesafe')?.dataset.selected).toBe('true')
-    await act(async () => row('semif')!.click())
+  it("lists Default and each running judge with its model, and writes only this session's metadata key", async () => {
+    const { view, iii, setMetadata, option, options, labels } = await mount({
+      [SESSION_PROVIDER_KEY]: 'typesafe',
+      model: 'm',
+    })
+    expect(view.querySelector('.judge-ui-session-trigger')?.textContent).toBe('judge · typesafe')
+    expect(options()).toEqual(['default', 'semif', 'typesafe'])
+    expect(labels()).toEqual(['Default', 'qwen3.5-4b', 'jev-latest'])
+    expect(option('default')?.textContent).toContain('typesafe · jev-latest')
+    expect(option('typesafe')?.getAttribute('aria-pressed')).toBe('true')
+    // A judge's model comes from its settings, read raw: no `${VAR}` expands into the page.
+    expect(iii.trigger).toHaveBeenCalledWith(
+      'configuration::get',
+      { id: 'judge-semif', raw: true },
+      { timeoutMs: 5_000 },
+    )
+    expect(iii.trigger.mock.calls.some(([id]) => id === 'judge::models::list')).toBe(false)
+    await act(async () => option('semif')!.click())
     expect(setMetadata).toHaveBeenLastCalledWith({ [SESSION_PROVIDER_KEY]: 'semif' })
     // Picking a provider starts its model load before the session's next turn.
     expect(iii.trigger).toHaveBeenCalledWith(
@@ -167,70 +269,142 @@ describe('per-session judge provider', () => {
       { timeoutMs: 10_000 },
     )
     const calls = iii.trigger.mock.calls.length
-    await act(async () => row('Default')!.click())
+    await act(async () => option('default')!.click())
     expect(setMetadata).toHaveBeenLastCalledWith({ [SESSION_PROVIDER_KEY]: undefined })
     expect(iii.trigger.mock.calls.length).toBe(calls)
   })
 
   it('keeps a stored provider that is not running selectable', async () => {
-    const { row } = await mount({ [SESSION_PROVIDER_KEY]: 'laya' })
-    expect(row('laya')?.textContent).toContain('Not running')
-    expect(row('laya')?.dataset.selected).toBe('true')
+    const { option, view } = await mount({ [SESSION_PROVIDER_KEY]: 'laya' })
+    expect(option('laya')?.textContent).toContain('Not running')
+    expect(option('laya')?.hasAttribute('data-warning')).toBe(true)
+    const trigger = view.querySelector('.judge-ui-session-trigger')
+    expect(trigger?.hasAttribute('data-warning')).toBe(true)
+    expect(trigger?.getAttribute('title')).toBe('judge-laya is not running')
+    expect(option('laya')?.getAttribute('aria-pressed')).toBe('true')
+    // Nothing answers for its settings, so there is nothing to configure.
+    expect(view.querySelector('button[aria-label="Configure laya"]')).toBeNull()
   })
 
-  it('filters the judges and picks the first match on Enter', async () => {
-    const { view, setMetadata, labels } = await mount({})
+  it('filters the judges, moves with the arrows and picks on Enter', async () => {
+    const { view, setMetadata, options } = await mount({})
     const filter = view.querySelector<HTMLInputElement>('input[aria-label="Filter judges"]')!
-    await type(filter, 'sem')
-    expect(labels()).toEqual(['semif'])
-    await act(async () => {
-      filter.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
-    })
+    // The highlight starts on the session's choice (Default) and walks down.
+    expect(view.querySelector('[data-highlighted]')?.getAttribute('data-judge-option')).toBe('default')
+    await press(filter, 'ArrowDown')
+    expect(view.querySelector('[data-highlighted]')?.getAttribute('data-judge-option')).toBe('semif')
+    expect(filter.getAttribute('aria-activedescendant')).toBe(view.querySelector('[data-highlighted]')?.id)
+    await press(filter, 'Enter')
     expect(setMetadata).toHaveBeenLastCalledWith({ [SESSION_PROVIDER_KEY]: 'semif' })
+    // Default matches what it resolves to.
+    await type(filter, 'jev')
+    expect(options()).toEqual(['default', 'typesafe'])
+    await press(filter, 'ArrowDown')
+    await press(filter, 'Enter')
+    expect(setMetadata).toHaveBeenLastCalledWith({ [SESSION_PROVIDER_KEY]: 'typesafe' })
     await type(filter, 'nothing')
-    expect(labels()).toEqual([])
+    expect(options()).toEqual([])
     expect(view.textContent).toContain('No judge matches “nothing”.')
   })
 
-  it("opens the judge settings from Configure", async () => {
-    const { view } = await mount({})
-    const configure = [...view.querySelectorAll('button')].find((button) => button.textContent === 'Configure')!
-    await act(async () => configure.click())
-    expect(view.querySelector('[data-configuring]')?.getAttribute('data-configuring')).toBe('judge')
+  it("configures a judge inside the picker and comes back to the list", async () => {
+    const { view, button, activePage } = await mount({})
+    expect(activePage()).toBe('judges')
+    await act(async () => button('Configure typesafe').click())
+    expect(activePage()).toBe('configure')
+    expect(view.querySelector('[data-page="configure"] h2')?.textContent).toBe('typesafe')
+    expect(view.querySelector('[data-panel]')?.getAttribute('data-panel')).toBe('judge-typesafe')
+    await act(async () => button('Back to judges').click())
+    expect(activePage()).toBe('judges')
+    await act(async () => button('Configure judge settings').click())
+    expect(view.querySelector('[data-page="configure"] h2')?.textContent).toBe('Judge settings')
+    expect(view.querySelector('[data-panel]')?.getAttribute('data-panel')).toBe('judge')
   })
 
-  it('adds a registry judge that is not installed and follows it until it registers', async () => {
+  it('asks before leaving settings with unsaved edits', async () => {
+    const { view, button, activePage } = await mount({})
+    await act(async () => button('Configure typesafe').click())
+    await act(async () => button('edit').click())
+    await act(async () => button('Back to judges').click())
+    expect(activePage()).toBe('configure')
+    expect(view.querySelector('[role="alert"]')?.textContent).toContain('Discard the changes you have not saved?')
+    await act(async () => button('Keep editing').click())
+    expect(view.querySelector('[role="alert"]')).toBeNull()
+    // Closing the menu asks too, and keeps it open until answered.
+    await act(async () => view.querySelector<HTMLElement>('[data-close-menu]')!.click())
+    expect(activePage()).toBe('configure')
+    await act(async () => button('Discard').click())
+    expect(activePage()).toBe('judges')
+  })
+
+  it('reads the judges again after a save, so a new model shows', async () => {
+    const iii = engine()
+    const { button, labels } = await mount({}, { iii })
+    await act(async () => button('Configure semif').click())
+    iii.state.models['judge-semif'] = 'qwen3.5-9b'
+    await act(async () => button('save').click())
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(labels()).toContain('qwen3.5-9b')
+  })
+
+  it('opens the settings in Settings on a Console without the inline editor', async () => {
+    const { view, button, activePage } = await mount({}, { panel: null })
+    await act(async () => button('Configure judge settings').click())
+    expect(activePage()).toBe('judges')
+    expect(view.querySelector('[data-settings-dialog]')?.getAttribute('data-settings-dialog')).toBe('judge')
+  })
+
+  it('adds a registry judge that is not installed, follows it until it registers, then offers its settings', async () => {
     vi.stubGlobal('fetch', registry())
     const iii = engine()
     // Accepted, then still running when the judge registers.
     iii.state.addReply = { status: 'accepted', operation_id: 'op-2', requested: 1 }
-    const { view } = await mount({}, vi.fn(), iii)
-    await act(async () => view.querySelector<HTMLElement>('button[aria-label="Add a judge"]')!.click())
+    const { view, button, options, activePage } = await mount({}, { iii })
+    await act(async () => button('Add a judge').click())
     await act(async () => {})
-    expect(view.textContent).toContain('Add a judge')
+    expect(activePage()).toBe('add')
     // Installed judges and the hub itself stay off the page.
-    const rows = () => [...view.querySelectorAll('[data-list-item] [data-label]')].map((row) => row.textContent)
-    expect(rows()).toEqual(['deciderjudge-decider@0.1.0'])
-    await act(async () => view.querySelector<HTMLElement>('button[aria-label="Add decider"]')!.click())
-    expect(iii.trigger).toHaveBeenCalledWith('compose::add', { workers: ['judge-decider'] }, { timeoutMs: 600_000 })
-    expect(view.textContent).toContain('Adding…')
-    iii.state.registered.push('decider')
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 3_100))
+    const rows = () => [...view.querySelectorAll('.judge-ui-session-add-title [data-label]')].map((row) => row.textContent)
+    expect(rows()).toEqual(['decider'])
+    await act(async () => button('Add decider').click())
+    const operationId = boundOperation(iii)
+    expect(operationId).toMatch(/^compose:[0-9a-f-]{36}$/)
+    // Bound terminal-only, before the add, under the id the add then names.
+    expect(iii.registerTrigger).toHaveBeenCalledWith({
+      type: 'compose-operation',
+      function_id: expect.stringMatching(/^iii::judge-ui::compose-operation::\d+::console-test$/),
+      config: { operation_id: operationId, terminal_only: true },
     })
-    expect(view.textContent).toContain('Added')
-    await act(async () => view.querySelector<HTMLElement>('button[aria-label="Back to judges"]')!.click())
-    expect(rows()).toEqual(['Default', 'decider', 'semif', 'typesafe'])
+    const bound = iii.registerTrigger.mock.invocationCallOrder.at(-1)!
+    const added = iii.trigger.mock.calls.findIndex(([id]) => id === 'compose::add')
+    expect(iii.trigger.mock.invocationCallOrder[added]).toBeGreaterThan(bound)
+    expect(iii.trigger).toHaveBeenCalledWith(
+      'compose::add',
+      { workers: ['judge-decider'], operation_id: operationId },
+      { timeoutMs: 600_000 },
+    )
+    expect(view.textContent).toContain('Adding…')
+    // The judge registering is an engine event, not something polled for.
+    iii.state.registered.push('decider')
+    await act(async () => iii.emit('engine::functions-available', { event: 'functions_changed', functions: [] }))
+    await settle()
+    await act(async () => button('Configure').click())
+    expect(activePage()).toBe('configure')
+    expect(view.querySelector('[data-panel]')?.getAttribute('data-panel')).toBe('judge-decider')
+    await act(async () => button('Back to judges').click())
+    expect(options()).toEqual(['default', 'decider', 'semif', 'typesafe'])
   }, 10_000)
 
   it('shows why an add failed and offers a retry', async () => {
     vi.stubGlobal('fetch', registry())
     const iii = engine()
     iii.state.addReply = { status: 'failed', error: { message: 'worker judge-decider not found' } }
-    const { view } = await mount({}, vi.fn(), iii)
-    await act(async () => view.querySelector<HTMLElement>('button[aria-label="Add a judge"]')!.click())
+    const { view, button } = await mount({}, { iii })
+    await act(async () => button('Add a judge').click())
     await act(async () => {})
-    await act(async () => view.querySelector<HTMLElement>('button[aria-label="Add decider"]')!.click())
+    await act(async () => button('Add decider').click())
     await act(async () => {})
     expect(view.querySelector('[role="alert"]')?.textContent).toBe('worker judge-decider not found')
     expect(view.querySelector('button[aria-label="Retry adding decider"]')).not.toBeNull()
@@ -243,33 +417,63 @@ describe('per-session judge provider', () => {
     // The daemon's detail, verbatim: the reason sits between resolver noise
     // and advice for the publisher.
     const detail = `container 'judge-decider': no version of 'judge-decider' satisfies '*'. ${reason} Publish a 'judge-decider' binary for 'x86_64-unknown-linux-musl' or install on a supported platform. (available: x86_64-unknown-linux-gnu)`
-    iii.state.addReply = { status: 'accepted', operation_id: 'op-1', requested: 1 }
-    iii.state.operation = { status: 'failed', last_event: { terminal: true, detail } }
-    const { view } = await mount({}, vi.fn(), iii)
-    await act(async () => view.querySelector<HTMLElement>('button[aria-label="Add a judge"]')!.click())
+    iii.state.addReply = { status: 'accepted', requested: 1 }
+    const { view, button } = await mount({}, { iii })
+    await act(async () => button('Add a judge').click())
     await act(async () => {})
-    await act(async () => view.querySelector<HTMLElement>('button[aria-label="Add decider"]')!.click())
+    await act(async () => button('Add decider').click())
+    await act(async () => {})
+    const operationId = boundOperation(iii)
+    // The one catch-up read finds it still running: nothing more is read
+    // until compose says it ended.
+    expect(iii.trigger).toHaveBeenCalledWith('compose::operation', { operation_id: operationId }, { timeoutMs: 5_000 })
+    const reads = () => iii.trigger.mock.calls.filter(([id]) => id === 'compose::operation').length
+    expect(reads()).toBe(1)
     expect(view.textContent).toContain('Adding…')
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 3_100))
-    })
-    expect(iii.trigger).toHaveBeenCalledWith('compose::operation', { operation_id: 'op-1' }, { timeoutMs: 5_000 })
+    iii.state.operation = { status: 'failed', last_event: { terminal: true, detail } }
+    await act(async () => endOperation(iii, operationId))
+    await act(async () => {})
+    expect(reads()).toBe(2)
     expect(view.querySelector('[role="alert"]')?.textContent).toBe(reason)
     expect(view.querySelector('button[aria-label="Retry adding decider"]')).not.toBeNull()
-  }, 10_000)
+    // Settled: the binding is gone.
+    expect(iii.bindings.some((entry) => entry.type === 'compose-operation')).toBe(false)
+  })
+
+  it('settles from the catch-up read an operation that ended before its binding landed', async () => {
+    vi.stubGlobal('fetch', registry())
+    const iii = engine()
+    iii.state.addReply = { status: 'accepted', requested: 1 }
+    iii.state.operation = { status: 'cancelled', last_event: { terminal: true, detail: 'operation cancelled' } }
+    const { view, button } = await mount({}, { iii })
+    await act(async () => button('Add a judge').click())
+    await act(async () => {})
+    await act(async () => button('Add decider').click())
+    await act(async () => {})
+    expect(view.querySelector('[role="alert"]')?.textContent).toBe('The add was cancelled.')
+    expect(iii.bindings.some((entry) => entry.type === 'compose-operation')).toBe(false)
+  })
 
   it('reports an add that compose calls done but whose judge never starts', async () => {
     vi.stubGlobal('fetch', registry())
     const iii = engine()
     // A worker that is not required and failed to start, or one declared and
     // stopped, still ends the operation as succeeded.
-    iii.state.addReply = { status: 'accepted', operation_id: 'op-3', requested: 1 }
-    iii.state.operation = { status: 'succeeded', last_event: { terminal: true, detail: 'all requested workers are ready' } }
-    const { view } = await mount({}, vi.fn(), iii)
+    iii.state.addReply = { status: 'accepted', requested: 1 }
+    const { view, button } = await mount({}, { iii })
     vi.useFakeTimers()
-    await act(async () => view.querySelector<HTMLElement>('button[aria-label="Add a judge"]')!.click())
+    await act(async () => button('Add a judge').click())
     await act(async () => {})
-    await act(async () => view.querySelector<HTMLElement>('button[aria-label="Add decider"]')!.click())
+    await act(async () => button('Add decider').click())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    const operationId = boundOperation(iii)
+    iii.state.operation = {
+      status: 'succeeded',
+      last_event: { terminal: true, detail: 'all requested workers are ready' },
+    }
+    await act(async () => endOperation(iii, operationId))
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3_100)
     })
@@ -280,18 +484,98 @@ describe('per-session judge provider', () => {
     expect(view.querySelector('[role="alert"]')?.textContent).toBe(
       'judge-decider was added but has not started; check its logs in Settings → Workers.',
     )
-    // It starts late: the open picker keeps checking and settles it.
+    // It starts late: the engine says so, and the open picker settles it.
     iii.state.registered.push('decider')
+    await act(async () => iii.emit('engine::functions-available', { event: 'functions_changed', functions: [] }))
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(3_100)
+      await vi.advanceTimersByTimeAsync(400)
     })
-    expect(view.textContent).toContain('Added')
+    expect(view.querySelector('[data-page="add"] .judge-ui-session-add-row button')?.textContent).toBe('Configure')
+  })
+
+  it('never reads the judges on a timer, only on engine changes while the picker is mounted', async () => {
+    const iii = engine()
+    const { view, labels } = await mount({}, { iii })
+    vi.useFakeTimers()
+    const lists = () => iii.trigger.mock.calls.filter(([id]) => id === 'engine::functions::list').length
+    const before = lists()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+    expect(lists()).toBe(before)
+    // The configuration binding names no id; another worker's entry is not news.
+    expect(iii.bindings.find((entry) => entry.type === 'configuration')?.config).toEqual({})
+    await act(async () => iii.emit('configuration', { type: 'configuration', event_type: 'updated', id: 'llm-router' }))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400)
+    })
+    expect(lists()).toBe(before)
+    // A judge's settings changing is: a burst reads once.
+    iii.state.models['judge-semif'] = 'qwen3.5-9b'
+    await act(async () => {
+      iii.emit('configuration', { type: 'configuration', event_type: 'updated', id: 'judge-semif' })
+      iii.emit('configuration', { type: 'configuration', event_type: 'updated', id: 'judge-semif' })
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400)
+    })
+    expect(lists()).toBe(before + 1)
+    expect(labels()).toContain('qwen3.5-9b')
+    // Closing the menu keeps them: the trigger's warning follows the engine.
+    await act(async () => view.querySelector<HTMLElement>('[data-close-menu]')!.click())
+    expect(iii.bindings.map((entry) => entry.type).sort()).toEqual([
+      'configuration',
+      'engine::functions-available',
+      'secrets::changed',
+    ])
+    // Unmounting drops them.
+    act(() => root?.unmount())
+    root = null
+    expect(iii.bindings).toEqual([])
+  })
+
+  it('warns on the trigger and in the list when the chosen judge has no usable key, until it has one', async () => {
+    const iii = engine()
+    const reason = 'no API key: save one in the judge-typesafe settings, or export TYPESAFE_API_KEY in its process and restart it'
+    iii.state.status.typesafe = { configured: false, reason }
+    const { view, option } = await mount({ [SESSION_PROVIDER_KEY]: 'typesafe' }, { iii })
+    const trigger = () => view.querySelector('.judge-ui-session-trigger')
+    expect(trigger()?.textContent).toBe('judge · typesafe')
+    expect(trigger()?.hasAttribute('data-warning')).toBe(true)
+    expect(trigger()?.getAttribute('aria-label')).toBe(
+      `Judge provider for this session: typesafe. typesafe is not configured: ${reason}`,
+    )
+    expect(option('typesafe')?.textContent).toContain(`Not configured: ${reason}`)
+    expect(option('typesafe')?.hasAttribute('data-warning')).toBe(true)
+    // Default resolves to the same judge, so it says so too.
+    expect(option('default')?.textContent).toContain('typesafe, not configured')
+    expect(option('default')?.hasAttribute('data-warning')).toBe(true)
+    // A local judge registers no status and is never asked for one.
+    expect(option('semif')?.hasAttribute('data-warning')).toBe(false)
+    expect(iii.trigger.mock.calls.some(([id]) => id === 'judge-semif::status')).toBe(false)
+    // The key lands as a secret while the menu is closed: the trigger clears.
+    await act(async () => view.querySelector<HTMLElement>('[data-close-menu]')!.click())
+    iii.state.status.typesafe = { configured: true }
+    await act(async () => iii.emit('secrets::changed', { name: 'TYPESAFE_API_KEY' }))
+    await settle()
+    expect(trigger()?.hasAttribute('data-warning')).toBe(false)
+    expect(trigger()?.getAttribute('title')).toBe('Judge provider for this session')
+  })
+
+  it('warns when Default resolves to a judge without a usable key', async () => {
+    const iii = engine()
+    iii.state.status.typesafe = { configured: false }
+    const { view, option } = await mount({}, { iii })
+    expect(view.querySelector('.judge-ui-session-trigger')?.getAttribute('title')).toBe(
+      'typesafe is not configured: no usable key',
+    )
+    expect(option('default')?.textContent).toContain('typesafe, not configured')
   })
 
   it('says so when the registry is unreachable', async () => {
     vi.stubGlobal('fetch', registry(false))
-    const { view } = await mount({})
-    await act(async () => view.querySelector<HTMLElement>('button[aria-label="Add a judge"]')!.click())
+    const { view, button } = await mount({})
+    await act(async () => button('Add a judge').click())
     await act(async () => {})
     expect(view.textContent).toContain('The workers registry is unreachable right now.')
   })
@@ -299,7 +583,7 @@ describe('per-session judge provider', () => {
   it('explains the judge and where this session uses it beside the picker', async () => {
     const { view } = await mount({})
     expect(view.querySelector('button[aria-label="What is the judge?"]')).not.toBeNull()
-    const help = view.querySelector('[role="tooltip"]')?.textContent ?? ''
+    const help = [...view.querySelectorAll('[role="tooltip"]')].map((tip) => tip.textContent).join(' ')
     expect(help).toContain('A fast evaluation model for typed questions')
     expect(help).toContain('ranks functions and skills when the agent searches the catalog')
     expect(help).toContain('checks a function call’s arguments')

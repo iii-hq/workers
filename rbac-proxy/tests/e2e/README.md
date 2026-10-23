@@ -50,6 +50,7 @@ run-tests.sh
 | `prefix-self-invoke-roundtrip` | the session invokes its own bare `myfn`; the proxy resolves + dispatches back (prefix stripped) and the handler runs |
 | `trigger-to-forbidden-denied` | a trigger bound to a forbidden function is never forwarded (no such binding on the engine) |
 | `channel-roundtrip-through-proxy` | a channel round-trips through the proxy's `/ws/channels` bridge |
+| `oversized-call-rejected-without-poisoning` | a call over the engine's 16 MiB frame limit (sent fragmented, as browsers do) fails with `payload_too_large`; middleware calls and new sessions keep working afterwards |
 
 ## Output
 
@@ -57,7 +58,7 @@ A per-case summary prints at the end; the machine-readable report is written to
 `reports/report.json`:
 
 ```json
-{ "pass": 8, "total": 8, "results": [ { "case": "...", "status": "PASS", "duration_ms": 12 } ] }
+{ "pass": 9, "total": 9, "results": [ { "case": "...", "status": "PASS", "duration_ms": 12 } ] }
 ```
 
 Engine / proxy / harness logs are written to `reports/{engine,proxy,harness}-<ts>.log`.

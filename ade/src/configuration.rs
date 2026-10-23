@@ -43,6 +43,9 @@ pub type ApplyLock = Arc<tokio::sync::Mutex<()>>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeConfig {
     pub http_port: u16,
+    /// The stored `http_host`, when set. Boot-time only: read before the
+    /// listener binds, never rebinds live.
+    pub http_host: Option<std::net::IpAddr>,
     /// Directory for ephemeral per-instance state, as configured (NOT yet
     /// resolved — see [`RuntimeConfig::resolved_data_dir`]).
     pub data_dir: String,
@@ -53,6 +56,7 @@ impl RuntimeConfig {
     pub fn fallback(http_port: u16, data_dir: &str) -> Self {
         Self {
             http_port,
+            http_host: None,
             data_dir: data_dir.to_string(),
             disabled_workers: HashSet::new(),
         }
@@ -108,6 +112,12 @@ fn schema() -> Value {
                 "default": 3113,
                 "description": "TCP port for the ADE UI, injected assets, and /ws proxy. Changes rebind the listener live."
             },
+            "http_host": {
+                "type": "string",
+                "minLength": 1,
+                "default": "0.0.0.0",
+                "description": "Interface the ADE listens on: 0.0.0.0 (the default) for every interface, so other machines on the network can open it; 127.0.0.1 for this machine only. Applies at the next start."
+            },
             "data_dir": {
                 "type": "string",
                 "minLength": 1,
@@ -138,6 +148,23 @@ fn schema() -> Value {
                     "followTurns": {
                         "type": "boolean",
                         "description": "Auto-open the trace of the active chat's live turn. When absent the UI defaults to on."
+                    }
+                },
+                "additionalProperties": true
+            },
+            "onboarding": {
+                "type": "object",
+                "description": "The first-run setup wizard.",
+                "properties": {
+                    "auto_open": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "Open the setup wizard by itself on a machine where it was never finished nor dismissed and no model is connected yet. Set false for a deployed ADE: a fresh data_dir reads as a first run. The command palette still opens it. III_CONSOLE_ONBOARDING_AUTO_OPEN=false in the worker's environment does the same for one environment."
+                    },
+                    "worker_sources": {
+                        "type": "object",
+                        "description": "Development: where the wizard adds a worker from, by registry name — a local directory, or a whole compose container object.",
+                        "additionalProperties": true
                     }
                 },
                 "additionalProperties": true
@@ -260,6 +287,9 @@ async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Re
     .await
 }
 
+// The shared module also carries `get_value_with`, which this worker does
+// not call (the ide worker does).
+#[allow(dead_code)]
 #[path = "../../crates/config-client/src/initialization.rs"]
 mod initialization;
 
@@ -295,6 +325,18 @@ fn runtime_config_from(
         }
     };
 
+    let http_host = match value.and_then(|value| value.get("http_host")) {
+        None | Some(Value::Null) => None,
+        Some(Value::String(host)) => Some(host.trim().parse().map_err(|_| {
+            format!(
+                "stored `console.http_host` {host:?} is not an IP address; use 0.0.0.0, 127.0.0.1 or an interface address"
+            )
+        })?),
+        Some(_) => {
+            return Err("stored `console.http_host` must be an IP address string".to_string())
+        }
+    };
+
     let data_dir = match value.and_then(|value| value.get("data_dir")) {
         None | Some(Value::Null) => fallback_data_dir.to_string(),
         Some(Value::String(dir)) if !dir.trim().is_empty() => dir.trim().to_string(),
@@ -303,6 +345,7 @@ fn runtime_config_from(
 
     Ok(RuntimeConfig {
         http_port,
+        http_host,
         data_dir,
         disabled_workers: value.map(disabled_workers_from).unwrap_or_default(),
     })
@@ -512,13 +555,11 @@ pub struct ConfigChangeRequest {}
 
 /// `Ok(None)` when the entry does not exist or holds `null`.
 pub(crate) async fn existing_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
-        .await
-    {
-        Ok(resp) => Ok(resp.get("value").filter(|v| !v.is_null()).cloned()),
-        Err(e) if is_not_found(&e) => Ok(None),
-        Err(e) => Err(e),
-    }
+    let stored = initialization::get_value_with(config_id(), |function, payload| {
+        trigger_configuration_with_retry(iii, function, payload)
+    })
+    .await?;
+    Ok(stored.filter(|value| !value.is_null()))
 }
 
 /// Replace the stored `console` entry wholesale (`configuration::set`).
@@ -572,29 +613,6 @@ pub(crate) async fn trigger_configuration_with_retry(
     ))
 }
 
-/// `true` only when the error carries the configuration worker's standalone
-/// `NOT_FOUND` entry code, identified by the outermost `remote error (<code>)` envelope code rather than a substring or token scan of the message, so
-/// a compound code such as `RESOURCE_NOT_FOUND`/`STATEMENT_NOT_FOUND` or the
-/// engine's lowercase missing-FUNCTION code `function_not_found` still
-/// propagates as a failure instead of being read as "nothing stored yet".
-fn is_not_found(error: &str) -> bool {
-    // Anchor on the SDK's own rendering instead of scanning the whole string:
-    // a remote failure prints as `remote error ({code}): {message}`, and this
-    // worker wraps a retried get as
-    // `configuration::get failed after CONFIG_RETRIES attempts: {err}`. Peel
-    // exactly that one wrapper (never a foreign one or a different attempt
-    // count) and then require the NOT_FOUND envelope at the very start, so a
-    // NOT_FOUND code buried in an unrelated message, a nested envelope, or a
-    // different wrapper stays a real failure and propagates.
-    const RETRY_WRAPPER: &str = "configuration::get failed after 3 attempts: ";
-    const _: () = assert!(CONFIG_RETRIES == 3);
-    let raw = error.trim();
-    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
-    raw == "NOT_FOUND"
-        || raw == "remote error (NOT_FOUND):"
-        || raw.starts_with("remote error (NOT_FOUND): ")
-}
-
 #[cfg(test)]
 mod tests {
     include!(concat!(
@@ -602,12 +620,16 @@ mod tests {
         "/../crates/config-client/tests/support/is_not_found_cases.rs"
     ));
 
-    /// The missing-entry classifier only seeds on the configuration worker's
-    /// standalone `NOT_FOUND` envelope; every unrelated failure or compound
-    /// code propagates instead of clobbering a stored value with a default.
     #[test]
-    fn is_not_found_matches_only_the_envelope_code() {
-        assert_missing_entry_contract(super::is_not_found);
+    fn shared_reader_matches_only_the_missing_entry_envelope_code() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        assert_missing_entry_contract(|error| {
+            runtime
+                .block_on(initialization::get_value_with(config_id(), |_, _| {
+                    std::future::ready(Err(error.to_string()))
+                }))
+                .is_ok_and(|value| value.is_none())
+        });
     }
 
     use super::*;
@@ -640,6 +662,33 @@ mod tests {
         let section = &s["properties"]["injectableUi"]["properties"]["disabledWorkers"];
         assert_eq!(section["type"], "array");
         assert_eq!(section["items"]["type"], "string");
+    }
+
+    #[test]
+    fn schema_exposes_the_onboarding_switch() {
+        let section = &schema()["properties"]["onboarding"]["properties"];
+        assert_eq!(section["auto_open"]["type"], "boolean");
+        assert_eq!(section["auto_open"]["default"], true);
+        assert_eq!(section["worker_sources"]["type"], "object");
+    }
+
+    #[test]
+    fn stored_http_host_is_read_for_the_next_start() {
+        let local =
+            runtime_config_from(Some(&json!({ "http_host": "127.0.0.1" })), 3113, "data/ade")
+                .unwrap();
+        assert_eq!(local.http_host, Some("127.0.0.1".parse().unwrap()));
+        assert_eq!(
+            runtime_config_from(Some(&json!({})), 3113, "data/ade")
+                .unwrap()
+                .http_host,
+            None
+        );
+        assert!(
+            runtime_config_from(Some(&json!({ "http_host": "localhost" })), 3113, "data/ade")
+                .is_err()
+        );
+        assert_eq!(schema()["properties"]["http_host"]["default"], "0.0.0.0");
     }
 
     #[test]
@@ -763,20 +812,6 @@ mod tests {
             .is_empty());
     }
 
-    fn two_free_ports() -> (u16, u16) {
-        loop {
-            let first = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let second = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let ports = (
-                first.local_addr().unwrap().port(),
-                second.local_addr().unwrap().port(),
-            );
-            if ports.0 != ports.1 {
-                return ports;
-            }
-        }
-    }
-
     async fn wait_for_connection(port: u16, expected: bool) -> bool {
         for _ in 0..50 {
             let connected = tokio::net::TcpStream::connect(("127.0.0.1", port))
@@ -792,18 +827,21 @@ mod tests {
 
     #[tokio::test]
     async fn rebind_starts_new_port_before_stopping_old_listener() {
-        let (old_port, new_port) = two_free_ports();
         let state = AppState::new(Arc::new("ws://127.0.0.1:1".to_string()), None, None, None);
-        let handle = server::start(old_port, state.clone()).await.unwrap();
+        // Let each listener retain its OS-assigned port from the first bind.
+        // Probing then releasing a free port races concurrent socket users.
+        let handle = server::start(0, state.clone()).await.unwrap();
+        let old_port = handle.local_addr.port();
         let port = new_port_cell(old_port);
 
         assert!(wait_for_connection(old_port, true).await);
-        rebind(&port, &state, &handle.control, new_port)
-            .await
-            .unwrap();
+        rebind(&port, &state, &handle.control, 0).await.unwrap();
 
-        assert_eq!(*port.read().await, new_port);
-        assert_eq!(handle.current_addr().await.unwrap().port(), new_port);
+        // The snapshot holds the requested setting; the handle has the
+        // actual ephemeral port selected while the old listener was bound.
+        assert_eq!(*port.read().await, 0);
+        let new_port = handle.current_addr().await.unwrap().port();
+        assert_ne!(new_port, old_port);
         assert!(wait_for_connection(new_port, true).await);
         assert!(wait_for_connection(old_port, false).await);
 
@@ -812,14 +850,15 @@ mod tests {
 
     #[tokio::test]
     async fn failed_rebind_keeps_old_port_and_listener() {
-        let (old_port, occupied_port) = two_free_ports();
         // Reserve the exact interface rebind uses. On macOS a wildcard
         // listener does not necessarily prevent a loopback bind to the same port.
-        let occupied = tokio::net::TcpListener::bind((server::bind_host(), occupied_port))
+        let occupied = tokio::net::TcpListener::bind((server::bind_host(), 0))
             .await
             .unwrap();
+        let occupied_port = occupied.local_addr().unwrap().port();
         let state = AppState::new(Arc::new("ws://127.0.0.1:1".to_string()), None, None, None);
-        let handle = server::start(old_port, state.clone()).await.unwrap();
+        let handle = server::start(0, state.clone()).await.unwrap();
+        let old_port = handle.local_addr.port();
         let port = new_port_cell(old_port);
 
         assert!(rebind(&port, &state, &handle.control, occupied_port)

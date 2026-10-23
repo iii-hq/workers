@@ -70,6 +70,8 @@ export function useTurnSummary(
   /** Absolute paths written since the last pass, drained here: those files
       are read again, every other row keeps the totals it has. */
   written: Set<string>,
+  /** The worker's protected paths, whose reads fail like a missing file's. */
+  isProtected?: (path: string) => boolean,
 ): readonly ShellReviewFileSummary[] {
   const [rows, setRows] = useState<readonly ShellReviewFileSummary[]>([])
   const seqRef = useRef(0)
@@ -149,7 +151,7 @@ export function useTurnSummary(
           let row: ShellReviewFileSummary = { path: rel, state: 'unavailable', add: null, del: null }
           let holds = false
           try {
-            const contents = await loadTurnDiff(host, root, rel, record)
+            const contents = await loadTurnDiff(host, root, rel, record, isProtected)
             if (!contents.binary && !contents.noBaseline) {
               const totals = diffTotals(diffLines(contents.oldContents, contents.newContents))
               row = { path: rel, state: 'ready', add: totals.add, del: totals.del }
@@ -170,7 +172,7 @@ export function useTurnSummary(
     return () => {
       cancelled = true
     }
-  }, [host, root, turnId, fileKey, refreshEpoch, turns])
+  }, [host, root, turnId, fileKey, refreshEpoch, turns, isProtected])
 
   return rows
 }

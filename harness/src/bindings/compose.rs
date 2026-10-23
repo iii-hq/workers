@@ -3,10 +3,20 @@
 //!
 //! SDK registration only queues a request, and engine discovery can show the
 //! trigger before its provider installs it. An immediate read is therefore not
-//! a readiness barrier. The existing expiry sweep retries still-armed watches;
-//! every replay enters the ordinary delivery hop and its atomic once claim.
+//! a readiness barrier. Still-armed watches are retried on events, never on a
+//! clock:
+//!
+//! * the harness's own standing `compose-operation` subscription
+//!   ([`register_terminal_watch`], every operation, terminal events only) —
+//!   an operation finishing inside a binding's activation window still
+//!   reaches the harness, which recovers every armed wake on that operation;
+//! * every binding pass ([`super::expiry::sweep`]): boot and each engine
+//!   worker connect/disconnect/announce, which covers the Compose provider
+//!   itself (re)activating.
+//!
+//! Every replay enters the ordinary delivery hop and its atomic once claim.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
@@ -24,7 +34,8 @@ static RECOVERIES: LazyLock<Recoveries> = LazyLock::new(Recoveries::default);
 /// Scheduling only: the durable binding and delivery claim remain authoritative.
 #[derive(Clone)]
 struct Recoveries {
-    active: Arc<Mutex<HashSet<String>>>,
+    /// Binding id -> whether another run was requested while it was active.
+    active: Arc<Mutex<HashMap<String, bool>>>,
     slots: Arc<tokio::sync::Semaphore>,
 }
 
@@ -38,22 +49,40 @@ impl Default for Recoveries {
 }
 
 impl Recoveries {
-    fn spawn(&self, id: &str, work: impl Future<Output = ()> + Send + 'static) -> bool {
-        let mut active = self.active.lock().unwrap_or_else(|p| p.into_inner());
-        if !active.insert(id.to_string()) {
-            return false;
+    /// Start a recovery for `id`, or — when one is already active — have it
+    /// run `work` once more after it finishes. A request arriving mid-run (a
+    /// terminal event that landed after the active snapshot was served) must
+    /// still get a snapshot taken after it, never be absorbed by the stale
+    /// one. Returns whether a new task started.
+    fn spawn<W, F>(&self, id: &str, work: W) -> bool
+    where
+        W: Fn() -> F + Send + 'static,
+        F: Future<Output = ()> + Send + 'static,
+    {
+        {
+            let mut active = self.active.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(rerun) = active.get_mut(id) {
+                *rerun = true;
+                return false;
+            }
+            active.insert(id.to_string(), false);
         }
-        let slot = RecoverySlot {
+        let mut slot = RecoverySlot {
             active: self.clone(),
             id: id.to_string(),
+            held: true,
         };
         let slots = self.slots.clone();
         tokio::spawn(async move {
-            let _slot = slot;
             let Ok(_permit) = slots.acquire_owned().await else {
                 return;
             };
-            work.await;
+            loop {
+                work().await;
+                if !slot.rerun_or_release() {
+                    break;
+                }
+            }
         });
         true
     }
@@ -62,15 +91,113 @@ impl Recoveries {
 struct RecoverySlot {
     active: Recoveries,
     id: String,
+    held: bool,
+}
+
+impl RecoverySlot {
+    /// Consume a pending re-run request (`true`), or release the id in the
+    /// same critical section that saw none (`false`) — a request can never
+    /// land between the check and the release and be lost.
+    fn rerun_or_release(&mut self) -> bool {
+        let mut active = self.active.active.lock().unwrap_or_else(|p| p.into_inner());
+        match active.get_mut(&self.id) {
+            Some(rerun) if *rerun => {
+                *rerun = false;
+                true
+            }
+            _ => {
+                active.remove(&self.id);
+                self.held = false;
+                false
+            }
+        }
+    }
 }
 
 impl Drop for RecoverySlot {
     fn drop(&mut self) {
-        self.active
-            .active
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&self.id);
+        if self.held {
+            self.active
+                .active
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&self.id);
+        }
+    }
+}
+
+/// Internal handler for the harness's standing terminal Compose watch.
+pub const TERMINAL_WATCH_FN_ID: &str = "harness::on-compose-operation";
+const COMPOSE_OPERATION_TRIGGER: &str = "compose-operation";
+
+/// The fields of a `compose-operation` event the watch reads.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct ComposeOperationEvent {
+    #[serde(default)]
+    pub operation_id: Option<String>,
+    #[serde(default)]
+    pub terminal: bool,
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct ComposeOperationAck {
+    pub ok: bool,
+}
+
+/// Subscribe the harness to every Compose operation's terminal event. A
+/// per-binding watch registered just before its operation finished may have
+/// been installed by the provider too late to see that event; this standing
+/// subscription was installed long before, so the completion still arrives
+/// and recovers the wake through the snapshot path. Parks harmlessly when no
+/// Compose provider is connected.
+pub fn register_terminal_watch(deps: &Arc<Deps>) {
+    let worker = deps.clone();
+    deps.iii.register_function(
+        TERMINAL_WATCH_FN_ID,
+        iii_sdk::RegisterFunction::new_async(move |event: ComposeOperationEvent| {
+            let deps = worker.clone();
+            async move {
+                if let (true, Some(operation_id)) = (event.terminal, event.operation_id) {
+                    recover_operation(&deps, &operation_id).await;
+                }
+                Ok::<_, iii_sdk::errors::Error>(ComposeOperationAck { ok: true })
+            }
+        })
+        .description(
+            "Internal: recover armed Compose wakes when any Compose operation reaches a \
+             terminal state (driven by the harness's own compose-operation subscription).",
+        )
+        .metadata(json!({ "internal": true })),
+    );
+    let input = iii_sdk::protocol::RegisterTriggerInput::new(
+        COMPOSE_OPERATION_TRIGGER,
+        TERMINAL_WATCH_FN_ID,
+        json!({ "terminal_only": true }),
+    );
+    let input = match crate::functions::subscribe::compose_operation_trigger_namespace() {
+        Some(namespace) => input.in_trigger_namespace(&namespace),
+        None => input,
+    };
+    if let Err(error) = deps.iii.register_trigger(input) {
+        tracing::warn!(%error, "binding the terminal Compose watch failed; wakes recover on worker changes only");
+    }
+}
+
+/// An operation finished: retry recovery for every armed wake watching it.
+pub async fn recover_operation(deps: &Deps, operation_id: &str) {
+    let bindings = match deps.bindings().await.list().await {
+        Ok(bindings) => bindings,
+        Err(error) => {
+            tracing::warn!(%error, operation_id, "Compose wake recovery skipped: binding store unreadable");
+            return;
+        }
+    };
+    let now = AgentMessage::now_ms();
+    for binding in bindings
+        .iter()
+        .filter(|binding| self::operation_id(binding, now) == Some(operation_id))
+    {
+        schedule(deps, binding);
     }
 }
 
@@ -83,36 +210,46 @@ pub(crate) fn schedule(deps: &Deps, binding: &Binding) {
     let deps = deps.clone();
     let binding_id = binding.id.clone();
     let operation_id = operation_id.to_string();
-    RECOVERIES.spawn(&binding.id, async move {
-        let snapshot = tokio::time::timeout(SNAPSHOT_TIMEOUT, async {
-            deps.engine()
-                .await
-                .dispatch(
-                    "compose::operation",
-                    json!({ "operation_id": operation_id }),
-                )
-                .await
-        })
-        .await;
-        let Ok(Ok(snapshot)) = snapshot else {
-            // Diagnostics never invalidate registration; a later sweep retries.
-            return;
-        };
-        let Some(event) = terminal_event(&operation_id, &snapshot) else {
-            return;
-        };
-        // The live event and this persisted copy share conditions, lifecycle
-        // CAS, and retirement. Never inject directly or increment fires here.
-        if let Err(error) = crate::functions::trigger_deliver::handle(
-            &deps,
-            event.clone(),
-            Some(json!({ "__binding": binding_id })),
-        )
-        .await
-        {
-            tracing::warn!(binding = %binding_id, %error, "Compose wake recovery failed");
-        }
+    RECOVERIES.spawn(&binding.id, move || {
+        let deps = deps.clone();
+        let binding_id = binding_id.clone();
+        let operation_id = operation_id.clone();
+        async move { recover(&deps, &binding_id, &operation_id).await }
     });
+}
+
+/// One snapshot read; a settled operation's persisted terminal event enters
+/// the ordinary delivery hop.
+async fn recover(deps: &Deps, binding_id: &str, operation_id: &str) {
+    let snapshot = tokio::time::timeout(SNAPSHOT_TIMEOUT, async {
+        deps.engine()
+            .await
+            .dispatch(
+                "compose::operation",
+                json!({ "operation_id": operation_id }),
+            )
+            .await
+    })
+    .await;
+    let Ok(Ok(snapshot)) = snapshot else {
+        // Diagnostics never invalidate registration; the next terminal
+        // event or worker change retries.
+        return;
+    };
+    let Some(event) = terminal_event(operation_id, &snapshot) else {
+        return;
+    };
+    // The live event and this persisted copy share conditions, lifecycle
+    // CAS, and retirement. Never inject directly or increment fires here.
+    if let Err(error) = crate::functions::trigger_deliver::handle(
+        deps,
+        event.clone(),
+        Some(json!({ "__binding": binding_id })),
+    )
+    .await
+    {
+        tracing::warn!(binding = %binding_id, %error, "Compose wake recovery failed");
+    }
 }
 
 fn operation_id(binding: &Binding, now_ms: i64) -> Option<&str> {
@@ -152,6 +289,8 @@ fn terminal_event<'a>(operation_id: &str, snapshot: &'a Value) -> Option<&'a Val
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
     use crate::bindings::{BindingTarget, Lifecycle, OwnerScope};
     use serde_json::json;
@@ -213,7 +352,7 @@ mod tests {
         assert!(terminal_event(id, &running).is_none());
 
         // The operation finishes before the provider installs its binding.
-        // A later sweep must recover the provider's exact persisted event.
+        // A later recovery must deliver the provider's exact persisted event.
         let settled = settled_snapshot();
         let recovered = terminal_event(id, &settled).expect("the missed event must be recoverable");
         assert_eq!(recovered, &settled["last_event"]);
@@ -293,15 +432,22 @@ mod tests {
             let (release, done) = tokio::sync::oneshot::channel::<()>();
             releases.push(Some(release));
             let started = started.clone();
+            let done = Arc::new(tokio::sync::Mutex::new(Some(done)));
             assert!(
-                recoveries.spawn(&format!("binding_{index}"), async move {
-                    started.send(index).unwrap();
-                    let _ = done.await;
+                recoveries.spawn(&format!("binding_{index}"), move || {
+                    let started = started.clone();
+                    let done = done.clone();
+                    async move {
+                        started.send(index).unwrap();
+                        if let Some(done) = done.lock().await.take() {
+                            let _ = done.await;
+                        }
+                    }
                 }),
                 "every watch must retain its recovery opportunity"
             );
         }
-        assert!(!recoveries.spawn("binding_0", async {
+        assert!(!recoveries.spawn("binding_0", || async {
             panic!("the same binding cannot have overlapping recoveries");
         }));
         let mut active = HashSet::new();
@@ -318,11 +464,13 @@ mod tests {
         );
 
         // Free one slot: the extra watch must run without needing the first
-        // MAX_RECOVERIES operations to all finish or a new sweep to select it.
+        // MAX_RECOVERIES operations to all finish or a new pass to select it.
         let queued = (0..=MAX_RECOVERIES)
             .find(|id| !active.contains(id))
             .unwrap();
-        let running = *active.iter().next().unwrap();
+        // binding_0 owes a re-run (the overlapping request above); free a
+        // different slot so the next start is the queued watch's.
+        let running = *active.iter().find(|index| **index != 0).unwrap();
         releases[running].take().unwrap().send(()).unwrap();
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(2), starts.recv())
@@ -331,5 +479,52 @@ mod tests {
             Some(queued)
         );
         drop(releases);
+    }
+
+    /// A recovery requested while one is mid-snapshot (an operation that
+    /// finished after that snapshot was served) runs once more afterwards —
+    /// the stale snapshot must not absorb it.
+    #[tokio::test]
+    async fn a_request_during_an_active_recovery_runs_it_again_afterwards() {
+        let recoveries = Recoveries::default();
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (release, done) = tokio::sync::oneshot::channel::<()>();
+        let done = Arc::new(tokio::sync::Mutex::new(Some(done)));
+        let (finished, mut finishes) = tokio::sync::mpsc::unbounded_channel();
+        let work = {
+            let runs = runs.clone();
+            move || {
+                let runs = runs.clone();
+                let done = done.clone();
+                let finished = finished.clone();
+                async move {
+                    runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if let Some(done) = done.lock().await.take() {
+                        let _ = done.await;
+                    }
+                    finished.send(()).unwrap();
+                }
+            }
+        };
+        assert!(recoveries.spawn("b", work.clone()));
+        tokio::task::yield_now().await;
+        assert!(!recoveries.spawn("b", work.clone()), "one run at a time");
+        assert!(!recoveries.spawn("b", work), "requests coalesce");
+        release.send(()).unwrap();
+        for _ in 0..2 {
+            tokio::time::timeout(Duration::from_secs(2), finishes.recv())
+                .await
+                .expect("the run and its one re-run finish");
+        }
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 2);
+        tokio::task::yield_now().await;
+        assert!(
+            recoveries
+                .active
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_empty(),
+            "the id is released once no re-run is owed"
+        );
     }
 }

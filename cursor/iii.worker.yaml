@@ -15,6 +15,5 @@ scripts:
 
 dependencies:
   state: "latest"
-  iii-stream: "latest"
   configuration: "latest"
   llm-router: "latest"

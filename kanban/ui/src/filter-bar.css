@@ -1,0 +1,384 @@
+/* Saved-view tabs: the tab list scrolls on its own, layout switch sits at the far end.
+   Narrow panes: every control is a 44px target, wherever the pointer is. */
+[data-iii-ui="kanban"] .kanban-views {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  background: var(--color-panel-raised);
+}
+
+[data-iii-ui="kanban"] .kanban-views__tabs {
+  flex: 1;
+  min-width: 0;
+}
+
+[data-iii-ui="kanban"] .kanban-views[data-narrow] [role="tab"],
+[data-iii-ui="kanban"] .kanban-views[data-narrow] .iii-ui-segmented__item {
+  min-height: 44px;
+}
+
+[data-iii-ui="kanban"] .kanban-views[data-narrow] .kanban-views__manage {
+  width: 44px;
+  height: 44px;
+}
+
+[data-iii-ui="kanban"] .kanban-views__count {
+  margin-left: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="kanban"] .kanban-views__edited {
+  margin-left: 6px;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="kanban"] .kanban-views__menu {
+  max-width: min(360px, calc(100vw - 16px));
+}
+
+[data-iii-ui="kanban"] .kanban-views__delete {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Filter toolbar: wraps on small widths; narrow panes get a full-width search and scrolling rows. */
+[data-iii-ui="kanban"] .kanban-filter {
+  flex-wrap: wrap;
+  gap: 4px;
+  height: auto;
+  min-height: 36px;
+  padding: 4px 14px;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__search {
+  width: 220px;
+  max-width: 100%;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__search input {
+  height: 28px;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__triggers {
+  display: contents;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__end {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__trigger,
+[data-iii-ui="kanban"] .kanban-filter__action {
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 13px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__action[data-strong="true"] {
+  color: var(--color-ink);
+}
+
+[data-iii-ui="kanban"] .kanban-filter__trigger[data-state="open"] {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+
+[data-iii-ui="kanban"] .kanban-filter__trigger[data-active="true"] {
+  background: var(--color-surface-selected);
+  color: var(--color-ink);
+}
+
+[data-iii-ui="kanban"] .kanban-filter__value {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+  color: var(--color-ink);
+}
+
+[data-iii-ui="kanban"] .kanban-filter__total {
+  padding: 0 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="kanban"] .kanban-filter[data-narrow="true"] .kanban-filter__search {
+  flex: 1 0 100%;
+  width: 100%;
+}
+
+[data-iii-ui="kanban"] .kanban-filter[data-narrow="true"] .kanban-filter__search input {
+  height: 44px;
+}
+
+[data-iii-ui="kanban"] .kanban-filter[data-narrow="true"] .kanban-filter__triggers,
+[data-iii-ui="kanban"] .kanban-filter[data-narrow="true"] .kanban-filter__end {
+  display: flex;
+  flex: 1 0 100%;
+  gap: 8px;
+  margin: 0 -14px;
+  padding: 0 14px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+[data-iii-ui="kanban"] .kanban-filter[data-narrow="true"] .kanban-filter__trigger,
+[data-iii-ui="kanban"] .kanban-filter[data-narrow="true"] .kanban-filter__action {
+  flex: none;
+  height: 44px;
+  padding: 0 12px;
+}
+
+[data-iii-ui="kanban"] .kanban-filter[data-narrow="true"] .kanban-filter__trigger:not([data-active="true"]) {
+  background: var(--color-surface);
+}
+
+/* Menu and sheet content shared by the four filters. */
+[data-iii-ui="kanban"] .kanban-filter__menu {
+  width: 240px;
+  max-width: calc(100vw - 16px);
+  font-size: 13px;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__menu[data-facet="labels"] {
+  width: 288px;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__menu [role^="menuitem"] {
+  gap: 8px;
+  min-height: 32px;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__menu[data-narrow="true"] [role^="menuitem"] {
+  min-height: 44px;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 4px;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__head input {
+  height: 32px;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__mode {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-left: 8px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="kanban"] .kanban-filter__list {
+  display: flex;
+  flex-direction: column;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="kanban"] [data-zero="true"] .kanban-filter__name {
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="kanban"] .kanban-filter__count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink-ghost);
+}
+
+/* A sub-heading inside a list ("Released") or above a menu ("Group by"); the quiet word after a name ("Archived"). */
+[data-iii-ui="kanban"] .kanban-filter__heading {
+  margin: 0;
+  padding: 6px 8px 2px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="kanban"] .kanban-filter__sheet .kanban-filter__heading {
+  padding: 12px 12px 4px;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__tag {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="kanban"] .kanban-filter__dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--color-ink-ghost);
+}
+
+[data-iii-ui="kanban"] .kanban-filter__dot[data-tone="alert"] {
+  background: var(--color-alert);
+}
+
+[data-iii-ui="kanban"] .kanban-filter__dot[data-tone="warn"] {
+  background: var(--color-warn);
+}
+
+[data-iii-ui="kanban"] .kanban-filter__empty,
+[data-iii-ui="kanban"] .kanban-filter__note {
+  margin: 0;
+  padding: 8px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="kanban"] .kanban-filter__note {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-left: 8px;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__hint {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="kanban"] .kanban-filter__menu .kanban-filter__clear {
+  min-height: 28px;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="kanban"] .kanban-filter__menu[data-narrow="true"] .kanban-filter__clear {
+  min-height: 44px;
+}
+
+/* Phone sheet: 48px rows, a primary "Show N tickets" at the bottom. */
+[data-iii-ui="kanban"] .kanban-filter__sheet-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  padding: 0 12px;
+  overflow-y: auto;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__sheet .kanban-filter__head input {
+  height: 48px;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__sheet .kanban-filter__mode {
+  padding-left: 0;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__sheet .iii-ui-segmented__item {
+  min-height: 44px;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__sheet .kanban-filter__list {
+  max-height: none;
+  overflow-y: visible;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* Hover only where a pointer can hover: on touch it would stay lit after the tap. */
+@media (hover: hover) {
+  [data-iii-ui="kanban"] .kanban-filter__row:hover {
+    background: var(--color-surface-hover);
+  }
+}
+
+[data-iii-ui="kanban"] .kanban-filter__row[aria-checked="true"] {
+  background: var(--color-surface-selected);
+}
+
+[data-iii-ui="kanban"] .kanban-filter__row:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__row:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__tick {
+  flex: none;
+  opacity: 0;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__row[aria-checked="true"] .kanban-filter__tick {
+  opacity: 1;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__sheet-foot {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px 4px;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__sheet-foot > button {
+  height: 48px;
+  padding: 0 16px;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__sheet-foot > .kanban-filter__show {
+  flex: 1;
+  font-variant-numeric: tabular-nums;
+}

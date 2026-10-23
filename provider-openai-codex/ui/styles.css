@@ -122,10 +122,16 @@
   border-radius: 6px;
 }
 
-[data-iii-ui='provider-openai-codex'] .codex-provider-card h3 {
-  margin: 10px 0 4px;
-  font-size: 16px;
-  font-weight: 600;
+[data-iii-ui='provider-openai-codex'] .codex-provider-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-head + p {
+  margin-top: 8px;
 }
 
 [data-iii-ui='provider-openai-codex'] .codex-provider-card p,
@@ -223,18 +229,24 @@
 }
 
 [data-iii-ui='provider-openai-codex'] .codex-provider-account {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--color-ink-faint);
   overflow-wrap: anywhere;
 }
 
-[data-iii-ui='provider-openai-codex'] .codex-provider-help {
-  margin-top: 16px;
+[data-iii-ui='provider-openai-codex'] .codex-provider-card .codex-provider-help {
+  margin-top: 12px;
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-card .codex-provider-meta {
+  margin-top: 12px;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--color-ink-ghost);
 }
 
 @container (min-width: 640px) {
-  [data-iii-ui='provider-openai-codex'] .codex-provider-card h3 {
-    font-size: 14px;
-  }
-
   [data-iii-ui='provider-openai-codex'] .codex-provider-card p,
   [data-iii-ui='provider-openai-codex'] .codex-provider-card li,
   [data-iii-ui='provider-openai-codex'] .codex-provider-action span {

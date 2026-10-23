@@ -15,9 +15,8 @@ import { parseCatalogModelKey } from '@/lib/catalog-model-key'
 import { errText } from '@/lib/errors'
 import { getIiiClient } from '@/lib/iii-client'
 import { newMessageId, newSessionId } from '@/lib/session-id'
-import { appendCustomEntry, fetchTranscript } from '@/lib/sessions/api'
-import { COMPACTION_CUSTOM_TYPE } from '@/lib/sessions/entry-mapper'
-import type { ModelId } from '@/types/chat'
+import { fetchTranscript } from '@/lib/sessions/api'
+import { type ModelId, THINKING_LOWEST } from '@/types/chat'
 import type { PendingApprovalRecord } from '@/types/iii-agent-event'
 import {
   acceptPendingApprovalRevision,
@@ -111,6 +110,7 @@ export function toThinkingLevel(
   level: ChatStreamOptions['thinkingLevel'],
 ): HarnessThinkingLevel | undefined {
   switch (level) {
+    case 'off':
     case 'minimal':
     case 'low':
     case 'medium':
@@ -133,7 +133,19 @@ export function toProviderOptions(
 ): Record<string, unknown> | undefined {
   if (!effort) return undefined
   if (effort === 'default') return {}
+  // `off` is a harness level, not a provider-native effort string: each
+  // provider maps it to its own switch (or warns), so nothing rides here.
+  if (effort === 'off') return undefined
+  // The harness resolves `lowest` itself (see toReasoningPreset).
+  if (effort === THINKING_LOWEST) return undefined
   return { [provider]: { reasoning_effort: effort } }
+}
+
+/** `lowest` asks the harness to choose the model's lowest effort. */
+export function toReasoningPreset(
+  effort: ChatStreamOptions['thinkingLevel'],
+): 'lowest' | undefined {
+  return effort === THINKING_LOWEST ? 'lowest' : undefined
 }
 
 /** Build `harness::send` `options.metadata` for filesystem scope. */
@@ -203,6 +215,7 @@ async function buildSendRequest(
   const { provider, model: modelId } = resolveRunParams(model)
   const thinkingLevel = toThinkingLevel(opts?.thinkingLevel)
   const providerOptions = toProviderOptions(provider, opts?.thinkingLevel)
+  const reasoning = toReasoningPreset(opts?.thinkingLevel)
 
   let functionPolicy = FALLBACK_FUNCTION_POLICY
   try {
@@ -237,6 +250,7 @@ async function buildSendRequest(
       ...toSkillOptions(opts?.skills),
       ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
       ...(providerOptions ? { provider_options: providerOptions } : {}),
+      ...(reasoning ? { reasoning } : {}),
       metadata: buildTurnMetadata(sessionId, messageId, opts?.workingDir),
     },
   }
@@ -740,136 +754,102 @@ async function realPreviewModelSwitch(
   }
 }
 
-/** `context::compact` response, discriminated on `status`. */
-type CompactResponse =
-  | {
-      status: 'ok'
-      summary: string
-      tail_start_index: number | null
-      tokens_before: number
-      tokens_after: number
-      used_prior_summary: boolean
-    }
-  | { status: 'busy' }
-  | { status: 'empty' }
-  | { status: 'overflow' }
+/** `harness::compact`'s outcome (harness `compaction::Outcome`). */
+interface HarnessCompactOutcome {
+  session_id: string
+  compaction_id: string
+  status: 'ok' | 'busy' | 'empty' | 'failed'
+  /** The outcome as every client shows it. */
+  message: string
+  tokens_before?: number
+  tokens_after?: number
+  summary?: string
+  /** Transcript rows it wrote, in order: start notice, then the outcome. */
+  entry_ids: string[]
+}
 
 /**
- * `/compact` — caller-owned compaction (harness.md / context-manager.md): read
- * the transcript, summarise the head via `context::compact`, then persist a
- * `compaction` custom entry the same way the harness does so the marker renders
- * and future turns anchor on it. Refuses while a turn is live.
- *
- * A prior compaction anchors this one the way it anchors the harness's next
- * turn (`compaction-window.ts`): its summary rides as `previous_summary` so the
- * summariser UPDATES it in place, and only the window from its
- * `tail_start_entry_id` onward is re-read — the convergence contract of
- * context-manager `integration.md` §5. `instructions` (the text after
- * `/compact`) is one-shot guidance for the summariser and is not persisted.
+ * Compaction that waits for its outcome — the model switch compacts before it
+ * switches. The harness runs it (`harness::compact`): it reads the window the
+ * next turn would assemble, lets the router resolve the summariser's limits,
+ * persists the `compaction` record, refreshes the context snapshot and tells
+ * every client watching the session (a "compacting…" notice, then the marker
+ * or a notice saying why not, and `harness::compaction`). Nothing here
+ * depends on this browser staying connected; `contextWindow` is unused — a
+ * catalog window with a made-up output allowance oversized the summariser's
+ * requests.
  */
 async function realCompactSession(
   sessionId: string,
   model: ModelId,
-  contextWindow?: number,
+  _contextWindow?: number,
   instructions?: string,
 ): Promise<CompactResult> {
   const { provider, model: modelId } = resolveRunParams(model)
-  const client = await getIiiClient()
+  const guidance = instructions?.trim()
   try {
-    // Don't compact under a live turn — the harness owns the active path.
-    const status = await getTurnStatus(client, sessionId).catch(() => null)
-    if (status && isTurnActive(status.status)) return { status: 'busy' }
-
-    // The window below goes straight back to a model, which cannot read an
-    // image block whose bytes were left out; ask for the full transcript.
-    const items = await fetchTranscript(sessionId, { includeImageData: true })
-    const anchor = latestCompactionAnchor(items)
-    const window = compactionWindow(items, anchor)
-    if (window.length === 0) return { status: 'empty' }
-    const messages = window.map((entry) => entry.message)
-    const guidance = instructions?.trim()
-
-    const DEFAULT_MAX_OUTPUT = 4_096
-    const modelInput: {
-      id: string
-      provider?: string
-      limits?: { context_window: number; max_output_tokens: number }
-    } = { id: modelId, provider }
-    if (typeof contextWindow === 'number' && contextWindow > 0) {
-      modelInput.limits = {
-        context_window: contextWindow,
-        max_output_tokens: DEFAULT_MAX_OUTPUT,
-      }
-    }
-
-    const resp = await client.trigger<CompactResponse>(
-      'context::compact',
+    const client = await getIiiClient()
+    const outcome = await client.trigger<HarnessCompactOutcome>(
+      'harness::compact',
       {
-        messages,
-        model: modelInput,
-        options: {
-          // Serialise concurrent compactions of the same conversation.
-          lease_key: sessionId,
-          ...(anchor?.summary ? { previous_summary: anchor.summary } : {}),
-          ...(guidance ? { instructions: guidance } : {}),
-        },
+        session_id: sessionId,
+        model: modelId,
+        provider,
+        ...(guidance ? { instructions: guidance } : {}),
       },
-      // Compaction makes a summariser LLM call budgeted up to 320s
-      // (context-manager `summarizer_timeout_ms`); the SDK's default 30s
-      // invocation timeout kills it mid-summary. Give the invocation
-      // headroom over the summariser's own budget.
+      // The summariser pipeline is budgeted up to ~300s server-side; the
+      // SDK's default 30s invocation timeout would give up mid-summary.
       { timeoutMs: 330_000 },
     )
-
-    if (resp?.status === 'ok') {
-      // `tail_start_index` indexes the `messages` we sent, i.e. the window.
-      const tailStartEntryId =
-        typeof resp.tail_start_index === 'number' &&
-        window[resp.tail_start_index]
-          ? window[resp.tail_start_index].entry_id
-          : null
-      // Persist the marker the same shape the harness writes, so it renders
-      // (session::message-added → conversations layer) and the next turn's
-      // assemble reads `summary` + `tail_start_entry_id` to anchor. A failed
-      // append is a failed compaction: nothing would anchor on the summary.
-      const appendResult = await appendCustomEntry({
-        session_id: sessionId,
-        custom_type: COMPACTION_CUSTOM_TYPE,
-        data: {
-          summary: resp.summary,
-          tail_start_entry_id: tailStartEntryId,
-          tokens_before: resp.tokens_before,
-          timestamp: Date.now(),
-        },
-      })
-      return {
-        status: 'ok',
-        tokensBefore: resp.tokens_before,
-        autoContinued: false,
-        summaryText:
-          resp.summary.length > 0
-            ? resp.summary
-            : '[prior conversation compacted]',
-        compactionEntryId: appendResult.entry_id,
-      }
-    }
-    if (resp?.status === 'busy') return { status: 'busy' }
-    if (resp?.status === 'empty') return { status: 'empty' }
-    if (resp?.status === 'overflow') {
-      return { status: 'overflow', message: 'compaction unavailable' }
-    }
-    return {
-      status: 'error',
-      message: `unexpected status: ${String(
-        (resp as { status?: unknown })?.status ?? 'null',
-      )}`,
+    switch (outcome?.status) {
+      case 'ok':
+        return {
+          status: 'ok',
+          tokensBefore: outcome.tokens_before ?? 0,
+          autoContinued: false,
+          summaryText: outcome.summary || '[prior conversation compacted]',
+          compactionEntryId: outcome.entry_ids[outcome.entry_ids.length - 1],
+          ownEntryIds: outcome.entry_ids,
+        }
+      case 'busy':
+        return { status: 'busy' }
+      case 'empty':
+        return { status: 'empty' }
+      case 'failed':
+        return { status: 'error', message: outcome.message }
+      default:
+        return {
+          status: 'error',
+          message: `unexpected status: ${String(outcome?.status ?? 'null')}`,
+        }
     }
   } catch (err) {
-    return {
-      status: 'error',
-      message: errText(err),
-    }
+    return { status: 'error', message: errText(err) }
   }
+}
+
+/**
+ * `/compact` typed in the chat: sent through `harness::send` like any message,
+ * which runs it as a server-side compaction instead of a turn. It resolves once
+ * the harness accepted it; progress and outcome arrive as session events every
+ * client sees — the start notice takes this message's `e_idem_` entry id, so
+ * the optimistic `/compact` row turns into it.
+ */
+async function realSendCompactCommand(
+  sessionId: string,
+  model: ModelId,
+  text: string,
+  messageId: string,
+): Promise<void> {
+  const { provider, model: modelId } = resolveRunParams(model)
+  const client = await getIiiClient()
+  await client.trigger('harness::send', {
+    session_id: sessionId,
+    message: text,
+    model: modelId,
+    provider,
+    idempotency_key: messageId,
+  })
 }
 
 export const realBackend: ChatBackend = {
@@ -889,5 +869,6 @@ export const realBackend: ChatBackend = {
   resolveApproval: realResolveApproval,
   abortRun: realAbortRun,
   compactSession: realCompactSession,
+  sendCompactCommand: realSendCompactCommand,
   previewModelSwitch: realPreviewModelSwitch,
 }

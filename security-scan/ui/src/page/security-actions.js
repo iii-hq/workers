@@ -3,6 +3,8 @@
 /** @typedef {import('./security-scan-data').ActionRequestResult} ActionRequestResult */
 /** @typedef {import('./security-scan-data').SecurityAction} SecurityAction */
 
+import { ACTION_CHANGED_TRIGGER } from './live-triggers.js'
+
 /**
  * @typedef {{
  *   submitting: boolean,
@@ -14,10 +16,6 @@
 
 /** @typedef {Record<string, FindingActionState>} SecurityActionsSnapshot */
 /** @typedef {{ actionId: string, status: import('./security-scan-data').ActionStatus, updatedAt: number }} ActionUpdate */
-
-const ACTION_EVENT_TYPE = 'security-scan:action-updated'
-const ACTION_STREAM_NAME = 'security-scan:runs'
-const ACTION_STREAM_GROUP = 'all'
 
 /** @param {string} runId @param {number} findingIndex @param {ActionKind} action */
 export function securityActionKey(runId, findingIndex, action) {
@@ -31,15 +29,19 @@ function objectRecord(value) {
     : null
 }
 
-/** @param {unknown} frame @returns {ActionUpdate | null} */
-export function actionUpdateFromFrame(frame) {
-  const root = objectRecord(frame)
-  const outer = objectRecord(root?.event)
-  const inner = objectRecord(outer?.event) ?? outer ?? root
-  if (inner?.type !== ACTION_EVENT_TYPE) return null
-  const data = objectRecord(inner.data)
+/**
+ * Parses a `security-scan::action-changed` notification
+ * (`{ action_id, run_id, repository, status, updated_at }`). Extra fields
+ * the engine adds are ignored; anything else is not an action change.
+ *
+ * @param {unknown} payload
+ * @returns {ActionUpdate | null}
+ */
+export function actionUpdateFromEvent(payload) {
+  const data = objectRecord(payload)
   if (
     typeof data?.action_id !== 'string' ||
+    !data.action_id ||
     typeof data.status !== 'string' ||
     typeof data.updated_at !== 'number'
   ) {
@@ -47,9 +49,7 @@ export function actionUpdateFromFrame(frame) {
   }
   return {
     actionId: data.action_id,
-    status: /** @type {import('./security-scan-data').ActionStatus} */ (
-      data.status
-    ),
+    status: /** @type {import('./security-scan-data').ActionStatus} */ (data.status),
     updatedAt: data.updated_at,
   }
 }
@@ -64,13 +64,7 @@ export function actionUpdateFromFrame(frame) {
  * }} dependencies
  */
 export function createSecurityActionsStore(dependencies) {
-  const {
-    host,
-    bindingId,
-    requestAction,
-    readAction,
-    errorText,
-  } = dependencies
+  const { host, bindingId, requestAction, readAction, errorText } = dependencies
 
   /** @type {SecurityActionsSnapshot} */
   let snapshot = {}
@@ -78,10 +72,19 @@ export function createSecurityActionsStore(dependencies) {
   const listeners = new Set()
   /** @type {Map<string, string>} */
   const keyByActionId = new Map()
+  /** Highest notification revision seen per action id. @type {Map<string, number>} */
+  const lastEventAt = new Map()
+  /**
+   * One authoritative read in flight per action id, plus at most one
+   * pending re-read: duplicate notifications coalesce, and reads apply in
+   * the order they were issued.
+   * @type {Map<string, { again: boolean, done: Promise<boolean> }>}
+   */
+  const reads = new Map()
   /** @type {Array<() => void>} */
   let disposers = []
   let connected = false
-  let streamBound = false
+  let bound = false
   let disposed = false
 
   const emit = () => {
@@ -100,9 +103,8 @@ export function createSecurityActionsStore(dependencies) {
     emit()
   }
 
-
   /** @param {string} actionId */
-  async function refreshAction(actionId) {
+  async function readOnce(actionId) {
     const key = keyByActionId.get(actionId)
     if (!key || disposed) return false
     try {
@@ -122,17 +124,54 @@ export function createSecurityActionsStore(dependencies) {
     }
   }
 
+  /**
+   * Re-reads one tracked action. While a read for it is in flight, further
+   * calls only mark it dirty, so a burst of notifications costs at most one
+   * extra read and a slower earlier read can never land after a later one.
+   *
+   * @param {string} actionId
+   * @returns {Promise<boolean>} whether a read result was applied
+   */
+  function refreshAction(actionId) {
+    const running = reads.get(actionId)
+    if (running) {
+      running.again = true
+      return running.done
+    }
+    const entry = { again: false, done: Promise.resolve(false) }
+    reads.set(actionId, entry)
+    entry.done = (async () => {
+      let applied = false
+      try {
+        do {
+          entry.again = false
+          applied = (await readOnce(actionId)) || applied
+        } while (entry.again && !disposed)
+      } finally {
+        reads.delete(actionId)
+      }
+      return applied
+    })()
+    return entry.done
+  }
+
   /** @param {ActionUpdate} update */
   const applyUpdate = (update) => {
     const key = keyByActionId.get(update.actionId)
     if (!key) return
-    updateState(key, (current) => ({
-      ...current,
-      request:
-        current.request?.action_id === update.actionId
-          ? { ...current.request, status: update.status }
-          : current.request,
-    }))
+    const seen = lastEventAt.get(update.actionId)
+    // A notification older than one already seen must not roll the
+    // optimistic status back; the authoritative re-read still runs.
+    if (seen === undefined || update.updatedAt >= seen) {
+      lastEventAt.set(update.actionId, update.updatedAt)
+      updateState(key, (current) => ({
+        ...current,
+        request:
+          current.request?.action_id === update.actionId
+            ? { ...current.request, status: update.status }
+            : current.request,
+      }))
+    }
     void refreshAction(update.actionId)
   }
 
@@ -141,33 +180,31 @@ export function createSecurityActionsStore(dependencies) {
     const handlerId = `iii::security-scan-ui::actions::${bindingId}`
     try {
       disposers.push(
-        host.iii.on(handlerId, (frame) => {
-          const update = actionUpdateFromFrame(frame)
+        host.iii.on(handlerId, (payload) => {
+          const update = actionUpdateFromEvent(payload)
           if (update) applyUpdate(update)
         }),
       )
       disposers.push(
         host.iii.registerTrigger({
-          type: 'stream',
+          type: ACTION_CHANGED_TRIGGER,
           function_id: `${handlerId}::${host.iii.browserId}`,
-          config: {
-            stream_name: ACTION_STREAM_NAME,
-            group_id: ACTION_STREAM_GROUP,
-          },
+          config: {},
         }),
       )
-      streamBound = true
+      bound = true
     } catch {
       for (const dispose of disposers) dispose()
       disposers = []
-      streamBound = false
+      bound = false
     }
     try {
       disposers.push(
         host.iii.addConnectionStateListener((state) => {
-          connected = streamBound && state === 'connected'
-          // Reconnect is the recovery path: frames missed while the socket
-          // was down are re-read once, here.
+          connected = bound && state === 'connected'
+          // Reconnect is the recovery path: notifications missed while the
+          // socket was down are not replayed, so tracked actions are re-read
+          // once, here.
           if (!connected) return
           for (const actionId of keyByActionId.keys()) {
             void refreshAction(actionId)
@@ -189,23 +226,16 @@ export function createSecurityActionsStore(dependencies) {
       error: null,
     }))
     try {
-      const response = await requestAction(
-        host,
-        runId,
-        findingIndex,
-        action,
-      )
+      const response = await requestAction(host, runId, findingIndex, action)
       keyByActionId.set(response.action_id, key)
       updateState(key, (current) => ({
         ...current,
         submitting: false,
         request: response,
-        action:
-          current.action?.action_id === response.action_id
-            ? current.action
-            : null,
+        action: current.action?.action_id === response.action_id ? current.action : null,
         error: null,
       }))
+      // Initial read: also the only read when live updates are unavailable.
       await refreshAction(response.action_id)
     } catch (error) {
       updateState(key, (current) => ({

@@ -30,7 +30,7 @@ cd examples/image-resize-demo
 
 This will:
 1. Install image-resize via the local registry
-2. Start the III engine (RestApiModule on :3111, StreamModule on :3112, external image-resize)
+2. Start the III engine (RestApiModule on :3111, external image-resize)
 3. Start the Node.js worker (registers HTTP endpoints)
 4. Send test images to `POST /thumbnail` and display results
 5. Save thumbnails to `output/`

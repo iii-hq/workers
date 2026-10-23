@@ -27,7 +27,7 @@ use serde_json::{json, Value};
 
 use crate::ingest::CheckoutVersions;
 use crate::store::investigations::InvestigationWrite;
-use crate::store::{Db, Store};
+use crate::store::{integer, number, Db, Store};
 use crate::{
     ids, lifecycle, ConfigCell, DoorbellResponseV1, GroupStateResponseV1, GroupStatusV1,
     InvestigateRequestV1, InvestigateResponseV1, InvestigationCancelRequestV1,
@@ -877,7 +877,7 @@ impl<D: Db> Investigations<D> {
             .await?
             .first()
             .and_then(|row| row.get("total"))
-            .and_then(Value::as_i64)
+            .and_then(integer)
             .unwrap_or(0)
             .max(0) as u64;
         let previous = self
@@ -987,10 +987,6 @@ fn text(row: &NamedRow, column: &str) -> Option<String> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .filter(|value| !value.is_empty())
-}
-
-fn number(row: &NamedRow, column: &str) -> Option<i64> {
-    row.get(column).and_then(Value::as_i64)
 }
 
 #[cfg(test)]

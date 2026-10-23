@@ -2,6 +2,7 @@ import type { Host } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useWorkerLive } from '@iii-dev/console-ui/hooks'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { isLiveUpdates, RUN_LIVE_TRIGGERS, RUNS_HANDLER_ID } from './live-triggers.js'
 import {
   listRuns,
   type RetryResult,
@@ -14,11 +15,8 @@ import {
   retryRun,
   type SecurityRun,
 } from './security-scan-data'
-import { isRepositoryScopeCurrent, isStreamLive } from './view-state.js'
+import { isRepositoryScopeCurrent } from './view-state.js'
 
-/** The hook's handler; the runs stream below is bound to `${HANDLER_ID}::<browserId>`. */
-const HANDLER_ID = 'iii::security-scan-ui::runs'
-const RUN_STREAM = { stream_name: 'security-scan:runs', group_id: 'all' }
 const NO_RUNS: RunSummary[] = []
 
 export interface SecurityRunsLive {
@@ -56,17 +54,19 @@ export function useSecurityRunsLive(host: Host, filters: RunFilters, selectedId:
     loading: fetching,
     error: listError,
     refresh,
-    live: streamBound,
+    live: bound,
   } = useWorkerLive<RepositoryRunList>({
     iii: host.iii,
-    // The runs feed is a `stream` trigger; the hook binds it to its handler
-    // and polls only while the binding is missing.
-    triggers: [{ type: 'stream', config: RUN_STREAM }],
+    // Bind the worker's run/reconciliation change trigger types first, then
+    // read once; every notification re-reads the list (notify, then query),
+    // and a response older than the latest read is dropped by the hook.
+    // Without a binding the list is re-read on tab focus, never on a timer.
+    triggers: RUN_LIVE_TRIGGERS,
     fetch: async () => ({
       repositoryKey,
       runs: await listRuns(host, { repository: repositoryKey, status: '' }),
     }),
-    handlerId: HANDLER_ID,
+    handlerId: RUNS_HANDLER_ID,
   })
 
   // The hook fetches on mount by itself; a repository scope change refetches.
@@ -90,7 +90,7 @@ export function useSecurityRunsLive(host: Host, filters: RunFilters, selectedId:
   }, [host, refresh])
 
   // The selected run: re-read on selection and whenever the list arrives
-  // (stream event, poll, manual refresh).
+  // (change notification, reconnect, tab focus, manual refresh).
   const [detail, setDetail] = useState<DetailState>({ runId: null, run: null, error: null })
   const [detailFetching, setDetailFetching] = useState(false)
   useEffect(() => {
@@ -162,7 +162,7 @@ export function useSecurityRunsLive(host: Host, filters: RunFilters, selectedId:
     loading: !scoped && !listError,
     detailLoading: selectedId !== null && (detailFetching || !detailIsCurrent),
     refreshing: fetching && scoped !== null,
-    live: isStreamLive(streamBound, connectionState),
+    live: isLiveUpdates(bound, connectionState),
     listError,
     detailError: detailIsCurrent ? detail.error : null,
     reconciliationRefreshRevision,

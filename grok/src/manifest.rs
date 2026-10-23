@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-const DESCRIPTION: &str = "xAI Grok CLI as an iii worker — grok::* run headless Grok turns, mirror raw streaming-json events onto grok::events, and stream AgentEvent frames onto agent::events.";
+const DESCRIPTION: &str = "xAI Grok CLI as an iii worker — grok::* run headless Grok turns, deliver raw streaming-json events on the grok::raw-event trigger type and AgentEvent frames on grok::agent-event.";
 
 #[derive(Serialize)]
 pub struct ModuleManifest {
@@ -24,8 +24,6 @@ pub fn build_manifest() -> ModuleManifest {
                 "cwd": "",
                 "always_approve": true,
             },
-            "events_stream": "agent::events",
-            "raw_events_stream": "grok::events",
             "grok_executable": "",
             "iii_context": true,
         }),

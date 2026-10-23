@@ -255,6 +255,11 @@ pub fn enrich(id: &str) -> Model {
             } else {
                 None
             },
+            supports_thinking_off: if m.reasoning {
+                Some(m.reasoning_efforts.contains(&"none"))
+            } else {
+                None
+            },
             reasoning_efforts: if m.reasoning_efforts.is_empty() {
                 None
             } else {
@@ -289,6 +294,7 @@ pub fn enrich(id: &str) -> Model {
             input_limit: None,
             supports_thinking: None,
             supports_xhigh: None,
+            supports_thinking_off: None,
             reasoning_efforts: None,
             supports_tools: Some(true),
             supports_vision: None,

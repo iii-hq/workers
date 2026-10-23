@@ -2,7 +2,7 @@
 
 [package]
 name = "judge"
-version = "0.2.3"
+version = "0.2.12"
 edition = "2021"
 publish = false
 license = "Apache-2.0"
@@ -14,7 +14,9 @@ console-ui = ["dep:iii-console-ui"]
 
 [dependencies]
 judge-contract = { path = "../crates/judge-contract" }
-iii-sdk = "=0.23.0"
+# `@<name>(id=…)` chat mentions: provider descriptor, views, token grammar.
+mention-contract = { path = "../crates/mention-contract" }
+iii-sdk = "=0.24.6"
 iii-config-client = { path = "../crates/config-client" }
 iii-console-ui = { path = "../crates/console-ui", optional = true }
 serde = { version = "1", features = ["derive"] }
@@ -26,10 +28,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 anyhow = "1"
 # Same major as iii-sdk's, so Context::current() sees the handler's baggage.
-opentelemetry = { version = "0.31", default-features = false }
+opentelemetry = { version = "0.32", default-features = false }
 
 [dev-dependencies]
 futures-util = "0.3"
+judge-openai = { path = "../judge-openai", default-features = false }
 judge-typesafe = { path = "../judge-typesafe", default-features = false }
 tempfile = "3"
 tokio-tungstenite = "0.28"

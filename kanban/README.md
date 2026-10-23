@@ -1,21 +1,24 @@
 # kanban
 
 A file-backed kanban board for an iii project. Tickets, threaded comments,
-an activity timeline and agent assignment live in one `board.json`; every
-mutation is a `kanban::*` function, and two trigger types (`kanban:change`,
-`kanban:comment`) let agents wake on what happens to a ticket instead of
-polling. The worker injects a board page and a ticket screen into the
-console, and ships five agent profiles — Product Manager, Tech Lead, Backend
-Engineer, Frontend Engineer, iii ADE Worker Designer — that plan, dispatch,
-build and review work as tickets on this board.
+an activity timeline, agent assignment, subtasks, releases and projects live
+in one `board.json`; every mutation is a `kanban::*` function, and two trigger
+types (`kanban:change`, `kanban:comment`) let agents wake on what happens to a
+ticket instead of polling. The worker injects a board page, a ticket screen
+and the Releases and Projects pages into the console, and ships five agent
+profiles — Product Manager, Tech Lead, Backend Engineer, Frontend Engineer,
+iii ADE Worker Designer — that plan, dispatch, build and review work as
+tickets on this board.
 
 ## Table of contents
 
 - [Install](#install)
 - [Quickstart](#quickstart)
 - [Configuration](#configuration)
+- [Subtasks, releases and projects](#subtasks-releases-and-projects)
 - [Custom trigger types](#custom-trigger-types)
 - [Console pages](#console-pages)
+- [Chat mentions](#chat-mentions)
 - [Agent profiles](#agent-profiles)
 - [Skills](#skills)
 - [Development](#development)
@@ -43,6 +46,14 @@ iii trigger kanban::ticket::update id=KAN-1 assignee=backend-engineer status=in_
 iii trigger kanban::comment::create ticket_id=KAN-1 body="Pushed the fix; ready for review." author=backend-engineer
 iii trigger kanban::ticket::move id=KAN-1 status=in_review actor=backend-engineer
 iii trigger kanban::ticket::get id=kan-1
+```
+
+Break a ticket into subtasks with `parent` (a key or uuid); the new ticket is
+`KAN-2`, and `KAN-1` now reports `children` and a `progress` count:
+
+```bash
+iii trigger kanban::ticket::create parent=KAN-1 title="Persist filters in the URL" actor=backend-engineer
+iii trigger kanban::ticket::get id=KAN-1
 ```
 
 From a worker, the same calls go through the SDK:
@@ -90,12 +101,32 @@ what changed:
 iii trigger kanban::board::get --json '{"statuses":["todo","in_progress","in_review"],"compact":true}'
 iii trigger kanban::ticket::list --json '{"status":"done","updated_since":"2026-09-10T00:00:00.000Z","compact":true}'
 ```
+
+The writes (`kanban::ticket::create`, `kanban::ticket::update`,
+`kanban::ticket::move`, `kanban::comment::create`) return the whole ticket,
+comments and activity included. An agent that writes in a loop passes
+`"compact": true` to get back only the compact row instead:
+
+```bash
+iii trigger kanban::ticket::move --json '{"id":"KAN-1","status":"in_review","actor":"backend-engineer","compact":true}'
+```
+
+`kanban::ticket::links` returns the tickets a ticket mentions and the
+tickets that mention it, found by key (`KAN-12`) in titles, descriptions and
+comments.
+
  Pass `actor` on writes and `author` on comments: the timeline
 reads honestly, and the comment filters key on exactly that string. Deleting
 a ticket (`kanban::ticket::delete`) is a soft delete — the row stays in the
 board file with `deleted_at` set and `kanban::ticket::restore` undoes it —
 and it is reserved for a person on the console's ticket screen; agents move
-a finished ticket to `in_review` or `done` instead.
+a finished ticket to `in_review` or `done` instead. Calls that change nothing
+(deleting a deleted ticket, restoring a live one, moving a ticket to where it
+already is, an update with no effect) record no activity and fire no trigger;
+a deleted ticket cannot be moved (nor have its status changed by an update;
+its other fields can still be edited). To change labels without overwriting a
+concurrent edit, `kanban::ticket::update` takes `add_labels` and
+`remove_labels` besides the whole-set `labels`.
 
 The full function list is in
 [`skills/SKILL.md`](skills/SKILL.md); request and response schemas come from
@@ -112,29 +143,144 @@ worker hot-reloads on `configuration:updated`; no restart is needed.
 data_path: data/kanban        # folder holding board.json; relative to III_COMPOSE_DIR (or the process cwd)
 id_prefix: KAN                # human keys become KAN-1, KAN-2, …  (^[A-Z][A-Z0-9]*$)
 default_status: backlog       # column a new ticket lands in when none is given
+done_status: done             # the column that counts as done: progress, release status, ship; default = the last column that is not canceled
+canceled_status: canceled     # the column that counts as canceled: out of progress and release totals; null = none
 columns:                      # left to right; `id` is what tickets store, `label` is what the board shows
   - { id: backlog, label: Backlog }
   - { id: todo, label: To do }
   - { id: in_progress, label: In progress }
   - { id: in_review, label: In review }
   - { id: done, label: Done }
+  - { id: canceled, label: Canceled }
 priorities: [low, medium, high, urgent]   # offered on a ticket, lowest first; the first one is the default
 agents_path: agents           # fallback folder of <id>.md agent profiles when iii-directory is not installed
 ```
 
 A stored value is repaired rather than refused: an unknown `default_status`
-falls to the first column, an invalid prefix falls back to `KAN`, duplicate
-column ids collapse, and an empty list falls back to the default. Pass
+falls to the first column, an unknown `done_status` falls to the last column
+that is not the canceled one, an unknown `canceled_status` (or one equal to
+`done_status`) means none,
+an invalid prefix falls back to `KAN`, duplicate column ids collapse, and an
+empty list falls back to the default. Pass
 `--config <file>.yaml` to seed the entry on first boot only; afterwards the
 configuration worker is the source of truth. `kanban::config::info` prints
-the resolved absolute paths.
+the resolved absolute paths, `done_status` and `canceled_status`;
+`kanban::board::get` returns both too. The settings form picks them as the
+**Done column** and the **Canceled column** (None for no canceled column).
+
+A ticket in the canceled column is canceled: it stays on the board and in its
+column count, but leaves `progress`, project and release totals, and shipping
+never treats it as open. New boards get the Canceled column; a stored board
+without one keeps its columns (add it in the settings form), and a stored board
+that already has a `canceled` column picks it up.
+
+A ticket also carries `pills`: small icon-and-text badges another worker pins
+on it (`[{ "icon": "calendar", "text": "Fri 17:00" }]`, `icon` a lucide icon
+name), set whole on `ticket::create` and `ticket::update` and drawn on the card
+and the ticket page.
+
+`board.json` is now version 2. The first write that upgrades a version 1 file
+keeps the original as `board.v1.json` next to it; going back to an older
+kanban drops projects, releases and subtask links on its next write, so restore
+that copy if you must downgrade.
+
+## Subtasks, releases and projects
+
+A ticket has at most one parent, one project and one release. The three are
+independent: nothing is inherited, and progress counts only the `done_status`
+column (In review is not done) over the tickets that are not canceled. `kanban::ticket::create` and
+`kanban::ticket::update` take `parent` (a key or uuid), `project` and `release`
+(an id or a name); a string sets, `null` clears, and leaving the field out
+changes nothing. The ticket a write or `kanban::ticket::get` returns carries
+its `parent`, its live `children` and `progress: { done, total }`; board and
+list rows carry `parent_id`, `project_id` and `release_id`.
+
+```bash
+iii trigger kanban::ticket::update id=KAN-2 parent=KAN-1 release="Phase 2" project="iii cloud"
+iii trigger kanban::ticket::update --json '{"id":"KAN-2","parent":null}'
+iii trigger kanban::ticket::list --json '{"release_id":"","compact":true}'
+```
+
+**Subtasks.** A subtask is a ticket with a `parent`, and the hierarchy is one
+level deep: the parent must exist, be live and have no parent of its own, a
+ticket cannot be its own parent, and a ticket with live children cannot get
+one. A child's status changes never touch the parent. `progress` is the
+children in `done_status` over the live children that are not canceled
+(deleted ones are not counted either), so a parent moved to Done with open children shows a warning in the
+console. Deleting a parent leaves its children; each then shows the parent as
+deleted. A deleted ticket can't become a subtask (restore it first), and
+restoring a subtask whose parent is gone, deleted or now a subtask itself
+detaches it, with an activity line on both. Attaching or detaching writes an activity line on both tickets and
+fires `kanban:change` for both. Creating a ticket with a `parent` does not copy
+the parent's project or release; the console prefills them when you add a
+subtask from the parent, and you can change them.
+
+**Projects.** A project has a name, description, optional lead (an agent
+profile or `user`) and color. It is `active` or `archived`; an archived
+project refuses new references but keeps its tickets, and `restore` brings it
+back. `kanban::project::list` returns each project with `total`, `done` and a
+count per column.
+
+**Releases.** A release has a name, description and one optional target date
+(`YYYY-MM-DD`). Its status is derived, never set: `released` once `released_at`
+is set, `active` when some live ticket in it is outside the first column,
+`planned` otherwise. The board sorts releases by target date (undated last),
+then by name with numbers in order (Phase 2 before Phase 10). A release does
+not belong to a project; `kanban::release::list` breaks each one down by
+project instead. Shipping closes the release: when tickets are not done,
+`kanban::release::ship` fails with "N tickets are not done; choose where they go
+(move_open_to)" until you pass `move_open_to`, either another release (which
+must exist, differ from this one and not be released) or `null` to take them out
+of any release. The response lists the `moved` tickets. A released release
+still accepts tickets; a ticket in it that is not done counts as `reopened`.
+`reopen` clears `released_at` (moved tickets stay where they went). A release
+can be deleted only when no ticket, live or deleted, references it.
+
+```bash
+iii trigger kanban::release::create name="Phase 2" target_at=2026-10-30
+iii trigger kanban::release::ship --json '{"id":"Phase 2","move_open_to":"Phase 3"}'
+```
+
+Names are unique per kind, ignoring case and surrounding spaces, and every
+function that takes a project or release accepts its id or its name.
+
+**Create from a label.** `kanban::label::convert` turns the tickets carrying a
+label (case-insensitive) into a project or a release, either a new one (`name`)
+or an existing one (`id`, or a `name` that already exists, which adds to it).
+It reports the tickets by key in four buckets: `added`, `already_here`,
+`in_other` (in another entity of the same kind; kept unless `replace` is set)
+and `deleted` (skipped). `dry_run` computes the buckets without writing
+anything. `remove_label` drops the label from the tickets that end up in the
+entity, and for a release `mark_released_if_done` sets `released_at` when every
+live ticket in it is done. Each changed ticket gets an activity line and a
+`ticket.updated` event, and running it twice adds nothing.
+
+```bash
+iii trigger kanban::label::convert --json '{"label":"phase-2","into":"release","name":"Phase 2","dry_run":true}'
+```
+
+| Function | What it does | Agents |
+|---|---|---|
+| `kanban::project::list` | Projects with status, totals and column counts; `include_archived` adds archived ones. | allowed |
+| `kanban::release::list` | Releases with derived status, totals, `reopened` and the per-project breakdown. | allowed |
+| `kanban::project::create` | Create a project. | denied, except a create whose `lead` is `deepwork` (the deepwork kit files each run under its own project) |
+| `kanban::project::update` / `archive` / `restore` | Manage a project. | denied |
+| `kanban::release::create` / `update` / `ship` / `reopen` / `delete` | Manage a release. | denied |
+| `kanban::label::convert` | Put the tickets with a label into a project or release. | denied |
+
+`kanban::ticket::list` and `kanban::board::get` also filter by `parent_id`,
+`project_id` and `release_id` (an empty string means none), and the board
+returns `projects` and `releases` next to its columns. Agents read projects and
+releases and can set `parent`, `project` and `release` on tickets; planning
+them is a human's call in the console, which `iii-permissions.yaml` enforces
+(the one exception: a deepwork run creates its own project).
 
 ## Custom trigger types
 
 | Trigger type | Config | Fires when | Payload to subscribers |
 |---|---|---|---|
-| `kanban:change` | `{ ticket_id?, events?, ticket?, metadata? }` | After every mutation. `ticket_id` (uuid or key) and `events` narrow it; an empty config fires for everything. | `{ event, ticket_id, ticket_key, ticket, comment, activity, at }` — `event` is one of `ticket.created`, `ticket.updated`, `ticket.moved`, `ticket.deleted`, `ticket.restored`, `comment.created`. |
-| `kanban:comment` | `{ ticket_id, author?, exclude_author?, root_only?, ticket? }` | A comment is created on that ticket. `ticket_id` is required; `author` keeps one author, `exclude_author` drops one (your own id), `root_only` ignores replies. | `{ event: "comment.created", ticket_id, ticket_key, ticket, comment, author, at }` |
+| `kanban:change` | `{ ticket_id?, parent_id?, release_id?, events?, ticket?, metadata? }` | After every mutation. `ticket_id` (uuid or key) and `events` narrow it; `parent_id` fires for that ticket and any of its children; `release_id` fires for tickets in that release and for the change that moved one out of it; an empty config fires for everything. | `{ event, ticket_id, ticket_key, ticket, comment, activity, at }` — `event` is one of `ticket.created`, `ticket.updated`, `ticket.moved`, `ticket.deleted`, `ticket.restored`, `comment.created`, `config.updated`. The last carries only `{ event, at }`: the configuration (columns, statuses, priorities) was reloaded; a binding with a `ticket_id`, `parent_id` or `release_id` filter never gets it. |
+| `kanban:comment` | `{ ticket_id \| parent_id, author?, exclude_author?, root_only?, ticket? }` | A comment is created on that ticket, or with `parent_id` on that ticket or any of its children. One of the two is required; `author` keeps one author, `exclude_author` drops one (your own id), `root_only` ignores replies. | `{ event: "comment.created", ticket_id, ticket_key, ticket, comment, author, at }` |
 
 `ticket` on either type is `full` (default: the ticket with comments and
 activity inline) or `summary` (the board-card fields only); an agent that
@@ -151,37 +297,105 @@ engine::register_trigger {
 }
 ```
 
+A feature ticket with subtasks needs one binding, not one per child:
+`parent_id` on `kanban:comment` and on `kanban:change` covers the parent and
+every child, including children attached later.
+
+```json
+engine::register_trigger {
+  "trigger_type": "kanban:comment",
+  "config": { "parent_id": "KAN-1", "exclude_author": "tech-lead", "ticket": "summary" },
+  "once": false,
+  "lifecycle": { "max_fires": 50, "expires_in_ms": 3600000 }
+}
+```
+
 Bindings live in the worker's in-process map and die with the process;
 `kanban::config::info` reports how many are held under `subscribers`. Pair a
 standing wake with a `cron` check-in over `kanban::comment::list`, which
-takes the same filters plus `since`.
+takes `ticket_id`, the author filters and `since` (no `parent_id`; list the
+parent and each child).
 
 ## Console pages
 
-While the worker is connected it injects two pages into the console:
+While the worker is connected it injects four pages into the console:
 
 - **Kanban** (page `kanban-board`) — the board: one lane per configured
   column, drag and drop between lanes, a new-ticket dialog, and a lane picker
-  when the pane is narrow. Clicking a card opens the ticket beside the
-  board; the card's **Open in this tab** action keeps it in the current pane
-  instead (the console reuses any tab that already shows a ticket pane), and
-  the inline view offers **Open in its own pane** to go the other way.
-- **Ticket** (page `kanban-ticket`) — one ticket: status, priority and
-  assignee (from `kanban::agent::list`), a Markdown description with an
-  editor, and the activity timeline with threaded comments. Delete and
+  when the pane is narrow. A filter bar narrows it by key or title, labels
+  (any or all of them), assignee, priority and last update, with a count per
+  option; a dot marks tickets changed since your last visit. Filters can be
+  saved as views (tabs above the bar), kept in this browser only. Project
+  and Release filters list each option with its count and a "No project" /
+  "No release" choice. **Group** splits the board into swimlanes by release,
+  project or parent ticket (saved with the view); a subtask's card carries a
+  plain "Subtask of KAN-57" line and a parent's card shows its progress, with
+  a warning dot when it is Done with open subtasks. A **List**
+  layout shows the same tickets grouped by status, sortable, with bulk
+  status, priority, label, assignee and delete edits. Clicking a card opens
+  the ticket in place of the board; the card's corner **Open in a pane**
+  action opens it beside the board instead (the console reuses any tab that
+  already shows a ticket pane), and the inline view offers **Open in its own
+  pane** too. The card's status is a picker: pick a column and the card
+  moves there.
+- **Ticket** (page `kanban-ticket`) — one ticket: status, priority,
+  assignee (from `kanban::agent::list`), Project, Release, Parent and editable
+  labels, a Markdown description with an editor, linked tickets (from
+  `kanban::ticket::links`; ticket keys in the text become links), and the
+  activity timeline with threaded comments, filterable to comments or changes.
+  A parent has a **Subtasks** section with its progress, an Open / All switch,
+  **Add existing ticket…** and a new-subtask action that starts in Backlog with
+  the parent's project and release; a Done parent with open subtasks shows a
+  warning with the ways out (move it back to In review, close the subtasks, or
+  detach them). A subtask shows a parent strip above its title. Delete and
   restore live here, behind a confirmation.
+- **Releases** (page `kanban-releases`) — every release with its derived
+  status, target date and progress, sorted by target date. A release page lists
+  its not-done and done tickets, the per-project breakdown and its details;
+  **Mark as released…** asks where the not-done tickets go, **Reopen…**
+  undoes it, and a release created from a label offers to add the tickets that
+  carry the label but are not in it yet. **New release** and **Create from a
+  label…** live here.
+- **Projects** (page `kanban-projects`) — every project with its progress, lead,
+  color, releases and most used labels; rename, **Archive…** (it confirms
+  when tickets are open) and restore from here. **New project** and **Create
+  from a label…** live here too. **Create from a label…** previews the
+  buckets (will be added, already here, in another release or project, deleted)
+  before anything is written, can run a batch for several labels at once, and
+  keeps the label unless you ask to remove it.
 
-Both pages stay live over a `kanban:change` binding, and the Kanban
+The pages stay live over a `kanban:change` binding, and the Kanban
 settings form edits the configuration above. Chat renders `kanban::*`
 results as ticket cards and `kanban:*` trigger activity with the ticket and
-comment it carried. Command palette rows: New ticket, Refresh board, Refresh
-ticket, Edit description, Write a comment, Back to the board.
+comment it carried. Command palette rows: New ticket, Refresh board, Clear
+filters, Refresh ticket, Edit description, Write a comment, Back to the board.
+
+## Chat mentions
+
+Tickets can be mentioned in a chat as `@kanban(id="<uuid>")`. In the
+console composer, type `@kanban`, press Tab and search by key (`KAN-12`,
+`12`) or title words; the ticket shows as a pill that previews on hover as
+its ticket card (the one ticket function results show) and opens the ticket
+screen on click.
+Agents get the ticket's one-line summary with the message and read the whole
+ticket through `kanban::ticket::get`.
+
+Two internal functions provide this (see
+[`crates/mention-contract`](../crates/mention-contract/README.md)):
+`kanban::mention::search` (live tickets ranked by key, then title, then
+description and labels) and `kanban::mention::get` (the view, including a
+soft-deleted ticket marked as such), which declares the provider.
 
 ## Agent profiles
 
 `agents/` ships five profiles. Each is a system prompt with preloaded
 `skills` and `functions`; the harness freezes both into every session that
-runs as that profile, and the board is the only channel between them.
+runs as that profile, and the board is the only channel between them. All
+five are `hidden: true`: the chat's new-conversation gallery does not list
+them, but they stay selectable by id, assignable on the board, and shown by
+`directory::agents::list` (with `hidden: true`). To put one in the gallery,
+drop `hidden: true` from its frontmatter (the file in `agents/`, the ADE's
+profile editor, or `directory::agents::update { id, content }`).
 
 | Profile id | Role | Preloaded skills |
 |---|---|---|
@@ -193,7 +407,7 @@ runs as that profile, and the board is the only channel between them.
 
 All four extend the bundled `iii-minimal` identity and use their profile id
 as `actor` / `author` / `exclude_author`, so the loop in
-[`skills/kanban-tickets.md`](skills/kanban-tickets.md) closes.
+[`skills/tickets/kanban-tickets.md`](skills/tickets/kanban-tickets.md) closes.
 
 ### Where they land
 
@@ -249,10 +463,11 @@ working doctrine the profiles preload, one folder per concern (each folder's
 `index.md` maps its files):
 
 - `tickets/` — how work moves through the board: `kanban-tickets` (the
-  shared loop, the comment wake, review vs done, never delete),
+  shared loop, the comment wake, subtasks, review vs done, never delete),
   `feature-planning` and `acceptance-review` (the Product Manager's halves),
   `ticket-orchestration` and `ticket-worker` (the dispatcher's and the
-  dispatched engineer's halves).
+  dispatched engineer's halves; the feature ticket is the parent of the
+  tickets it dispatches).
 - `iii-node/` — building a Node worker (package shape, functions, triggers,
   asset delivery, compose wiring) with its bundled `configuration` reference.
 - `ade-worker-design/` — the designer's half: the injectable UI contract

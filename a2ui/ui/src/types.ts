@@ -43,7 +43,16 @@ export interface SurfaceRecord {
 }
 
 export interface SurfaceRevision { revision: number; title: string; updated_at_ms: number; reason: string }
-export interface LiveBinding { id: string; trigger_type: string; config: JsonValue; target_path: string; event_path?: string }
+export interface BindingQuery { function_id: string; payload?: JsonValue; result_path?: string }
+export interface LiveBinding {
+  id: string
+  trigger_type: string
+  config: JsonValue
+  target_path: string
+  event_path?: string
+  /** Provider read query (worker-owned trigger types): initial read + notify-then-query. */
+  query?: BindingQuery
+}
 export interface SurfaceTemplate { template_id: string; title: string; description: string; updated_at_ms: number }
 
 export interface SurfaceSummary {
@@ -70,6 +79,11 @@ export interface SurfaceReceipt {
   revision: number
   component_count: number
   page: string
+}
+
+export interface BindingRefreshReceipt extends SurfaceReceipt {
+  value: JsonValue
+  changed: boolean
 }
 
 export interface ActionResponse {

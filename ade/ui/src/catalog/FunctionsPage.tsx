@@ -9,10 +9,11 @@
  * metadata, and how to call it. The masthead carries every identity fact
  * once (worker, runtime, bindings, last call), so no side rail repeats them.
  *
- * Live, never polled. `engine::functions-available` fires whenever functions
- * are registered or unregistered, so a worker connecting or dying is visible
- * here within a beat, and rows that arrived on the last tick flash once so
- * the change is legible rather than silent.
+ * Live, never polled. `engine::functions-available` fires when the function
+ * set changes and `engine::workers-available` when a worker connects or
+ * dies, so either is visible here without a manual refresh (within ~100ms
+ * on newer engines; older ones poll on a 5s tick), and rows that arrived on
+ * the last tick flash once so the change is legible rather than silent.
  *
  * `engine::functions::list` is the catalogue (one cheap row per function);
  * `engine::functions::info` is fetched per selection, because that is where

@@ -2,7 +2,6 @@
 //! contract's deadlines, atomic results, usage accounting and caller-scoped
 //! cancellation.
 use crate::{
-    cancellation::CancellationRegistry,
     download::Checkpoint,
     engine::{self, Engine, Stop},
     prompt::{self, MAX_OPTIONS},
@@ -14,6 +13,7 @@ use judge_contract::{
     EvaluationResult, ModelCard, ModelsRequest, ModelsResponse, Question, ScoreLevel, Stats, Usage,
     DEFAULT_MAX_REQUEST_BYTES, DEFAULT_MAX_TIMEOUT_MS,
 };
+use judge_provider::cancellation::CancellationRegistry;
 use serde_json::Value;
 use std::{
     collections::BTreeMap,

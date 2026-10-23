@@ -82,7 +82,8 @@ fn registration_payload(spec: &EntrySpec) -> Value {
 
 /// The stored value, or `None` when nothing is stored yet (a `NOT_FOUND`
 /// entry, or a stored explicit `null` — the placeholder an unseeded
-/// registration persists).
+/// registration persists — including a null the engine refuses to serve
+/// through its schema check, see [`initialization::get_value_with`]).
 ///
 /// The missing-entry code is the configuration worker's uppercase literal
 /// `NOT_FOUND` and the match is deliberately case-SENSITIVE: the engine's
@@ -90,11 +91,11 @@ fn registration_payload(spec: &EntrySpec) -> Value {
 /// configuration worker that is absent or unroutable must surface as an
 /// error, never read as "nothing stored yet".
 pub async fn fetch(iii: &IIIClient, id: &str) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": id })).await {
-        Ok(resp) => Ok(resp.get("value").cloned().filter(|v| !v.is_null())),
-        Err(e) if is_not_found(&e) => Ok(None),
-        Err(e) => Err(e),
-    }
+    let stored = initialization::get_value_with(id, |function, payload| {
+        trigger_configuration_with_retry(iii, function, payload)
+    })
+    .await?;
+    Ok(stored.filter(|v| !v.is_null()))
 }
 
 /// `true` only when the error carries the configuration worker's standalone
@@ -176,6 +177,9 @@ async fn trigger_configuration_with_retry(
 /// Best-effort trigger binding: a transient failure must not brick boot or a
 /// reload — it surfaces as a `None` handle (and a warn) and is retried on
 /// the next config event.
+// `register_trigger` is deprecated in iii-sdk 0.25; engines 0.24 and 0.25
+// both serve it.
+#[allow(deprecated)]
 pub fn try_bind(iii: &IIIClient, input: RegisterTriggerInput) -> Option<Trigger> {
     let (trigger_type, function_id) = (input.trigger_type.clone(), input.function_id.clone());
     match iii.register_trigger(input) {
@@ -306,6 +310,10 @@ where
         .metadata(json!({ "internal": true })),
     );
 
+    // Deprecated in iii-sdk 0.25. The `configuration` trigger type is still
+    // served by 0.25 engines (next to `configuration::on-updated`), so one
+    // binding keeps working on 0.24 and 0.25.
+    #[allow(deprecated)]
     iii.register_trigger(RegisterTriggerInput::new(
         "configuration".to_string(),
         fn_id.to_string(),

@@ -6,7 +6,16 @@
 //! - `engine/src/workers/queue/adapters/builtin/adapter.rs` (the
 //!   `QueueAdapter` impl, `FunctionHandler`, `SubscriptionConfig` mapping).
 //! - `engine/src/builtins/queue.rs` (`QueueConfig` defaults, the
-//!   `Worker`/`FifoWorker`/`GroupedFifoWorker` polling loops).
+//!   `Worker`/`FifoWorker`/`GroupedFifoWorker` consumer loops).
+//!
+//! Consumers are event-driven, not polled (a deliberate departure from the
+//! engine's `poll_interval_ms` loops): a consumer that finds its queue empty
+//! parks on the store's [`QueueStore::ready_signal`] — fired by enqueue,
+//! retrying nack, requeue, and redrive — and, when a retry backoff is
+//! pending, on a one-shot timer for exactly that job's due time
+//! ([`QueueStore::next_ready_delay`]). The signal's `Notified` future is
+//! enabled before the `dequeue` that comes back empty, so a job enqueued in
+//! between is never missed.
 //!
 //! Fan-out model (matches the engine exactly — see
 //! `engine/src/workers/queue/adapters/builtin/adapter.rs:196-337`):
@@ -45,25 +54,26 @@
 //!   shared queue with a delay and may be interleaved with newer arrivals,
 //!   rather than blocking the whole subscription on one job. Fifo
 //!   *ordering* for jobs that succeed on their first attempt is unaffected
-//!   (the poller is single-threaded and never dequeues the next job before
+//!   (the consumer is single-threaded and never dequeues the next job before
 //!   the current one is acked or nacked).
 //! - Duplicate `(topic, id)` subscriptions warn and no-op instead of
 //!   silently replacing the old subscription's map entry and leaking its
-//!   polling task (the actual, un-guarded, engine builtin behavior).
+//!   consumer task (the actual, un-guarded, engine builtin behavior).
 //!   Redis and RabbitMQ adapters in the engine already guard this way;
 //!   this port applies the same guard to the builtin adapter to preserve
 //!   the "one subscription per (topic, id)" invariant.
 
 use std::collections::{HashMap, HashSet};
+use std::pin::Pin;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
-use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::sync::futures::Notified;
 use tokio::sync::oneshot::error::TryRecvError;
 use tokio::sync::{mpsc, oneshot, Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
@@ -79,8 +89,6 @@ const DEFAULT_MAX_RETRIES: u32 = 3;
 const DEFAULT_BACKOFF_MS: u64 = 1000;
 /// `engine/src/builtins/queue.rs` `QueueConfig::default()` (concurrency).
 const DEFAULT_CONCURRENCY: u32 = 10;
-/// `engine/src/builtins/queue.rs` `QueueConfig::default()` (poll_interval_ms).
-const DEFAULT_POLL_INTERVAL_MS: u64 = 100;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Mode {
@@ -89,9 +97,9 @@ enum Mode {
 }
 
 /// Per-subscription settings resolved from [`SubscriberQueueConfig`],
-/// shared (read-only) across a subscription's polling task(s).
+/// shared (read-only) across a subscription's consumer task(s).
 struct PollerConfig {
-    /// The internal queue this subscription's poller reads from —
+    /// The internal queue this subscription's consumer reads from —
     /// `format!("{topic}::{id}")`, not the bare topic name (see
     /// the module doc's fan-out model).
     queue_name: String,
@@ -103,17 +111,16 @@ struct PollerConfig {
     condition_function_id: Option<String>,
     max_retries: u32,
     backoff_ms: u64,
-    poll_interval_ms: u64,
 }
 
-/// A tracked `(topic, id)` subscription and its polling task.
+/// A tracked `(topic, id)` subscription and its consumer task.
 struct Subscription {
     cancel: oneshot::Sender<()>,
     task: JoinHandle<()>,
 }
 
-/// Builtin transport adapter: subscriptions are backed by pure in-process
-/// polling tasks over the worker's [`QueueStore`].
+/// Builtin transport adapter: subscriptions are backed by in-process,
+/// event-driven consumer tasks over the worker's [`QueueStore`].
 pub struct BuiltinAdapter {
     store: Arc<dyn QueueStore>,
     invoker: Arc<dyn Invoker>,
@@ -122,7 +129,6 @@ pub struct BuiltinAdapter {
     /// bare topic name to its subscribers' internal queue names
     /// (`format!("{topic}::{id}")`) for fan-out enqueue and all DLQ/stat ops.
     topic_subscriptions: Mutex<HashMap<String, HashSet<String>>>,
-    poll_interval_ms: u64,
     function_queue_configs: RwLock<HashMap<String, FunctionQueueConfig>>,
     function_deliveries: Arc<Mutex<HashMap<u64, Arc<FunctionDelivery>>>>,
     function_consumers: Mutex<Vec<FunctionConsumerHandle>>,
@@ -170,23 +176,11 @@ fn internal_queue_name(topic: &str, subscription_id: &str) -> String {
 
 impl BuiltinAdapter {
     pub fn new(store: Arc<dyn QueueStore>, invoker: Arc<dyn Invoker>) -> Self {
-        Self::with_poll_interval_ms(store, invoker, DEFAULT_POLL_INTERVAL_MS)
-    }
-
-    /// Test-only knob: a short poll interval keeps polling-loop-driven
-    /// tests fast without changing observable subscribe/fifo/concurrency
-    /// behavior.
-    fn with_poll_interval_ms(
-        store: Arc<dyn QueueStore>,
-        invoker: Arc<dyn Invoker>,
-        poll_interval_ms: u64,
-    ) -> Self {
         Self {
             store,
             invoker,
             subscriptions: Mutex::new(HashMap::new()),
             topic_subscriptions: Mutex::new(HashMap::new()),
-            poll_interval_ms,
             function_queue_configs: RwLock::new(HashMap::new()),
             function_deliveries: Arc::new(Mutex::new(HashMap::new())),
             function_consumers: Mutex::new(Vec::new()),
@@ -283,7 +277,6 @@ impl QueueAdapter for BuiltinAdapter {
             condition_function_id,
             max_retries,
             backoff_ms,
-            poll_interval_ms: self.poll_interval_ms,
         };
 
         let sub = spawn_poller(
@@ -599,13 +592,16 @@ impl QueueAdapter for BuiltinAdapter {
         queue_name: &str,
         prefetch: u32,
     ) -> anyhow::Result<mpsc::Receiver<QueueMessage>> {
-        let config = self
+        // The definition only gates consumption here: the builtin consumer is
+        // event-driven, so the (deprecated) `poll_interval_ms` is unused.
+        if !self
             .function_queue_configs
             .read()
             .await
-            .get(queue_name)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("function queue '{queue_name}' has not been set up"))?;
+            .contains_key(queue_name)
+        {
+            anyhow::bail!("function queue '{queue_name}' has not been set up");
+        }
 
         let consumer_id = self.consumer_counter.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel(prefetch.max(1) as usize);
@@ -621,7 +617,6 @@ impl QueueAdapter for BuiltinAdapter {
                 delivery_counter,
                 consumer_id,
                 task_queue_name,
-                config.poll_interval_ms,
                 tx,
             )
             .await;
@@ -750,10 +745,10 @@ async fn run_function_queue_consumer(
     delivery_counter: Arc<AtomicU64>,
     consumer_id: u64,
     queue_name: String,
-    poll_interval_ms: u64,
     tx: mpsc::Sender<QueueMessage>,
 ) {
     let outstanding = Arc::new(Semaphore::new(tx.max_capacity()));
+    let ready = store.ready_signal(&queue_name);
     loop {
         if tx.is_closed() {
             break;
@@ -767,11 +762,16 @@ async fn run_function_queue_consumer(
             },
         };
 
+        // Register for the wake-up BEFORE looking: an enqueue racing the
+        // empty `dequeue` below still wakes this consumer.
+        let notified = ready.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
         let Some(job) = store.dequeue(&queue_name).await else {
             drop(permit);
             tokio::select! {
                 _ = tx.closed() => break,
-                _ = tokio::time::sleep(Duration::from_millis(poll_interval_ms)) => continue,
+                _ = wait_until_ready(&store, &queue_name, notified) => continue,
             }
         };
 
@@ -858,6 +858,28 @@ async fn requeue_function_deliveries(
     }
 }
 
+/// Park an idle consumer until its queue may hold a dequeueable job: the
+/// store signals a change (enqueue, retrying nack, requeue, redrive), or the
+/// earliest delayed job — a retry backoff — reaches its due time. With
+/// nothing waiting it parks on the signal alone; there is no periodic
+/// re-check. `notified` must have been enabled before the caller's empty
+/// `dequeue`.
+async fn wait_until_ready(
+    store: &Arc<dyn QueueStore>,
+    queue_name: &str,
+    notified: Pin<&mut Notified<'_>>,
+) {
+    match store.next_ready_delay(queue_name).await {
+        Some(due_in) => {
+            tokio::select! {
+                _ = notified => {}
+                _ = tokio::time::sleep(due_in) => {}
+            }
+        }
+        None => notified.await,
+    }
+}
+
 fn spawn_poller(
     store: Arc<dyn QueueStore>,
     invoker: Arc<dyn Invoker>,
@@ -884,6 +906,7 @@ async fn run_fifo(
     cfg: PollerConfig,
     mut cancelled: oneshot::Receiver<()>,
 ) {
+    let ready = store.ready_signal(&cfg.queue_name);
     loop {
         // Cancellation is honored only between jobs: an in-flight invocation
         // runs to completion and acks/nacks (killing it mid-call risks a
@@ -892,13 +915,18 @@ async fn run_fifo(
         if !matches!(cancelled.try_recv(), Err(TryRecvError::Empty)) {
             return;
         }
+        // Registered before the dequeue so a concurrent enqueue cannot slip
+        // between "queue is empty" and "park".
+        let notified = ready.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
         match store.dequeue(&cfg.queue_name).await {
             Some(job) => process_job(&store, &invoker, &cfg, job).await,
             None => {
                 tokio::select! {
                     biased;
                     _ = &mut cancelled => return,
-                    _ = tokio::time::sleep(Duration::from_millis(cfg.poll_interval_ms)) => {}
+                    _ = wait_until_ready(&store, &cfg.queue_name, notified) => {}
                 }
             }
         }
@@ -916,6 +944,7 @@ async fn run_concurrent(
     mut cancelled: oneshot::Receiver<()>,
 ) {
     let semaphore = Arc::new(Semaphore::new(concurrency as usize));
+    let ready = store.ready_signal(&cfg.queue_name);
     let cfg = Arc::new(cfg);
     let mut tasks = JoinSet::new();
 
@@ -933,6 +962,11 @@ async fn run_concurrent(
             },
         };
 
+        // Registered before the dequeue so a concurrent enqueue cannot slip
+        // between "queue is empty" and "park".
+        let notified = ready.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
         match store.dequeue(&cfg.queue_name).await {
             Some(job) => {
                 let store = Arc::clone(&store);
@@ -948,7 +982,7 @@ async fn run_concurrent(
                 tokio::select! {
                     biased;
                     _ = &mut cancelled => break,
-                    _ = tokio::time::sleep(Duration::from_millis(cfg.poll_interval_ms)) => {}
+                    _ = wait_until_ready(&store, &cfg.queue_name, notified) => {}
                 }
             }
         }
@@ -1023,6 +1057,7 @@ mod tests {
     use serde_json::json;
     use std::future::Future;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::Duration;
     use tokio::sync::Notify;
     use tokio::time::{sleep, Instant};
 
@@ -1044,7 +1079,6 @@ mod tests {
     fn function_queue_config() -> FunctionQueueConfig {
         FunctionQueueConfig {
             concurrency: 1,
-            poll_interval_ms: 1,
             backoff_ms: 1,
             ..FunctionQueueConfig::default()
         }
@@ -1396,6 +1430,14 @@ mod tests {
             self.inner.requeue(topic, job).await
         }
 
+        fn ready_signal(&self, topic: &str) -> Arc<Notify> {
+            self.inner.ready_signal(topic)
+        }
+
+        async fn next_ready_delay(&self, topic: &str) -> Option<Duration> {
+            self.inner.next_ready_delay(topic).await
+        }
+
         async fn list_topics(&self) -> Vec<String> {
             self.inner.list_topics().await
         }
@@ -1486,12 +1528,318 @@ mod tests {
         Some(overrides)
     }
 
+    /// Publishes a running call count (so tests wait on the event, not a
+    /// timer) and records each call's time and payload. The first
+    /// `fail_first` calls fail.
+    struct SignalingInvoker {
+        calls: tokio::sync::watch::Sender<usize>,
+        call_times: Mutex<Vec<std::time::Instant>>,
+        payloads: Mutex<Vec<Value>>,
+        fail_first: usize,
+    }
+
+    impl SignalingInvoker {
+        fn new(fail_first: usize) -> Self {
+            Self {
+                calls: tokio::sync::watch::Sender::new(0),
+                call_times: Mutex::new(Vec::new()),
+                payloads: Mutex::new(Vec::new()),
+                fail_first,
+            }
+        }
+
+        fn calls(&self) -> tokio::sync::watch::Receiver<usize> {
+            self.calls.subscribe()
+        }
+    }
+
+    #[async_trait]
+    impl Invoker for SignalingInvoker {
+        async fn call(&self, _function_id: &str, payload: Value) -> Result<Option<Value>, String> {
+            self.call_times.lock().await.push(std::time::Instant::now());
+            self.payloads.lock().await.push(payload);
+            let mut call = 0;
+            self.calls.send_modify(|count| {
+                *count += 1;
+                call = *count;
+            });
+            if call <= self.fail_first {
+                Err("expected failure".to_string())
+            } else {
+                Ok(Some(json!({"ok": true})))
+            }
+        }
+    }
+
+    fn mode_config(fifo: bool) -> SubscriberQueueConfig {
+        SubscriberQueueConfig {
+            queue_mode: fifo.then(|| "fifo".to_string()),
+            ..Default::default()
+        }
+    }
+
+    // An idle subscriber wakes on the enqueue itself. Under a paused clock a
+    // poll-driven consumer could only make progress by advancing virtual time
+    // to its next tick (the old 100ms poll), which the 50ms timeout forbids;
+    // the event-driven one delivers with zero virtual time elapsed.
+    #[tokio::test(start_paused = true)]
+    async fn idle_subscriber_wakes_on_enqueue_without_any_timer() {
+        for fifo in [false, true] {
+            let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
+            let invoker = Arc::new(SignalingInvoker::new(0));
+            let mut calls = invoker.calls();
+            let adapter = BuiltinAdapter::new(store, invoker.clone());
+            adapter
+                .subscribe(
+                    "demo",
+                    "sub1",
+                    "backend",
+                    None,
+                    None,
+                    config(mode_config(fifo)),
+                    None,
+                )
+                .await;
+            // With a paused clock this only returns once every task is idle:
+            // the consumer has found the queue empty and parked.
+            sleep(Duration::from_millis(10)).await;
+
+            for round in 1..=3 {
+                let enqueued_at = Instant::now();
+                adapter.enqueue("demo", json!(round), None, None).await;
+                tokio::time::timeout(
+                    Duration::from_millis(50),
+                    calls.wait_for(|count| *count == round),
+                )
+                .await
+                .expect("an idle consumer must wake on enqueue, not on a poll tick")
+                .unwrap();
+                assert_eq!(
+                    enqueued_at.elapsed(),
+                    Duration::ZERO,
+                    "fifo={fifo}: delivery must not wait on any timer"
+                );
+            }
+            adapter.shutdown().await;
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_function_queue_consumer_wakes_on_publish_without_any_timer() {
+        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
+        let adapter = BuiltinAdapter::new(store, Arc::new(FakeInvoker::default()));
+        let config = function_queue_config();
+        adapter
+            .setup_function_queue("turns", &config)
+            .await
+            .unwrap();
+        let mut receiver = adapter.consume_function_queue("turns", 1).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+
+        for receipt in ["receipt-1", "receipt-2"] {
+            let published_at = Instant::now();
+            adapter
+                .publish_to_function_queue(
+                    "turns",
+                    "harness::turn",
+                    json!({"receipt": receipt}),
+                    receipt,
+                    config.max_retries,
+                    config.backoff_ms,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+            let message = tokio::time::timeout(Duration::from_millis(50), receiver.recv())
+                .await
+                .expect("an idle function-queue consumer must wake on publish")
+                .unwrap();
+            assert_eq!(message.message_id.as_deref(), Some(receipt));
+            assert_eq!(published_at.elapsed(), Duration::ZERO);
+            // Acking frees the prefetch slot; the consumer then parks again
+            // and must wake for the next publish just as fast.
+            adapter
+                .ack_function_queue("turns", message.delivery_id)
+                .await
+                .unwrap();
+            sleep(Duration::from_millis(10)).await;
+        }
+        adapter.shutdown().await;
+    }
+
+    // A nacked job is retried at exactly its backoff due time: the consumer
+    // arms a one-shot timer for the earliest delayed job instead of
+    // re-checking on an interval (which would add up to a whole tick).
+    #[tokio::test]
+    async fn delayed_retry_is_delivered_at_its_due_time() {
+        const BACKOFF_MS: u64 = 300;
+        for fifo in [false, true] {
+            let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
+            let invoker = Arc::new(SignalingInvoker::new(1));
+            let mut calls = invoker.calls();
+            let adapter = BuiltinAdapter::new(store, invoker.clone());
+            adapter
+                .subscribe(
+                    "demo",
+                    "sub1",
+                    "backend",
+                    None,
+                    None,
+                    config(SubscriberQueueConfig {
+                        max_retries: Some(3),
+                        backoff_delay_ms: Some(BACKOFF_MS),
+                        ..mode_config(fifo)
+                    }),
+                    None,
+                )
+                .await;
+            adapter.enqueue("demo", json!("job"), None, None).await;
+
+            tokio::time::timeout(Duration::from_secs(2), calls.wait_for(|count| *count == 2))
+                .await
+                .expect("the retry should be delivered")
+                .unwrap();
+            let times = invoker.call_times.lock().await.clone();
+            let gap = times[1] - times[0];
+            assert!(
+                gap >= Duration::from_millis(BACKOFF_MS - 2),
+                "fifo={fifo}: retry delivered before its due time ({gap:?})"
+            );
+            assert!(
+                gap < Duration::from_millis(BACKOFF_MS + 50),
+                "fifo={fifo}: retry must fire at its due time, not a later tick ({gap:?})"
+            );
+            wait_until(|| async { adapter.topic_stats("demo").await.unwrap().delivered == 1 })
+                .await;
+            adapter.shutdown().await;
+        }
+    }
+
+    // Lost wake-up guard: each enqueue lands while the consumer is finishing
+    // the previous job and heading back to park, and no later enqueue exists
+    // to rescue a missed signal — so a lost wake-up is a stuck round. Then
+    // concurrent publishers race each other and the consumer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn no_lost_wakeup_when_enqueues_race_the_consumer_going_idle() {
+        for fifo in [false, true] {
+            let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
+            let invoker = Arc::new(SignalingInvoker::new(0));
+            let mut calls = invoker.calls();
+            let adapter = Arc::new(BuiltinAdapter::new(store, invoker.clone()));
+            adapter
+                .subscribe(
+                    "demo",
+                    "sub1",
+                    "backend",
+                    None,
+                    None,
+                    config(mode_config(fifo)),
+                    None,
+                )
+                .await;
+
+            for round in 1..=200usize {
+                adapter.enqueue("demo", json!(round), None, None).await;
+                tokio::time::timeout(
+                    Duration::from_secs(1),
+                    calls.wait_for(|count| *count == round),
+                )
+                .await
+                .unwrap_or_else(|_| panic!("fifo={fifo}: wake-up lost in round {round}"))
+                .unwrap();
+            }
+
+            let mut publishers = JoinSet::new();
+            for publisher in 0..4 {
+                let adapter = Arc::clone(&adapter);
+                publishers.spawn(async move {
+                    for i in 0..50 {
+                        adapter
+                            .enqueue("demo", json!(1_000 + publisher * 100 + i), None, None)
+                            .await;
+                        tokio::task::yield_now().await;
+                    }
+                });
+            }
+            while publishers.join_next().await.is_some() {}
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                calls.wait_for(|count| *count == 400),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("fifo={fifo}: concurrent enqueues were not all woken"))
+            .unwrap();
+            adapter.shutdown().await;
+        }
+    }
+
+    // Two consumers on one store queue (a same-id resubscribe racing the
+    // detached drain of the previous one) are both woken by every enqueue,
+    // yet each job is delivered exactly once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn two_consumers_on_one_store_queue_deliver_each_job_once() {
+        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
+        let invoker = Arc::new(SignalingInvoker::new(0));
+        let mut calls = invoker.calls();
+        let consumer = |mode| {
+            spawn_poller(
+                Arc::clone(&store),
+                invoker.clone(),
+                PollerConfig {
+                    queue_name: "shared".to_string(),
+                    function_id: "backend".to_string(),
+                    metadata: None,
+                    namespace: None,
+                    condition_function_id: None,
+                    max_retries: 3,
+                    backoff_ms: 1,
+                },
+                mode,
+                4,
+            )
+        };
+        let consumers = [consumer(Mode::Concurrent), consumer(Mode::Fifo)];
+
+        for i in 0..200 {
+            store.enqueue("shared", json!(i)).await.unwrap();
+        }
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            calls.wait_for(|count| *count >= 200),
+        )
+        .await
+        .expect("every job should be delivered")
+        .unwrap();
+        wait_until(|| {
+            let store = store.clone();
+            async move { store.topic_stats("shared").await.delivered == 200 }
+        })
+        .await;
+
+        let mut delivered = invoker
+            .payloads
+            .lock()
+            .await
+            .iter()
+            .map(|payload| payload.as_i64().unwrap())
+            .collect::<Vec<_>>();
+        delivered.sort_unstable();
+        assert_eq!(delivered, (0..200).collect::<Vec<_>>());
+        for consumer in consumers {
+            let _ = consumer.cancel.send(());
+            let _ = consumer.task.await;
+        }
+    }
+
     // (a) subscribe+enqueue delivers.
     #[tokio::test]
     async fn subscribe_then_enqueue_delivers() {
         let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
         let invoker = Arc::new(FakeInvoker::default());
-        let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker.clone(), 5);
+        let adapter = BuiltinAdapter::new(store.clone(), invoker.clone());
 
         adapter
             .subscribe("demo", "sub1", "backend", None, None, None, None)
@@ -1516,7 +1864,7 @@ mod tests {
     async fn enqueue_fans_out_to_every_subscriber() {
         let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
         let invoker = Arc::new(FakeInvoker::default());
-        let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker.clone(), 5);
+        let adapter = BuiltinAdapter::new(store.clone(), invoker.clone());
 
         adapter
             .subscribe("demo", "sub-a", "fn-a", None, None, None, None)
@@ -1547,7 +1895,7 @@ mod tests {
     async fn same_function_subscriptions_receive_metadata_and_namespace() {
         let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
         let invoker = Arc::new(FakeInvoker::default());
-        let adapter = BuiltinAdapter::with_poll_interval_ms(store, invoker.clone(), 5);
+        let adapter = BuiltinAdapter::new(store, invoker.clone());
 
         adapter
             .subscribe(
@@ -1604,7 +1952,7 @@ mod tests {
     async fn enqueue_without_subscribers_buffers_on_bare_topic() {
         let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
         let invoker = Arc::new(FakeInvoker::default());
-        let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker, 5);
+        let adapter = BuiltinAdapter::new(store.clone(), invoker);
 
         adapter
             .enqueue("demo", json!("no subscribers yet"), None, None)
@@ -1624,7 +1972,7 @@ mod tests {
     async fn concurrency_zero_pauses_consumption() {
         let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
         let invoker = Arc::new(FakeInvoker::default());
-        let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker.clone(), 5);
+        let adapter = BuiltinAdapter::new(store.clone(), invoker.clone());
 
         adapter
             .subscribe(
@@ -1657,7 +2005,7 @@ mod tests {
     async fn concurrency_limits_in_flight_invocations() {
         let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
         let invoker = Arc::new(ConcurrencyGateInvoker::new(60));
-        let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker.clone(), 5);
+        let adapter = BuiltinAdapter::new(store.clone(), invoker.clone());
 
         adapter
             .subscribe(
@@ -1693,7 +2041,7 @@ mod tests {
     async fn fifo_processes_strictly_in_order() {
         let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
         let invoker = Arc::new(OrderRecordingInvoker::default());
-        let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker.clone(), 3);
+        let adapter = BuiltinAdapter::new(store.clone(), invoker.clone());
 
         adapter
             .subscribe(
@@ -1736,7 +2084,7 @@ mod tests {
         let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
         let invoker = Arc::new(FakeInvoker::default());
         invoker.fail_backend.store(true, Ordering::SeqCst);
-        let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker.clone(), 3);
+        let adapter = BuiltinAdapter::new(store.clone(), invoker.clone());
 
         adapter
             .subscribe(
@@ -1772,7 +2120,7 @@ mod tests {
         let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
         let invoker = Arc::new(FakeInvoker::default());
         invoker.fail_backend.store(true, Ordering::SeqCst);
-        let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker.clone(), 3);
+        let adapter = BuiltinAdapter::new(store.clone(), invoker.clone());
 
         let retry_cfg = || {
             config(SubscriberQueueConfig {
@@ -1815,7 +2163,7 @@ mod tests {
     async fn unsubscribe_stops_delivery_and_keeps_backlog_for_rearm() {
         let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
         let invoker = Arc::new(FakeInvoker::default());
-        let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker.clone(), 3);
+        let adapter = BuiltinAdapter::new(store.clone(), invoker.clone());
 
         adapter
             .subscribe(
@@ -1867,11 +2215,7 @@ mod tests {
     async fn unsubscribe_detaches_while_the_inflight_delivery_completes() {
         let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
         let invoker = Arc::new(GatedInvoker::default());
-        let adapter = Arc::new(BuiltinAdapter::with_poll_interval_ms(
-            store.clone(),
-            invoker.clone(),
-            3,
-        ));
+        let adapter = Arc::new(BuiltinAdapter::new(store.clone(), invoker.clone()));
 
         adapter
             .subscribe("demo", "sub1", "backend", None, None, None, None)
@@ -1913,11 +2257,7 @@ mod tests {
     async fn publish_blocked_on_store_io_does_not_block_other_topics() {
         let store = Arc::new(GatedEnqueueStore::default());
         let invoker = Arc::new(FakeInvoker::default());
-        let adapter = Arc::new(BuiltinAdapter::with_poll_interval_ms(
-            store.clone(),
-            invoker.clone(),
-            3,
-        ));
+        let adapter = Arc::new(BuiltinAdapter::new(store.clone(), invoker.clone()));
 
         let paused = Some(SubscriberQueueConfig {
             concurrency: Some(0),
@@ -1978,7 +2318,7 @@ mod tests {
         let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
         let invoker = Arc::new(FakeInvoker::default());
         *invoker.condition_value.lock().await = Some(Value::Bool(false));
-        let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker.clone(), 3);
+        let adapter = BuiltinAdapter::new(store.clone(), invoker.clone());
 
         adapter
             .subscribe(
@@ -2010,7 +2350,7 @@ mod tests {
     async fn duplicate_subscription_is_noop() {
         let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
         let invoker = Arc::new(FakeInvoker::default());
-        let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker.clone(), 3);
+        let adapter = BuiltinAdapter::new(store.clone(), invoker.clone());
 
         adapter
             .subscribe("demo", "sub1", "backend", None, None, None, None)
@@ -2027,7 +2367,7 @@ mod tests {
     async fn dlq_peek_returns_store_jobs_as_json() {
         let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
         let invoker = Arc::new(FakeInvoker::default());
-        let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker, 3);
+        let adapter = BuiltinAdapter::new(store.clone(), invoker);
 
         store.enqueue("demo", json!("job")).await.unwrap();
         let job = store.dequeue("demo").await.unwrap();

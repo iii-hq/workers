@@ -8,10 +8,12 @@ import * as ReactDOMClient from 'react-dom/client'
 import { createRoot } from 'react-dom/client'
 import { TooltipProvider } from '@/components/ui/Tooltip'
 import { routeFromHash, standaloneRouteFromHash } from '@/hooks/use-hash-route'
+import { sideChatsLeftByClosedTabs } from '@/lib/chat-aside'
 import { buildConsoleApi } from '@/lib/console-api'
 import { installRandomUUIDPolyfill } from '@/lib/crypto-polyfill'
 import { getIiiClient } from '@/lib/iii-client'
 import { registerServiceWorker } from '@/lib/register-service-worker'
+import { initTelemetry } from '@/lib/telemetry'
 import { setUiAssetsStatus } from '@/lib/ui-slots'
 import { App } from './App'
 import './index.css'
@@ -24,6 +26,10 @@ import { Standalone } from './Standalone'
 // (main.test.ts guards both). Runs before the injectable-UI boot below —
 // getIiiClient() is exactly the SDK path that needs it.
 installRandomUUIDPolyfill()
+
+// Counts this tab as an open ADE from the start, whatever page it shows:
+// side chats end once every tab is closed (see the function).
+void sideChatsLeftByClosedTabs()
 
 /**
  * Injectable-UI boot contract: the global goes up before anything else can
@@ -68,6 +74,7 @@ favicon.type = 'image/svg+xml'
 favicon.href = new URL('./icons/icon.svg', document.baseURI).href
 if (!favicon.isConnected) document.head.appendChild(favicon)
 registerServiceWorker()
+void initTelemetry()
 
 const root = document.getElementById('root')
 if (!root) throw new Error('missing #root container')

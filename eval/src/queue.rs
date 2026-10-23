@@ -71,8 +71,7 @@ fn run_queue_definition() -> Value {
             "message_group_field": "evaluation_id",
             "concurrency": RUN_CONCURRENCY,
             "max_retries": 3,
-            "backoff_ms": 1_000,
-            "poll_interval_ms": 100
+            "backoff_ms": 1_000
         }
     })
 }

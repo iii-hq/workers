@@ -1,6 +1,5 @@
 //! SemIf provider for the judge hub: a frozen GGUF LLM run in-process through
 //! llama.cpp, reading the next-token logits of the option letters (no decoding).
-mod cancellation;
 pub mod client;
 pub mod config;
 pub mod configuration;

@@ -260,7 +260,7 @@ export const WorktreeMenu = memo(function WorktreeMenu({
 }: WorktreeMenuProps) {
   const [open, setOpen] = useState(false)
   const ops = useWorktreeOps(host, dir, page, open, 'menu')
-  // Refresh re-reads the chip too, even when it brings no focus change.
+  // Refresh re-reads the chip too, whatever the worker reported.
   const [refreshes, setRefreshes] = useState(0)
   const head = useHead(host, dir, `${rereadKey}:${refreshes}`)
   const [query, setQuery] = useState('')

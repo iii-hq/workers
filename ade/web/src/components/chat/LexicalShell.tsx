@@ -48,6 +48,7 @@ import type { FileMentionRef } from '@/lib/file-mention-token'
 import type { FileSearchFn } from '@/lib/file-search'
 import type { FunctionEntry } from '@/lib/functions'
 import { bindingMatchesEvent } from '@/lib/keybindings/bindings'
+import type { MentionSearchContext } from '@/lib/mentions/types'
 import {
   type ComposerEditorSize,
   classifyComposerResize,
@@ -74,6 +75,8 @@ import { PillArrowNavPlugin } from './lexical/PillArrowNavPlugin'
 import { SlashCommandNode } from './lexical/SlashCommandNode'
 import { SlashCommandsPlugin } from './lexical/SlashCommandsPlugin'
 import { SlashCommandTransformPlugin } from './lexical/SlashCommandTransformPlugin'
+import { WorkerMentionNode } from './lexical/WorkerMentionNode'
+import { WorkerMentionTransformPlugin } from './lexical/WorkerMentionTransformPlugin'
 
 interface LexicalShellProps {
   onChange: (text: string) => void
@@ -83,6 +86,12 @@ interface LexicalShellProps {
   disabled?: boolean
   /** Put the caret in the editor on mount. Off by default. */
   autoFocus?: boolean
+  /**
+   * Take inserts and focus requests from other surfaces (on by default). A
+   * second composer on screen, such as a side chat's, turns it off so a pick
+   * or a file reference lands in the main chat only.
+   */
+  externalInput?: boolean
 }
 
 /**
@@ -116,6 +125,7 @@ const baseConfig = {
     FunctionMentionNode,
     FileMentionNode,
     SlashCommandNode,
+    WorkerMentionNode,
     ...COMPOSER_MARKDOWN_NODES,
   ],
   onError(error: Error) {
@@ -689,6 +699,8 @@ interface LexicalShellExtendedProps extends LexicalShellProps {
   menuFrameRef?: RefObject<HTMLElement | null>
   /** Up/Down browse a message history: return text to load ('' clears), or null. */
   onHistoryNav?: (direction: 'up' | 'down') => string | null
+  /** Where worker mention searches are asked from (session, folder). */
+  mentionContext?: MentionSearchContext
 }
 
 export function LexicalShell({
@@ -697,6 +709,7 @@ export function LexicalShell({
   placeholder = 'send a message…',
   disabled,
   autoFocus,
+  externalInput = true,
   clearToken,
   initialContent,
   functionEntries,
@@ -704,6 +717,7 @@ export function LexicalShell({
   onOpenFileMention,
   menuFrameRef,
   onHistoryNav,
+  mentionContext,
 }: LexicalShellExtendedProps) {
   /* LexicalComposer reads initialConfig once on mount; lock it behind useMemo
      so the initializer callback identity doesn't trigger a remount on re-render. */
@@ -761,19 +775,20 @@ export function LexicalShell({
         <HistoryNavPlugin onNav={onHistoryNav} menuOpenRef={menuOpenRef} />
         {/* After HistoryNavPlugin on purpose: same priority, later registration. */}
         <ArrowOutOfCodePlugin menuOpenRef={menuOpenRef} />
-        <ExternalInsertPlugin />
+        {externalInput ? <ExternalInsertPlugin /> : null}
         {/* Opening a session is a request to write in it, so the first
           keystroke should land in the message rather than be spent aiming.
           Lexical's own plugin waits for the editable node, which a bare
           focus() call on mount does not. */}
         {autoFocus === true && disabled !== true ? <AutoFocusPlugin /> : null}
-        <FocusOnRequestPlugin enabled={disabled !== true} />
+        <FocusOnRequestPlugin enabled={disabled !== true && externalInput} />
         <EditablePlugin disabled={disabled} />
         <MentionsPlugin
           menuOpenRef={menuOpenRef}
           functionEntries={functionEntries}
           searchFiles={searchFiles}
           frameRef={menuFrameRef}
+          mentionContext={mentionContext}
         />
         {searchFiles ? (
           <FileMentionsPlugin
@@ -789,6 +804,7 @@ export function LexicalShell({
         <FunctionMentionTransformPlugin />
         <FileMentionTransformPlugin />
         <SlashCommandTransformPlugin />
+        <WorkerMentionTransformPlugin />
       </ComposerMentionContext.Provider>
     </LexicalComposer>
   )

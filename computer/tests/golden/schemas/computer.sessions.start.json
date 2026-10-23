@@ -1,5 +1,5 @@
 {
-  "description": "Start a computer-use session and return its session_id. Pass `image` to boot a fresh desktop in an iii-sandbox microVM, `endpoint` to drive a remote desktop's guest executor, or neither to drive the local machine. Stop it with computer::sessions::stop.",
+  "description": "Start a computer-use session and return its session_id. Pass `image` to boot a fresh desktop in an iii-sandbox microVM, `endpoint` to drive a remote desktop's guest executor, or neither for the worker's configured default (else the local machine); `native: true` always drives the local machine. Stop it with computer::sessions::stop.",
   "function_id": "computer::sessions::start",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -29,6 +29,11 @@
           "integer",
           "null"
         ]
+      },
+      "native": {
+        "default": false,
+        "description": "Drive this machine even when the worker has a default `sandbox_image` or `default_endpoint` configured. Refused with `image` or `endpoint`.",
+        "type": "boolean"
       },
       "os": {
         "default": null,
@@ -64,9 +69,36 @@
           "width"
         ],
         "type": "object"
+      },
+      "Support": {
+        "description": "Whether the session takes one kind of action, and why not.",
+        "properties": {
+          "reason": {
+            "description": "Why not, when unsupported. On a supported `semantic` it is a warning instead: on Linux, accessibility is off and only GTK apps expose a tree.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "supported": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "supported"
+        ],
+        "type": "object"
       }
     },
     "properties": {
+      "coordinates": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/Support"
+          }
+        ],
+        "description": "Screenshots and coordinate actions (pointer, keyboard) on this session."
+      },
       "endpoint": {
         "description": "What the session drives: `native` for the local machine, or the normalized remote endpoint.",
         "type": "string"
@@ -82,15 +114,25 @@
         ],
         "description": "Desktop pixel dimensions; the coordinate space for `computer::act`."
       },
+      "semantic": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/Support"
+          }
+        ],
+        "description": "Accessibility (ref-based) actions on this session."
+      },
       "session_id": {
         "description": "Pass this to every other computer function.",
         "type": "string"
       }
     },
     "required": [
+      "coordinates",
       "endpoint",
       "os",
       "screen",
+      "semantic",
       "session_id"
     ],
     "title": "StartOutput",

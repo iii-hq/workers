@@ -121,6 +121,11 @@ async fn run_stream_call(
     } else {
         None
     };
+    if reasoning && input.thinking_level.is_some() && reasoning_effort.is_none() {
+        warnings.push(format!(
+            "thinking_level ignored: {model} has no reasoning-off switch"
+        ));
+    }
 
     let body = build_body(&BodyArgs {
         model: cfg.model.clone(),

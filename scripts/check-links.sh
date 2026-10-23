@@ -22,6 +22,7 @@ ignore=(
   'https://api.workers.iii.dev/w?tag=provider&cursor=p2' # test assertion with a fake pagination cursor; the API answers 400
   'https://workers.iii.dev/workers/skills' # published (badge.svg 200) but registry page missing
   'https://workers.iii.dev/workers/ade'    # console renamed to ade in #1126; page appears with the first publish under the new name — drop once live
+  'https://iii.dev/docs/upgrading/migrate-from-streams' # pubsub deprecation guide (MOT-3619), referenced ahead of publication — drop once live
 )
 
 urls=$(grep -rhoE 'https?://[a-zA-Z0-9.-]*iii\.dev[^)"'"'"'`[:space:]>,]*' . \

@@ -4,7 +4,7 @@
  * dependencies inside it, and the two page assets beside it.
  *
  * The assets stay separate files rather than string constants in the bundle,
- * because `onboarding::ui-content` reads them from disk at call time — the
+ * because `learn-iii::ui-content` reads them from disk at call time — the
  * same code path the watcher uses in development.
  *
  * The page itself is not built here: `build:bundle` runs the shared

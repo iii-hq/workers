@@ -143,6 +143,49 @@ describe('TriggerActivityCard', () => {
     expect(html).toContain('deploy::release')
   })
 
+  it('shows a condition that answered "not yet" as waiting, not as a failure', () => {
+    const skip = (gate: string, note: string) =>
+      renderToStaticMarkup(
+        createElement(TriggerActivityCard, {
+          record: record(
+            `e_trigskip_sub_1_${gate}_0123456789abcdef0123456789abcdef`,
+            {
+              subscription_id: 'sub_1',
+              trigger_type: 'state',
+              config: { scope: 'run-r1-w1' },
+              label: 'run r1 w1',
+              target: 'harness::send',
+              once: true,
+              fires: 0,
+              retired: false,
+              fired_at: 1,
+              outcome: 'skipped',
+              note,
+            },
+          ),
+          defaultOpen: true,
+        }),
+      )
+
+    const waiting = skip(
+      'condition',
+      '`state::barrier` skipped this fire: 1/3 arrived',
+    )
+    expect(waiting).toContain(
+      'class="activity-status-icon" data-status="pending"',
+    )
+    expect(waiting).toContain('Waiting on condition')
+    expect(waiting).toContain('Waiting')
+    expect(waiting).toContain('1/3 arrived')
+    expect(waiting).not.toContain('Delivery skipped')
+    expect(waiting).not.toContain('delivery was skipped')
+
+    const failed = skip('condition-error', '`state::barrier`: call failed')
+    expect(failed).toContain('class="activity-status-icon" data-status="error"')
+    expect(failed).toContain('Delivery skipped')
+    expect(failed).not.toContain('Waiting on condition')
+  })
+
   it('shows a generic source for any worker-defined trigger type', () => {
     const registration = registrationFromCall({
       id: 'call-1',

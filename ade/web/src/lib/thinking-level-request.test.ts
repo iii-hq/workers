@@ -31,6 +31,19 @@ describe('thinking-level requests', () => {
     disposeDuplicate()
   })
 
+  it('accepts a request for the lowest effort the model has', () => {
+    const listener = vi.fn(() => true)
+    const dispose = onThinkingLevelChangeRequest(listener)
+    expect(
+      requestThinkingLevelChange({ sessionId: 'session-1', level: 'lowest' }),
+    ).toBe(true)
+    expect(listener).toHaveBeenCalledWith({
+      sessionId: 'session-1',
+      level: 'lowest',
+    })
+    dispose()
+  })
+
   it('rejects incomplete requests and removes listeners', () => {
     const listener = vi.fn(() => true)
     const dispose = onThinkingLevelChangeRequest(listener)
@@ -58,7 +71,10 @@ describe('thinking-level requests', () => {
     const dispose = onThinkingLevelChangeRequest(listener)
 
     expect(
-      requestThinkingLevelChange({ sessionId: 'session-1', level: 'ludicrous' }),
+      requestThinkingLevelChange({
+        sessionId: 'session-1',
+        level: 'ludicrous',
+      }),
     ).toBe(false)
     expect(listener).not.toHaveBeenCalled()
     dispose()

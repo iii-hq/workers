@@ -1,10 +1,13 @@
 /**
- * Paged read-only view of one table.
+ * Paged view of one table.
  *
  * Reads go through `database::browseTable`, which takes typed filters and
  * sorts and returns the page plus a total honouring the same filters — one
  * call where this used to make two and build its own SQL. The page no longer
  * writes `SELECT`, and neither does an agent asking the same question.
+ *
+ * The grid stays read-only; the one write is New row (tables only), a form
+ * that inserts through `database::insertRow`.
  *
  * The grid is the shared `ResultGrid`, so cells render the same way as in the
  * SQL panel and the chat family.
@@ -26,19 +29,15 @@ import {
   uiClasses,
 } from '@iii-dev/console-ui'
 import { copyText } from '@iii-dev/console-ui/format'
-import { CircleAlert, Table2, X } from 'lucide-react'
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { CircleAlert, Plus, Table2, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { cellText, rowAsTsv } from '../lib/grid-cursor'
 import { type FilterSpec, isComplete, PAGE_SIZE } from '../lib/rpc'
 import { CellInspector } from './CellInspector'
 import { ColumnStatsPanel } from './ColumnStatsPanel'
-import {
-  browseTableRef,
-  type DbDriver,
-  type TableSort,
-  tableColumns,
-} from './db-data'
-import { FilterBar } from './FilterBar'
+import { browseTableRef, type DbDriver, distinctValuesRef, type TableSort, tableColumns } from './db-data'
+import { FilterBar, type SuggestFn } from './FilterBar'
+import { NewRowDialog } from './NewRowDialog'
 import { Pagination } from './pagination'
 import { RowDetail } from './RowDetail'
 import { ResultGrid } from './result-grid'
@@ -68,14 +67,21 @@ interface TableDataPanelProps {
    * sort, and the cursor.
    */
   refreshToken?: number
+  /** Views never offer New row. */
+  kind?: 'table' | 'view'
+  /** `database::insertRow` is registered. */
+  canInsert?: boolean
+  /** The worker takes raw SQL filter chips. */
+  canRawFilter?: boolean
+  /** `database::distinctValues` is registered. */
+  canSuggest?: boolean
 }
 
+const SUGGESTIONS = 12
+const INSERTED_NOTE_MS = 4000
+
 /** The modifier key, written the way this keyboard has it. */
-const MOD =
-  typeof navigator !== 'undefined' &&
-  /mac/i.test(navigator.platform || navigator.userAgent)
-    ? '⌘'
-    : 'ctrl+'
+const MOD = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform || navigator.userAgent) ? '⌘' : 'ctrl+'
 
 export function TableDataPanel({
   host,
@@ -87,8 +93,19 @@ export function TableDataPanel({
   onFollow,
   initialFilters,
   refreshToken,
+  kind,
+  canInsert,
+  canRawFilter,
+  canSuggest,
 }: TableDataPanelProps) {
   const [page, setPage] = useState(0)
+  const [newRowOpen, setNewRowOpen] = useState(false)
+  const [insertedNote, setInsertedNote] = useState<string | null>(null)
+  useEffect(() => {
+    if (!insertedNote) return
+    const timer = setTimeout(() => setInsertedNote(null), INSERTED_NOTE_MS)
+    return () => clearTimeout(timer)
+  }, [insertedNote])
   const [pageSize, setPageSize] = useState(PAGE_SIZE)
   const [sort, setSort] = useState<TableSort | null>(null)
   const [selectedRow, setSelectedRow] = useState<number | null>(null)
@@ -97,10 +114,7 @@ export function TableDataPanel({
   // Only complete, enabled chips are sent. Serialising them into the fetcher's
   // dependency key means a half-typed value does not trigger a read, and the
   // page settles once the chip becomes valid.
-  const applied = useMemo(
-    () => filters.filter((f) => !f.disabled && isComplete(f)),
-    [filters],
-  )
+  const applied = useMemo(() => filters.filter((f) => !f.disabled && isComplete(f)), [filters])
   const appliedKey = JSON.stringify(applied)
 
   // Editing a filter invalidates the page number and the selected row: page 4
@@ -128,16 +142,19 @@ export function TableDataPanel({
   const pageRead = useDatabaseRead(enabled, pageFetcher)
   const columnsRead = useDatabaseRead(enabled, columnsFetcher)
 
-  const columnInfo = useMemo(() => columnsRead.data ?? [], [columnsRead.data])
-  const primaryKeys = useMemo(
-    () => columnInfo.filter((c) => c.pk).map((c) => c.name),
-    [columnInfo],
+  const suggest = useCallback<SuggestFn>(
+    (column, search) =>
+      distinctValuesRef(host, db, table, column, {
+        search: search || undefined,
+        limit: SUGGESTIONS,
+      }).then((r) => r.values),
+    [host, db, table],
   )
+
+  const columnInfo = useMemo(() => columnsRead.data ?? [], [columnsRead.data])
+  const primaryKeys = useMemo(() => columnInfo.filter((c) => c.pk).map((c) => c.name), [columnInfo])
   const foreignKeys = useMemo(() => {
-    const out: Record<
-      string,
-      NonNullable<(typeof columnInfo)[number]['fk']>
-    > = {}
+    const out: Record<string, NonNullable<(typeof columnInfo)[number]['fk']>> = {}
     for (const c of columnInfo) {
       if (c.fk) out[c.name] = c.fk
     }
@@ -175,9 +192,7 @@ export function TableDataPanel({
     onActivate: (r) => setSelectedRow((cur) => (cur === r ? null : r)),
   })
 
-  const cursorColumn = keyboard.cursor
-    ? gridCols[keyboard.cursor.col]
-    : undefined
+  const cursorColumn = keyboard.cursor ? gridCols[keyboard.cursor.col] : undefined
   const cursorMeta = columnInfo.find((c) => c.name === cursorColumn)
   const totalPages = useMemo(() => {
     if (total !== null) return Math.max(1, Math.ceil(total / pageSize))
@@ -186,17 +201,41 @@ export function TableDataPanel({
     return hasMore ? page + 2 : page + 1
   }, [total, hasMore, page, pageSize])
 
+  const dialect = driver === 'unknown' ? 'unknown' : driver
+  const filterBar = (
+    <FilterBar
+      columns={columnInfo}
+      filters={filters}
+      onChange={changeFilters}
+      allowRaw={canRawFilter}
+      dialect={dialect}
+      suggest={canSuggest ? suggest : undefined}
+    />
+  )
+  const insertable = kind === 'table' && canInsert === true
+  const newRow = insertable ? (
+    <NewRowDialog
+      host={host}
+      db={db}
+      table={table}
+      columns={columnInfo}
+      dialect={dialect}
+      open={newRowOpen}
+      onOpenChange={setNewRowOpen}
+      onInserted={() => {
+        setInsertedNote(`Row inserted into ${table}`)
+        pageRead.refresh()
+      }}
+    />
+  ) : null
+
   if (pageRead.error) {
     // The filter bar stays: when a filter itself caused the failure, hiding
     // it traps the user with no way to edit or remove the offending chip.
     return (
       <div className="db-data">
         <div className="db-data-main">
-          <FilterBar
-            columns={columnInfo}
-            filters={filters}
-            onChange={changeFilters}
-          />
+          {filterBar}
           <div className="db-pad">
             <StatusPanel
               variant="alert"
@@ -227,11 +266,7 @@ export function TableDataPanel({
     return (
       <div className="db-data">
         <div className="db-data-main">
-          <FilterBar
-            columns={columnInfo}
-            filters={filters}
-            onChange={changeFilters}
-          />
+          {filterBar}
           <EmptyState
             icon={Table2}
             title={filtering ? 'No matching rows' : 'Empty table'}
@@ -240,44 +275,51 @@ export function TableDataPanel({
                 ? `no rows in ${table} match the ${applied.length} filter${applied.length === 1 ? '' : 's'} above`
                 : `${table} has no rows`
             }
+            action={insertable ? { label: 'New row', onClick: () => setNewRowOpen(true) } : undefined}
           />
+          {insertedNote ? (
+            <span className="db-sr-only" role="status">
+              {insertedNote}
+            </span>
+          ) : null}
         </div>
+        {newRow}
       </div>
     )
   }
 
   const rows = result.rows
-  const detailRow =
-    selectedRow !== null && selectedRow < rows.length ? rows[selectedRow] : null
+  const detailRow = selectedRow !== null && selectedRow < rows.length ? rows[selectedRow] : null
 
   return (
     <div className="db-data">
       <div className="db-data-main">
-        <FilterBar
-          columns={columnInfo}
-          filters={filters}
-          onChange={changeFilters}
-        />
+        {filterBar}
         <Toolbar
           aria-label="table data"
           className="db-bar db-data-bar"
           end={
-            onOpenInSql ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => onOpenInSql(table)}
-              >
-                Open in SQL
-              </Button>
+            insertable || onOpenInSql ? (
+              <>
+                {insertable ? (
+                  <Button variant="ghost" size="sm" onClick={() => setNewRowOpen(true)}>
+                    <Plus size={16} aria-hidden />
+                    New row
+                  </Button>
+                ) : null}
+                {onOpenInSql ? (
+                  <Button variant="ghost" size="sm" onClick={() => onOpenInSql(table)}>
+                    Open in SQL
+                  </Button>
+                ) : null}
+              </>
             ) : undefined
           }
         >
           <span className="name">{table}</span>
           <span>
             {(() => {
-              const n =
-                result.columns?.length ?? Object.keys(rows[0] ?? {}).length
+              const n = result.columns?.length ?? Object.keys(rows[0] ?? {}).length
               return `${n} column${n === 1 ? '' : 's'}`
             })()}
           </span>
@@ -285,11 +327,15 @@ export function TableDataPanel({
               beside three active filters reads as the table's size. The
               worker counts with the same filters applied, so say so. */}
           <span className={total === null ? uiClasses.pulse : undefined}>
-            {total !== null
-              ? `${total.toLocaleString()} row${total === 1 ? '' : 's'}`
-              : '… rows'}
+            {total !== null ? `${total.toLocaleString()} row${total === 1 ? '' : 's'}` : '… rows'}
             {filtering ? ' matching' : ''}
+            {typeof result.elapsed_ms === 'number' ? ` · ${result.elapsed_ms} ms` : ''}
           </span>
+          {insertedNote ? (
+            <span className="db-data-note" role="status">
+              {insertedNote}
+            </span>
+          ) : null}
           {/* The audible twin of the counts: rows and page after each load,
               silence while loading. */}
           <span className="db-sr-only" role="status">
@@ -309,17 +355,14 @@ export function TableDataPanel({
               Sorted by {sort.column} {sort.dir} · Clear
             </Button>
           ) : null}
-          {pageRead.loading ? (
-            <span className={uiClasses.pulse}>Refreshing…</span>
-          ) : null}
+          {pageRead.loading ? <span className={uiClasses.pulse}>Refreshing…</span> : null}
           {view.view.hidden.length > 0 ? (
             <Button variant="ghost" size="sm" onClick={view.showAll}>
               {view.view.hidden.length} column
               {view.view.hidden.length === 1 ? '' : 's'} hidden · Show all
             </Button>
           ) : null}
-          {Object.keys(view.view.widths).length > 0 ||
-          view.view.order.length > 0 ? (
+          {Object.keys(view.view.widths).length > 0 || view.view.order.length > 0 ? (
             <Button variant="ghost" size="sm" onClick={view.reset}>
               Reset layout
             </Button>
@@ -329,11 +372,7 @@ export function TableDataPanel({
             catches keys bubbling from the focused cell, so it is a scroll
             region rather than a control of its own. */}
         {/* biome-ignore lint/a11y/noStaticElementInteractions: scroll container catching keys bubbled from the focused gridcell */}
-        <div
-          className="db-data-scroll"
-          ref={gridRef}
-          onKeyDown={keyboard.onKeyDown}
-        >
+        <div className="db-data-scroll" ref={gridRef} onKeyDown={keyboard.onKeyDown}>
           <ResultGrid
             keyboard={keyboard}
             view={view}
@@ -350,11 +389,7 @@ export function TableDataPanel({
             onRowClick={(i) => setSelectedRow((cur) => (cur === i ? null : i))}
             selectedRow={selectedRow}
             foreignKeys={foreignKeys}
-            onFollowFk={
-              onFollow
-                ? (fk, value) => onFollow(fk.table, fk.column, value)
-                : undefined
-            }
+            onFollowFk={onFollow ? (fk, value) => onFollow(fk.table, fk.column, value) : undefined}
             stickyHeader
             hideFooter
           />
@@ -382,8 +417,7 @@ export function TableDataPanel({
           {/* Advertised nowhere else — without this line the roving-cursor
               grid reads as mouse-only. */}
           <span className="db-kbd-hint">
-            Arrows move · PgUp/PgDn turn pages · {MOD}c copies a cell · {MOD}⇧c
-            the row
+            Arrows move · PgUp/PgDn turn pages · {MOD}c copies a cell · {MOD}⇧c the row
           </span>
         </StatusBar>
       </div>
@@ -418,9 +452,7 @@ export function TableDataPanel({
               </IconButton>
             </div>
             <TabsContent value="row">
-              {detailRow ? (
-                <RowDetail row={detailRow} columns={columnInfo} />
-              ) : null}
+              {detailRow ? <RowDetail row={detailRow} columns={columnInfo} /> : null}
             </TabsContent>
             <TabsContent value="cell">
               {keyboard.cursor && cursorColumn ? (
@@ -434,27 +466,17 @@ export function TableDataPanel({
                   col={keyboard.cursor.col}
                   colCount={gridCols.length}
                   foreignKey={cursorMeta?.fk}
-                  onFollow={
-                    onFollow
-                      ? (fk, v) => onFollow(fk.table, fk.column, v)
-                      : undefined
-                  }
+                  onFollow={onFollow ? (fk, v) => onFollow(fk.table, fk.column, v) : undefined}
                 />
               ) : null}
             </TabsContent>
             <TabsContent value="stats">
-              {cursorColumn ? (
-                <ColumnStatsPanel
-                  host={host}
-                  db={db}
-                  table={table}
-                  column={cursorColumn}
-                />
-              ) : null}
+              {cursorColumn ? <ColumnStatsPanel host={host} db={db} table={table} column={cursorColumn} /> : null}
             </TabsContent>
           </Tabs>
         </div>
       ) : null}
+      {newRow}
     </div>
   )
 }

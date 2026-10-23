@@ -7,7 +7,7 @@
 use serde_json::{json, Value};
 
 use super::{ScenarioDriver, VerifyFn};
-use crate::expand::ALLOWED_FUNCTIONS_MARKER;
+use crate::expand::{ALLOWED_FUNCTIONS_MARKER, RESPONSE_LANGUAGE_MARKER};
 use crate::fixtures::{ScenarioFixture, ScenarioIntervention};
 use crate::types::frames::{
     AssistantMessage, AssistantMessageEvent, AssistantRoleTag, ContentBlock, ErrorKind, ErrorShape,
@@ -281,8 +281,10 @@ impl Scenario {
     }
 
     /// Extra environment for the harness process under test — integration
-    /// knobs (e.g. a shrunken expiry-sweep interval) that tune the subject
-    /// for one scenario without touching the others.
+    /// knobs that tune the subject for one scenario without touching the
+    /// others. No scenario needs one right now (the expiry scenario's sweep
+    /// knob went with the sweep); kept for the next that does.
+    #[allow(dead_code)]
     pub(super) fn harness_env(mut self, key: &str, value: &str) -> Self {
         self.harness_env.push((key.to_string(), value.to_string()));
         self
@@ -320,7 +322,7 @@ impl Scenario {
 
     pub(super) fn build(self) -> ScenarioFixture {
         let send = self.send.expect("scenario send is required");
-        let allowed_functions = send.allowed_functions.clone();
+        let system_prompt_template = system_prompt(&send.allowed_functions, &self.model.id);
         let compiled_send = send.compile(&self.id, &self.model);
         let generations = self
             .generations
@@ -357,7 +359,7 @@ impl Scenario {
                 },
                 generations,
             },
-            system_prompt_template: system_prompt(&allowed_functions),
+            system_prompt_template,
             verify: self.verify.expect("scenario verification is required"),
             probe_actions: self.probe_actions,
             harness_env: self.harness_env,
@@ -1577,7 +1579,7 @@ fn error_kind_code(kind: ErrorKind) -> &'static str {
     }
 }
 
-fn system_prompt(allowed_functions: &[String]) -> String {
+fn system_prompt(allowed_functions: &[String], model: &str) -> String {
     let base = DEFAULT_SYSTEM_PROMPT
         .strip_suffix('\n')
         .unwrap_or(DEFAULT_SYSTEM_PROMPT);
@@ -1594,7 +1596,15 @@ fn system_prompt(allowed_functions: &[String]) -> String {
             ALLOWED_FUNCTIONS_MARKER
         )
     };
-    format!("{base}\n\nYour session id is {{{{session_id}}}}.\n{policy}")
+    // The response-language line sits between the session id and the policy,
+    // exactly where the harness's runtime context puts it (the working
+    // directory, between them in production, is off in this stack). The
+    // co-author line closes it: `co_author` defaults on (MOT-5364).
+    format!(
+        "{base}\n\nYour session id is {{{{session_id}}}}.\n{RESPONSE_LANGUAGE_MARKER}{policy}\n\
+         End every git commit message you write with a blank line, then the trailer \
+         `Co-authored-by: iii harness ({model}) <noreply@iii.dev>`."
+    )
 }
 
 #[cfg(test)]

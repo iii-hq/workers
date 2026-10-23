@@ -6,7 +6,7 @@
     "properties": {
       "bank": {
         "default": null,
-        "description": "Bank to preview; the configured default when omitted.",
+        "description": "Bank to preview; a directory's bank (`<name>-<6 hex>`) reads `default_bank` under it, as its turns do. Omitted: the calling session's bank with its layers (its agent profile's bank too), else the configured default.",
         "type": [
           "string",
           "null"
@@ -114,6 +114,15 @@
               }
             ]
           },
+          "stated_at": {
+            "description": "When the fact was last STATED (created, re-observed, text edited). Unlike `updated_at`, pin/tag/entity edits never bump it, so consolidation can order \"which statement is current\" by it. Legacy records load as None.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "superseded_by": {
             "description": "Memory id that replaced this one, when superseded by content.",
             "type": [
@@ -149,6 +158,13 @@
       },
       "PreviewMemory": {
         "properties": {
+          "bank": {
+            "description": "The bank holding it, when not `bank`: the default bank, read under a bank the session's directory chose, or its agent profile's bank.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "memory": {
             "$ref": "#/definitions/Memory"
           },
@@ -208,7 +224,7 @@
         ]
       },
       "retrieval": {
-        "description": "Retrieval mode that ran (`bm25-entity` or `bm25-entity-semantic`).",
+        "description": "Retrieval mode that ran (`bm25-entity` or `bm25-entity-semantic`; `none` when memories are not injected).",
         "type": "string"
       },
       "rules": {

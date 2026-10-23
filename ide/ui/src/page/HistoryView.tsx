@@ -54,6 +54,11 @@ export function HistoryView({
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState<string | null>(null)
   const [details, setDetails] = useState<Load<GitCommitDetails> | null>(null)
+  // A reload retries details that failed to load: the sha they are keyed on
+  // comes back the same.
+  const [retry, setRetry] = useState(0)
+  const detailsRef = useRef(details)
+  detailsRef.current = details
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState<{ text: string; failed: boolean } | null>(null)
   const [revertFor, setRevertFor] = useState<GitLogCommit | null>(null)
@@ -75,6 +80,7 @@ export function HistoryView({
         setSelected((current) =>
           commits.some((commit) => commit.sha === current) ? current : (commits[0]?.sha ?? null),
         )
+        if (detailsRef.current?.kind === 'error') setRetry((value) => value + 1)
       })
       .catch((err: unknown) => {
         if (seqRef.current !== seq) return
@@ -87,6 +93,9 @@ export function HistoryView({
   const shown = useMemo(() => commits.filter((commit) => matchesCommit(commit, query)), [commits, query])
   const current = commits.find((commit) => commit.sha === selected) ?? null
 
+  // Keyed on the sha: a reload finds the same entry as a new object, and
+  // a sha's content never changes.
+  const currentSha = current?.sha ?? null
   useEffect(() => {
     if (root === null || current === null) {
       setDetails(null)
@@ -100,7 +109,7 @@ export function HistoryView({
     return () => {
       live = false
     }
-  }, [host, root, current])
+  }, [host, root, currentSha, retry])
 
   const perform = useCallback(
     async (label: string, action: () => Promise<string>) => {

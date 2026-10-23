@@ -530,7 +530,7 @@ async fn prepare(deps: &Deps, op: &mut Operation) -> Result<(), HarnessError> {
     // Never interpret a stop acknowledgement as terminality.
     let mut records = Vec::new();
     for id in &op.members {
-        if let Some(record) = state::get_turn(&deps.iii, id, timeout).await? {
+        if let Some(record) = state::get_turn_unhydrated(&deps.iii, id, timeout).await? {
             if !record.status.is_terminal() {
                 deps.cancels.fire(&record.turn_id);
             }
@@ -573,7 +573,7 @@ async fn prepare(deps: &Deps, op: &mut Operation) -> Result<(), HarnessError> {
         for id in &op.members {
             let _activity = deps.turn_activity.guard(id).await;
             let _lock = deps.locks.guard(id).await;
-            if let Some(record) = state::get_turn(&deps.iii, id, timeout).await? {
+            if let Some(record) = state::get_turn_unhydrated(&deps.iii, id, timeout).await? {
                 if !record.status.is_terminal() {
                     terminal = false;
                 }
@@ -632,7 +632,7 @@ async fn erase(deps: &Deps, op: &mut Operation) -> Result<(), HarnessError> {
         // is refused. Holding it across cleanup and session::delete would
         // stall every topology writer in the process for those RPCs.
         drop(deps.topology.lock().await);
-        if let Some(record) = state::get_turn(&deps.iii, &id, timeout).await? {
+        if let Some(record) = state::get_turn_unhydrated(&deps.iii, &id, timeout).await? {
             if !record.status.is_terminal() {
                 return Err(failure(format!("{id} became nonterminal; refusing erase")));
             }

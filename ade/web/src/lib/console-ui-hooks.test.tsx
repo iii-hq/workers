@@ -231,7 +231,7 @@ describe('useWorkerLive', () => {
     expect(hook.current.data).toBe('second')
   })
 
-  it('polls while not live and surfaces fetch errors', async () => {
+  it('never polls while not live: it re-reads when the tab is focused again', async () => {
     vi.useFakeTimers()
     const { iii } = fakeIii({ failRegister: true })
     const fetch = vi.fn().mockRejectedValue({ code: 'E1', message: 'down' })
@@ -241,14 +241,17 @@ describe('useWorkerLive', () => {
         triggers: ['t'],
         fetch,
         handlerId: 'h',
-        pollMs: 500,
       }),
     )
     await act(async () => {})
     expect(hook.current.live).toBe(false)
     expect(hook.current.error).toBe('E1: down')
     await act(async () => {
-      vi.advanceTimersByTime(500)
+      vi.advanceTimersByTime(60_000)
+    })
+    expect(fetch).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
     })
     expect(fetch).toHaveBeenCalledTimes(2)
   })

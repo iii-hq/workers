@@ -8,7 +8,7 @@
  * Two halves, one worker and one login: `claude::run` drives Claude Code
  * headless from here, and `claude::terminal::*` drives the same CLI in a
  * `shell::pty` session a person types into. Both report onto the same
- * `agent::events` stream.
+ * `claude::agent-event` feed (raw Claude Code messages: `claude::raw-event`).
  */
 
 import { parseArgs } from 'node:util';
@@ -20,7 +20,7 @@ import {
   fetchRuntime,
   registerClaudeConfig,
 } from './configuration.js';
-import { makeEmitter } from './events.js';
+import { registerAgentFeeds } from './agent-feed.js';
 import { resolveClaudeExecutable } from './executable.js';
 import { register } from './run.js';
 import { registerActivity } from './terminal/activity.js';
@@ -113,9 +113,12 @@ const refresh = async () => {
 
 await bindConfigTrigger(iii, refresh);
 
-// Emitters bind the boot stream names (a stream-name change needs a restart).
-const emit = makeEmitter(iii, holder.current.events_stream);
-const emitRaw = makeEmitter(iii, holder.current.raw_events_stream);
+// The two owned event feeds: claude::agent-event (AgentEvent frames) and
+// claude::raw-event (verbatim Claude Code messages), each with its own
+// binding table and sequence counter.
+const feeds = registerAgentFeeds(iii);
+const emit = feeds.agent.emit;
+const emitRaw = feeds.raw.emit;
 register(iii, () => holder.current, emit, emitRaw);
 
 // The terminal half: the hook sink, what a session runs, who pays for it, and

@@ -36,7 +36,6 @@ use colored::Colorize;
 use iii_helpers::observability::opentelemetry::metrics::Counter;
 use iii_helpers::observability::opentelemetry::KeyValue;
 use iii_sdk::helpers::create_channel;
-use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -107,6 +106,14 @@ pub(crate) fn error_response(status: StatusCode, code: &str, message: &str) -> R
         axum::Json(json!({ "error": { "code": code, "message": message } })),
     )
         .into_response()
+}
+
+/// `422 CONDITION_NOT_MET`: the route's condition function returned `false`,
+/// or its observer's filters rejected the request.
+fn condition_not_met() -> Response {
+    let mut body = error_body("CONDITION_NOT_MET", "Request condition not met", None);
+    body["skipped"] = json!(true);
+    (StatusCode::UNPROCESSABLE_ENTITY, axum::Json(body)).into_response()
 }
 
 /// Apply a parsed control message to the accumulated response status/headers.
@@ -424,6 +431,19 @@ pub async fn dynamic_handler(
         }
     };
 
+    // An observer's filters (evaluated in-process against the request as
+    // `input`) gate the route like a condition function returning `false`.
+    // Always passes for a trigger binding.
+    if !route.sink.accepts(&payload) {
+        tracing::debug!(
+            function_id = %route.function_id,
+            observer_id = %route.id(),
+            "Observer filters rejected the request, skipping handler"
+        );
+        drop(res_reader);
+        return record_status(condition_not_met());
+    }
+
     // Conditional execution (trigger config-driven), runs after global
     // middleware and before per-route middleware/handler. The condition
     // function receives the serialized request minus the channel refs, which
@@ -446,11 +466,7 @@ pub async fn dynamic_handler(
                     "Condition check failed, skipping handler"
                 );
                 drop(res_reader);
-                let mut body = error_body("CONDITION_NOT_MET", "Request condition not met", None);
-                body["skipped"] = json!(true);
-                return record_status(
-                    (StatusCode::UNPROCESSABLE_ENTITY, axum::Json(body)).into_response(),
-                );
+                return record_status(condition_not_met());
             }
             Err(err) => {
                 let error_id = generate_error_id();
@@ -531,10 +547,11 @@ pub async fn dynamic_handler(
     });
 
     // Spawn the invocation so it runs concurrently with draining the response
-    // channel.
+    // channel. The route invokes its target the way it was bound: `iii.trigger`
+    // for a trigger, `obs.call` for an observer (see `Route::call`).
     let mut call = {
         let iii = state.iii.clone();
-        let function_id = route.function_id.clone();
+        let target = route.clone();
         let timeout_ms = config.default_timeout;
         // Propagate THIS request's HTTP-span trace context onto the outbound
         // trigger so `request -> worker -> function` is one unified trace. The
@@ -549,16 +566,7 @@ pub async fn dynamic_handler(
         use tracing_opentelemetry::OpenTelemetrySpanExt;
         let otel_cx = tracing::Span::current().context();
         tokio::spawn(
-            async move {
-                iii.trigger(TriggerRequest {
-                    function_id,
-                    payload,
-                    action: None,
-                    timeout_ms: Some(timeout_ms),
-                })
-                .await
-            }
-            .with_context(otel_cx),
+            async move { target.call(&iii, payload, timeout_ms).await }.with_context(otel_cx),
         )
     };
 

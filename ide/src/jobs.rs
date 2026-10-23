@@ -47,6 +47,12 @@ pub struct JobHandle {
     /// directly (that risked SIGKILLing a reused pid after `wait()` reaped the
     /// child); see [`kill_signal_for`] and the drain task.
     pub host_pid: Option<u32>,
+    /// Harness session that started the job, stamped by the harness on
+    /// `shell::exec_bg`. `harness::stop` reaps a stopped tree's jobs by it
+    /// (`shell::kill-session-jobs`); `None` (console, other workers) never
+    /// matches. Internal only: not on `JobRecord`, so `shell::list` stays
+    /// caller-neutral.
+    pub owner_session_id: Option<String>,
 }
 
 pub struct Jobs {
@@ -304,6 +310,22 @@ pub async fn list_all() -> Vec<JobRecord> {
     out
 }
 
+/// Ids of the running jobs owned by any of `session_ids`.
+pub async fn running_owned_by(session_ids: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for (id, handle) in snapshot().await {
+        let h = handle.lock().await;
+        if h.record.status == JobStatus::Running
+            && h.owner_session_id
+                .as_ref()
+                .is_some_and(|owner| session_ids.contains(owner))
+        {
+            out.push(id);
+        }
+    }
+    out
+}
+
 /// Best-effort terminate every still-running host-backed job. Called on shutdown
 /// so the worker does not leave orphaned OS processes behind.
 ///
@@ -459,6 +481,7 @@ mod tests {
             },
             child: None,
             host_pid: None,
+            owner_session_id: None,
         }
     }
 
@@ -501,6 +524,7 @@ mod tests {
             },
             child: None,
             host_pid: None,
+            owner_session_id: None,
         };
         try_reserve_and_insert(handle, usize::MAX)
             .await

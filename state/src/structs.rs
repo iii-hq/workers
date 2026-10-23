@@ -100,7 +100,7 @@ pub struct StateListKeysResult {
     pub keys: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum StateEventType {
     #[serde(rename = "state:created")]
     Created,
@@ -110,14 +110,22 @@ pub enum StateEventType {
     Deleted,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// One committed state change: the payload of a `state` trigger handler and
+/// the input of `state::on-changed`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StateEventData {
+    /// Always `state`.
     #[serde(rename = "type")]
     pub message_type: String,
+    /// `state:created`, `state:updated` or `state:deleted`.
     pub event_type: StateEventType,
+    /// Scope of the changed key.
     pub scope: String,
+    /// The changed key.
     pub key: String,
+    /// The value before the change; `null` for a created key.
     pub old_value: Option<Value>,
+    /// The value after the change; `null` for a deleted key.
     pub new_value: Value,
 }
 

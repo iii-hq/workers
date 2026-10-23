@@ -607,14 +607,25 @@
       },
       "ThinkingLevel": {
         "description": "Reasoning-effort tier; levels map to provider-native knobs via `Model.thinking_budgets`.",
-        "enum": [
-          "minimal",
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ],
-        "type": "string"
+        "oneOf": [
+          {
+            "enum": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The harness asks the provider not to reason; reserves no budget unless the model declares one for it.",
+            "enum": [
+              "off"
+            ],
+            "type": "string"
+          }
+        ]
       },
       "Usage": {
         "description": "Token / cost accounting reported by providers.",

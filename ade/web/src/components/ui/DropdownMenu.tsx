@@ -87,21 +87,41 @@ export function DropdownMenuCheckboxItem({
   className,
   children,
   indicator,
+  box = false,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.CheckboxItem> & {
   /** Checked-state icon (a Lucide icon, per the design system); defaults to a checkmark. */
   indicator?: React.ReactNode
+  /**
+   * Draw the box too, empty while off (the shared Checkbox look): for a
+   * setting that stays on, where a lone check mark leaves "off" looking
+   * like a plain action.
+   */
+  box?: boolean
 }) {
+  const mark = indicator ?? (
+    <Check aria-hidden className="size-4" strokeWidth={2.5} />
+  )
   return (
     <DropdownMenuPrimitive.CheckboxItem
-      className={cn(choiceItemClass, className)}
+      className={cn(choiceItemClass, box && 'group/check pl-8', className)}
       {...props}
     >
-      <DropdownMenuPrimitive.ItemIndicator className="absolute top-1/2 left-2 -translate-y-1/2 text-ink">
-        {indicator ?? (
-          <Check aria-hidden className="size-4" strokeWidth={2.5} />
-        )}
-      </DropdownMenuPrimitive.ItemIndicator>
+      {box ? (
+        <span
+          aria-hidden
+          data-menu-checkbox=""
+          className="absolute top-1/2 left-2 flex size-[18px] -translate-y-1/2 items-center justify-center rounded-sm border border-edge bg-surface text-accent-fg group-data-[state=checked]/check:border-accent group-data-[state=checked]/check:bg-accent"
+        >
+          <DropdownMenuPrimitive.ItemIndicator>
+            {mark}
+          </DropdownMenuPrimitive.ItemIndicator>
+        </span>
+      ) : (
+        <DropdownMenuPrimitive.ItemIndicator className="absolute top-1/2 left-2 -translate-y-1/2 text-ink">
+          {mark}
+        </DropdownMenuPrimitive.ItemIndicator>
+      )}
       {children}
     </DropdownMenuPrimitive.CheckboxItem>
   )

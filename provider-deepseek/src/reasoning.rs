@@ -62,7 +62,10 @@ pub fn thinking_type(
     if !reasoning {
         return None;
     }
-    native.or_else(|| level.is_some().then_some("enabled"))
+    native.or_else(|| match level? {
+        ThinkingLevel::Off => Some("disabled"),
+        _ => Some("enabled"),
+    })
 }
 
 /// The router's five levels collapse onto DeepSeek's three-wide ladder.
@@ -73,6 +76,7 @@ pub fn thinking_type(
 /// `None` when the model does not reason or no level was requested.
 pub fn reasoning_effort_for(level: Option<ThinkingLevel>) -> Option<&'static str> {
     Some(match level? {
+        ThinkingLevel::Off => return None,
         ThinkingLevel::Minimal | ThinkingLevel::Low => "low",
         ThinkingLevel::Medium | ThinkingLevel::High => "high",
         ThinkingLevel::Xhigh => "max",
@@ -107,6 +111,18 @@ pub fn resolve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn off_disables_thinking_and_carries_no_effort() {
+        assert_eq!(
+            resolve(Some(ThinkingLevel::Off), true, None),
+            ReasoningParams {
+                thinking: Some("disabled"),
+                reasoning_effort: None,
+            }
+        );
+        assert_eq!(reasoning_effort_for(Some(ThinkingLevel::Off)), None);
+    }
     use serde_json::json;
 
     #[test]

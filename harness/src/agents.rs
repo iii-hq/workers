@@ -65,6 +65,11 @@ struct AgentGetWire {
     icon: Option<String>,
     #[serde(default)]
     color: Option<String>,
+    /// `false`: sessions running as this profile start without the skills
+    /// index. Resolved through `extends` by the directory; older
+    /// directories omit the field (index on).
+    #[serde(default)]
+    skills_index: Option<bool>,
     /// Set by the directory when the profile's `extends` chain does not
     /// resolve; the served prompt is then the file's own body only.
     #[serde(default)]
@@ -84,8 +89,13 @@ pub struct ResolvedAgent {
     /// into `prompt` by [`resolve`] (ids the directory could not serve are
     /// still listed here; the prompt names them as unavailable). Empty = the
     /// profile declares none. Never a filter: the session's skill index
-    /// stays whole, only an explicit `options.skills` narrows it.
+    /// stays whole (unless `skills_index` is false), only an explicit
+    /// `options.skills` narrows it.
     pub skills: Vec<String>,
+    /// `false` = sessions started as this profile (root sends and spawns)
+    /// are seeded with no skill context, so no `<available_skills>` index;
+    /// preloaded `skills` still render. Defaults to true.
+    pub skills_index: bool,
     /// The profile's preloaded function ids, in declaration order — the
     /// contracts rendered into `prompt` by [`resolve`] (ids the engine did
     /// not know at resolution are still listed here; the prompt names them
@@ -209,7 +219,7 @@ async fn attach_preloaded_skills(
     }
     agent.prompt = append_block(
         &agent.prompt,
-        &render_preloaded_skills(&loaded, &unavailable),
+        &render_preloaded_skills(&loaded, &unavailable, agent.skills_index),
     );
 }
 
@@ -217,13 +227,15 @@ async fn attach_preloaded_skills(
 /// DECLARED id, or `None` when the directory answered with something else —
 /// its miss recovery serves a worker or engine overview under a different
 /// id, and an overview is not the skill the profile asked to preload. The
-/// served id may be the declared one canonicalized (`iii://` prefix and
-/// `.md` suffix dropped); the block keeps the profile's spelling, which is
-/// what the skills index shows too.
+/// served id may be the declared one canonicalized: the `iii://` prefix and
+/// `.md` suffix dropped, and a folder's `index` served under the folder's id
+/// (`harness/iii-node/index` → `harness/iii-node`), as the skills index lists
+/// it. The block keeps the profile's spelling.
 fn skill_in_get_response(id: &str, response: &Value) -> Option<PreloadedSkill> {
     let served = response.get("id").and_then(Value::as_str)?;
     let canonical = id.trim_start_matches("iii://").trim_end_matches(".md");
-    if served != id && served != canonical {
+    let folder = canonical.strip_suffix("/index");
+    if served != id && served != canonical && Some(served) != folder {
         tracing::warn!(
             skill_id = %id,
             served = %served,
@@ -243,13 +255,23 @@ fn skill_in_get_response(id: &str, response: &Value) -> Option<PreloadedSkill> {
 /// order, then the ids the directory could not serve. The `<skill id>` shape
 /// is the one the skills index already describes as "already loaded", so
 /// the two blocks agree on what the model must not fetch again.
-pub(crate) fn render_preloaded_skills(skills: &[PreloadedSkill], unavailable: &[String]) -> String {
+/// `index` is false for a profile with `skills_index: false`: the session has
+/// no skills index, so the block does not point at one.
+pub(crate) fn render_preloaded_skills(
+    skills: &[PreloadedSkill],
+    unavailable: &[String],
+    index: bool,
+) -> String {
     let mut body = String::from(
         "<preloaded_skills>\nThese skills are preloaded for this agent profile: every `<skill id=\"...\">` \
          block below is already in context — follow it directly and do not call \
-         `directory::skills::get` for these ids. Every other skill still goes through the skills \
-         index and `directory::skills::get`.",
+         `directory::skills::get` for these ids.",
     );
+    if index {
+        body.push_str(
+            " Every other skill still goes through the skills index and `directory::skills::get`.",
+        );
+    }
     for skill in skills {
         body.push_str("\n\n<skill id=\"");
         body.push_str(&skill.id);
@@ -665,6 +687,7 @@ fn normalize(id: &str, wire: AgentGetWire) -> ResolvedAgent {
             .collect(),
         model: wire.model,
         reasoning_effort: wire.reasoning_effort,
+        skills_index: wire.skills_index.unwrap_or(true),
         name,
         icon,
         color,
@@ -799,6 +822,21 @@ mod tests {
             "inheritance_error": "  ",
         }));
         assert!(check_resolvable(&blank).is_ok());
+    }
+
+    #[test]
+    fn skills_index_defaults_on_and_follows_the_directory() {
+        let base = serde_json::json!({ "name": "Lead", "system_prompt": "Body." });
+        assert!(
+            normalize("lead", wire(base.clone())).skills_index,
+            "an older directory omits the key: the index stays on"
+        );
+        let mut off = base.clone();
+        off["skills_index"] = serde_json::json!(false);
+        assert!(!normalize("lead", wire(off)).skills_index);
+        let mut on = base;
+        on["skills_index"] = serde_json::json!(true);
+        assert!(normalize("lead", wire(on)).skills_index);
     }
 
     #[test]
@@ -940,6 +978,21 @@ mod tests {
         assert!(skill_in_get_response("harness/alpha", &serde_json::json!({})).is_none());
     }
 
+    /// The directory serves a folder's `index.md` under the folder's id, so a
+    /// profile declaring `<folder>/index` gets `<folder>` back. That is the
+    /// declared skill, not a miss recovery (MOT-5344).
+    #[test]
+    fn skill_get_response_accepts_the_folder_id_for_an_index_skill() {
+        let served = serde_json::json!({ "id": "harness/iii-node", "body": "# iii-node" });
+        let skill = skill_in_get_response("harness/iii-node/index", &served).unwrap();
+        assert_eq!(skill.id, "harness/iii-node/index");
+        assert!(skill_in_get_response("iii://harness/iii-node/index.md", &served).is_some());
+        // Only that one alias: another folder, or the parent, is still a miss.
+        assert!(skill_in_get_response("harness/other/index", &served).is_none());
+        let parent = serde_json::json!({ "id": "harness", "body": "# harness" });
+        assert!(skill_in_get_response("harness/iii-node/index", &parent).is_none());
+    }
+
     #[test]
     fn preloaded_skills_block_lists_bodies_in_order_and_names_the_unavailable() {
         let skills = vec![
@@ -952,7 +1005,7 @@ mod tests {
                 body: "Checksum last.".into(),
             },
         ];
-        let block = render_preloaded_skills(&skills, &["harness/missing".to_string()]);
+        let block = render_preloaded_skills(&skills, &["harness/missing".to_string()], true);
         assert!(block.starts_with("<preloaded_skills>\n"));
         assert!(block.ends_with("\n</preloaded_skills>"));
         assert!(block.contains("already in context"));
@@ -972,9 +1025,16 @@ mod tests {
         );
 
         // Nothing unavailable → no such paragraph; the block still explains itself.
-        let clean = render_preloaded_skills(&skills, &[]);
+        let clean = render_preloaded_skills(&skills, &[], true);
         assert!(!clean.contains("NOT available"));
         assert_eq!(clean.matches("</skill>").count(), 2);
+        assert!(clean.contains("Every other skill still goes through the skills index"));
+
+        // A profile with `skills_index: false` has no index to point at.
+        let alone = render_preloaded_skills(&skills, &[], false);
+        assert!(!alone.contains("skills index"), "got: {alone}");
+        assert!(alone.contains("do not call `directory::skills::get` for these ids"));
+        assert_eq!(alone.matches("</skill>").count(), 2);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! Provider-neutral judge hub: `judge::*` forwarded to `judge-<provider>::*`.
 pub mod config;
 pub mod configuration;
+pub mod mentions;
 pub mod register;
 pub use config::JudgeConfig;
 pub use configuration::SharedConfig;

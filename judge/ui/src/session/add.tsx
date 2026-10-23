@@ -1,6 +1,7 @@
-import { Button, IconButton, List, ListItem, uiClasses } from '@iii-dev/console-ui'
-import { ArrowLeft, Check, Plus, RefreshCw } from 'lucide-react'
+import { Button, Skeleton, uiClasses } from '@iii-dev/console-ui'
+import { Check, Plus, RefreshCw } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { type ConfigureTarget, JudgeMark } from './judges'
 
 /**
  * The public registry's `evaluation` tag, which every judge provider publishes
@@ -45,17 +46,19 @@ export interface AddJudgePanelProps {
   /** Providers registered on the engine now (`judge-<provider>` answering). */
   registered: ReadonlySet<string>
   adds: ReadonlyMap<string, AddState>
+  /** Settings of registered providers, by provider: an added judge links to them. */
+  targets: ReadonlyMap<string, ConfigureTarget>
   onAdd(worker: string): void
-  onBack(): void
+  onConfigure(target: ConfigureTarget): void
 }
 
 /**
- * The picker's second page, as the model picker's "Add a provider": every
- * judge worker the registry publishes that is not installed yet, one tap to
- * add. Adding runs `compose::add`; the row follows it until the new judge
- * registers and shows up on the first page.
+ * The picker's "Add a judge" page, as the model picker's "Add a provider":
+ * every judge worker the registry publishes that is not installed yet, one
+ * tap to add. Adding runs `compose::add`; the row follows it until the new
+ * judge registers, then offers its settings — a hosted judge needs a key.
  */
-export function AddJudgePanel({ registered, adds, onAdd, onBack }: AddJudgePanelProps) {
+export function AddJudgePanel({ registered, adds, targets, onAdd, onConfigure }: AddJudgePanelProps) {
   const [registry, setRegistry] = useState<{ judges: RegistryJudge[] | null; error: boolean }>({
     judges: null,
     error: false,
@@ -76,69 +79,68 @@ export function AddJudgePanel({ registered, adds, onAdd, onBack }: AddJudgePanel
 
   // What is installed stays off this page; a judge added from here stays
   // listed so its progress and outcome remain visible.
-  const rows = (registry.judges ?? []).filter(
-    (judge) => adds.has(judge.name) || !registered.has(judge.provider),
-  )
+  const rows = (registry.judges ?? []).filter((judge) => adds.has(judge.name) || !registered.has(judge.provider))
   const everythingInstalled = (registry.judges?.length ?? 0) > 0 && rows.length === 0
 
   return (
-    <div className={`judge-ui-session-page ${uiClasses.motionPanel}`} data-page="add">
-      <div className="judge-ui-session-subheader">
-        <IconButton label="Back to judges" tooltip={false} variant="ghost" onClick={onBack}>
-          <ArrowLeft size={16} aria-hidden />
-        </IconButton>
-        <div className="judge-ui-session-subheader-copy">
-          <h2 className="judge-ui-session-subtitle">Add a judge</h2>
-          <p className="judge-ui-session-subdescription">Judge workers from the workers registry.</p>
-        </div>
-      </div>
-      {registry.judges === null ? (
-        <List className="judge-ui-session-list" aria-busy="true">
-          <ListItem className="judge-ui-session-row" disabled label="Loading judges…" />
-        </List>
-      ) : registry.error ? (
-        <div className="judge-ui-session-empty">
-          <p>The workers registry is unreachable right now.</p>
-          <Button variant="pill" size="sm" onClick={() => setAttempt((n) => n + 1)}>
-            Retry
-          </Button>
-        </div>
-      ) : rows.length === 0 ? (
-        <p className="judge-ui-session-empty">
-          {everythingInstalled
-            ? 'Every judge in the registry is already installed.'
-            : 'The registry lists no judge workers.'}
-        </p>
-      ) : (
-        <List className="judge-ui-session-list" aria-label="Judges in the workers registry">
-          {rows.map((judge) => {
-            const add = adds.get(judge.name)
-            return (
-              <ListItem
-                key={judge.name}
-                as="div"
-                className={`judge-ui-session-row judge-ui-session-add-row${add?.kind === 'failed' ? ' judge-ui-session-add-row--failed' : ''}`}
-                leading={<span className="judge-ui-session-mark">{judge.provider.charAt(0).toUpperCase()}</span>}
-                label={
-                  <>
-                    {judge.provider}
-                    <span className="judge-ui-session-worker">
-                      {judge.name}
-                      {judge.version ? `@${judge.version}` : ''}
+    <>
+      <div className="judge-ui-session-scroll">
+        {registry.judges === null ? (
+          <div className="judge-ui-session-card" role="status" aria-busy="true" aria-label="Loading judges">
+            {[0, 1, 2].map((row) => (
+              <div key={row} className="judge-ui-session-add-row">
+                <Skeleton className="judge-ui-session-skeleton-mark" />
+                <span className="judge-ui-session-add-copy">
+                  <Skeleton className="judge-ui-session-skeleton-title" />
+                  <Skeleton className="judge-ui-session-skeleton-line" />
+                </span>
+                <Skeleton className="judge-ui-session-skeleton-action" />
+              </div>
+            ))}
+          </div>
+        ) : registry.error ? (
+          <div className="judge-ui-session-notice">
+            <p>The workers registry is unreachable right now.</p>
+            <Button variant="pill" size="sm" onClick={() => setAttempt((n) => n + 1)}>
+              Retry
+            </Button>
+          </div>
+        ) : rows.length === 0 ? (
+          <p className="judge-ui-session-notice">
+            {everythingInstalled
+              ? 'Every judge in the registry is already installed.'
+              : 'The registry lists no judge workers.'}
+          </p>
+        ) : (
+          <ul className="judge-ui-session-card" aria-label="Judges in the workers registry">
+            {rows.map((judge) => {
+              const add = adds.get(judge.name)
+              const target = add?.kind === 'done' ? targets.get(judge.provider) : undefined
+              return (
+                <li key={judge.name} className="judge-ui-session-add-row" data-failed={add?.kind === 'failed' || undefined}>
+                  <JudgeMark provider={judge.provider} />
+                  <span className="judge-ui-session-add-copy">
+                    <span className="judge-ui-session-add-title">
+                      <span data-label>{judge.provider}</span>
+                      <span className="judge-ui-session-worker">
+                        {judge.name}
+                        {judge.version ? `@${judge.version}` : ''}
+                      </span>
                     </span>
-                  </>
-                }
-                description={
-                  add?.kind === 'failed' ? (
-                    <span className="judge-ui-session-error" role="alert">
-                      {add.error}
-                    </span>
-                  ) : (
-                    (judge.description ?? undefined)
-                  )
-                }
-                trailing={
-                  add?.kind === 'done' ? (
+                    {judge.description ? (
+                      <span className="judge-ui-session-add-description">{judge.description}</span>
+                    ) : null}
+                    {add?.kind === 'failed' ? (
+                      <span className="judge-ui-session-error" role="alert">
+                        {add.error}
+                      </span>
+                    ) : null}
+                  </span>
+                  {target ? (
+                    <Button variant="pill" size="sm" onClick={() => onConfigure(target)}>
+                      Configure
+                    </Button>
+                  ) : add?.kind === 'done' ? (
                     <span className="judge-ui-session-status">
                       <Check size={16} aria-hidden />
                       Added
@@ -158,17 +160,17 @@ export function AddJudgePanel({ registered, adds, onAdd, onBack }: AddJudgePanel
                       {add?.kind === 'failed' ? <RefreshCw size={16} aria-hidden /> : <Plus size={16} aria-hidden />}
                       {add?.kind === 'failed' ? 'Retry' : 'Add'}
                     </Button>
-                  )
-                }
-              />
-            )
-          })}
-        </List>
-      )}
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </div>
       <p className="judge-ui-session-hint">
         Adding a judge runs <code>compose::add</code>, the same as <code>iii trigger compose::add worker=…</code> in your
-        terminal. A hosted judge still needs its credentials: configure it once it appears in the list.
+        terminal. A hosted judge still needs its key: configure it once it is added.
       </p>
-    </div>
+    </>
   )
 }

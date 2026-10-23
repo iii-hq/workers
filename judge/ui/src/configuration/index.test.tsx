@@ -61,6 +61,7 @@ const registry = {
   functions: [
     { function_id: 'judge-typesafe::evaluate', namespace: 'my-project', worker_name: 'judge-typesafe' },
     { function_id: 'judge-typesafe::cancel', namespace: 'my-project', worker_name: 'judge-typesafe' },
+    { function_id: 'judge-typesafe::status', namespace: 'my-project', worker_name: 'judge-typesafe' },
     { function_id: 'judge-local-llm::evaluate', namespace: 'my-project', worker_name: 'judge-local-llm' },
     { function_id: 'judge-laya::configuration-id', namespace: 'my-project', worker_name: 'judge-laya' },
     { function_id: 'judge::evaluate', namespace: 'my-project', worker_name: 'judge' },
@@ -97,11 +98,11 @@ afterEach(async () => {
 })
 
 describe('listProviders', () => {
-  it('keeps one row per judge-<provider> worker answering evaluate', async () => {
+  it('keeps one row per judge-<provider> worker answering evaluate, noting which answer status', async () => {
     await expect(listProviders(engine())).resolves.toEqual([
-      { provider: 'laya', worker: 'judge-laya', namespace: 'my-project' },
-      { provider: 'local-llm', worker: 'judge-local-llm', namespace: 'my-project' },
-      { provider: 'typesafe', worker: 'judge-typesafe', namespace: 'my-project' },
+      { provider: 'laya', worker: 'judge-laya', namespace: 'my-project', status: false },
+      { provider: 'local-llm', worker: 'judge-local-llm', namespace: 'my-project', status: false },
+      { provider: 'typesafe', worker: 'judge-typesafe', namespace: 'my-project', status: true },
     ])
   })
 })

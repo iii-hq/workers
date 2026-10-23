@@ -4,6 +4,23 @@
 
 ### Added
 
+- **No polling in the IDE page.** Two new trigger types replace every timer
+  and focus re-read: `shell::git-changed` (bind `{ path }`; one event per
+  ~200 ms batch naming what moved in the repository — `head`, `index`,
+  `refs`, `worktrees`, `repository` — including a `.git` appearing in a
+  folder that had none) and `shell::turns::changed` (bind
+  `{ session_id }`; fires when the session's change history is stored).
+  The branch chip no longer runs three gits on every click and focus
+  change: it reads again when the worker says the repository moved, reads
+  only `git status` when files change, and leaves a folder in no repository
+  alone until one appears. The Git window's log follows the same feed
+  instead of window focus, the Timeline reads the turn list on the
+  worker's word instead of every 1.5 s, the Source Control status follows
+  stages and commits made in a terminal, and "Add to stack" (and the chat
+  card of a `coder::scaffold-worker` that started its worker) follows the
+  `compose-operation` events of an operation bound before it starts
+  instead of polling `compose::operation` and `compose::status` every
+  second.
 - **Branch actions in the branch menu.** The IDE header's branch chip (the
   chat's keeps its plain list, each row with its Merge and Delete) opens with
   Update Project, Push…, New Branch… and Checkout Tag or Revision…, then
@@ -199,6 +216,24 @@
   every time — and the walk is name-sorted.
 
 ### Fixed
+
+- **Stopping a session kills its background jobs.** A `sleep 300` started
+  with `shell::exec_bg` kept running after `harness::stop` stopped the agent
+  that started it, and nothing could tell whose job it was. Each job now
+  remembers the harness session that started it (the harness stamps it on
+  the call), and the new harness-internal `shell::kill-session-jobs
+  { session_ids }` kills the running jobs those sessions own; `harness::stop`
+  calls it for the whole stopped tree. Jobs of other sessions, and jobs
+  started outside a harness session, are untouched. Models cannot call it.
+- **A fresh project no longer fails on its first restart.** On the first boot
+  the worker looked for a stored value before offering its default, found the
+  default the stack injects for the entry, and offered nothing, so the engine
+  saved an empty value. The next start read that empty value back and the
+  worker exited with a schema error, leaving the IDE and anything depending on
+  it stopped. The default is now always offered; the engine applies it only
+  when nothing is saved, so a stored value is never replaced. A project
+  already stuck on the empty value saves the default on its first start after
+  upgrading and comes up on the start after that.
 
 - **A protected file says so instead of "no longer here".** A file on the
   worker's protected paths (`code.non_accessible_globs`: `.env`, `.env.*`,

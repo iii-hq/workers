@@ -15,6 +15,7 @@ mod exec_dispatch;
 mod filesystem_access;
 mod fs;
 mod functions;
+mod git_events;
 mod job_events;
 mod jobs;
 mod path;
@@ -23,6 +24,7 @@ mod scode;
 mod target;
 mod telemetry;
 mod triggers;
+mod turn_events;
 mod turn_observe;
 mod turn_snapshot;
 mod turns;
@@ -341,6 +343,20 @@ async fn main() -> Result<()> {
     );
 
     iii.register_function(
+        "shell::kill-session-jobs",
+        RegisterFunction::new_async(|req: functions::types::KillSessionJobsRequest| {
+            telemetry::record_call("shell::kill-session-jobs", async move {
+                Ok::<_, Error>(functions::kill::handle_session(req).await)
+            })
+        })
+        .description(
+            "Harness-internal: kill every running background job owned by the given harness \
+             session_ids (harness::stop reaps a stopped session tree). Returns { killed }.",
+        )
+        .metadata(serde_json::json!({ "internal": true })),
+    );
+
+    iii.register_function(
         "shell::status",
         RegisterFunction::new_async(|req: StatusRequest| {
             telemetry::record_call("shell::status", async move {
@@ -429,6 +445,12 @@ async fn main() -> Result<()> {
     // shell::changed trigger type — subscribers name the directory in their
     // binding config.
     events::register_changed_trigger(&iii, watch_resolver.clone());
+
+    // The repository state feed: HEAD, index, refs and worktrees of the
+    // repository a bound directory sits in — what shell::changed leaves out
+    // (.git), so the branch chip and the Git window never re-read on a timer
+    // or on focus.
+    git_events::register_git_changed_trigger(&iii, watch_resolver.clone());
 
     // The background-job completion feed: subscribers name a job_id in their
     // binding config and are woken once, instead of polling shell::status.

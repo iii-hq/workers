@@ -114,6 +114,8 @@ export type StreamEvent =
        */
       kind: 'turn-status'
       phase: 'accepted' | 'merged' | 'queued' | 'started'
+      /** The effort the harness chose for a `lowest` request. */
+      reasoningEffort?: string
     }
 
 export interface ChatStreamOptions {
@@ -242,6 +244,11 @@ export type CompactResult =
       summaryText: string
       /** Exact session-manager entry id of the persisted compaction marker. */
       compactionEntryId: string
+      /**
+       * Every transcript row this compaction wrote (the start notice and the
+       * marker); defaults to the marker alone.
+       */
+      ownEntryIds?: string[]
     }
   | { status: 'busy' }
   | { status: 'overflow'; message: string }
@@ -401,11 +408,11 @@ export interface ChatBackend {
     thinkingLevel?: string,
   ): Promise<{ needsCompaction: boolean; tokens: number; usable: number }>
   /**
-   * Powers `/compact`. Compacts the session-manager transcript (the single
-   * source of truth) directly. `contextWindow` skips the server's
-   * `models::get` lookup when known. `instructions` is the free text typed
-   * after the command: one-shot guidance for the summariser on what to keep,
-   * drop, or emphasise — it steers this compaction only.
+   * Compacts the conversation and resolves with the outcome (the model switch
+   * waits on it). Server-backed sessions compact on the harness; a local
+   * backend compacts its own transcript and uses `contextWindow` as the
+   * budget. `instructions` is one-shot guidance for the summariser on what to
+   * keep, drop, or emphasise.
    */
   compactSession?(
     sessionId: string,
@@ -413,4 +420,16 @@ export interface ChatBackend {
     contextWindow?: number,
     instructions?: string,
   ): Promise<CompactResult>
+  /**
+   * `/compact` typed in the chat, for a server-backed session: the text goes
+   * through `harness::send`, which runs it as a compaction instead of a turn
+   * and reports start and outcome to every client watching the session.
+   * Resolves once accepted; `messageId` is the send's idempotency key.
+   */
+  sendCompactCommand?(
+    sessionId: string,
+    model: ModelId,
+    text: string,
+    messageId: string,
+  ): Promise<void>
 }

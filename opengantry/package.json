@@ -1,6 +1,6 @@
 {
   "name": "opengantry",
-  "version": "0.1.11",
+  "version": "0.1.13",
   "private": true,
   "description": "OpenGantry governance worker for iii: kernel verify and middleware gate.",
   "license": "Apache-2.0",
@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "@jeger-ai/opengantry": "^3.2.5",
-    "iii-sdk": "0.23.0",
+    "iii-sdk": "0.24.6",
     "zod": "^4.4.3"
   },
   "devDependencies": {

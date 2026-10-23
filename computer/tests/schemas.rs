@@ -1,4 +1,4 @@
-//! Wire-schema snapshots for the ten `computer::*` functions.
+//! Wire-schema snapshots for the twelve `computer::*` functions.
 //!
 //! `computer::functions::catalog()` is the single source of truth for each
 //! function's id, registration description, and schemars-derived
@@ -31,7 +31,7 @@ fn spec_to_pretty_json(spec: &FunctionSpec) -> String {
     pretty
 }
 
-/// The catalog must cover exactly the ten registered functions, in
+/// The catalog must cover exactly the twelve registered functions, in
 /// registration order (kept in lockstep with `register_all`).
 #[test]
 fn catalog_lists_all_functions_in_registration_order() {
@@ -45,7 +45,9 @@ fn catalog_lists_all_functions_in_registration_order() {
             "computer::displays",
             "computer::screenshot",
             "computer::observe",
+            "computer::find",
             "computer::act",
+            "computer::run",
             "computer::screencast::start",
             "computer::screencast::stop",
             "computer::frame",
@@ -88,5 +90,43 @@ fn every_function_has_typed_request_and_response_schemas() {
             &format!("{} response_schema", spec.function_id),
             &spec.response_schema,
         );
+    }
+}
+
+/// The worker-owned `computer::frame-changed` trigger type: binding config and
+/// notification payload are wire surface too (the console viewport binds it).
+#[test]
+fn frame_changed_trigger_contract_matches_golden() {
+    use computer::frames::{FrameBindingConfig, FrameChange, FRAME_CHANGED, FRAME_CHANGED_DESC};
+    let generator = || schemars::r#gen::SchemaSettings::draft07().into_generator();
+    let value = serde_json::json!({
+        "trigger_type": FRAME_CHANGED,
+        "description": FRAME_CHANGED_DESC,
+        "config_schema": generator().into_root_schema_for::<FrameBindingConfig>(),
+        "payload_schema": generator().into_root_schema_for::<FrameChange>(),
+    });
+    let mut pretty = serde_json::to_string_pretty(&value).expect("contract serializes");
+    pretty.push('\n');
+    if let Err(msg) = support::check_golden("triggers/computer.frame-changed.json", &pretty) {
+        panic!("{msg}");
+    }
+}
+
+/// `computer::activity` (the console's live preview binds it): binding config
+/// and payload are wire surface.
+#[test]
+fn activity_trigger_contract_matches_golden() {
+    use computer::events::{ActivityEvent, BindingConfig, ACTIVITY, ACTIVITY_DESC};
+    let generator = || schemars::r#gen::SchemaSettings::draft07().into_generator();
+    let value = serde_json::json!({
+        "trigger_type": ACTIVITY,
+        "description": ACTIVITY_DESC,
+        "config_schema": generator().into_root_schema_for::<BindingConfig>(),
+        "payload_schema": generator().into_root_schema_for::<ActivityEvent>(),
+    });
+    let mut pretty = serde_json::to_string_pretty(&value).expect("contract serializes");
+    pretty.push('\n');
+    if let Err(msg) = support::check_golden("triggers/computer.activity.json", &pretty) {
+        panic!("{msg}");
     }
 }

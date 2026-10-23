@@ -6,11 +6,14 @@
 
 services:
   minio:
-    image: quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z
+    # Same upstream release, built from pinned source commits: public images
+    # are no longer anonymously available from quay.io/minio.
+    build: ./fixtures/minio
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
+      MC_HOST_local: http://minioadmin:minioadmin@127.0.0.1:9000
       # MINIO_DOMAIN enables virtual-host-style URL resolution for the R2
       # backend's force_path_style: false code path. Combined with
       # extra_hosts on the engine side (or /etc/hosts on the developer's

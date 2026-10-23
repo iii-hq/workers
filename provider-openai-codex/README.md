@@ -59,7 +59,12 @@ can still use `auth::get_token` from an external credential vault, then a
 read-only `${CODEX_HOME:-$HOME/.codex}/auth.json` fallback. The vault remains
 responsible for its own refresh. The provider never imports or writes the CLI
 file, and never refreshes the CLI's tokens. The file fallback needs host access
-and does not support an OS keyring-only login.
+and does not support an OS keyring-only login. Once Codex rejects a vault or CLI
+token, requests fail with `auth_expired` and `auth::status` reports `expired`
+until that token is replaced. Signing in with ChatGPT in the provider form works
+in every case. `codex login` rewrites only the CLI file, so it helps only when
+the vault holds no Codex credential; replace a rejected vault credential in the
+vault.
 
 ### Authentication functions
 
@@ -97,9 +102,12 @@ provider id `openai`.
   new models and removing retired ones. Failed or empty refreshes preserve the
   router's persisted last-known-good slice. Namespacing prevents
   `AmbiguousModel` collisions with `provider-openai`.
-  Context limits follow the backend's `context_window`, using
-  `max_context_window` only when it is absent. The latter is the ceiling for
-  configuration overrides in the [upstream Codex contract](https://github.com/openai/codex/blob/rust-v0.159.0/codex-rs/protocol/src/openai_models.rs#L452-L455).
+  Context limits follow the catalog's `max_context_window`, using
+  `context_window` only when it is absent. In the [upstream Codex contract](https://github.com/openai/codex/blob/rust-v0.159.0/codex-rs/protocol/src/openai_models.rs#L452-L455)
+  `context_window` is the CLI's default working window (272K) and
+  `max_context_window` the ceiling for configuration overrides (872K). The
+  backend itself accepts input up to ~922K on current models, so the ceiling
+  is the larger limit that is still safe to advertise.
 - **Request:** Responses API — `input` items, `stream: true`, `store: false`,
   optional `tools` and `reasoning: { effort }`. Headers: `Authorization: Bearer`,
   `chatgpt-account-id`, Codex compatibility `version`,
@@ -214,7 +222,7 @@ Regenerate the wire-schema goldens with `UPDATE_GOLDENS=1 cargo test`.
 | `not configured: sign in with ChatGPT …` | no active session | select **Sign in with ChatGPT** in the provider form |
 | `device_login_disabled` | device-code sign-in is disabled | enable it in ChatGPT security settings or ask your workspace administrator |
 | `storage_unavailable` | state worker is down or lacks private namespace support | start/update the state worker and retry; credentials are not replaced by a fallback |
-| `auth_expired` | token was revoked or the CLI fallback expired | sign in again in the provider form |
+| `auth_expired` | token was revoked, or Codex rejected or expired the vault/CLI fallback | sign in again in the provider form; for a CLI fallback with no vault credential, `codex login` also works |
 | `requires a ChatGPT OAuth login … API keys belong on provider-openai` | credential is an API key | this provider is OAuth-only; use `provider-openai` for keys |
 | `missing ChatGPT account id` | token lacks the account claim | sign in again with a ChatGPT account |
 | backend `Unsupported parameter` / shape errors | Codex backend contract drifted | update this worker's request/SSE mapping against the current backend |

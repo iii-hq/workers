@@ -57,6 +57,15 @@ agents, pair with the `skills` worker.
   always refuses denylisted paths regardless; paths must be absolute (unless
   jailed, where a relative path resolves against the primary root) and
   symlinks are never followed.
+- In a harness session every call carries a trusted `fs_scope.root`. Under
+  the `workspace` boundary (harness `filesystem_boundary`), `coder::*`,
+  `shell::fs::*` and an exec `cwd` refuse paths outside that root and the
+  session's grants (`C220`/`S220`, `C215`/`S215`); under `configured_roots`
+  the root is only the default directory for relative paths.
+- With `fs.exec_confinement: landlock`, a session's host `shell::exec` /
+  `exec_bg` can write only under its root, its grants, the repository's git
+  dir and `fs.exec_writable` (`/tmp`, `/dev`, caches, toolchains); reads stay
+  open. Without Landlock such a call fails closed with `S222`.
 - Sandbox-backed background jobs cannot be hard-killed: `shell::kill` flips the
   record but the in-VM process runs until its `timeout_ms` (or `sandbox::stop`).
 - Not for inlining file bytes into an LLM tool result: `shell::fs::read`/
@@ -76,8 +85,8 @@ agents, pair with the `skills` worker.
   EOF), plus `cwd`/`env` — are rejected with `S210` when supplied on a sandbox
   target, because the sandbox exec protocol does not forward them.
 - `shell::exec_bg`: spawn a command as a background job and return
-  a `job_id` immediately. Host-targeted jobs run until they exit or `shell::kill`
-  terminates them — unbounded by default, capped only when the operator sets a
+  a `job_id` immediately. Host-targeted jobs run until they exit, `shell::kill`
+  terminates them, or `harness::stop` stops the session that started them — unbounded by default, capped only when the operator sets a
   positive `max_bg_timeout_ms` (default `0` = unbounded), after which a runaway
   job is killed and its status becomes `killed`. Sandbox jobs honor `timeout_ms`.
   Same optional host-only `stdin` as `shell::exec`.
@@ -144,3 +153,20 @@ standalone worker) over the **same jail** (`fs.host_roots`): `coder::info`
 `coder::move`. Prefer these structured ops over editing files through
 `shell::exec`. They return `C2xx` error codes (distinct from `shell::*`'s
 `S2xx`); protected paths are the shared `code.non_accessible_globs`.
+`coder::list-templates` lists the worker templates (`code.templates`: a local
+`dir`, or a cached git clone) with their language and the compose containers
+they need.
+`coder::scaffold-worker { template, name, directory?, operation_id?, start_after? }`
+writes one into a missing or empty folder whose last segment is `name`
+(default `workers/<name>`), all or nothing, then adds it to the stack in the
+same call (`compose::add` with the worker, its `start_after` and the
+`requires` the stack lacks): a name the stack already has fails `C235`
+before any write, and the result carries `operation_id` and `started`, or
+`start_error` with the files kept. `start: false` writes the files only and
+returns `compose_add`, the `compose::add` payload to send whole, adding
+`start_after` to its entry and missing `requires` as more entries (never the
+bare `worker` string form, which drops the scripts). It adds to the stack
+the ide runs in, so a harness session without `compose::add`, or whose
+`compose::add` the approval gate would not allow outright, gets the files
+only, with a note (an explicit `start: true` is refused there); its own
+`compose::add` then goes through approval as usual.

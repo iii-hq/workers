@@ -6,9 +6,9 @@ SemIf reads runtime-defined decisions from a frozen open LLM: one forward pass,
 a softmax over the next-token logits of the option letters `A`–`P`, no decoding.
 Its published Qwen3.5-4B baseline agrees with Jev's own references on 0.845 of
 TypeSafe's public subset (Jev 0.883). This worker runs the same prompt through
-llama.cpp (the [`llama-cpp-2`](https://crates.io/crates/llama-cpp-2) crate) on
-the CPU, on Metal (macOS) or on Vulkan (Linux x86_64: AMD, NVIDIA and Intel
-GPUs), picked automatically at start.
+llama.cpp (`crates/llama-native`, the engine every local judge provider
+shares) on the CPU, on Metal (macOS) or on Vulkan (Linux x86_64: AMD, NVIDIA
+and Intel GPUs), picked automatically at start.
 
 ## Hardware selection
 
@@ -19,7 +19,7 @@ GPUs), picked automatically at start.
   skipped and the CPU runs the model, so the same package works on GPU
   desktops, servers and containers. The CPU module is picked for the host
   (AVX2, AVX-512, AMX variants). The package ships `libllama`, `libggml`,
-  `libggml-base`, the CPU variants and the Vulkan module (≈77 MB) beside the
+  `libggml-base`, the CPU variants and the Vulkan module (≈71 MB) beside the
   binary, which finds them through its `$ORIGIN` runpath.
 - **Linux aarch64**: CPU, statically linked.
 
@@ -89,7 +89,9 @@ uncalibrated. At most
 Every question of one evaluation shares its state, and SemIf puts the evidence
 first. The worker prefills the prompts' longest common token run once,
 snapshots it, restores it into up to `parallel_questions` sequences and decodes
-their suffixes together in one batch (SemIf's parallel suffixes). The prefix is
+their suffixes together in one batch (SemIf's parallel suffixes). The snapshot
+stays in the model's device memory (VRAM on a GPU; about 270 MB for a
+6.7k-token prefix, held until the next evaluation replaces it). The prefix is
 found on tokens, not re-tokenized text: a state ending in `{}` merges with the
 following `}` two tokens back, which SemIf's own `_state_prefix` rejects.
 `usage.input_tokens` counts the decoded tokens (the shared prefix once).
@@ -110,6 +112,11 @@ one-time prefill. On the same card llama.cpp's ROCm backend measured within
 10% of Vulkan either way, so the worker ships Vulkan alone. A single short
 decision takes 67–140 ms on the GPU and 1.1–1.4 s on the CPU.
 
+These figures predate llama.cpp b11379 (`crates/llama-native`). Against the
+previous build, b11379 takes 0.85 of the time on the CPU (a 1.6k-token request
+of 9 questions and a 7.6k-token one of 10, 9 runs each) and the same time on
+Vulkan (within 2%).
+
 GPU, reuse and batching change probabilities by up to 0.02 against fresh CPU
 scoring, as SemIf documents for its own fast paths.
 
@@ -129,15 +136,16 @@ scoring, as SemIf documents for its own fast paths.
 
 ## Building
 
-llama.cpp is compiled from source through `crates/llama-runtime`: `cmake`, a C++ compiler and `libclang`
-(for bindgen) are required; if libclang lives outside the default search path
-set `LIBCLANG_PATH` (and `BINDGEN_EXTRA_CLANG_ARGS=-I<clang>/include` when its
-builtin headers are not found). Linux x86_64 builds also need the Vulkan
-loader headers, the SPIR-V headers and `glslc` (Ubuntu: `libvulkan-dev
-spirv-headers glslc`) to compile the Vulkan module (only the module links
-`libvulkan`, the binary does not). The build copies the modules and libraries
-beside the binary, so `target/release` has the published layout; the release
-catalog ships them as the artifact's `companions`. Windows is not published
-yet.
+llama.cpp b11379 is compiled from source through `crates/llama-native`: its
+`build.rs` downloads GitHub's source archive (checked against a pinned
+sha256), builds it with cmake and compiles a small C shim against it, with no
+bindgen. It needs `curl`, `tar`, `patch`, `cmake` and a C++17 compiler; an
+offline build points `III_LLAMA_CPP_TARBALL` at a copy of the archive, checked
+the same way. Linux x86_64 builds also need the Vulkan loader headers, the
+SPIR-V headers and `glslc` (Ubuntu: `libvulkan-dev spirv-headers glslc`) to
+compile the Vulkan module (only the module links `libvulkan`, the binary does
+not). The build copies the modules and libraries beside the binary, so
+`target/release` has the published layout; the release catalog ships them as
+the artifact's `companions`. Windows is not published yet.
 
 For the full API, read the hub's [reference](../judge/reference.md).

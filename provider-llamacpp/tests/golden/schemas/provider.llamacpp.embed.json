@@ -15,7 +15,7 @@
       },
       "model": {
         "default": null,
-        "description": "Model name echoed for parity with the other providers; llama-server embeds with its loaded model regardless.",
+        "description": "Forwarded only when set (a llama-server in router mode selects by it). Unset, the server answers with its loaded model and names it, so the reply reports the real model and a model swap on the server is visible to callers that key vectors by model.",
         "type": [
           "string",
           "null"

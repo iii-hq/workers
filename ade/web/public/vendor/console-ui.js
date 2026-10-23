@@ -84,6 +84,7 @@ export const {
   PanelHeader,
   RawValueInput,
   SearchField,
+  SecretKeyField,
   Select,
   SegmentedControl,
   Selector,
@@ -118,6 +119,7 @@ export const {
   TooltipContent,
   TooltipTrigger,
   WorkerConfigurationDialog,
+  WorkerConfigurationPanel,
   Wordmark,
 } = api.components
 export default api

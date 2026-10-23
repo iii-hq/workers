@@ -12,6 +12,12 @@
 //! from the catalog cache) directly. A parity fixture in the tests asserts the
 //! vendored matcher agrees with the engine's.
 //!
+//! Every decision is keyed by `(namespace, function_id)`, as in the engine
+//! since namespaces became a routing dimension: an `expose_functions` rule
+//! answers in the namespace it names (`default` when it names none), the auth
+//! function's `namespaces` grants answer in their own namespace, and
+//! `allowed_functions` answers in `default` only.
+//!
 //! The proxy also holds, per downstream connection, a [`ProxySession`] that
 //! mirrors the engine's `Session` fields (rbac_session.rs) — the boundaries it
 //! re-derives itself because a WebSocket worker receives no in-process
@@ -51,6 +57,12 @@ pub struct RbacConfig {
     pub on_trigger_registration_function_id: Option<String>,
     #[serde(default)]
     pub on_trigger_type_registration_function_id: Option<String>,
+    /// The engine's observer registration hook (iii 0.25). Accepted so an
+    /// engine `rbac` block can be copied here unchanged, but not called yet:
+    /// this version of the proxy refuses every `observe` (see the
+    /// interceptor), so there is no registration for the hook to rewrite.
+    #[serde(default)]
+    pub on_observer_registration_function_id: Option<String>,
 }
 
 impl RbacConfig {
@@ -61,7 +73,7 @@ impl RbacConfig {
     pub fn uses_metadata(&self) -> bool {
         self.expose_functions
             .iter()
-            .any(|f| matches!(f, FunctionFilter::Metadata(_)))
+            .any(FunctionFilter::is_metadata)
     }
 }
 
@@ -172,19 +184,70 @@ impl MetadataValue {
 // the Serialize/JsonSchema impls are the proxy's own (symmetric round-trip).
 // ---------------------------------------------------------------------------
 
+/// The namespace a request lands in when it names none — the engine's
+/// `DEFAULT_NAMESPACE`.
+pub const DEFAULT_NAMESPACE: &str = "default";
+
 #[derive(Debug, Clone, PartialEq)]
-pub enum FunctionFilter {
+enum FilterMatcher {
     Match(WildcardPattern),
     Metadata(HashMap<String, MetadataValue>),
 }
 
+/// One `expose_functions` rule: a matcher plus an optional namespace scope.
+///
+/// VENDORED from rbac_config.rs. The namespace is optional and additive. When
+/// present, the rule applies only to that namespace; when absent it applies to
+/// the `default` namespace only — a rule without a namespace does NOT match a
+/// function reached in another namespace.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionFilter {
+    matcher: FilterMatcher,
+    namespace: Option<String>,
+}
+
 impl FunctionFilter {
-    /// VENDORED from rbac_config.rs:111-128. A function with no metadata never
-    /// matches a metadata filter; metadata keys are AND'd within a filter.
-    pub fn matches(&self, function_id: &str, metadata: Option<&Value>) -> bool {
-        match self {
-            FunctionFilter::Match(pattern) => pattern.matches(function_id),
-            FunctionFilter::Metadata(expected) => {
+    /// A wildcard-id rule scoped to the `default` namespace. Chain
+    /// [`FunctionFilter::in_namespace`] to scope it elsewhere.
+    pub fn match_pattern(pattern: &str) -> Self {
+        Self {
+            matcher: FilterMatcher::Match(WildcardPattern::new(pattern)),
+            namespace: None,
+        }
+    }
+
+    /// A metadata rule scoped to the `default` namespace. Chain
+    /// [`FunctionFilter::in_namespace`] to scope it elsewhere.
+    pub fn metadata(map: HashMap<String, MetadataValue>) -> Self {
+        Self {
+            matcher: FilterMatcher::Metadata(map),
+            namespace: None,
+        }
+    }
+
+    /// Scope this rule to `namespace` instead of the `default` one.
+    pub fn in_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.namespace = Some(namespace.into());
+        self
+    }
+
+    /// `true` for a metadata rule (it needs the function's registered
+    /// metadata, which the proxy reads from its catalog cache).
+    pub fn is_metadata(&self) -> bool {
+        matches!(self.matcher, FilterMatcher::Metadata(_))
+    }
+
+    /// VENDORED from rbac_config.rs. Whether this rule exposes `function_id`
+    /// reached in `namespace`. A function with no metadata never matches a
+    /// metadata rule; metadata keys are AND'd within a rule.
+    pub fn matches(&self, function_id: &str, namespace: &str, metadata: Option<&Value>) -> bool {
+        let rule_ns = self.namespace.as_deref().unwrap_or(DEFAULT_NAMESPACE);
+        if rule_ns != namespace {
+            return false;
+        }
+        match &self.matcher {
+            FilterMatcher::Match(pattern) => pattern.matches(function_id),
+            FilterMatcher::Metadata(expected) => {
                 let Some(metadata) = metadata else {
                     return false;
                 };
@@ -199,7 +262,7 @@ impl FunctionFilter {
     }
 }
 
-/// VENDORED from rbac_config.rs:130-139.
+/// VENDORED from rbac_config.rs.
 fn parse_match_pattern(s: &str) -> Option<String> {
     let trimmed = s.trim();
     if (trimmed.starts_with("match(\"") && trimmed.ends_with("\")"))
@@ -211,7 +274,7 @@ fn parse_match_pattern(s: &str) -> Option<String> {
     }
 }
 
-/// VENDORED from rbac_config.rs:141-148.
+/// VENDORED from rbac_config.rs.
 fn parse_metadata_value(value: Value) -> MetadataValue {
     if let Some(s) = value.as_str() {
         if let Some(pattern) = parse_match_pattern(s) {
@@ -221,8 +284,10 @@ fn parse_metadata_value(value: Value) -> MetadataValue {
     MetadataValue::Exact(value)
 }
 
-/// VENDORED from rbac_config.rs:150-207 — accepts a `match("pattern")` string
-/// or a `{ metadata: { … } }` map.
+/// VENDORED from rbac_config.rs — accepts a `match("pattern")` string, or a map
+/// with a `match` (raw pattern) or a `metadata` key and an optional
+/// `namespace`. Unknown keys are refused: a typo like `namesapce` would
+/// otherwise leave the rule scoped to `default` without a word.
 impl<'de> Deserialize<'de> for FunctionFilter {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -234,7 +299,9 @@ impl<'de> Deserialize<'de> for FunctionFilter {
             type Value = FunctionFilter;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("a match(\"pattern\") string or a map with 'metadata' key")
+                formatter.write_str(
+                    "a match(\"pattern\") string or a map with a 'match' or 'metadata' key",
+                )
             }
 
             fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
@@ -242,7 +309,7 @@ impl<'de> Deserialize<'de> for FunctionFilter {
                 E: de::Error,
             {
                 if let Some(pattern) = parse_match_pattern(v) {
-                    Ok(FunctionFilter::Match(WildcardPattern::new(&pattern)))
+                    Ok(FunctionFilter::match_pattern(&pattern))
                 } else {
                     Err(de::Error::custom(format!(
                         "expected match(\"pattern\"), got: {v} — exact ids need it too: match(\"{v}\")"
@@ -255,25 +322,51 @@ impl<'de> Deserialize<'de> for FunctionFilter {
                 M: MapAccess<'de>,
             {
                 let mut metadata_map: HashMap<String, MetadataValue> = HashMap::new();
+                let mut match_pattern: Option<WildcardPattern> = None;
+                let mut namespace: Option<String> = None;
 
                 while let Some(key) = map.next_key::<String>()? {
-                    if key == "metadata" {
-                        let inner: HashMap<String, Value> = map.next_value()?;
-                        for (k, v) in inner {
-                            metadata_map.insert(k, parse_metadata_value(v));
+                    match key.as_str() {
+                        "metadata" => {
+                            let inner: HashMap<String, Value> = map.next_value()?;
+                            for (k, v) in inner {
+                                metadata_map.insert(k, parse_metadata_value(v));
+                            }
                         }
-                    } else {
-                        let _: Value = map.next_value()?;
+                        // Map form of a wildcard rule, e.g. `{ match: "svc::*" }`.
+                        // The raw pattern is taken as-is (no `match("...")` wrapper).
+                        "match" => {
+                            let raw: String = map.next_value()?;
+                            match_pattern = Some(WildcardPattern::new(&raw));
+                        }
+                        "namespace" => {
+                            namespace = Some(map.next_value()?);
+                        }
+                        other => {
+                            let _: Value = map.next_value()?;
+                            return Err(de::Error::custom(format!(
+                                "unknown key '{other}' in expose_functions filter; \
+                                 expected 'match', 'metadata', or 'namespace'"
+                            )));
+                        }
                     }
                 }
 
-                if metadata_map.is_empty() {
-                    Err(de::Error::custom(
-                        "expected a 'metadata' key with filter conditions",
-                    ))
-                } else {
-                    Ok(FunctionFilter::Metadata(metadata_map))
-                }
+                let matcher = match (match_pattern, metadata_map.is_empty()) {
+                    (Some(pattern), true) => FilterMatcher::Match(pattern),
+                    (None, false) => FilterMatcher::Metadata(metadata_map),
+                    (Some(_), false) => {
+                        return Err(de::Error::custom(
+                            "a filter has either a 'match' or a 'metadata' key, not both",
+                        ));
+                    }
+                    (None, true) => {
+                        return Err(de::Error::custom(
+                            "expected a 'match' or 'metadata' key with filter conditions",
+                        ));
+                    }
+                };
+                Ok(FunctionFilter { matcher, namespace })
             }
         }
 
@@ -281,8 +374,10 @@ impl<'de> Deserialize<'de> for FunctionFilter {
     }
 }
 
-/// Symmetric with [`FunctionFilter`]'s `Deserialize`: a `Match` serializes to
-/// the `match("…")` string form, a `Metadata` filter to `{ "metadata": { … } }`.
+/// Symmetric with [`FunctionFilter`]'s `Deserialize`: a namespace-less `match`
+/// rule serializes to the `match("…")` string form; a metadata rule, or any
+/// rule with a namespace, to the map form (`{ "match": "…" }` /
+/// `{ "metadata": { … } }`, plus `"namespace"`).
 /// The engine's `RbacConfig` does not round-trip (it is deserialize-only), but
 /// the proxy persists its config through the `configuration` worker and must
 /// re-read what it stored, so the canonical serialized form is the
@@ -292,15 +387,25 @@ impl Serialize for FunctionFilter {
     where
         S: Serializer,
     {
-        match self {
-            FunctionFilter::Match(p) => serializer.serialize_str(&format!("match(\"{}\")", p.raw)),
-            FunctionFilter::Metadata(map) => {
-                let mut inner = serde_json::Map::new();
-                for (k, v) in map {
-                    inner.insert(k.clone(), v.to_json());
+        match (&self.matcher, &self.namespace) {
+            (FilterMatcher::Match(p), None) => {
+                serializer.serialize_str(&format!("match(\"{}\")", p.raw))
+            }
+            (matcher, namespace) => {
+                let mut m = serializer.serialize_map(None)?;
+                match matcher {
+                    FilterMatcher::Match(p) => m.serialize_entry("match", p.raw())?,
+                    FilterMatcher::Metadata(map) => {
+                        let mut inner = serde_json::Map::new();
+                        for (k, v) in map {
+                            inner.insert(k.clone(), v.to_json());
+                        }
+                        m.serialize_entry("metadata", &Value::Object(inner))?;
+                    }
                 }
-                let mut m = serializer.serialize_map(Some(1))?;
-                m.serialize_entry("metadata", &Value::Object(inner))?;
+                if let Some(namespace) = namespace {
+                    m.serialize_entry("namespace", namespace)?;
+                }
                 m.end()
             }
         }
@@ -308,7 +413,8 @@ impl Serialize for FunctionFilter {
 }
 
 /// A typed-enough JSON Schema for the `configuration` worker and the manifest:
-/// either a `match("…")` string or an object with a `metadata` map. (schemars
+/// a `match("…")` string, or an object with a `match` pattern or a `metadata`
+/// map and an optional `namespace`. (schemars
 /// cannot derive this because of the custom (a)symmetric serde.)
 impl JsonSchema for FunctionFilter {
     fn schema_name() -> String {
@@ -330,8 +436,21 @@ impl JsonSchema for FunctionFilter {
                 },
                 {
                     "type": "object",
-                    "description": "Metadata filter: all keys must match (AND). String values may be a match(\"…\") wildcard.",
-                    "properties": { "metadata": { "type": "object" } },
+                    "description": "Wildcard match scoped to a namespace (`default` when omitted), e.g. { match: \"api::*\", namespace: \"orders\" }.",
+                    "properties": {
+                        "match": { "type": "string" },
+                        "namespace": { "type": "string" }
+                    },
+                    "required": ["match"],
+                    "additionalProperties": false
+                },
+                {
+                    "type": "object",
+                    "description": "Metadata filter: all keys must match (AND). String values may be a match(\"…\") wildcard. Scoped to `namespace` (`default` when omitted).",
+                    "properties": {
+                        "metadata": { "type": "object" },
+                        "namespace": { "type": "string" }
+                    },
                     "required": ["metadata"],
                     "additionalProperties": false
                 }
@@ -364,19 +483,31 @@ pub const INFRASTRUCTURE_FUNCTIONS: &[&str] = &[
     "engine::baggage::get_all",
 ];
 
-/// VENDORED from rbac_config.rs:253-289, with the engine's `function:
-/// Option<&Function>` replaced by `metadata: Option<&Value>` (the proxy reads
-/// the function's registered metadata from its catalog cache rather than from
-/// an in-process `Function`). The decision flow is unchanged:
+/// Whether one scoped grant covers `function_id`. VENDORED from rbac_config.rs.
 ///
-/// 1. `forbidden` → deny
-/// 2. `allowed` → allow
-/// 3. infrastructure carve-out → allow
-/// 4. any `expose_functions` filter matches → allow
-/// 5. otherwise → deny
+/// A grant is an exact id or a wildcard. Both spellings of the wildcard are
+/// accepted: bare (`svc::*`) and wrapped (`match("svc::*")`).
+fn grant_matches(grant: &str, function_id: &str) -> bool {
+    let raw = parse_match_pattern(grant).unwrap_or_else(|| grant.to_string());
+    raw == function_id || (raw.contains('*') && WildcardPattern::new(&raw).matches(function_id))
+}
+
+/// VENDORED from rbac_config.rs (`is_function_allowed_ref`), with the engine's
+/// `function: Option<&Function>` replaced by `metadata: Option<&Value>` (the
+/// proxy reads the function's registered metadata from its catalog cache
+/// rather than from an in-process `Function`). The decision flow is unchanged:
+///
+/// 1. `forbidden` → deny (global: a denial holds in every namespace)
+/// 2. a `namespaces` grant naming `namespace` → allow
+/// 3. `allowed` (no namespace) → allow, in `default` only
+/// 4. infrastructure carve-out → allow
+/// 5. an `expose_functions` rule scoped to `namespace` matches → allow
+/// 6. otherwise → deny
 pub fn is_function_allowed(
     function_id: &str,
+    namespace: &str,
     config: Option<&RbacConfig>,
+    session_namespaces: &HashMap<String, Vec<String>>,
     allowed_functions: &[String],
     forbidden_functions: &[String],
     metadata: Option<&Value>,
@@ -392,7 +523,17 @@ pub fn is_function_allowed(
         return false;
     }
 
-    if allowed_functions.iter().any(|f| f == function_id) {
+    // A grant that names this namespace, by exact id or by pattern.
+    if session_namespaces.get(namespace).is_some_and(|granted| {
+        granted
+            .iter()
+            .any(|grant| grant_matches(grant, function_id))
+    }) {
+        return true;
+    }
+
+    // A grant that names no namespace answers in `default` and nowhere else.
+    if namespace == DEFAULT_NAMESPACE && allowed_functions.iter().any(|f| f == function_id) {
         return true;
     }
 
@@ -404,7 +545,7 @@ pub fn is_function_allowed(
         config
             .expose_functions
             .iter()
-            .any(|filter| filter.matches(function_id, metadata))
+            .any(|filter| filter.matches(function_id, namespace, metadata))
     } else {
         true
     }
@@ -421,7 +562,14 @@ pub fn is_function_allowed(
 pub struct ProxySession {
     pub session_id: Uuid,
     pub ip_address: String,
+    /// Grants scoped to one namespace each: `{ "orders": ["svc::*"] }`. The
+    /// keys are also the namespaces the connection may declare on
+    /// `engine::workers::register`; an empty map leaves it free to declare
+    /// any (the engine's pre-namespace behaviour).
+    pub namespaces: HashMap<String, Vec<String>>,
+    /// Grants that name no namespace. They apply in `default` only.
     pub allowed_functions: Vec<String>,
+    /// Denials, global on purpose (deny wins in every namespace).
     pub forbidden_functions: Vec<String>,
     /// `None` = all trigger types allowed.
     pub allowed_trigger_types: Option<Vec<String>>,
@@ -442,6 +590,7 @@ impl ProxySession {
         Self {
             session_id: Uuid::new_v4(),
             ip_address,
+            namespaces: HashMap::new(),
             allowed_functions: vec![],
             forbidden_functions: vec![],
             allowed_trigger_types: None,
@@ -473,6 +622,8 @@ fn default_context() -> Value {
 #[derive(Debug, Deserialize)]
 pub struct AuthResult {
     #[serde(default)]
+    pub namespaces: HashMap<String, Vec<String>>,
+    #[serde(default)]
     pub allowed_functions: Vec<String>,
     #[serde(default)]
     pub forbidden_functions: Vec<String>,
@@ -493,6 +644,7 @@ impl AuthResult {
         ProxySession {
             session_id: Uuid::new_v4(),
             ip_address,
+            namespaces: self.namespaces,
             allowed_functions: self.allowed_functions,
             forbidden_functions: self.forbidden_functions,
             allowed_trigger_types: self.allowed_trigger_types,
@@ -570,16 +722,20 @@ pub async fn resolve_session(
 // Access decision helpers used by the interceptor and the engine overrides.
 // ---------------------------------------------------------------------------
 
-/// `is_function_allowed` bound to a session + the live `rbac` config snapshot.
+/// `is_function_allowed` bound to a session + the live `rbac` config snapshot,
+/// for `function_id` reached in `namespace`.
 pub fn access_allowed(
     rbac: Option<&RbacConfig>,
     session: &ProxySession,
+    namespace: &str,
     function_id: &str,
     metadata: Option<&Value>,
 ) -> bool {
     is_function_allowed(
         function_id,
+        namespace,
         rbac,
+        &session.namespaces,
         &session.allowed_functions,
         &session.forbidden_functions,
         metadata,
@@ -646,10 +802,29 @@ mod tests {
         RbacConfig {
             expose_functions: patterns
                 .iter()
-                .map(|p| FunctionFilter::Match(WildcardPattern::new(p)))
+                .map(|p| FunctionFilter::match_pattern(p))
                 .collect(),
             ..RbacConfig::default()
         }
+    }
+
+    /// The pre-namespace call shape: `default`, no scoped grants.
+    fn allowed_in_default(
+        function_id: &str,
+        config: Option<&RbacConfig>,
+        allowed: &[String],
+        forbidden: &[String],
+        metadata: Option<&Value>,
+    ) -> bool {
+        is_function_allowed(
+            function_id,
+            DEFAULT_NAMESPACE,
+            config,
+            &HashMap::new(),
+            allowed,
+            forbidden,
+            metadata,
+        )
     }
 
     #[test]
@@ -657,7 +832,7 @@ mod tests {
         let c = cfg(&["*"]);
         let allowed = vec!["test::fn".to_string()];
         let forbidden = vec!["test::fn".to_string()];
-        assert!(!is_function_allowed(
+        assert!(!allowed_in_default(
             "test::fn",
             Some(&c),
             &allowed,
@@ -670,7 +845,7 @@ mod tests {
     fn allowed_overrides_empty_expose() {
         let c = cfg(&[]);
         let allowed = vec!["test::fn".to_string()];
-        assert!(is_function_allowed(
+        assert!(allowed_in_default(
             "test::fn",
             Some(&c),
             &allowed,
@@ -684,13 +859,13 @@ mod tests {
         for id in INFRASTRUCTURE_FUNCTIONS {
             let c = cfg(&[]);
             assert!(
-                is_function_allowed(id, Some(&c), &[], &[], None),
+                allowed_in_default(id, Some(&c), &[], &[], None),
                 "carve-out {id} should be allowed with empty expose"
             );
             let c = cfg(&[]);
             let forbidden = vec![id.to_string()];
             assert!(
-                !is_function_allowed(id, Some(&c), &[], &forbidden, None),
+                !allowed_in_default(id, Some(&c), &[], &forbidden, None),
                 "carve-out {id} should be denied when forbidden"
             );
         }
@@ -699,7 +874,7 @@ mod tests {
     #[test]
     fn deny_by_default() {
         let c = cfg(&["api::*"]);
-        assert!(!is_function_allowed(
+        assert!(!allowed_in_default(
             "internal::fn",
             Some(&c),
             &[],
@@ -722,13 +897,13 @@ mod tests {
         ] {
             let c = cfg(&[]);
             assert!(
-                !is_function_allowed(id, Some(&c), &[], &[], None),
+                !allowed_in_default(id, Some(&c), &[], &[], None),
                 "discovery id {id} must be gated by expose_functions, not carved out"
             );
         }
         // …but reachable when exposed.
         let c = cfg(&["engine::functions::*"]);
-        assert!(is_function_allowed(
+        assert!(allowed_in_default(
             "engine::functions::list",
             Some(&c),
             &[],
@@ -744,7 +919,7 @@ mod tests {
             "internal::private",
             "engine::workers::list",
         ] {
-            assert!(is_function_allowed(id, None, &[], &[], None));
+            assert!(allowed_in_default(id, None, &[], &[], None));
         }
     }
 
@@ -753,17 +928,17 @@ mod tests {
         let mut meta = HashMap::new();
         meta.insert("public".to_string(), MetadataValue::Exact(json!(true)));
         let c = RbacConfig {
-            expose_functions: vec![FunctionFilter::Metadata(meta)],
+            expose_functions: vec![FunctionFilter::metadata(meta)],
             ..RbacConfig::default()
         };
-        assert!(is_function_allowed(
+        assert!(allowed_in_default(
             "any::fn",
             Some(&c),
             &[],
             &[],
             Some(&json!({"public": true}))
         ));
-        assert!(!is_function_allowed(
+        assert!(!allowed_in_default(
             "any::fn",
             Some(&c),
             &[],
@@ -771,7 +946,7 @@ mod tests {
             Some(&json!({"public": false}))
         ));
         // No metadata → never matches a metadata filter.
-        assert!(!is_function_allowed("any::fn", Some(&c), &[], &[], None));
+        assert!(!allowed_in_default("any::fn", Some(&c), &[], &[], None));
     }
 
     // --- serde round-trip (the property the engine does NOT have) ----------
@@ -799,7 +974,7 @@ mod tests {
 
     #[test]
     fn function_filter_serializes_to_operator_form() {
-        let f = FunctionFilter::Match(WildcardPattern::new("api::*"));
+        let f = FunctionFilter::match_pattern("api::*");
         assert_eq!(
             serde_json::to_value(&f).unwrap(),
             json!("match(\"api::*\")")
@@ -809,6 +984,7 @@ mod tests {
     #[test]
     fn auth_result_defaults_match_engine() {
         let r: AuthResult = serde_json::from_value(json!({})).unwrap();
+        assert!(r.namespaces.is_empty());
         assert!(r.allowed_functions.is_empty());
         assert!(r.forbidden_functions.is_empty());
         assert!(r.allowed_trigger_types.is_none());
@@ -834,6 +1010,258 @@ mod tests {
         assert_eq!(
             remediation(&s, "api::x"),
             "remove from rbac.forbidden_functions"
+        );
+    }
+
+    // --- Namespace parity (the fixtures from rbac_config.rs) ---------------
+
+    fn grants(pairs: &[(&str, &[&str])]) -> HashMap<String, Vec<String>> {
+        pairs
+            .iter()
+            .map(|(ns, ids)| {
+                (
+                    ns.to_string(),
+                    ids.iter().map(|id| id.to_string()).collect(),
+                )
+            })
+            .collect()
+    }
+
+    fn denying_everything() -> RbacConfig {
+        // Nothing gets through on the operator's config alone; whatever passes
+        // below passed on the session's grants.
+        cfg(&["nothing::matches"])
+    }
+
+    fn allowed_in(
+        namespace: &str,
+        function_id: &str,
+        config: &RbacConfig,
+        scoped: &HashMap<String, Vec<String>>,
+        allowed: &[String],
+        forbidden: &[String],
+    ) -> bool {
+        is_function_allowed(
+            function_id,
+            namespace,
+            Some(config),
+            scoped,
+            allowed,
+            forbidden,
+            None,
+        )
+    }
+
+    #[test]
+    fn scoped_grant_answers_in_its_own_namespace_only() {
+        let scoped = grants(&[("orders", &["svc::get"])]);
+        let c = denying_everything();
+        assert!(allowed_in("orders", "svc::get", &c, &scoped, &[], &[]));
+        assert!(!allowed_in("analytics", "svc::get", &c, &scoped, &[], &[]));
+    }
+
+    #[test]
+    fn scoped_grant_accepts_wildcards_and_exact_ids_in_either_spelling() {
+        let c = denying_everything();
+        for grant in ["svc::*", "match(\"svc::*\")"] {
+            let scoped = grants(&[("orders", &[grant])]);
+            assert!(allowed_in("orders", "svc::get", &c, &scoped, &[], &[]));
+            assert!(!allowed_in("orders", "other::get", &c, &scoped, &[], &[]));
+        }
+        for grant in ["svc::get", "match(\"svc::get\")"] {
+            let scoped = grants(&[("orders", &[grant])]);
+            assert!(allowed_in("orders", "svc::get", &c, &scoped, &[], &[]));
+        }
+    }
+
+    #[test]
+    fn a_namespace_key_alone_grants_nothing() {
+        let scoped = grants(&[("orders", &[])]);
+        assert!(!allowed_in(
+            "orders",
+            "svc::get",
+            &denying_everything(),
+            &scoped,
+            &[],
+            &[]
+        ));
+    }
+
+    #[test]
+    fn unscoped_allowed_functions_apply_in_default_only() {
+        let allowed = vec!["svc::get".to_string()];
+        let c = denying_everything();
+        let none = HashMap::new();
+        assert!(allowed_in(
+            DEFAULT_NAMESPACE,
+            "svc::get",
+            &c,
+            &none,
+            &allowed,
+            &[]
+        ));
+        assert!(!allowed_in("orders", "svc::get", &c, &none, &allowed, &[]));
+    }
+
+    #[test]
+    fn forbidden_stays_global_across_namespaces() {
+        let scoped = grants(&[("orders", &["svc::get"])]);
+        let forbidden = vec!["svc::get".to_string()];
+        for namespace in [DEFAULT_NAMESPACE, "orders", "analytics"] {
+            assert!(
+                !allowed_in(
+                    namespace,
+                    "svc::get",
+                    &denying_everything(),
+                    &scoped,
+                    &[],
+                    &forbidden
+                ),
+                "a denial must hold in {namespace} too"
+            );
+        }
+    }
+
+    #[test]
+    fn infrastructure_stays_reachable_from_a_scoped_namespace() {
+        let scoped = grants(&[("orders", &[])]);
+        for id in INFRASTRUCTURE_FUNCTIONS {
+            assert!(
+                allowed_in("orders", id, &denying_everything(), &scoped, &[], &[]),
+                "expected {id} to stay reachable in a scoped namespace"
+            );
+        }
+    }
+
+    #[test]
+    fn expose_filter_without_namespace_matches_only_default() {
+        let c = cfg(&["svc::*"]);
+        let none = HashMap::new();
+        assert!(allowed_in(
+            DEFAULT_NAMESPACE,
+            "svc::get",
+            &c,
+            &none,
+            &[],
+            &[]
+        ));
+        assert!(!allowed_in("orders", "svc::get", &c, &none, &[], &[]));
+    }
+
+    #[test]
+    fn expose_filter_with_namespace_matches_only_that_namespace() {
+        let c = RbacConfig {
+            expose_functions: vec![FunctionFilter::match_pattern("svc::*").in_namespace("orders")],
+            ..RbacConfig::default()
+        };
+        let none = HashMap::new();
+        assert!(allowed_in("orders", "svc::get", &c, &none, &[], &[]));
+        assert!(!allowed_in(
+            DEFAULT_NAMESPACE,
+            "svc::get",
+            &c,
+            &none,
+            &[],
+            &[]
+        ));
+        assert!(!allowed_in("analytics", "svc::get", &c, &none, &[], &[]));
+    }
+
+    #[test]
+    fn function_filter_round_trips_through_serde() {
+        let mut map = HashMap::new();
+        map.insert(
+            "public".to_string(),
+            MetadataValue::Exact(Value::Bool(true)),
+        );
+        map.insert(
+            "scope".to_string(),
+            MetadataValue::Wildcard(WildcardPattern::new("team-*")),
+        );
+        let filter = FunctionFilter::metadata(map).in_namespace("team");
+        let back: FunctionFilter =
+            serde_json::from_value(serde_json::to_value(&filter).unwrap()).unwrap();
+        assert_eq!(back, filter);
+        let meta = json!({ "public": true, "scope": "team-alpha" });
+        assert!(back.matches("svc::get", "team", Some(&meta)));
+        assert!(!back.matches("svc::get", DEFAULT_NAMESPACE, Some(&meta)));
+
+        // A namespaced `match` rule uses the map form and keeps its scope.
+        let m = FunctionFilter::match_pattern("api::*").in_namespace("orders");
+        let as_json = serde_json::to_value(&m).unwrap();
+        assert_eq!(as_json, json!({ "match": "api::*", "namespace": "orders" }));
+        let mb: FunctionFilter = serde_json::from_value(as_json).unwrap();
+        assert!(mb.matches("api::x", "orders", None));
+        assert!(!mb.matches("api::x", DEFAULT_NAMESPACE, None));
+    }
+
+    #[test]
+    fn function_filter_parses_the_engine_map_forms() {
+        let yaml = r#"
+            expose_functions:
+              - match: "api::*"
+                namespace: orders
+              - metadata:
+                  public: true
+                namespace: billing
+        "#;
+        let c: RbacConfig = serde_yaml::from_str(yaml).unwrap();
+        let none = HashMap::new();
+        assert!(allowed_in("orders", "api::x", &c, &none, &[], &[]));
+        assert!(!allowed_in(
+            DEFAULT_NAMESPACE,
+            "api::x",
+            &c,
+            &none,
+            &[],
+            &[]
+        ));
+        assert!(is_function_allowed(
+            "any::fn",
+            "billing",
+            Some(&c),
+            &none,
+            &[],
+            &[],
+            Some(&json!({ "public": true }))
+        ));
+        assert!(c.uses_metadata());
+    }
+
+    #[test]
+    fn function_filter_rejects_unknown_keys_and_ambiguous_maps() {
+        // A typo must not silently widen or narrow the rule.
+        assert!(serde_json::from_value::<FunctionFilter>(
+            json!({ "match": "api::*", "namesapce": "orders" })
+        )
+        .is_err());
+        assert!(serde_json::from_value::<FunctionFilter>(
+            json!({ "match": "api::*", "metadata": { "public": true } })
+        )
+        .is_err());
+        assert!(serde_json::from_value::<FunctionFilter>(json!({})).is_err());
+    }
+
+    #[test]
+    fn auth_result_reads_scoped_namespaces() {
+        let r: AuthResult =
+            serde_json::from_value(json!({ "namespaces": { "orders": ["svc::*"] } })).unwrap();
+        let s = r.into_session("ip".into());
+        assert_eq!(
+            s.namespaces.get("orders"),
+            Some(&vec!["svc::*".to_string()])
+        );
+    }
+
+    #[test]
+    fn observer_registration_hook_is_accepted() {
+        let c: RbacConfig = serde_json::from_value(
+            json!({ "on_observer_registration_function_id": "p::on-observe" }),
+        )
+        .unwrap();
+        assert_eq!(
+            c.on_observer_registration_function_id.as_deref(),
+            Some("p::on-observe")
         );
     }
 }

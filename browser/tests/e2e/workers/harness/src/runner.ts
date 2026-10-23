@@ -2,7 +2,7 @@ import { writeFileSync, mkdirSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import { resolve } from 'node:path'
 import { once } from 'node:events'
-import type { ISdk } from 'iii-sdk'
+import type { IIIClient } from 'iii-sdk'
 import { CASES, ORIGIN_PAGE_HTML, type CaseContext, type TestCase } from './cases.ts'
 import { HARDENING_CASES } from './cases-hardening.ts'
 
@@ -16,7 +16,7 @@ interface CaseResult {
 }
 
 export interface RunnerOptions {
-  iii: ISdk
+  iii: IIIClient
   reportPath: string
   /** Harness-side substring filter on case name (run-tests.sh's --filter=). */
   filter?: string

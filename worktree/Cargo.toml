@@ -2,7 +2,7 @@
 
 [package]
 name = "worktree"
-version = "0.3.15"
+version = "0.3.16"
 edition = "2021"
 publish = false
 
@@ -15,7 +15,7 @@ name = "worktree"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.23.0"
+iii-sdk = "=0.24.6"
 iii-worker-paths = { path = "../crates/worker-paths" }
 # Worker-side injectable console UI (content function + console:script/style
 # triggers + hot-reload watcher) — direct path link, never published.

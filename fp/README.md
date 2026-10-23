@@ -37,6 +37,7 @@ trigger type.
 | function | lodash | request |
 |---|---|---|
 | `fp::pipe` | — | `{ through: [{function, payload?, into?}], preview_chars? }` |
+| `fp::batch` | — | `{ calls: [{id?, function, payload?, namespace?, timeout_ms?}], concurrency?, stop_on_error?, timeout_ms?, max_entry_bytes?, max_calls? }` — independent calls, every answer in place (experimental) |
 | `fp::get` | `_.get` | `{ value, path }` — JSON pointer; a miss names the available keys |
 | `fp::pick` | `_.pick` | `{ value, paths }` — subset an object by top-level keys |
 | `fp::omit` | `_.omit` | `{ value, paths }` — drop top-level keys |
@@ -113,6 +114,30 @@ fp::pipe { through: [
   8000 — the receipt must never become the bulk channel it replaces).
 - A failing step stops the pipe; the error carries the completed-step trail.
 
+## The batch (experimental)
+
+```jsonc
+fp::batch { calls: [
+  { id: "info",   function: "engine::workers::info", payload: { name: "todo" } },
+  { id: "http",   function: "http::status" },
+  { id: "logs",   function: "compose::logs", payload: { container: "todo", tail: 40 } }
+]}
+```
+
+- Independent calls, nothing threaded. They run at once, or `concurrency`
+  at a time; `stop_on_error: true` runs them in order and stops after the
+  first error (the rest answer `SKIPPED`).
+- One result per call, in order: `{ id, function, status: "ok", result,
+  chars, truncated? }` or `{ id, function, status: "error", code, message }`.
+  `id` defaults to the position. `ok` is true only when every call answered.
+- Defaults: 10 s per call (`timeout_ms`, per call or per request), 16 KB per
+  result (`max_entry_bytes`; a bigger result comes back as the first bytes
+  of its JSON text with `truncated: true` and the full `chars`), 12 calls
+  per request (`max_calls`; more still runs, with a warning that the
+  response may be too large to deliver; hard ceiling 64).
+- Same refusals as pipe steps, plus no nested batch and no pipe as a call.
+  Same approval surface: the batch runs with this worker's authority.
+
 ### Boundaries
 
 - Steps run with THIS worker's authority, not the calling agent's per-step
@@ -133,7 +158,7 @@ fp::pipe { through: [
   agent policy hard-denies — session writes and `session::store::*`,
   `approval::*`, `configuration::*`/`oauth::*` (credentials),
   `router::*`/`provider::*` (model spend), `harness::*`/`run::*` (turn
-  control), `stream::*` and bus internals, `*::on-config-change` — because
+  control), `stream::*` (the deprecated iii-stream surface) and bus internals, `*::on-config-change` — because
   steps run with worker authority and must not ride past those denies.
   Session READS (`session::get`/`list`/`messages*`/`get-message`/
   `get-attachment`/`list-attachments`) are allowed, like `database::query`:

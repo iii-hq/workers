@@ -2,7 +2,7 @@
 
 [package]
 name = "judge-decider"
-version = "0.2.1"
+version = "0.2.4"
 edition = "2021"
 publish = false
 license = "Apache-2.0"
@@ -14,7 +14,8 @@ console-ui = ["dep:iii-console-ui"]
 
 [dependencies]
 judge-contract = { path = "../crates/judge-contract" }
-iii-sdk = "=0.23.0"
+judge-provider = { path = "../crates/judge-provider" }
+iii-sdk = "=0.24.6"
 iii-config-client = { path = "../crates/config-client" }
 iii-console-ui = { path = "../crates/console-ui", optional = true }
 clap = { version = "4", features = ["derive", "env"] }

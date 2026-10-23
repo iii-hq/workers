@@ -320,3 +320,18 @@ describe('buildActiveSubagentChipModel', () => {
     })
   })
 })
+
+describe('collectSubagentDescendants and side chats', () => {
+  it('does not count a side chat that copied its parent link as a sibling', () => {
+    const list = [
+      conversation('root'),
+      conversation('worker', { parentId: 'root' }),
+      conversation('side', {
+        parentId: 'root',
+        sessionMetadata: { side_chat_of: 'worker' },
+      }),
+    ]
+    const { descendants } = collectSubagentDescendants(list, 'root')
+    expect(descendants.map((d) => d.conversation.id)).toEqual(['worker'])
+  })
+})

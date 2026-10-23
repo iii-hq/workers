@@ -12,8 +12,7 @@ use serde_json::{Value, json};
 
 pub const CONFIG_ID: &str = "kanban";
 pub const CONFIG_NAME: &str = "Kanban";
-pub const CONFIG_DESCRIPTION: &str =
-    "Where the board file lives, how tickets are numbered, and which columns the board has.";
+pub const CONFIG_DESCRIPTION: &str = "Where the board file lives, how tickets are numbered, which columns the board has, and which one counts as done.";
 pub const DEFAULT_PRIORITIES: [&str; 4] = ["low", "medium", "high", "urgent"];
 const DEFAULT_PREFIX: &str = "KAN";
 
@@ -34,6 +33,15 @@ pub struct KanbanConfig {
     pub id_prefix: String,
     /// Column id a new ticket lands in when none is given.
     pub default_status: String,
+    /// Column id that counts as done: progress, release status, shipping and
+    /// the subtask warning use only this column. Defaults to the last column
+    /// that is not the canceled one.
+    pub done_status: String,
+    /// Column id that counts as canceled: its tickets leave progress, project
+    /// and release totals, and never hold a release open. `None` when the
+    /// board has no canceled column.
+    #[serde(default)]
+    pub canceled_status: Option<String>,
     /// Board columns, left to right.
     pub columns: Vec<Column>,
     /// Priority values offered on a ticket, lowest first.
@@ -49,6 +57,7 @@ pub fn default_columns() -> Vec<Column> {
         ("in_progress", "In progress"),
         ("in_review", "In review"),
         ("done", "Done"),
+        ("canceled", "Canceled"),
     ]
     .into_iter()
     .map(|(id, label)| Column {
@@ -68,6 +77,8 @@ impl Default for KanbanConfig {
             data_path: iii_worker_paths::default_path("data/kanban"),
             id_prefix: DEFAULT_PREFIX.to_string(),
             default_status: "backlog".to_string(),
+            done_status: "done".to_string(),
+            canceled_status: Some("canceled".to_string()),
             columns: default_columns(),
             priorities: default_priorities(),
             agents_path: iii_worker_paths::default_path("agents"),
@@ -129,6 +140,14 @@ pub fn schema() -> Value {
                 "type": "string",
                 "description": "Column id a new ticket lands in when none is given."
             },
+            "done_status": {
+                "type": "string",
+                "description": "Column id that counts as done (progress, releases, shipping, the subtask warning). Defaults to the last column that is not the canceled one; an unknown id falls back to it."
+            },
+            "canceled_status": {
+                "type": ["string", "null"],
+                "description": "Column id that counts as canceled: its tickets leave progress, project and release totals. Defaults to `canceled` when the board has that column; null, an unknown id or the done column means no canceled column."
+            },
             "columns": {
                 "type": "array",
                 "minItems": 1,
@@ -173,8 +192,10 @@ fn valid_prefix(prefix: &str) -> bool {
 }
 
 /// Repair whatever is stored into a usable config: unknown default column
-/// falls to the first column, an invalid prefix falls back to `KAN`, empty
-/// lists fall back to the defaults, duplicate column ids collapse.
+/// falls to the first column, unknown done column to the last one that is not
+/// the canceled one, an unknown canceled column to none, an invalid
+/// prefix falls back to `KAN`, empty lists fall back to the defaults,
+/// duplicate column ids collapse.
 pub fn normalize(raw: &Value) -> KanbanConfig {
     let defaults = KanbanConfig::default();
     let input = raw.as_object();
@@ -212,6 +233,27 @@ pub fn normalize(raw: &Value) -> KanbanConfig {
         columns[0].id.clone()
     };
 
+    // A missing key means the default `canceled` column; an explicit null or
+    // empty string means none.
+    let requested_canceled = match field("canceled_status") {
+        None => "canceled".to_string(),
+        Some(value) => clean_string(Some(value)),
+    };
+    let requested_done = clean_string(field("done_status"));
+    let done_status = if columns.iter().any(|column| column.id == requested_done) {
+        requested_done
+    } else {
+        columns
+            .iter()
+            .rev()
+            .find(|column| column.id != requested_canceled)
+            .unwrap_or(&columns[columns.len() - 1])
+            .id
+            .clone()
+    };
+    let canceled_status = Some(requested_canceled)
+        .filter(|id| *id != done_status && columns.iter().any(|column| column.id == *id));
+
     let priorities: Vec<String> = field("priorities")
         .and_then(Value::as_array)
         .map(|entries| {
@@ -234,6 +276,8 @@ pub fn normalize(raw: &Value) -> KanbanConfig {
         },
         id_prefix,
         default_status,
+        done_status,
+        canceled_status,
         columns,
         priorities: if priorities.is_empty() {
             default_priorities()
@@ -256,7 +300,7 @@ mod tests {
     fn defaults_round_trip_through_normalize() {
         let defaults = KanbanConfig::default();
         assert_eq!(normalize(&defaults.to_json()), defaults);
-        assert_eq!(normalize(&json!({})).columns.len(), 5);
+        assert_eq!(normalize(&json!({})).columns.len(), 6);
     }
 
     #[test]
@@ -291,7 +335,66 @@ mod tests {
             repaired.default_status, "open",
             "an unknown default falls to the first column"
         );
+        assert_eq!(
+            repaired.done_status, "closed",
+            "an absent done column falls to the last column"
+        );
         assert_eq!(repaired.priorities, default_priorities());
+    }
+
+    #[test]
+    fn done_status_is_kept_when_it_is_a_column_and_repaired_otherwise() {
+        let columns = json!([{ "id": "a" }, { "id": "b" }, { "id": "c" }]);
+        let kept = normalize(&json!({ "columns": columns, "done_status": " b " }));
+        assert_eq!(kept.done_status, "b");
+        let unknown = normalize(&json!({ "columns": columns, "done_status": "nope" }));
+        assert_eq!(unknown.done_status, "c");
+        assert_eq!(normalize(&json!({})).done_status, "done");
+        assert_eq!(schema()["properties"]["done_status"]["type"], "string");
+    }
+
+    #[test]
+    fn canceled_status_defaults_to_the_canceled_column_and_never_takes_done() {
+        let empty = normalize(&json!({}));
+        assert_eq!(
+            empty.done_status, "done",
+            "the canceled column is never the done fallback"
+        );
+        assert_eq!(empty.canceled_status.as_deref(), Some("canceled"));
+        let columns = json!([{ "id": "todo" }, { "id": "done" }, { "id": "canceled" }]);
+        let missing = normalize(&json!({ "columns": columns }));
+        assert_eq!(missing.done_status, "done");
+        assert_eq!(missing.canceled_status.as_deref(), Some("canceled"));
+        let none = normalize(&json!({ "columns": columns, "canceled_status": null }));
+        assert_eq!(
+            none.canceled_status, None,
+            "an explicit null means no canceled column"
+        );
+        assert_eq!(
+            none.done_status, "canceled",
+            "with none, the last column is done again"
+        );
+        let renamed = normalize(&json!({
+            "columns": [{ "id": "todo" }, { "id": "done" }, { "id": "dropped" }],
+            "canceled_status": "dropped",
+        }));
+        assert_eq!(renamed.canceled_status.as_deref(), Some("dropped"));
+        assert_eq!(renamed.done_status, "done");
+        let unknown = normalize(&json!({ "columns": columns, "canceled_status": "nope" }));
+        assert_eq!(unknown.canceled_status, None);
+        let clash = normalize(&json!({
+            "columns": columns,
+            "done_status": "canceled",
+            "canceled_status": "canceled",
+        }));
+        assert_eq!(clash.done_status, "canceled");
+        assert_eq!(clash.canceled_status, None, "done wins a clash");
+        let legacy = normalize(&json!({ "columns": [{ "id": "todo" }, { "id": "done" }] }));
+        assert_eq!(
+            legacy.canceled_status, None,
+            "a stored board without the column keeps none"
+        );
+        assert_eq!(legacy.done_status, "done");
     }
 
     #[test]

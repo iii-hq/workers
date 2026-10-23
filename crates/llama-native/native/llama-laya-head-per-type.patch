@@ -1,0 +1,92 @@
+llama.cpp b11379 runs laya's decision head once per question type (choice,
+score, noul) on every token, because the type is not a graph input: 6 head
+block passes per forward where the reference runs 2, which made judge-laya
+16-25% slower on the CPU than its candle head. With decision orders in the
+batch (llama_batch_ext_set_decision_order, every token of a row carrying its
+question's order), the head adds each token's type embedding and runs once;
+its score fills all three columns, so readers of a type's column are
+unchanged. A batch without orders keeps the per-type head. Upstream: not
+filed yet.
+
+--- a/src/models/modern-bert.cpp
++++ b/src/models/modern-bert.cpp
+@@ -1,8 +1,43 @@
+ #include "models.h"
+ 
++#include "llama-ext.h"
++
+ // question types of a decision model: choice, score, noul
+ static const uint32_t N_DECISION_TYPES = 3;
+ 
++// The question type of each token, from the batch's decision orders (llama_batch_ext_set_decision_order: every
++// token of a row carries its question's order), so the decision head runs once instead of once per type. A batch
++// without orders keeps the per-type head.
++class llm_graph_input_decision_types : public llm_graph_input_i {
++public:
++    explicit llm_graph_input_decision_types(const llama_ubatch & ubatch) :
++        n_tokens(ubatch.n_tokens), has_orders(ubatch.decision_order != nullptr) {}
++
++    void set_input(const llama_ubatch * ubatch) override {
++        if (!types) {
++            return;
++        }
++        std::vector<int32_t> data(n_tokens);
++        for (int64_t i = 0; i < n_tokens; ++i) {
++            switch (ubatch->decision_order[i]) {
++                case LLAMA_DECISION_ORDER_QUESTION_SCORE: data[i] = 1; break;
++                case LLAMA_DECISION_ORDER_QUESTION_NOUL:  data[i] = 2; break;
++                default:                                  data[i] = 0; break; // choice
++            }
++        }
++        ggml_backend_tensor_set(types, data.data(), 0, ggml_nbytes(types));
++    }
++
++    bool can_reuse(const llm_graph_params & params) override {
++        return params.ubatch.n_tokens == n_tokens && (params.ubatch.decision_order != nullptr) == has_orders;
++    }
++
++    ggml_tensor * types = nullptr; // I32 [n_tokens], the type embedding row of each token
++
++    const int64_t n_tokens;
++    const bool    has_orders;
++};
++
+ void llama_model_modern_bert::load_arch_hparams(llama_model_loader & ml) {
+     const bool found_swa = ml.get_key(LLM_KV_ATTENTION_SLIDING_WINDOW, hparams.n_swa, false);
+     if (found_swa && hparams.n_swa > 0) {
+@@ -249,10 +284,20 @@
+ 
+     ggml_tensor * scores = nullptr;
+ 
+-    // the question type is not a graph input, so the head is evaluated for each of them
+-    for (uint32_t it = 0; it < N_DECISION_TYPES; ++it) {
+-        ggml_tensor * type_row = ggml_view_1d(ctx0, model.type_embd, n_embd, it * model.type_embd->nb[1]);
+-        ggml_tensor * inpL = ggml_add(ctx0, inp, type_row);
++    auto * inp_types = static_cast<llm_graph_input_decision_types *>(
++            res->add_input(std::make_unique<llm_graph_input_decision_types>(ubatch)));
++    if (inp_types->has_orders) {
++        inp_types->types = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
++        ggml_set_input(inp_types->types);
++    }
++
++    // with the question type of each token as an input, the head runs once; otherwise once per type
++    const uint32_t n_passes = inp_types->has_orders ? 1 : N_DECISION_TYPES;
++    for (uint32_t it = 0; it < n_passes; ++it) {
++        ggml_tensor * type_rows = inp_types->has_orders
++            ? ggml_get_rows(ctx0, model.type_embd, inp_types->types)
++            : ggml_view_1d(ctx0, model.type_embd, n_embd, it * model.type_embd->nb[1]);
++        ggml_tensor * inpL = ggml_add(ctx0, inp, type_rows);
+ 
+         for (int il = n_layer_enc; il < n_layer; ++il) {
+             const auto & layer = model.layers[il];
+@@ -298,6 +343,10 @@
+ 
+         scores = scores ? ggml_concat(ctx0, scores, cur, 0) : cur;
+     }
++    if (inp_types->has_orders) {
++        // each token's score in every column: the reader takes its question type's
++        scores = ggml_repeat_4d(ctx0, scores, N_DECISION_TYPES, scores->ne[1], 1, 1);
++    }
+     cb(scores, "decision_scores", -1);
+ 
+     return scores;

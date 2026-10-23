@@ -2,7 +2,7 @@
 
 [package]
 name = "quick-tunnel"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 publish = false
 license = "Apache-2.0"
@@ -14,7 +14,7 @@ name = "quick-tunnel"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.22.1-alpha.25"
+iii-sdk = "=0.24.6"
 iii-config-client = { path = "../crates/config-client" }
 anyhow = "1"
 async-trait = "0.1"

@@ -71,27 +71,44 @@ See the [mixed Noul/Choice/Score example](reference.md#evaluate),
 
 **Settings → Workers → judge** selects the default provider from the workers
 registered as `judge-<provider>` (seeded from `JUDGE_PROVIDER`, else `typesafe`).
-Four ship today: [`judge-typesafe`](../judge-typesafe/) (TypeSafe's hosted JEV),
-[`judge-decider`](../judge-decider/), [`judge-semif`](../judge-semif/) and
-[`judge-laya`](../judge-laya/) (open models running inside the worker); a request may name its own with a top-level
+Six ship today: [`judge-typesafe`](../judge-typesafe/) (TypeSafe's hosted JEV),
+[`judge-openai`](../judge-openai/) (OpenAI's hosted Decisions API),
+[`judge-decider`](../judge-decider/), [`judge-semif`](../judge-semif/),
+[`judge-laya`](../judge-laya/) and [`judge-clef`](../judge-clef/) (open models running inside the worker); a request may name its own with a top-level
 `provider`. Between the two sits
 the calling session's provider: the console's composer (beside the model
 picker) stores it as the session's `judge_provider` metadata, the harness
 stamps it on every turn as the `iii.judge.provider` OTel baggage, and callers
-in that turn (function search, call reconciliation, `browser::run`) send it as
+in that turn (function search, call reconciliation, `browser::run`,
+`computer::run`) send it as
 `provider`; a request without one falls back to that baggage, then to the
 default. Each session routes on its own; no session changes another's judge
 or the default. A local provider keeps its model loaded while it is the
 default (all of them with **Keep every local provider loaded**, `preload_all`);
 a request naming any other one loads its model on first use, which that request
 may not outlast, and the model is released after 10 idle minutes. Picking a
-provider in the composer starts that load. A new provider is a
+provider in the composer starts that load. The composer's judge picker is
+laid out like the model picker: each provider shows the model its settings
+name, **Configure** edits a provider's settings (or the hub's) inside the
+picker, and **+** adds a judge worker from the registry. A choice that would
+not be used (its worker is not running, or it has no usable key) shows a
+warning on the composer and beside it in the list. A new provider is a
 worker that registers `judge-<provider>::evaluate`, `::models::list` and
-`::cancel` with the [`judge-contract`](../crates/judge-contract/) types,
+`::cancel` (plus `::status` when it needs a key) with the
+[`judge-contract`](../crates/judge-contract/) types,
 marked `metadata.internal: true` so default discovery shows only the hub, and
 accepts request ids up to 512 bytes; the hub needs no change. See
 [Configuration](reference.md#configuration) and
 [Cancellation](reference.md#cancellation).
+
+## Chat mentions
+
+Because the harness always runs the judge, the judge also delivers chat
+mentions to agents: a user's `@kanban(id="…")` (or any worker-defined
+mention) reaches the agent with a one-line summary of the item and a
+pre-verified call for its full details, and agents learn which mention names
+they may write in replies. See [Chat mentions](reference.md#chat-mentions);
+`JUDGE_MENTIONS=false` turns it off.
 
 The hub holds no credentials; its configuration entry (`judge`, or
 `III_CONFIG_NAME`) carries only the default provider and `preload_all`. For the full API,

@@ -1,8 +1,8 @@
 //! `storage::getObject` — read an object inline.
 
-use super::{err_to_str, AppState, INLINE_BODY_CAP};
+use super::{err_to_str, validate_key, AppState, INLINE_BODY_CAP};
 use crate::backend::GetReq as BackendGetReq;
-use crate::error::{backend_error_to_storage, StorageError};
+use crate::error::backend_error_to_storage;
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use chrono::{DateTime, Utc};
@@ -29,11 +29,7 @@ pub struct GetResp {
 }
 
 pub async fn handle(state: &AppState, req: GetReq) -> Result<GetResp, String> {
-    if req.key.is_empty() {
-        return Err(err_to_str(StorageError::ConfigError {
-            message: "key must not be empty".into(),
-        }));
-    }
+    validate_key(&req.key).map_err(err_to_str)?;
     let backend = state.backend(&req.bucket).await.map_err(err_to_str)?;
     let resp = backend
         .get(BackendGetReq {

@@ -70,7 +70,7 @@ pub async fn handle(
     overrides.stdin = req.stdin;
 
     match req.target {
-        Target::Host => spawn_host_job(req.job_id, cfg, argv, overrides).await,
+        Target::Host => spawn_host_job(req.session_id, req.job_id, cfg, argv, overrides).await,
         Target::Sandbox { sandbox_id } => {
             // cwd/env/stdin are host-only — the sandbox::exec payload does not
             // forward them. Reject loudly (S210 in the message) rather than
@@ -90,12 +90,22 @@ pub async fn handle(
             // (zero leaves background host jobs unbounded).
             let resolved = cfg.resolve_timeout(req.timeout_ms);
             let fwd: Arc<dyn TriggerFwd> = Arc::new(IiiTriggerFwd::new(iii));
-            spawn_sandbox_job(req.job_id, cfg, fwd, sandbox_id, argv, resolved).await
+            spawn_sandbox_job(
+                req.session_id,
+                req.job_id,
+                cfg,
+                fwd,
+                sandbox_id,
+                argv,
+                resolved,
+            )
+            .await
         }
     }
 }
 
 pub(crate) async fn spawn_host_job(
+    owner_session_id: Option<String>,
     job_id: Option<String>,
     cfg: Arc<ShellConfig>,
     argv: Vec<String>,
@@ -126,6 +136,7 @@ pub(crate) async fn spawn_host_job(
             finalized: false,
             child: Some(child),
             host_pid,
+            owner_session_id,
         })
     })
     .await?;
@@ -281,6 +292,7 @@ pub(crate) async fn spawn_host_job(
 }
 
 pub(crate) async fn spawn_sandbox_job(
+    owner_session_id: Option<String>,
     job_id: Option<String>,
     cfg: Arc<ShellConfig>,
     fwd: Arc<dyn TriggerFwd>,
@@ -311,6 +323,7 @@ pub(crate) async fn spawn_sandbox_job(
             finalized: false,
             child: None,
             host_pid: None,
+            owner_session_id,
         },
         cfg.max_concurrent_jobs,
     )
@@ -545,6 +558,7 @@ mod host_path_tests {
         let cfg = cfg(200, 16);
         let resp = spawn_host_job(
             None,
+            None,
             cfg,
             vec!["sleep".into(), "5".into()],
             ExecOverrides::default(),
@@ -582,9 +596,15 @@ mod host_path_tests {
         let _gauge_gate = jobs::GAUGE_TEST_GUARD.lock().await;
         // Control: a fast command finishes normally well within the cap.
         let cfg = cfg(5_000, 16);
-        let resp = spawn_host_job(None, cfg, vec!["true".into()], ExecOverrides::default())
-            .await
-            .expect("spawn_host_job");
+        let resp = spawn_host_job(
+            None,
+            None,
+            cfg,
+            vec!["true".into()],
+            ExecOverrides::default(),
+        )
+        .await
+        .expect("spawn_host_job");
         let status = await_terminal(&resp.job_id, 2000).await;
         assert_eq!(status, JobStatus::Finished);
         let h = jobs::get(&resp.job_id).await.expect("job exists");
@@ -598,6 +618,7 @@ mod host_path_tests {
         // executable. Rejection cannot leave a child or side effects behind.
         let cfg = cfg(30_000, 0);
         let err = spawn_host_job(
+            None,
             None,
             cfg,
             vec!["/no-such-executable-for-cap-rejection".into()],
@@ -634,6 +655,7 @@ mod host_path_tests {
         let _guard = jobs::HOST_SWEEP_TEST_GUARD.lock().await;
 
         let resp = spawn_host_job(
+            None,
             None,
             cfg(60_000, 16),
             vec!["sleep".into(), "30".into()],
@@ -897,6 +919,6 @@ mod sandbox_path_tests {
         argv: Vec<String>,
         timeout_ms: u64,
     ) -> Result<crate::functions::types::ExecBgResponse, String> {
-        super::spawn_sandbox_job(None, cfg, fwd, sandbox_id, argv, timeout_ms).await
+        super::spawn_sandbox_job(None, None, cfg, fwd, sandbox_id, argv, timeout_ms).await
     }
 }

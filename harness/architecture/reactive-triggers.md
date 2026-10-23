@@ -120,9 +120,9 @@ and never changes delivery.
 | `state` | `scope?`, `key?` — omit `key` and it fires for every key in the scope |
 | `cron` | `expression` (6-field: sec min hour day month weekday) |
 | `durable:subscriber` | `topic`, `queue_config?` — the queue. `queue` is the provider *package*, not a type |
-| `subscribe` | `topic` — pubsub |
-| `stream` | `stream_name?`, `group_id?`, `item_id?` |
-| `stream:join` / `stream:leave` | `stream_name?` |
+| `subscribe` (deprecated: pubsub) | `topic` — pubsub |
+| `stream` (deprecated: iii-stream) | `stream_name?`, `group_id?`, `item_id?` |
+| `stream:join` / `stream:leave` (deprecated: iii-stream) | `stream_name?` |
 | `log` | `level?` |
 | `trace` | `service_name?`, `status?` |
 | `configuration` | `configuration_id?`, `event_types?` |
@@ -261,11 +261,12 @@ is the deadline primitive every run used to encode as a cron boundary plus a
 remembered `once: true`: "wake me when X happens, or tell me at T that it
 did not" is a wake binding plus one timer registration.
 
-`expires_at` on a **wake** is a real deadline, not just a stop: a periodic
-sweep retires any binding whose lifecycle is spent, and when the retiree is a
-never-fired wake it **injects a `[notification]` into the parked session** —
-naming the watch, the deadline, and that nothing else will fire it — so the
-session un-parks and runs its own fallback instead of sleeping forever. The
+`expires_at` on a **wake** is a real deadline, not just a stop: the binding's
+own deadline timer retires it at that instant (no periodic sweep), and when
+the retiree is a never-fired wake it **injects a `[notification]` into the
+parked session** — naming the watch, the deadline, and that nothing else will
+fire it — so the session un-parks and runs its own fallback instead of
+sleeping forever. The
 same notice is delivered when a lineage session unregisters someone else's
 armed wake. "Wake me when X happens, or tell me at T that it didn't" is
 therefore ONE registration; no cron-boundary deadline hack needed.

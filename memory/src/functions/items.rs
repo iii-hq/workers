@@ -9,10 +9,6 @@ use crate::error::MemoryError;
 use crate::events::ItemEvent;
 use crate::types::{fingerprint, now_ms, Confidence, Memory, Provenance};
 
-fn default_bank_name(req_bank: &Option<String>, cfg_default: &str) -> String {
-    req_bank.clone().unwrap_or_else(|| cfg_default.to_string())
-}
-
 /// Normalized entity handles: trimmed, lowercased, empty dropped, capped.
 fn normalize_entities(entities: Vec<String>) -> Vec<String> {
     entities
@@ -68,6 +64,7 @@ fn save_transition(existing: Option<Memory>, input: SaveInput) -> (Memory, ItemE
             f.corroboration = f.corroboration.saturating_add(1);
             f.pinned = f.pinned || pinned;
             f.updated_at = now;
+            f.stated_at = Some(now);
             f.revision += 1;
             if live {
                 (f, ItemEvent::Updated, false)
@@ -94,6 +91,7 @@ fn save_transition(existing: Option<Memory>, input: SaveInput) -> (Memory, ItemE
                 invalid_at: None,
                 superseded_by: None,
                 revision: 0,
+                stated_at: Some(now),
             },
             ItemEvent::Created,
             true,
@@ -101,14 +99,23 @@ fn save_transition(existing: Option<Memory>, input: SaveInput) -> (Memory, ItemE
     }
 }
 
+/// A save into the default bank that names no entities is the user's own
+/// (the memory page's add field, the CLI): about the user, so it is read
+/// under every directory bank too.
+fn about_the_user(entities: &[String], bank: &str, default_bank: &str) -> bool {
+    entities.iter().all(|e| e.trim().is_empty()) && bank == default_bank
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SaveRequest {
-    /// Target bank; the configured default when omitted.
+    /// Target bank; omitted: the calling session's bank, else the configured default.
     #[serde(default)]
     pub bank: Option<String>,
     /// The memory, one self-contained sentence.
     pub text: String,
     /// Entity handles (people/projects/tools) used as a retrieval signal.
+    /// None into the default bank: `user`, read under every repository's
+    /// bank.
     #[serde(default)]
     pub entities: Vec<String>,
     /// Topical labels for filtering within the bank (organization, not
@@ -131,14 +138,28 @@ pub struct SaveResponse {
 }
 
 pub async fn save(deps: &Deps, req: SaveRequest) -> Result<SaveResponse, MemoryError> {
-    let text = req.text.trim().to_string();
+    let text = req.text.trim();
+    crate::redact::reject_injection("text", text)?;
+    // Redact before the fingerprint: dedup and the stored text agree, and
+    // the caller sees what was kept in the returned record. Bounded after:
+    // stripping invisible characters can shorten the text or empty it.
+    let redaction = crate::redact::redact(text);
+    let text = redaction.text.trim().to_string();
     if text.len() < 3 || text.len() > 2_000 {
         return Err(MemoryError::InvalidInput(
             "text must be 3..2000 characters".into(),
         ));
     }
-    let cfg = deps.config().await;
-    let bank_name = default_bank_name(&req.bank, &cfg.default_bank);
+    // Short fields too, before normalization lowercases them (a lowercased
+    // key still leaks its material, and the key shapes are case-sensitive).
+    let (mut entities, mut tags) = (req.entities, req.tags);
+    let mut labels = redaction.labels;
+    labels.extend(crate::redact::drop_secrets(&mut entities));
+    labels.extend(crate::redact::drop_secrets(&mut tags));
+    let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
+    if about_the_user(&entities, &bank_name, &deps.config().await.default_bank) {
+        crate::scope::into_layer(&mut entities);
+    }
     let store = deps.store().await;
     let (bank, bank_created) = store.ensure_bank(&bank_name, None).await?;
     if bank_created {
@@ -153,20 +174,25 @@ pub async fn save(deps: &Deps, req: SaveRequest) -> Result<SaveResponse, MemoryE
         SaveInput {
             id,
             text,
-            entities: req.entities,
-            tags: req.tags,
+            entities,
+            tags,
             pinned: req.pinned,
             session_id: req.session_id,
             now,
         },
     );
     bank.commit(memory.clone()).await?;
-    deps.emitter.item(event, &bank_name, &memory).await;
+    let reason = crate::redact::reason(&labels);
+    deps.emitter
+        .item_with(event, &bank_name, &memory, reason.as_deref())
+        .await;
+    crate::embed_client::spawn_backfill(deps, &bank_name);
     Ok(SaveResponse { memory, created })
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetRequest {
+    /// Bank; omitted: the calling session's bank, else the configured default.
     #[serde(default)]
     pub bank: Option<String>,
     pub id: String,
@@ -178,8 +204,7 @@ pub struct GetResponse {
 }
 
 pub async fn get(deps: &Deps, req: GetRequest) -> Result<GetResponse, MemoryError> {
-    let cfg = deps.config().await;
-    let bank_name = default_bank_name(&req.bank, &cfg.default_bank);
+    let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
     let store = deps.store().await;
     let bank = store.bank(&bank_name).await?;
     let memory = bank
@@ -191,6 +216,7 @@ pub async fn get(deps: &Deps, req: GetRequest) -> Result<GetResponse, MemoryErro
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListRequest {
+    /// Bank; omitted: the calling session's bank, else the configured default.
     #[serde(default)]
     pub bank: Option<String>,
     /// Page size, default 50, max 500.
@@ -213,8 +239,7 @@ pub struct ListResponse {
 }
 
 pub async fn list(deps: &Deps, req: ListRequest) -> Result<ListResponse, MemoryError> {
-    let cfg = deps.config().await;
-    let bank_name = default_bank_name(&req.bank, &cfg.default_bank);
+    let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
     let store = deps.store().await;
     let bank = store.bank(&bank_name).await?;
     let limit = req.limit.unwrap_or(50).min(500);
@@ -237,6 +262,7 @@ pub struct MemoryResponse {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct UpdateRequest {
+    /// Bank; omitted: the calling session's bank, else the configured default.
     #[serde(default)]
     pub bank: Option<String>,
     pub id: String,
@@ -252,27 +278,40 @@ pub struct UpdateRequest {
 }
 
 pub async fn update(deps: &Deps, req: UpdateRequest) -> Result<MemoryResponse, MemoryError> {
-    let cfg = deps.config().await;
-    let bank_name = default_bank_name(&req.bank, &cfg.default_bank);
+    let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
     let store = deps.store().await;
     let bank = store.bank(&bank_name).await?;
     let mut memory = bank
         .get(&req.id)
         .await
         .ok_or_else(|| MemoryError::MemoryNotFound(req.id.clone()))?;
+    let mut text_changed = false;
+    let mut labels: Vec<&'static str> = Vec::new();
     if let Some(text) = req.text {
-        let text = text.trim().to_string();
+        crate::redact::reject_injection("text", &text)?;
+        // Bounded after redaction, as in `save`.
+        let redaction = crate::redact::redact(text.trim());
+        let text = redaction.text.trim().to_string();
         if text.len() < 3 || text.len() > 2_000 {
             return Err(MemoryError::InvalidInput(
                 "text must be 3..2000 characters".into(),
             ));
         }
+        labels.extend(redaction.labels);
+        // A text edit restates the fact; pin/tag/entity edits do not.
+        text_changed = memory.text != text;
+        if text_changed {
+            memory.stated_at = Some(now_ms());
+        }
         memory.text = text;
     }
-    if let Some(entities) = req.entities {
+    // Redacted before normalization lowercases them (see `save`).
+    if let Some(mut entities) = req.entities {
+        labels.extend(crate::redact::drop_secrets(&mut entities));
         memory.entities = normalize_entities(entities);
     }
-    if let Some(tags) = req.tags {
+    if let Some(mut tags) = req.tags {
+        labels.extend(crate::redact::drop_secrets(&mut tags));
         memory.tags = normalize_entities(tags);
     }
     if let Some(pinned) = req.pinned {
@@ -281,22 +320,27 @@ pub async fn update(deps: &Deps, req: UpdateRequest) -> Result<MemoryResponse, M
     memory.updated_at = now_ms();
     memory.revision += 1;
     bank.commit(memory.clone()).await?;
+    let reason = crate::redact::reason(&labels);
     deps.emitter
-        .item(ItemEvent::Updated, &bank_name, &memory)
+        .item_with(ItemEvent::Updated, &bank_name, &memory, reason.as_deref())
         .await;
+    // The commit dropped the vector of the old text; embed the new one.
+    if text_changed {
+        crate::embed_client::spawn_backfill(deps, &bank_name);
+    }
     Ok(MemoryResponse { memory })
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DeleteRequest {
+    /// Bank; omitted: the calling session's bank, else the configured default.
     #[serde(default)]
     pub bank: Option<String>,
     pub id: String,
 }
 
 pub async fn delete(deps: &Deps, req: DeleteRequest) -> Result<MemoryResponse, MemoryError> {
-    let cfg = deps.config().await;
-    let bank_name = default_bank_name(&req.bank, &cfg.default_bank);
+    let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
     let store = deps.store().await;
     let bank = store.bank(&bank_name).await?;
     let mut memory = bank
@@ -317,6 +361,7 @@ pub async fn delete(deps: &Deps, req: DeleteRequest) -> Result<MemoryResponse, M
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PinRequest {
+    /// Bank; omitted: the calling session's bank, else the configured default.
     #[serde(default)]
     pub bank: Option<String>,
     pub id: String,
@@ -340,25 +385,85 @@ pub async fn pin(deps: &Deps, req: PinRequest) -> Result<MemoryResponse, MemoryE
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SupersedeRequest {
+    /// Bank; omitted: the calling session's bank, else the configured default.
     #[serde(default)]
     pub bank: Option<String>,
     /// Memory to retire.
     pub id: String,
     /// Live memory that replaces it.
     pub superseded_by: String,
+    /// Merge semantics: the survivor absorbs the retired record's
+    /// observations (corroboration += retired + 1) in the same call. A
+    /// pinned survivor is never written. Default false (a state change:
+    /// the new record replaces the old, nothing to absorb).
+    #[serde(default)]
+    pub reinforce: bool,
+    /// Why — carried on the `memory::item-changed` events this call emits
+    /// (not persisted on the record). Trimmed, capped at 500 chars.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SupersedeResponse {
+    /// The retired record.
+    pub memory: Memory,
+    /// True when the survivor was reinforced (`reinforce` asked and the
+    /// survivor is not pinned).
+    pub reinforced: bool,
+}
+
+const MAX_REASON_CHARS: usize = 500;
+
+fn clamp_reason(reason: Option<String>) -> Option<String> {
+    let reason: String = reason?.trim().chars().take(MAX_REASON_CHARS).collect();
+    (!reason.is_empty()).then_some(reason)
+}
+
+/// The two records a supersede writes: the retired loser and, when
+/// reinforcing a non-pinned survivor, the survivor absorbing the loser's
+/// observations — `(s+1) + (r+1)` total, so corroboration `s + r + 1`,
+/// stamped with the LATEST of the two `updated_at` (a merge is not a fresh
+/// restatement; Hindsight keeps the latest source `mentioned_at`).
+pub(crate) fn supersede_transition(
+    mut loser: Memory,
+    mut winner: Memory,
+    reinforce: bool,
+    now: u64,
+) -> (Memory, Option<Memory>) {
+    let loser_updated_at = loser.updated_at;
+    let loser_corroboration = loser.corroboration;
+    let loser_stated_at = loser.stated_at;
+    loser.invalid_at = Some(now);
+    loser.superseded_by = Some(winner.id.clone());
+    loser.updated_at = now;
+    loser.revision += 1;
+    if !reinforce || winner.pinned {
+        return (loser, None);
+    }
+    winner.corroboration = winner
+        .corroboration
+        .saturating_add(loser_corroboration)
+        .saturating_add(1);
+    winner.updated_at = winner.updated_at.max(loser_updated_at);
+    winner.stated_at = winner.stated_at.max(loser_stated_at);
+    winner.revision += 1;
+    (loser, Some(winner))
 }
 
 /// Retire one memory in favor of another: tombstone with a pointer, never a
 /// plain delete. The consolidation seam — siblings merge duplicates through
 /// this instead of touching files. Pinned memories cannot be superseded.
-pub async fn supersede(deps: &Deps, req: SupersedeRequest) -> Result<MemoryResponse, MemoryError> {
+pub async fn supersede(
+    deps: &Deps,
+    req: SupersedeRequest,
+) -> Result<SupersedeResponse, MemoryError> {
     if req.id == req.superseded_by {
         return Err(MemoryError::InvalidInput(
             "a memory cannot supersede itself".into(),
         ));
     }
-    let cfg = deps.config().await;
-    let bank_name = default_bank_name(&req.bank, &cfg.default_bank);
+    let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
     let store = deps.store().await;
     let bank = store.bank(&bank_name).await?;
     let winner = bank
@@ -371,7 +476,7 @@ pub async fn supersede(deps: &Deps, req: SupersedeRequest) -> Result<MemoryRespo
             req.superseded_by
         )));
     }
-    let mut memory = bank
+    let memory = bank
         .get(&req.id)
         .await
         .ok_or_else(|| MemoryError::MemoryNotFound(req.id.clone()))?;
@@ -390,20 +495,46 @@ pub async fn supersede(deps: &Deps, req: SupersedeRequest) -> Result<MemoryRespo
             req.id, memory.superseded_by
         )));
     }
-    memory.invalid_at = Some(now_ms());
-    memory.superseded_by = Some(req.superseded_by);
-    memory.updated_at = now_ms();
-    memory.revision += 1;
-    bank.commit(memory.clone()).await?;
+    let reason = clamp_reason(req.reason);
+    let (retired, survivor) = supersede_transition(memory, winner, req.reinforce, now_ms());
+    // Loser first: a retry after a failed survivor write then fails as
+    // "already retired" instead of double-reinforcing.
+    bank.commit(retired.clone()).await?;
     deps.emitter
-        .item(ItemEvent::Superseded, &bank_name, &memory)
+        .item_with(
+            ItemEvent::Superseded,
+            &bank_name,
+            &retired,
+            reason.as_deref(),
+        )
         .await;
-    Ok(MemoryResponse { memory })
+    let reinforced = survivor.is_some();
+    if let Some(survivor) = survivor {
+        bank.commit(survivor.clone()).await?;
+        deps.emitter
+            .item_with(ItemEvent::Updated, &bank_name, &survivor, reason.as_deref())
+            .await;
+    }
+    Ok(SupersedeResponse {
+        memory: retired,
+        reinforced,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_entityless_save_into_the_default_bank_is_about_the_user() {
+        assert!(about_the_user(&[], "main", "main"));
+        assert!(
+            about_the_user(&[" ".into()], "main", "main"),
+            "blank entities name nothing"
+        );
+        assert!(!about_the_user(&["ledger-sync".into()], "main", "main"));
+        assert!(!about_the_user(&[], "w-abc123", "main"));
+    }
 
     fn record(id: &str, revision: u64, live: bool, pinned: bool) -> Memory {
         Memory {
@@ -420,6 +551,7 @@ mod tests {
             invalid_at: if live { None } else { Some(20) },
             superseded_by: if live { None } else { Some("fpw".into()) },
             revision,
+            stated_at: None,
         }
     }
 
@@ -440,6 +572,7 @@ mod tests {
         assert!(created);
         assert!(matches!(event, ItemEvent::Created));
         assert_eq!(m.revision, 0);
+        assert_eq!(m.stated_at, Some(99), "a new record is stated now");
         assert_eq!(m.entities, vec!["mike", "blog"]);
         assert_eq!(m.tags, vec!["intro"]);
         assert!(m.pinned);
@@ -502,6 +635,7 @@ mod tests {
             },
         );
         assert!(created, "a resurrection re-enters live sets");
+        assert_eq!(m.stated_at, Some(99), "re-saving restates the fact");
         assert!(matches!(event, ItemEvent::Created));
         assert_eq!(
             m.revision, 8,
@@ -510,10 +644,63 @@ mod tests {
         assert!(m.invalid_at.is_none());
         assert!(m.superseded_by.is_none());
     }
+
+    #[test]
+    fn supersede_retires_and_reinforce_carries_the_retired_count() {
+        let mut loser = record("fpl", 3, true, false);
+        loser.corroboration = 6;
+        loser.updated_at = 50;
+        loser.stated_at = Some(45);
+        let mut winner = record("fpw", 1, true, false);
+        winner.corroboration = 0;
+        winner.updated_at = 40;
+        winner.stated_at = Some(30);
+        let (retired, survivor) = supersede_transition(loser, winner.clone(), true, 99);
+        assert_eq!(retired.invalid_at, Some(99));
+        assert_eq!(retired.superseded_by.as_deref(), Some("fpw"));
+        assert_eq!(retired.revision, 4);
+        let survivor = survivor.expect("reinforced");
+        // (0+1) + (6+1) observations = corroboration 7: the survivor never
+        // ends below the record it absorbed.
+        assert_eq!(survivor.corroboration, 7);
+        // Latest of the two, NOT now: a merge is not a fresh restatement.
+        assert_eq!(survivor.updated_at, 50);
+        assert_eq!(survivor.stated_at, Some(45), "latest statement of the two");
+        assert_eq!(survivor.revision, 2);
+
+        let (_, none) = supersede_transition(record("fpl", 0, true, false), winner, false, 99);
+        assert!(none.is_none(), "reinforce off leaves the survivor alone");
+    }
+
+    #[test]
+    fn supersede_never_writes_a_pinned_survivor() {
+        let pinned = record("fpw", 1, true, true);
+        let (retired, survivor) =
+            supersede_transition(record("fpl", 0, true, false), pinned, true, 99);
+        assert!(retired.invalid_at.is_some(), "the loser still retires");
+        assert!(
+            survivor.is_none(),
+            "pinned is untouchable by automatic paths"
+        );
+    }
+
+    #[test]
+    fn reason_is_trimmed_capped_in_chars_and_empty_is_none() {
+        assert_eq!(
+            clamp_reason(Some("  same fact  ".into())).as_deref(),
+            Some("same fact")
+        );
+        assert_eq!(clamp_reason(Some("   ".into())), None);
+        assert_eq!(clamp_reason(None), None);
+        let long = "ção".repeat(300); // 900 chars, multibyte
+        let clamped = clamp_reason(Some(long)).unwrap();
+        assert_eq!(clamped.chars().count(), 500);
+    }
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct TagsRequest {
+    /// Bank; omitted: the calling session's bank, else the configured default.
     #[serde(default)]
     pub bank: Option<String>,
 }
@@ -531,8 +718,7 @@ pub struct TagsResponse {
 }
 
 pub async fn tags(deps: &Deps, req: TagsRequest) -> Result<TagsResponse, MemoryError> {
-    let cfg = deps.config().await;
-    let bank_name = default_bank_name(&req.bank, &cfg.default_bank);
+    let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
     let store = deps.store().await;
     let bank = store.bank(&bank_name).await?;
     Ok(TagsResponse {

@@ -52,6 +52,7 @@ use crate::functions::prompts::validate_name;
 use crate::functions::skills::{
     find_fs_skill_in, resolve_visible_skills, RegisteredWorkersCache, SKILL_BODY_MAX_BYTES,
 };
+use crate::kits::origin::{AgentSource, OriginIndex, SourceKind};
 use crate::sources::{mark_self_write, write_file_atomic};
 use crate::trigger_types;
 
@@ -131,6 +132,11 @@ pub struct AgentEntry {
     /// harness refuses to run it until the chain is fixed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inheritance_error: Option<String>,
+    /// Where the file came from: an installed kit (`kits.lock`), a worker's
+    /// skills bundle (its completion marker), the project itself (`local`),
+    /// the user-global root (`global`) or the worker binary (`builtin`).
+    /// `modified` says whether a kit's or worker's file was edited here.
+    pub source: AgentSource,
     /// File mtime as RFC 3339; empty for a bundled profile.
     pub modified_at: String,
 }
@@ -190,6 +196,11 @@ pub struct AgentGetOutput {
     /// through `extends`; `null` = the model/provider default. Served
     /// verbatim and validated at use time.
     pub reasoning_effort: Option<String>,
+    /// `false` = sessions running as this profile start without the
+    /// names-only skills index (`<available_skills>`), resolved through
+    /// `extends`; omitted when no profile in the chain sets it (on).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skills_index: Option<bool>,
     /// Harness subagent icon token (closed set, validated at write
     /// time); `null` = caller picks.
     pub icon: Option<String>,
@@ -218,6 +229,8 @@ pub struct AgentGetOutput {
     /// excluded). Present only when the request set `raw: true`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw: Option<String>,
+    /// Where the file came from (see `list`).
+    pub source: AgentSource,
     /// File mtime as RFC 3339; empty for a bundled profile.
     pub modified_at: String,
 }
@@ -322,7 +335,8 @@ fn register_list(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
         .description(
             "List agent profiles (id, name, description, logo, icon, color, model, \
              reasoning_effort, skill_count, function_count, extends, hidden, composer_placeholder, \
-             modified_at) from the agents folder plus the bundled ones (`builtin: true`). \
+             source, modified_at) from the agents folder plus the bundled ones (`builtin: true`). \
+             `source` says where each file came from: kit, worker, local, global or builtin. \
              Inherited fields resolve through `extends` (composer_placeholder never inherits); skill_count null means no preloaded skills, \
              function_count counts the preloaded functions (contracts injected into new sessions).",
         ),
@@ -351,7 +365,8 @@ fn register_get(iii: &Arc<IIIClient>, cfg: &SharedConfig, cache: &Arc<Registered
              `extends` chain, display fields, preloaded `skills` (skill ids whose bodies \
              the harness pre-loads into the session prompt) plus `unknown_skills`, preloaded `functions` (engine \
              function ids the harness pre-loads into the session prompt) plus \
-             `unknown_functions`, model, reasoning_effort, and `inheritance_error` when \
+             `unknown_functions`, model, reasoning_effort, `skills_index` (false = sessions \
+             start without the skills index), and `inheritance_error` when \
              the chain does not resolve. Pass raw: true for the exact on-disk file to \
              edit with directory::agents::update.",
         ),
@@ -378,8 +393,8 @@ fn register_create(iii: &Arc<IIIClient>, cfg: &SharedConfig, subs: &trigger_type
         .description(
             "Create a new agent profile at <agents_folder>/<id>.md from full-file \
              markdown (frontmatter with a non-empty `name`, emoji-only `logo`, optional \
-             `skills:` filter and `functions:` list of engine function ids to pre-load \
-             into sessions; the body is the system prompt and may be empty). Rejects ids \
+             `skills:` preloads, `skills_index: false` to start sessions without the skills \
+             index, and `functions:` list of engine function ids to pre-load into sessions; the body is the system prompt and may be empty). Rejects ids \
              or paths that already exist; a bundled id is shadowed.",
         )
         .metadata(json!({"tool": {"label": "Create agent profile"}})),
@@ -406,7 +421,7 @@ fn register_update(iii: &Arc<IIIClient>, cfg: &SharedConfig, subs: &trigger_type
         .description(
             "Overwrite one existing agent profile with full-file markdown \
              (frontmatter with a non-empty `name`, emoji-only `logo`, optional `skills:` \
-             and `functions:` lists; the body is the system prompt and may be empty). \
+             and `functions:` lists and `skills_index`; the body is the system prompt and may be empty). \
              Updating a bundled profile creates a local file that shadows it. To change \
              only the preloaded functions, prefer directory::agents::functions::add / remove.",
         )
@@ -631,9 +646,9 @@ fn resolve_chain<'a>(
     (chain, None)
 }
 
-/// What a profile inherits through its `extends` chain. `model` and
-/// `reasoning_effort` are single values: the nearest chain member that sets
-/// one wins. `skills` and `functions` are lists and inherit ADDITIVELY: the
+/// What a profile inherits through its `extends` chain. `model`,
+/// `reasoning_effort` and `skills_index` are single values: the nearest chain
+/// member that sets one wins. `skills` and `functions` are lists and inherit ADDITIVELY: the
 /// resolved list is the union of every list along the chain, root first and
 /// first occurrence kept, so a child extends what its parents allow / preload
 /// instead of replacing it — an empty list means "adds nothing here", never
@@ -644,6 +659,7 @@ struct Inherited {
     functions: Vec<String>,
     model: Option<String>,
     reasoning_effort: Option<String>,
+    skills_index: Option<bool>,
 }
 
 fn inherit(chain: &[&FsAgent]) -> Inherited {
@@ -652,6 +668,7 @@ fn inherit(chain: &[&FsAgent]) -> Inherited {
         functions: union_root_first(chain.iter().rev().map(|a| a.functions.as_slice())),
         model: chain.iter().find_map(|a| a.model.clone()),
         reasoning_effort: chain.iter().find_map(|a| a.reasoning_effort.clone()),
+        skills_index: chain.iter().find_map(|a| a.skills_index),
     }
 }
 
@@ -720,8 +737,27 @@ fn compose_prompt(chain: &[&FsAgent]) -> Result<String, String> {
     Ok(prompt.unwrap_or_default())
 }
 
+/// Origin index for `source`: the project's `kits.lock` plus worker markers.
+fn origin_index(cfg: &SkillsConfig) -> OriginIndex {
+    OriginIndex::load(
+        crate::kits::lock::KitsLock::read_lenient(&crate::kits::paths::kits_lock()),
+        &cfg.resolved_skills_folder(),
+    )
+}
+
+fn agent_source(cfg: &SkillsConfig, index: &OriginIndex, agent: &FsAgent) -> AgentSource {
+    if agent.builtin {
+        return AgentSource::simple(SourceKind::Builtin);
+    }
+    if !agent.abs_path.starts_with(cfg.resolved_agents_folder()) {
+        return AgentSource::simple(SourceKind::Global);
+    }
+    index.classify_project_agent(&agent.name, &agent.abs_path)
+}
+
 pub fn list_agents(cfg: &SkillsConfig) -> ListAgentsOutput {
     let catalog = catalog(cfg);
+    let origins = origin_index(cfg);
     let agents = catalog
         .iter()
         .map(|a| {
@@ -744,6 +780,7 @@ pub fn list_agents(cfg: &SkillsConfig) -> ListAgentsOutput {
                 composer_placeholder: a.composer_placeholder.clone(),
                 builtin: a.builtin,
                 inheritance_error,
+                source: agent_source(cfg, &origins, a),
             }
         })
         .collect();
@@ -794,6 +831,7 @@ pub fn get_agent(
         unknown_functions: Vec::new(),
         model: inherited.model,
         reasoning_effort: inherited.reasoning_effort,
+        skills_index: inherited.skills_index,
         icon: agent.icon.clone(),
         color: agent.color.clone(),
         extends: agent.extends.clone(),
@@ -802,6 +840,7 @@ pub fn get_agent(
         builtin: agent.builtin,
         inheritance_error,
         raw,
+        source: agent_source(cfg, &origin_index(cfg), agent),
     })
 }
 
@@ -1296,6 +1335,79 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("composer_placeholder"), "got: {err}");
         assert!(!tmp.path().join("agents/long.md").exists());
+    }
+
+    /// `skills_index` is a single value: the nearest chain member that sets it
+    /// wins, `true` in a child turns the index back on, and `get` omits it when
+    /// no profile in the chain sets it. Preloaded skills are unaffected.
+    #[test]
+    fn skills_index_inherits_nearest_and_is_omitted_when_unset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+        write_fixture(
+            tmp.path(),
+            "agents/base.md",
+            "---\nname: Base\nskills_index: false\nskills:\n  - a\n---\nBase.\n",
+        );
+        write_fixture(
+            tmp.path(),
+            "agents/child.md",
+            "---\nname: Child\nextends: base\n---\nChild.\n",
+        );
+        write_fixture(
+            tmp.path(),
+            "agents/back.md",
+            "---\nname: Back\nextends: child\nskills_index: true\n---\nBack.\n",
+        );
+        write_fixture(
+            tmp.path(),
+            "agents/plain.md",
+            "---\nname: Plain\n---\nPlain.\n",
+        );
+        let get = |id: &str| {
+            get_agent(
+                &cfg,
+                AgentGetInput {
+                    id: id.into(),
+                    raw: None,
+                },
+                &[],
+            )
+            .unwrap()
+        };
+        let base = get("base");
+        assert_eq!(base.skills_index, Some(false));
+        assert_eq!(base.skills, vec!["a".to_string()], "preloads still serve");
+        assert_eq!(get("child").skills_index, Some(false));
+        assert_eq!(get("back").skills_index, Some(true));
+        let plain = get("plain");
+        assert_eq!(plain.skills_index, None);
+        assert!(!serde_json::to_string(&plain)
+            .unwrap()
+            .contains("skills_index"));
+    }
+
+    /// Like `hidden`, a non-boolean value makes the profile invalid: a scan
+    /// skips it and a write is refused.
+    #[test]
+    fn a_non_boolean_skills_index_makes_the_profile_invalid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+        write_fixture(
+            tmp.path(),
+            "agents/bad.md",
+            "---\nname: Bad\nskills_index: no\n---\nBad.\n",
+        );
+        assert!(list_agents(&cfg).agents.iter().all(|a| a.id != "bad"));
+        let err = create_agent(
+            &cfg,
+            &AgentCreateInput {
+                id: "worse".into(),
+                content: "---\nname: Worse\nskills_index: \"false\"\n---\nWorse.\n".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("skills_index"), "got: {err}");
     }
 
     /// Profile-local: a child that sets no example does not inherit its

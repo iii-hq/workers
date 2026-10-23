@@ -1,8 +1,11 @@
 [workspace]
+# Vendored crates build and test on their own (own Cargo.lock), outside this
+# workspace's fmt and clippy; CI runs their tests separately.
+exclude = ["vendor/xa11y-linux", "vendor/xa11y-macos"]
 
 [package]
 name = "computer"
-version = "0.1.19"
+version = "0.1.24"
 edition = "2021"
 publish = false
 
@@ -15,8 +18,16 @@ name = "computer"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.22.1-alpha.25"
+# Screenshot downscale + JPEG re-encode (native capture, remote guest frames).
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+iii-sdk = "=0.24.6"
 iii-console-ui = { path = "../crates/console-ui" }
+# Typed judge::evaluate messages for computer::run; the judge worker itself is
+# optional at runtime.
+judge-contract = { path = "../crates/judge-contract" }
+# Same major as iii-sdk's, so Context::current() sees the handler's baggage
+# (the calling session's judge provider).
+opentelemetry = { version = "0.32", default-features = false }
 arc-swap = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 tokio-tungstenite = "0.24"
@@ -31,16 +42,42 @@ clap = { version = "4", features = ["derive", "env"] }
 schemars = "0.8"
 async-trait = "0.1"
 base64 = "0.22"
+# Accessibility tree model, selector engine and the Provider trait. Pure Rust:
+# the platform backends below are the only crates that touch OS APIs.
+xa11y-core = "=0.15.2"
 
-# Native host backend (screen capture + input injection). Only meaningful on a
-# desktop OS, and these pull system libraries (dbus/xcb/xdo) that headless Linux
-# servers and CI do not have, so they are gated to macOS/Windows. Other targets
-# build with the computer-server backend only.
+# Native host backend on macOS/Windows (screen capture + input injection).
+# These pull system libraries on Linux (libxdo, libxkbcommon, pipewire, xcb),
+# so Linux has its own driver below.
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 enigo = "0.3"
 xcap = "0.9"
 image = "0.25"
 
+# Semantic (accessibility) backends. Never the `xa11y` umbrella crate: its
+# process-wide provider caches the first PermissionDenied forever and drags the
+# Linux backend into the lockfile.
+[target.'cfg(target_os = "macos")'.dependencies]
+# xa11y-macos 0.15.2 vendored with our patches M1-M4 (vendor/xa11y-macos/PATCHES.md).
+xa11y-macos = { path = "vendor/xa11y-macos" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+xa11y-windows = "=0.15.2"
+
+# Native host on Linux: our own X11 driver (src/driver/native/x11.rs) over
+# pure-Rust x11rb — GetImage capture, RandR monitors, XTest input — so every
+# Linux release triple (gnu and musl) still builds with no system C library.
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.14", default-features = false, features = ["xtest", "randr"] }
+xkeysym = "0.2"
+# AT-SPI semantic backend: xa11y-linux 0.15.2 vendored with our patches and
+# without its Wayland/uinput/portal code (vendor/xa11y-linux/PATCHES.md).
+xa11y-linux = { path = "vendor/xa11y-linux" }
+# Read-only AT-SPI bus probe (org.a11y.Bus GetAddress, org.a11y.Status
+# IsEnabled); same version and features as the vendored crate, so no new
+# crate enters the graph.
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+
 [dev-dependencies]
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net"] }

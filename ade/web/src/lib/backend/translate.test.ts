@@ -281,6 +281,22 @@ describe('translateTurnSource — pre-content turn status', () => {
     ])
   })
 
+  it('carries the effort the harness chose for a lowest request', () => {
+    expect(
+      translateTurnSource(
+        sendResolved({
+          reasoning: { thinking_level: 'low', reasoning_effort: 'low' },
+        }),
+      ),
+    ).toEqual([
+      { kind: 'turn-status', phase: 'accepted', reasoningEffort: 'low' },
+    ])
+    // A model with no effort choices: the provider decides, the slider reads Default.
+    expect(translateTurnSource(sendResolved({ reasoning: {} }))).toEqual([
+      { kind: 'turn-status', phase: 'accepted', reasoningEffort: 'default' },
+    ])
+  })
+
   it('maps a merged send to phase merged', () => {
     expect(translateTurnSource(sendResolved({ merged: true }))).toEqual([
       { kind: 'turn-status', phase: 'merged' },

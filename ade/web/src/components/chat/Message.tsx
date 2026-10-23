@@ -1,5 +1,5 @@
-import { Bot, Sparkles } from 'lucide-react'
-import { useEffect, useRef } from 'react'
+import { Bot, MessageSquareQuote, Sparkles } from 'lucide-react'
+import { useContext, useEffect, useRef } from 'react'
 import { FunctionTriggerCard } from '@/components/function-trigger/FunctionTriggerCard'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import type { TriggerRegistration } from '@/components/trigger-activity/model'
@@ -8,6 +8,11 @@ import { Caret } from '@/components/ui/Caret'
 import { Chip } from '@/components/ui/Chip'
 import { Prompt } from '@/components/ui/Prompt'
 import { Card, CardBody, CardHeader } from '@/components/ui/Surface'
+import {
+  AskInSideChatContext,
+  SideChatQuotesContext,
+  splitQuotedMessage,
+} from '@/lib/chat-aside'
 import { FileMessageContext } from '@/lib/file-navigation'
 import { Markdown } from '@/lib/markdown'
 import { invocationCommand, parseSlashInvocations } from '@/lib/slash-commands'
@@ -21,7 +26,7 @@ import type {
 } from '@/types/chat'
 import { SUBAGENT_ICON_COMPONENTS } from './ActiveSubagentChips'
 import { AttachmentChip } from './AttachmentChip'
-import { CopyMessageButton } from './CopyMessageButton'
+import { AskInSideChatButton, CopyMessageButton } from './CopyMessageButton'
 import { MemoryChip } from './MemoryChip'
 import { SystemNotice } from './SystemNotice'
 import { ThoughtMessage } from './ThoughtMessage'
@@ -413,6 +418,12 @@ function UserMessage({
   const chips = attachments.filter(
     (a) => !(a.type === 'text/x-skill' && inline.has(a.name)),
   )
+  // In a side chat, a question asked about a quote opens with that quote.
+  const sideQuotes = useContext(SideChatQuotesContext)
+  const quoted = sideQuotes
+    ? splitQuotedMessage(message.content, sideQuotes.quotes)
+    : null
+  const prose = quoted ? quoted.rest : message.content
   return (
     <article
       className="group flex flex-col items-end gap-2"
@@ -427,11 +438,29 @@ function UserMessage({
         ) : null}
         <span>You</span>
       </header>
-      <div className="max-w-[92%] break-words rounded-sm bg-surface px-3.5 py-2.5 @2xl:max-w-[80%]">
-        <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
-          {message.content}
-        </Markdown>
-      </div>
+      {quoted && sideQuotes ? (
+        <button
+          type="button"
+          onClick={() => sideQuotes.jump(quoted.quote)}
+          aria-label="Show the quoted message"
+          title="Show the quoted message"
+          className="flex max-w-[92%] flex-col gap-1 rounded-md bg-surface px-3 py-2 text-left hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus @2xl:max-w-[80%]"
+        >
+          <Eyebrow className="text-ink-ghost">
+            Quoted · {quoted.quote.agent || 'Agent'}
+          </Eyebrow>
+          <span className="line-clamp-3 text-[12px] leading-[18px] text-ink-faint">
+            {quoted.quote.text}
+          </span>
+        </button>
+      ) : null}
+      {prose.trim() ? (
+        <div className="max-w-[92%] break-words rounded-sm bg-surface px-3.5 py-2.5 @2xl:max-w-[80%]">
+          <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
+            {prose}
+          </Markdown>
+        </div>
+      ) : null}
       {chips.length > 0 ? (
         <div className="flex max-w-[92%] flex-wrap justify-end gap-2 @2xl:max-w-[80%]">
           {chips.map((a) => (
@@ -453,6 +482,7 @@ function AssistantMessage({
   agentName?: string
 }) {
   const showCaret = !!message.streaming
+  const sideChat = useContext(AskInSideChatContext)
   // A tool-only turn has no prose but still carries a copy payload (its
   // function calls) via copyText; direct renders without a list-provided
   // payload fall back to the prose gate.
@@ -470,16 +500,34 @@ function AssistantMessage({
         <span className="font-medium text-ink-faint">
           {message.agent || agentName || 'Agent'}
         </span>
-        {copySource !== undefined && !message.streaming ? (
-          <CopyMessageButton
-            text={copySource}
-            className="opacity-100 sm:order-last sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
-          />
+        {/* The message's actions, revealed on hover where there is one. */}
+        {!message.streaming ? (
+          <span className="flex items-center gap-2 opacity-100 sm:order-last sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
+            {copySource !== undefined ? (
+              <CopyMessageButton text={copySource} />
+            ) : null}
+            {message.content ? (
+              <AskInSideChatButton
+                text={message.content}
+                messageId={message.id}
+                agent={message.agent || agentName}
+              />
+            ) : null}
+          </span>
         ) : null}
         {message.model ? (
           <span className="text-ink-ghost">· {message.model}</span>
         ) : null}
         {message.memory ? <MemoryChip memory={message.memory} /> : null}
+        {sideChat?.quotedIds.has(message.id) ? (
+          <span
+            className="inline-flex items-center gap-1 text-[11px] text-ink-faint"
+            data-quoted-in-side-chat=""
+          >
+            <MessageSquareQuote aria-hidden className="size-4 shrink-0" />
+            In side chat
+          </span>
+        ) : null}
       </header>
       <div className="pr-1">
         {message.content ? (

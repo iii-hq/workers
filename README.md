@@ -52,10 +52,18 @@ see [`iii-hq/iii`](https://github.com/iii-hq/iii):
 npx skills add iii-hq/iii --all
 ```
 
+## Kits
+
+[`kits/`](kits/) holds kits: agent profiles, skills and the workers they need,
+installed together through `iii-directory` (see [Kits](iii-directory/README.md#kits)).
+Current kit: [`deepwork`](kits/deepwork/), dynamic multi-agent workflows on the
+kanban board.
+
 ## Modules
 
 | Worker | Kind | Summary |
 |---|---|---|
+| [`whatsapp`](whatsapp/) | Go | Linked-phone sessions through whatsmeow and official Meta Cloud API messaging, attachments, groups, and filtered events; includes ADE setup and integration tests. |
 | [`acp`](acp/) | Rust | Agent Client Protocol surface — stdio JSON-RPC, exposes iii agents as ACP sessions. |
 | [`approval-gate`](approval-gate/) | Rust | Human-in-the-loop approval gate — evaluates each function call (continue / deny / hold), holds pending calls for a human, and emits `approval::pending-*` events. Binds the harness `pre_trigger` hook. See [`approval-gate/architecture/`](approval-gate/architecture/). |
 | [`harness`](harness/) | Node | TS port of the iii harness stack — bundles `harness` (provider registry + credentials/settings/permissions via the `configuration` worker), `turn-orchestrator`, `hook-fanout`, `models-catalog`, the `provider-*` workers, `llm-budget`, and `context-compaction` as one pnpm monorepo. Approval is delegated to the standalone `approval-gate` worker via the `pre_trigger` hook. Conversations persist in `session-manager`. See [`harness/README.md`](harness/README.md). |
@@ -80,8 +88,10 @@ npx skills add iii-hq/iii --all
 | [`stories`](stories/) | Rust | Component stories for any React project — builds CSF story files with the project's own Vite (monorepo-aware), indexes components and their states per git line, compares the working tree with a branch, a commit or a chat turn, renders deterministic screenshots and DOM/React trees through `browser`, and injects an explorer and compare page into the console. |
 | [`iii-directory`](iii-directory/) | Rust | Engine introspection, workers-registry proxy, filesystem-backed skills, system prompts, and agent profiles, plus one-shot lexical function search — `directory::search_functions` returns compact candidates for the relevant functions (BM25 + coverage pruning, installed + installable-from-registry) and directs callers to batch selected ids through `engine::functions::info`; its search hint is injected at most once per turn. |
 | [`judge`](judge/) | Rust | Provider-neutral Noul, Choice and Score evaluations through `judge::evaluate` and caller-scoped cancellation (plus the internal `judge::models::list` for tools that size requests), forwarded to the selected `judge-<provider>` worker. |
-| [`judge-laya`](judge-laya/) | Rust | laya provider for `judge`: the ModernBERT typed-decision model downloaded from the Hugging Face Hub and run in-process (candle), no API key or external service, behind `judge-laya::*`. |
+| [`judge-laya`](judge-laya/) | Rust | laya provider for `judge`: the ModernBERT typed-decision model downloaded from the Hugging Face Hub and run in-process (encoder and decision head in one llama.cpp graph), no API key or external service, behind `judge-laya::*`. |
 | [`judge-decider`](judge-decider/) | Rust | decider provider for `judge`: decider-4b v2 (a Qwen3.5-4B-Base fine-tune for typed decisions, GGUF) downloaded from the Hugging Face Hub and run in-process through llama.cpp, no API key or external service, behind `judge-decider::*`. |
+| [`judge-clef`](judge-clef/) | Rust | clef provider for `judge`: Cloudflare's Clef-Flash decision model downloaded from the Hugging Face Hub and run in-process (backbone and joint schema head in one llama.cpp graph), no API key or external service, behind `judge-clef::*`. |
+| [`judge-openai`](judge-openai/) | Rust | OpenAI provider for `judge`: Noul, Choice and Score questions answered by OpenAI's Decisions API (`gpt-6-luna`, beta), with worker-owned credentials, configurable limits, per-call retries and a Console configuration form behind `judge-openai::*`. |
 | [`judge-typesafe`](judge-typesafe/) | Rust | TypeSafe JEV provider for `judge`: worker-owned credentials, configurable limits, per-call retries and a Console configuration form behind `judge-typesafe::*`. |
 | [`lsp`](lsp/) | Rust | Language Server for iii function ids, trigger configs, and worker discovery. Autocomplete / hover across JS/TS, Python, Rust. |
 | [`lsp-vscode`](lsp-vscode/) | Node | VS Code extension package `iii-lsp`, embedding the `lsp` server. |
@@ -106,6 +116,7 @@ npx skills add iii-hq/iii --all
 | [`ide`](ide/) | Rust | Unix shell + filesystem worker — `shell::exec` with denylist/timeout/output caps and background jobs; `fs::ls`/`stat`/`mkdir`/`rm`/`chmod`/`mv`/`grep`/`sed`/`read`/`write` with host jail, denylist, and size caps. |
 | [`storage`](storage/) | Rust | S3-compatible object storage across AWS S3, GCS, Cloudflare R2, and a managed local rustfs backend. Streamed uploads, presigned URLs, and object change triggers. |
 | [`tailscale`](tailscale/) | Rust | Tailscale as an iii worker — the `tailscale` CLI as 38 typed `tailscale::*` functions (connectivity, peers, exit nodes, preferences, Serve and Funnel publishing, Taildrop, certificates, Taildrive, accounts, tailnet lock, updates) with a Console page: links as QR codes, devices, network diagnostics, settings. |
+| [`tmux`](tmux/) | Rust | tmux sessions and windows as `tmux::*` functions — list, create, rename, select and kill; per pane, the agent CLI running there (Claude Code, Codex, …) as working / waiting / idle, the `iii compose` stack with its engine and worker ports, and every listening port traced to its pane; plus a Console page whose terminal is a live tmux client. |
 | [`browser`](browser/) | Rust | Interactive Chromium sessions over CDP with console/network capture, a11y-tree snapshots with actionable refs, viewable screenshots, and DevTools element picking for the console UI. |
 | [`a2ui`](a2ui/) | Rust | A2UI v0.9.1 generative interfaces for Harness sessions — `a2ui::generate` turns compact intent into validated declarative surfaces, persists them per conversation, renders them inline in chat and on an injectable Console page, and routes user actions back into the originating session. |
 | [`canvas`](canvas/) | Rust | Diagrams as editable source — `canvas::*` store mermaid text and freeform whiteboard scenes under stable 8-character ids, draw element by element via `canvas::element::*`, serve the per-family mermaid syntax primer, and validate source before it lands; the console streams each canvas live in chat and on a canvas page. |

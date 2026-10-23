@@ -249,8 +249,9 @@ pub fn merge_usage(raw: &Value, into: &mut Usage) {
 }
 
 /// [`merge_usage`] plus the 1-hour cache-write split: when the payload
-/// reports `cache_creation.ephemeral_1h_input_tokens`, the provider prices
-/// the usage itself (the router keeps a provider-reported `cost_usd`).
+/// reports `cache_creation.ephemeral_1h_input_tokens`, or the prompt bills on
+/// a long-prompt card, the provider prices the usage itself (the router
+/// keeps a provider-reported `cost_usd`).
 fn fold_usage(raw: &Value, state: &mut PartialState, model: &str) {
     merge_usage(raw, &mut state.usage);
     if let Some(v) = raw
@@ -260,7 +261,7 @@ fn fold_usage(raw: &Value, state: &mut PartialState, model: &str) {
         state.cache_write_1h = v;
     }
     state.usage.cost_usd =
-        crate::curated::cost_with_1h_cache_writes(model, &state.usage, state.cache_write_1h);
+        crate::curated::provider_cost_usd(model, &state.usage, state.cache_write_1h);
 }
 
 /// Build a terminal error frame outside the SSE flow (fetch/HTTP failures).

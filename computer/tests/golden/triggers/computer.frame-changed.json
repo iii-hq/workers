@@ -1,0 +1,104 @@
+{
+  "config_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "description": "Binding filter for `computer::frame-changed`. `session_id` is required: a viewer follows one desktop; unknown keys fail the registration.",
+    "properties": {
+      "session_id": {
+        "description": "The computer session whose frames to follow.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "FrameBindingConfig",
+    "type": "object"
+  },
+  "description": "The newest screencast frame of one session changed (a new frame was stored, or the frame was cleared because the screencast or session stopped). Config: { session_id } (required). Payload: { session_id, epoch, frame_seq, change, width, height, mime?, bytes?, timestamp }; no image: read it with computer::frame. Latest state only: intermediate notifications are coalesced for slow consumers, nothing is stored or replayed.",
+  "payload_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "FrameChangeKind": {
+        "oneOf": [
+          {
+            "description": "A new frame was stored; read it with `computer::frame`.",
+            "enum": [
+              "updated"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The stored frame was dropped (screencast stopped, capture failed, or the session ended). Nothing to read until the next `updated`.",
+            "enum": [
+              "cleared"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "The notification. Small and image-free.",
+    "properties": {
+      "bytes": {
+        "description": "Encoded image size in bytes (`updated` only).",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "change": {
+        "$ref": "#/definitions/FrameChangeKind"
+      },
+      "epoch": {
+        "description": "Identifies this incarnation of the session in this worker process (ms when it was created or restored). `frame_seq` restarts at 1 when `epoch` changes; compare `(epoch, frame_seq)` to order frames.",
+        "format": "int64",
+        "type": "integer"
+      },
+      "frame_seq": {
+        "description": "Sequence of the newest stored frame (monotonic within an epoch). For `cleared`, the sequence of the last frame that was stored.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "height": {
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "mime": {
+        "description": "Image mime of the stored frame (`updated` only).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "timestamp": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "width": {
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "change",
+      "epoch",
+      "frame_seq",
+      "height",
+      "session_id",
+      "timestamp",
+      "width"
+    ],
+    "title": "FrameChange",
+    "type": "object"
+  },
+  "trigger_type": "computer::frame-changed"
+}

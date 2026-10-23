@@ -119,8 +119,73 @@ pub enum GroupChangeReasonV1 {
     Investigating,
 }
 
+/// What kind of failure a group is, as triage reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TriageKindV1 {
+    /// A bug the reporting worker's maintainer has to fix in code.
+    Defect,
+    /// The worker rejected bad input and said so: working as designed.
+    CallerError,
+    /// A dependency starting, restarting or timing out; it went away.
+    Transient,
+    /// Local setup: credentials, tokens, files, versions, a missing worker.
+    Environment,
+    /// Tests, probes and deliberately fake identifiers.
+    TestTraffic,
+}
+
+impl TriageKindV1 {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Defect => "defect",
+            Self::CallerError => "caller_error",
+            Self::Transient => "transient",
+            Self::Environment => "environment",
+            Self::TestTraffic => "test_traffic",
+        }
+    }
+}
+
+/// Which side of triage the list shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RelevanceV1 {
+    /// What needs a person: defects, persistent caller errors and
+    /// environment problems, regressions, and anything not triaged yet.
+    Relevant,
+    /// Everything else.
+    Noise,
+}
+
+/// Who decided a triage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TriageSourceV1 {
+    /// A deterministic check: a missing function that is registered by the
+    /// time the group is looked at.
+    Rule,
+    /// `judge::evaluate`.
+    Judge,
+}
+
+/// A hint for ordering and filtering the list. It never moves a group:
+/// resolving and ignoring stay human decisions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GroupTriageV1 {
+    pub kind: TriageKindV1,
+    /// Between 0 and 1, as the judge reports it; 1 for a rule.
+    pub confidence: f64,
+    pub source: TriageSourceV1,
+    /// The judge model that answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub at_ms: i64,
+}
+
 /// A group as the list shows it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GroupSummaryV1 {
     pub id: String,
@@ -160,6 +225,11 @@ pub struct GroupSummaryV1 {
     pub resolved_version: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub resolve_until_version_change: bool,
+    /// Absent until the group has been triaged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triage: Option<GroupTriageV1>,
+    /// Whether the default list shows it; see [`RelevanceV1::Relevant`].
+    pub relevant: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
@@ -176,6 +246,9 @@ pub struct GroupsListRequestV1 {
     /// Matches the title, the message sample and the function id.
     #[serde(default)]
     pub search: Option<String>,
+    /// Absent lists both sides.
+    #[serde(default)]
+    pub relevance: Option<RelevanceV1>,
     #[serde(default)]
     pub offset: Option<u32>,
     #[serde(default)]
@@ -192,6 +265,9 @@ pub struct GroupsListRequestV1 {
 pub struct GroupsListResponseV1 {
     pub groups: Vec<GroupSummaryV1>,
     pub total: u64,
+    /// Both sides under the same filters, whatever `relevance` asked for.
+    pub relevant_total: u64,
+    pub noise_total: u64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]

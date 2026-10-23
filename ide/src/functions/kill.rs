@@ -1,5 +1,7 @@
 use crate::exec::error::ExecError;
-use crate::functions::types::{KillRequest, KillResponse};
+use crate::functions::types::{
+    KillRequest, KillResponse, KillSessionJobsRequest, KillSessionJobsResponse,
+};
 use crate::jobs::{self, JobStatus};
 
 pub async fn handle(req: KillRequest) -> Result<KillResponse, ExecError> {
@@ -92,6 +94,21 @@ pub async fn handle(req: KillRequest) -> Result<KillResponse, ExecError> {
     })
 }
 
+/// `shell::kill-session-jobs`: kill every running job the given harness
+/// sessions own, through the same per-job paths as `shell::kill`.
+pub async fn handle_session(req: KillSessionJobsRequest) -> KillSessionJobsResponse {
+    let mut killed = Vec::new();
+    for job_id in jobs::running_owned_by(&req.session_ids).await {
+        // A job that finished or was pruned since the scan has nothing to kill.
+        if let Ok(resp) = handle(KillRequest { job_id }).await {
+            if resp.killed {
+                killed.push(resp.job_id);
+            }
+        }
+    }
+    KillSessionJobsResponse { killed }
+}
+
 #[cfg(test)]
 mod missing_job_tests {
     use super::*;
@@ -160,6 +177,7 @@ mod sandbox_kill_tests {
                 finalized: false,
                 child: None,
                 host_pid: None,
+                owner_session_id: None,
             })),
         );
 
@@ -231,6 +249,7 @@ mod host_kill_tests {
         // kill-signal channel (a faked handle cannot be killed — by design).
         let resp = crate::functions::exec_bg::spawn_host_job(
             None,
+            None,
             Arc::new(cfg),
             vec!["sleep".to_string(), "30".to_string()],
             ExecOverrides::default(),
@@ -282,6 +301,62 @@ mod host_kill_tests {
         jobs::JOBS.map.lock().await.remove(&id);
     }
 
+    /// MOT-5407: a session sweep kills only the jobs that session owns.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn session_sweep_kills_only_the_owned_jobs() {
+        use crate::jobs::{GAUGE_TEST_GUARD, HOST_SWEEP_TEST_GUARD};
+        use std::time::{Duration, Instant};
+
+        let _gauge_gate = GAUGE_TEST_GUARD.lock().await;
+        let _guard = HOST_SWEEP_TEST_GUARD.lock().await;
+
+        let mut cfg = open_cfg();
+        cfg.max_timeout_ms = 60_000;
+        cfg.max_concurrent_jobs = 64;
+        let cfg = Arc::new(cfg);
+        let spawn = |owner: &str| {
+            crate::functions::exec_bg::spawn_host_job(
+                Some(owner.to_string()),
+                None,
+                cfg.clone(),
+                vec!["sleep".to_string(), "30".to_string()],
+                ExecOverrides::default(),
+            )
+        };
+        let stopped = spawn("session-a").await.expect("spawn a").job_id;
+        let other = spawn("session-b").await.expect("spawn b").job_id;
+        let pid = |id: String| async move {
+            jobs::get(&id).await.unwrap().lock().await.host_pid.unwrap()
+        };
+        let (stopped_pid, other_pid) = (pid(stopped.clone()).await, pid(other.clone()).await);
+
+        let resp = handle_session(KillSessionJobsRequest {
+            session_ids: vec!["session-a".into()],
+        })
+        .await;
+        assert_eq!(resp.killed, vec![stopped.clone()]);
+
+        let start = Instant::now();
+        while pid_alive(stopped_pid) {
+            assert!(
+                start.elapsed() < Duration::from_secs(3),
+                "the stopped session's job must die within 3s"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(pid_alive(other_pid), "another session's job must survive");
+
+        handle(KillRequest {
+            job_id: other.clone(),
+        })
+        .await
+        .unwrap();
+        let mut map = jobs::JOBS.map.lock().await;
+        map.remove(&stopped);
+        map.remove(&other);
+    }
+
     /// Coverage for branch 1: a Running host job whose `Child` is still in the
     /// handle (drain task has not yet taken it) is terminated via `start_kill`.
     #[cfg(unix)]
@@ -319,6 +394,7 @@ mod host_kill_tests {
                 finalized: false,
                 child: Some(child),
                 host_pid: Some(pid),
+                owner_session_id: None,
             })),
         );
 

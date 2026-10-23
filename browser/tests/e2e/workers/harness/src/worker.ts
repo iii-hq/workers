@@ -1,4 +1,4 @@
-import { registerWorker, Logger } from 'iii-sdk'
+import { registerWorker } from 'iii-sdk'
 import { resolve } from 'node:path'
 import { Runner } from './runner.ts'
 
@@ -7,10 +7,9 @@ const REPORT_PATH = resolve(process.env.HARNESS_REPORT_PATH ?? './reports/report
 const FILTER = process.env.HARNESS_FILTER
 
 const iii = registerWorker(URL)
-const logger = new Logger()
 const runner = new Runner({ iii, reportPath: REPORT_PATH, filter: FILTER })
 
-logger.info('harness: registered, kicking off suite', {
+console.log('harness: registered, kicking off suite', {
   url: URL,
   filter: FILTER ?? 'all',
   reportPath: REPORT_PATH,

@@ -71,11 +71,13 @@ and registration entirely.
 
 ## Rust checks
 
-After building the UI, run the shared contract suite and both worker variants:
+After building the UI, run the shared contract and provider suites and both
+worker variants:
 
 ```bash
 unset TYPESAFE_API_KEY
 cargo test --manifest-path crates/judge-contract/Cargo.toml --locked
+cargo test --manifest-path crates/judge-provider/Cargo.toml --locked
 cargo fmt --manifest-path judge-typesafe/Cargo.toml --all -- --check
 cargo clippy --manifest-path judge-typesafe/Cargo.toml --locked --all-targets --all-features -- -D warnings
 cargo test --manifest-path judge-typesafe/Cargo.toml --locked --all-features
@@ -91,7 +93,12 @@ usage accounting, cancellation ownership, and binary boot/registration.
 The default-feature run also covers embedded Console assets; the second run
 checks the worker without UI support.
 
-For a focused transport or registration change:
+HTTP retries, Retry-After and billing 429 handling, bounded/redacted provider
+errors, the cancellation registry and `secret://` resolution live in the shared
+[crates/judge-provider](https://github.com/iii-hq/workers/tree/main/crates/judge-provider).
+Make transport changes there, run its suite, then rerun this worker's suites.
+
+For a focused client or registration change:
 
 ```bash
 cargo test --manifest-path judge-typesafe/Cargo.toml --locked --test client
@@ -142,7 +149,8 @@ tests cannot run inadvertently.
 ## Worker conventions
 
 The public runtime functions remain `judge-typesafe::evaluate`, `judge-typesafe::models::list` and
-`judge-typesafe::cancel`. Their types live in
+`judge-typesafe::cancel`, plus `judge-typesafe::status`, which tells the Console's judge picker
+whether a usable key is held. Their types live in
 [judge-contract](https://github.com/iii-hq/workers/tree/main/crates/judge-contract),
 and [src/register.rs](src/register.rs) publishes the bus schemas. Every
 registration carries `metadata.internal: true`: callers reach the provider

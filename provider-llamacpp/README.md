@@ -8,9 +8,18 @@ Implements the provider protocol from
 `provider::llamacpp::refresh_models` (live `GET /v1/models` + `GET /props` →
 `router::models::reconcile`).
 
-Default upstream: `http://127.0.0.1:8080/v1/chat/completions` — `llama-server`'s
-own default bind address and port. Point `api_url` at any running
-`llama-server` instance (local, LAN, or a remote box) to use it.
+Default upstream: `http://127.0.0.1:8080/v1/chat/completions`, `llama-server`'s
+own default bind address and port. With no `api_url` configured, discovery
+also tries `http://127.0.0.1:9931`, the Llama desktop app's default port, and
+every later request follows whichever of the two answered. Point `api_url` at
+any running `llama-server` instance (local, LAN, or a remote box) to use it.
+
+Default model: after each discovery the provider re-declares `default_models`
+as the served models ranked loaded first (router-mode servers report
+`status.value`; a classic single-model server is loaded), then by the
+parameter count in the id (`27B` beats `8B`), ties in the server's listing
+order. A `harness::send` that names only the provider, and a new ADE chat,
+start on the first of those the router finds in the catalog.
 
 ## Embeddings
 
@@ -42,15 +51,25 @@ chose. Counting is local and never runs the model.
   not a configuration error: requests simply go out with no `Authorization`
   header. If the server *does* have `--api-key` set and ours is missing or
   wrong, the server's 401/403 surfaces as the normal `auth_expired` error.
+  The declaration sets `credential_optional: true`, so the router reports
+  llama.cpp `configured` without a key and consoles offer its models.
 - **Catalog:** `src/discovery.rs` discovers the catalog live — `GET
   /v1/models` lists every id the server serves (no "gpt-"-style family gate:
   llama.cpp serves arbitrary GGUF aliases, so every id is kept), enriched
-  with `GET /props` for the runtime context size (`n_ctx`, the operator's
-  `--ctx-size` — more accurate than `/v1/models`' `meta.n_ctx_train`, the
-  model's *trained* max) and vision-modality support. No pricing
-  (self-hosted). Multi-model router-mode (`--models-dir`, `GET /models`,
-  `/models/load`) is out of scope for v1 — this targets the common
-  single-loaded-model server.
+  with the runtime context size and vision-modality support. The window is
+  the operator's `--ctx-size`, never `meta.n_ctx_train` (the model's
+  *trained* max): a single-model server reports it as `n_ctx` on `GET
+  /props`; a router-mode server (`llama serve`, the Llama desktop app)
+  reports `n_ctx: 0` there, which is ignored, and each `/v1/models` row
+  carries the instance's launch args, from which `--ctx-size` is read. The
+  server rejects any prompt over that window, so a console cannot work
+  around a small one by compacting; the declaration carries a
+  `context_overflow_hint` (`register.rs`) that the router reports on
+  `router::provider::list` and the ADE shows under its context-overflow
+  card, pointing at the server's `--ctx-size`, the desktop app's per-model
+  options, the llama.cpp server docs and the provider restart that picks the
+  new size up (`iii trigger compose::restart` or the Workers page). No
+  pricing (self-hosted).
 - **Liveness:** `ping` at least every 30s of upstream silence; a failed
   channel write (caller gone / `router::abort`) drops the SSE receiver and
   aborts the in-flight HTTP request.

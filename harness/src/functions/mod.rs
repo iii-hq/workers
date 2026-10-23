@@ -3,6 +3,7 @@
 //! `pub async fn handle(deps, req)` the registration closure wraps; tests call
 //! the same `handle` functions directly (SOP §7).
 
+pub mod compact;
 pub mod context_policy;
 pub mod delete_session_tree;
 pub mod filesystem;
@@ -41,6 +42,13 @@ pub const SEND_ID: &str = "harness::send";
 pub const SEND_DESC: &str =
     "Entry point: ensure the session, persist the incoming message, and kick off a turn; returns \
      fast (or merges into a running turn).";
+
+pub const COMPACT_ID: &str = "harness::compact";
+pub const COMPACT_DESC: &str =
+    "Compact a session's conversation now and wait for the outcome: summarise its older \
+     history with the session's (or the named) model, keep the recent tail verbatim, and tell \
+     every client watching the session. `/compact` through harness::send starts the same \
+     compaction without waiting.";
 
 pub const SPAWN_ID: &str = "harness::spawn";
 pub const SPAWN_DESC: &str =
@@ -95,7 +103,8 @@ pub const METRICS_DESC: &str =
     "Aggregate durable model usage, function outcomes, and available trace/span observability \
      for the session tree `root_session_id` belongs to (`session_id` is accepted as an alias, \
      and a sub-agent id is resolved to its root). `complete` is true only after every session \
-     in the durable tree has reached a terminal turn.";
+     in the durable tree has reached a terminal turn. Pass `omit_context: true` when you only \
+     need the counters and cost: each session's context snapshot is then left out.";
 
 pub const TEARDOWN_ID: &str = "harness::teardown";
 pub const TEARDOWN_DESC: &str =
@@ -300,6 +309,9 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     );
     register_internal(iii, deps, SEND_ID, SEND_DESC, |d, r| async move {
         send::handle(&d, r).await
+    });
+    register_internal(iii, deps, COMPACT_ID, COMPACT_DESC, |d, r| async move {
+        compact::handle(&d, r).await
     });
     register(iii, deps, SPAWN_ID, SPAWN_DESC, |d, r| async move {
         spawn::handle(&d, r).await
