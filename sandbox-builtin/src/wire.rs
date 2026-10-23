@@ -91,7 +91,8 @@ pub struct WorkerStartRequest {
     /// Container key; becomes `III_WORKER_NAME`.
     pub worker_name: String,
     pub source: WorkerSource,
-    /// Complete guest env; carried in the body only, never argv or the kernel cmdline.
+    /// Complete guest env. Today the adapter passes it on the `__vm-boot` argv,
+    /// so host users can read it; MOT-5493 (iii#2377) moves it out of band.
     pub env: BTreeMap<String, String>,
     /// The engine's URL as seen from the host.
     pub engine_url: String,

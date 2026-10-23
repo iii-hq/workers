@@ -74,7 +74,8 @@ custom_images:                  # extra images: name -> OCI ref
 A `custom_images` key may not reuse a preset name (`python`, `node`), and the
 old wrapped shape (`sandbox: {...}`) is rejected.
 
-VM tuning stays in four environment variables the adapter passes to each VM:
+VM tuning stays in four environment variables the adapter passes to each
+worker VM (sandboxes ignore them):
 
 | Variable | Effect |
 |---|---|
