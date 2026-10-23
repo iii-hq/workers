@@ -3839,89 +3839,81 @@ async fn spawn_event_pumps(
         }));
     }
 
-    // network: request → response/failure, correlated by request id
-    let pending: Arc<Mutex<HashMap<String, (String, String)>>> =
-        Arc::new(Mutex::new(HashMap::new()));
-
-    if let Ok(mut events) = page
-        .event_listener::<cdp_network::EventRequestWillBeSent>()
-        .await
-    {
-        let pending = pending.clone();
-        tasks.push(tokio::spawn(async move {
-            while let Some(event) = events.next().await {
-                let id = event.request_id.inner().to_string();
-                let mut pending = pending.lock().unwrap_or_else(|p| p.into_inner());
-                if pending.len() >= 2_048 {
-                    pending.clear();
-                }
-                pending.insert(
-                    id,
-                    (event.request.method.clone(), event.request.url.clone()),
-                );
-            }
-        }));
-    }
-
-    if let Ok(mut events) = page
-        .event_listener::<cdp_network::EventResponseReceived>()
-        .await
-    {
+    // network: request → response/failure, correlated by request id. One
+    // task takes all four streams, starts first (`biased`): the CDP handler
+    // hands a request's start to its channel before its response, finish or
+    // failure, so every response and failure finds its request's method and
+    // url. Split across tasks, an instant failure (a refused port) could run
+    // before its start and lose its url. A request is kept until it finishes
+    // or fails, so a failure after its response (an aborted body) keeps its
+    // url too.
+    if let (Ok(mut started), Ok(mut responded), Ok(mut finished), Ok(mut failed)) = (
+        page.event_listener::<cdp_network::EventRequestWillBeSent>()
+            .await,
+        page.event_listener::<cdp_network::EventResponseReceived>()
+            .await,
+        page.event_listener::<cdp_network::EventLoadingFinished>()
+            .await,
+        page.event_listener::<cdp_network::EventLoadingFailed>()
+            .await,
+    ) {
         let s = session.clone();
         let sx = sessions.clone();
-        let pending = pending.clone();
         tasks.push(tokio::spawn(async move {
-            while let Some(event) = events.next().await {
-                let key = event.request_id.inner().to_string();
-                let method = {
-                    let mut pending = pending.lock().unwrap_or_else(|p| p.into_inner());
-                    pending.remove(&key).map(|(m, _)| m)
-                };
-                let entry = NetworkEntry {
-                    seq: s.next_seq(),
-                    timestamp: now_ms(),
-                    method: method.unwrap_or_else(|| "GET".to_string()),
-                    url: truncate(&event.response.url, MAX_TEXT_LEN),
-                    status: Some(event.response.status),
-                    mime_type: Some(event.response.mime_type.clone()),
-                    failed: event.response.status >= 400,
-                    error: None,
-                };
-                push_network_and_emit(&sx, &s, entry).await;
-            }
-        }));
-    }
-
-    if let Ok(mut events) = page
-        .event_listener::<cdp_network::EventLoadingFailed>()
-        .await
-    {
-        let s = session.clone();
-        let sx = sessions.clone();
-        let pending = pending.clone();
-        tasks.push(tokio::spawn(async move {
-            while let Some(event) = events.next().await {
-                let key = event.request_id.inner().to_string();
-                let (method, url) = {
-                    let mut pending = pending.lock().unwrap_or_else(|p| p.into_inner());
-                    pending
-                        .remove(&key)
-                        .unwrap_or_else(|| ("GET".to_string(), String::new()))
-                };
-                if event.canceled.unwrap_or(false) {
-                    continue;
+            // request id → (method, url)
+            let mut requests: HashMap<String, (String, String)> = HashMap::new();
+            loop {
+                tokio::select! {
+                    biased;
+                    Some(event) = started.next() => {
+                        if requests.len() >= 2_048 {
+                            requests.clear();
+                        }
+                        requests.insert(
+                            event.request_id.inner().to_string(),
+                            (event.request.method.clone(), event.request.url.clone()),
+                        );
+                    }
+                    Some(event) = responded.next() => {
+                        let method = requests
+                            .get(event.request_id.inner())
+                            .map(|(method, _)| method.clone());
+                        let entry = NetworkEntry {
+                            seq: s.next_seq(),
+                            timestamp: now_ms(),
+                            method: method.unwrap_or_else(|| "GET".to_string()),
+                            url: truncate(&event.response.url, MAX_TEXT_LEN),
+                            status: Some(event.response.status),
+                            mime_type: Some(event.response.mime_type.clone()),
+                            failed: event.response.status >= 400,
+                            error: None,
+                        };
+                        push_network_and_emit(&sx, &s, entry).await;
+                    }
+                    Some(event) = finished.next() => {
+                        requests.remove(event.request_id.inner());
+                    }
+                    Some(event) = failed.next() => {
+                        let (method, url) = requests
+                            .remove(event.request_id.inner())
+                            .unwrap_or_else(|| ("GET".to_string(), String::new()));
+                        if event.canceled.unwrap_or(false) {
+                            continue;
+                        }
+                        let entry = NetworkEntry {
+                            seq: s.next_seq(),
+                            timestamp: now_ms(),
+                            method,
+                            url: truncate(&url, MAX_TEXT_LEN),
+                            status: None,
+                            mime_type: None,
+                            failed: true,
+                            error: Some(event.error_text.clone()),
+                        };
+                        push_network_and_emit(&sx, &s, entry).await;
+                    }
+                    else => break,
                 }
-                let entry = NetworkEntry {
-                    seq: s.next_seq(),
-                    timestamp: now_ms(),
-                    method,
-                    url: truncate(&url, MAX_TEXT_LEN),
-                    status: None,
-                    mime_type: None,
-                    failed: true,
-                    error: Some(event.error_text.clone()),
-                };
-                push_network_and_emit(&sx, &s, entry).await;
             }
         }));
     }

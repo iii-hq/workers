@@ -60,6 +60,11 @@ fn chromium_present() -> bool {
 /// Boot an engine and the worker, the worker seeded with `seed` (YAML
 /// under `browser:`). None when `iii` or a Chromium is missing.
 async fn boot(seed: &str) -> Option<Harness> {
+    boot_with(seed, &[]).await
+}
+
+/// `boot`, with `env` set on the worker process.
+async fn boot_with(seed: &str, env: &[(&str, &str)]) -> Option<Harness> {
     let iii_bin = which::which("iii").ok()?;
     if !chromium_present() {
         return None;
@@ -106,7 +111,8 @@ async fn boot(seed: &str) -> Option<Harness> {
         .arg(&engine_ws)
         .arg("--config")
         .arg(&seed_path)
-        .env("III_COMPOSE_DIR", &data_dir);
+        .env("III_COMPOSE_DIR", &data_dir)
+        .envs(env.iter().copied());
     match worker_log {
         Some(file) => {
             let err = file
@@ -1000,6 +1006,85 @@ async fn a_viewers_own_tap_draws_no_agent_cursor() {
         true,
         "an agent's click lost its cursor"
     );
+    client.shutdown_async().await;
+}
+
+/// A request that fails at once (an unsafe port, refused before anything is
+/// sent) is still recorded with its method and url, however fast its
+/// failure follows its start: rounds of parallel fetches to `:9` and
+/// `:6000`, some of them POSTs, every one of them in the network log with
+/// its own url. The worker runs on one runtime thread, where tokio runs the
+/// task woken last first: with the start and the failure in separate tasks
+/// that lost the url of a few dozen failures out of 480, every run.
+#[tokio::test]
+async fn an_instant_failure_keeps_its_url() {
+    let Some(h) = boot_with("  network_buffer: 2000\n", &[("TOKIO_WORKER_THREADS", "1")]).await
+    else {
+        eprintln!("skipping: `iii` or Chromium not available");
+        return;
+    };
+    let client = connect(&h).await;
+    let url = serve_html(STATIC_PAGE);
+    let id = open(&client, &url).await;
+    const ROUNDS: usize = 8;
+    const PER_ROUND: usize = 60;
+    for round in 0..ROUNDS {
+        let fired = evaluate(
+            &client,
+            &id,
+            &format!(
+                "Promise.allSettled(Array.from({{length: {PER_ROUND}}}, (_, i) => \
+                 fetch(`http://127.0.0.1:${{i % 2 ? 9 : 6000}}/refused?r={round}&i=${{i}}`, \
+                 i % 3 ? {{}} : {{method: 'POST', body: 'x'}}))).then(r => r.length)"
+            ),
+        )
+        .await;
+        assert_eq!(fired, PER_ROUND as u64, "round {round}");
+    }
+    // Every failure is in the log, each with its own url and method.
+    let want = ROUNDS * PER_ROUND;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let entries = loop {
+        let read = call(
+            &client,
+            "browser::network::read",
+            json!({ "session_id": id, "failed_only": true, "pattern": "refused", "limit": 2000 }),
+        )
+        .await;
+        let entries = read["entries"].as_array().cloned().unwrap_or_default();
+        let unnamed = call(
+            &client,
+            "browser::network::read",
+            json!({ "session_id": id, "failed_only": true, "limit": 2000 }),
+        )
+        .await["entries"]
+            .as_array()
+            .map(|all| all.iter().filter(|e| e["url"] == "").count())
+            .unwrap_or(0);
+        assert_eq!(unnamed, 0, "failures recorded without their url");
+        if entries.len() >= want || Instant::now() > deadline {
+            break entries;
+        }
+        sleep(Duration::from_millis(200)).await;
+    };
+    assert_eq!(entries.len(), want, "not every failure was recorded");
+    let mut seen = std::collections::BTreeSet::new();
+    for entry in &entries {
+        let url = entry["url"].as_str().unwrap_or_default();
+        let query = url
+            .split_once('?')
+            .map(|(_, q)| q.to_string())
+            .unwrap_or_default();
+        let i: usize = query
+            .split('&')
+            .find_map(|kv| kv.strip_prefix("i="))
+            .and_then(|i| i.parse().ok())
+            .unwrap_or_else(|| panic!("no i in {url}"));
+        let method = if i.is_multiple_of(3) { "POST" } else { "GET" };
+        assert_eq!(entry["method"], method, "{entry}");
+        assert_eq!(entry["error"], "net::ERR_UNSAFE_PORT", "{entry}");
+        assert!(seen.insert(query.clone()), "recorded twice: {url}");
+    }
     client.shutdown_async().await;
 }
 
