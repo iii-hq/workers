@@ -649,6 +649,13 @@ so it names itself instead and holds a lease:
   console also watches. A change restarts the cast. Frames keep reporting
   `width`/`height` as the viewport in CSS pixels, the coordinate space of
   `browser::act`, whatever the JPEG's own size.
+- Every restart of the cast (a viewer joining, a resize, a navigation, a
+  change of scale) brings a frame of the current viewport with a newer
+  `frame_seq`, even on a page that never repaints: Chromium does not always
+  send one there (the frame of a restart can come at the old size, which
+  is never published, or not at all), so when none has gone out 150 ms
+  after the restart the worker captures the visible viewport, sized like
+  the cast's frames, and publishes it.
 
 `browser::resize` with `mobile: true` makes the tab a phone the page can
 see: the mobile viewport, touch input (`navigator.maxTouchPoints` 5,

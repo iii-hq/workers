@@ -114,7 +114,14 @@ async fn boot(seed: &str) -> Option<Harness> {
                 .ok()
                 .map(Stdio::from)
                 .unwrap_or(Stdio::null());
-            worker_cmd.env("RUST_LOG", "debug").stdout(file).stderr(err)
+            worker_cmd
+                .env(
+                    "RUST_LOG",
+                    std::env::var("BROWSER_TEST_WORKER_RUST_LOG")
+                        .unwrap_or_else(|_| "debug".into()),
+                )
+                .stdout(file)
+                .stderr(err)
         }
         None => worker_cmd.stdout(Stdio::null()).stderr(Stdio::null()),
     };
@@ -206,6 +213,15 @@ const INPUT_PAGE: &str = "<!doctype html><html><head><meta name=viewport \
 const WIDE_PAGE: &str = "<!doctype html><html><head><style>html{scroll-behavior:auto}\
     body{margin:0;width:4000px;height:4000px;background:linear-gradient(135deg,#fff,#06b)}\
     </style></head><body></body></html>";
+
+/// Nothing on it ever repaints by itself: a tall striped page, no timers.
+const STATIC_PAGE: &str = "<!doctype html><html><head><meta name=viewport \
+    content='width=device-width'><style>body{margin:0}div{height:300px}</style></head>\
+    <body><div style='background:#b91c1c'></div><div style='background:#1d4ed8'></div>\
+    <div style='background:#047857'></div><div style='background:#a16207'></div>\
+    <div style='background:#6d28d9'></div><div style='background:#0f766e'></div>\
+    <div style='background:#be185d'></div><div style='background:#334155'></div>\
+    </body></html>";
 
 /// Text, a gradient and a running counter: what a phone shows most, and
 /// what a denser frame makes legible.
@@ -588,6 +604,57 @@ async fn a_viewer_scale_sharpens_frames_under_frame_density() {
     )
     .await;
     assert!(!screencast_active(&client, &id).await);
+    client.shutdown_async().await;
+}
+
+/// A page that never repaints still shows its new size after a resize:
+/// the viewer gets a frame of the new viewport each time (growing and
+/// shrinking), with a newer `frame_seq`, never the old picture again.
+#[tokio::test]
+async fn a_resize_over_a_static_page_brings_a_frame_of_the_new_size() {
+    let Some(h) = boot("  max_sessions: 4\n").await else {
+        eprintln!("skipping: `iii` or Chromium not available");
+        return;
+    };
+    let client = connect(&h).await;
+    let url = serve_html(STATIC_PAGE);
+    let id = open(&client, &url).await;
+    call(
+        &client,
+        "browser::resize",
+        json!({ "session_id": id, "width": 412, "height": 860,
+                "device_scale_factor": 2.625, "mobile": true, "fit": true }),
+    )
+    .await;
+    call(
+        &client,
+        "browser::screencast::start",
+        json!({ "session_id": id, "viewer_id": "android-static", "scale": 2.0 }),
+    )
+    .await;
+    let mut frame = frame_sized(&client, &id, 0, (412, 860)).await;
+    evaluate(&client, &id, "scrollTo(0, 1200); true").await;
+    for (width, height) in [(412, 600), (412, 860), (800, 700), (419, 337)] {
+        let asked = Instant::now();
+        call(
+            &client,
+            "browser::resize",
+            json!({ "session_id": id, "width": width, "height": height,
+                    "device_scale_factor": 2.625, "mobile": true, "fit": true }),
+        )
+        .await;
+        let next = frame_sized(&client, &id, frame_seq(&frame), (width, height)).await;
+        eprintln!(
+            "resize to {width}x{height}: a frame of the new size after {} ms",
+            asked.elapsed().as_millis()
+        );
+        assert_eq!(
+            (next["width"].as_u64(), next["height"].as_u64()),
+            (Some(u64::from(width)), Some(u64::from(height))),
+            "the payload must name the new viewport"
+        );
+        frame = next;
+    }
     client.shutdown_async().await;
 }
 

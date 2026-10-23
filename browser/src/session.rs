@@ -60,6 +60,11 @@ const FRAME_MIN_INTERVAL_MS: i64 = 33;
 /// so a viewer that vanished stops holding its tab within its lease plus
 /// this.
 const VIEWER_REAP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long a (re)started screencast gets to deliver a frame of the
+/// current viewport before the worker captures one itself
+/// (`Sessions::expect_fresh_frame`). Chromium's own frame comes within tens
+/// of milliseconds when it comes at all.
+const FRESH_FRAME_GRACE: std::time::Duration = std::time::Duration::from_millis(150);
 /// Chromium's error text for a committed HTTP error status (a 4xx/5xx with
 /// an empty body). The tab shows the response like any browser does, so it is
 /// reported rather than treated as a failed navigation.
@@ -802,6 +807,15 @@ pub struct Session {
     pub viewport_width: AtomicU32,
     pub viewport_height: AtomicU32,
     pub latest_frame: Mutex<Option<LatestFrame>>,
+    /// The newest frame for the `browser::frame-event` pusher (latest
+    /// wins). Fed only by `Session::publish_frame`, with the slot above.
+    frames: tokio::sync::watch::Sender<Option<LatestFrame>>,
+    /// Bumped by every `Sessions::expect_fresh_frame`, so only the latest
+    /// pending check after a burst of restarts captures.
+    fresh_epoch: AtomicU64,
+    /// The device scale factor `browser::resize` emulates (f64 bits; 1 as
+    /// every page opens), which a captured frame is scaled against.
+    device_scale_factor: AtomicU64,
     /// Number of live consumers of the Chromium screencast: each console
     /// viewer and each recording counts as one. The CDP screencast runs
     /// while this is > 0; it starts on the 0->1 transition and stops on
@@ -1099,6 +1113,106 @@ impl Session {
     /// a console viewer and/or a recording).
     pub fn screencast_on(&self) -> bool {
         self.screencast_consumers.load(Ordering::Relaxed) > 0
+    }
+
+    /// Record the device scale factor `browser::resize` just emulated.
+    pub fn set_device_scale_factor(&self, dpr: f64) {
+        self.device_scale_factor
+            .store(dpr.to_bits(), Ordering::Relaxed);
+    }
+
+    /// Hand a frame to viewers as the newest: the next `frame_seq`, the
+    /// `browser::frame` slot, and the `browser::frame-event` push. The one
+    /// way a frame goes out, for the screencast pump and the worker's own
+    /// capture alike; numbered under the slot's lock so the slot and the
+    /// push only ever move forward.
+    fn publish_frame(&self, frame: Arc<ScreencastFrameEvent>) -> LatestFrame {
+        let mut slot = self.latest_frame.lock().unwrap_or_else(|p| p.into_inner());
+        let latest = LatestFrame {
+            frame,
+            seq: self.tab.frame_seq.fetch_add(1, Ordering::Relaxed) + 1,
+            timestamp: now_ms(),
+        };
+        *slot = Some(latest.clone());
+        self.frames.send_replace(Some(latest.clone()));
+        latest
+    }
+
+    /// Whether a frame of the current viewport has gone out, newer than
+    /// `since` when given. A tab in the user's own browser (attach) is not
+    /// sized by the worker, so any frame counts there.
+    fn has_fresh_frame(&self, since: Option<u64>) -> bool {
+        let slot = self.latest_frame.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(latest) = slot.as_ref() else {
+            return false;
+        };
+        since.is_none_or(|since| latest.seq > since)
+            && (!matches!(self.backing, Backing::Shared(_))
+                || (latest.width(), latest.height()) == self.viewport())
+    }
+
+    /// The visible viewport as a frame like the screencast's: a JPEG at the
+    /// density the viewers call for, described in CSS pixels.
+    async fn capture_frame(&self, quality: i64) -> Result<ScreencastFrameEvent, String> {
+        let metrics = self
+            .page
+            .execute(cdp_page::GetLayoutMetricsParams::default())
+            .await
+            .map_err(|e| format!("layout metrics: {e}"))?
+            .result;
+        let visual = &metrics.css_visual_viewport;
+        let (density, _) = self.frame_limits();
+        let (width, height, scale) = match &self.backing {
+            // The clip is in document pixels and comes out at its size times
+            // `scale` times the emulated device scale factor.
+            Backing::Shared(_) => {
+                let (width, height) = self.viewport();
+                let dpr = f64::from_bits(self.device_scale_factor.load(Ordering::Relaxed));
+                (
+                    f64::from(width),
+                    f64::from(height),
+                    density * visual.scale / dpr.max(0.1),
+                )
+            }
+            Backing::Own(_) => (
+                (visual.client_width * visual.scale).round(),
+                (visual.client_height * visual.scale).round(),
+                visual.scale,
+            ),
+        };
+        let clip = cdp_page::Viewport {
+            x: visual.page_x,
+            y: visual.page_y,
+            width: visual.client_width,
+            height: visual.client_height,
+            scale,
+        };
+        let params = cdp_page::CaptureScreenshotParams::builder()
+            .format(cdp_page::CaptureScreenshotFormat::Jpeg)
+            .quality(quality)
+            .clip(clip)
+            .from_surface(true)
+            .capture_beyond_viewport(false)
+            .optimize_for_speed(true)
+            .build();
+        let shot =
+            tokio::time::timeout(std::time::Duration::from_secs(2), self.page.execute(params))
+                .await
+                .map_err(|_| "capture timed out".to_string())?
+                .map_err(|e| format!("capture: {e}"))?;
+        Ok(ScreencastFrameEvent {
+            data: shot.result.data.clone(),
+            metadata: cdp_page::ScreencastFrameMetadata {
+                offset_top: 0.0,
+                page_scale_factor: visual.scale,
+                device_width: width,
+                device_height: height,
+                scroll_offset_x: visual.page_x,
+                scroll_offset_y: visual.page_y,
+                timestamp: None,
+            },
+            session_id: 0,
+        })
     }
 
     /// True while `browser::resize` keeps the page in phone emulation.
@@ -1778,6 +1892,9 @@ impl Sessions {
             viewport_width: AtomicU32::new(cfg.viewport_width),
             viewport_height: AtomicU32::new(cfg.viewport_height),
             latest_frame: Mutex::new(None),
+            frames: tokio::sync::watch::channel(None).0,
+            fresh_epoch: AtomicU64::new(0),
+            device_scale_factor: AtomicU64::new(1.0f64.to_bits()),
             screencast_consumers: std::sync::atomic::AtomicUsize::new(0),
             pane_viewers: std::sync::atomic::AtomicUsize::new(0),
             viewers: tokio::sync::Mutex::new(HashMap::new()),
@@ -2143,6 +2260,9 @@ impl Sessions {
             viewport_width: AtomicU32::new(cfg.viewport_width),
             viewport_height: AtomicU32::new(cfg.viewport_height),
             latest_frame: Mutex::new(None),
+            frames: tokio::sync::watch::channel(None).0,
+            fresh_epoch: AtomicU64::new(0),
+            device_scale_factor: AtomicU64::new(1.0f64.to_bits()),
             screencast_consumers: std::sync::atomic::AtomicUsize::new(0),
             pane_viewers: std::sync::atomic::AtomicUsize::new(0),
             viewers: tokio::sync::Mutex::new(HashMap::new()),
@@ -2520,6 +2640,7 @@ impl Sessions {
                 .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             return Err(format!("screencast start failed: {e}"));
         }
+        self.expect_fresh_frame(session, true);
         Ok(())
     }
 
@@ -2544,6 +2665,62 @@ impl Sessions {
             .cast_capped
             .store(limits.is_some(), Ordering::Relaxed);
         Ok(())
+    }
+
+    /// A (re)started screencast owes its viewers a frame of the current
+    /// viewport, and Chromium does not always pay: on a page that does not
+    /// repaint, the frame of a restart can be one of the old size (dropped
+    /// by the pump, rightly) or none at all, and nothing follows. So when no
+    /// frame of the current viewport has gone out `FRESH_FRAME_GRACE` after
+    /// the restart, the worker captures the visible viewport and publishes
+    /// it as the next frame. `newer` asks for a frame newer than the restart
+    /// (the page may have changed); without it any frame of the current
+    /// viewport will do (a viewer joining a running cast). A burst of
+    /// restarts (a resize per animation step) checks once, after the last.
+    fn expect_fresh_frame(&self, session: &Arc<Session>, newer: bool) {
+        if matches!(&session.backing, Backing::Shared(shared) if shared.engine == BrowserEngine::Lightpanda)
+        {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        // Only a restart supersedes a pending check; a join's weaker one
+        // runs on its own.
+        let epoch = newer.then(|| session.fresh_epoch.fetch_add(1, Ordering::Relaxed) + 1);
+        let since = newer.then(|| session.tab.frame_seq.load(Ordering::Relaxed));
+        let quality = self.config.load().screenshot_quality as i64;
+        let session = session.clone();
+        runtime.spawn(async move {
+            tokio::time::sleep(FRESH_FRAME_GRACE).await;
+            let superseded =
+                epoch.is_some_and(|epoch| session.fresh_epoch.load(Ordering::Relaxed) != epoch);
+            if superseded || !session.screencast_on() || session.has_fresh_frame(since) {
+                return;
+            }
+            match session.capture_frame(quality).await {
+                // Checked again: a real frame may have come meanwhile, and
+                // it is the newer picture.
+                Ok(frame) if !session.has_fresh_frame(since) => {
+                    let published = session.publish_frame(Arc::new(frame));
+                    tracing::debug!(
+                        session_id = %session.id,
+                        frame_seq = published.seq,
+                        width = published.width(),
+                        height = published.height(),
+                        "no screencast frame of the new viewport came; published a capture"
+                    );
+                }
+                // The capture's own redraw usually makes Chromium send the
+                // frame it owed.
+                Ok(_) => {
+                    tracing::debug!(session_id = %session.id, "the screencast frame came during the capture");
+                }
+                Err(error) => {
+                    tracing::debug!(session_id = %session.id, %error, "fresh frame capture failed");
+                }
+            }
+        });
     }
 
     /// Start a running screencast again for the current viewport and
@@ -2588,6 +2765,7 @@ impl Sessions {
             session.pane_viewers.fetch_add(1, Ordering::Relaxed);
         }
         self.refresh_cast_density(session).await;
+        self.expect_fresh_frame(session, false);
         Ok(())
     }
 
@@ -2664,6 +2842,7 @@ impl Sessions {
                 scale = lease.scale,
                 "screencast viewer joined"
             );
+            self.expect_fresh_frame(session, false);
         } else {
             tracing::trace!(session_id = %session.id, viewer_id = %lease.viewer_id, "screencast viewer lease renewed");
         }
@@ -2767,6 +2946,7 @@ impl Sessions {
             > 1
         {
             self.restart_screencast(session).await;
+            self.expect_fresh_frame(session, true);
         }
         self.release_screencast(session).await;
     }
@@ -3788,12 +3968,13 @@ async fn spawn_event_pumps(
     // awaited trigger per viewer) runs on its own task fed by a watch
     // channel — latest frame wins — so a slow bus never stalls the pump or
     // builds a backlog of stale pictures; the viewer always gets the newest
-    // frame the engine can take.
+    // frame the engine can take. The worker's own captures
+    // (`Sessions::expect_fresh_frame`) go out on the same channel.
     if let Ok(mut events) = page
         .event_listener::<cdp_page::EventScreencastFrame>()
         .await
     {
-        let (frame_tx, mut frame_rx) = tokio::sync::watch::channel::<Option<LatestFrame>>(None);
+        let mut frame_rx = session.frames.subscribe();
         {
             let s = session.clone();
             let sx = sessions.clone();
@@ -3855,8 +4036,16 @@ async fn spawn_event_pumps(
                     // rendered at the previous surface size while its
                     // metadata already reports the new viewport. Pushed, it
                     // would show letterboxed and map clicks off by the
-                    // difference; the corrected frame follows at once.
+                    // difference. The corrected frame usually follows at
+                    // once; on a page that does not repaint it may not, and
+                    // `Sessions::expect_fresh_frame` captures one instead.
                     if !frame_matches_metadata(&event, &bytes) {
+                        tracing::debug!(
+                            session_id = %s.id,
+                            width = event.metadata.device_width,
+                            height = event.metadata.device_height,
+                            "screencast frame of a stale size dropped"
+                        );
                         continue;
                     }
                     held = Some((event, bytes));
@@ -3868,28 +4057,18 @@ async fn spawn_event_pumps(
                     continue;
                 };
                 last_push_ms = now_ms();
-                let seq = s.tab.frame_seq.fetch_add(1, Ordering::Relaxed) + 1;
-                let stream_frame = LatestFrame {
-                    frame: event,
-                    seq,
-                    timestamp: last_push_ms,
-                };
                 // Offer it to the pusher (the console is bound to the frame
                 // trigger); the in-memory slot stays as the seed for a fresh
                 // viewer's first paint.
-                let _ = frame_tx.send(Some(stream_frame.clone()));
+                s.publish_frame(event);
                 // Feed the recorder the same capped frame flow through a
                 // bounded queue with try_send: the pump never awaits ffmpeg
                 // I/O, and frames are dropped rather than backing up if the
                 // encoder falls behind.
-                {
-                    let rec = s.recording.lock().await;
-                    if let Some(recording) = rec.as_ref() {
-                        let _ = recording.tx.try_send(bytes);
-                    }
+                let rec = s.recording.lock().await;
+                if let Some(recording) = rec.as_ref() {
+                    let _ = recording.tx.try_send(bytes);
                 }
-                let mut slot = s.latest_frame.lock().unwrap_or_else(|p| p.into_inner());
-                *slot = Some(stream_frame);
             }
         }));
     }

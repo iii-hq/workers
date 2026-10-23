@@ -2889,10 +2889,12 @@ fn register_resize(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     .await
                     .map_err(|e| handler_err(format!("resize failed: {e}")))?;
                 session.set_viewport(width, height);
+                session.set_device_scale_factor(dpr);
                 // The page content did not change, so the compositor may not
                 // push a screencast frame at the new size on its own; nudge
                 // one out through the counted screencast paths. The restart
-                // also sizes the frames to the new viewport.
+                // also sizes the frames to the new viewport, and a page that
+                // still sends none gets one captured for it.
                 sx.nudge_screencast(&session).await;
                 Ok::<_, Error>(resize::ResizeOutput {
                     ok: true,
