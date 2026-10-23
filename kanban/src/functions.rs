@@ -843,7 +843,67 @@ async fn ticket_create(ctx: Arc<Ctx>, input: TicketCreateInput) -> Result<Ticket
     Ok(written(outcome.result, input.compact))
 }
 
-async fn ticket_get(ctx: Arc<Ctx>, input: TicketGetInput) -> Result<TicketView, Error> {
+/// `kanban::ticket::get` answers: the ticket view with its activity bounded,
+/// so a long-lived ticket stays under the caller's result-size cap.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct TicketGetView {
+    #[serde(flatten)]
+    pub view: TicketView,
+    /// Activity entries the ticket has in total; `activity` holds fewer when
+    /// older non-comment entries were left out (`kanban::activity::list` pages them all).
+    pub activity_total: u64,
+}
+
+/// Non-comment activity entries `kanban::ticket::get` returns (the newest).
+pub const GET_ACTIVITY_MAX: usize = 50;
+/// Characters of a changed text value kept in `kanban::ticket::get` activity.
+pub const GET_CHANGE_TEXT_MAX: usize = 200;
+
+/// Bound the activity of a `ticket::get` response only: keep every
+/// `comment.created` entry (the discussion) plus the newest
+/// [`GET_ACTIVITY_MAX`] others, and cut each string in `changes[].from/to`
+/// longer than [`GET_CHANGE_TEXT_MAX`] chars to a prefix plus a marker with the
+/// original length. Storage, `activity::list` and events keep the full text.
+pub fn bound_for_get(mut view: TicketView) -> TicketGetView {
+    let activity = &mut view.ticket.activity;
+    let activity_total = activity.len() as u64;
+    activity.sort_by_key(|entry| entry.seq);
+    let others = activity
+        .iter()
+        .filter(|entry| entry.kind != "comment.created")
+        .count();
+    let mut skip = others.saturating_sub(GET_ACTIVITY_MAX);
+    activity.retain(|entry| {
+        if entry.kind == "comment.created" || skip == 0 {
+            return true;
+        }
+        skip -= 1;
+        false
+    });
+    for change in activity
+        .iter_mut()
+        .filter_map(|entry| entry.changes.as_mut())
+        .flatten()
+    {
+        for value in [&mut change.from, &mut change.to] {
+            if let Value::String(text) = value {
+                let chars = text.chars().count();
+                if chars > GET_CHANGE_TEXT_MAX {
+                    let prefix: String = text.chars().take(GET_CHANGE_TEXT_MAX).collect();
+                    *text = format!(
+                        "{prefix}… [truncated, {chars} chars; kanban::activity::list has the full text]"
+                    );
+                }
+            }
+        }
+    }
+    TicketGetView {
+        view,
+        activity_total,
+    }
+}
+
+async fn ticket_get(ctx: Arc<Ctx>, input: TicketGetInput) -> Result<TicketGetView, Error> {
     let config = config_snapshot(&ctx.config);
     let board = read(&ctx).await?;
     board::find_ticket(&board, &input.id)
@@ -855,6 +915,7 @@ async fn ticket_get(ctx: Arc<Ctx>, input: TicketGetInput) -> Result<TicketView, 
                 config.canceled_status.as_deref(),
             )
         })
+        .map(bound_for_get)
         .ok_or_else(|| not_found(&input.id))
 }
 
@@ -1351,7 +1412,7 @@ pub fn register_functions(ctx: &Arc<Ctx>) {
     register(
         ctx,
         "kanban::ticket::get",
-        "Read one ticket with its comments and activity, its parent, its live subtasks and their progress. The id accepts the internal uuid or the human-readable key.",
+        "Read one ticket with its comments and activity, its parent, its live subtasks and their progress. The activity is bounded to keep the result small: every comment.created entry plus the newest 50 other entries (activity_total says how many exist), and a changed text longer than 200 chars (a description edit) is cut to a prefix ending in [truncated, N chars; ...]. kanban::activity::list returns the full history and the full text. The id accepts the internal uuid or the human-readable key.",
         ticket_get,
     );
     register(
