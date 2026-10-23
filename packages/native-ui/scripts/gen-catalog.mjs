@@ -30,7 +30,7 @@ const EVENT_ARGS = {
   submit: { '*': 'text: string' },
   select: { '*': 'index: number' },
   focus: { '*': 'focused: boolean' },
-  frame: { '*': 'width: number, height: number' },
+  frame: { '*': 'width: number, height: number, modeChanged: boolean' },
   error: { '*': 'message: string' },
   keyboard: { '*': 'open: boolean' },
   longPress: { RemoteScreen: 'x: number, y: number' },

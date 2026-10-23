@@ -336,7 +336,7 @@ export interface RemoteScreenProps extends CommonProps {
   placeholder?: Prop<string>
   maxScale?: Prop<number>
   onLongPress?: (x: number, y: number) => void
-  onFrame?: (width: number, height: number) => void
+  onFrame?: (width: number, height: number, modeChanged: boolean) => void
   onError?: (message: string) => void
   onKeyboard?: (open: boolean) => void
   onReady?: (item?: any) => void
