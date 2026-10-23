@@ -5,6 +5,9 @@
 //! 2. DynFileSystem I/O tests (new) — exercise real filesystem operations via
 //!    the DynFileSystem trait on a PassthroughFs backed by a temp directory.
 
+// mode_t is u16 on macOS and u32 on Linux: the `as u32` casts are needed on one of them.
+#![allow(clippy::unnecessary_cast)]
+
 use std::ffi::CString;
 use std::fs::File;
 use std::io;
