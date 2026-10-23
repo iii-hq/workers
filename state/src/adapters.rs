@@ -12,7 +12,7 @@ use std::time::Duration;
 use crate::structs::StateValue;
 use async_trait::async_trait;
 use iii_helpers::stream::{StreamSetResult, StreamUpdateResult, UpdateOp};
-use redis::{AsyncCommands, Client, aio::ConnectionManager};
+use redis::{AsyncCommands, Client, RedisError, RedisResult, aio::ConnectionManager};
 use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
@@ -664,8 +664,61 @@ const JSON_UPDATE_SCRIPT: &str = r#"
     end
 "#;
 
+/// Evaluate `$call` (an awaited Redis call), and once more when its error
+/// passes `$retry_on`.
+///
+/// A Redis restart (node drain, upgrade, OOM kill) closes every client
+/// socket. `ConnectionManager` only finds out when the next command hits the
+/// dead socket: it starts reconnecting but still fails that command with an
+/// I/O error ("broken pipe"). The second attempt waits for the new connection.
+///
+/// Only for reads and for `PING` (see `ready`). A dropped connection does not
+/// say whether the command reached the server: an EOF or a reset can come after
+/// the server ran it. A write sent twice would report a wrong old value, or undo
+/// what another writer did in between, so writes are never sent twice.
+macro_rules! retry_once {
+    ($retry_on:expr, $call:expr) => {
+        match $call {
+            Err(error) if $retry_on(&error) => {
+                tracing::warn!(%error, "Redis connection lost; retrying on a new connection");
+                $call
+            }
+            result => result,
+        }
+    };
+}
+
 pub struct RedisAdapter {
     publisher: Arc<Mutex<ConnectionManager>>,
+}
+
+/// A connection the server dropped (a restart, an idle timeout), the one case
+/// a command is sent again (see `retry_once!`). Not a refused connection: the
+/// manager returns it when its reconnect backoff failed, and a second round
+/// would double the wait while every caller queues on the lock. Ceiling: after
+/// an outage longer than that backoff (about 6 to 12 s), the manager hands the
+/// next call its cached refusal, so the first call after Redis is back fails
+/// once; retrying refusals too would fix that at the cost of the double wait.
+fn dropped(error: &RedisError) -> bool {
+    error.is_connection_dropped() && !error.is_connection_refusal()
+}
+
+/// Before a write: a `PING`, sent again once if the connection was dropped. It
+/// takes the hit of a socket a Redis restart left dead, so the write that
+/// follows goes once, on a live connection. A connection that drops between the
+/// two fails the write, which is not retried (see `retry_once!`). Only an I/O
+/// error stops the write: any answer from the server, even an error (an ACL
+/// without `ping`, a renamed command), proves the socket is alive.
+async fn ready(conn: &mut ConnectionManager) -> anyhow::Result<()> {
+    match retry_once!(
+        dropped,
+        redis::cmd("PING").query_async::<()>(&mut *conn).await
+    ) {
+        Err(error) if error.is_io_error() => Err(anyhow::anyhow!(
+            "Redis did not answer, nothing was written: {error}"
+        )),
+        _ => Ok(()),
+    }
 }
 
 impl RedisAdapter {
@@ -707,13 +760,19 @@ impl StateAdapter for RedisAdapter {
         // per-field version keys if unrelated writes cause contention.
         for _ in 0..REDIS_CAS_MAX_ATTEMPTS {
             let mut conn = self.publisher.lock().await;
-            redis::cmd("WATCH")
-                .arg(&scope_key)
-                .query_async::<()>(&mut *conn)
+            // WATCH lives on the connection, so a retry must WATCH again.
+            let read: RedisResult<Option<String>> = retry_once!(
+                dropped,
+                async {
+                    redis::cmd("WATCH")
+                        .arg(&scope_key)
+                        .query_async::<()>(&mut *conn)
+                        .await?;
+                    conn.hget(&scope_key, key).await
+                }
                 .await
-                .map_err(|e| anyhow::anyhow!("Failed to watch Redis CAS value: {e}"))?;
-
-            let encoded: Option<String> = match conn.hget(&scope_key, key).await {
+            );
+            let encoded = match read {
                 Ok(encoded) => encoded,
                 Err(error) => {
                     let _ = redis::cmd("UNWATCH").query_async::<()>(&mut *conn).await;
@@ -738,6 +797,8 @@ impl StateAdapter for RedisAdapter {
                 });
             }
 
+            // Not retried: a lost EXEC reply may hide our own commit, and the
+            // retry would then report our write as someone else's.
             let committed: Option<(usize,)> = redis::pipe()
                 .atomic()
                 .cmd("HSET")
@@ -792,6 +853,7 @@ impl StateAdapter for RedisAdapter {
             "#,
         );
 
+        ready(&mut conn).await?;
         let old_value_str: Option<String> = script
             .key(&scope_key)
             .arg(key)
@@ -812,7 +874,10 @@ impl StateAdapter for RedisAdapter {
         let scope_key = format!("state:{}", scope);
         let mut conn = self.publisher.lock().await;
 
-        match conn.hget::<_, _, Option<String>>(&scope_key, &key).await {
+        match retry_once!(
+            dropped,
+            conn.hget::<_, _, Option<String>>(&scope_key, &key).await
+        ) {
             Ok(Some(s)) => serde_json::from_str::<Value>(&s)
                 .map_err(|e| anyhow::anyhow!("Failed to deserialize value from Redis: {}", e))
                 .map(|value| Some(StateValue::from(value))),
@@ -837,7 +902,8 @@ impl StateAdapter for RedisAdapter {
         // Use a single Lua script that atomically gets, applies operations, and sets.
         let script = redis::Script::new(JSON_UPDATE_SCRIPT);
 
-        let result: redis::RedisResult<Vec<String>> = script
+        ready(&mut conn).await?;
+        let result: RedisResult<Vec<String>> = script
             .key(&scope_key)
             .arg(key)
             .arg(&ops_json)
@@ -897,7 +963,8 @@ impl StateAdapter for RedisAdapter {
         let scope_key = format!("state:{}", scope);
         let mut conn = self.publisher.lock().await;
 
-        conn.hdel::<_, String, ()>(&scope_key, key.to_string())
+        ready(&mut conn).await?;
+        conn.hdel::<_, _, ()>(&scope_key, key)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to delete value from Redis: {}", e))?;
         Ok(())
@@ -907,10 +974,11 @@ impl StateAdapter for RedisAdapter {
         let scope_key = format!("state:{}", scope);
         let mut conn = self.publisher.lock().await;
 
-        let values = conn
-            .hgetall::<String, HashMap<String, String>>(scope_key)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to get group from Redis: {}", e))?;
+        let values = retry_once!(
+            dropped,
+            conn.hgetall::<_, HashMap<String, String>>(&scope_key).await
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to get group from Redis: {}", e))?;
 
         let mut result = Vec::new();
         for v in values.into_values() {
@@ -926,39 +994,46 @@ impl StateAdapter for RedisAdapter {
         let scope_key = format!("state:{}", scope);
         let mut conn = self.publisher.lock().await;
 
-        conn.hkeys::<_, Vec<String>>(&scope_key)
-            .await
+        retry_once!(dropped, conn.hkeys::<_, Vec<String>>(&scope_key).await)
             .map_err(|e| anyhow::anyhow!("Failed to list keys from Redis: {}", e))
     }
 
     async fn list_groups(&self) -> anyhow::Result<Vec<String>> {
         let mut conn = self.publisher.lock().await;
-        let mut cursor = 0u64;
-        let mut groups = Vec::new();
+        // A retry restarts the scan from cursor 0.
+        let groups: RedisResult<Vec<String>> = retry_once!(
+            dropped,
+            async {
+                let mut cursor = 0u64;
+                let mut groups = Vec::new();
 
-        loop {
-            let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
-                .arg(cursor)
-                .arg("MATCH")
-                .arg("state:*")
-                .arg("COUNT")
-                .arg(100)
-                .query_async(&mut *conn)
-                .await?;
+                loop {
+                    let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                        .arg(cursor)
+                        .arg("MATCH")
+                        .arg("state:*")
+                        .arg("COUNT")
+                        .arg(100)
+                        .query_async(&mut *conn)
+                        .await?;
 
-            for key in keys {
-                if let Some(scope) = key.strip_prefix("state:") {
-                    groups.push(scope.to_string());
+                    for key in keys {
+                        if let Some(scope) = key.strip_prefix("state:") {
+                            groups.push(scope.to_string());
+                        }
+                    }
+
+                    cursor = new_cursor;
+                    if cursor == 0 {
+                        break;
+                    }
                 }
+                Ok(groups)
             }
+            .await
+        );
 
-            cursor = new_cursor;
-            if cursor == 0 {
-                break;
-            }
-        }
-
-        Ok(groups)
+        Ok(groups?)
     }
 
     async fn destroy(&self) -> anyhow::Result<()> {
