@@ -83,24 +83,28 @@ async fn handle_connection(
     };
 
     // 2. Dial the upstream engine listener.
-    let (engine, _resp) = match tokio_tungstenite::connect_async(cfg.engine_url.as_str()).await {
-        Ok(pair) => pair,
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                engine_url = %crate::redact_url(&cfg.engine_url),
-                "failed to dial upstream engine; closing downstream"
-            );
-            let mut client = client;
-            let _ = client
-                .send(AxumMessage::Close(Some(AxumCloseFrame {
-                    code: 1011, // internal error
-                    reason: "engine WS dial failed".into(),
-                })))
-                .await;
-            return;
-        }
-    };
+    // Nagle off toward the engine too (small frames, see server.rs).
+    let (engine, _resp) =
+        match tokio_tungstenite::connect_async_with_config(cfg.engine_url.as_str(), None, true)
+            .await
+        {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    engine_url = %crate::redact_url(&cfg.engine_url),
+                    "failed to dial upstream engine; closing downstream"
+                );
+                let mut client = client;
+                let _ = client
+                    .send(AxumMessage::Close(Some(AxumCloseFrame {
+                        code: 1011, // internal error
+                        reason: "engine WS dial failed".into(),
+                    })))
+                    .await;
+                return;
+            }
+        };
 
     state.active.fetch_add(1, Ordering::Relaxed);
     let _guard = ActiveGuard(state.active.clone());

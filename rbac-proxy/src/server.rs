@@ -163,7 +163,14 @@ fn serve_with_deadline(
         loop {
             let (stream, peer) = tokio::select! {
                 accepted = listener.accept() => match accepted {
-                    Ok(conn) => conn,
+                    Ok((stream, peer)) => {
+                        // Small frames must not wait for the peer's delayed ACK
+                        // (the engine listener does the same, MOT-5377).
+                        if let Err(e) = stream.set_nodelay(true) {
+                            tracing::debug!(error = %e, "could not set TCP_NODELAY");
+                        }
+                        (stream, peer)
+                    }
                     Err(e) if matches!(
                         e.kind(),
                         std::io::ErrorKind::ConnectionRefused
