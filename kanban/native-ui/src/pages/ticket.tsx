@@ -94,6 +94,9 @@ function mergeLinks(mentions: readonly Summary[], mentionedBy: readonly Summary[
 }
 
 const FILTERS: ActivityFilter[] = ['all', 'comments', 'changes']
+
+/** Unsent comments by ticket: opening another card in the detail, or a page on top, keeps what was typed. */
+const drafts = new Map<string, string>()
 const SUBTASKS_SHOWN = 8
 
 export function TicketView(props: { ticketKey: string }) {
@@ -103,7 +106,12 @@ export function TicketView(props: { ticketKey: string }) {
   const [parentView, setParentView] = createSignal<Ticket | null>(null)
   const [filter, setFilter] = createSignal<ActivityFilter>('all')
   const [replyTo, setReplyTo] = createSignal<{ id: string; who: string } | null>(null)
-  const [draft, setDraft] = createSignal('')
+  const [draft, setDraftSignal] = createSignal(drafts.get(props.ticketKey) ?? '')
+  const setDraft = (next: string | ((now: string) => string)) => {
+    const value = setDraftSignal(next as never) as string
+    if (value) drafts.set(props.ticketKey, value)
+    else drafts.delete(props.ticketKey)
+  }
   const [sending, setSending] = createSignal(false)
   const [busy, setBusy] = createSignal(0)
   const [allSubs, setAllSubs] = createSignal(false)
@@ -195,6 +203,18 @@ export function TicketView(props: { ticketKey: string }) {
       () => ticket()?.updated_at,
       (at, before) => {
         if (at && before) soon('links', readLinks, 500)
+      },
+    ),
+  )
+  // The engine back: what the bus said meanwhile is lost; read again.
+  createEffect(
+    on(
+      () => iii.env.online,
+      (now, before) => {
+        if (now && before === false && iii.env.visible) {
+          void read(true)
+          void readLinks()
+        }
       },
     ),
   )

@@ -172,6 +172,8 @@ export function FiltersPage() {
             weight={1}
             enabled={activeCount(filters()) > 0}
             onPress={() => {
+              // A search still waiting for its pause would bring the text back.
+              clearTimeout(timer)
               setText('')
               setFilters(EMPTY_FILTERS)
             }}

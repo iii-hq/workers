@@ -92,6 +92,19 @@ describe('the board state', () => {
     expect([ids(by(next, 'todo')), by(next, 'todo')?.total]).toEqual([['t1', 't3'], 2])
   })
 
+  it('a card counted but not drawn leaves the lane that counted it, once', () => {
+    const placed = new Map<string, string>()
+    // Moved to the end of the partial Done: counted there, not drawn, remembered.
+    let next = placeMove(base(), 't1', 'done', undefined, placed)
+    expect([by(next, 'todo')?.total, by(next, 'done')?.total, placed.get('t1')]).toEqual([2, 41, 'done'])
+    // Its answer names the column it came from; the placed lane wins, so nothing counts twice.
+    next = upsert(next, card('t1', 'done', 41, { updated_at: at(90) }), { moved: true, from: 'todo' }, placed)
+    expect([by(next, 'todo')?.total, by(next, 'done')?.total]).toEqual([2, 41])
+    // A later move out of Done takes it from there, and the lane it left is renumbered.
+    next = upsert(next, card('t1', 'todo', 1, { updated_at: at(91) }), { moved: true }, placed)
+    expect([ids(by(next, 'todo')), by(next, 'done')?.total, placed.has('t1')]).toEqual([['t1', 't2', 't3'], 40, false])
+  })
+
   it('applies a write once, and never a version older than one it has, nor one from before a deletion', () => {
     const memo = newMemo()
     let lanes = base()

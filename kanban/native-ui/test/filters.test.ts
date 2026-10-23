@@ -87,6 +87,19 @@ describe('filters', () => {
     expect(host.prop(onTop(host, 'filters-page'), 'subtitle')).toBe('65 of 65 tickets')
   })
 
+  it('Clear all right after typing clears the text too (the pause does not bring it back)', async () => {
+    const { host } = await start()
+    await host.press('filters')
+    await host.settle()
+    await host.select(onTop(host, 'filter-updated'), 3)
+    await host.type(onTop(host, 'filter-text'), 'KAN-2')
+    await host.press(onTop(host, 'clear-filters'))
+    await host.tick(400)
+    await host.settle()
+    expect(host.prop('filters', 'active')).not.toBe(true)
+    expect(host.prop(onTop(host, 'filter-text'), 'value')).toBe('')
+  })
+
   it('labels: any or all of them', async () => {
     const { host } = await start()
     await host.press('filters')

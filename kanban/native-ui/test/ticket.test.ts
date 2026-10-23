@@ -234,6 +234,29 @@ describe('editing', () => {
   })
 })
 
+describe('what the review caught', () => {
+  it('Done in the label search right after typing adds what was typed, not the last match', async () => {
+    const { host } = await openReview()
+    await host.press('add-label')
+    await host.settle()
+    await host.type(onTop(host, 'pick-search'), 'brandnew')
+    await host.submit(onTop(host, 'pick-search'))
+    await host.settle()
+    expect(callsOf(host, 'ticket::update')).toEqual([{ id: 't4', add_labels: ['brandnew'], actor: 'user' }])
+  })
+
+  it('a comment being typed survives opening another card in the detail', async () => {
+    const { host } = await openReview()
+    await host.type('composer', 'Half a thought')
+    await host.itemPress('lane:in_progress', 't1')
+    await host.settle()
+    expect(host.prop('composer', 'value')).toBe('')
+    await host.itemPress('lane:in_review', 't4')
+    await host.settle()
+    expect(host.prop('composer', 'value')).toBe('Half a thought')
+  })
+})
+
 describe('delete and restore', () => {
   it('deletes only after the destructive confirmation; the board drops the card; restore brings it back', async () => {
     const { host, answers } = await openReview()

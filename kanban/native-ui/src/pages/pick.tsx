@@ -259,6 +259,9 @@ export function PickPage(props: { params: JsonObject }) {
             autofocus={needsBoard}
             clearable
             onSubmit={() => {
+              // What was typed counts now, not after the search's pause.
+              clearTimeout(timer)
+              setQuery(text().trim())
               const first = all().find((r) => r.kind === 0 && r.enabled)
               if (kind === 'label' && first) choose(first)
             }}
