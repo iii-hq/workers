@@ -32,6 +32,15 @@ pub enum HarnessError {
     #[error("harness/context_overflow: {0}")]
     ContextOverflow(String),
 
+    /// The session's context strategy names an assembly function that is
+    /// not registered (still missing after the transient step retry).
+    #[error("harness/context_strategy_unavailable: {0}")]
+    ContextStrategyUnavailable(String),
+
+    /// A context strategy ended the run on purpose (`applied.strategy_stop`).
+    #[error("harness/context_budget_stop: {0}")]
+    ContextBudgetStop(String),
+
     /// A state read/write backing the loop failed.
     #[error("harness/state: {0}")]
     State(String),
@@ -55,6 +64,8 @@ impl HarnessError {
             HarnessError::SpawnFanoutExceeded(_) => "harness/spawn_fanout_exceeded",
             HarnessError::Dependency(_) => "harness/dependency",
             HarnessError::ContextOverflow(_) => "harness/context_overflow",
+            HarnessError::ContextStrategyUnavailable(_) => "harness/context_strategy_unavailable",
+            HarnessError::ContextBudgetStop(_) => "harness/context_budget_stop",
             HarnessError::State(_) => "harness/state",
             HarnessError::ProjectStore(_) => "harness/project_store",
             HarnessError::Internal(_) => "harness/internal",
@@ -81,6 +92,8 @@ mod tests {
             HarnessError::SpawnFanoutExceeded("m".into()),
             HarnessError::Dependency("m".into()),
             HarnessError::ContextOverflow("m".into()),
+            HarnessError::ContextStrategyUnavailable("m".into()),
+            HarnessError::ContextBudgetStop("m".into()),
             HarnessError::State("m".into()),
             HarnessError::ProjectStore("m".into()),
             HarnessError::Internal("m".into()),

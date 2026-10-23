@@ -107,6 +107,15 @@ impl Store {
                     json!({"sessions":self.sessions.values().filter(|m| &m["metadata"]["parent_session_id"] == parent).cloned().collect::<Vec<_>>()}),
                 )
             }
+            "session::ensure" => {
+                let created = !self.sessions.contains_key(sid);
+                let meta = self
+                    .sessions
+                    .entry(sid.into())
+                    .or_insert_with(|| json!({"session_id":sid,"metadata":data["metadata"]}))
+                    .clone();
+                Ok(json!({"created":created,"meta":meta}))
+            }
             "session::messages" => {
                 Ok(json!({"messages":self.messages.get(sid).cloned().unwrap_or_default()}))
             }
@@ -155,6 +164,17 @@ impl Store {
             "context::assemble" => {
                 Err("intentional boundary stop after observing LLM input".into())
             }
+            // A context strategy that gives the step it ingested back as maintenance.
+            "context-clm::assemble" if data["options"]["session_id"] == "clm_grant" => Ok(json!({
+                "messages": [{"role": "user", "content": [{"type": "text", "text": "go"}], "timestamp": 1}],
+                "token_count": 10, "usable": 100, "effective_max_output_tokens": 10,
+                "applied": {"maintenance_step": true}
+            })),
+            // A context strategy that ends the run: over budget, with a stop.
+            "context-clm::assemble" => Ok(json!({
+                "token_count": 200, "usable": 100, "effective_max_output_tokens": 10,
+                "applied": {"strategy_stop": "over budget"}
+            })),
             "state::claim-namespace" => Ok(json!({"claimed":true})),
             "engine::unregister_trigger" => Ok(json!({"removed":true})),
             _ => Err(format!("unexpected mock RPC {function}: {data}")),
@@ -1960,6 +1980,90 @@ async fn orphan_redrive_reads_only_changed_turns_and_the_sweep_refreshes_its_vie
     );
 }
 
+/// A strategy turn past max_turns assembles only to learn whether its last
+/// step was context maintenance. An assembly that gives nothing back, a stop
+/// or a failure, ends the turn at max_turns as before it assembled.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_strategy_step_past_max_turns_ends_there_when_its_assembly_gives_nothing_back() {
+    for fail in [false, true] {
+        let stack = Stack::new("completed").await;
+        stack.session("clm", None, "running");
+        {
+            let mut store = stack.store.lock().unwrap();
+            let mut row = store.state("harness_turn", "clm");
+            row["step"] = json!(16);
+            row["turn_count"] = json!(16);
+            row["options"]["context_strategy"] =
+                json!({"name": "clm", "budget_tokens": null, "effective": true});
+            store.put("harness_turn", "clm", row);
+            if fail {
+                store.fail.insert("context-clm::assemble".into());
+            }
+        }
+        let payload = serde_json::from_value(
+            json!({"session_id":"clm","turn_id":"t_clm","step":16,"depth":0}),
+        )
+        .unwrap();
+        harness::turn_loop::run_step(&stack.deps, payload)
+            .await
+            .unwrap();
+        let row = turn(&stack, "clm");
+        assert_eq!(
+            (&row["status"], &row["stop_reason"]),
+            (&json!("completed"), &json!("max_turns")),
+            "fail={fail}: {row}"
+        );
+        assert!(
+            stack
+                .store
+                .lock()
+                .unwrap()
+                .calls
+                .iter()
+                .any(|(f, _)| f == "context-clm::assemble"),
+            "the guard waited for the assembly"
+        );
+    }
+}
+
+/// The same step, when its assembly gives the last step back as maintenance,
+/// keeps the turn going past max_turns and records the grant.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_strategy_step_past_max_turns_generates_on_a_maintenance_grant() {
+    let stack = Stack::new("completed").await;
+    stack.session("clm_grant", None, "running");
+    {
+        let mut store = stack.store.lock().unwrap();
+        let mut row = store.state("harness_turn", "clm_grant");
+        row["step"] = json!(16);
+        row["turn_count"] = json!(16);
+        row["options"]["context_strategy"] =
+            json!({"name": "clm", "budget_tokens": null, "effective": true});
+        store.put("harness_turn", "clm_grant", row);
+    }
+    let payload = serde_json::from_value(
+        json!({"session_id":"clm_grant","turn_id":"t_clm_grant","step":16,"depth":0}),
+    )
+    .unwrap();
+    // The mock has no model stream: reaching it is the proof the step generates.
+    let outcome = harness::turn_loop::run_step(&stack.deps, payload).await;
+    assert!(
+        format!("{outcome:?}").contains("engine::channels::create"),
+        "{outcome:?}"
+    );
+    let row = turn(&stack, "clm_grant");
+    assert_eq!(
+        (&row["status"], &row["stop_reason"]),
+        (&json!("running"), &Value::Null),
+        "{row}"
+    );
+    assert_eq!(
+        (&row["maintenance_steps"], &row["maintenance_step_at"]),
+        (&json!(1), &json!(16)),
+        "{row}"
+    );
+}
+
 /// A finished turn's record keeps only what a finished turn is read for
 /// (MOT-5166): open calls and calls with a child stay; done calls without
 /// one, the failure counts, the watermark and the stream id go.
@@ -1998,9 +2102,14 @@ async fn finalized_turn_records_drop_what_only_a_running_turn_reads() {
     // finalize_cancelled: a stop on a parked turn with no external call.
     ordinary_stop(&stack, "parent").await;
     // finalize_failed: an unexpected step error.
-    harness::turn_loop::fail_turn(&stack.deps, "child1", "t_child1", "boom")
-        .await
-        .unwrap();
+    harness::turn_loop::fail_turn(
+        &stack.deps,
+        "child1",
+        "t_child1",
+        &harness::error::HarnessError::Internal("boom".into()),
+    )
+    .await
+    .unwrap();
     for (id, status) in [
         ("parent", "cancelled"),
         ("child1", "failed"),
@@ -2381,14 +2490,9 @@ async fn stopped_and_failed_steps_finalize_without_the_prompt_body() {
         .await
         .unwrap_err();
     assert!(error.to_string().contains("missing prompt body"), "{error}");
-    harness::turn_loop::fail_turn(
-        &stack.deps,
-        "grandchild1",
-        "t_grandchild1",
-        &error.to_string(),
-    )
-    .await
-    .unwrap();
+    harness::turn_loop::fail_turn(&stack.deps, "grandchild1", "t_grandchild1", &error)
+        .await
+        .unwrap();
     assert_eq!(turn(&stack, "grandchild1")["status"], "failed");
     for id in ["child1", "grandchild1"] {
         assert_eq!(
@@ -2415,4 +2519,69 @@ async fn status_reports_a_session_without_its_prompt_body() {
     .unwrap()
     .expect("a report");
     assert_eq!(report.turn_id.as_deref(), Some("t_parent"));
+}
+
+/// Put a context strategy on `id`'s turn record, as a seeding send froze it.
+fn carry_clm(stack: &Stack, id: &str, options: Value) {
+    let mut store = stack.store.lock().unwrap();
+    let mut turn = store.state("harness_turn", id);
+    for (key, value) in options.as_object().unwrap() {
+        turn["options"][key] = value.clone();
+    }
+    turn["options"]["context_strategy"] = json!({"name":"clm","effective":true});
+    store.put("harness_turn", id, turn);
+}
+
+/// A wake reseeds from the prior turn's options; the strategy it carries is
+/// decided again for the new turn, not trusted from the old one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_inject_reseed_settles_the_carried_context_strategy_again() {
+    let stack = Stack::new("completed").await;
+    // No root on the prior turn: effective there, gone by the reseed.
+    carry_clm(&stack, "parent", json!({"functions":{"allow":["*"]}}));
+    let outcome = harness::functions::send::inject(
+        &stack.deps,
+        "parent",
+        harness::types::message::AgentMessage::user_text("wake"),
+        Some("wake-clm"),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(!outcome.merged);
+    let turn = turn(&stack, "parent");
+    assert_eq!(turn["turn_id"], outcome.turn_id.as_str());
+    assert_eq!(
+        turn["options"]["context_strategy"],
+        json!({"name":"clm","budget_tokens":null,"effective":false,"skipped_reason":"no filesystem root"})
+    );
+}
+
+/// Spec §4.6: a sub-agent never inherits its parent's context strategy, even
+/// from a parent whose strategy runs and whose root and policy it inherits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_spawned_child_gets_no_context_strategy() {
+    let stack = Stack::new("running").await;
+    carry_clm(
+        &stack,
+        "parent",
+        json!({"functions":{"allow":["*"]},"metadata":{"fs_scope":{"root":"/work"}}}),
+    );
+    let parent: TurnRecord = serde_json::from_value(turn(&stack, "parent")).unwrap();
+    assert!(parent.options.effective_context_strategy().is_some());
+    let child = harness::subagent::spawn_from_turn(
+        &stack.deps,
+        &parent,
+        "call-spawn",
+        &json!({"session_id":"clm-child","task":"look around","model":"fake"}),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("spawn: {error:?}"));
+    let record = turn(&stack, &child.session_id);
+    assert_eq!(record["turn_id"], child.turn_id.as_str());
+    assert_eq!(record["options"]["metadata"]["fs_scope"]["root"], "/work");
+    assert!(
+        record["options"].get("context_strategy").is_none(),
+        "{record}"
+    );
 }

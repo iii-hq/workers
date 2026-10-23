@@ -155,6 +155,17 @@ pub struct WorkerConfig {
     #[serde(default)]
     pub filesystem_boundary: crate::filesystem_scope::BoundaryMode,
 
+    /// Context strategy of a session whose metadata has no
+    /// `context_strategy`. Unset or `"default"` → context-manager
+    /// (`context::assemble`); a name (`^[a-z0-9-]{1,64}$`, e.g. `"clm"`) →
+    /// `context-<name>::assemble`. Session metadata always wins (`"default"`
+    /// there keeps a session on context-manager), and sub-agents from
+    /// `harness::spawn` never get a strategy. Applies from the next send that
+    /// seeds a turn.
+    #[serde(default)]
+    #[schemars(regex(pattern = r"^[a-z0-9-]{1,64}$"))]
+    pub default_context_strategy: Option<String>,
+
     /// JSON file used for the operator's durable project catalog. Resolved
     /// like every other worker path: absolute and `~/` paths are kept, relative
     /// paths resolve under `III_COMPOSE_DIR` (or the process cwd outside
@@ -399,6 +410,7 @@ impl Default for WorkerConfig {
             default_functions: default_functions(),
             default_filesystem_root: None,
             filesystem_boundary: Default::default(),
+            default_context_strategy: None,
             projects_file_path: default_projects_file_path(),
         }
     }

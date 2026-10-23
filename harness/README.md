@@ -208,6 +208,7 @@ max_result_bytes: 262144         # function-result byte cap at capture; oversize
 prompt_cache_sections: true      # send the frozen profile prefix as its own cacheable section (+ digest) on router::chat
 co_author: true                  # tell agents to end git commit messages with "Co-authored-by: iii harness (<model>) <noreply@iii.dev>"
 call_reconciliation: judge       # repair malformed call arguments before dispatch: off | coerce (lossless parses) | judge (+ judge::evaluate when deployed)
+default_context_strategy: default  # context strategy of sessions whose metadata names none: default (context-manager) | <name> (context-<name>::assemble, e.g. clm)
 projects_file_path: ~/.iii/data/harness/projects.json  # durable operator project catalog (default: data/harness-projects.json under III_COMPOSE_DIR / cwd)
 sweep_expression: "0 * * * * *"  # cron for the pending-call expiry sweep
 ```

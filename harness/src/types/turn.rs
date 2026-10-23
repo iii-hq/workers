@@ -120,6 +120,31 @@ pub struct ResponseLanguage {
     pub name: String,
 }
 
+/// A session's non-default context strategy, read from its
+/// `context_strategy` / `context_budget_tokens` metadata by `harness::send`
+/// and frozen onto the turn. The name only ever selects
+/// `context-<name>::assemble`; it is never used as a function id itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ContextStrategy {
+    /// Validated `^[a-z0-9-]{1,64}$`, never `default`.
+    pub name: String,
+    /// Per-session budget for the strategy; `None` = its configured default.
+    pub budget_tokens: Option<u64>,
+    /// Decided once as the turn is seeded: false when the turn has no
+    /// filesystem root or may not call `shell::exec`, and it then assembles
+    /// with `context::assemble`.
+    pub effective: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped_reason: Option<String>,
+}
+
+impl ContextStrategy {
+    /// The assembly function this strategy names.
+    pub fn function_id(&self) -> String {
+        format!("context-{}::assemble", self.name)
+    }
+}
+
 /// Per-send options frozen onto the turn record when it is created; they
 /// apply unchanged until the turn ends (a merged send never changes them,
 /// except to adopt a first `response_language`).
@@ -195,6 +220,14 @@ pub struct TurnOptions {
     /// spawned children. `None` until a message is long enough to tell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_language: Option<ResponseLanguage>,
+    /// The session's context strategy, frozen when the turn is seeded.
+    /// `None` (also on every record written before this field) assembles
+    /// with context-manager. Boxed: records ride by value through the
+    /// completion tail on the SDK's default-size thread stack
+    /// (`turn_loop::stack_tests`), and an inline field overflows it in debug
+    /// builds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_strategy: Option<Box<ContextStrategy>>,
     /// Cap on output-contract validation retries before finalising with a
     /// best-effort result (harness.md § Output contract).
     #[serde(default = "default_max_validation_retries")]
@@ -226,6 +259,11 @@ impl TurnOptions {
             .and_then(Value::as_object)
             .and_then(|scope| scope.get(FS_SCOPE_ROOT_KEY))
             .and_then(Value::as_str)
+    }
+
+    /// The context strategy this turn runs, when it is effective.
+    pub fn effective_context_strategy(&self) -> Option<&ContextStrategy> {
+        self.context_strategy.as_deref().filter(|s| s.effective)
     }
 
     /// Adopt `incoming`'s response language when this turn has none yet — a
@@ -439,6 +477,15 @@ pub struct TurnRecord {
     pub validation_retries: u32,
     #[serde(default)]
     pub transient_resumes: u32,
+    /// Generate steps a context strategy marked as its own maintenance
+    /// (`applied.maintenance_step`): counted in `turn_count`, not toward
+    /// `max_turns` ([`Self::counted_turns`]). At most `max_turns / 2`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub maintenance_steps: u32,
+    /// The step whose assembly last granted a maintenance step, so a
+    /// redelivered step never grants twice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maintenance_step_at: Option<u64>,
     /// The step whose `harness::ask` was accepted (its card is shown). Read
     /// back to end the turn on the question, also when the step is
     /// redelivered after a crash.
@@ -454,6 +501,12 @@ pub struct TurnRecord {
 }
 
 impl TurnRecord {
+    /// Steps that count toward `max_turns`: the completed ones less the
+    /// context-maintenance steps.
+    pub fn counted_turns(&self) -> u32 {
+        self.turn_count.saturating_sub(self.maintenance_steps)
+    }
+
     /// Function_call ids still awaiting a result (`triggered` or `pending`).
     pub fn pending_call_ids(&self) -> Vec<String> {
         self.calls
@@ -586,6 +639,7 @@ pub(crate) mod tests {
                 seeded_contracts: None,
                 system_prompt_ref: None,
                 response_language: None,
+                context_strategy: None,
             },
             calls: Default::default(),
             parent: None,
@@ -602,11 +656,35 @@ pub(crate) mod tests {
             dispatch_only_functions: Vec::new(),
             validation_retries: 0,
             transient_resumes: 0,
+            maintenance_steps: 0,
+            maintenance_step_at: None,
             ask_step: None,
             ask_seen_step: None,
             created_at: 1,
             updated_at: 1,
         }
+    }
+
+    #[test]
+    fn maintenance_steps_are_omitted_when_unset_and_default_on_legacy_records() {
+        let value = serde_json::to_value(record()).unwrap();
+        assert!(value.get("maintenance_steps").is_none(), "{value}");
+        assert!(value.get("maintenance_step_at").is_none(), "{value}");
+        let decoded: TurnRecord = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded.maintenance_steps, 0);
+        assert_eq!(decoded.maintenance_step_at, None);
+
+        let granted = TurnRecord {
+            turn_count: 5,
+            maintenance_steps: 2,
+            maintenance_step_at: Some(4),
+            ..record()
+        };
+        assert_eq!(granted.counted_turns(), 3);
+        let wire = serde_json::to_value(&granted).unwrap();
+        assert_eq!(wire["maintenance_steps"], json!(2));
+        assert_eq!(wire["maintenance_step_at"], json!(4));
+        assert_eq!(serde_json::from_value::<TurnRecord>(wire).unwrap(), granted);
     }
 
     #[test]
@@ -847,6 +925,7 @@ pub(crate) mod tests {
         assert_eq!(r.options.max_validation_retries, 2);
         assert_eq!(r.options.max_transient_resumes, 3);
         assert_eq!(r.transient_resumes, 0);
+        assert_eq!((r.maintenance_steps, r.maintenance_step_at), (0, None));
         assert_eq!(r.options.output, OutputContract::Text);
         assert_eq!(r.options.skill_context, None);
         assert_eq!(r.skill_ack, None);
@@ -958,5 +1037,50 @@ pub(crate) mod tests {
         no_scope.metadata = Some(json!({ "other": "/ignored" }));
         assert!(!existing.refresh_filesystem_root_from(&no_scope));
         assert_eq!(existing.filesystem_root(), Some("/new"));
+    }
+
+    fn clm(effective: bool) -> ContextStrategy {
+        ContextStrategy {
+            name: "clm".into(),
+            budget_tokens: Some(16_384),
+            effective,
+            skipped_reason: (!effective).then(|| "no filesystem root".to_string()),
+        }
+    }
+
+    #[test]
+    fn context_strategy_is_absent_on_old_records_and_round_trips_when_set() {
+        let value = serde_json::to_value(record()).unwrap();
+        assert!(
+            value["options"].get("context_strategy").is_none(),
+            "{value}"
+        );
+        let decoded: TurnRecord = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded.options.context_strategy, None);
+
+        let mut r = record();
+        r.options.context_strategy = Some(Box::new(clm(false)));
+        let wire = serde_json::to_value(&r).unwrap();
+        assert_eq!(
+            wire["options"]["context_strategy"],
+            json!({
+                "name": "clm",
+                "budget_tokens": 16384,
+                "effective": false,
+                "skipped_reason": "no filesystem root"
+            })
+        );
+        assert_eq!(serde_json::from_value::<TurnRecord>(wire).unwrap(), r);
+    }
+
+    #[test]
+    fn context_strategy_selects_its_namespaced_function_only_when_effective() {
+        assert_eq!(clm(true).function_id(), "context-clm::assemble");
+        let mut options = record().options;
+        assert_eq!(options.effective_context_strategy(), None);
+        options.context_strategy = Some(Box::new(clm(false)));
+        assert_eq!(options.effective_context_strategy(), None);
+        options.context_strategy = Some(Box::new(clm(true)));
+        assert_eq!(options.effective_context_strategy(), Some(&clm(true)));
     }
 }
