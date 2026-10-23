@@ -361,6 +361,7 @@ export function TicketView(props: { ticketKey: string }) {
 
   const edit = async (field: 'title' | 'description') => {
     const t = ticket()
+    if (!online()) return toast(OFFLINE, 'error')
     if (!t || !editable()) return
     const result = await iii.nav.push<{ text: string }>('text', {
       title: field === 'title' ? 'Edit title' : 'Edit description',
