@@ -12,7 +12,8 @@ pub struct ActInput {
     /// Mouse button for `click`: `left` (default), `right`, or `middle`.
     #[serde(default)]
     pub button: Option<String>,
-    /// Clicks in the gesture: 2 double-clicks (`click` only, default 1).
+    /// Clicks in the gesture: 2 double-clicks, 3 triple-clicks (`click`
+    /// only; default 1, held to 1..3).
     #[serde(default)]
     pub click_count: Option<u32>,
     /// Element ref from `browser::elements` (`n4`), `browser::snapshot`
@@ -61,7 +62,15 @@ pub struct ActInput {
     pub ghost_cursor: Option<bool>,
 }
 
+/// Most clicks one `click` makes (a triple-click selects a paragraph).
+pub const MAX_CLICK_COUNT: u32 = 3;
+
 impl ActInput {
+    /// The clicks of a `click`, held to 1..`MAX_CLICK_COUNT`.
+    pub fn clicks(&self) -> i64 {
+        i64::from(self.click_count.unwrap_or(1).clamp(1, MAX_CLICK_COUNT))
+    }
+
     /// The wheel deltas of a `scroll`: `(delta_x, delta_y)`. A bare scroll
     /// pages down 600px; one that only names `delta_x` moves sideways only.
     pub fn scroll_deltas(&self) -> (f64, f64) {
@@ -192,6 +201,19 @@ mod tests {
             scroll(Some(-40.0), Some(80.0)).scroll_deltas(),
             (-40.0, 80.0)
         );
+    }
+
+    #[test]
+    fn click_count_is_held_to_one_through_three() {
+        let click = |click_count| ActInput {
+            action: "click".to_string(),
+            click_count,
+            ..ActInput::default()
+        };
+        assert_eq!(click(None).clicks(), 1);
+        assert_eq!(click(Some(0)).clicks(), 1);
+        assert_eq!(click(Some(2)).clicks(), 2);
+        assert_eq!(click(Some(1_000_000)).clicks(), 3);
     }
 
     #[test]

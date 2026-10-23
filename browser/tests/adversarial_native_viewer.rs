@@ -842,7 +842,6 @@ async fn density_two_frames_track_each_phone_resize() {
 /// `click_count` is not bounded: a count of a million has to come back
 /// within 20 s, or it is a worker stuck dispatching clicks.
 #[tokio::test]
-#[ignore = "finding 2: act click_count is unbounded; a count of 1000000 is still dispatching after 20 s"]
 async fn act_click_count_is_bounded() {
     let Some(h) = boot("  max_sessions: 4\n").await else {
         eprintln!("skipping: `iii` or Chromium not available");

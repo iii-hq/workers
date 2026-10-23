@@ -23,7 +23,7 @@
         ]
       },
       "click_count": {
-        "description": "Clicks in the gesture: 2 double-clicks (`click` only, default 1).",
+        "description": "Clicks in the gesture: 2 double-clicks, 3 triple-clicks (`click` only; default 1, held to 1..3).",
         "default": null,
         "type": [
           "integer",

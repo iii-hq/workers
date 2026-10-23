@@ -1509,7 +1509,7 @@ async fn perform_in(session: &Session, req: &act::ActInput, group: &str) -> Resu
         "click" => {
             let (x, y) = action_point(session, req, group).await?;
             let button = req.button.as_deref().unwrap_or("left");
-            let clicks = i64::from(req.click_count.unwrap_or(1));
+            let clicks = req.clicks();
             // A phone has no mouse: its left click is a tap.
             let tap = button == "left" && session.is_mobile();
             if tap {
