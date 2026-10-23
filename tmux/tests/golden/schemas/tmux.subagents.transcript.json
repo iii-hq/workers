@@ -1,0 +1,162 @@
+{
+  "description": "What one sub-agent of the agent in a pane (Claude Code or Codex) has done so far, from the transcript the agent keeps on disk: the task it was given, what it wrote and reasoned, the tools it called and what they returned, oldest first. Works while the sub-agent runs (`working`) and after it finished, as long as the agent runs. Read-only.",
+  "function_id": "tmux::subagents::transcript",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "limit": {
+        "default": null,
+        "description": "The most items returned, the latest ones: 200 when absent, at most 1000.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "pane": {
+        "description": "Pane id of the agent, e.g. `%5`.",
+        "type": "string"
+      },
+      "subagent": {
+        "description": "The sub-agent's id, from `agent.subagents[].id` in `tmux::sessions::list`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "pane",
+      "subagent"
+    ],
+    "title": "TranscriptInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "TranscriptItem": {
+        "description": "One step of a sub-agent's transcript.",
+        "properties": {
+          "at_ms": {
+            "description": "When the agent recorded it.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "error": {
+            "default": false,
+            "description": "The tool reported a failure (`tool_result` only).",
+            "type": "boolean"
+          },
+          "kind": {
+            "$ref": "#/definitions/TranscriptItemKind"
+          },
+          "text": {
+            "description": "The text, cut at 4 000 characters (then ending in `…`). A tool call's is its main argument: the command, path, pattern or query, else the whole input as JSON.",
+            "type": "string"
+          },
+          "tool": {
+            "description": "The tool's name, on `tool_call` and `tool_result` items.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "text"
+        ],
+        "type": "object"
+      },
+      "TranscriptItemKind": {
+        "oneOf": [
+          {
+            "description": "A message to the sub-agent after its task, from the agent that runs it.",
+            "enum": [
+              "user"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "What the sub-agent wrote.",
+            "enum": [
+              "text"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Its reasoning, when the agent records it in clear.",
+            "enum": [
+              "thinking"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A tool it called, with the call's main argument.",
+            "enum": [
+              "tool_call"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "What a tool returned.",
+            "enum": [
+              "tool_result"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "What one sub-agent has done so far, from the transcript its agent keeps.",
+    "properties": {
+      "agent": {
+        "description": "Matcher id of that agent: `claude` or `codex`.",
+        "type": "string"
+      },
+      "items": {
+        "description": "The latest items, oldest first, without the task.",
+        "items": {
+          "$ref": "#/definitions/TranscriptItem"
+        },
+        "type": "array"
+      },
+      "pane_id": {
+        "description": "Pane id of the agent running the sub-agent.",
+        "type": "string"
+      },
+      "prompt": {
+        "description": "The task it was given, cut at 16 000 characters. Null when the transcript holds none; Codex keeps a sub-agent's task encrypted, so there it shows only the task's name and sender.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "subagent_id": {
+        "description": "The sub-agent's id, as in `agent.subagents`.",
+        "type": "string"
+      },
+      "truncated": {
+        "description": "Older items were left out: past `limit`, or before the last 4 MiB of the file.",
+        "type": "boolean"
+      },
+      "working": {
+        "description": "The sub-agent is still in its agent's `subagents` list.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "agent",
+      "items",
+      "pane_id",
+      "subagent_id",
+      "truncated",
+      "working"
+    ],
+    "title": "SubagentTranscript",
+    "type": "object"
+  }
+}

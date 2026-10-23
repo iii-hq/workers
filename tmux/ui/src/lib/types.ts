@@ -28,6 +28,53 @@ export interface AgentStatus {
   since_ms: number
   /** The agent's session title (the pane title without its status glyph); null when it set none. */
   title?: string | null
+  /**
+   * Sub-agents at work, oldest first; they keep `state` at `working` after
+   * the agent's own turn ended. Absent from workers that predate them.
+   */
+  subagents?: SubagentStatus[]
+}
+
+export interface SubagentStatus {
+  /** Stable within the agent's session: Claude Code's agent id, Codex's thread id. */
+  id: string
+  /** What it was asked to do. */
+  description: string
+  /** Claude Code's agent type (`general-purpose`, `Explore`) or Codex's role; null when none. */
+  kind: string | null
+  /** 1 under the main agent, 2 under one of its sub-agents, … */
+  depth: number
+  /** When it started its current task. */
+  since_ms: number
+}
+
+/** `tmux::subagents::transcript`: what one sub-agent has done so far. */
+export interface SubagentTranscript {
+  pane_id: string
+  /** Matcher id of the agent running it: `claude` or `codex`. */
+  agent: string
+  subagent_id: string
+  /** Still in its agent's `subagents` list. */
+  working: boolean
+  /** The task it was given; null when the transcript holds none. */
+  prompt: string | null
+  /** The latest items, oldest first, without the task. */
+  items: TranscriptItem[]
+  /** Older items were left out. */
+  truncated: boolean
+}
+
+export type TranscriptItemKind = 'user' | 'text' | 'thinking' | 'tool_call' | 'tool_result'
+
+export interface TranscriptItem {
+  kind: TranscriptItemKind
+  at_ms: number | null
+  /** Cut at 4 000 characters. A tool call's is its main argument. */
+  text: string
+  /** The tool's name, on tool calls and results. */
+  tool: string | null
+  /** The tool reported a failure. */
+  error: boolean
 }
 
 export interface ComposeRef {

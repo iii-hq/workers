@@ -1,6 +1,7 @@
 //! Builds [`Overview`]: one tmux listing, the process table and listening
 //! sockets (re-scanned on their own cadence, or at once when a pane's
-//! foreground process changes), and a `capture-pane` per agent pane.
+//! foreground process changes), and per agent pane a `capture-pane` plus
+//! what the agent records about itself on disk.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -9,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
+use crate::activity::{ActivityReader, Recorder};
 use crate::agents::{host_names, session_title, AgentSet, AgentTracker};
 use crate::binary::BinaryCache;
 use crate::compose;
@@ -19,6 +21,10 @@ use crate::model::{
 };
 use crate::procs::{self, IiiEnv, ProcTable, Scanner, SocketListener};
 use crate::tmux_cli::{list_all_args, parse_list_all, RawSnapshot, Socket, Tmux, TmuxError};
+
+/// How old the agents of the last collection may be when a function asks
+/// for one pane's.
+const SEEN_FRESH: Duration = Duration::from_secs(3);
 
 /// ttys of the tmux clients this worker runs for console terminals.
 #[derive(Clone, Default)]
@@ -66,9 +72,12 @@ pub struct Collector {
     config: SharedConfig,
     binary: BinaryCache,
     scanner: Arc<StdMutex<Scanner>>,
+    activity: Arc<StdMutex<ActivityReader>>,
     procs: Mutex<ProcCache>,
     agents: Mutex<AgentTracker>,
     compiled: StdMutex<Option<CompiledAgents>>,
+    /// The agents the last collection found, by pane id, and when.
+    seen: StdMutex<Option<(Instant, HashMap<String, AgentStatus>)>>,
     console: ConsoleClients,
     /// One collection at a time: concurrent callers would only race each
     /// other's scans.
@@ -81,9 +90,11 @@ impl Collector {
             config,
             binary: BinaryCache::default(),
             scanner: Arc::new(StdMutex::new(Scanner::new())),
+            activity: Arc::new(StdMutex::new(ActivityReader::default())),
             procs: Mutex::new(ProcCache::default()),
             agents: Mutex::new(AgentTracker::default()),
             compiled: StdMutex::new(None),
+            seen: StdMutex::new(None),
             console,
             gate: Mutex::new(()),
         }
@@ -91,6 +102,28 @@ impl Collector {
 
     pub fn config(&self) -> Arc<WorkerConfig> {
         self.config.load_full()
+    }
+
+    /// The agent running in `pane`, from a collection at most
+    /// [`SEEN_FRESH`] old.
+    pub async fn pane_agent(&self, pane: &str) -> Option<AgentStatus> {
+        let fresh = |collector: &Self| {
+            let seen = collector.seen.lock().unwrap_or_else(|p| p.into_inner());
+            match seen.as_ref() {
+                Some((at, agents)) if at.elapsed() < SEEN_FRESH => Some(agents.get(pane).cloned()),
+                _ => None,
+            }
+        };
+        if let Some(agent) = fresh(self) {
+            return agent;
+        }
+        self.overview().await;
+        fresh(self).flatten()
+    }
+
+    /// The process table of the last scan.
+    pub async fn proc_table(&self) -> Arc<ProcTable> {
+        self.procs.lock().await.table.clone()
     }
 
     /// The configured tmux, or why there is none.
@@ -281,7 +314,7 @@ impl Collector {
         let agents = self.agent_set(&config);
         let statuses = match &tmux {
             Some(tmux) => {
-                self.agent_statuses(tmux, &raw, &procs.table, &agents, &config)
+                self.agent_statuses(tmux, &raw, procs.table.clone(), &agents, &config)
                     .await
             }
             None => HashMap::new(),
@@ -308,7 +341,7 @@ impl Collector {
         &self,
         tmux: &Tmux,
         raw: &RawSnapshot,
-        table: &ProcTable,
+        table: Arc<ProcTable>,
         agents: &AgentSet,
         config: &WorkerConfig,
     ) -> HashMap<String, AgentStatus> {
@@ -317,10 +350,26 @@ impl Collector {
             .iter()
             .filter(|pane| !pane.dead)
             .filter_map(|pane| {
-                let (index, pid) = agents.find(table, pane.pid)?;
+                let (index, pid) = agents.find(&table, pane.pid)?;
                 Some((pane.id.clone(), index, pid, pane.title.clone()))
             })
             .collect();
+
+        // The on-disk records are read while the captures run.
+        let recorded: Vec<(String, Recorder, u32)> = found
+            .iter()
+            .filter_map(|(pane_id, index, pid, _)| {
+                let recorder = Recorder::of(&agents.get(*index)?.id)?;
+                Some((pane_id.clone(), recorder, *pid))
+            })
+            .collect();
+        let reader = self.activity.clone();
+        let activity = tokio::task::spawn_blocking(move || {
+            reader
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .read(&table, &recorded)
+        });
 
         let mut captures = tokio::task::JoinSet::new();
         for (pane_id, index, pid, title) in found {
@@ -332,6 +381,10 @@ impl Collector {
                 (pane_id, index, pid, title, text)
             });
         }
+        let mut activity = activity.await.unwrap_or_else(|error| {
+            tracing::warn!(%error, "reading agent activity failed");
+            HashMap::new()
+        });
         let now = now_ms();
         let mut tracker = self.agents.lock().await;
         let mut out = HashMap::new();
@@ -342,8 +395,16 @@ impl Collector {
             let Some(agent) = agents.get(index) else {
                 continue;
             };
-            let (state, since_ms) =
-                tracker.observe(&pane_id, agent, pid, &text, now, config.busy_window_ms);
+            let recorded = activity.remove(&pane_id).unwrap_or_default();
+            let (state, since_ms) = tracker.observe(
+                &pane_id,
+                agent,
+                pid,
+                &text,
+                recorded.state,
+                now,
+                config.busy_window_ms,
+            );
             out.insert(
                 pane_id,
                 AgentStatus {
@@ -353,10 +414,12 @@ impl Collector {
                     state,
                     since_ms,
                     title: session_title(agent, &pane_title, host_names()),
+                    subagents: recorded.subagents,
                 },
             );
         }
         tracker.retain(&out.keys().cloned().collect());
+        *self.seen.lock().unwrap_or_else(|p| p.into_inner()) = Some((Instant::now(), out.clone()));
         out
     }
 }
@@ -634,6 +697,7 @@ mod tests {
                 state: AgentState::Working,
                 since_ms: 1,
                 title: Some("Fix login".into()),
+                subagents: vec![],
             },
         )]);
         let sessions = build_sessions(&raw, &agents, &composes, &listeners, &console);
