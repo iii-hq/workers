@@ -17,6 +17,22 @@ pub enum StorageError {
     #[error("unknown bucket {bucket}")]
     UnknownBucket { bucket: String },
 
+    /// The bucket is configured but its backend could not be built (an
+    /// unresolvable reference, a bad field, rejected credentials). `stage`
+    /// is `config` | `secrets` | `auth`.
+    #[serde(rename = "BUCKET_UNAVAILABLE")]
+    #[error("bucket {bucket} is unavailable ({stage}): {message}")]
+    BucketUnavailable {
+        bucket: String,
+        stage: String,
+        message: String,
+    },
+
+    /// A ranged read starting past the end of the object.
+    #[serde(rename = "INVALID_RANGE")]
+    #[error("offset {offset} is past the end of the object ({size} bytes)")]
+    InvalidRange { offset: u64, size: u64 },
+
     #[serde(rename = "OBJECT_NOT_FOUND")]
     #[error("object not found: {bucket}/{key}")]
     ObjectNotFound { bucket: String, key: String },
@@ -113,6 +129,7 @@ pub fn backend_error_to_storage(
             size: actual_size,
             cap,
         },
+        BackendError::InvalidRange { offset, size } => StorageError::InvalidRange { offset, size },
         BackendError::Provider {
             inner_code,
             message,
@@ -179,6 +196,30 @@ mod tests {
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!(v["code"], "PROVIDER_AUTH_FAILED");
         assert_eq!(v["provider"], "s3");
+    }
+
+    #[test]
+    fn bucket_unavailable_and_invalid_range_have_stable_codes() {
+        let v = serde_json::to_value(StorageError::BucketUnavailable {
+            bucket: "photos".into(),
+            stage: "secrets".into(),
+            message: "`secret_access_key`: secret://X did not resolve".into(),
+        })
+        .unwrap();
+        assert_eq!(v["code"], "BUCKET_UNAVAILABLE");
+        assert_eq!(v["bucket"], "photos");
+        assert_eq!(v["stage"], "secrets");
+        let v = serde_json::to_value(StorageError::InvalidRange { offset: 9, size: 5 }).unwrap();
+        assert_eq!(v["code"], "INVALID_RANGE");
+        assert_eq!(v["offset"], 9);
+        assert_eq!(v["size"], 5);
+        let s = backend_error_to_storage(
+            BackendError::InvalidRange { offset: 9, size: 5 },
+            "local",
+            "b",
+            "k",
+        );
+        assert!(matches!(s, StorageError::InvalidRange { .. }));
     }
 
     #[test]
