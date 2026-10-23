@@ -9,7 +9,8 @@ a worker may have both.
 The worker publishes a JavaScript bundle; the iii app fetches it, checks its
 sha256, compiles it and runs it in a QuickJS VM on the device, and draws
 what the script describes with its own native components. The script may
-only call the worker's own functions and bind its own trigger types.
+only call the worker's own functions (`<ns>::…`) and bind its own trigger
+types (`<ns>::…` or `<ns>:…`).
 
 ## What lives elsewhere
 
@@ -22,6 +23,7 @@ only call the worker's own functions and bind its own trigger types.
 | The canonical schema (types, props, events, enums, codes, limits) | `packages/native-ui/catalog.json` (changes go through the ide copy too) |
 | The crate: defaults, overrides, what `register` does | `crates/native-ui/README.md`, `crates/native-ui/src/lib.rs` |
 | A small complete app | `packages/native-ui/examples/hello` |
+| Catalogue 2 (Markdown, Lanes, drag and drop, `listFill`, hues), one page each | `packages/native-ui/examples/catalog2` |
 
 ## Reference workers
 
@@ -115,9 +117,17 @@ first line:
 - `src/app.tsx` calls `defineApp({ pages: { root, … } })` once, at the top
   level. `root` is the page the app opens; the others are pushed with
   `iii.nav.push`.
+- An app that uses catalogue 2 (`Markdown`, `Lanes`, `hue`,
+  `List.dragGroup`/`onDrop`, `ListDetail.listFill`) declares it:
+  `defineApp({ catalog: 2, … })`, and `.catalog(2)` on the crate's builder
+  (§4). Both say the same number; the SDK warns when an app uses a newer
+  piece than it declared. An app that needs none of it stays on 1 (the
+  browser) and keeps running on older iii apps.
 - The script decides **what** appears; the host decides **how**: no layout
   per device. The only adaptive input is `iii.env.windowClass`
-  (`compact`/`wide`), for choices like where a toolbar sits.
+  (`compact`/`wide`), for choices like where a toolbar sits. `Lanes` and
+  `ListDetail.listFill` pick columns or pages from the host's own width:
+  never from `windowClass`.
 - The VM has no DOM, network, `URL`, `TextEncoder`, `Intl` or `eval`.
   Everything outside the tree goes through `iii` (`call`, `on`, `nav`, `ui`,
   `storage`, `clipboard`, `openUrl`, `share`, `saveFile`).
@@ -154,6 +164,14 @@ harness:
   http(s) URLs, from the address bar, Retry and history alike.
 - **Unique List keys.** Pass worker data that may repeat a key through
   `lastPerKey(items, key)` before `createList().set`.
+- **Markdown never opens a link.** A tap is `onLink(href)` only; the href is
+  worker data. Route the app's own links (`kan:KAN-12`) to `iii.nav.push`
+  and hand the rest to `iii.openUrl` (http, https and mailto, and it asks).
+- **A drop is optimistic; splice in the handler.** The host shows the
+  dropped item in its new place only until the next batch that changes
+  either List, or 1 s. `onDrop` splices both lists in one `batch`, then
+  calls the worker, and puts the item back with a toast if the call fails.
+  Test it: `host.drop(target, key, index, source)`, then `host.keys(…)`.
 
 ## 2. Build: limits and smoke run
 
@@ -242,15 +260,20 @@ pub fn register(iii: &Arc<IIIClient>) -> NativeUiHandle {
 - `register` needs a tokio runtime when the watcher is on (it spawns the
   poller). The handle also gives `function_id()` and `hash()` (the served
   bundle's, which the watcher changes).
-- Bump `.catalog(n)` only when the bundle uses a catalogue version the
-  oldest app you support lacks; that app then shows "Needs a newer iii app".
+- `.catalog(n)` is the lowest catalogue the bundle needs (default 1), the
+  same number as the app's `defineApp({ catalog })`, which goes in its
+  `ready`. Raise both only when the bundle uses what that version added
+  (catalogue 2: `Markdown`, `Lanes`, `hue`, `dragGroup`, `listFill`); an iii
+  app with an older catalogue then shows "Needs a newer iii app" in the hub
+  (from the descriptor) and on opening (from `ready`).
 
 ### Workers in TypeScript or Python
 
 No helper: it is one function (design §2.6). Hash the UTF-8 bytes of the
 bundle with sha256 (lower-case hex), register `<ns>::native-ui` with
 `metadata: { internal: true, native_ui: { v: 1, app: { title, icon, blurb },
-bundle: { path, hash, size }, catalog: 1, dev: false } }`, answer
+bundle: { path, hash, size }, catalog, dev: false } }` (`catalog` as the
+app's `defineApp` declares it, 1 by default), answer
 `{ path }` with `{ content, hash, size }` and throw
 `UNKNOWN_NATIVE_UI_ASSET: <path>` for any other path. Build the bundle with
 the same `@iii-dev/native-ui/build`.
@@ -324,6 +347,8 @@ character outside `[A-Z0-9]` as `_` (`III_IOS_SIMULATOR_NATIVE_UI_WATCH`).
   `pnpm typecheck` passes for the app and the tests, and it is listed in
   `pnpm-workspace.yaml`.
 - The app's tests run in the harness with `calls` for every function it uses.
+- `defineApp({ catalog })` and the builder's `.catalog(n)` say the same
+  version (both 1 unless the app uses catalogue 2).
 - `Cargo.toml` links `iii-native-ui` by path; `build.rs` builds
   `native-ui/`, reruns on the SDK's sources too, and honours
   `SKIP_UI_BUILD`.
