@@ -15,6 +15,8 @@ export const EVENTS = {
   error: 11,
   keyboard: 12,
   ready: 13,
+  link: 14,
+  drop: 15,
 } as const
 
 export type EventName = keyof typeof EVENTS
@@ -34,4 +36,6 @@ export const EVENT_PROPS: Readonly<Record<string, number>> = {
   onError: 11,
   onKeyboard: 12,
   onReady: 13,
+  onLink: 14,
+  onDrop: 15,
 }

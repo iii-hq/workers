@@ -148,6 +148,7 @@ export class HostTree {
         const keyField = n.props.get(16) ?? 'key'
         const keys = n.items.map((it) => it[keyField])
         if (new Set(keys).size !== keys.length) this.violation(`listSplice: duplicate keys in List ${id}`)
+        this.checkBound(n, items, keyField)
         return
       }
       default:
@@ -169,6 +170,40 @@ export class HostTree {
       }
     }
     this.touched.clear()
+  }
+
+  /**
+   * The item fields the templates of List `n` bind hold their prop's type,
+   * as the host reads them (an enum as its index: the SDK turns a name in a
+   * field bound to an enum prop into it); missing or null is the default.
+   */
+  checkBound(n, items, keyField) {
+    const bound = []
+    const visit = (id) => {
+      const c = this.nodes.get(id)
+      if (!c) return
+      for (const [tag, value] of c.props) {
+        if (value && typeof value === 'object' && !Array.isArray(value) && typeof value[BINDING] === 'string') {
+          const prop = propOf(c.type, tag)
+          if (prop) bound.push([value[BINDING], prop])
+        }
+      }
+      for (const list of c.slots.values()) for (const child of list) visit(child)
+    }
+    for (const [slot, list] of n.slots) if (slotSpec(n.type, slot)?.template) for (const id of list) visit(id)
+    for (const item of items) {
+      for (const [path, prop] of bound) {
+        let value = item
+        for (const key of path.split('.')) value = value && typeof value === 'object' ? value[key] : undefined
+        if (value === undefined || value === null) continue
+        const problem = checkValue(prop, value)
+        if (problem) {
+          this.violation(
+            `listSplice: item ${JSON.stringify(item[keyField])} of List ${n.id}: ${path} (bound to ${prop.name}) is ${problem}: ${JSON.stringify(value)}`,
+          )
+        }
+      }
+    }
   }
 
   writeText(n, value) {

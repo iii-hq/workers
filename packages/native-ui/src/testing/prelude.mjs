@@ -23,6 +23,9 @@ export const PRELUDE = `(function (hostLog, hostNow, hostFail, hostSend, maxDept
       return String(v)
     }
   }
+  // What the engine throws to stop the VM: never swallowed (the interrupt is
+  // uncatchable anyway; out of memory is not, and it is fatal on the device).
+  const isStop = (e) => e instanceof Error && e.name === 'InternalError' && /out of memory|interrupted/.test(e.message)
   const logger = (level) => (...args) => { hostLog(level, args.map(show).join(' ')) }
   define(g, 'console', { debug: logger(0), log: logger(1), info: logger(1), warn: logger(2), error: logger(3) })
   define(g, 'performance', { now: () => hostNow() })
@@ -90,7 +93,10 @@ export const PRELUDE = `(function (hostLog, hostNow, hostFail, hostSend, maxDept
       if (t.every) t.due = now + t.every
       else timers.delete(id)
       ran++
-      try { t.fn(...t.args) } catch (e) { hostFail('timer', show(e)) }
+      try { t.fn(...t.args) } catch (e) {
+        if (isStop(e)) throw e
+        hostFail('timer', show(e))
+      }
     }
     return ran
   }

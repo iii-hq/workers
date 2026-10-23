@@ -34,6 +34,28 @@ const EVENT_ARGS = {
   error: { '*': 'message: string' },
   keyboard: { '*': 'open: boolean' },
   longPress: { RemoteScreen: 'x: number, y: number' },
+  link: { '*': 'href: string' },
+  // The SDK hands the source List over as its node (the object a `ref` gives), not the wire id.
+  drop: { '*': 'key: string | number, index: number, source: NodeRef | null' },
+}
+
+/**
+ * What each catalogue version added (catalog.json keeps no history): a type,
+ * or `Type.prop` / `Type.onEvent`. A bundle that uses one declares that
+ * version (`defineApp({ catalog })`); the SDK warns when it did not.
+ */
+const ADDED = {
+  2: [
+    'Markdown',
+    'Lanes',
+    'Icon.hue',
+    'Badge.hue',
+    'StatusDot.hue',
+    'Chip.hue',
+    'List.dragGroup',
+    'List.onDrop',
+    'ListDetail.listFill',
+  ],
 }
 
 /** Props an SDK component owns itself instead of passing straight through. */
@@ -43,7 +65,7 @@ const HAND_TYPED = {
 }
 
 /** The JSX children of these components become their `text` prop. */
-const TEXT_CHILDREN = new Set(['Text', 'Badge', 'Button', 'Chip'])
+const TEXT_CHILDREN = new Set(['Text', 'Badge', 'Button', 'Chip', 'Markdown'])
 
 const pascal = (s) => s[0].toUpperCase() + s.slice(1)
 const handlerName = (event) => `on${pascal(event)}`
@@ -176,8 +198,31 @@ function genCatalog(catalog) {
     out.push('  },')
   }
   out.push('} as const satisfies Record<string, TypeSpec>\n')
-  out.push('export type TypeName = keyof typeof TYPES')
+  out.push('export type TypeName = keyof typeof TYPES\n')
+  out.push('/** The catalogue version that added a type, or a `Type.prop` / `Type.onEvent` of an older type. */')
+  out.push('export const SINCE: Readonly<Record<string, number>> = {')
+  for (const [version, names] of Object.entries(ADDED)) {
+    for (const name of names)
+      out.push(`  ${/^\w+$/.test(name) ? name : q(name)}: ${checkAdded(catalog, Number(version), name)},`)
+  }
+  out.push('}')
   return `${out.join('\n')}\n`
+}
+
+/** `name` of ADDED exists in the catalogue, at a version it already has; returns the version. */
+function checkAdded(catalog, version, name) {
+  if (!(version > 1 && version <= catalog.catalogVersion)) {
+    throw new Error(`catalog: ADDED[${version}] is not a version between 2 and ${catalog.catalogVersion}`)
+  }
+  const [typeName, member] = name.split('.')
+  const type = catalog.types.find((t) => t.name === typeName)
+  const found =
+    type &&
+    (member === undefined ||
+      type.props.some((p) => p.name === member) ||
+      type.events.some((e) => handlerName(e) === member))
+  if (!found) throw new Error(`catalog: ADDED names ${name}, which catalog.json does not have`)
+  return version
 }
 
 function eventTag(catalog, name) {

@@ -164,6 +164,9 @@ g.__vm_receive = (message: unknown): void => {
   try {
     entries = JSON.parse(message)
   } catch (err) {
+    // Only the message's own fault is the host's to hear about; running out
+    // of memory (or the deadline) while parsing stops the VM.
+    if (!(err instanceof SyntaxError)) throw err
     console.error('native-ui: the host sent invalid JSON', describe(err))
     return
   }

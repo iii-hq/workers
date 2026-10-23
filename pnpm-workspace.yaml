@@ -48,6 +48,7 @@ packages:
   - voice/ui
   - vscode/ui
   - kanban/ui
+  - kanban/native-ui
   - onboarding/ui
   - stories/ui
   - ios-simulator/ui

@@ -38,7 +38,8 @@
     "gen": "node scripts/gen-catalog.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
-    "build:example": "node examples/hello/build.mjs"
+    "build:example": "node examples/hello/build.mjs",
+    "build:catalog2": "node examples/catalog2/build.mjs"
   },
   "dependencies": {
     "@babel/core": "catalog:",
