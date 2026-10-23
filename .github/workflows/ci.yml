@@ -688,8 +688,12 @@ jobs:
 
       - name: Install the SDK and the native apps
         # Only these packages and their workspace deps (as computer-native
-        # does): an unrelated package must not break this job.
-        run: pnpm --filter '@iii-dev/native-ui...' --filter './*/native-ui...' install --frozen-lockfile
+        # does): an unrelated package must not break this job. Native apps are
+        # named @iii-workers/<worker>-native-ui; selected by name, the closure
+        # follows their workspace devDependencies too (the browser's imports
+        # its console UI's address helpers, whose tsconfig needs that UI's own
+        # install), which a path selector does not.
+        run: pnpm --filter '@iii-dev/native-ui...' --filter '@iii-workers/*-native-ui...' install --frozen-lockfile
 
       - name: Biome
         # packages/native-ui and every <worker>/native-ui.
@@ -710,10 +714,10 @@ jobs:
           node scripts/gen-conformance.mjs --check
 
       - name: Native apps typecheck
-        run: pnpm --filter './*/native-ui' --filter '!@iii-dev/native-ui' typecheck
+        run: pnpm --filter '@iii-workers/*-native-ui' typecheck
 
       - name: Native apps tests
-        run: pnpm --filter './*/native-ui' --filter '!@iii-dev/native-ui' test
+        run: pnpm --filter '@iii-workers/*-native-ui' test
 
   # ──────────────────────────────────────────────────────────────
   # llm-router lifecycle contract: unlike the regular Rust job, this always

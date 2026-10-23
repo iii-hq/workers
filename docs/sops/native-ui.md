@@ -308,7 +308,10 @@ character outside `[A-Z0-9]` as `_` (`III_IOS_SIMULATOR_NATIVE_UI_WATCH`).
   and the native apps, then runs biome over them, the SDK's typecheck and
   tests, the freshness of its generated catalogue and conformance files, and
   every app's `typecheck` and `test` scripts (so a new app needs both, and
-  nothing in the workflow). Locally, the same:
+  nothing in the workflow). It selects the apps by name
+  (`@iii-workers/*-native-ui`), so keep that name; an app that imports source
+  from its worker's console UI (the browser's address helpers) lists that UI
+  as a `workspace:*` devDependency, or the job doesn't install it. Locally, the same:
   `pnpm --filter '@iii-dev/native-ui' test`, `… typecheck`, and
   `pnpm --filter './<worker>/native-ui' test` / `typecheck`.
 - **On a device**: the iii app lists the worker's app in the environment's

@@ -287,6 +287,9 @@ importers:
         specifier: workspace:*
         version: link:../../packages/native-ui
     devDependencies:
+      '@iii-workers/browser-ui':
+        specifier: workspace:*
+        version: link:../ui
       '@types/node':
         specifier: ^25.8.0
         version: 25.9.5
