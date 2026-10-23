@@ -24,6 +24,171 @@
       }
     ],
     "definitions": {
+      "ComparabilityCheckV1": {
+        "additionalProperties": false,
+        "properties": {
+          "baseline": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "candidate": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "field": {
+            "type": "string"
+          },
+          "matches": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "matches"
+        ],
+        "type": "object"
+      },
+      "ComparabilityV1": {
+        "additionalProperties": false,
+        "description": "The conditions that must match for a fair comparison; only the Harness version is meant to differ.",
+        "properties": {
+          "checks": {
+            "items": {
+              "$ref": "#/definitions/ComparabilityCheckV1"
+            },
+            "type": "array"
+          },
+          "comparable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "checks",
+          "comparable"
+        ],
+        "type": "object"
+      },
+      "CriterionMetricV1": {
+        "description": "What a validation measures. Every metric but `signal_per_run` is the mean over the runs of the scenario the infrastructure did not break (`pass_rate` is the share that passed, an unfinished run counting as not passed; `duration` is the wall time in milliseconds).",
+        "oneOf": [
+          {
+            "enum": [
+              "pass_rate",
+              "cost_usd",
+              "duration",
+              "tokens",
+              "function_calls"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Occurrences of one of the suggestion's patterns per run, counted by the deterministic detectors over each run's transcript.",
+            "enum": [
+              "signal_per_run"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "CriterionV1": {
+        "additionalProperties": false,
+        "properties": {
+          "direction": {
+            "$ref": "#/definitions/DirectionV1"
+          },
+          "metric": {
+            "$ref": "#/definitions/CriterionMetricV1"
+          },
+          "min_effect": {
+            "format": "double",
+            "type": "number"
+          },
+          "min_runs": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "pattern": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "registered_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "registered_by": {
+            "type": "string"
+          },
+          "scenario_id": {
+            "description": "The scenario whose runs are measured.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "direction",
+          "metric",
+          "min_effect",
+          "min_runs",
+          "registered_at",
+          "registered_by",
+          "scenario_id"
+        ],
+        "type": "object"
+      },
+      "CycleDecisionV1": {
+        "additionalProperties": false,
+        "description": "The cycle's decision and the evidence it rests on, computed in code.",
+        "properties": {
+          "comparability": {
+            "$ref": "#/definitions/ComparabilityV1"
+          },
+          "decided_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "outcome": {
+            "$ref": "#/definitions/DecisionOutcomeV1"
+          },
+          "policy_revision": {
+            "description": "The frozen plan's `policy_revision` the decision was made under.",
+            "type": "string"
+          },
+          "preserved": {
+            "description": "Each preserved condition, judged, in the plan's order.",
+            "items": {
+              "$ref": "#/definitions/EvidenceV1"
+            },
+            "type": "array"
+          },
+          "primary": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/EvidenceV1"
+              }
+            ],
+            "description": "The plan's criterion, judged."
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "comparability",
+          "decided_at",
+          "outcome",
+          "policy_revision",
+          "preserved",
+          "primary",
+          "reason"
+        ],
+        "type": "object"
+      },
       "CycleEventV1": {
         "additionalProperties": false,
         "description": "One status change of a cycle, oldest first in `CycleRecordV1::history`.",
@@ -77,6 +242,58 @@
           }
         ]
       },
+      "CyclePlanV1": {
+        "additionalProperties": false,
+        "description": "What a cycle commits to before any result is recorded.",
+        "properties": {
+          "controls": {
+            "default": [],
+            "description": "The controls the cycle runs next to the pair.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "criterion": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/CriterionV1"
+              }
+            ],
+            "description": "The metric, its direction, the minimum effect and the scenario."
+          },
+          "frozen_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "objective": {
+            "type": "string"
+          },
+          "policy_revision": {
+            "description": "The revision of the policy the cycle runs under; both sides must report it.",
+            "type": "string"
+          },
+          "preserved": {
+            "default": [],
+            "description": "Correctness conditions the candidate must preserve: one that regresses rejects the candidate whatever the metric did, one that goes unmeasured makes the decision inconclusive. With `min_effect` 0 any loss is a regression.",
+            "items": {
+              "$ref": "#/definitions/CriterionV1"
+            },
+            "type": "array"
+          },
+          "sampling": {
+            "$ref": "#/definitions/SamplingPlanV1"
+          }
+        },
+        "required": [
+          "criterion",
+          "frozen_at",
+          "objective",
+          "policy_revision",
+          "sampling"
+        ],
+        "type": "object"
+      },
       "CycleRecordV1": {
         "additionalProperties": false,
         "description": "The one record of a loop cycle, whichever input started it.",
@@ -95,6 +312,17 @@
           "cycle_id": {
             "type": "string"
           },
+          "decision": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CycleDecisionV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The decision on the cycle's pair, recorded once."
+          },
           "failure": {
             "type": [
               "string",
@@ -109,6 +337,17 @@
           },
           "input": {
             "$ref": "#/definitions/CycleInputV1"
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CyclePlanV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The plan frozen before any result, with its `policy_revision`: what the decision is keyed by. Once set it never changes."
           },
           "result": {
             "anyOf": [
@@ -181,6 +420,241 @@
           "cancelled"
         ],
         "type": "string"
+      },
+      "DecisionOutcomeV1": {
+        "oneOf": [
+          {
+            "description": "The pair is comparable, every preserved condition held and the metric moved by the minimum effect the wanted way.",
+            "enum": [
+              "accepted"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A preserved condition was lost, or the metric did not improve.",
+            "enum": [
+              "rejected"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "An incompatible pair, a technical failure or a missing measure.",
+            "enum": [
+              "inconclusive"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "DirectionV1": {
+        "enum": [
+          "decrease",
+          "increase"
+        ],
+        "type": "string"
+      },
+      "EvidenceRunV1": {
+        "additionalProperties": false,
+        "description": "One run of the scenario as the E2E reported it. Runs the infrastructure broke are listed with the E2E's own words, never counted.",
+        "properties": {
+          "completed": {
+            "description": "The E2E reported the run complete with a valid technical outcome.",
+            "type": "boolean"
+          },
+          "completion": {
+            "description": "`completion` as the E2E reported it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "function_calls": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "signals": {
+            "additionalProperties": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "description": "Occurrences of each of the row's patterns the detectors found in this run's transcript (0 is a measurement); absent when the report held no transcript.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "`passed` or `failed`, the run's task outcome.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "technical": {
+            "description": "`technical` as the E2E reported it; anything but `valid` is an infrastructure failure.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "total_tokens": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "wall_time_ms": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "completed",
+          "run_id"
+        ],
+        "type": "object"
+      },
+      "EvidenceSideV1": {
+        "additionalProperties": false,
+        "properties": {
+          "execution_id": {
+            "type": "string"
+          },
+          "mean": {
+            "description": "Mean of the criterion's metric over those runs; absent without a criterion or without such runs.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "n": {
+            "description": "Measurable runs (see `EvidenceRunV1::measurable`) with a value of the criterion's metric (every measurable run while there is no criterion).",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "runs": {
+            "description": "Every run of the scenario the execution holds.",
+            "items": {
+              "$ref": "#/definitions/EvidenceRunV1"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "execution_id",
+          "n",
+          "runs"
+        ],
+        "type": "object"
+      },
+      "EvidenceV1": {
+        "additionalProperties": false,
+        "description": "Computed in code from the attached pair's runs, never by a model. It is what the person's verdict is shown next to.",
+        "properties": {
+          "baseline": {
+            "$ref": "#/definitions/EvidenceSideV1"
+          },
+          "candidate": {
+            "$ref": "#/definitions/EvidenceSideV1"
+          },
+          "computed_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "computed_outcome": {
+            "$ref": "#/definitions/ValidationOutcomeV1"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "scenario_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "baseline",
+          "candidate",
+          "computed_at",
+          "computed_outcome",
+          "reason",
+          "scenario_id"
+        ],
+        "type": "object"
+      },
+      "SamplingPlanV1": {
+        "additionalProperties": false,
+        "description": "How many measured runs each side needs and the inputs they run on.",
+        "properties": {
+          "runs_per_side": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "seeds": {
+            "default": [],
+            "description": "The inputs/seeds both sides must run on; empty means only that the two sides report the same ones.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "runs_per_side"
+        ],
+        "type": "object"
+      },
+      "ValidationOutcomeV1": {
+        "oneOf": [
+          {
+            "description": "The candidate moved the metric by at least `min_effect` in the wanted direction, with `min_runs` completed runs each side.",
+            "enum": [
+              "validated_improvement"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The metric moved less than `min_effect`.",
+            "enum": [
+              "no_improvement"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The metric moved by at least `min_effect` the wrong way.",
+            "enum": [
+              "regression"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Too few completed runs, missing data or no criterion.",
+            "enum": [
+              "inconclusive"
+            ],
+            "type": "string"
+          }
+        ]
       }
     },
     "title": "Nullable_CycleRecordV1"

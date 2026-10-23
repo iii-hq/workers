@@ -284,6 +284,23 @@ pub fn compatibility(
     candidate: &DecisionSideV1,
 ) -> ComparabilityV1 {
     let mut comparability = runtime::comparability(&baseline.execution, &candidate.execution);
+    // The E2E's comparability reads a scenario's unknown behavior or
+    // contract as an empty value, which matches another unknown one here.
+    let unknown = |missing: fn(&E2eScenarioV1) -> bool| {
+        [&baseline.execution, &candidate.execution]
+            .iter()
+            .any(|execution| execution.scenarios.iter().any(missing))
+    };
+    for check in &mut comparability.checks {
+        let missing = match check.field.as_str() {
+            "behavior_sha256" => unknown(|scenario| scenario.behavior_sha256.is_none()),
+            "contract_fingerprint" => unknown(|scenario| scenario.contract_fingerprint.is_none()),
+            _ => false,
+        };
+        if missing {
+            check.matches = false;
+        }
+    }
     let extra = [
         (
             "seeds",
