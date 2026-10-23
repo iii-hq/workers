@@ -40,8 +40,20 @@ pub struct ObservationIndexV1 {
     pub admitted_at: i64,
 }
 
+/// A stored configuration that no longer parses under the current schema (a
+/// legacy record with the removed chat-monitor fields) stays inert: it is
+/// ignored, as if never configured, and never migrated or read twice.
 pub async fn get_config(iii: &IIIClient) -> Result<Option<MonitorConfigV1>, EvalError> {
-    get(iii, CONFIG_SCOPE, CONFIG_KEY).await
+    let Some(stored): Option<Value> = get(iii, CONFIG_SCOPE, CONFIG_KEY).await? else {
+        return Ok(None);
+    };
+    match serde_json::from_value(stored) {
+        Ok(config) => Ok(Some(config)),
+        Err(error) => {
+            tracing::warn!(%error, "ignoring unreadable legacy eval_monitor/config");
+            Ok(None)
+        }
+    }
 }
 
 pub async fn put_config(iii: &IIIClient, config: &MonitorConfigV1) -> Result<(), EvalError> {

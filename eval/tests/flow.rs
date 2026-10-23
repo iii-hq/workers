@@ -3794,6 +3794,53 @@ async fn a_replay_reproduces_the_signal_and_the_proposed_change_removes_it() {
 }
 
 #[tokio::test]
+async fn a_legacy_stored_config_stays_inert_and_never_breaks_eval() {
+    // A config stored by the removed chat monitor (with its enabled_since,
+    // observer and rejection fields) no longer parses: it is ignored as if
+    // never configured, never migrated, and configuring replaces it.
+    let legacy = json!({"enabled": true, "enabled_since": 1_700_000_000_000_i64,
+        "observer_bound": true, "observer_error": "gone",
+        "last_rejection": {"reason": "capacity", "at": 1_700_000_000_000_i64},
+        "model": {"model": "analyst-model", "provider": "analyst-provider",
+                  "thinking_level": "low"},
+        "daily_cost_cap_usd": 1.0,
+        "revision": "legacy", "updated_at": 1_700_000_000_000_i64});
+    let h = Harness::start(World::new()).await;
+    h.world().state.insert(
+        (state::CONFIG_SCOPE.into(), state::CONFIG_KEY.into()),
+        legacy.clone(),
+    );
+    assert_eq!(state::get_config(&h.deps.iii).await.unwrap(), None);
+    let monitor = runtime::monitor_state(&h.deps, MonitorStateRequestV1::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        monitor.config, None,
+        "the legacy record reads as unconfigured"
+    );
+    assert_eq!(monitor.cost.cap_usd, None, "its cap is not applied");
+    runtime::sweep(&h.deps).await.unwrap();
+    assert_eq!(
+        h.world()
+            .state
+            .get(&(state::CONFIG_SCOPE.into(), state::CONFIG_KEY.into())),
+        Some(&legacy),
+        "reading never migrates or rewrites the legacy record"
+    );
+
+    let config = h.configure(true).await;
+    assert_ne!(config.revision, "legacy");
+    assert_eq!(
+        state::get_config(&h.deps.iii).await.unwrap(),
+        Some(config.clone())
+    );
+    let monitor = runtime::monitor_state(&h.deps, MonitorStateRequestV1::default())
+        .await
+        .unwrap();
+    assert_eq!(monitor.config, Some(config));
+}
+
+#[tokio::test]
 async fn user_chats_are_never_admitted() {
     // The worker no longer observes chats: no admission entry is offered, and
     // a finished chat from any client, configured or not, never becomes an
