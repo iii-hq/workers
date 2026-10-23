@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { lastPerKey } from '../src/keys'
-import { diffItems } from '../src/runtime/diff'
+import { diffItems, sameJson } from '../src/runtime/diff'
 import { parseUrl } from '../src/url'
 
 type Item = { key: string; v?: number }
@@ -99,5 +99,25 @@ describe('lastPerKey', () => {
       { key: 'b', v: 2 },
     ])
     expect(lastPerKey([], 'key')).toEqual([])
+  })
+})
+
+describe('sameJson', () => {
+  it('compares JSON values as the host reads them', () => {
+    const item = { a: 1, b: { c: [1, 'x', null] } }
+    expect(sameJson(item, item)).toBe(true)
+    expect(sameJson(item, JSON.parse(JSON.stringify(item)))).toBe(true)
+    expect(sameJson({ a: 1, b: 2 }, { b: 2, a: 1 })).toBe(true)
+    expect(sameJson({ a: 1, u: undefined }, { a: 1 })).toBe(true)
+    expect(sameJson({ a: 1 }, { a: 1, u: undefined })).toBe(true)
+    expect(sameJson({ a: 1 }, { a: 1, b: 2 })).toBe(false)
+    expect(sameJson({ a: 1, b: 2 }, { a: 1 })).toBe(false)
+    expect(sameJson({ a: [1, 2] }, { a: [1, 2, 3] })).toBe(false)
+    expect(sameJson({ a: [1, { b: 2 }] }, { a: [1, { b: 3 }] })).toBe(false)
+    expect(sameJson({ a: null }, { a: {} })).toBe(false)
+    expect(sameJson({ a: [] }, { a: {} })).toBe(false)
+    expect(sameJson({ a: '1' }, { a: 1 })).toBe(false)
+    expect(sameJson({ d: new Date(0) }, { d: new Date(0) })).toBe(true)
+    expect(sameJson({ d: new Date(0) }, { d: new Date(1) })).toBe(false)
   })
 })

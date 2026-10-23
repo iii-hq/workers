@@ -11,7 +11,7 @@ import { applyProps, applySlots } from './components'
 import { ENUMS, type EnumName, LIMITS, OP } from './generated/catalog'
 import type { ListBaseProps } from './generated/props'
 import { insert } from './renderer'
-import { diffItems } from './runtime/diff'
+import { diffItems, sameJson } from './runtime/diff'
 import {
   createNode,
   ELEMENT,
@@ -107,7 +107,7 @@ export function createList<T extends object>(options: {
       const i = find(key)
       if (i < 0) return false
       const next = { ...items[i], ...patch }
-      if (JSON.stringify(next) !== JSON.stringify(items[i])) {
+      if (!sameJson(next, items[i])) {
         apply(i, 1, [next])
         changed()
       }
