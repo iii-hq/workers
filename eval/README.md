@@ -5,7 +5,7 @@ backed by evidence and an E2E validation plan.
 
 The monitor is **inactive until configured**. It observes, analyzes and
 suggests; it never edits code, opens PRs or changes the observed session, and
-starts E2E executions only when a person calls `eval::start-validation` (with a
+never starts E2E executions (with a
 code directory configured, the investigating LLM
 may only call read-only functions: see [Code access](#code-access)). The
 behavior is specified in
@@ -262,14 +262,9 @@ input. Leave `code_repository` unset to keep the investigation read-nothing.
 | `eval::config` | Configuration (or null) and the `cost` block. |
 | `eval::list` | Compact records, newest first (`limit` 1–200, default 50); `observation_key` keeps only the analyses of one observed turn, reanalyses included. |
 | `eval::status` | One compact record, or null. |
-| `eval::result` | Record plus evidence, diagnostics, triage, suggestions, the monitor's own consumption, E2E links and one review row per suggestion (`reviews`). |
+| `eval::result` | Record plus evidence, diagnostics, triage, suggestions, the monitor's own consumption. |
 | `eval::cancel` | Signals the Jev call (`judge::cancel`) and stops the investigation (`harness::stop`); never touches the observed session. |
 | `eval::delete` | Deletes a terminal analysis; the turn stays marked as analyzed until retention. |
-| `eval::attach-validation` | Links baseline and candidate E2E executions to a suggestion and computes the pair's evidence (`dry_run: true` only looks them up). |
-| `eval::start-validation` | Explicitly starts a baseline and a candidate E2E execution (Docker) of one scenario, pinned to two pushed commits. Spends model tokens. |
-| `eval::review` | `set_lifecycle`, `set_criterion` or `set_verdict` on one suggestion of a terminal analysis. |
-| `eval::reviews` | The stored review rows and, per analysis, its suggestions counted by lifecycle status. |
-| `eval::recurrence` | For a suggestion shipped in a version, how often its patterns appeared per analysis before and from that version. |
 | `eval::completed` (trigger) | `{evaluation_id, status, timestamp}` when an analysis ends. |
 
 Internal: `eval::step` (queue `eval-run`, FIFO per analysis, concurrency 8)
@@ -313,10 +308,8 @@ console never restates them:
 
 ## Recovery and its limits
 
-Records, indexes and assets live in `state` scopes `eval_monitor`,
-`eval_observation`, `eval_analysis` and `eval_analysis_assets`; the review rows
-in `eval_suggestion` (below). A record is
-saved before its index; startup reconciles missing indexes, and the sweep
+Records and assets live in `state` scopes `eval_monitor`,
+`eval_analysis` and `eval_analysis_assets`. The sweep
 re-enqueues pending work and
 fails analyses past their deadline.
 
@@ -349,182 +342,14 @@ the next turn replaces it); when the record would take the assets over their
 limit it is left out and `assets.capture.record_omitted` says why, while the
 options and digest stay.
 
-## E2E validation
+## E2E comparison
 
 A suggestion carries a reproduction, task invariants, a primary effort metric,
 the expected baseline-versus-candidate comparison and non-regression
-controls. Turning it into proof is a separate, explicit step: fix the
-scenario version and criteria, run baseline and candidate with
-`harness-e2e`, then link both executions:
-
-```bash
-iii trigger eval::attach-validation --json '{
-  "evaluation_id": "<id>", "suggestion_index": 0,
-  "baseline_execution_id": "<baseline>", "candidate_execution_id": "<candidate>"
-}'
-```
-
-The link stores what `e2e::dashboard::execution-get` reports (status, report
-availability, evidence errors). Attaching the same pair again refreshes its link
-but keeps the first `attached_at`, which still says when results first existed. Each scenario keeps its `run_count` and
-`measures` (the execution's own averages) and, when
-`plan_execution.measurements.cohorts[]` has exactly one cohort for it, that
-cohort's own aggregates: `pass_rate`, `mean_score`, `completed_runs`,
-`planned_runs`, `cost_usd_per_run` and `total_tokens_per_run` (the cohort's
-totals divided by its completed runs; the totals also cover failed attempts),
-`median_wall_time_ms` and `p50_function_calls`. Each is absent when the E2E did
-not report it (a count may arrive as a float), never zero. It is a reference,
-not a verdict: improvement,
-no improvement, regression or inconclusive belong to the E2E comparison and its
-criteria.
-
-## Review and validation
-
-What people decide about a suggestion lives in its own row, in the
-`eval_suggestion` state scope keyed `<evaluation_id>:<suggestion_index>`
-(`SuggestionReviewV1`), never in the suggestion, whose schema is what the
-investigating LLM must return. The row copies the suggestion's `title`,
-`harness_component`, plan `scenario_id` and its `patterns` (`<rule_id>:<target>`
-of the diagnostics the suggestion's evidence cites), so it outlives the
-analysis's retention and `eval::delete`. A suggestion nobody acted on has no
-stored row and reads as `new` in `eval::result.reviews` (one row per
-suggestion) with `lifecycle.history: []`.
-
-`eval::review {evaluation_id, suggestion_index, action, ...}` needs the
-analysis to be terminal and the suggestion to exist. The author of every change
-is `by` when the request names one, else the user the eval worker runs as
-(`$USER`, else `$LOGNAME`), else the caller's identity (`_caller_worker_id`):
-a browser's worker id is an opaque uuid, so it comes last. The console sends no
-`by`, so what it records is the host's user.
-
-- **`set_lifecycle`** with `status` `accepted`, `in_progress`, `shipped`,
-  `rejected` or `duplicate` (never back to `new`; a shipped suggestion stays
-  shipped, to complete its `pr` or `version`). `shipped` needs a `pr` (kept from
-  an earlier status when omitted) and may carry the `version` it shipped in, a
-  semantic version like `1.8.43`; `rejected` needs a `reason`; `duplicate`
-  needs `duplicate_of`. `lifecycle.history` keeps `{status, at, by, note?}` for
-  every change.
-- **`set_criterion`** registers what a validation is judged by, before its
-  results: a `metric` (`signal_per_run` with one of the row's `patterns`,
-  `pass_rate`, `cost_usd`, `duration`, `tokens` or `function_calls`), a
-  `direction`, a `min_effect` (the smallest difference between the baseline and
-  candidate means that counts, in the metric's own unit: signals per run, USD,
-  seconds of wall time, function calls or tokens; percentage points, 0-100, for
-  `pass_rate`. `1` is one signal per run, never 1%) and `min_runs` (1-20
-  completed runs each side), on the plan's scenario unless `scenario_id` names
-  another. The same criterion again keeps its registration time. Once a pair
-  is attached or a run started, an existing criterion is frozen
-  (`criterion_frozen:`): one chosen after seeing results proves nothing.
-- **`set_verdict`** records the person's `outcome` (`validated_improvement`,
-  `no_improvement`, `regression` or `inconclusive`), `rationale` and
-  `controls_checked`, with a snapshot of the criterion. `validated_improvement`
-  is refused (`verdict_refused:`) unless a criterion was registered no later than
-  the first moment results could exist (the earliest of each attached
-  execution's own `started_at`, the attach, and the executions this worker
-  started, also those a restart replaced), so an old pair attached after its
-  criterion does not count as unseen, and the evidence has at least `min_runs`
-  measured runs on both sides. The computed outcome (below) is not
-  a precondition: the person may disagree, and both are kept.
-
-### Evidence
-
-Whenever a pair is attached (by hand or by a started run) and the suggestion's
-scenario is known (the criterion's, else the plan's), the runs of that scenario
-in both executions (`detail.reports[].report.scenarios[].runs[]`) become the
-row's `evidence`: per run its `completed` flag (the E2E's `completion` is
-`completed` and `technical` is `valid`, both kept as reported, so infrastructure
-failures and incomplete runs are listed, never silently dropped), `status`,
-cost, wall time, tokens, function calls, and the occurrences of each of the
-row's patterns that `diagnostics::detect` finds in the run's own transcript
-(`transcript.messages`; a run without transcript has no count, 0 is a
-measurement). Per side `n` is the measured runs with a value of the criterion's
-metric and `mean` their mean. A run is measured when its `technical` is `valid`:
-one the agent left unfinished (`completion: task_incomplete`) is the Harness's
-result, so it counts, as a fail of the pass rate whatever its `status` says,
-while an infrastructure failure measured nothing and stays out. `computed_outcome` is decided in code, with a
-`reason`: `validated_improvement` when the candidate moves the baseline mean by
-at least `min_effect` (in its unit) in the wanted direction, `regression` when it
-moves the wrong way by that much, `no_improvement` otherwise, and `inconclusive`
-when there is no criterion, a side has no run of the scenario, more than half of
-a side's runs did not complete (technical failures and unfinished runs) or a
-side has fewer than `min_runs` measured runs with the metric. Only the root
-session of each run is
-read (a Docker run's sessions never reach this engine); every metric but
-`signal_per_run` is a mean over the same runs, not the E2E cohort aggregate.
-
-### Starting a validation
-
-`eval::start-validation {evaluation_id, suggestion_index, scenario_id,
-candidate_ref, baseline_ref?, runs?, model, provider, criterion}` replaces the
-manual steps of linking two E2E runs. It runs only when called: it spends model
-tokens and Docker time on two executions whose cost depends on the scenario and
-`runs` (a past cohort of the same scenario in the E2E is the best estimate).
-
-With `dry_run: true` (default `false`) it stops after the checks that need no
-E2E: the refs resolve (step 1), both commits are pushed and differ, and the
-scenario and runs are valid (and `criterion.min_runs <= runs`, when a criterion
-is sent; `model`, `provider` and `criterion` are otherwise only required for a
-real start). It answers `{baseline, candidate, warnings}`, each side
-`{commit, short, branch}` (`short` is 12 characters, `branch` a remote branch
-that holds the commit, the one named like the ref when several do), and
-registers nothing, records no run and calls no E2E function. A baseline given
-that is not an ancestor of the candidate is a warning, not an error. The
-console asks it 400 ms after the last keystroke and when a field loses focus,
-shows `Resolved · <sha> · pushed to <branch>` or the refusal under each field,
-and keeps Start disabled until a dry run succeeded for exactly the current
-refs, scenario and runs.
-
-1. Needs `code_repository` configured (`code_repository_required:`). The refs
-   are resolved with `git` in it: `candidate_ref` and `baseline_ref` may be a
-   plain branch, tag or commit name; the baseline defaults to the merge base of
-   the candidate and `origin/main`. Each commit must be on a remote branch of
-   the clone (`git branch -r --contains`, nothing is fetched: run `git fetch`
-   after a push) because the E2E builds the Harness from GitHub. Errors:
-   `git_unavailable:`, `git_ref_invalid:` (also when both resolve to the same
-   commit), `commit_not_pushed:`.
-2. Each stack is the YAML of the E2E's stack built on the `harness` template
-   (`e2e::dashboard::stacks-list`) with only its `harness` container replaced by
-   `{worker: package://harness, commit: <sha>, repository: iii-hq/workers}`.
-   Everything else, including the `latest` versions the base declares, is the
-   E2E's own (a comparability check on the attached pair shows when two
-   executions resolved different ones).
-3. Nothing changed so far; now the criterion is registered and the run recorded
-   as `starting` (`run` in the row: both commits, scenario, runs, model,
-   provider, `started_at`), and two executions start with
-   `e2e::dashboard::execution-start` (`where: docker`, one technical retry,
-   `runs` 1-20, default 5, label `eval <evaluation_id> S<n> baseline|candidate`
-   with `n` the suggestion number from 1). The row goes to `running` with both
-   execution ids. A refusal is `e2e_busy:` or `e2e_unavailable:`; the run is
-   then `failed` with the error, naming the baseline execution when it had
-   already started (cancel it in the E2E). A start the E2E never answers
-   (`e2e_start_unconfirmed:`, after 30 s) may still have started an execution,
-   so the run stays `starting`, with the baseline id when it had one, and no
-   second start can duplicate it: look for the label in the E2E; the sweep fails
-   the run after 5 minutes. One run per suggestion at a time.
-4. The sweep (every 15 s) polls `e2e::dashboard::executions-list {ids}` for
-   running runs. When both executions are `completed`, `interrupted`,
-   `cancelled` or `failed` the run is `finished` and the pair is attached with
-   the evidence computed (`attached`), also when the executions ended badly: the
-   evidence then says why it cannot judge. An E2E that does not answer leaves it
-   `finished` with the error and the next sweep tries again, for 30 minutes
-   after both ended (`finished_at`), then it is `failed` with `attach_gave_up:`
-   and the last error, and the pair can be attached by hand or started again; an
-   execution the E2E no longer lists, or an analysis deleted meanwhile, makes it
-   `failed` at once. A `starting` run older than 5 minutes (a restart between the
-   request and its answer, or an E2E that never answered) is `failed`. Startup
-   recovery does not wait on the E2E: the first sweep, 15 s later, does.
-
-### After the release
-
-`eval::recurrence {evaluation_id, suggestion_index}` for a suggestion marked
-`shipped` with a `version` returns, per row pattern, the occurrences, the
-analyses with at least one and the occurrences per analysis for the analyses on
-Harness versions before that version (`before`) and from it on
-(`from_version`). Only analyses whose collection finished count (`signals` is
-empty both when nothing was found and before collection), and analyses without a
-semantic `harness_version` are left out and counted in `without_version`: the
-manual ones, among them every reanalysis, so one turn is never counted twice.
-Analyses are kept 30 days, so the earlier window is bounded by retention.
+controls. The manual review and validation path (lifecycle, criterion,
+verdict, attached or started E2E pairs, recurrence) was removed; the
+comparison code stays in the library (`review::runs_of`, `review::evidence`,
+`review::judge`, `review::compare`) for the loop's own decision.
 
 ## Migration from prompt experiments
 

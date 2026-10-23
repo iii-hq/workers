@@ -1,17 +1,15 @@
 use schemars::JsonSchema;
 
 use crate::contract::{
-    AttachValidationRequestV1, AttachValidationResponseV1, ConfigureRequestV1,
-    CycleCancelResponseV1, CycleIdRequestV1, CycleListRequestV1, CycleListResponseV1,
-    CycleRecordV1, CycleResultResponseV1, CycleStartRequestV1, CycleStartResponseV1,
-    EvalDeleteResponseV1, EvaluationIdRequestV1, MonitorConfigV1, MonitorStateRequestV1,
-    MonitorStateResponseV1, RecurrenceRequestV1, RecurrenceResponseV1, ReviewRequestV1,
-    ReviewsRequestV1, ReviewsResponseV1, StartValidationRequestV1, StartValidationResponseV1,
-    StepRequestV1, StepResponseV1, SuggestionReviewV1, SweepEventV1, SweepResponseV1,
+    ConfigureRequestV1, CycleCancelResponseV1, CycleIdRequestV1, CycleListRequestV1,
+    CycleListResponseV1, CycleRecordV1, CycleResultResponseV1, CycleStartRequestV1,
+    CycleStartResponseV1, EvalDeleteResponseV1, EvaluationIdRequestV1, MonitorConfigV1,
+    MonitorStateRequestV1, MonitorStateResponseV1, StepRequestV1, StepResponseV1, SweepEventV1,
+    SweepResponseV1,
 };
 use crate::functions::{
-    ATTACH_VALIDATION_ID, CANCEL_ID, CONFIGURE_ID, CONFIG_ID, DELETE_ID, LIST_ID, RECURRENCE_ID,
-    RESULT_ID, REVIEWS_ID, REVIEW_ID, START_ID, START_VALIDATION_ID, STATUS_ID, STEP_ID, SWEEP_ID,
+    CANCEL_ID, CONFIGURE_ID, CONFIG_ID, DELETE_ID, LIST_ID, RESULT_ID, START_ID, STATUS_ID,
+    STEP_ID, SWEEP_ID,
 };
 
 pub struct FunctionSpec {
@@ -44,11 +42,6 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<CycleIdRequestV1, Option<CycleResultResponseV1>>(RESULT_ID),
         spec::<CycleIdRequestV1, CycleCancelResponseV1>(CANCEL_ID),
         spec::<EvaluationIdRequestV1, EvalDeleteResponseV1>(DELETE_ID),
-        spec::<AttachValidationRequestV1, AttachValidationResponseV1>(ATTACH_VALIDATION_ID),
-        spec::<StartValidationRequestV1, StartValidationResponseV1>(START_VALIDATION_ID),
-        spec::<ReviewRequestV1, SuggestionReviewV1>(REVIEW_ID),
-        spec::<ReviewsRequestV1, ReviewsResponseV1>(REVIEWS_ID),
-        spec::<RecurrenceRequestV1, RecurrenceResponseV1>(RECURRENCE_ID),
         spec::<StepRequestV1, StepResponseV1>(STEP_ID),
         spec::<SweepEventV1, SweepResponseV1>(SWEEP_ID),
     ]

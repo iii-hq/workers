@@ -35,14 +35,11 @@ use crate::diagnostics::{self, entry_id, entry_turn, role};
 use crate::error::EvalError;
 use crate::events::EvalEvents;
 use crate::locks::EvalLocks;
-use crate::state::ObservationIndexV1;
-use crate::{ids, queue, review, state, validation};
+use crate::{ids, queue, state};
 
 /// Whole-analysis budget from admission, including queue wait and collection.
 const ANALYSIS_BUDGET_MS: i64 = 30 * 60 * 1_000;
 pub(crate) const BUS_TIMEOUT_MS: u64 = 10_000;
-/// A whole E2E execution with every run's transcript is megabytes of JSON.
-const E2E_DETAIL_TIMEOUT_MS: u64 = 60_000;
 const JUDGE_TIMEOUT_MS: u64 = 60_000;
 const JUDGE_BUS_TIMEOUT_MS: u64 = 70_000;
 /// Transport slack between the provider's budget and the bus timeout.
@@ -153,12 +150,6 @@ pub struct Deps {
     pub inflight: InFlight,
     pub scenarios: ScenarioCatalog,
     pub last_maintenance: Arc<AtomicI64>,
-    /// How long `eval::start-validation` waits for the E2E to accept an
-    /// execution; a field so the unanswered case can be tested.
-    pub start_timeout_ms: u64,
-    /// The user the worker runs as: who a change is credited to when the
-    /// request names nobody; a field so the author can be tested.
-    pub host_user: Option<String>,
 }
 
 impl Deps {
@@ -170,8 +161,6 @@ impl Deps {
             inflight: InFlight::default(),
             scenarios: ScenarioCatalog::default(),
             last_maintenance: Arc::new(AtomicI64::new(0)),
-            start_timeout_ms: validation::START_TIMEOUT_MS,
-            host_user: review::host_user(),
         }
     }
 }
@@ -365,12 +354,7 @@ pub async fn result(
         return Ok(None);
     };
     let assets = state::get_assets(&deps.iii, &record.evaluation_id).await?;
-    let reviews = review::rows_for(deps, &assets, &record.evaluation_id).await?;
-    Ok(Some(EvalResultResponseV1 {
-        record,
-        assets,
-        reviews,
-    }))
+    Ok(Some(EvalResultResponseV1 { record, assets }))
 }
 
 pub async fn list(
@@ -584,130 +568,6 @@ async fn resume_cycles(deps: &Deps) -> Result<(), EvalError> {
     Ok(())
 }
 
-/// Links two existing E2E executions to a suggestion. The links are
-/// references for review; the verdict belongs to the E2E comparison. When the
-/// suggestion's scenario is known the runs of both sides are also measured
-/// into the suggestion's row (`review::evidence`).
-pub async fn attach_validation(
-    deps: &Deps,
-    request: AttachValidationRequestV1,
-) -> Result<AttachValidationResponseV1, EvalError> {
-    let baseline_id = request.baseline_execution_id.trim();
-    let candidate_id = request.candidate_execution_id.trim();
-    if baseline_id.is_empty() || candidate_id.is_empty() || baseline_id == candidate_id {
-        return Err(EvalError::InvalidRequest(
-            "baseline and candidate must be two distinct E2E execution ids".into(),
-        ));
-    }
-    // A request that cannot be attached never reaches the E2E.
-    let (_, assets) =
-        review::terminal_analysis(deps, &request.evaluation_id, "attach E2E results").await?;
-    suggestion_at(&assets, request.suggestion_index)?;
-    let (link, baseline, candidate) =
-        fetch_link(deps, request.suggestion_index, baseline_id, candidate_id).await?;
-    if request.dry_run {
-        return Ok(AttachValidationResponseV1 { link, saved: false });
-    }
-    let link = save_link(
-        deps,
-        &request.evaluation_id,
-        link,
-        (&baseline, &candidate),
-        false,
-    )
-    .await?;
-    Ok(AttachValidationResponseV1 { link, saved: true })
-}
-
-/// Reads both executions in full, with no lock held, and builds the link;
-/// the bundles are what the evidence is computed from.
-pub(crate) async fn fetch_link(
-    deps: &Deps,
-    suggestion_index: usize,
-    baseline_id: &str,
-    candidate_id: &str,
-) -> Result<(ValidationLinkV1, Value, Value), EvalError> {
-    let baseline = e2e_bundle(deps, baseline_id, "baseline").await?;
-    let candidate = e2e_bundle(deps, candidate_id, "candidate").await?;
-    let (baseline_ref, candidate_ref) = (
-        e2e_reference(baseline_id, &baseline),
-        e2e_reference(candidate_id, &candidate),
-    );
-    let link = ValidationLinkV1 {
-        suggestion_index,
-        comparability: comparability(&baseline_ref, &candidate_ref),
-        baseline: baseline_ref,
-        candidate: candidate_ref,
-        attached_at: ids::now_ms(),
-    };
-    Ok((link, baseline, candidate))
-}
-
-/// Saves an attached pair and the evidence computed from it. The same pair
-/// again (a repeated click, the sweep resuming) replaces its link but keeps
-/// the first `attached_at`, which still says when results first existed.
-/// `run_attached` also marks the suggestion's own run as attached.
-pub(crate) async fn save_link(
-    deps: &Deps,
-    evaluation_id: &str,
-    mut link: ValidationLinkV1,
-    bundles: (&Value, &Value),
-    run_attached: bool,
-) -> Result<ValidationLinkV1, EvalError> {
-    let _guard = deps.locks.guard(evaluation_id).await;
-    let (mut record, mut assets) =
-        review::terminal_analysis(deps, evaluation_id, "attach E2E results").await?;
-    suggestion_at(&assets, link.suggestion_index)?;
-    let same_pair = |other: &ValidationLinkV1| {
-        other.suggestion_index == link.suggestion_index
-            && other.baseline.execution_id == link.baseline.execution_id
-            && other.candidate.execution_id == link.candidate.execution_id
-    };
-    match assets.validations.iter_mut().find(|other| same_pair(other)) {
-        Some(existing) => {
-            link.attached_at = existing.attached_at;
-            *existing = link.clone();
-        }
-        None => assets.validations.push(link.clone()),
-    }
-    state::put_assets(&deps.iii, &assets).await?;
-    record.counters.validations = assets.validations.len() as u32;
-    record.updated_at = ids::now_ms();
-    state::put_record(&deps.iii, &record).await?;
-    review::record_evidence(deps, &assets, &link, bundles, run_attached).await?;
-    Ok(link)
-}
-
-/// The suggestion an E2E action refers to.
-pub(crate) fn suggestion_at(
-    assets: &AnalysisAssetsV1,
-    index: usize,
-) -> Result<&SuggestionV1, EvalError> {
-    let suggestions = assets
-        .investigation
-        .as_ref()
-        .map_or(&[][..], |investigation| &investigation.suggestions[..]);
-    suggestions.get(index).ok_or_else(|| {
-        EvalError::InvalidRequest(format!(
-            "suggestion_index {index} does not exist ({} suggestion(s))",
-            suggestions.len()
-        ))
-    })
-}
-
-fn e2e_lookup_error(execution_id: &str, role: &str, error: &str) -> EvalError {
-    if error.contains("execution not found") || error.contains("invalid execution id") {
-        EvalError::InvalidRequest(format!(
-            "e2e_execution_not_found({role}): E2E execution {execution_id} was not found; the id \
-             may be wrong or the execution deleted"
-        ))
-    } else {
-        EvalError::Dependency(format!(
-            "e2e_unavailable: the E2E service could not read execution {execution_id}: {error}"
-        ))
-    }
-}
-
 /// Everything that must match between baseline and candidate; only the
 /// Harness version is meant to differ. Unknown values never match.
 pub fn comparability(
@@ -778,183 +638,13 @@ pub fn comparability(
     }
 }
 
-/// A count from the E2E, which writes some as floats (`"run_count": 1.0`).
-fn e2e_count(value: &Value) -> u32 {
-    value
-        .as_u64()
-        .or_else(|| {
-            value
-                .as_f64()
-                .filter(|count| *count >= 0.0)
-                .map(|count| count.round() as u64)
-        })
-        .map_or(0, |count| count.min(u32::MAX as u64) as u32)
-}
-
-/// A count the E2E reported; absent stays absent, never zero.
-fn e2e_reported_count(value: &Value) -> Option<u32> {
-    value.is_number().then(|| e2e_count(value))
-}
-
-/// One scenario of an execution: its identity and averages from
-/// `scenario_metrics`, and its cohort's own aggregates when
-/// `plan_execution.measurements.cohorts` has exactly one for it (two cohorts
-/// of one scenario, one per subject, cannot be told apart here).
-fn e2e_scenario(scenario: &Value, cohorts: &[Value]) -> E2eScenarioV1 {
-    let text = |value: &Value| value.as_str().map(str::to_string);
-    let scenario_id = scenario["scenario_id"].as_str().unwrap_or_default();
-    let mut matching = cohorts
-        .iter()
-        .filter(|cohort| cohort["scenario_id"] == scenario_id);
-    let cohort = matching
-        .next()
-        .filter(|_| matching.next().is_none())
-        .unwrap_or(&Value::Null);
-    let aggregate = &cohort["aggregate"];
-    let completed_runs = e2e_reported_count(&aggregate["completed_runs"]);
-    let per_run = |total: &Value| {
-        total
-            .as_f64()
-            .zip(completed_runs.filter(|runs| *runs > 0))
-            .map(|(total, runs)| total / f64::from(runs))
-    };
-    E2eScenarioV1 {
-        scenario_id: scenario_id.into(),
-        behavior_sha256: text(&scenario["behavior_sha256"]),
-        contract_fingerprint: text(&scenario["contract_fingerprint"]),
-        run_count: e2e_count(&scenario["run_count"]),
-        measures: [
-            "function_calls",
-            "function_call_errors",
-            "tokens",
-            "duration_seconds",
-            "cost_usd",
-        ]
-        .into_iter()
-        .map(|key| {
-            (
-                key.to_string(),
-                E2eMeasureV1 {
-                    average: scenario["averages"][key].as_f64(),
-                    samples: e2e_count(&scenario["samples"][key]),
-                },
-            )
-        })
-        .collect(),
-        pass_rate: aggregate["pass_rate"].as_f64(),
-        mean_score: aggregate["mean_score"].as_f64(),
-        completed_runs,
-        planned_runs: e2e_reported_count(&aggregate["planned_runs"]),
-        cost_usd_per_run: per_run(&aggregate["cost"]["total_usd"]),
-        total_tokens_per_run: per_run(&aggregate["total_tokens_consumed"]),
-        median_wall_time_ms: aggregate["robustness"]["median_wall_time_ms"].as_f64(),
-        p50_function_calls: cohort["consumption"]["p50_function_calls"].as_f64(),
-    }
-}
-
-/// Reads one execution, run transcripts included. Errors carry a stable code
-/// the console matches on: `e2e_execution_not_found(<role>)` when the E2E
-/// answered that the id is unknown or invalid, `e2e_unavailable` when the
-/// service could not answer.
-async fn e2e_bundle(deps: &Deps, execution_id: &str, role: &str) -> Result<Value, EvalError> {
-    call(
-        deps,
-        "e2e::dashboard::execution-get",
-        json!({ "execution_id": execution_id }),
-        E2E_DETAIL_TIMEOUT_MS,
-    )
-    .await
-    .map_err(|error| e2e_lookup_error(execution_id, role, &error.to_string()))
-}
-
-/// What an `execution-get` bundle says about the execution itself.
-fn e2e_reference(execution_id: &str, bundle: &Value) -> E2eExecutionRefV1 {
-    let summary = &bundle["manifest"]["executions"][0];
-    let detail = &bundle["detail"];
-    let reports: Vec<E2eReportRefV1> = detail["reports"]
-        .as_array()
-        .map(|reports| {
-            reports
-                .iter()
-                .map(|report| E2eReportRefV1 {
-                    scenario_id: report["scenario_id"].as_str().unwrap_or_default().into(),
-                    subject_id: report["subject_id"].as_str().map(str::to_string),
-                    available: report["available"] == true,
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let availability = detail["availability"]
-        .as_str()
-        .or_else(|| summary["availability"].as_str())
-        .map(str::to_string);
-    let text = |value: &Value| value.as_str().map(str::to_string);
-    let first_report = &detail["reports"][0]["report"];
-    let system = &first_report["system_under_test"];
-    let cohorts = detail["plan_execution"]["measurements"]["cohorts"]
-        .as_array()
-        .map_or(&[][..], Vec::as_slice);
-    let scenarios = detail["scenario_metrics"]
-        .as_array()
-        .or_else(|| summary["scenario_metrics"].as_array())
-        .map(|scenarios| {
-            scenarios
-                .iter()
-                .map(|scenario| e2e_scenario(scenario, cohorts))
-                .collect()
-        })
-        .unwrap_or_default();
-    let assessment = if detail["assessment_summary"].is_object() {
-        &detail["assessment_summary"]
-    } else {
-        &summary["assessment_summary"]
-    };
-    E2eExecutionRefV1 {
-        execution_id: execution_id.into(),
-        label: text(&summary["label"]).or_else(|| text(&detail["label"])),
-        status: text(&summary["status"]).or_else(|| text(&detail["status"])),
-        conclusion: text(&summary["conclusion"]).or_else(|| text(&detail["conclusion"])),
-        started_at: text(&summary["started_at"])
-            .or_else(|| text(&detail["started_at"]))
-            .and_then(|at| ids::parse_ms(&at)),
-        reports_available: !reports.is_empty()
-            && reports.iter().all(|report| report.available)
-            && availability.as_deref() != Some("unavailable"),
-        availability,
-        reports,
-        evidence_error: text(&detail["evidence_error"]),
-        model: text(&first_report["subject"]["model"])
-            .or_else(|| text(&summary["parameters"]["model"])),
-        provider: text(&first_report["subject"]["provider"])
-            .or_else(|| text(&summary["parameters"]["provider"])),
-        harness_version: text(&system["harness_version"])
-            .or_else(|| text(&summary["release"]["version"])),
-        engine_version: text(&system["engine_version"])
-            .or_else(|| text(&summary["engine_version"])),
-        e2e_revision: text(&system["e2e_revision"]).or_else(|| text(&summary["source"]["sha"])),
-        scenarios,
-        assessments: assessment["assessment_count"]
-            .as_u64()
-            .map(|total| E2eAssessmentsV1 {
-                passed: assessment["assessment_outcomes"]["passed"]
-                    .as_u64()
-                    .unwrap_or(0) as u32,
-                total: total as u32,
-            }),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Recovery
 // ---------------------------------------------------------------------------
 
-/// The periodic sweep: `resume_analyses`, then the validation runs waiting on
-/// the E2E.
+/// The periodic sweep: `resume_analyses`.
 pub async fn sweep(deps: &Deps) -> Result<SweepResponseV1, EvalError> {
-    let response = resume_analyses(deps).await?;
-    // Last: waiting on the E2E never delays the monitor's own recovery.
-    validation::advance_runs(deps).await;
-    Ok(response)
+    resume_analyses(deps).await
 }
 
 /// Re-enqueues pending analyses, fails those past their deadline and, at most
@@ -984,7 +674,6 @@ async fn resume_analyses(deps: &Deps) -> Result<SweepResponseV1, EvalError> {
     let last = deps.last_maintenance.load(Ordering::Relaxed);
     if now - last >= MAINTENANCE_INTERVAL_MS {
         deps.last_maintenance.store(now, Ordering::Relaxed);
-        response.reconciled = reconcile(deps, &records).await?;
         response.retained_deleted = retain(deps, records, now).await?;
     }
     Ok(response)
@@ -994,51 +683,11 @@ async fn resume_analyses(deps: &Deps) -> Result<SweepResponseV1, EvalError> {
 /// indexes for records saved before a crash, then resume pending work. The
 /// validation runs wait for the first sweep: the boot never waits on the E2E.
 pub async fn recover(deps: &Deps) -> Result<SweepResponseV1, EvalError> {
-    let records = state::list_records(&deps.iii).await?;
-    let reconciled = reconcile(deps, &records).await?;
     deps.last_maintenance
         .store(ids::now_ms(), Ordering::Relaxed);
-    let mut response = resume_analyses(deps).await?;
-    response.reconciled += reconciled;
+    let response = resume_analyses(deps).await?;
     resume_cycles(deps).await?;
     Ok(response)
-}
-
-async fn reconcile(deps: &Deps, records: &[AnalysisRecordV1]) -> Result<u64, EvalError> {
-    let indexed: BTreeSet<String> = state::list_observations(&deps.iii)
-        .await?
-        .into_iter()
-        .map(|index| index.observation_key)
-        .collect();
-    let mut newest: BTreeMap<&str, &AnalysisRecordV1> = BTreeMap::new();
-    for record in records {
-        let entry = newest.entry(&record.observation_key).or_insert(record);
-        if record.created_at > entry.created_at {
-            *entry = record;
-        }
-    }
-    let mut reconciled = 0;
-    for (key, record) in newest {
-        if indexed.contains(key) {
-            continue;
-        }
-        let _guard = deps.locks.guard(&format!("observation:{key}")).await;
-        if state::get_observation(&deps.iii, key).await?.is_none() {
-            state::put_observation(
-                &deps.iii,
-                &ObservationIndexV1 {
-                    observation_key: key.into(),
-                    session_id: record.session_id.clone(),
-                    turn_id: record.turn_id.clone(),
-                    evaluation_id: record.evaluation_id.clone(),
-                    admitted_at: record.created_at,
-                },
-            )
-            .await?;
-            reconciled += 1;
-        }
-    }
-    Ok(reconciled)
 }
 
 /// Removes monitor results only — never sessions or E2E assets. Indexes of
@@ -1057,28 +706,6 @@ async fn retain(deps: &Deps, records: Vec<AnalysisRecordV1>, now: i64) -> Result
             let _guard = deps.locks.guard(&record.evaluation_id).await;
             state::delete_analysis(&deps.iii, &record.evaluation_id).await?;
             deleted += 1;
-        }
-    }
-    let active: BTreeSet<&str> = records
-        .iter()
-        .filter(|record| !record.status.is_terminal())
-        .map(|record| record.observation_key.as_str())
-        .collect();
-    for index in state::list_observations(&deps.iii).await? {
-        if index.admitted_at >= now - RETENTION_MS
-            || active.contains(index.observation_key.as_str())
-        {
-            continue;
-        }
-        // Re-read under the admission lock: a reanalysis may have published
-        // a fresh index since the listing.
-        let key = &index.observation_key;
-        let _guard = deps.locks.guard(&format!("observation:{key}")).await;
-        if state::get_observation(&deps.iii, key)
-            .await?
-            .is_some_and(|current| current.admitted_at < now - RETENTION_MS)
-        {
-            state::delete_observation(&deps.iii, key).await?;
         }
     }
     Ok(deleted)
@@ -1474,7 +1101,7 @@ async fn collect(deps: &Deps, record: &AnalysisRecordV1) -> Result<Collected, Co
     }
 
     let root_entries = read_entries(deps, record, root).await?;
-    let window = observation_window(deps, record, &root_entries).await?;
+    let window = observation_window(record, &root_entries).await?;
     let mut limitations = Vec::new();
     if window.len() > 1 {
         limitations.push(format!(
@@ -1825,7 +1452,6 @@ async fn read_entries(
 /// The observed turn plus the earlier root turns no analysis has covered,
 /// newest first, so a wake continuation is analyzed as one run.
 async fn observation_window(
-    deps: &Deps,
     record: &AnalysisRecordV1,
     entries: &[Value],
 ) -> Result<Vec<String>, CollectError> {
@@ -1855,21 +1481,6 @@ async fn observation_window(
         // (their indexes are gone), are history, not new occurrences.
         if started.is_none_or(|started| started < record.observe_since.max(retained_since)) {
             break;
-        }
-        let key = ids::observation_key(&record.session_id, turn);
-        if let Some(index) = state::get_observation(&deps.iii, &key).await? {
-            // A turn whose own analysis lost the race to the next turn was
-            // never analyzed: it joins this window instead.
-            let superseded = state::get_record(&deps.iii, &index.evaluation_id)
-                .await?
-                .is_some_and(|previous| {
-                    previous
-                        .failure
-                        .is_some_and(|failure| failure.code == "source_advanced")
-                });
-            if !superseded {
-                break;
-            }
         }
         window.push(turn.to_string());
     }
@@ -3427,14 +3038,6 @@ mod tests {
     }
 
     #[test]
-    fn e2e_counts_accept_the_floats_the_e2e_writes() {
-        assert_eq!(e2e_count(&json!(1.0)), 1);
-        assert_eq!(e2e_count(&json!(3)), 3);
-        assert_eq!(e2e_count(&json!(-1.0)), 0);
-        assert_eq!(e2e_count(&json!(null)), 0);
-    }
-
-    #[test]
     fn no_credits_is_the_only_http_status_with_a_code_of_its_own() {
         let failure = |code: &str, http_status: Option<u16>| -> TriageFailureV1 {
             serde_json::from_value(json!({
@@ -3454,52 +3057,6 @@ mod tests {
             judge_failure_code(&failure("missing_key", None)),
             "judge_missing_key"
         );
-    }
-
-    #[test]
-    fn cohort_values_are_per_run_and_never_invented() {
-        let scenario = json!({"scenario_id": "a", "run_count": 2});
-        let cohort =
-            |id: &str, aggregate: Value| json!({"scenario_id": id, "aggregate": aggregate});
-        let full = json!({"completed_runs": 4.0, "planned_runs": 5, "pass_rate": 0.75,
-            "mean_score": 90.0, "cost": {"total_usd": 1.0}, "total_tokens_consumed": 2000,
-            "robustness": {"median_wall_time_ms": 10.5}});
-        let found = e2e_scenario(&scenario, &[cohort("a", full.clone())]);
-        assert_eq!(
-            (found.completed_runs, found.planned_runs),
-            (Some(4), Some(5))
-        );
-        assert_eq!(
-            (found.cost_usd_per_run, found.total_tokens_per_run),
-            (Some(0.25), Some(500.0))
-        );
-        assert_eq!(found.median_wall_time_ms, Some(10.5));
-        assert_eq!(found.p50_function_calls, None);
-
-        // No completed run: a per-run value has no denominator.
-        let none_completed = e2e_scenario(
-            &scenario,
-            &[cohort(
-                "a",
-                json!({"completed_runs": 0, "cost": {"total_usd": 1.0}}),
-            )],
-        );
-        assert_eq!(none_completed.completed_runs, Some(0));
-        assert_eq!(none_completed.cost_usd_per_run, None);
-        // Two cohorts of one scenario cannot be told apart; another
-        // scenario's cohort is not this one's.
-        for cohorts in [
-            vec![cohort("a", full.clone()), cohort("a", full.clone())],
-            vec![cohort("b", full)],
-            vec![],
-        ] {
-            let bare = e2e_scenario(&scenario, &cohorts);
-            assert_eq!(
-                (bare.pass_rate, bare.completed_runs, bare.cost_usd_per_run),
-                (None, None, None)
-            );
-            assert_eq!(bare.run_count, 2);
-        }
     }
 
     #[test]
@@ -3539,24 +3096,6 @@ mod tests {
             Some(json!({"total": 1}))
         );
         assert_eq!(catalog.fresh(1_000 + SCENARIO_CACHE_MS), None);
-    }
-
-    #[test]
-    fn e2e_lookup_errors_carry_stable_codes() {
-        let missing = e2e_lookup_error("x", "candidate", "handler error: execution not found");
-        assert!(missing
-            .to_string()
-            .contains("e2e_execution_not_found(candidate)"));
-        let invalid = e2e_lookup_error("x", "baseline", "handler error: invalid execution id");
-        assert!(invalid
-            .to_string()
-            .contains("e2e_execution_not_found(baseline)"));
-        let down = e2e_lookup_error(
-            "x",
-            "baseline",
-            "Function e2e::dashboard::execution-get not found in namespace my-project.",
-        );
-        assert!(down.to_string().contains("e2e_unavailable"));
     }
 
     fn check(

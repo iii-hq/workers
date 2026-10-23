@@ -67,7 +67,6 @@ Validar seleção não vazia e opções suportadas pelo modelo. Usar `router::mo
 | `eval::result` | `evaluation_id`. | Registro com evidências, triagem, sugestões e vínculos E2E, ou `null`. |
 | `eval::cancel` | `evaluation_id`. | Estado final; cancela apenas o trabalho do monitor. |
 | `eval::delete` | `evaluation_id`. | Remove uma análise terminal e suas prévias; preserva a deduplicação da observação durante a retenção. |
-| `eval::attach-validation` | `evaluation_id`, `suggestion_index`, `baseline_execution_id`, `candidate_execution_id`. | Vínculo com execuções E2E existentes e disponibilidade das evidências. |
 | `eval::compare-sessions` | Contrato atual. | Comparação atual, sem julgamento de equivalência ou vitória. |
 
 Manter internas `eval::step` e `eval::sweep`. O request de step conserva `evaluation_id` e uma revisão monotônica `step`.
@@ -100,7 +99,6 @@ Usar os mesmos métodos `state::get`, `state::set`, `state::list` e `state::dele
 | Escopo | Conteúdo |
 | --- | --- |
 | `eval_monitor` | Configuração. |
-| `eval_observation` | Chave estável da sessão/turno e ID da última análise admitida. |
 | `eval_analysis` | Metadados compactos, estado de execução, contadores e referências às evidências. |
 | `eval_analysis_assets` | Snapshot, prévias, triagem, sugestões, consumo e vínculos E2E. |
 
@@ -337,13 +335,7 @@ Usar `eval::completed` para atualização e polling moderado somente enquanto ho
 
 ### 9.2 Associação de resultados
 
-`eval::attach-validation` associa duas execuções existentes a uma sugestão. Validar índice, análise terminal e IDs distintos. Consultar `e2e::dashboard::execution-get` com `execution_id`, quando esse serviço estiver disponível, para obter o detalhe e a disponibilidade dos relatórios.
-
-Persistir as identidades e referências que o E2E fornece. Se o report ou seus assets estiverem indisponíveis, o vínculo deve indicar isso. Não aceitar do caller uma flag `validated: true` como prova.
-
-Os estados de experimento — melhoria validada, sem melhoria, regressão e inconclusivo — precisam estar sustentados pelo parecer e pelos critérios do E2E. O `eval` exibe e referencia esse parecer; não cria um segundo grader ou deixa a LLM decidir o resultado. Se a superfície disponível expuser apenas métricas projetadas, anexar os links sem promovê-los a prova de melhoria.
-
-O serviço E2E é necessário para essa associação, não para a observação normal. Não adicionar uma dependência de código entre os dois repositórios nem iniciar campanhas ao anexar um resultado.
+O caminho manual de associação, revisão e validação de sugestões foi removido. O código de comparação (`review::runs_of`, `review::evidence`, `review::judge`, `review::compare`) permanece público na biblioteca para a decisão do ciclo.
 
 ### 9.3 Roteiro da prova no cenário de redescoberta
 

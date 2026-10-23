@@ -8,37 +8,20 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::contract::{
-    AnalysisAssetsV1, AnalysisRecordV1, CycleRecordV1, MonitorConfigV1, SuggestionReviewV1,
-};
+use crate::contract::{AnalysisAssetsV1, AnalysisRecordV1, CycleRecordV1, MonitorConfigV1};
 use crate::error::EvalError;
 
 pub const CONFIG_SCOPE: &str = "eval_monitor";
 pub const CONFIG_KEY: &str = "config";
 pub const DAILY_SPEND_KEY: &str = "daily_spend";
-pub const OBSERVATION_SCOPE: &str = "eval_observation";
 pub const ANALYSIS_SCOPE: &str = "eval_analysis";
 pub const ASSETS_SCOPE: &str = "eval_analysis_assets";
-/// What people decided about each suggestion, keyed
-/// `<evaluation_id>:<suggestion_index>`; outlives the analysis's retention.
-pub const REVIEW_SCOPE: &str = "eval_suggestion";
 /// The Harness's own turn records, keyed by session: only the latest turn.
 pub const HARNESS_TURN_SCOPE: &str = "harness_turn";
 /// The loop's own cycle records, keyed by `cycle_id`. Cycle functions read
 /// and write only this scope, never the monitor's scopes above.
 pub const CYCLE_SCOPE: &str = "eval_loop_cycle";
 const DISPATCH_TIMEOUT_MS: u64 = 10_000;
-
-/// Marks one observed session turn as admitted. It outlives a deleted
-/// analysis until retention, so a redelivered event cannot re-admit it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ObservationIndexV1 {
-    pub observation_key: String,
-    pub session_id: String,
-    pub turn_id: String,
-    pub evaluation_id: String,
-    pub admitted_at: i64,
-}
 
 /// A stored configuration that no longer parses under the current schema (a
 /// legacy record with the removed chat-monitor fields) stays inert: it is
@@ -77,25 +60,6 @@ pub async fn get_spend(iii: &IIIClient) -> Result<Option<DailySpendV1>, EvalErro
 
 pub async fn put_spend(iii: &IIIClient, spend: &DailySpendV1) -> Result<(), EvalError> {
     set(iii, CONFIG_SCOPE, DAILY_SPEND_KEY, spend).await
-}
-
-pub async fn get_observation(
-    iii: &IIIClient,
-    key: &str,
-) -> Result<Option<ObservationIndexV1>, EvalError> {
-    get(iii, OBSERVATION_SCOPE, key).await
-}
-
-pub async fn put_observation(iii: &IIIClient, index: &ObservationIndexV1) -> Result<(), EvalError> {
-    set(iii, OBSERVATION_SCOPE, &index.observation_key, index).await
-}
-
-pub async fn list_observations(iii: &IIIClient) -> Result<Vec<ObservationIndexV1>, EvalError> {
-    list(iii, OBSERVATION_SCOPE).await
-}
-
-pub async fn delete_observation(iii: &IIIClient, key: &str) -> Result<(), EvalError> {
-    delete(iii, OBSERVATION_SCOPE, key).await
 }
 
 pub async fn get_record(
@@ -144,10 +108,6 @@ pub async fn list_cycles(iii: &IIIClient) -> Result<Vec<CycleRecordV1>, EvalErro
     list(iii, CYCLE_SCOPE).await
 }
 
-fn review_key(evaluation_id: &str, suggestion_index: usize) -> String {
-    format!("{evaluation_id}:{suggestion_index}")
-}
-
 /// The Harness's record of a session's latest turn, with its content-addressed
 /// prompt bodies restored.
 pub async fn get_turn_record(
@@ -177,28 +137,6 @@ pub async fn get_turn_record(
         stored["options"]["skill_context"]["baseline"] = Value::String(baseline);
     }
     Ok(Some(stored))
-}
-
-pub async fn get_review(
-    iii: &IIIClient,
-    evaluation_id: &str,
-    suggestion_index: usize,
-) -> Result<Option<SuggestionReviewV1>, EvalError> {
-    get(
-        iii,
-        REVIEW_SCOPE,
-        &review_key(evaluation_id, suggestion_index),
-    )
-    .await
-}
-
-pub async fn put_review(iii: &IIIClient, review: &SuggestionReviewV1) -> Result<(), EvalError> {
-    let key = review_key(&review.evaluation_id, review.suggestion_index);
-    set(iii, REVIEW_SCOPE, &key, review).await
-}
-
-pub async fn list_reviews(iii: &IIIClient) -> Result<Vec<SuggestionReviewV1>, EvalError> {
-    list(iii, REVIEW_SCOPE).await
 }
 
 /// Removes the assets before the record, so a partial delete never leaves a

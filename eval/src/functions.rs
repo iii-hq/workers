@@ -5,9 +5,8 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::json;
 
 use crate::contract::{
-    AttachValidationRequestV1, ConfigureRequestV1, CycleIdRequestV1, CycleListRequestV1,
-    CycleStartRequestV1, EvaluationIdRequestV1, MonitorStateRequestV1, RecurrenceRequestV1,
-    ReviewRequestV1, ReviewsRequestV1, StartValidationRequestV1, StepRequestV1, SweepEventV1,
+    ConfigureRequestV1, CycleIdRequestV1, CycleListRequestV1, CycleStartRequestV1,
+    EvaluationIdRequestV1, MonitorStateRequestV1, StepRequestV1, SweepEventV1,
 };
 use crate::runtime::Deps;
 
@@ -19,11 +18,6 @@ pub const STATUS_ID: &str = "eval::status";
 pub const RESULT_ID: &str = "eval::result";
 pub const CANCEL_ID: &str = "eval::cancel";
 pub const DELETE_ID: &str = "eval::delete";
-pub const ATTACH_VALIDATION_ID: &str = "eval::attach-validation";
-pub const START_VALIDATION_ID: &str = "eval::start-validation";
-pub const REVIEW_ID: &str = "eval::review";
-pub const REVIEWS_ID: &str = "eval::reviews";
-pub const RECURRENCE_ID: &str = "eval::recurrence";
 pub const STEP_ID: &str = "eval::step";
 pub const SWEEP_ID: &str = "eval::sweep";
 
@@ -164,106 +158,6 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
         .description(
             "Delete a terminal analysis and its stored previews. The turn stays marked as \
              analyzed until retention, so it is not re-admitted automatically.",
-        ),
-    );
-
-    let current = deps.clone();
-    iii.register_function(
-        ATTACH_VALIDATION_ID,
-        RegisterFunction::new_async(move |request: AttachValidationRequestV1| {
-            let deps = current.clone();
-            async move {
-                crate::runtime::attach_validation(&deps, request)
-                    .await
-                    .map_err(Error::from)
-            }
-        })
-        .description(
-            "Link a baseline and a candidate E2E execution (read through \
-             e2e::dashboard::execution-get) to one suggestion of a terminal analysis. The link \
-             records report availability and, when the suggestion's scenario is known, the \
-             evidence computed from the runs; it is not a verdict and starts no campaign.",
-        ),
-    );
-
-    let current = deps.clone();
-    iii.register_function(
-        START_VALIDATION_ID,
-        RegisterFunction::new_async(move |request: StartValidationRequestV1| {
-            let deps = current.clone();
-            async move {
-                crate::validation::start_validation(&deps, request)
-                    .await
-                    .map_err(Error::from)
-            }
-        })
-        .description(
-            "Explicitly start a baseline and a candidate E2E execution for one suggestion. Both \
-             commits (candidate_ref, and baseline_ref or the merge base with origin/main) are \
-             resolved with git in the configured code_repository and must be on a remote branch; \
-             each stack is the E2E's `harness` template with only the Harness pinned to its commit, \
-             run in Docker (runs 1-20, default 5). The criterion is registered before anything \
-             starts; the sweep attaches the pair when both finish and computes the evidence. \
-             Spends model tokens, and never runs unless called. With dry_run: true it only \
-             resolves and checks the refs, scenario and runs and answers with the resolved \
-             commits (`baseline`, `candidate`, `warnings`); it registers nothing and calls no \
-             E2E function.",
-        ),
-    );
-
-    let current = deps.clone();
-    iii.register_function(
-        REVIEW_ID,
-        RegisterFunction::new_async(move |request: ReviewRequestV1| {
-            let deps = current.clone();
-            async move {
-                crate::review::review(&deps, request)
-                    .await
-                    .map_err(Error::from)
-            }
-        })
-        .description(
-            "Record what a person decided about a suggestion of a terminal analysis: move its \
-             lifecycle (new, accepted, in_progress, shipped, rejected, duplicate), register the \
-             criterion a validation is judged by, or record a verdict. A verdict of \
-             validated_improvement is refused unless the criterion was registered before the \
-             first attached pair or run and both sides have min_runs completed runs. The author \
-             is `by`, else the eval host's user, else the caller's identity.",
-        ),
-    );
-
-    let current = deps.clone();
-    iii.register_function(
-        REVIEWS_ID,
-        RegisterFunction::new_async(move |request: ReviewsRequestV1| {
-            let deps = current.clone();
-            async move {
-                crate::review::reviews(&deps, request)
-                    .await
-                    .map_err(Error::from)
-            }
-        })
-        .description(
-            "List the stored suggestion reviews (lifecycle, criterion, run, evidence, verdict) \
-             and, per analysis with suggestions, how many sit at each lifecycle status.",
-        ),
-    );
-
-    let current = deps.clone();
-    iii.register_function(
-        RECURRENCE_ID,
-        RegisterFunction::new_async(move |request: RecurrenceRequestV1| {
-            let deps = current.clone();
-            async move {
-                crate::review::recurrence(&deps, request)
-                    .await
-                    .map_err(Error::from)
-            }
-        })
-        .description(
-            "For a suggestion marked shipped with its version, how often its patterns were found \
-             per analysis on Harness versions before it against from it on. Analyses without a \
-             semantic Harness version are left out and counted.",
         ),
     );
 
