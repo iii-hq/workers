@@ -134,17 +134,6 @@
             "format": "double",
             "type": "number"
           },
-          "today_replay_unknown": {
-            "description": "Replay samples of the day without a cost, failed ones included. They add nothing to `today_replay_usd`, but their cost is unknown, not zero.",
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "today_replay_usd": {
-            "description": "The replay bucket: the known cost of the day's `eval::reproduce` samples. Never capped.",
-            "format": "double",
-            "type": "number"
-          },
           "today_unknown": {
             "description": "Analyses of the day whose investigation started but reported no cost. They add nothing to `today_capture_usd`, but their cost is unknown, not zero.",
             "format": "uint32",
@@ -152,7 +141,7 @@
             "type": "integer"
           },
           "today_usd": {
-            "description": "Everything the monitor is known to have spent since `since`: `today_capture_usd` + `today_replay_usd`. The cap does not compare this.",
+            "description": "Everything the monitor is known to have spent since `since`: equal to `today_capture_usd`.",
             "format": "double",
             "type": "number"
           }
@@ -162,8 +151,6 @@
           "per_analysis",
           "since",
           "today_capture_usd",
-          "today_replay_unknown",
-          "today_replay_usd",
           "today_unknown",
           "today_usd"
         ],

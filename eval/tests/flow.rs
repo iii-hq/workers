@@ -22,7 +22,7 @@ use harness::types::event::StopReason;
 use harness::types::message::{
     empty_assistant, AgentMessage, FunctionResultMessage, FunctionResultRoleTag,
 };
-use harness::types::turn::{ResponseLanguage, TurnRecord};
+use harness::types::turn::TurnRecord;
 use iii_sdk::{register_worker, IIIClient, InitOptions};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -69,11 +69,6 @@ struct World {
     extra_frames: Vec<Value>,
     /// The cost every `harness::metrics` call reports; `None` is unknown.
     cost_usd: Option<f64>,
-    /// The cost every `router::complete` reply reports; `None` is unknown.
-    sample_cost_usd: Option<f64>,
-    /// Every `router::complete` call fails, as when the bus gives up on a
-    /// provider that may still bill.
-    samples_fail: bool,
     /// What `engine::workers::list` answers; `None` is an engine without it.
     workers: Option<Value>,
     /// What `e2e::dashboard::tests-list` answers; `None` is a down E2E.
@@ -118,8 +113,6 @@ impl World {
             held_judge: None,
             extra_frames: Vec::new(),
             cost_usd: None,
-            sample_cost_usd: Some(0.001),
-            samples_fail: false,
             workers: None,
             tests_list: None,
             stacks: None,
@@ -390,38 +383,6 @@ impl World {
                     Some(bundle) => bundle.clone(),
                     None => return Some(Err("execution not found".into())),
                 }
-            }
-            // Context assembly that changes nothing, and a provider count.
-            "context::assemble" => json!({
-                "system_prompt": data["system_prompt"], "messages": data["messages"],
-                "token_count": 100, "usable": 100_000, "effective_max_output_tokens": 1_000,
-                "applied": {}
-            }),
-            "router::count_tokens" => json!({"tokens": 100, "estimator": "provider",
-                "model": data["model"], "provider": "p"}),
-            // A model that re-reads the contract only while the registry
-            // notice is in its context.
-            "router::complete" => {
-                if self.samples_fail {
-                    return Some(Err("the provider never answered".into()));
-                }
-                let notice = data["messages"].to_string().contains("registry changed");
-                let mut reply = empty_assistant("p", "task-model");
-                reply.content = if notice {
-                    vec![ContentBlock::FunctionCall {
-                        id: "c3".into(),
-                        function_id: "agent_trigger".into(),
-                        arguments: json!({"function": INFO, "description": "re-read",
-                            "payload": {"function_id": "crm::profile"}}),
-                    }]
-                } else {
-                    vec![ContentBlock::text("Scheduled once; receipt R-1.")]
-                };
-                let mut usage = json!({"input": 12, "output": 4});
-                if let Some(cost) = self.sample_cost_usd {
-                    usage["cost_usd"] = json!(cost);
-                }
-                json!({"message": reply, "provider": "p", "model": "task-model", "usage": usage})
             }
             other => return Some(Err(format!("unexpected call to {other}"))),
         }))
@@ -3634,29 +3595,8 @@ async fn the_sweep_fails_runs_that_cannot_finish_and_retries_the_ones_the_e2e_dr
 }
 
 // ---------------------------------------------------------------------------
-// Reproduction at the decision point
+// Capture of the analyzed turn and the suggestion's check
 // ---------------------------------------------------------------------------
-
-async fn reproduce(h: &Harness, request: Value) -> Result<ReproduceResponseV1, EvalError> {
-    eval::reproduce::reproduce(&h.deps, serde_json::from_value(request).unwrap()).await
-}
-
-/// Waits for the reproduction's background task.
-async fn settled(h: &Harness, evaluation_id: &str, id: &str) -> ReproductionV1 {
-    for _ in 0..200 {
-        let current = row(h, evaluation_id)
-            .await
-            .reproductions
-            .into_iter()
-            .find(|reproduction| reproduction.id == id)
-            .unwrap();
-        if current.state != ReproductionStateV1::Running {
-            return current;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    panic!("the reproduction never finished");
-}
 
 /// The Harness's turn record of `turn_id`, with fields beyond the options.
 fn turn_record(turn_id: &str) -> Value {
@@ -3680,9 +3620,9 @@ fn turn_record(turn_id: &str) -> Value {
     serde_json::to_value(serde_json::from_value::<TurnRecord>(minimal).unwrap()).unwrap()
 }
 
-/// An analysis whose suggestion has a replayable decision point, made while
-/// the Harness holds `record` as the session's latest turn.
-async fn replayable(mut world: World, record: Value) -> (Harness, String) {
+/// An analysis whose suggestion carries a check of its decision point, made
+/// while the Harness holds `record` as the session's latest turn.
+async fn captured(mut world: World, record: Value) -> (Harness, String) {
     let decision = format!("e_{TURN}_1_assistant");
     let mut planned = suggestion(&decision);
     planned["check"] = json!({
@@ -3706,91 +3646,18 @@ async fn replayable(mut world: World, record: Value) -> (Harness, String) {
 }
 
 #[tokio::test]
-async fn a_replay_reproduces_the_signal_and_the_proposed_change_removes_it() {
-    let (h, evaluation_id) = replayable(World::new(), turn_record(TURN)).await;
+async fn a_suggestion_check_is_kept_with_the_captured_turn_and_nothing_replays_it() {
+    let (h, evaluation_id) = captured(World::new(), turn_record(TURN)).await;
     let result = h.result(&evaluation_id).await;
     assert_eq!(result.assets.capture.as_ref().unwrap().turn_id, TURN);
     let suggestion = &result.assets.investigation.as_ref().unwrap().suggestions[0];
     assert!(suggestion.check.is_some(), "{}", suggestion.limitations);
-
-    // Nothing is spent or stored by a dry run.
-    let preview = reproduce(
-        &h,
-        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "dry_run": true}),
-    )
-    .await
-    .unwrap()
-    .preview
-    .unwrap();
-    assert_eq!(preview.original.signal, Some(true));
-    assert_eq!(preview.original.calls[0].target, INFO);
-    assert!(h.world().calls_to("router::complete").is_empty());
-
-    // The base: the model saw the notice and re-reads the contract.
-    let base = reproduce(
-        &h,
-        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "samples": 3, "by": "ana"}),
-    )
-    .await
-    .unwrap()
-    .reproduction_id
-    .unwrap();
-    let base = settled(&h, &evaluation_id, &base).await;
-    assert_eq!(
-        base.state,
-        ReproductionStateV1::Completed,
-        "{:?}",
-        base.error
-    );
-    assert_eq!(base.samples.len(), 3);
-    assert!(base.samples.iter().all(|reply| reply.signal == Some(true)));
-    assert!((base.cost_usd.unwrap() - 0.003).abs() < 1e-9);
-    assert!(base.fidelity.is_some());
-
-    // The proposed change removes the notice: no reply re-reads it.
-    let change = reproduce(
-        &h,
-        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "samples": 3,
-            "change": {"kind": "proposed"}, "by": "ana"}),
-    )
-    .await
-    .unwrap()
-    .reproduction_id
-    .unwrap();
-    let change = settled(&h, &evaluation_id, &change).await;
-    assert_eq!(change.change_kind, ReproductionChangeKindV1::Proposed);
-    assert!(change
-        .samples
+    // The one-step replay is gone: it is not offered and no model is sampled.
+    assert!(!eval::surface::catalog()
         .iter()
-        .all(|reply| reply.signal == Some(false)));
-    // Sampling never ran a function.
+        .any(|spec| spec.function_id == "eval::reproduce"));
+    assert!(h.world().calls_to("router::complete").is_empty());
     assert!(h.world().calls_to(INFO).is_empty());
-
-    // More replies join the same reproduction.
-    reproduce(
-        &h,
-        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "samples": 2,
-            "extend": change.id, "by": "ana"}),
-    )
-    .await
-    .unwrap();
-    let extended = settled(&h, &evaluation_id, &change.id).await;
-    assert_eq!(extended.samples.len(), 5);
-
-    // A change whose text is not where it says is refused before spending.
-    let calls = h.world().calls_to("router::complete").len();
-    let refused = reproduce(
-        &h,
-        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "by": "ana",
-            "change": {"kind": "custom", "edits": [{"target": format!("e_{TURN}_c1"),
-                "find": "not in the result", "replace": "x"}]}}),
-    )
-    .await;
-    assert!(
-        matches!(refused, Err(EvalError::InvalidRequest(_))),
-        "{refused:?}"
-    );
-    assert_eq!(h.world().calls_to("router::complete").len(), calls);
 }
 
 #[tokio::test]
@@ -3879,143 +3746,8 @@ async fn user_chats_are_never_admitted() {
 }
 
 #[tokio::test]
-async fn replay_spend_is_reported_but_never_reaches_the_cap() {
-    let (h, evaluation_id) = replayable(World::new(), turn_record(TURN)).await;
-    // A cap each of the three samples (0.001) would pass together.
-    configure_capped(&h, json!(0.002)).await.unwrap();
-    let id = reproduce(
-        &h,
-        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "samples": 3, "by": "ana"}),
-    )
-    .await
-    .unwrap()
-    .reproduction_id
-    .unwrap();
-    let replay = settled(&h, &evaluation_id, &id).await;
-    assert_eq!(
-        replay.state,
-        ReproductionStateV1::Completed,
-        "{:?}",
-        replay.error
-    );
-
-    let cost = cost_block(&h).await;
-    assert!((cost.today_replay_usd - 0.003).abs() < 1e-9, "{cost:?}");
-    assert!((cost.today_usd - 0.003).abs() < 1e-9, "{cost:?}");
-    // The analysis reported no cost: unknown, so the capture bucket is empty
-    // and says so, instead of the replay filling it.
-    assert_eq!(
-        (
-            cost.today_capture_usd,
-            cost.today_unknown,
-            cost.today_replay_unknown
-        ),
-        (0.0, 1, 0)
-    );
-    assert_eq!((cost.cap_usd, cost.capped), (Some(0.002), false));
-
-    // What an analysis spends still counts against the cap.
-    h.world().cost_usd = Some(0.06);
-    let reanalysis = reanalyze(&h).await;
-    investigated(&h, &reanalysis).await;
-    let cost = cost_block(&h).await;
-    assert_eq!((cost.today_capture_usd, cost.capped), (0.06, true));
-    assert!((cost.today_replay_usd - 0.003).abs() < 1e-9, "{cost:?}");
-    assert!((cost.today_usd - 0.063).abs() < 1e-9, "{cost:?}");
-}
-
-#[tokio::test]
-async fn a_replay_sample_without_a_cost_stays_unknown() {
-    let mut world = World::new();
-    world.sample_cost_usd = None;
-    let (h, evaluation_id) = replayable(world, turn_record(TURN)).await;
-    let id = reproduce(
-        &h,
-        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "samples": 3, "by": "ana"}),
-    )
-    .await
-    .unwrap()
-    .reproduction_id
-    .unwrap();
-    let replay = settled(&h, &evaluation_id, &id).await;
-    assert_eq!(replay.samples.len(), 3);
-    assert_eq!((replay.cost_usd, replay.cost_unknown_samples), (None, 3));
-    let cost = cost_block(&h).await;
-    assert_eq!(
-        (cost.today_replay_usd, cost.today_replay_unknown),
-        (0.0, 3),
-        "unknown, not a free replay"
-    );
-}
-
-#[tokio::test]
-async fn a_replay_keeps_the_turns_response_language_in_the_tool_schema() {
-    let language = ResponseLanguage {
-        code: "por".into(),
-        name: "Portuguese".into(),
-    };
-    let mut record = turn_record(TURN);
-    record["options"]["response_language"] = serde_json::to_value(&language).unwrap();
-    let (h, evaluation_id) = replayable(World::new(), record).await;
-
-    let preview = reproduce(
-        &h,
-        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "dry_run": true}),
-    )
-    .await
-    .unwrap();
-    assert!(preview.preview.is_some());
-
-    let id = reproduce(
-        &h,
-        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "samples": 1, "by": "ana"}),
-    )
-    .await
-    .unwrap()
-    .reproduction_id
-    .unwrap();
-    let replay = settled(&h, &evaluation_id, &id).await;
-    assert_eq!(
-        replay.state,
-        ReproductionStateV1::Completed,
-        "{:?}",
-        replay.error
-    );
-
-    let expected =
-        serde_json::to_value([harness::policy::agent_trigger_schema(Some(&language))]).unwrap();
-    let calls = h.world().calls_to("router::complete");
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0]["tools"], expected);
-}
-
-#[tokio::test]
-async fn a_failed_replay_sample_is_unknown_not_free() {
-    let mut world = World::new();
-    world.samples_fail = true;
-    let (h, evaluation_id) = replayable(world, turn_record(TURN)).await;
-    let id = reproduce(
-        &h,
-        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "samples": 3, "by": "ana"}),
-    )
-    .await
-    .unwrap()
-    .reproduction_id
-    .unwrap();
-    let replay = settled(&h, &evaluation_id, &id).await;
-    assert_eq!(replay.state, ReproductionStateV1::Failed);
-    assert_eq!((replay.cost_usd, replay.cost_unknown_samples), (None, 3));
-    let cost = cost_block(&h).await;
-    assert_eq!(
-        (cost.today_replay_usd, cost.today_replay_unknown),
-        (0.0, 3),
-        "the provider may have billed what the bus gave up on"
-    );
-}
-
-#[tokio::test]
 async fn the_capture_is_the_analyzed_turns_whole_record_even_after_another_turn_ran() {
-    let (h, evaluation_id) = replayable(World::new(), turn_record(TURN)).await;
+    let (h, evaluation_id) = captured(World::new(), turn_record(TURN)).await;
     // The Harness keeps only a session's latest turn: the next one replaces it.
     h.world().state.insert(
         (state::HARNESS_TURN_SCOPE.into(), ROOT.into()),
@@ -4024,17 +3756,8 @@ async fn the_capture_is_the_analyzed_turns_whole_record_even_after_another_turn_
     let capture = h.result(&evaluation_id).await.assets.capture.unwrap();
     assert_eq!(capture.record, Some(turn_record(TURN)));
     assert_eq!(capture.record_omitted, None);
-    // What a reproduction reads is still there, from the copy.
+    // The options are still there, from the copy.
     assert_eq!(capture.options, turn_record(TURN)["options"]);
-    let preview = reproduce(
-        &h,
-        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "dry_run": true}),
-    )
-    .await
-    .unwrap()
-    .preview
-    .unwrap();
-    assert_eq!(preview.original.signal, Some(true));
 }
 
 #[tokio::test]
@@ -4062,7 +3785,7 @@ async fn the_capture_hydrates_the_harness_prompt_references() {
         json!({"body": skills, "created_at": 1}),
     );
 
-    let (h, evaluation_id) = replayable(world, record).await;
+    let (h, evaluation_id) = captured(world, record).await;
     let capture = h.result(&evaluation_id).await.assets.capture.unwrap();
     assert_eq!(capture.options["system_prompt"], prompt);
     assert_eq!(capture.options["skill_context"]["baseline"], skills);
@@ -4074,9 +3797,9 @@ async fn the_capture_hydrates_the_harness_prompt_references() {
 #[tokio::test]
 async fn a_turn_record_too_big_for_the_assets_is_left_out_and_says_why() {
     let mut record = turn_record(TURN);
-    // Outside the options: the part a reproduction reads stays small.
+    // Outside the options: the captured options stay small.
     record["result"] = json!("x".repeat(2 * 1024 * 1024));
-    let (h, evaluation_id) = replayable(World::new(), record).await;
+    let (h, evaluation_id) = captured(World::new(), record).await;
     let result = h.result(&evaluation_id).await;
     assert_eq!(result.record.status, EvalStatusV1::Completed);
     let capture = result.assets.capture.unwrap();
