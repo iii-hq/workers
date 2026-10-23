@@ -3,26 +3,24 @@
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
-      "evaluation_id": {
+      "cycle_id": {
         "type": "string"
       }
     },
     "required": [
-      "evaluation_id"
+      "cycle_id"
     ],
-    "title": "EvaluationIdRequestV1",
+    "title": "CycleIdRequestV1",
     "type": "object"
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "additionalProperties": false,
     "definitions": {
-      "EvalStatusV1": {
+      "CycleStatusV1": {
         "enum": [
           "queued",
-          "collecting",
-          "judging",
-          "investigating",
+          "running",
           "completed",
           "failed",
           "cancelled"
@@ -35,14 +33,14 @@
         "type": "boolean"
       },
       "status": {
-        "$ref": "#/definitions/EvalStatusV1"
+        "$ref": "#/definitions/CycleStatusV1"
       }
     },
     "required": [
       "cancelled",
       "status"
     ],
-    "title": "EvalCancelResponseV1",
+    "title": "CycleCancelResponseV1",
     "type": "object"
   }
 }

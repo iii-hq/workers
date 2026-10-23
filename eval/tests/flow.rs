@@ -4178,3 +4178,326 @@ async fn a_turn_record_too_big_for_the_assets_is_left_out_and_says_why() {
     assert_eq!(capture.options, turn_record(TURN)["options"]);
     assert_eq!(capture.turn_id, TURN);
 }
+
+// ---------------------------------------------------------------------------
+// Loop cycles: one record per cycle in the loop's own scope, whichever input
+// started it.
+// ---------------------------------------------------------------------------
+
+/// The scopes the monitor wrote before the loop existed.
+const LEGACY_SCOPES: [&str; 5] = [
+    state::CONFIG_SCOPE,
+    state::OBSERVATION_SCOPE,
+    state::ANALYSIS_SCOPE,
+    state::ASSETS_SCOPE,
+    state::REVIEW_SCOPE,
+];
+
+async fn start_cycle(h: &Harness, request: Value) -> Result<CycleStartResponseV1, EvalError> {
+    runtime::cycle_start(&h.deps, serde_json::from_value(request).unwrap()).await
+}
+
+fn cycle_request(cycle_id: &str) -> CycleIdRequestV1 {
+    serde_json::from_value(json!({"cycle_id": cycle_id})).unwrap()
+}
+
+async fn cycle(h: &Harness, cycle_id: &str) -> CycleRecordV1 {
+    runtime::cycle_status(&h.deps, cycle_request(cycle_id))
+        .await
+        .unwrap()
+        .expect("cycle exists")
+}
+
+fn statuses(record: &CycleRecordV1) -> Vec<CycleStatusV1> {
+    record.history.iter().map(|event| event.status).collect()
+}
+
+fn stored_cycles(h: &Harness) -> Vec<String> {
+    h.world()
+        .state
+        .keys()
+        .filter(|(scope, _)| scope == state::CYCLE_SCOPE)
+        .map(|(_, key)| key.clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn cycle_from_objective_and_from_execution_share_one_history() {
+    let h = Harness::start(World::new()).await;
+    let from_objective = start_cycle(&h, json!({"objective": "  Stop rediscovering contracts  "}))
+        .await
+        .unwrap();
+    let from_execution = start_cycle(&h, json!({"execution_id": "exec-1"}))
+        .await
+        .unwrap();
+    assert_eq!(from_objective.status, CycleStatusV1::Queued);
+    assert_eq!(from_execution.status, CycleStatusV1::Queued);
+    assert_ne!(from_objective.cycle_id, from_execution.cycle_id);
+    assert!(ids::is_cycle(&from_objective.cycle_id));
+    assert!(ids::is_cycle(&from_execution.cycle_id));
+
+    // Both inputs write one record each, of one shape, in the one loop scope.
+    let mut expected = vec![
+        from_objective.cycle_id.clone(),
+        from_execution.cycle_id.clone(),
+    ];
+    expected.sort();
+    assert_eq!(stored_cycles(&h), expected);
+    assert_eq!(h.records(), 0, "a cycle is not a monitor analysis");
+    let objective = cycle(&h, &from_objective.cycle_id).await;
+    let execution = cycle(&h, &from_execution.cycle_id).await;
+    assert_eq!(
+        objective.input,
+        CycleInputV1::Objective("Stop rediscovering contracts".into())
+    );
+    assert_eq!(execution.input, CycleInputV1::ExecutionId("exec-1".into()));
+    let wire = serde_json::to_value(&execution).unwrap();
+    assert_eq!(wire["input"], json!({"execution_id": "exec-1"}));
+    for record in [&objective, &execution] {
+        assert_eq!(record.schema_version, CYCLE_SCHEMA_VERSION);
+        assert_eq!(record.status, CycleStatusV1::Queued);
+        assert_eq!(statuses(record), [CycleStatusV1::Queued]);
+        assert!(record.result.is_none());
+    }
+
+    // Both steps go through the one run queue and advance the same history.
+    assert_eq!(h.world().steps.len(), 2);
+    h.drain().await;
+    for cycle_id in [&from_objective.cycle_id, &from_execution.cycle_id] {
+        let record = cycle(&h, cycle_id).await;
+        assert_eq!(record.status, CycleStatusV1::Running);
+        assert_eq!(
+            statuses(&record),
+            [CycleStatusV1::Queued, CycleStatusV1::Running]
+        );
+        assert_eq!(record.step, 1);
+    }
+
+    // One list holds both, newest first.
+    let listed = runtime::cycle_list(&h.deps, serde_json::from_value(json!({})).unwrap())
+        .await
+        .unwrap()
+        .cycles;
+    let mut listed_ids: Vec<_> = listed.iter().map(|cycle| cycle.cycle_id.clone()).collect();
+    assert!(listed
+        .windows(2)
+        .all(|pair| pair[0].created_at >= pair[1].created_at));
+    listed_ids.sort();
+    assert_eq!(listed_ids, expected);
+    let one = runtime::cycle_list(
+        &h.deps,
+        serde_json::from_value(json!({"limit": 1})).unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(one.cycles.len(), 1);
+    assert!(matches!(
+        runtime::cycle_list(
+            &h.deps,
+            serde_json::from_value(json!({"limit": 0})).unwrap()
+        )
+        .await,
+        Err(EvalError::InvalidRequest(_))
+    ));
+
+    // Exactly one input: none, both or a blank one start nothing.
+    for request in [
+        json!({}),
+        json!({"objective": "Fix it", "execution_id": "exec-1"}),
+        json!({"objective": "   "}),
+        json!({"execution_id": ""}),
+    ] {
+        let refused = start_cycle(&h, request.clone()).await;
+        assert!(
+            matches!(refused, Err(EvalError::InvalidRequest(_))),
+            "{request}: {refused:?}"
+        );
+    }
+    assert_eq!(stored_cycles(&h), expected);
+    assert!(h.world().steps.is_empty());
+}
+
+#[tokio::test]
+async fn cycle_can_be_started_followed_and_canceled() {
+    let mut h = Harness::start(World::new()).await;
+    let started = start_cycle(&h, json!({"objective": "Shorter plans"}))
+        .await
+        .unwrap();
+    let cycle_id = started.cycle_id;
+
+    // Followed: status and result read the same record; no result yet.
+    let queued = runtime::cycle_result(&h.deps, cycle_request(&cycle_id))
+        .await
+        .unwrap()
+        .expect("cycle exists");
+    assert_eq!(queued.cycle.status, CycleStatusV1::Queued);
+    assert!(queued.result.is_none());
+    h.drain().await;
+    let running = runtime::cycle_result(&h.deps, cycle_request(&cycle_id))
+        .await
+        .unwrap()
+        .expect("cycle exists");
+    assert_eq!(running.cycle, cycle(&h, &cycle_id).await);
+    assert_eq!(running.cycle.status, CycleStatusV1::Running);
+    assert!(running.result.is_none());
+    let step_before_cancel = running.cycle.step;
+
+    // Cancelled: the history records it and a step queued before is skipped.
+    let cancelled = runtime::cycle_cancel(&h.deps, cycle_request(&cycle_id))
+        .await
+        .unwrap();
+    assert!(cancelled.cancelled);
+    assert_eq!(cancelled.status, CycleStatusV1::Cancelled);
+    let record = cycle(&h, &cycle_id).await;
+    assert_eq!(record.status, CycleStatusV1::Cancelled);
+    assert!(record.completed_at.is_some());
+    assert_eq!(
+        statuses(&record),
+        [
+            CycleStatusV1::Queued,
+            CycleStatusV1::Running,
+            CycleStatusV1::Cancelled
+        ]
+    );
+    let late = runtime::step(
+        &h.deps,
+        StepRequestV1 {
+            evaluation_id: cycle_id.clone(),
+            step: step_before_cancel,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(late.skipped);
+    assert_eq!(late.status, EvalStatusV1::Cancelled);
+    assert_eq!(cycle(&h, &cycle_id).await, record);
+    // Cancelling a finished cycle leaves it as is.
+    let again = runtime::cycle_cancel(&h.deps, cycle_request(&cycle_id))
+        .await
+        .unwrap();
+    assert!(!again.cancelled);
+    assert_eq!(again.status, CycleStatusV1::Cancelled);
+    assert_eq!(cycle(&h, &cycle_id).await, record);
+
+    // A cycle cancelled before its first step never runs.
+    let early = start_cycle(&h, json!({"execution_id": "exec-2"}))
+        .await
+        .unwrap()
+        .cycle_id;
+    assert!(
+        runtime::cycle_cancel(&h.deps, cycle_request(&early))
+            .await
+            .unwrap()
+            .cancelled
+    );
+    h.drain().await;
+    let record = cycle(&h, &early).await;
+    assert_eq!(
+        statuses(&record),
+        [CycleStatusV1::Queued, CycleStatusV1::Cancelled]
+    );
+
+    // A lost enqueue is resumed after a restart.
+    let lost = start_cycle(&h, json!({"objective": "Resume me"}))
+        .await
+        .unwrap()
+        .cycle_id;
+    h.world().steps.clear();
+    h.restart();
+    runtime::recover(&h.deps).await.unwrap();
+    let resumed: Vec<_> = h
+        .world()
+        .steps
+        .iter()
+        .map(|step| step["evaluation_id"].clone())
+        .collect();
+    assert_eq!(resumed, [json!(lost)]);
+    h.drain().await;
+    assert_eq!(cycle(&h, &lost).await.status, CycleStatusV1::Running);
+
+    // An unknown cycle reads as null and cannot be cancelled.
+    let unknown = "cycle_unknown";
+    assert!(runtime::cycle_status(&h.deps, cycle_request(unknown))
+        .await
+        .unwrap()
+        .is_none());
+    assert!(runtime::cycle_result(&h.deps, cycle_request(unknown))
+        .await
+        .unwrap()
+        .is_none());
+    assert!(matches!(
+        runtime::cycle_cancel(&h.deps, cycle_request(unknown)).await,
+        Err(EvalError::NotFound(_))
+    ));
+}
+
+#[tokio::test]
+async fn legacy_scopes_are_never_read() {
+    let mut world = World::new();
+    // Old records no current type can read; touching one would fail the call.
+    for scope in LEGACY_SCOPES {
+        world.state.insert(
+            (scope.to_string(), "cycle_legacy".to_string()),
+            json!({"legacy": true}),
+        );
+    }
+    let h = Harness::start(world).await;
+    h.world().calls.clear();
+
+    let objective = start_cycle(&h, json!({"objective": "Fewer retries"}))
+        .await
+        .unwrap()
+        .cycle_id;
+    let execution = start_cycle(&h, json!({"execution_id": "exec-3"}))
+        .await
+        .unwrap()
+        .cycle_id;
+    h.drain().await;
+    cycle(&h, &objective).await;
+    runtime::cycle_result(&h.deps, cycle_request(&execution))
+        .await
+        .unwrap()
+        .expect("cycle exists");
+    let listed = runtime::cycle_list(&h.deps, CycleListRequestV1::default())
+        .await
+        .unwrap();
+    assert_eq!(listed.cycles.len(), 2);
+    assert!(
+        runtime::cycle_status(&h.deps, cycle_request("cycle_legacy"))
+            .await
+            .unwrap()
+            .is_none(),
+        "a legacy record is not a cycle"
+    );
+    runtime::cycle_cancel(&h.deps, cycle_request(&execution))
+        .await
+        .unwrap();
+
+    // Every call was the loop's own state or its run queue: no legacy scope,
+    // no user chat, no session.
+    let calls = h.world().calls.clone();
+    assert!(!calls.is_empty());
+    for (function, payload) in &calls {
+        if function == "eval::step" {
+            continue;
+        }
+        assert!(
+            function.starts_with("state::"),
+            "unexpected call to {function}"
+        );
+        assert_eq!(
+            payload["scope"],
+            state::CYCLE_SCOPE,
+            "{function} touched {payload}"
+        );
+    }
+    // The legacy records stay inert: neither migrated nor deleted.
+    for scope in LEGACY_SCOPES {
+        assert_eq!(
+            h.world()
+                .state
+                .get(&(scope.to_string(), "cycle_legacy".to_string())),
+            Some(&json!({"legacy": true}))
+        );
+    }
+}
