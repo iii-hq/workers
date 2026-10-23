@@ -17,7 +17,7 @@ iii trigger compose::add worker=sandbox-builtin
 ```
 
 Calling `sandbox::*` through the router needs iii 0.26 or later; the
-`sandbox-builtin::*` ids work on any engine.
+`sandbox-builtin::*` ids work on iii 0.24 and later.
 
 ## Quickstart
 
