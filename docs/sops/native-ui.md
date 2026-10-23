@@ -188,8 +188,11 @@ that make them stale), the same loop for both.
 
 The CI finds `native-ui/` like `web/` and `ui/`: the `rust` job and the
 binary build set up pnpm and Node and pre-build it, also for the projects of
-a worker's path dependencies (`.github/workflows/ci.yml`). It does not run
-the SDK's own tests (below).
+a worker's path dependencies (`.github/workflows/ci.yml`). The app's own
+suite runs in the `native-ui` job (§6), and a change to the SDK puts every
+worker whose sub-project depends on `@iii-dev/native-ui` in the `rust`
+matrix, so its embedded bundle is rebuilt and tested
+(`discover_changed_workers.py`, `BUNDLED_PACKAGES`).
 
 ## 4. Register with the crate
 
@@ -299,9 +302,15 @@ character outside `[A-Z0-9]` as `_` (`III_IOS_SIMULATOR_NATIVE_UI_WATCH`).
   `native_ui().metadata()["native_ui"]["bundle"]["hash"]` equals
   `iii_native_ui::sha256_hex(BUNDLE)`. The registration machinery itself is
   tested once, in the crate.
-- **The SDK** has no CI job yet: after a change in `packages/native-ui`, run
-  its tests and the tests of the apps that bundle it by hand
-  (`packages/native-ui/README.md` › Working on the package).
+- **In CI**, the `native-ui` job runs when `packages/native-ui/`, any
+  `<worker>/native-ui/`, `crates/native-ui/`, the root `pnpm-lock.yaml` or
+  `pnpm-workspace.yaml` (or the CI itself) changes. It installs only the SDK
+  and the native apps, then runs biome over them, the SDK's typecheck and
+  tests, the freshness of its generated catalogue and conformance files, and
+  every app's `typecheck` and `test` scripts (so a new app needs both, and
+  nothing in the workflow). Locally, the same:
+  `pnpm --filter '@iii-dev/native-ui' test`, `… typecheck`, and
+  `pnpm --filter './<worker>/native-ui' test` / `typecheck`.
 - **On a device**: the iii app lists the worker's app in the environment's
   hub once the worker runs; a bundle with a fatal error shows the app's
   failure screen with Restart and the message in "Copy details".

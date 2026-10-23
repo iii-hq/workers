@@ -61,6 +61,7 @@ jobs:
       integration_changed: ${{ steps.bucket.outputs.integration_changed }}
       llm_router_integration: ${{ steps.bucket.outputs.llm_router_integration }}
       provider_contract: ${{ steps.bucket.outputs.provider_contract }}
+      native_ui: ${{ steps.bucket.outputs.native_ui }}
       any: ${{ steps.bucket.outputs.any }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -654,6 +655,65 @@ jobs:
 
       - name: Run tests
         run: cargo test --locked --all-features
+
+  # ──────────────────────────────────────────────────────────────
+  # Worker native UI: the @iii-dev/native-ui SDK (packages/native-ui) and
+  # every worker's native app built with it (<worker>/native-ui). The rust
+  # matrix only builds an app's bundle on the way to its worker's binary;
+  # this job runs their own suites: the SDK's (the QuickJS harness, the
+  # runtime, the build, the conformance flows), its generated catalogue and
+  # conformance files, biome, and each app's typecheck and tests. discover's
+  # native_ui gates it: the SDK, an app, crates/native-ui, the root pnpm
+  # workspace or this CI changed. A source change in the SDK also puts the
+  # workers that bundle it in the rust matrix (discover's BUNDLED_PACKAGES).
+  # ──────────────────────────────────────────────────────────────
+  native-ui:
+    name: "native-ui: SDK + native apps"
+    needs: discover
+    if: needs.discover.outputs.native_ui == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: 'pnpm'
+          cache-dependency-path: '**/pnpm-lock.yaml'
+
+      - name: Install the SDK and the native apps
+        # Only these packages and their workspace deps (as computer-native
+        # does): an unrelated package must not break this job.
+        run: pnpm --filter '@iii-dev/native-ui...' --filter './*/native-ui...' install --frozen-lockfile
+
+      - name: Biome
+        # packages/native-ui and every <worker>/native-ui.
+        run: |
+          mapfile -t dirs < <(dirname -- */native-ui/package.json)
+          npx --yes @biomejs/biome@2.4.10 ci "${dirs[@]}"
+
+      - name: SDK typecheck
+        run: pnpm --filter '@iii-dev/native-ui' typecheck
+
+      - name: SDK tests
+        run: pnpm --filter '@iii-dev/native-ui' test
+
+      - name: Generated catalogue and conformance files are fresh
+        working-directory: packages/native-ui
+        run: |
+          node scripts/gen-catalog.mjs --check
+          node scripts/gen-conformance.mjs --check
+
+      - name: Native apps typecheck
+        run: pnpm --filter './*/native-ui' --filter '!@iii-dev/native-ui' typecheck
+
+      - name: Native apps tests
+        run: pnpm --filter './*/native-ui' --filter '!@iii-dev/native-ui' test
 
   # ──────────────────────────────────────────────────────────────
   # llm-router lifecycle contract: unlike the regular Rust job, this always
