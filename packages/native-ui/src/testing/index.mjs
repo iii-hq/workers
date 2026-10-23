@@ -73,6 +73,7 @@ class TestHost {
     this.options = o
     this.ns = o.ns ?? 'demo'
     this.appKey = o.appKey ?? `worker:${this.ns}`
+    this.catalog = o.catalog ?? catalog.catalogVersion
     this.envState = { ...DEFAULT_ENV, ...(o.env ?? {}) }
     this.calls = o.calls ?? {}
     this.uiAnswers = o.ui ?? {}
@@ -187,6 +188,11 @@ class TestHost {
     if (!this.ready) {
       this._fail('load', "This bundle didn't call defineApp (no ready during the load)")
     }
+    // The app's version handshake (design §5.6): it never mounts a bundle
+    // that needs a newer catalogue, and shows "Needs a newer iii app".
+    if (this.ready.catalog > this.catalog) {
+      this._fail('catalog', `the bundle needs catalog ${this.ready.catalog}; this host renders ${this.catalog}`)
+    }
     if (this.options.autoInit !== false) this._enqueue([1, this.initInfo()])
     this._report()
   }
@@ -194,7 +200,7 @@ class TestHost {
   /** The `init` info this host sends (design §5.6). */
   initInfo() {
     return {
-      catalog: catalog.catalogVersion,
+      catalog: this.catalog,
       features: [...catalog.features],
       host: this.options.host ?? 'android 0.1.0',
       engine: this.options.engine ?? 'quickjs-emscripten 0.31.0',
@@ -352,8 +358,10 @@ class TestHost {
 
   // ── Requests ──────────────────────────────────────────────────────────────
 
-  _allowed(id) {
-    return typeof id === 'string' && id.startsWith(`${this.ns}::`) && !/^(iii|engine)::/.test(id)
+  /** The host's policy: functions `<ns>::…`; trigger types `<ns>::…` or `<ns>:…`; never `iii::` or `engine::`. */
+  _allowed(id, kind = 'call') {
+    const prefix = kind === 'call' ? `${this.ns}::` : `${this.ns}:`
+    return typeof id === 'string' && id.startsWith(prefix) && !/^(iii|engine)::/.test(id)
   }
 
   _respond(reqId, ok, value) {
@@ -407,8 +415,8 @@ class TestHost {
         )
       }
       case 'on':
-        if (!this._allowed(args.trigger))
-          return this._error(reqId, 'forbidden', `${ns} may only bind ${ns}::… triggers`)
+        if (!this._allowed(args.trigger, 'bind'))
+          return this._error(reqId, 'forbidden', `${ns} may only bind ${ns}:… or ${ns}::… triggers`)
         this.subscriptions.set(args.sub, { trigger: args.trigger, config: args.config ?? {} })
         return this._respond(reqId, true, null)
       case 'off':
@@ -757,13 +765,100 @@ class TestHost {
     await this.settle()
   }
 
-  /** The person picks option `index` of a Segmented (shown at once, then `select`). */
+  /**
+   * The person picks option `index` of a Segmented, or settles on lane
+   * `index` of a Lanes (one lane per page): shown at once, then `select`.
+   */
   async select(target, index) {
-    const { id } = this.find(target)
+    const { id, type } = this.find(target)
+    const n = this.model.nodes.get(id)
+    const selected = propByName(n.type, 'selected')
+    if (type !== 'Segmented' && type !== 'Lanes') throw new Error(`select: node ${id} is a ${type}`)
+    const count = (n.props.get(propByName(n.type, type === 'Lanes' ? 'titles' : 'options').tag) ?? []).length
+    if (!(Number.isInteger(index) && index >= 0 && index < count)) {
+      throw new Error(`select: ${index} is not one of the ${count} ${type === 'Lanes' ? 'lanes' : 'options'} of ${id}`)
+    }
     this._subscribed(id, 'select')
-    this.model.nodes.get(id).props.set(17, index)
+    n.props.set(selected.tag, index)
     this._enqueue([2, id, eventsByName.get('select').tag, [index]])
     await this.settle()
+  }
+
+  /**
+   * The person taps a link of a Markdown: `link [href]`. `href` must be in
+   * its text, before `limits.maxMarkdownChars` (the host draws no further).
+   */
+  async link(target, href) {
+    const node = this.find(target)
+    if (node.type !== 'Markdown') throw new Error(`link: node ${node.id} is a ${node.type}`)
+    const text = typeof node.props?.text === 'string' ? node.props.text : ''
+    const at = text.indexOf(href)
+    if (at < 0) throw new Error(`link: the text of Markdown ${node.id} has no ${JSON.stringify(href)}`)
+    if (at >= catalog.limits.maxMarkdownChars) {
+      throw new Error(`link: ${JSON.stringify(href)} is past limits.maxMarkdownChars, which the host does not draw`)
+    }
+    await this.emit(node.id, 'link', [href])
+  }
+
+  /**
+   * The person drags item `key` out of the List `source` (default: the
+   * target, a reorder) and drops it on the List `target` at `index`, its
+   * position among the target's items once it is out of its old place:
+   * `drop [key, index, source id]` on the target. Both Lists need the same
+   * `dragGroup`. Like the device host, the lists show what the script
+   * leaves: a script that does not splice them puts the item back.
+   */
+  async drop(target, key, index, source = target) {
+    const to = this._list(target, 'drop')
+    const from = this._list(source, 'drop')
+    const group = to.props.get(propByName(to.type, 'dragGroup').tag)
+    if (group == null) throw new Error(`drop: List ${to.id} has no dragGroup`)
+    if (from.props.get(propByName(from.type, 'dragGroup').tag) !== group) {
+      throw new Error(`drop: List ${from.id} is not in the drag group ${JSON.stringify(group)}`)
+    }
+    const keyField = from.props.get(16) ?? 'key'
+    if (!from.items.some((it) => it[keyField] === key)) {
+      throw new Error(`drop: List ${from.id} has no item ${JSON.stringify(key)}`)
+    }
+    const max = to.items.length - (to === from ? 1 : 0)
+    if (!(Number.isInteger(index) && index >= 0 && index <= max)) {
+      throw new Error(`drop: index ${index} is out of 0..${max} in List ${to.id}`)
+    }
+    const tag = this._subscribed(to.id, 'drop')
+    this._enqueue([2, to.id, tag, [key, index, from.id]])
+    await this.settle()
+  }
+
+  _list(target, what) {
+    const { id, type } = this.find(target)
+    if (type !== 'List') throw new Error(`${what}: node ${id} is a ${type}, not a List`)
+    return this.model.nodes.get(id)
+  }
+
+  /** A List's items, as the host holds them. */
+  items(target) {
+    return this.model.view(this._list(target, 'items').id).items
+  }
+
+  /** The keys of a List's items, in order. */
+  keys(target) {
+    const list = this._list(target, 'keys')
+    const keyField = list.props.get(16) ?? 'key'
+    return list.items.map((it) => it[keyField])
+  }
+
+  /** A Lanes as the host draws it: `titles`, `counts` (null entries for none), `selected` and its lanes' nodes. */
+  lanes(target) {
+    const node = this.find(target)
+    if (node.type !== 'Lanes') throw new Error(`lanes: node ${node.id} is a ${node.type}`)
+    const titles = node.props?.titles ?? []
+    const counts = node.props?.counts ?? []
+    return {
+      titles,
+      counts: titles.map((_, i) => counts[i] ?? null),
+      selected: node.props?.selected ?? 0,
+      lanes: node.slots?.lanes ?? [],
+    }
   }
 
   /**

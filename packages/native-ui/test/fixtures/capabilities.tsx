@@ -8,6 +8,14 @@ function Root() {
       (v) => setOut(`ok ${JSON.stringify(v ?? null)}`),
       (e: IiiError) => setOut(`error ${e instanceof IiiError ? e.code : 'other'}: ${e.message}`),
     )
+  const bind = (type: string) => {
+    try {
+      const off = iii.on(type, {}, () => {})
+      off.ready.then(() => setOut(`bound ${type}`))
+    } catch (e) {
+      setOut(`threw ${(e as IiiError).code}: ${(e as Error).message}`)
+    }
+  }
   const actions: Record<string, () => void> = {
     'call-own': () => show(iii.call('demo::echo', { a: 1 }, { timeoutMs: 999_999 })),
     'call-missing': () => show(iii.call('demo::missing')),
@@ -16,14 +24,12 @@ function Root() {
     'call-slow': () => show(iii.call('demo::slow', {}, { timeoutMs: 1000 })),
     'call-other': () => show(iii.call('state::get', {})),
     'call-engine': () => show(iii.call('engine::functions::list', {})),
-    'bind-other': () => {
-      try {
-        iii.on('state::changed', {}, () => {})
-        setOut('bound')
-      } catch (e) {
-        setOut(`threw ${(e as IiiError).code}: ${(e as Error).message}`)
-      }
-    },
+    'bind-other': () => bind('state::changed'),
+    'bind-engine': () => bind('engine::functions-changed'),
+    'bind-longer-ns': () => bind('demos:changed'),
+    'bind-colon': () => bind('demo:ticket-changed'),
+    'bind-double-colon': () => bind('demo::changed'),
+    'call-colon': () => show(iii.call('demo:echo', {})),
     toast: () => iii.ui.toast('Saved', 'success'),
     confirm: () => show(iii.ui.confirm({ title: 'Clear?', confirm: 'Clear', destructive: true })),
     prompt: () => show(iii.ui.prompt({ title: 'Name', confirm: 'OK', keyboard: 'url', mono: true })),

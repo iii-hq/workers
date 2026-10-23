@@ -14,7 +14,16 @@
  * a node again later, it goes out again under a new id.
  */
 
-import { COMMON_PROPS, ENUMS, type EnumName, OP, type PropSpec, TYPES, type TypeSpec } from '../generated/catalog'
+import {
+  COMMON_PROPS,
+  ENUMS,
+  type EnumName,
+  OP,
+  type PropSpec,
+  SINCE,
+  TYPES,
+  type TypeSpec,
+} from '../generated/catalog'
 import type { NodeRef } from '../types'
 import { dropLastEntry, ids, lastEntry, onFlush, push, schedule } from './wire'
 
@@ -105,6 +114,23 @@ export function nodeById(id: unknown): ElementNode | undefined {
   return liveById.get(id as number)
 }
 
+/** The catalogue version the app declared in `defineApp` (what its `ready` says). */
+export const appCatalog = { version: 1 }
+
+/**
+ * Warns once when `name` (a type, `Type.prop` or `Type.onEvent`) is newer
+ * than the declared catalogue: an iii app of that older catalogue would
+ * still run the bundle, and draw a placeholder or ignore the prop.
+ */
+export function checkSince(name: string): void {
+  const since = SINCE[name]
+  if (since !== undefined && since > appCatalog.version) {
+    warnOnce(
+      `${name} is catalogue ${since}, and this app declares ${appCatalog.version}: defineApp({ catalog: ${since}, … }), and NativeUi::catalog(${since}) in the worker`,
+    )
+  }
+}
+
 export function createNode(typeName: string): ElementNode {
   const spec = (TYPES as unknown as Record<string, TypeSpec>)[typeName]
   if (!spec) {
@@ -112,6 +138,7 @@ export function createNode(typeName: string): ElementNode {
       `<${typeName}> is not a native-ui component: use the components of @iii-dev/native-ui (Column, Text, Button, …)`,
     )
   }
+  checkSince(typeName)
   return new ElementNode(typeName, spec)
 }
 
@@ -247,6 +274,20 @@ function defaultsOf(node: ElementNode): Map<number, unknown> {
     defaultsByType.set(node.typeName, d)
   }
   return d
+}
+
+const specsByType = new Map<string, Map<number, PropSpec>>()
+
+/** The spec of prop `tag` of `node` (its type's, then the common ones). */
+export function propSpecOf(node: ElementNode, tag: number): PropSpec | undefined {
+  let specs = specsByType.get(node.typeName)
+  if (!specs) {
+    specs = new Map()
+    for (const spec of Object.values(COMMON_PROPS)) specs.set(spec[0], spec)
+    for (const spec of Object.values(node.spec.props)) specs.set(spec[0], spec)
+    specsByType.set(node.typeName, specs)
+  }
+  return specs.get(tag)
 }
 
 /** Same wire value (props hold primitives, small arrays and binding objects). */
@@ -401,6 +442,7 @@ export function encodeProp(spec: PropSpec, value: unknown, label: string): unkno
 
 /** Sets a prop or an event handler by its JSX name (`gap`, `onPress`). */
 export function setNamedProp(node: ElementNode, name: string, value: unknown): void {
+  if (value !== undefined && value !== null) checkSince(`${node.typeName}.${name}`)
   const spec = node.spec.props[name] ?? (name === 'events' ? undefined : COMMON_PROPS[name])
   if (spec) {
     setProp(node, spec[0], encodeProp(spec, value, `${node.typeName}.${name}`))

@@ -20,8 +20,10 @@ import type {
   IconButtonProps,
   IconProps,
   ImageProps,
+  LanesProps,
   ListDetailProps,
   ListRowProps,
+  MarkdownProps,
   PageProps,
   ProgressProps,
   RemoteScreenProps,
@@ -177,6 +179,14 @@ export const EmptyState = make<EmptyStateProps>('EmptyState')
 export const Image = make<ImageProps>('Image')
 export const StatusPanel = make<StatusPanelProps>('StatusPanel')
 
+/**
+ * CommonMark (GFM tables, strikethrough, autolinks) drawn by the app's chat
+ * renderer; the JSX children become its `text`. The host never opens a
+ * link: a tap is `onLink(href)`, and the script decides (`iii.openUrl`,
+ * `iii.nav.push`). Without `onLink`, a tap on a link does nothing.
+ */
+export const Markdown = makeText<MarkdownProps>('Markdown')
+
 // ── Inputs ──────────────────────────────────────────────────────────────────
 
 export const Button = makeText<ButtonProps>('Button')
@@ -253,6 +263,21 @@ export function Segmented(props: SegmentedProps): JSX.Element {
 
 export const ListRow = make<ListRowProps>('ListRow')
 export const Card = make<CardProps>('Card')
+
+/**
+ * Lanes side by side (columns) or one per page under a tab strip: the host
+ * picks from its width and `laneWidth`. Its children are the lanes, one per
+ * title, in order (usually a `List` each). `onSelect(index)` is optimistic
+ * like Segmented's: keep `selected` in a signal it updates, or the host
+ * goes back to the lane `selected` says.
+ */
+export function Lanes(props: LanesProps): JSX.Element {
+  const node = createNode('Lanes')
+  applyProps(node, props as AnyProps)
+  applySlots(node, props as AnyProps)
+  resyncAfter(node, EVENTS.select, 18, (v) => (typeof v === 'number' ? Math.trunc(v) : 0))
+  return node as unknown as JSX.Element
+}
 
 // ── Page chrome, overlays, high level ───────────────────────────────────────
 

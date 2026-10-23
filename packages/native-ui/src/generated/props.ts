@@ -10,6 +10,7 @@ import type {
   ChipTone,
   CrossAlign,
   DotTone,
+  Hue,
   ImageFit,
   ImeAction,
   KeyboardType,
@@ -107,6 +108,8 @@ export interface IconProps extends CommonProps {
   name?: Prop<IconName>
   size?: Prop<number>
   tone?: Prop<Tone>
+  /** Not none: this named color (the app's agent and project colors) instead of the tone. */
+  hue?: Prop<Hue>
 }
 
 /** Badge (12). */
@@ -114,6 +117,8 @@ export interface BadgeProps extends CommonProps {
   text?: Prop<string>
   variant?: Prop<BadgeVariant>
   icon?: Prop<IconName>
+  /** Not none: this named color (the app's agent and project colors) instead of the variant. */
+  hue?: Prop<Hue>
   /** Text children become the `text` prop (in a List template, one bound field may be the text). */
   children?: JSX.Element | Binding
 }
@@ -123,6 +128,8 @@ export interface StatusDotProps extends CommonProps {
   tone?: Prop<DotTone>
   pulse?: Prop<boolean>
   size?: Prop<number>
+  /** Not none: this named color (the app's agent and project colors) instead of the tone. */
+  hue?: Prop<Hue>
 }
 
 /** Spinner (14). */
@@ -165,6 +172,18 @@ export interface StatusPanelProps extends CommonProps {
   action?: JSX.Element
   /** Slot 0 (`action`). */
   children?: JSX.Element
+}
+
+/** Markdown (19). */
+export interface MarkdownProps extends CommonProps {
+  /** CommonMark with GFM tables, strikethrough and autolinks, drawn by the app's chat renderer. Past limits.maxMarkdownChars the host draws the start and a note. Images show as their alt text (the host fetches nothing); raw HTML shows as text. */
+  text?: Prop<string>
+  selectable?: Prop<boolean>
+  /** The small type of a comment or a card; false = body. */
+  dense?: Prop<boolean>
+  onLink?: (href: string) => void
+  /** Text children become the `text` prop (in a List template, one bound field may be the text). */
+  children?: JSX.Element | Binding
 }
 
 /** Button (20). */
@@ -243,6 +262,8 @@ export interface ChipProps extends CommonProps {
   selected?: Prop<boolean>
   tone?: Prop<ChipTone>
   enabled?: Prop<boolean>
+  /** Not none: this named color (the app's agent and project colors) instead of the tone. */
+  hue?: Prop<Hue>
   onPress?: (item?: any) => void
   onLongPress?: (item?: any) => void
   /** Text children become the `text` prop (in a List template, one bound field may be the text). */
@@ -255,8 +276,11 @@ export interface ListBaseProps extends CommonProps {
   dividers?: Prop<boolean>
   refreshing?: Prop<boolean>
   contentPadding?: Prop<Padding>
+  /** Not null: a long press lifts an item, and it can be dragged to any List with the same group (this one included: a reorder); releasing it fires drop on the List under it. A long press released without moving still fires the item's longPress. Inside Lanes, holding a dragged item over a tab (or near the side in columns) for 400 ms brings that lane; releasing it on a tab drops it at index 0 of the first List in that lane. */
+  dragGroup?: Prop<string>
   onRefresh?: (item?: any) => void
   onEndReached?: (item?: any) => void
+  onDrop?: (key: string | number, index: number, source: NodeRef | null) => void
   header?: JSX.Element
   empty?: JSX.Element
   footer?: JSX.Element
@@ -289,6 +313,22 @@ export interface CardProps extends CommonProps {
   children?: JSX.Element
 }
 
+/** Lanes (33). */
+export interface LanesProps extends CommonProps {
+  /** One per lane, in order. */
+  titles?: Prop<readonly string[]>
+  /** Per lane, a short text after the title (a count: 5, 99+); null or a missing entry = none. */
+  counts?: Prop<readonly string[]>
+  /** One lane per page: the lane in view. Columns: the lane the host scrolls into view when this changes. */
+  selected?: Prop<number>
+  /** The width of a column. The host shows columns side by side when at least two fit its width (they share the width when all fit), else one lane per page under a tab strip. */
+  laneWidth?: Prop<number>
+  onSelect?: (index: number) => void
+  lanes?: JSX.Element
+  /** Slot 0 (`lanes`). */
+  children?: JSX.Element
+}
+
 /** Page (40). */
 export interface PageProps extends CommonProps {
   title?: Prop<string>
@@ -309,6 +349,8 @@ export interface ListDetailProps extends CommonProps {
   listTitle?: Prop<string>
   showDetail?: Prop<boolean>
   detailFullHeight?: Prop<boolean>
+  /** Wide only: while showDetail is false the list takes the whole width (no detail column, no emptyDetail, no hide button); with showDetail the list has its usual width beside the detail. */
+  listFill?: Prop<boolean>
   onDismiss?: (item?: any) => void
   list?: JSX.Element
   detail?: JSX.Element

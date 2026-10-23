@@ -93,7 +93,8 @@ export const DESIGN_EXAMPLES = [
   { id: 'env.change', dir: 'toVm', message: '[[5,{"windowClass":"wide"}]]' },
 ]
 
-const DESIGN_HOST = { host: 'android 0.1.0', engine: 'quickjs-ng 0.17.0' }
+/** The host of the §5.7 strings: an app of catalogue 1, as the design writes its `init`. */
+const DESIGN_HOST = { host: 'android 0.1.0', engine: 'quickjs-ng 0.17.0', catalog: 1 }
 
 /** The flows; each runs on a fresh host with the app built from conformance/apps/<app>.tsx. */
 export const FLOWS = [
@@ -288,7 +289,7 @@ export async function runFlow(flow, bundle) {
     const out = {
       name: flow.name,
       description: flow.description,
-      catalog: 1,
+      catalog: host.ready.catalog,
       encoding: 'json-v0',
       app: `conformance/apps/${flow.app}.tsx`,
       ns: flow.host.ns,
