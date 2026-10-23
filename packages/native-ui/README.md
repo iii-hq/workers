@@ -277,7 +277,9 @@ const tabs = createList<Tab>({ key: 'key', kind: 'kind' })
   The harness fires it with `itemEmit(list, key, node, 'link', [href])`.
 - `createList({ key, kind?, items? })`: `items()` (reactive), `set(all)`
   (only what changed travels: the changed positions when keys keep their
-  order, else one splice between the common head and tail), `splice`,
+  order, else one splice between the common head and tail; an item that is
+  the same object as before is skipped without a comparison, so keep the
+  unchanged ones when you can), `splice`,
   `update(key, patch)`, `remove(key)`, `get(key)`. Treat items as immutable
   JSON; change them through the source.
 - Keys must be unique: the host logs a duplicate (and suffixes it), the
@@ -466,7 +468,10 @@ indexes in range, no node left detached at the end of a batch, bindings only
 in templates, prop values of their catalogue type (and bound item fields
 too), messages within `limits.maxMessageBytes`. Its policy is the host's:
 calls to `<ns>::…`, bindings of `<ns>::…` and `<ns>:…`. Any violation or uncaught VM error fails the
-action (`strict: false` to only record them). `rawRequests: true` exposes a
+action (`strict: false` to only record them). Like the device, a step
+that passes its deadline fails with `watchdog` even when the interrupt
+landed in a promise job (QuickJS turns it into a rejection there), and
+running out of memory in a timer or a microtask fails with `memory`. `rawRequests: true` exposes a
 test-only `__iiiui_request(method, args)` in the VM that skips the SDK's own
 checks, to show what the host answers to a request the SDK would refuse.
 
