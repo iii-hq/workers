@@ -15,9 +15,13 @@ listener, while at the boundary it:
 - **namespaces** a session's registrations behind `function_registration_prefix`,
 - runs **middleware** and the three **registration hooks**, and
 - **rewrites the results of the eight `engine::*` discovery functions** so a
-  caller only ever sees the surface it is allowed to invoke, and
-- **forwards only the frame types it knows**: anything else is dropped, so a
-  protocol addition stays closed until the proxy learns to gate it.
+  caller only ever sees the surface it is allowed to invoke,
+- **pins identities**: a proxied worker registers as `rbac-proxy:<declared
+  name>`, and an `engine::*` call is forwarded only as a direct call (a queued
+  one is refused), so a session never runs anything as a trusted worker, and
+- **forwards only the frame types it knows, and only text frames from the
+  client**: anything else, a binary frame included, is dropped, so a protocol
+  addition stays closed until the proxy learns to gate it.
 
 It is the [`console`](https://github.com/iii-hq/workers/tree/main/ade) reverse-proxy pattern (`src/proxy.rs`: one
 outbound engine WebSocket per inbound connection) with an RBAC interceptor
@@ -88,6 +92,10 @@ namespaces a connection may declare, and `allowed_functions` applies in
 `default` only. `on_observer_registration_function_id` is accepted (so an
 engine `rbac` block copies over unchanged) but not called yet; see below.
 
+A call through the middleware waits up to 610 s for it (a middleware that
+forwards with its own timeout should use 600 s or less), and a connection that
+does not finish its upgrade headers within 10 s is closed.
+
 Hot reload: a `host`/`port` change rebinds the public listener (last-good on
 bind failure — the previous listener *and* config are kept); everything else
 (`engine_url`, `rbac.*`, `middleware_function_id`, `expose_worker_internals`)
@@ -111,8 +119,8 @@ Workers behind the proxy keep `registerTrigger`, which the 0.25 engine still
 serves. Details: [`protocol-interception.md § iii 0.25 observe`](https://github.com/iii-hq/workers/blob/main/tech-specs/2026-06-rbac-proxy-worker/protocol-interception.md#iii-025-observe).
 
 > **Security.** Only the proxy's RBAC port should face untrusted networks.
-> Always set `auth_function_id` on a public proxy — with no auth function,
-> `expose_functions` alone gates access and every connection is admitted.
+> Set `auth_function_id`: with none, every upgrade is refused. The stored
+> default has none, so a proxy that lost its configuration stays closed.
 
 ## Functions
 

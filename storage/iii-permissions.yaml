@@ -1,0 +1,25 @@
+# Agent permissions for the storage worker.
+version: 1
+
+rules:
+  # Console asset delivery and the reload sinks are engine plumbing, never
+  # agent-callable. The reload handlers re-fetch the authoritative value and
+  # ignore their payload; the denies close the surface anyway.
+  - '!storage::ui-content'
+  - '!storage::on-config-change'
+  - '!storage::on-secret-change'
+  # Bucket management is the human's call, made from a bucket editor (the
+  # console, the app): like configuration::set, these rewrite which providers
+  # and credentials the worker uses. getBucket returns the stored entry
+  # (literals redacted, but references, endpoints and key ids intact).
+  - '!storage::saveBucket'
+  - '!storage::deleteBucket'
+  - '!storage::getBucket'
+  # testBucket signs requests with the credentials the candidate references,
+  # toward whatever endpoint the candidate names.
+  - '!storage::testBucket'
+  # Reads are safe to allow by default.
+  - storage::listBuckets
+  - storage::listObjects
+  - storage::headObject
+  - storage::getObject

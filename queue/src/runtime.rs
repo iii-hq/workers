@@ -1375,15 +1375,13 @@ mod tests {
         ) {
         }
 
-        async fn subscribe(
+        async fn subscribe_target(
             &self,
             _topic: &str,
             _id: &str,
-            _function_id: &str,
-            _metadata: Option<serde_json::Value>,
+            _target: crate::trigger::SubscriberTarget,
             _condition_function_id: Option<String>,
             _queue_config: Option<crate::subscriber_config::SubscriberQueueConfig>,
-            _namespace: Option<String>,
         ) {
         }
 

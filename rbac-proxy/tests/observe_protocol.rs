@@ -43,8 +43,12 @@ fn without_features(v: &mut Value) {
     v.as_object_mut().unwrap().remove("features");
 }
 
-fn without_data_features(v: &mut Value) {
+/// The register call as the engine gets it: no features, and the name pinned
+/// behind the proxy's `rbac-proxy:` prefix.
+fn registered_through_proxy(v: &mut Value) {
     v["data"].as_object_mut().unwrap().remove("features");
+    let name = v["data"]["name"].as_str().unwrap();
+    v["data"]["name"] = json!(format!("rbac-proxy:{name}"));
 }
 
 fn without_observe(v: &mut Value) {
@@ -78,7 +82,7 @@ fn expectation(file: &str) -> Expect {
         "registerfunction-owner.json" => ForwardedDownstream(without_observe),
         "registerfunction-not-observable.json" => ForwardedDownstream(opt_out_only),
         "invokefunction-legacy.json" => ForwardedDownstream(unchanged),
-        "invokefunction-workers-register.json" => ForwardedDownstream(without_data_features),
+        "invokefunction-workers-register.json" => ForwardedDownstream(registered_through_proxy),
         "unregistertriggertype.json" => ForwardedDownstream(unchanged),
 
         // Engine → worker.

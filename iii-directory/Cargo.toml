@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-directory"
-version = "1.2.42"
+version = "1.2.43"
 edition = "2021"
 publish = false
 

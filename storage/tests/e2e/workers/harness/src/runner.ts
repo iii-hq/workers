@@ -22,6 +22,7 @@ import {
 } from './cases-edge.ts';
 import { buildProviderQuirkCases } from './cases-provider.ts';
 import { buildConcurrencyCases } from './cases-concurrency.ts';
+import { buildBucketCases, buildRangeCases } from './cases-buckets.ts';
 
 interface CaseResult {
   case: string;
@@ -497,6 +498,15 @@ export class Runner {
     // 4. Negative-path suite (runs against local).
     for (const c of ERROR_CASES) {
       if (!accept(c)) continue;
+      record(await this.runCase(c));
+    }
+
+    // 4b. Ranged reads, then bucket management. Bucket edits rewrite the
+    // worker's configuration (each reload keeps the untouched buckets and
+    // their notification pollers), so they run after every other suite.
+    for (const c of [...buildRangeCases(providers), ...buildBucketCases(providers)]) {
+      if (!accept(c)) continue;
+      if (c.provider && downProviders.has(c.provider)) { recordSkip(c); continue; }
       record(await this.runCase(c));
     }
 

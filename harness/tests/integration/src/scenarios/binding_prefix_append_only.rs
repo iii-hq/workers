@@ -8,7 +8,8 @@
 //! second. Turn 2 arrives through a probe send that moves the working
 //! directory (the runtime aid frozen into the system prompt), makes one more
 //! call and answers. The queue drain and the runtime-context notice must
-//! reach the model as appended messages, never as rewrites.
+//! reach the model as appended messages, never as rewrites. Every assistant
+//! entry's `origin.req` fingerprints the request the router received.
 
 use serde_json::json;
 
@@ -148,6 +149,9 @@ pub(super) fn scenario() -> ScenarioFixture {
                 && last.contains("Your working directory is /tmp/int-036"),
             "turn 2 step 0 does not end with the runtime-context notice: {last:?}"
         );
+        // Each step's stamped `origin.req` is the digest of the request the
+        // router actually received.
+        run.expect_request_fingerprints()?;
         run.expect_append_only_requests()
     })
     .build()

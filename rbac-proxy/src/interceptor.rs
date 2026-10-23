@@ -81,6 +81,14 @@ const OBSERVER_FUNCTIONS_PREFIX: &str = "engine::observers::";
 /// `RegistrationRejected.code` for a namespace the session may not declare.
 const NAMESPACE_FORBIDDEN: &str = "NAMESPACE_FORBIDDEN";
 
+/// How long a call routed through the middleware may run. The SDK default
+/// (30 s) would cut the client's longer calls short while the work goes on;
+/// the client keeps its own timeout.
+const MIDDLEWARE_TIMEOUT_MS: u64 = 610_000;
+
+/// Prefix of every worker name a proxied connection declares.
+const WORKER_NAME_PREFIX: &str = "rbac-proxy:";
+
 /// Observe error code for what this proxy does not support.
 const UNSUPPORTED: &str = "UNSUPPORTED";
 
@@ -518,6 +526,19 @@ impl Interceptor {
             return self.deny_invoke(&function_id, inv_id, &v);
         }
 
+        // An engine:: call reaches the trusted listener as is: queued, it would
+        // run later on the queue worker's own connection, as that worker. Only
+        // a direct call (no action, or void) goes through.
+        if target.starts_with("engine::") && !is_direct_call(&v) {
+            return self.reply_invoke_error(
+                &function_id,
+                inv_id,
+                &v,
+                "FORBIDDEN",
+                &format!("function '{function_id}' may only be called directly through rbac-proxy"),
+            );
+        }
+
         if target == "engine::workers::register" {
             return self.on_register_worker(v, inv_id).await;
         }
@@ -629,6 +650,11 @@ impl Interceptor {
         }
         if let Some(data) = v.get_mut("data").and_then(Value::as_object_mut) {
             retain_supported_features(data);
+            // A proxied worker cannot claim a trusted worker's name (the engine
+            // keeps one live worker per name and rejects the other one).
+            if let Some(Value::String(name)) = data.get_mut("name") {
+                *name = format!("{WORKER_NAME_PREFIX}{name}");
+            }
         }
         DownstreamAction::Forward(v.to_string())
     }
@@ -719,7 +745,7 @@ impl Interceptor {
                 function_id: mw_id,
                 payload: input,
                 action: None,
-                timeout_ms: None,
+                timeout_ms: Some(MIDDLEWARE_TIMEOUT_MS),
             }
             .namespace(namespace);
             if let Some(metadata) = metadata {
@@ -902,6 +928,14 @@ fn retain_supported_features(obj: &mut serde_json::Map<String, Value>) {
     }
 }
 
+/// No `action`, or a void one: the call runs now, on the caller's connection.
+fn is_direct_call(v: &Value) -> bool {
+    match v.get("action") {
+        None | Some(Value::Null) => true,
+        Some(action) => action.get("type").and_then(Value::as_str) == Some("void"),
+    }
+}
+
 /// `RegisterFunction.observe` (iii 0.25) declares how the function is
 /// observed: owner delivery, an args schema, and a `legacy_trigger_type` that
 /// makes it the stand-in for an old trigger type. None of it is gated by the
@@ -1035,6 +1069,56 @@ mod tests {
         assert_eq!(
             r["error"]["message"],
             "function 'secret::do' not allowed (add to rbac.expose_functions)"
+        );
+    }
+
+    #[tokio::test]
+    async fn queued_engine_call_is_refused() {
+        let i = interceptor(config_with(expose(&["api::*"]), None), session(None));
+        let frame = json!({
+            "type": "invokefunction",
+            "invocation_id": "22222222-2222-2222-2222-222222222222",
+            "function_id": "engine::workers::register",
+            "data": { "name": "browser:x", "runtime": "browser" },
+            "action": { "type": "enqueue", "queue": "default" }
+        });
+        let DownstreamAction::ReplyToClient(reply) = i.handle_downstream(&frame.to_string()).await
+        else {
+            panic!("expected a synthesized refusal");
+        };
+        let r: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(r["error"]["code"], "FORBIDDEN");
+    }
+
+    #[tokio::test]
+    async fn declared_worker_name_is_prefixed() {
+        let i = interceptor(config_with(expose(&["api::*"]), None), session(None));
+        let frame = json!({
+            "type": "invokefunction",
+            "function_id": "engine::workers::register",
+            "data": { "name": "queue", "runtime": "browser" },
+            "action": { "type": "void" }
+        });
+        let DownstreamAction::Forward(out) = i.handle_downstream(&frame.to_string()).await else {
+            panic!("expected the registration forwarded");
+        };
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["data"]["name"], "rbac-proxy:queue");
+    }
+
+    #[tokio::test]
+    async fn void_worker_registration_still_goes_through() {
+        let i = interceptor(config_with(expose(&["api::*"]), None), session(None));
+        let frame = json!({
+            "type": "invokefunction",
+            "function_id": "engine::workers::register",
+            "data": { "name": "browser:x", "runtime": "browser" },
+            "action": { "type": "void" }
+        });
+        let action = i.handle_downstream(&frame.to_string()).await;
+        assert!(
+            matches!(action, DownstreamAction::Forward(_)),
+            "got {action:?}"
         );
     }
 
@@ -1380,7 +1464,7 @@ mod tests {
         });
         let o = forwarded(i.handle_downstream(&register.to_string()).await);
         assert!(o["data"].get("features").is_none());
-        assert_eq!(o["data"]["name"], "w");
+        assert_eq!(o["data"]["name"], "rbac-proxy:w");
 
         let registered = json!({
             "type": "workerregistered",
