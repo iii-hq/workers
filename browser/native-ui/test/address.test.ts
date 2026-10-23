@@ -62,7 +62,7 @@ describe('the web-address gate (D10)', () => {
     expect(webAddress('example.com')).toBe('https://example.com')
     expect(webAddress('localhost:3000/x')).toBe('http://localhost:3000/x')
     expect(webAddress('[::1]:8080')).toBe('http://[::1]:8080')
-    expect(webAddress('iii.dev@evil.example')).toBe('https://iii.dev@evil.example')
+    expect(webAddress('bank.example@evil.example')).toBe('https://bank.example@evil.example')
     expect(webAddress('bücher.de')).toBe('https://bücher.de')
   })
 

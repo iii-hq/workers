@@ -95,7 +95,7 @@ describe('adversarial: the address bar', () => {
   // held: a credential in the URL names its real host; a bracketed IPv6 local host gets http.
   it('a URL with credentials names its real host; a bracketed IPv6 local host gets http', async () => {
     const { host } = await opened('t1')
-    await go(host, 'iii.dev@evil.example')
+    await go(host, 'bank.example@evil.example')
     expect(host.find('tab').props?.subtitle).toBe('evil.example')
     await go(host, '[::1]:8080')
     expect(navigates(host).at(-1)).toBe('http://[::1]:8080')
