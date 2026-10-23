@@ -638,7 +638,9 @@ async fn a_resize_over_a_static_page_brings_a_frame_of_the_new_size() {
         json!({ "session_id": id, "viewer_id": "android-static", "scale": 2.0 }),
     )
     .await;
-    let mut frame = frame_sized(&client, &id, 0, (412, 860)).await;
+    // At the default `frame_density` (2), the viewer's scale 2 doubles
+    // every frame, Chromium's and the worker's own capture alike.
+    let mut frame = frame_sized(&client, &id, 0, (824, 1720)).await;
     evaluate(&client, &id, "scrollTo(0, 1200); true").await;
     for (width, height) in [(412, 600), (412, 860), (800, 700), (419, 337)] {
         let asked = Instant::now();
@@ -649,7 +651,7 @@ async fn a_resize_over_a_static_page_brings_a_frame_of_the_new_size() {
                     "device_scale_factor": 2.625, "mobile": true, "fit": true }),
         )
         .await;
-        let next = frame_sized(&client, &id, frame_seq(&frame), (width, height)).await;
+        let next = frame_sized(&client, &id, frame_seq(&frame), (width * 2, height * 2)).await;
         eprintln!(
             "resize to {width}x{height}: a frame of the new size after {} ms",
             asked.elapsed().as_millis()
@@ -664,12 +666,12 @@ async fn a_resize_over_a_static_page_brings_a_frame_of_the_new_size() {
     client.shutdown_async().await;
 }
 
-/// At the default `frame_density` (1) a named viewer's `scale` above 1
-/// cannot sharpen anything: frames stay CSS-sized. Below 1 it shrinks them
-/// (less to send), unless the console also watches.
+/// At `frame_density` 1 a named viewer's `scale` above 1 cannot sharpen
+/// anything: frames stay CSS-sized. Below 1 it shrinks them (less to send),
+/// unless the console also watches.
 #[tokio::test]
 async fn frame_density_one_keeps_css_frames_and_a_small_scale_shrinks_them() {
-    let Some(h) = boot("  max_sessions: 4\n").await else {
+    let Some(h) = boot("  frame_density: 1\n").await else {
         eprintln!("skipping: `iii` or Chromium not available");
         return;
     };

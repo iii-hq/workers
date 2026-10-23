@@ -518,7 +518,7 @@ browser:
   max_timeout_ms: 120000    # ceiling; caller timeout_ms clamped DOWN to this
   inactive_after_ms: 1800000 # unused, unwatched tabs sleep after this (incognito closes); 0 disables
   screenshot_quality: 60    # JPEG quality 1-100 (screenshots and live-view frames)
-  frame_density: 1          # 1-3: device pixels per CSS pixel the live view can stream; see below
+  frame_density: 2          # 1-3: device pixels per CSS pixel the live view can stream; see below
   allowed_schemes: [http, https, file]  # `file` lets a local document be rendered; see below
   max_snapshot_nodes: 2000  # a11y outline size cap
   default_origin_policy:    # omitted fields default to allow
@@ -554,16 +554,20 @@ browser:
     adaptive_max_bytes: 268435456 # safe only; compat preserves the unbounded wrapper behavior
 ```
 
-`frame_density` above 1 launches Chromium with
+`frame_density` (default 2) launches Chromium with
 `--force-device-scale-factor`, so a native viewer on a dense screen can ask
 for frames at up to that many pixels per CSS pixel (see
-[Live view for native viewers](#live-view-for-native-viewers)). It is a
-trade-off, which is why the default stays 1: the setting is the whole
+[Live view for native viewers](#live-view-for-native-viewers)). At 1 a
+phone's view gets about 41% of the pixels it shows, and text is blurry; at
+2, about 82%. Measured against 1, the tap-to-frame time (about 90 ms) and
+the frame rate (28-30) do not change; a viewer streaming at scale 2
+receives about 2.5x the bytes per frame, and only while the page changes (a
+412x915 text page at quality 60: about 45 KB per frame at 1x, 113 KB at 2x,
+plus a third more as base64 on the bus). The setting is the whole
 browser's, so every tab, watched or not and agent-only ones included,
-rasterizes at that density (more GPU/CPU and memory on the engine host),
-and a viewer streaming at scale 2 receives about 2.5x the bytes per frame
-(a 412x915 text page at quality 60: about 45 KB per frame at 1x, 113 KB at
-2x, plus a third more as base64 on the bus, at up to 30 frames a second).
+rasterizes at that density: about 10-15% more Chromium memory (some 48 MB
+for the first tab, 16-19 MB for each further one, 30-40 MB more for a
+watched one). On a small host running many agent tabs, set it to 1.
 Screenshots, PDFs, picks and `browser::act` coordinates stay in CSS pixels
 whatever the setting, since every tab keeps an explicit device scale factor
 of 1, and the console keeps getting CSS-sized frames.
@@ -644,9 +648,9 @@ so it names itself instead and holds a lease:
   a wake joins afresh.
 - `scale` (0.5..3, default 1) is the frame pixels the viewer wants per CSS
   pixel. The cast runs at the largest named viewer's scale, held to
-  `frame_density` (so at the default of 1 only a scale below 1 changes
-  anything: smaller frames, less to send) and to at least 1 while the
-  console also watches. A change restarts the cast. Frames keep reporting
+  `frame_density` (so at a `frame_density` of 1 only a scale below 1
+  changes anything: smaller frames, less to send) and to at least 1 while
+  the console also watches. A change restarts the cast. Frames keep reporting
   `width`/`height` as the viewport in CSS pixels, the coordinate space of
   `browser::act`, whatever the JPEG's own size.
 - Every restart of the cast (a viewer joining, a resize, a navigation, a

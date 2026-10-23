@@ -2,7 +2,13 @@
 import type { ComponentProps, ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
-import { BrowserConfigEditor, browserConfigurationValue, focusBrowserNarrowPane, migrateBrowserConfiguration } from '.'
+import {
+  BrowserConfigEditor,
+  browserConfigurationValue,
+  focusBrowserNarrowPane,
+  migrateBrowserConfiguration,
+  numberFromInput,
+} from '.'
 import { booleanLiteralForRawValue, numberLiteralForRawValue } from './template-values'
 
 vi.mock('@iii-dev/console-ui', () => ({
@@ -78,6 +84,7 @@ const value = {
   max_timeout_ms: 120_000,
   inactive_after_ms: 1_800_000,
   screenshot_quality: 60,
+  frame_density: 2,
   allowed_schemes: ['http', 'https', 'file'],
   max_snapshot_nodes: 2_000,
   default_origin_policy: { access: 'deny' },
@@ -150,6 +157,7 @@ describe('BrowserConfigEditor schema parity', () => {
       'max_timeout_ms',
       'inactive_after_ms',
       'screenshot_quality',
+      'frame_density',
       'allowed_schemes',
       'max_snapshot_nodes',
       'default_origin_policy',
@@ -161,6 +169,37 @@ describe('BrowserConfigEditor schema parity', () => {
     ]) {
       expect(html).toContain(`data-field="${field}`)
     }
+  })
+
+  it('offers the live view frame density with its range, half steps, default and help', () => {
+    const { frame_density: _set, ...unset } = value
+    const html = renderToStaticMarkup(
+      <BrowserConfigEditor
+        selection="viewport"
+        value={unset}
+        errors={new Map()}
+        narrow={false}
+        onBack={() => {}}
+        onChange={() => {}}
+      />,
+    )
+    const input = html.match(/<input[^>]*data-field="frame_density"[^>]*>/)?.[0] ?? ''
+    expect(input).toContain('min="1"')
+    expect(input).toContain('max="3"')
+    expect(input).toContain('step="0.5"')
+    expect(input).toContain('placeholder="2"')
+    expect(input).toContain('inputMode="decimal"')
+    expect(html).toContain('on a small host running many agent tabs, set 1')
+  })
+
+  it('stores a number field as a number, decimals only where the field takes them', () => {
+    expect(numberFromInput('1.5', true)).toBe(1.5)
+    expect(numberFromInput('2', true)).toBe(2)
+    expect(numberFromInput('1.5')).toBe('1.5')
+    expect(numberFromInput('60')).toBe(60)
+    expect(numberFromInput('-1', true)).toBe('-1')
+    expect(numberFromInput('${FRAME_DENSITY:2}', true)).toBe('${FRAME_DENSITY:2}')
+    expect(numberFromInput('  ', true)).toBeUndefined()
   })
 
   it('renders every Scrapling setting as a dedicated control', () => {
