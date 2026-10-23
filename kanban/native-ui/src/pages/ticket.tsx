@@ -41,7 +41,7 @@ import {
   Text,
   TextField,
 } from '@iii-dev/native-ui'
-import { type ActivityFilter, counts, type TimelineRow, timeline } from '../activity'
+import type { ActivityFilter } from '../activity'
 import { type Brief, kanban, type Summary, type Ticket } from '../api'
 import type { WriteKind } from '../board'
 import {
@@ -56,8 +56,9 @@ import {
   statusLabel,
   statusStep,
 } from '../format'
-import { type LinkedTicket, linkTicketKeys, TICKET_HREF } from '../links'
-import { childOrder, doneWarning, subtaskDefaults } from '../rules'
+import { FILTERS, type Item, ticketItems } from '../items'
+import { type LinkedTicket, TICKET_HREF } from '../links'
+import { doneWarning, subtaskDefaults } from '../rules'
 import {
   agentOf,
   columns,
@@ -93,11 +94,8 @@ function mergeLinks(mentions: readonly Summary[], mentionedBy: readonly Summary[
   return [...rows.values()]
 }
 
-const FILTERS: ActivityFilter[] = ['all', 'comments', 'changes']
-
 /** Unsent comments by ticket: opening another card in the detail, or a page on top, keeps what was typed. */
 const drafts = new Map<string, string>()
-const SUBTASKS_SHOWN = 8
 
 export function TicketView(props: { ticketKey: string }) {
   const [ticket, setTicket] = createSignal<Ticket | null>(null)
@@ -115,7 +113,9 @@ export function TicketView(props: { ticketKey: string }) {
   const [sending, setSending] = createSignal(false)
   const [busy, setBusy] = createSignal(0)
   const [allSubs, setAllSubs] = createSignal(false)
-  const rows = createList<TimelineRow>({ key: 'key', kind: 'kind' })
+  /** Long comments shown whole. */
+  const [expanded, setExpanded] = createSignal<ReadonlySet<string>>(new Set())
+  const rows = createList<Item>({ key: 'key', kind: 'kind' })
   const timers = new Map<string, number>()
   let menuButton: NodeRef | undefined
   let composer: NodeRef | undefined
@@ -259,16 +259,38 @@ export function TicketView(props: { ticketKey: string }) {
     links().map(({ ticket: t }) => ({ key: t.key, title: t.title, status: statusLabel(columns(), t.status) })),
   )
 
+  // Everything below the head is an item: the host draws only what is on screen (design §6.2).
   createEffect(() => {
     const t = ticket()
     if (!t) return rows.set([])
-    const list = linked()
+    const m = meta()
     rows.set(
-      timeline(t, filter(), columns(), who, now(), !deleted()).map((row) =>
-        row.kind ? { ...row, text: linkTicketKeys(row.text, list) } : row,
-      ),
+      ticketItems({
+        ticket: t,
+        filter: filter(),
+        columns: columns(),
+        done: m?.done ?? '',
+        canceled: m?.canceled ?? null,
+        who,
+        now: now(),
+        linked: linked(),
+        links: links().filter((l) => l.ticket.id !== t.parent_id && !t.children.some((c) => c.id === l.ticket.id)),
+        expanded: expanded(),
+        allSubtasks: allSubs(),
+        editable: editable(),
+      }),
     )
   })
+  const fold = (item: Item, open: boolean) => {
+    const id = item.comment
+    if (!id) return
+    setExpanded((now) => {
+      const next = new Set(now)
+      if (open) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }
 
   const follow = (href: string) => {
     if (href.startsWith(TICKET_HREF)) {
@@ -506,13 +528,13 @@ export function TicketView(props: { ticketKey: string }) {
     }
   }
 
-  const reply = (item: TimelineRow) => {
-    if (!item.canReply) return
-    setReplyTo({ id: item.root, who: item.who })
+  const reply = (item: Item) => {
+    if (!item.canReply || !item.root) return
+    setReplyTo({ id: item.root, who: item.who ?? '' })
     if (composer) iii.ui.focus(composer)
   }
 
-  const commentMenu = async (item: TimelineRow) => {
+  const commentMenu = async (item: Item) => {
     if (!item.comment) return
     const choice = await iii.ui.actionMenu(null, {
       title: item.who,
@@ -558,10 +580,6 @@ export function TicketView(props: { ticketKey: string }) {
   const hiddenChanges = () => {
     const t = ticket()
     return t ? t.activity_total - t.activity.length : 0
-  }
-  const tally = () => {
-    const t = ticket()
-    return t ? counts(t) : { comments: 0, changes: 0 }
   }
 
   return (
@@ -783,46 +801,6 @@ export function TicketView(props: { ticketKey: string }) {
                     Edit
                   </Button>
                 </Row>
-                <Show
-                  when={t().description.trim()}
-                  fallback={
-                    <Text role="small" tone="faint">
-                      No description yet.
-                    </Text>
-                  }
-                >
-                  <Markdown testTag="description" selectable onLink={follow}>
-                    {linkTicketKeys(t().description, linked())}
-                  </Markdown>
-                </Show>
-                <Show when={!t().parent_id && t().children.length > 0}>
-                  <Subtasks
-                    ticket={t()}
-                    all={allSubs()}
-                    onAll={() => setAllSubs(true)}
-                    onOpen={openTicket}
-                    onAdd={() => void addSubtask()}
-                    enabled={editable()}
-                  />
-                </Show>
-                <LinkedTickets
-                  rows={links().filter(
-                    (l) => l.ticket.id !== t().parent_id && !t().children.some((c) => c.id === l.ticket.id),
-                  )}
-                  onOpen={openTicket}
-                />
-                <Row gap={8}>
-                  <Text role="micro" tone="muted" weight={1}>
-                    Activity
-                  </Text>
-                  <Segmented
-                    testTag="activity-filter"
-                    compact
-                    options={['All', `Comments ${tally().comments}`, `Changes ${tally().changes}`]}
-                    selected={FILTERS.indexOf(filter())}
-                    onSelect={(i: number) => setFilter(FILTERS[i] ?? 'all')}
-                  />
-                </Row>
               </Column>
             }
             templates={[
@@ -833,25 +811,69 @@ export function TicketView(props: { ticketKey: string }) {
                   <Text role="small" tone="faint" text={row.time} />
                 </Row>
               ),
-              (row) => <CommentCard row={row} onReply={reply} onMenu={commentMenu} onLink={follow} />,
               (row) => (
-                <Row gap={6} padding={[0, 0, 0, 16]}>
-                  <Icon name="corner-down-right" size={14} tone="faint" />
+                <Row gap={6}>
+                  <Icon name="corner-down-right" size={14} tone="faint" padding={[0, 0, 0, 12]} visible={row.isReply} />
                   <Column weight={1}>
-                    <CommentCard row={row} onReply={reply} onMenu={commentMenu} onLink={follow} />
+                    <CommentCard row={row} onReply={reply} onMenu={commentMenu} onLink={follow} onFold={fold} />
                   </Column>
                 </Row>
               ),
+              (row) => (
+                <Markdown
+                  testTag="description"
+                  selectable
+                  padding={[0, 4]}
+                  text={row.text}
+                  onLink={itemHandler((_item: Item, href: string) => follow(href))}
+                />
+              ),
+              (row) => (
+                <Column gap={4} padding={[4, 4, 0, 4]}>
+                  <Row gap={8} visible={row.isHeading}>
+                    <Text role="micro" tone="muted" weight={1} text={row.heading} />
+                    <Text role="small" tone="muted" visible={row.hasCount} text={row.count} />
+                    <Segmented
+                      testTag="activity-filter"
+                      compact
+                      visible={row.isActivity}
+                      options={row.options}
+                      selected={row.selected}
+                      onSelect={itemHandler((_item: Item, i: number) => setFilter(FILTERS[i] ?? 'all'))}
+                    />
+                  </Row>
+                  <Progress tone="success" visible={row.hasProgress} value={row.progress} />
+                  <Text role="small" tone="faint" visible={row.isNote} text={row.note} />
+                  <ListRow
+                    visible={row.isRow}
+                    icon={row.rowIcon}
+                    title={row.rowTitle}
+                    subtitle={row.rowSubtitle}
+                    onPress={(item: Item) => item.open && openTicket(item.open)}
+                  />
+                  <Row gap={8} visible={row.hasButtons}>
+                    <Button
+                      testTag="all-subtasks"
+                      small
+                      kind="ghost"
+                      visible={row.hasAll}
+                      text={row.allText}
+                      onPress={() => setAllSubs(true)}
+                    />
+                    <Button
+                      testTag="add-subtask"
+                      small
+                      kind="ghost"
+                      icon="plus"
+                      visible={row.hasAdd}
+                      onPress={() => void addSubtask()}
+                    >
+                      Add subtask
+                    </Button>
+                  </Row>
+                </Column>
+              ),
             ]}
-            empty={
-              <Text role="small" tone="faint" padding={[8, 4]}>
-                {filter() === 'all'
-                  ? 'Nothing has happened yet.'
-                  : filter() === 'comments'
-                    ? 'No comments yet.'
-                    : 'No changes yet.'}
-              </Text>
-            }
             footer={
               <Show when={filter() !== 'comments' && hiddenChanges() > 0}>
                 <Text role="small" tone="faint" padding={[8, 4]}>
@@ -873,21 +895,26 @@ function priorityTone(priority: string, priorities: readonly string[]): 'neutral
   return fromTop === 0 ? 'danger' : fromTop === 1 ? 'warning' : 'neutral'
 }
 
-/** A comment (template 1) or a reply (inside template 2): the author with the agent's color, the time, Reply, the body. */
+/**
+ * A comment (template 1; a reply is indented): the author with the agent's
+ * color, the time, Reply, the body; a long one shows its start and "Show
+ * more" (design §6.3).
+ */
 function CommentCard(props: {
-  row: Bound<TimelineRow>
-  onReply: (item: TimelineRow) => void
-  onMenu: (item: TimelineRow) => void
+  row: Bound<Item>
+  onReply: (item: Item) => void
+  onMenu: (item: Item) => void
   onLink: (href: string) => void
+  onFold: (item: Item, open: boolean) => void
 }) {
   const r = props.row
   return (
-    <Card gap={6} onLongPress={(item: TimelineRow) => void props.onMenu(item)}>
+    <Card gap={6} onLongPress={(item: Item) => void props.onMenu(item)}>
       <Row gap={8}>
         <Icon name={r.icon} hue={r.hue} size={16} />
         <Text role="smallStrong" weight={1} text={r.who} />
         <Text role="small" tone="faint" text={r.time} />
-        <Button small kind="ghost" visible={r.canReply} onPress={(item: TimelineRow) => props.onReply(item)}>
+        <Button small kind="ghost" visible={r.canReply} onPress={(item: Item) => props.onReply(item)}>
           Reply
         </Button>
       </Row>
@@ -895,8 +922,26 @@ function CommentCard(props: {
         dense
         selectable
         text={r.text}
-        onLink={itemHandler((_item: TimelineRow, href: string) => props.onLink(href))}
+        onLink={itemHandler((_item: Item, href: string) => props.onLink(href))}
       />
+      <Button
+        testTag="show-more"
+        small
+        kind="ghost"
+        visible={r.folded}
+        onPress={(item: Item) => props.onFold(item, true)}
+      >
+        Show more
+      </Button>
+      <Button
+        testTag="show-less"
+        small
+        kind="ghost"
+        visible={r.canFold}
+        onPress={(item: Item) => props.onFold(item, false)}
+      >
+        Show less
+      </Button>
     </Card>
   )
 }
@@ -960,79 +1005,6 @@ function DoneWarning(props: {
           </Row>
         </Column>
       )}
-    </Show>
-  )
-}
-
-function Subtasks(props: {
-  ticket: Ticket
-  all: boolean
-  onAll: () => void
-  onOpen: (key: string) => void
-  onAdd: () => void
-  enabled: boolean
-}) {
-  const m = () => meta()
-  const ordered = () => childOrder(props.ticket.children, m()?.done ?? '', m()?.canceled ?? null)
-  const shown = () => (props.all ? ordered() : ordered().slice(0, SUBTASKS_SHOWN))
-  const progress = () => props.ticket.progress
-  return (
-    <Column testTag="subtasks" gap={4}>
-      <Row gap={8}>
-        <Text role="micro" tone="muted" weight={1}>
-          Subtasks
-        </Text>
-        <Text role="small" tone="muted">{`${progress().done} of ${progress().total}`}</Text>
-      </Row>
-      <Progress value={progress().total ? progress().done / progress().total : 0} tone="success" />
-      <For each={shown()}>
-        {(child) => {
-          const s = () => statusStep(columns(), child.status, m()?.done ?? '', m()?.canceled ?? null)
-          return (
-            <ListRow
-              icon={STEP_ICON[s()]}
-              title={`${child.key}  ${child.title}`}
-              subtitle={statusLabel(columns(), child.status)}
-              onPress={() => props.onOpen(child.key)}
-            />
-          )
-        }}
-      </For>
-      <Row gap={8}>
-        <Show when={!props.all && ordered().length > SUBTASKS_SHOWN}>
-          <Button testTag="all-subtasks" small kind="ghost" onPress={props.onAll}>
-            {`Show all ${ordered().length}`}
-          </Button>
-        </Show>
-        <Button testTag="add-subtask" small kind="ghost" icon="plus" enabled={props.enabled} onPress={props.onAdd}>
-          Add subtask
-        </Button>
-      </Row>
-    </Column>
-  )
-}
-
-function LinkedTickets(props: { rows: LinkRow[]; onOpen: (key: string) => void }) {
-  return (
-    <Show when={props.rows.length > 0}>
-      <Column testTag="links" gap={4}>
-        <Text role="micro" tone="muted">
-          Linked tickets
-        </Text>
-        <For each={props.rows}>
-          {(row) => {
-            const m = meta()
-            return (
-              <ListRow
-                icon={STEP_ICON[statusStep(columns(), row.ticket.status, m?.done ?? '', m?.canceled ?? null)]}
-                title={`${row.ticket.key}  ${row.ticket.title}`}
-                subtitle={`${statusLabel(columns(), row.ticket.status)} · ${row.relation}`}
-                onPress={() => props.onOpen(row.ticket.key)}
-              />
-            )
-          }}
-        </For>
-      </Column>
     </Show>
   )
 }

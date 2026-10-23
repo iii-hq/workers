@@ -1,6 +1,6 @@
 /** A new ticket (design §2, §4): where it starts, what it carries, a subtask's defaults, failures. */
 import { describe, expect, it } from 'vitest'
-import { callsOf, keysOf, onTop, start, topCard } from './fake'
+import { callsOf, itemOf, keysOf, onTop, start, topCard } from './fake'
 
 describe('a new ticket', () => {
   it('on a phone starts in the lane on screen, and opens once created', async () => {
@@ -93,6 +93,6 @@ describe('a new ticket', () => {
     ])
     expect(host.toasts.at(-1)).toEqual({ text: 'Created KAN-6', kind: 'success' })
     await host.settle()
-    expect(host.findAll({ type: 'Text', text: '1 of 3' })).toHaveLength(1)
+    expect(itemOf(host, '@sub')).toMatchObject({ count: '1 of 3' })
   })
 })

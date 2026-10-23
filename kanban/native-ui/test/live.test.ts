@@ -5,7 +5,7 @@
  * screen.
  */
 import { describe, expect, it } from 'vitest'
-import { callsOf, cards, FakeKanban, keysOf, onTop, sample, start } from './fake'
+import { activityOf, callsOf, cards, FakeKanban, itemOf, keysOf, onTop, sample, start, tapLink } from './fake'
 
 describe('the board follows kanban:change', () => {
   it('creates, moves, updates, deletes and restores what others do', async () => {
@@ -124,7 +124,7 @@ describe('this app’s own writes keep a partial lane’s count', () => {
   async function openUnread(host: Awaited<ReturnType<typeof start>>['host']) {
     await host.itemPress('lane:in_review', 't4')
     await host.settle()
-    await host.link('description', '#kanban-ticket/KAN-60')
+    await tapLink(host, '#kanban-ticket/KAN-60')
     await host.settle()
     expect(host.deck.at(-1)).toMatchObject({ name: 'ticket', params: { key: 'KAN-60' } })
   }
@@ -276,8 +276,11 @@ describe('the open ticket follows kanban:change', () => {
     await host.tick(300)
     await host.settle()
     expect(callsOf(host, 'ticket::get')).toHaveLength(2)
-    const items = host.items('activity') as Record<string, unknown>[]
-    expect(items.find((i) => i.text === 'Agent says hi')).toMatchObject({ kind: 1, who: 'Tech Lead', hue: 2 })
+    expect(activityOf(host).find((i) => i.text === 'Agent says hi')).toMatchObject({
+      kind: 1,
+      who: 'Tech Lead',
+      hue: 2,
+    })
     expect(host.find('priority').props).toMatchObject({ text: 'High' })
   })
 
@@ -285,11 +288,11 @@ describe('the open ticket follows kanban:change', () => {
     const { host, fake } = await start()
     await host.itemPress('lane:in_progress', 't1')
     await host.settle()
-    expect(host.findAll({ type: 'Text', text: '1 of 2' })).toHaveLength(1)
+    expect(itemOf(host, '@sub')).toMatchObject({ count: '1 of 2', progress: 0.5 })
     await fake.elsewhere('ticket::move', { id: 'KAN-2', status: 'done' })
     await host.tick(300)
     await host.settle()
-    expect(host.findAll({ type: 'Text', text: '2 of 2' })).toHaveLength(1)
+    expect(itemOf(host, '@sub')).toMatchObject({ count: '2 of 2', progress: 1 })
   })
 
   it('reads itself again when the engine comes back (what the bus said meanwhile is lost)', async () => {
@@ -304,7 +307,7 @@ describe('the open ticket follows kanban:change', () => {
     await host.env({ online: true })
     await host.settle()
     expect(callsOf(host, 'ticket::get').length).toBe(reads + 1)
-    expect((host.items('activity') as { text: string }[]).some((i) => i.text === 'Said while you were away')).toBe(true)
+    expect(activityOf(host).some((i) => i.text === 'Said while you were away')).toBe(true)
   })
 
   it('an unrelated event reads nothing', async () => {

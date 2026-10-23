@@ -10,10 +10,12 @@ import { ago, statusLabel } from './format'
 
 export type ActivityFilter = 'all' | 'comments' | 'changes'
 
-/** One item of the activity List. `kind` picks the template: 0 an event, 1 a comment, 2 a reply. */
+/** One item of the activity in the ticket's List. `kind` picks the template: 0 an event, 1 a comment (or a reply). */
 export interface TimelineRow {
   key: string
-  kind: 0 | 1 | 2
+  kind: 0 | 1
+  /** A reply, drawn under its root and indented. */
+  isReply: boolean
   /** The author or actor, by name. */
   who: string
   /** An event's sentence, after its actor's name; a comment's body (Markdown). */
@@ -173,7 +175,8 @@ export function timeline(
   const placed = new Set<string>()
   const commentRow = (c: Comment, reply: boolean): TimelineRow => ({
     key: `c:${c.id}`,
-    kind: reply ? 2 : 1,
+    kind: 1,
+    isReply: reply,
     who: who.name(c.author),
     text: c.body,
     time: ago(c.created_at, now),
@@ -199,6 +202,7 @@ export function timeline(
     rows.push({
       key: `a:${entry.id}`,
       kind: 0,
+      isReply: false,
       who: who.name(entry.actor),
       text: `${who.name(entry.actor)} ${many ? `added ${keys.length} subtasks ${keys[0]} … ${keys[keys.length - 1]}` : `added subtask ${keys[0]}`}`,
       time: ago(entry.at, now),
@@ -233,6 +237,7 @@ export function timeline(
     rows.push({
       key: `a:${entry.id}`,
       kind: 0,
+      isReply: false,
       who: who.name(entry.actor),
       text: `${who.name(entry.actor)} ${sentence(entry, columns, who.name)}`,
       time: ago(entry.at, now),

@@ -327,13 +327,13 @@ describe('the activity', () => {
   const columns = [{ id: 'todo', label: 'To do' }]
   it('threads replies under their root and folds subtask additions', () => {
     const rows = timeline(ticket, 'all', columns, who, Date.parse(at(100)), true)
-    expect(rows.map((r) => [r.kind, r.text])).toEqual([
-      [0, 'Tech Lead created this in To do'],
-      [1, 'c1'],
-      [2, 'r1'],
-      [1, 'c2'],
-      [0, 'Tech Lead added 2 subtasks KAN-2 … KAN-3'],
-      [0, 'Tech Lead added the label b, assigned this to Tech Lead'],
+    expect(rows.map((r) => [r.kind, r.isReply, r.text])).toEqual([
+      [0, false, 'Tech Lead created this in To do'],
+      [1, false, 'c1'],
+      [1, true, 'r1'],
+      [1, false, 'c2'],
+      [0, false, 'Tech Lead added 2 subtasks KAN-2 … KAN-3'],
+      [0, false, 'Tech Lead added the label b, assigned this to Tech Lead'],
     ])
     expect(rows[2]).toMatchObject({ root: 'c1', comment: 'r1', who: 'You', icon: 'user' })
     expect(timeline(ticket, 'comments', columns, who, 0, true).map((r) => r.key)).toEqual(['c:c1', 'c:r1', 'c:c2'])

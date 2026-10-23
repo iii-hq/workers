@@ -5,7 +5,21 @@
  */
 import { decodeMessage } from '@iii-dev/native-ui/testing'
 import { describe, expect, it } from 'vitest'
-import { callsOf, cards, onTop, sample, start, topCard } from './fake'
+import {
+  activityOf,
+  callsOf,
+  cards,
+  descriptionOf,
+  itemOf,
+  longMarkdown,
+  onTop,
+  piecesOf,
+  sample,
+  start,
+  tapLink,
+  ticketList,
+  topCard,
+} from './fake'
 
 /** Opens KAN-4 (In review) from the board and lets its reads land. */
 async function openReview(env: Record<string, unknown> = {}) {
@@ -65,25 +79,28 @@ describe('the head', () => {
     expect(host.find('project').props).toMatchObject({ text: 'No project' })
     expect(host.findAll({ type: 'Chip', text: 'Prod', icon: 'tag' })).toHaveLength(1)
     // KAN-1 is linked (it mentions KAN-4 and KAN-4 mentions it): its key becomes a link.
-    expect(host.prop('description', 'text')).toBe(
+    expect(descriptionOf(host)).toBe(
       '## Done\n\n- Built it\n- Tested it, see [the run](https://ci.example.com/run/7)\n\nPart of [KAN-1](#kanban-ticket/KAN-1 "Search v2 · In progress").',
     )
-    expect(host.findAll({ type: 'ListRow', subtitle: 'In progress · both ways' })).toHaveLength(1)
+    expect(itemOf(host, '@l:t1')).toMatchObject({ isRow: true, rowSubtitle: 'In progress · both ways', open: 'KAN-1' })
   })
 
   it('threads the activity: a comment, its reply under it, then the filters', async () => {
     const { host } = await openReview()
-    const items = host.items('activity') as Record<string, unknown>[]
-    expect(items.map((i) => [i.kind, i.who, i.text])).toEqual([
-      [0, 'You', 'You created this in In review'],
-      [1, 'Backend Engineer', 'Pushed the fix; ready for review.'],
-      [2, 'You', 'Looks good, **merging**.'],
+    expect(activityOf(host).map((i) => [i.kind, i.isReply, i.who, i.text])).toEqual([
+      [0, false, 'You', 'You created this in In review'],
+      [1, false, 'Backend Engineer', 'Pushed the fix; ready for review.'],
+      [1, true, 'You', 'Looks good, **merging**.'],
     ])
-    expect(host.find('activity-filter').props).toMatchObject({ options: ['All', 'Comments 2', 'Changes 1'] })
-    await host.select('activity-filter', 2)
-    expect((host.items('activity') as { kind: number }[]).map((i) => i.kind)).toEqual([0])
-    await host.select('activity-filter', 1)
-    expect((host.items('activity') as { kind: number }[]).map((i) => i.kind)).toEqual([1, 2])
+    expect(itemOf(host, '@activity')).toMatchObject({ options: ['All', 'Comments 2', 'Changes 1'], selected: 0 })
+    const filter = (i: number) => host.itemEmit('activity', '@activity', { type: 'Segmented' }, 'select', [i])
+    await filter(2)
+    expect(activityOf(host).map((i) => i.kind)).toEqual([0])
+    expect(itemOf(host, '@activity')).toMatchObject({ selected: 2 })
+    await filter(1)
+    expect(activityOf(host).map((i) => i.isReply)).toEqual([false, true])
+    // The order below the head: the description, the linked tickets, then the activity.
+    expect(ticketList(host).map((i) => i.key)).toEqual(['@d0', '@links', '@l:t1', '@activity', 'c:c1', 'c:c2'])
   })
 })
 
@@ -98,7 +115,7 @@ describe('comments', () => {
     ])
     expect(fake.get('KAN-4')?.comments).toHaveLength(3)
     expect(host.prop('composer', 'value')).toBe('')
-    const last = (host.items('activity') as Record<string, unknown>[]).at(-1)
+    const last = activityOf(host).at(-1)
     expect(last).toMatchObject({ kind: 1, who: 'You', text: 'Merged, thanks!' })
     expect(cards(host, 'in_review')[0]).toMatchObject({ comments: '3' })
   })
@@ -114,8 +131,12 @@ describe('comments', () => {
     await host.settle()
     expect(callsOf(host, 'comment::create').at(-1)).toMatchObject({ parent_id: 'c1', body: 'One more thing' })
     expect(host.findAll('replying')).toHaveLength(0)
-    const items = host.items('activity') as Record<string, unknown>[]
-    expect(items.map((i) => i.kind)).toEqual([0, 1, 2, 2])
+    expect(activityOf(host).map((i) => [i.kind, i.isReply])).toEqual([
+      [0, false],
+      [1, false],
+      [1, true],
+      [1, true],
+    ])
   })
 
   it('a failed comment keeps the text and says why', async () => {
@@ -146,7 +167,7 @@ describe('editing', () => {
       description: 'New body, see KAN-1.',
       actor: 'user',
     })
-    expect(host.prop('description', 'text')).toContain('New body, see [KAN-1](#kanban-ticket/KAN-1')
+    expect(descriptionOf(host)).toContain('New body, see [KAN-1](#kanban-ticket/KAN-1')
   })
 
   it('edits the title by tapping it; an unchanged or blank title writes nothing', async () => {
@@ -257,6 +278,90 @@ describe('what the review caught', () => {
   })
 })
 
+describe('long Markdown, drawn a piece at a time', () => {
+  /** KAN-4 with `description` and, when given, a long comment by the tech lead. */
+  async function openWith(description: string, comment?: string) {
+    const fake = sample()
+    const review = fake.get('KAN-4')
+    if (!review) throw new Error('no KAN-4')
+    review.description = description
+    if (comment) {
+      const at = fake.stamp()
+      review.comments.push({
+        id: 'long',
+        ticket_id: 't4',
+        parent_id: null,
+        body: comment,
+        author: 'tech-lead',
+        created_at: at,
+      })
+      review.activity.push({
+        id: 'along',
+        ticket_id: 't4',
+        seq: fake.seq++,
+        type: 'comment.created',
+        actor: 'tech-lead',
+        at,
+        comment_id: 'long',
+      })
+      review.updated_at = at
+    }
+    const started = await start({ fake })
+    await started.host.itemPress('lane:in_review', 't4')
+    await started.host.settle()
+    return started
+  }
+
+  it('a 20 KB description is several items of the ticket’s List, and joined they are the text', async () => {
+    const text = longMarkdown()
+    const { host } = await openWith(text)
+    const parts = piecesOf(host)
+    expect(parts.length).toBeGreaterThan(8)
+    expect(parts.map((p) => p.key)).toEqual(parts.map((_, i) => `@d${i}`))
+    expect(descriptionOf(host)).toBe(text)
+    // Every piece is its own Markdown item, at most a few KB: the host composes the visible ones.
+    expect(Math.max(...parts.map((p) => String(p.text).length))).toBeLessThan(3200)
+    // A short description stays one item.
+    const short = await openWith('Just a line.')
+    expect(piecesOf(short.host)).toHaveLength(1)
+  })
+
+  it('never splits a fence, even with blank lines inside it', async () => {
+    const fence = `\`\`\`\n${Array.from({ length: 150 }, (_, i) => `step ${i}\n`).join('\n')}\`\`\``
+    const { host } = await openWith(`${longMarkdown(6000)}\n\n${fence}\n\n${longMarkdown(6000)}`)
+    const parts = piecesOf(host).map((p) => String(p.text))
+    expect(parts.find((p) => p.includes('step 0'))).toContain('step 149')
+    for (const part of parts) expect(part.split('\n').filter((l) => l.startsWith('```')).length % 2).toBe(0)
+  })
+
+  it('links ticket keys in every piece, and a key in a late piece opens its ticket', async () => {
+    const text = `KAN-1 starts it.\n\n${longMarkdown(15_000)}\n\nAnd KAN-1 ends it.`
+    const { host } = await openWith(text)
+    const parts = piecesOf(host)
+    const link = '[KAN-1](#kanban-ticket/KAN-1 "Search v2 · In progress")'
+    expect(String(parts[0].text)).toContain(`${link} starts it.`)
+    expect(String(parts.at(-1)?.text)).toContain(`And ${link} ends it.`)
+    await host.itemEmit('activity', String(parts.at(-1)?.key), { type: 'Markdown' }, 'link', ['#kanban-ticket/KAN-1'])
+    await host.settle()
+    expect(topCard(host)).toMatchObject({ name: 'ticket', params: { key: 'KAN-1' } })
+  })
+
+  it('a long comment shows its start with Show more, which expands it in place (and Show less folds it)', async () => {
+    const body = longMarkdown(8000)
+    const { host } = await openWith('Short.', body)
+    const comment = () => itemOf(host, 'c:long')
+    expect(comment()).toMatchObject({ kind: 1, folded: true, canFold: false })
+    expect(String(comment()?.text).length).toBeLessThan(2000)
+    expect(body.startsWith(String(comment()?.text))).toBe(true)
+    await host.itemPress('activity', 'c:long', { type: 'Button', text: 'Show more' })
+    expect(comment()).toMatchObject({ folded: false, canFold: true, text: body })
+    await host.itemPress('activity', 'c:long', { type: 'Button', text: 'Show less' })
+    expect(comment()).toMatchObject({ folded: true })
+    // A short comment never folds.
+    expect(itemOf(host, 'c:c1')).toMatchObject({ folded: false, canFold: false })
+  })
+})
+
 describe('delete and restore', () => {
   it('deletes only after the destructive confirmation; the board drops the card; restore brings it back', async () => {
     const { host, answers } = await openReview()
@@ -327,19 +432,21 @@ describe('the Done warning', () => {
 describe('links in Markdown', () => {
   it('a ticket key opens that ticket as a page; a web link asks to open it; anything else is refused', async () => {
     const { host } = await openReview()
-    await host.link('description', '#kanban-ticket/KAN-1')
+    await tapLink(host, '#kanban-ticket/KAN-1')
     await host.settle()
     expect(topCard(host)).toMatchObject({ name: 'ticket', params: { key: 'KAN-1' } })
     expect(host.prop(onTop(host, 'ticket'), 'title')).toBe('KAN-1')
     // The pushed page has the subtasks of KAN-1; one opens on top.
-    await host.press(onTop(host, { type: 'ListRow', title: 'KAN-2  Persist filters in the URL' }))
+    const list = onTop(host, 'activity')
+    expect(itemOf(host, '@s:t2', list)).toMatchObject({ rowTitle: 'KAN-2  Persist filters in the URL' })
+    await host.itemPress(list, '@s:t2', { type: 'ListRow' })
     await host.settle()
     expect(topCard(host)).toMatchObject({ name: 'ticket', params: { key: 'KAN-2' } })
     expect(host.prop(onTop(host, 'parent'), 'visible')).not.toBe(false)
     await host.back()
     await host.back()
     await host.settle()
-    await host.link('description', 'https://ci.example.com/run/7')
+    await tapLink(host, 'https://ci.example.com/run/7')
     expect(host.opened).toEqual(['https://ci.example.com/run/7'])
   })
 
