@@ -17,9 +17,9 @@ path = "src/lib.rs"
 # The iii 0.25 Rust SDK (observable functions), on its release candidate
 # until 0.25.0 is published. Exact pins: a caret requirement on a prerelease
 # would also accept later candidates.
-iii-sdk = "=0.25.0-rc.4"
+iii-sdk = "=0.25.0"
 iii-worker-paths = { path = "../crates/worker-paths" }
-iii-helpers = "=0.25.0-rc.4"
+iii-helpers = "=0.25.0"
 iii-console-ui = { path = "../crates/console-ui" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }
