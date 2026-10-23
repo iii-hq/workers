@@ -196,7 +196,8 @@ fn plan_is_frozen_before_results_with_policy_revision() {
 
     // Any other plan is refused: objective, metric, minimum effect, preserved
     // conditions, controls, sampling and policy are all frozen.
-    let changes: Vec<(&str, fn(&mut CyclePlanV1))> = vec![
+    type PlanChange = fn(&mut CyclePlanV1);
+    let changes: Vec<(&str, PlanChange)> = vec![
         ("objective", |plan| plan.objective = "something else".into()),
         ("metric", |plan| {
             plan.criterion.metric = CriterionMetricV1::Tokens
