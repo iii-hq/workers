@@ -3,13 +3,13 @@ use schemars::JsonSchema;
 use crate::contract::{
     ConfigureRequestV1, CycleCancelResponseV1, CycleIdRequestV1, CycleListRequestV1,
     CycleListResponseV1, CycleRecordV1, CycleResultResponseV1, CycleStartRequestV1,
-    CycleStartResponseV1, EvalDeleteResponseV1, EvaluationIdRequestV1, MonitorConfigV1,
-    MonitorStateRequestV1, MonitorStateResponseV1, StepRequestV1, StepResponseV1, SweepEventV1,
-    SweepResponseV1,
+    CycleStartResponseV1, EvalDeleteResponseV1, EvaluationIdRequestV1,
+    ExecutionAdmissionResponseV1, ExecutionChangedEventV1, MonitorConfigV1, MonitorStateRequestV1,
+    MonitorStateResponseV1, StepRequestV1, StepResponseV1, SweepEventV1, SweepResponseV1,
 };
 use crate::functions::{
-    CANCEL_ID, CONFIGURE_ID, CONFIG_ID, DELETE_ID, LIST_ID, RESULT_ID, START_ID, STATUS_ID,
-    STEP_ID, SWEEP_ID,
+    CANCEL_ID, CONFIGURE_ID, CONFIG_ID, DELETE_ID, EXECUTION_CHANGED_ID, LIST_ID, RESULT_ID,
+    START_ID, STATUS_ID, STEP_ID, SWEEP_ID,
 };
 
 pub struct FunctionSpec {
@@ -44,5 +44,6 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<EvaluationIdRequestV1, EvalDeleteResponseV1>(DELETE_ID),
         spec::<StepRequestV1, StepResponseV1>(STEP_ID),
         spec::<SweepEventV1, SweepResponseV1>(SWEEP_ID),
+        spec::<ExecutionChangedEventV1, ExecutionAdmissionResponseV1>(EXECUTION_CHANGED_ID),
     ]
 }

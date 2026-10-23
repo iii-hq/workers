@@ -22,6 +22,7 @@ fn catalog_matches_the_registered_surface() {
             "eval::delete",
             "eval::step",
             "eval::sweep",
+            "eval::execution-changed",
         ]
     );
 }
