@@ -92,7 +92,8 @@ pub struct WorkerStartRequest {
     pub worker_name: String,
     pub source: WorkerSource,
     /// Complete guest env. Today the adapter passes it on the `__vm-boot` argv,
-    /// so host users can read it; MOT-5493 (iii#2377) moves it out of band.
+    /// so host users can read it, and it also lands in the guest kernel cmdline
+    /// (readable only inside the guest); MOT-5493 (iii#2377) moves it out of band.
     pub env: BTreeMap<String, String>,
     /// The engine's URL as seen from the host.
     pub engine_url: String,

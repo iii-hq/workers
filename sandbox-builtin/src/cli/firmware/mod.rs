@@ -1,6 +1,6 @@
-//! Firmware and init binary management for iii-worker.
+//! Firmware and init binary management for sandbox-builtin.
 //!
-//! The VMM (msb_krun) is compiled directly into the iii-worker binary.
+//! The VMM (msb_krun) is compiled directly into the sandbox-builtin binary.
 //! libkrunfw (the guest kernel firmware) and iii-init (the guest init process)
 //! are resolved via a two-stage chain, and fail closed (nothing is downloaded):
 //!

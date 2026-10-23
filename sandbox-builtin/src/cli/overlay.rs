@@ -9,7 +9,7 @@
 //!    legacy per-worker-clone model with `III_ROOTFS_MODE=legacy`.
 //!
 //! 2. Capability handshake — overlay requires an EMBEDDED iii-init. An
-//!    embedded init is compiled into *this* iii-worker binary, so it is
+//!    embedded init is compiled into *this* sandbox-builtin binary, so it is
 //!    guaranteed version-matched and overlay-capable. A downloaded/cached
 //!    init (resolved from `~/.iii/lib/iii-init`) can be STALE — older than
 //!    this binary, predating overlay support — and would ignore the

@@ -57,7 +57,8 @@ pub(crate) fn require_overlay_capable(has_embedded_init: bool) -> Result<(), San
     }
     Err(SandboxError::BootFailed(
         "sandbox isolation requires a sandbox-builtin built with an embedded iii-init \
-         (official release builds, or run scripts/build-init.sh and build with \
+         (official release builds, or run BUILD_TARGET=<host target triple> \
+         scripts/build-init.sh and build with \
          --features embed-init locally); without it the \
          sandbox root cannot be isolated from the shared image cache"
             .to_string(),
@@ -158,7 +159,7 @@ impl VmLauncher for IiiWorkerLauncher {
         // Defense in depth: `handle_create` already ran `preflight`;
         // re-check before libkrunfw provisioning for any other caller.
         require_overlay_capable(iii_filesystem::init::has_init())?;
-        // We're running inside the iii-worker binary ourselves, so the
+        // We're running inside the sandbox-builtin binary ourselves, so the
         // path to fork+exec for __vm-boot is our own executable. More
         // reliable than a PATH lookup: current_exe() is guaranteed to
         // resolve (unlike PATH, which can be empty in service managers)
@@ -185,7 +186,7 @@ impl VmLauncher for IiiWorkerLauncher {
                 if let Err(e) =
                     crate::cli::worker_manager::platform::ensure_macos_entitlements(&bin)
                 {
-                    tracing::warn!(error = %e, "failed to codesign iii-worker for Hypervisor entitlement");
+                    tracing::warn!(error = %e, "failed to codesign sandbox-builtin for Hypervisor entitlement");
                 }
                 tracing::info!(
                     ms = t0.elapsed().as_millis() as u64,
@@ -206,7 +207,7 @@ impl VmLauncher for IiiWorkerLauncher {
         // Ensure `libkrunfw.<soname>` is discoverable by the loader.
         // Managed workers call this at startup from
         // worker_manager::libkrun and local_worker; the sandbox path
-        // skips it entirely. When iii-worker ships with embed-libkrunfw,
+        // skips it entirely. When sandbox-builtin ships with embed-libkrunfw,
         // this extracts the embedded bytes to ~/.iii/lib/ on first use;
         // otherwise it falls back to a GitHub-release download. Without
         // this step, dlopen(libkrunfw.X.dylib) fails inside the spawned
@@ -293,7 +294,9 @@ impl VmLauncher for IiiWorkerLauncher {
             .stdout(std::process::Stdio::null())
             .stderr(stderr)
             .spawn()
-            .map_err(|e| SandboxError::BootFailed(format!("spawn iii-worker __vm-boot: {e}")))?;
+            .map_err(|e| {
+                SandboxError::BootFailed(format!("spawn sandbox-builtin __vm-boot: {e}"))
+            })?;
 
         let vm_pid = child
             .id()
@@ -941,7 +944,8 @@ mod sandbox_boot_shape_tests {
     fn refuses_to_boot_without_embedded_init() {
         assert!(matches!(
             require_overlay_capable(false),
-            Err(SandboxError::BootFailed(m)) if m.contains("embedded iii-init")
+            Err(SandboxError::BootFailed(m))
+                if m.contains("embedded iii-init") && m.contains("BUILD_TARGET=")
         ));
         assert!(require_overlay_capable(true).is_ok());
     }
