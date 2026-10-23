@@ -70,9 +70,15 @@ fn strip_ages(fleet: &Value) -> Value {
     )
 }
 
-fn is_function_not_found(message: &str) -> bool {
+/// No adapter to ask: `sandbox::list` missing (engine without the router),
+/// or the router's S301 (adapter not connected) / S303 (none configured),
+/// since the router always registers `sandbox::list` itself.
+fn adapter_absent(message: &str) -> bool {
     let m = message.to_ascii_lowercase();
-    m.contains("function_not_found") || m.contains("not found")
+    m.contains("function_not_found")
+        || m.contains("not found")
+        || message.contains(r#""code":"S301""#)
+        || message.contains(r#""code":"S303""#)
 }
 
 /// One observation: read, compare, maybe emit. Returns the new state and
@@ -93,7 +99,7 @@ fn step(
             }
             (next, WATCH_INTERVAL)
         }
-        Err(message) if is_function_not_found(&message) => {
+        Err(message) if adapter_absent(&message) => {
             if *previous != Reported::Absent {
                 emitter.emit(Event::fleet(true, Value::Array(vec![])));
             }
@@ -260,6 +266,34 @@ mod tests {
             Err("Function sandbox::list not found".into()),
             &emitter,
         );
+        let seen = recorder.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0]["daemon_absent"], true);
+    }
+
+    #[tokio::test]
+    async fn router_s301_reports_absent_instead_of_the_last_fleet() {
+        // The adapter crashed with VMs up: its lifeline killed them, so the
+        // last fleet must not stay on screen.
+        let (emitter, recorder) = harness();
+        let (state, _) = step(&Reported::Nothing, Ok(fleet_of(&["a"])), &emitter);
+        let s301 = r#"remote error (invocation_failed): {"code":"S301","message":"adapter sandbox-builtin not connected in namespace default; compose::add iii-sandbox in that project installs it","retryable":true,"type":"transient"}"#;
+        let (state, delay) = step(&state, Err(s301.into()), &emitter);
+        assert!(state == Reported::Absent);
+        assert_eq!(delay, ABSENT_RECHECK);
+        let seen = recorder.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[1]["daemon_absent"], true);
+        assert_eq!(seen[1]["sandboxes"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn router_s303_reports_absent() {
+        let (emitter, recorder) = harness();
+        let s303 = r#"remote error (invocation_failed): {"code":"S303","message":"no sandbox adapter configured: this engine is not managed by a Compose file; set sandbox.adapter in its engine config (Compose-managed engines default to sandbox-builtin)","retryable":false,"type":"validation"}"#;
+        let (state, delay) = step(&Reported::Nothing, Err(s303.into()), &emitter);
+        assert!(state == Reported::Absent);
+        assert_eq!(delay, ABSENT_RECHECK);
         let seen = recorder.seen.lock().unwrap();
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0]["daemon_absent"], true);
