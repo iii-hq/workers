@@ -81,6 +81,11 @@ const OBSERVER_FUNCTIONS_PREFIX: &str = "engine::observers::";
 /// `RegistrationRejected.code` for a namespace the session may not declare.
 const NAMESPACE_FORBIDDEN: &str = "NAMESPACE_FORBIDDEN";
 
+/// How long a call routed through the middleware may run. The SDK default
+/// (30 s) would cut the client's longer calls short while the work goes on;
+/// the client keeps its own timeout.
+const MIDDLEWARE_TIMEOUT_MS: u64 = 610_000;
+
 /// Prefix of every worker name a proxied connection declares.
 const WORKER_NAME_PREFIX: &str = "rbac-proxy:";
 
@@ -740,7 +745,7 @@ impl Interceptor {
                 function_id: mw_id,
                 payload: input,
                 action: None,
-                timeout_ms: None,
+                timeout_ms: Some(MIDDLEWARE_TIMEOUT_MS),
             }
             .namespace(namespace);
             if let Some(metadata) = metadata {
