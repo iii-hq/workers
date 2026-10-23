@@ -1533,7 +1533,6 @@ async fn the_largest_scale_drives_the_stream_and_each_leave_drops_it() {
 /// The session-status badge describes the watching human. A named viewer
 /// leaving while the console still watches must not take the badge away.
 #[tokio::test]
-#[ignore = "finding 5: stopping a named viewer removes the session badge while the console still watches"]
 async fn the_badge_stays_while_a_console_still_watches() {
     let Some(h) = boot("  max_sessions: 4\n").await else {
         eprintln!("skipping: `iii` or Chromium not available");

@@ -3829,13 +3829,15 @@ fn register_screencast_stop(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     if !released {
                         return Ok::<_, Error>(pick::AckOutput { ok: true });
                     }
-                    // The viewer's overlays go regardless; they belong to the
-                    // watching human, not to a recording consumer.
-                    let _ = session.page.evaluate(overlays::remove_badge_script()).await;
-                    let _ = session
-                        .page
-                        .evaluate(overlays::remove_ghost_cursor_script())
-                        .await;
+                    // The overlays belong to the watching humans, not to a
+                    // recording consumer: they go with the last viewer.
+                    if !session.has_viewers().await {
+                        let _ = session.page.evaluate(overlays::remove_badge_script()).await;
+                        let _ = session
+                            .page
+                            .evaluate(overlays::remove_ghost_cursor_script())
+                            .await;
+                    }
                 }
                 Ok::<_, Error>(pick::AckOutput { ok: true })
             }

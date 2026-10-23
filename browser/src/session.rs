@@ -1293,6 +1293,12 @@ impl Session {
         }
     }
 
+    /// Whether anyone still watches the live view: a console pane or
+    /// preview, or a named viewer (a recording is not a viewer).
+    pub async fn has_viewers(&self) -> bool {
+        self.anon_viewers.load(Ordering::Relaxed) > 0 || !self.viewers.lock().await.is_empty()
+    }
+
     /// True while `browser::resize` keeps the page in phone emulation.
     pub fn is_mobile(&self) -> bool {
         self.mobile.load(Ordering::Relaxed)
