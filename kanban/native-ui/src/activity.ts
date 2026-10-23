@@ -163,14 +163,33 @@ export function timeline(
   canReply: boolean,
 ): TimelineRow[] {
   const comments = new Map(ticket.comments.map((c) => [c.id, c]))
+  /**
+   * The root a comment answers: up its parents while they exist. The worker
+   * keeps replies one level deep, but stored data may not: a reply to a reply
+   * goes under the first one's root, and a comment in a parent cycle (or its
+   * own parent) is a root of its own.
+   */
+  const rootOf = (c: Comment): Comment => {
+    const seen = new Set<string>()
+    let at = c
+    while (at.parent_id && !seen.has(at.id)) {
+      const parent = comments.get(at.parent_id)
+      if (!parent) break
+      seen.add(at.id)
+      at = parent
+    }
+    return seen.has(at.id) ? c : at
+  }
+  const roots = new Map(ticket.comments.map((c) => [c.id, rootOf(c).id]))
   const replies = new Map<string, Comment[]>()
   for (const c of ticket.comments) {
-    if (c.parent_id && comments.has(c.parent_id)) {
-      const thread = replies.get(c.parent_id) ?? []
-      thread.push(c)
-      replies.set(c.parent_id, thread)
-    }
+    const root = roots.get(c.id) as string
+    if (root === c.id) continue
+    const thread = replies.get(root) ?? []
+    thread.push(c)
+    replies.set(root, thread)
   }
+  const isRoot = (c: Comment) => roots.get(c.id) === c.id
   const rows: TimelineRow[] = []
   const placed = new Set<string>()
   const commentRow = (c: Comment, reply: boolean): TimelineRow => ({
@@ -183,15 +202,16 @@ export function timeline(
     icon: c.author === 'user' ? 'user' : 'bot',
     hue: who.hue(c.author),
     comment: c.id,
-    root: reply && c.parent_id ? c.parent_id : c.id,
+    root: roots.get(c.id) ?? c.id,
     canReply,
   })
+  /** A root and its replies after it; a reply on its own when its root is not listed. */
   const pushComment = (c: Comment) => {
     if (placed.has(c.id)) return
     placed.add(c.id)
-    const isReply = !!c.parent_id && comments.has(c.parent_id)
-    rows.push(commentRow(c, isReply))
-    if (!isReply) for (const r of replies.get(c.id) ?? []) if (!placed.has(r.id)) pushComment(r)
+    const root = isRoot(c)
+    rows.push(commentRow(c, !root))
+    if (root) for (const r of replies.get(c.id) ?? []) pushComment(r)
   }
   const entries = [...ticket.activity].sort((a, b) => a.seq - b.seq)
   let adds: { entry: Activity; keys: string[] } | null = null
@@ -219,8 +239,8 @@ export function timeline(
       flush()
       if (filter === 'changes') continue
       const c = entry.comment_id ? comments.get(entry.comment_id) : undefined
-      // A reply is placed with its root; one whose root is gone comes in its own place.
-      if (c && (!c.parent_id || !comments.has(c.parent_id))) pushComment(c)
+      // A reply is placed with its root, in the root's place.
+      if (c) pushComment(isRoot(c) ? c : (comments.get(roots.get(c.id) as string) ?? c))
       continue
     }
     if (filter === 'comments') continue
@@ -249,11 +269,15 @@ export function timeline(
     })
   }
   flush()
-  // Comments the activity does not list (an older worker, a bounded read): at the end, oldest first.
+  // Comments the activity does not list (an older worker, a bounded read): at the end, oldest first, roots
+  // with their replies; every comment is listed once.
   if (filter !== 'changes') {
-    for (const c of [...ticket.comments].sort((a, b) => (a.created_at < b.created_at ? -1 : 1))) {
-      if (!c.parent_id || !comments.has(c.parent_id)) pushComment(c)
-    }
+    // Oldest first; comments of the same instant keep the worker's order (a stable sort).
+    const sorted = [...ticket.comments].sort((a, b) =>
+      a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0,
+    )
+    for (const c of sorted) if (isRoot(c)) pushComment(c)
+    for (const c of sorted) pushComment(c)
   }
   return rows
 }

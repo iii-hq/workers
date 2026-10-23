@@ -448,11 +448,19 @@ export const kanban = {
   },
 }
 
-/** Binds `kanban:change` (bind first, read after `ready`); a failed binding is reported and left unbound. */
-export function listen(handler: (event: ChangeEvent) => void): Unsubscribe & { ready: Promise<boolean> } {
+/**
+ * Binds `kanban:change` (bind first, read after `ready`); a failed binding is
+ * reported and left unbound. A delivery that is not a change the app can
+ * read goes to `bad`.
+ */
+export function listen(
+  handler: (event: ChangeEvent) => void,
+  bad?: () => void,
+): Unsubscribe & { ready: Promise<boolean> } {
   const off = iii.on(CHANGE_TRIGGER, { ticket: 'summary' }, (payload) => {
     const event = changeOf(payload)
     if (event) handler(event)
+    else bad?.()
   })
   const ready = off.ready.then(
     () => true,

@@ -362,6 +362,70 @@ describe('long Markdown, drawn a piece at a time', () => {
   })
 })
 
+describe('what the Haiku review caught in the ticket screen', () => {
+  it('Close subtasks waits behind a drag of the same subtask (one card’s writes in order)', async () => {
+    const fake = sample()
+    const parent = fake.get('KAN-1')
+    if (parent) parent.status = 'done'
+    const { host, answers } = await start({ fake })
+    await host.itemPress('lane:done', 't1')
+    await host.settle()
+    fake.hold('ticket::move')
+    await host.drop('lane:in_progress', 't2', 0, 'lane:todo')
+    answers.confirms.push(true)
+    await host.press('close-subtasks')
+    await host.settle()
+    expect(fake.waiting('ticket::move')).toHaveLength(1)
+    fake.release('ticket::move')
+    await host.settle()
+    fake.release('ticket::move')
+    await host.settle()
+    expect(callsOf(host, 'ticket::move').map((p) => [p.id, p.status])).toEqual([
+      ['t2', 'in_progress'],
+      ['t2', 'done'],
+    ])
+    expect(fake.get('KAN-2')?.status).toBe('done')
+  })
+
+  it('a web link with a user name or password in it is refused', async () => {
+    const fake = sample()
+    const review = fake.get('KAN-4')
+    if (review)
+      review.description = 'See [the dashboard](https://admin:hunter2@evil.example/x) and [mail](mailto:a@b.example).'
+    const { host } = await start({ fake })
+    await host.itemPress('lane:in_review', 't4')
+    await host.settle()
+    await tapLink(host, 'https://admin:hunter2@evil.example/x')
+    expect(host.opened).toEqual([])
+    expect(host.toasts.at(-1)).toEqual({ text: "This link can't be opened here", kind: 'info' })
+    await tapLink(host, 'mailto:a@b.example')
+    expect(host.opened).toEqual(['mailto:a@b.example'])
+  })
+
+  it('the parent strip never goes back to an older version of the parent', async () => {
+    const fake = sample()
+    const { host } = await start({ fake })
+    // The parent as an older read would answer it: 1 of 2 done.
+    const old = JSON.parse(JSON.stringify(fake.view(fake.get('KAN-1') as never)))
+    await host.itemPress('lane:todo', 't2')
+    await host.settle()
+    const shows = (text: string) => host.findAll({ type: 'Text', text }).length > 0
+    expect(shows('1/2')).toBe(true)
+    // KAN-2 is done and the parent is renamed: the strip reads the parent again, 2/2 and newer.
+    await fake.elsewhere('ticket::move', { id: 'KAN-2', status: 'done' })
+    await fake.elsewhere('ticket::update', { id: 'KAN-1', title: 'Search v2, renamed' })
+    await host.tick(300)
+    expect(shows('2/2')).toBe(true)
+    // A later read of the parent answers the older version: it is not shown.
+    const real = fake.answer.bind(fake)
+    fake.overrides['ticket::get'] = (p) => (p.id === 't1' ? old : real('kanban::ticket::get', p))
+    await fake.elsewhere('ticket::update', { id: 'KAN-3', title: 'A sibling changed' })
+    await host.tick(300)
+    expect(callsOf(host, 'ticket::get').filter((p) => p.id === 't1').length).toBeGreaterThan(2)
+    expect(shows('2/2')).toBe(true)
+  })
+})
+
 describe('delete and restore', () => {
   it('deletes only after the destructive confirmation; the board drops the card; restore brings it back', async () => {
     const { host, answers } = await openReview()

@@ -14,6 +14,7 @@ import {
   For,
   type Hue,
   iii,
+  onCleanup,
   Page,
   Row,
   Scroll,
@@ -51,6 +52,7 @@ import {
   readingAll,
   releases,
   setFilters,
+  setFiltersOpen,
 } from '../state'
 
 /** Labels shown before "Show all". */
@@ -63,6 +65,9 @@ interface Option {
 }
 
 export function FiltersPage() {
+  // The counts need every card while the page is open (after Clear all, the board pages again).
+  setFiltersOpen(true)
+  onCleanup(() => setFiltersOpen(false))
   readAll()
   const [text, setText] = createSignal(filters().q)
   const [allLabelsShown, setAllLabelsShown] = createSignal(false)

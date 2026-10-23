@@ -115,3 +115,49 @@ export function cardRow(t: Summary, ctx: CardContext): CardRow {
     selected: ctx.selected === t.key,
   }
 }
+
+interface Entry {
+  ticket: Summary
+  base: object
+  parent: string | undefined
+  subs: string
+  selected: boolean
+  row: CardRow
+}
+
+/**
+ * `rowOf(ticket, ctx, base)`: the cached row while the ticket, `base` (the
+ * shared inputs) and its own lookups stay the same. `rowOf.prune(ids)` forgets
+ * the tickets no lane holds any more.
+ */
+export function createCardCache(): ((ticket: Summary, ctx: CardContext, base: object) => CardRow) & {
+  prune(ids: ReadonlySet<string>): void
+  size(): number
+} {
+  const cache = new Map<string, Entry>()
+  const rowOf = (ticket: Summary, ctx: CardContext, base: object): CardRow => {
+    const parent = ticket.parent_id ? ctx.keys.get(ticket.parent_id) : undefined
+    const stats = ctx.subs?.get(ticket.id)
+    const subs = stats ? `${stats.done}/${stats.total}` : ''
+    const selected = ctx.selected === ticket.key
+    const hit = cache.get(ticket.id)
+    if (
+      hit &&
+      hit.ticket === ticket &&
+      hit.base === base &&
+      hit.parent === parent &&
+      hit.subs === subs &&
+      hit.selected === selected
+    )
+      return hit.row
+    const row = cardRow(ticket, ctx)
+    cache.set(ticket.id, { ticket, base, parent, subs, selected, row })
+    return row
+  }
+  return Object.assign(rowOf, {
+    prune(ids: ReadonlySet<string>) {
+      for (const id of cache.keys()) if (!ids.has(id)) cache.delete(id)
+    },
+    size: () => cache.size,
+  })
+}

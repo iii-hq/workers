@@ -39,8 +39,8 @@ import {
 } from '@iii-dev/native-ui'
 import { kanban, type Summary } from '../api'
 import { allRows, dropIndex, type Lane, partial, subtaskStats } from '../board'
-import type { CardRow } from '../cards'
-import { createCardCache, createFeeder } from '../feed'
+import { type CardRow, createCardCache } from '../cards'
+import { createFeeder } from '../feed'
 import { activeCount, EMPTY_FILTERS, matches } from '../filters'
 import { count, priorityLabel, shareText } from '../format'
 import {
@@ -295,11 +295,16 @@ function Board(props: { onNew: () => void }) {
   createEffect(() => {
     const shared = base()
     const ctx = { ...shared, ...lookups(), selected: selected() }
-    for (const l of lanes())
+    const ids = new Set<string>()
+    for (const l of lanes()) {
       feed(
         sourceOf(l.id),
         shownRows(l).map((row) => rowOf(row, ctx, shared)),
       )
+      for (const row of l.rows) ids.add(row.id)
+    }
+    // Rows of tickets no lane holds any more are forgotten.
+    rowOf.prune(ids)
   })
 
   const counts = () =>
@@ -319,9 +324,8 @@ function Board(props: { onNew: () => void }) {
       toast('The engine is not connected', 'error')
       return
     }
-    const visible = sourceOf(to)
-      .items()
-      .map((item) => item.key)
+    // The cards the lane shows, all of them: the host may hold only the first ones while a big lane is fed.
+    const visible = shownRows(target).map((r) => r.id)
     const where = dropIndex(target.rows, visible, Number.isFinite(at) ? Math.max(0, Math.floor(at)) : 0, id)
     // Dropped where it already is: nothing to write.
     if (row.status === to && target.rows.findIndex((r) => r.id === id) === where) return
@@ -344,12 +348,19 @@ function Board(props: { onNew: () => void }) {
       <For each={columns()}>
         {(column) => {
           const laneState = () => lanes().find((l) => l.id === column.id)
+          // A lane that goes (the configuration changed) takes its list and source with it.
+          let node: NodeRef | undefined
+          onCleanup(() => {
+            if (node) listLane.delete(node)
+            sources.delete(column.id)
+          })
           const [pulling, setPulling] = createSignal(false)
           return (
             <List
               testTag={`lane:${column.id}`}
-              ref={(node) => {
-                listLane.set(node, column.id)
+              ref={(list) => {
+                node = list
+                listLane.set(list, column.id)
               }}
               weight={1}
               source={sourceOf(column.id)}

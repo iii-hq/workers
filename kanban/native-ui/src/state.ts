@@ -96,12 +96,16 @@ const [agents, setAgents] = createSignal<Agent[]>([])
 const [projects, setProjects] = createSignal<Project[]>([])
 const [releases, setReleases] = createSignal<Release[]>([])
 const [paging, setPaging] = createSignal<ReadonlySet<string>>(new Set())
-/** Read the whole board from now on: a filter is (or was) on. */
-const [wantAll, setWantAll] = createSignal(false)
+/** The filters page is on screen: its counts need every card. */
+const [filtersOpen, setFiltersOpen] = createSignal(false)
 const [readingAll, setReadingAll] = createSignal(false)
+/** Read the whole board: a filter is on, or the filters page is open (after Clear all, reads page again). */
+const wantAll = () => filtering() || filtersOpen()
+/** How far a lane was paged (the first page, then each Load more): a quiet read keeps that many rows. */
+let pagedTo = FIRST_PAGE
 const [now, setNow] = createSignal(Date.now())
 
-export { agents, lanes, loadError, loaded, meta, now, paging, projects, readingAll, releases, setNow }
+export { agents, lanes, loadError, loaded, meta, now, paging, projects, readingAll, releases, setFiltersOpen, setNow }
 
 const memo = newMemo()
 
@@ -170,24 +174,28 @@ export type LoadResult = 'applied' | 'superseded' | 'failed'
 
 /**
  * Reads the board: every row with a filter on (the filters need them all),
- * else as many rows per column as the app shows now (at least the first
- * page; a lane paged to its end keeps its rows). Only the newest read is
- * applied (an older one resolves `superseded`); `quiet` reads show no error
- * over a board already on screen.
+ * else as many rows per column as the person paged to (at least the first
+ * page). Only the newest read is applied (an older one resolves
+ * `superseded`); the moves still out are drawn again over it; `quiet` reads
+ * show no error over a board already on screen.
  */
 export async function load(quiet = false): Promise<LoadResult> {
   const token = ++loadSeq
   const from = begin()
   const all = wantAll()
-  const shown = Math.max(0, ...lanes().map((lane) => lane.rows.length))
-  const limit = Math.ceil(Math.max(FIRST_PAGE, shown) / FIRST_PAGE) * FIRST_PAGE
+  const limit = Math.ceil(Math.max(FIRST_PAGE, pagedTo) / FIRST_PAGE) * FIRST_PAGE
   if (all) setReadingAll(true)
   try {
     const read = await kanban.board(all ? undefined : limit)
     if (token !== loadSeq) return 'superseded'
     batch(() => {
       applyMeta(read)
-      setLanes(applyRead(read, journal.slice(from), memo))
+      let next = applyRead(read, journal.slice(from), memo)
+      // A move the worker has not answered yet: this read was answered before it, so it is drawn again.
+      for (const [id, move] of optimistic) {
+        if (memo.versions.get(id) === move.version) next = placeMove(next, id, move.status, move.index, memo.placed)
+      }
+      setLanes(next)
       setLoadError(null)
       setLoaded(true)
     })
@@ -204,11 +212,10 @@ export async function load(quiet = false): Promise<LoadResult> {
   }
 }
 
-/** The whole board, once: the filters see every card from now on. A failure shows (the filters would be short). */
+/** The whole board, when a filter or the filters page needs it. A failure shows (the filters would be short). */
 export function readAll(): void {
-  if (wantAll() && (complete() || readingAll())) return
-  setWantAll(true)
-  if (!complete()) void load()
+  if (complete() || readingAll()) return
+  void load()
 }
 
 /** The next page of a partial lane (`endReached`, Load more). */
@@ -224,6 +231,7 @@ export async function more(id: string): Promise<void> {
     const next = appendPage(lanes(), id, page.rows, page.total, memo, changed)
     setLanes(next)
     const after = next.find((l) => l.id === id)
+    if (after) pagedTo = Math.max(pagedTo, after.rows.length)
     // The lane changed while the page was out (its offset may have skipped or repeated a row), or nothing new
     // came while it is still partial: the rows are out of step with the column. One read sets them right.
     if (changed || (after && partial(after) && after.rows.length === had)) void load(true)
@@ -294,7 +302,8 @@ function onEvent(event: ChangeEvent): void {
 
 /** Binds `kanban:change`, then reads the board (bind first, read after `ready`). The cleanup unbinds. */
 export function goLive(): () => void {
-  const off = listen(onEvent)
+  // An event the app cannot read still says the board changed: read it again, after the burst.
+  const off = listen(onEvent, planSoon)
   let bound = true
   void off.ready.then(() => {
     if (bound) void load(!!meta())
@@ -309,6 +318,8 @@ export function goLive(): () => void {
 
 /** The writes of one card go one after the other: a second drop must not overtake the first. */
 const tails = new Map<string, Promise<unknown>>()
+/** Moves on screen that the worker has not answered yet, with the card's version when they were made. */
+const optimistic = new Map<string, { status: string; index?: number; version: number | undefined }>()
 
 /**
  * Moves card `id` to `status` at `index` (absent = the end of the column):
@@ -331,11 +342,14 @@ export function moveTicket(id: string, status: string, index?: number, from?: st
         ?.rows.findIndex((r) => r.id === id) ?? -1)
     : -1
   const version = memo.versions.get(id)
+  const pending = { status, index, version }
+  optimistic.set(id, pending)
   setLanes((current) => placeMove(current, id, status, index, memo.placed))
   const save = async (): Promise<Ticket | null> => {
     const from = begin()
     try {
       const ticket = await kanban.move(id, status, index)
+      if (optimistic.get(id) === pending) optimistic.delete(id)
       noteOwn(ticket)
       write(summaryOf(ticket), { moved: true, from: left })
       // Another card changed while this one was out (its place was drawn against a guess), or nothing changed.
@@ -343,6 +357,7 @@ export function moveTicket(id: string, status: string, index?: number, from?: st
       if (crowded || (row && Date.parse(ticket.updated_at) <= Date.parse(row.updated_at))) void load(true)
       return ticket
     } catch (err) {
+      if (optimistic.get(id) === pending) optimistic.delete(id)
       toast(`Couldn't move ${row?.key ?? 'the ticket'}: ${readable(err)}`, 'error')
       if ((await load(true)) === 'failed' && row && at >= 0 && memo.versions.get(id) === version) {
         setLanes((current) => upsert(current, { ...row, order: at + 1 }, { moved: true }, memo.placed))
@@ -423,13 +438,52 @@ export const filtering = () => !isEmpty(filters())
 
 let saveTimer: number | undefined
 
+/** Storage keeps at most 64 KiB a value (limits.maxStorageValueBytes): what is saved stays well under. */
+const SAVED_MAX = 32_768
+
+/** UTF-8 bytes of `text` (no TextEncoder in the VM). */
+function utf8(text: string): number {
+  let bytes = 0
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i)
+    if (code < 0x80) bytes += 1
+    else if (code < 0x800) bytes += 2
+    else if (code >= 0xd800 && code < 0xdc00) {
+      // A surrogate pair is one 4-byte character.
+      bytes += 4
+      i++
+    } else bytes += 3
+  }
+  return bytes
+}
+
+/** The filters as saved: a set too big to keep (a pasted wall of text, thousands of labels) is cut down. */
+export function saveable(f: Filters): { value: Filters; trimmed: boolean } {
+  if (utf8(JSON.stringify(f)) <= SAVED_MAX) return { value: f, trimmed: false }
+  const cut = (values: string[]) => values.slice(0, 50).map((v) => v.slice(0, 100))
+  const value: Filters = {
+    ...f,
+    q: f.q.slice(0, 200),
+    labels: cut(f.labels),
+    assignees: cut(f.assignees),
+    priorities: cut(f.priorities),
+    projects: cut(f.projects),
+    releases: cut(f.releases),
+  }
+  return { value, trimmed: true }
+}
+
 export function setFilters(next: Filters): void {
   setFiltersSignal(next)
   if (!isEmpty(next)) readAll()
   if (saveTimer !== undefined) clearTimeout(saveTimer)
   saveTimer = setTimeout(() => {
     saveTimer = undefined
-    iii.storage.set('filters', next as never).catch(() => {})
+    const { value, trimmed } = saveable(next)
+    if (trimmed) toast('These filters are too long to keep on this device; a shorter version is kept')
+    iii.storage
+      .set('filters', value as never)
+      .catch((err: unknown) => toast(`Couldn't keep the filters: ${readable(err)}`, 'error'))
   }, 500)
 }
 
@@ -452,10 +506,7 @@ export async function restore(): Promise<void> {
   try {
     const [stored, storedLane] = await Promise.all([iii.storage.get('filters'), iii.storage.get('lane')])
     const f = coerceFilters(stored)
-    if (!isEmpty(f)) {
-      setFiltersSignal(f)
-      setWantAll(true)
-    }
+    if (!isEmpty(f)) setFiltersSignal(f)
     if (typeof storedLane === 'string' && !lane()) setLaneSignal(storedLane)
   } catch {
     // Nothing kept: the defaults.
