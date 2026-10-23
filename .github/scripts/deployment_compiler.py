@@ -262,7 +262,10 @@ def validate_artifact(
     if kind not in ARTIFACT_KINDS:
         fail(f"workers.{worker}.artifact.kind is unsupported")
     allowed_fields = {
-        "rust-binary": {"kind", "toolchain", "binary", "targets", "windows_exception", "frontends", "companions"},
+        "rust-binary": {
+            "kind", "toolchain", "binary", "targets", "windows_exception", "frontends", "companions",
+            "features", "prebuild", "macos_entitlements",
+        },
         "go-binary": {"kind", "toolchain", "binary", "targets", "windows_exception"},
         "javascript-bundle": {
             "kind", "workspace_root", "runtime", "package_manager", "lockfile",
@@ -343,6 +346,29 @@ def validate_artifact(
             )
         ):
             fail(f"workers.{worker}.artifact.companions must be file-name glob patterns")
+        # Build extras for binaries that embed guest artifacts and run under
+        # Hypervisor.framework: cargo features, a prebuild step run from the
+        # worker dir with BUILD_TARGET set, and the macOS signing entitlements.
+        features = artifact.get("features")
+        if features is not None and (
+            not isinstance(features, list)
+            or not features
+            or any(not isinstance(feature, str) or not re.fullmatch(r"[a-z0-9_-]+", feature) for feature in features)
+        ):
+            fail(f"workers.{worker}.artifact.features must be a non-empty array of cargo feature names")
+        prebuild = artifact.get("prebuild")
+        if prebuild is not None:
+            if not isinstance(prebuild, list) or not prebuild or any(
+                not isinstance(part, str) or not part for part in prebuild
+            ):
+                fail(f"workers.{worker}.artifact.prebuild must be a non-empty argv")
+            if not safe_relative(worker_dir, prebuild[0], f"workers.{worker}.artifact.prebuild[0]").is_file():
+                fail(f"workers.{worker}.artifact.prebuild[0] does not identify a file: {prebuild[0]}")
+        entitlements = artifact.get("macos_entitlements")
+        if entitlements is not None and not safe_relative(
+            worker_dir, entitlements, f"workers.{worker}.artifact.macos_entitlements"
+        ).is_file():
+            fail(f"workers.{worker}.artifact.macos_entitlements does not identify a file: {entitlements}")
         frontends = artifact.get("frontends", [])
         if not isinstance(frontends, list):
             fail(f"workers.{worker}.artifact.frontends must be an array")

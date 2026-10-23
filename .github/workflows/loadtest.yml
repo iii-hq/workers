@@ -1,0 +1,212 @@
+name: Load Benchmarks
+
+# Capacity and resource benchmarks (sandbox-builtin/crates/iii-loadtest): the
+# iii engine alone in microVMs of fixed size, driven by real SDK workers. Every
+# iii release, and every Monday on iii main for the trend in between. The
+# engine is built from iii-hq/iii at the ref under test; the load test, the
+# guest init and the firmware come from this repository's sandbox-builtin.
+# Results land on iii-hq/iii's gh-pages branch (loadtest/index.json +
+# loadtest/runs/<id>.json) and iii.dev/benchmarks is rebuilt from them.
+#
+# iii's create-tag.yml sends every release, prereleases included, as a
+# repository_dispatch of type iii-release with client_payload.version (the
+# event it sends iii-hq/templates), through III_CI_APP, which must be installed
+# on this repository with Contents: write. The run builds tag iii/v<version>;
+# a dispatch without a version fails at checkout instead of benchmarking main.
+#
+# Secret III_PAGES_TOKEN: a token for iii-hq/iii with contents: write (push
+# gh-pages) and actions: write (dispatch deploy-website.yml). Only publishing
+# runs use it.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  repository_dispatch:
+    types: [iii-release]
+  workflow_dispatch:
+    inputs:
+      iii_ref:
+        description: 'iii-hq/iii ref (branch, tag or SHA) to build the engine from'
+        required: false
+        default: main
+      profiles:
+        description: 'Machine profiles: host, or <vcpus>x<MiB> microVMs'
+        required: false
+        default: 'host,1x512,2x1024,4x2048'
+      scenarios:
+        description: 'Scenarios (iii-loadtest scenarios lists them)'
+        required: false
+        default: 'rpc,fanout,filters,observers,emit,local,overload,connections'
+      quick:
+        description: 'Short steps, fewer levels: checks the pipeline, never published'
+        type: boolean
+        default: false
+      publish:
+        description: 'Publish to iii-hq/iii gh-pages and rebuild iii.dev/benchmarks'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  # One run at a time: they would share the runner's cores, and gh-pages.
+  group: loadtest-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  III_TELEMETRY_ENABLED: "false"
+
+jobs:
+  loadtest:
+    name: Load benchmarks
+    # A GitHub-hosted larger runner (Linux x64, 16 vCPUs) added to this
+    # repository; its name is the label. Set the LOADTEST_RUNNER variable to
+    # use another.
+    runs-on: ${{ vars.LOADTEST_RUNNER || 'iii-loadtest-16-cores' }}
+    timeout-minutes: 300
+    env:
+      III_REF: ${{ github.event_name == 'repository_dispatch' && format('iii/v{0}', github.event.client_payload.version) || inputs.iii_ref || 'main' }}
+      PROFILES: ${{ inputs.profiles || 'host,1x512,2x1024,4x2048' }}
+      SCENARIOS: ${{ inputs.scenarios || 'rpc,fanout,filters,observers,emit,local,overload,connections' }}
+      QUICK: ${{ inputs.quick && '--quick' || '' }}
+      PUBLISH: ${{ github.event_name != 'workflow_dispatch' || (inputs.publish && !inputs.quick) }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Check out the engine
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: iii-hq/iii
+          ref: ${{ env.III_REF }}
+          path: iii
+          persist-credentials: false
+
+      # Same rule as ci.yml's VM jobs: the runner user needs /dev/kvm.
+      - name: Enable KVM
+        run: |
+          if [ ! -e /dev/kvm ]; then
+            echo "::error::/dev/kvm is missing on this runner: the microVM profiles cannot boot"
+            exit 1
+          fi
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+          lscpu | grep -E '^(Model name|CPU\(s\)|Thread\(s\) per core)'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get install -y libcap-ng-dev \
+            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
+
+      # build-init.sh adds the musl target the guest init needs.
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.97.1
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: loadtest
+          cache-on-failure: true
+          workspaces: |
+            iii -> target
+            sandbox-builtin -> target
+
+      - name: Build the engine
+        working-directory: iii
+        run: cargo build --locked --release -p iii
+
+      - name: Build the guest init and the load test
+        working-directory: sandbox-builtin
+        run: |
+          # The microVM's PID 1, static (the same init sandbox-builtin's worker VMs boot).
+          BUILD_TARGET=x86_64-unknown-linux-gnu scripts/build-init.sh
+          cargo build --locked --release -p iii-loadtest
+
+      - name: Version
+        id: meta
+        run: |
+          if [[ "$III_REF" == iii/v* ]]; then
+            VERSION="${III_REF#iii/v}"
+          else
+            VERSION="$(iii/target/release/iii --version)+$(git -C iii rev-parse --short HEAD)"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Run the suite
+        run: |
+          sandbox-builtin/target/release/iii-loadtest suite \
+            --profiles "$PROFILES" \
+            --scenarios "$SCENARIOS" \
+            ${QUICK:+--quick} \
+            --engine iii/target/release/iii \
+            --krunfw sandbox-builtin/firmware/libkrunfw-linux-x86_64.so \
+            --init sandbox-builtin/target/x86_64-unknown-linux-musl/release/iii-init \
+            --out loadtest-results
+
+      - name: Summarize
+        if: always()
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          test -f loadtest-results/results.json || exit 0
+          sandbox-builtin/target/release/iii-loadtest export loadtest-results \
+            --version "$VERSION" \
+            --machine "GitHub-hosted runner, $(nproc) vCPUs" \
+            --url "$RUN_URL"
+          cat loadtest-results/report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: loadtest-${{ steps.meta.outputs.version }}
+          path: |
+            loadtest-results/results.json
+            loadtest-results/summary.json
+            loadtest-results/report.md
+            loadtest-results/*/*/config.yaml
+            loadtest-results/*/*/engine.log
+            loadtest-results/*/*/console.log
+          retention-days: 90
+
+      - name: Check out gh-pages
+        if: env.PUBLISH == 'true'
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: iii-hq/iii
+          ref: gh-pages
+          path: gh-pages
+          token: ${{ secrets.III_PAGES_TOKEN }}
+
+      - name: Publish to gh-pages
+        if: env.PUBLISH == 'true'
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          sandbox-builtin/target/release/iii-loadtest publish loadtest-results/summary.json --pages gh-pages
+          cd gh-pages
+          git add loadtest
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "loadtest: $VERSION"
+          # iii's criterion workflow pushes to gh-pages too: retry on a race.
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:gh-pages; then exit 0; fi
+            git fetch --depth=1 origin gh-pages
+            git rebase FETCH_HEAD
+            sleep $((attempt * 5))
+          done
+          exit 1
+
+      - name: Rebuild iii.dev/benchmarks
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.III_PAGES_TOKEN }}
+        run: gh workflow run deploy-website.yml --repo iii-hq/iii --ref main
