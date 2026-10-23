@@ -1,6 +1,7 @@
 # Sandbox worker: moving the VM substrate out of the iii engine
 
 - Status: design, ready for planning. Date: 2026-10-20.
+- Amended 2026-10-23 [User]: iii 0.25.0 shipped from main without this work, so the release is 0.26 and every version below says so. `iii-loadtest` (added in 0.25, it boots the engine in libkrun microVMs) moves to the workers repo as `sandbox-builtin/crates/iii-loadtest` with `.github/workflows/loadtest.yml`; iii's `create-tag.yml` dispatches `iii-release` with `{version}` to iii-hq/workers, and iii.dev/benchmarks links there.
 - Code read: iii repo at `342a7704c`, workers repo at `8773952be`. Nothing was built or run; *inference* marks claims not confirmed by running code.
 - Tags: **[User]** decided by the product owner · **[Designer]** designer's call, accepted, builder may refine · **[Builder]** left to the builder · **[Designer, plan triage]** changed by plan triage decisions D1-D13 (T1 in 13) · **[Designer, adversarial review]** changed by the adversarial plan review (A1 in 13). Settlements S1-S7 (designer's calls) and decisions Q1-Q5 (user) are indexed in 13.
 - Paths under `engine/`, `crates/`, `scripts/` are in the iii repo (the installer is `engine/install.sh`); paths under a worker folder or `template/` are in the workers repo.
@@ -234,7 +235,7 @@ engine:
 
 ### 6.4 Validation and migration errors [User 6]
 - Remove `"iii-sandbox"` from `CONFIGURABLE_ENGINE_WORKERS`.
-- Compose `validate_engine` (`config.rs:473-498`) raises `SANDBOX_CONFIG_MOVED` before its generic check: "engine.workers.iii-sandbox was removed in iii 0.25: sandboxes now run in the sandbox-builtin worker, which Compose installs for you. Replace the block with `engine.sandbox.adapter: sandbox-builtin` (optional, the default) and move image_allowlist/custom_images/default_* to `containers.sandbox-builtin.config_override`. Guide: https://iii.dev/docs/upgrading/sandbox-worker". It also prints the replacement YAML built from the old block.
+- Compose `validate_engine` (`config.rs:473-498`) raises `SANDBOX_CONFIG_MOVED` before its generic check: "engine.workers.iii-sandbox was removed in iii 0.26: sandboxes now run in the sandbox-builtin worker, which Compose installs for you. Replace the block with `engine.sandbox.adapter: sandbox-builtin` (optional, the default) and move image_allowlist/custom_images/default_* to `containers.sandbox-builtin.config_override`. Guide: https://iii.dev/docs/upgrading/sandbox-worker". It also prints the replacement YAML built from the old block.
 - Update the text of `UnsupportedEngineWorker` (`error.rs:46-50`). `EngineWorkerIsBuiltin` (`daemon.rs:2178-2191`) keeps its text: it names no worker, and the rewrite below runs first. [Designer, plan triage]
 - `compose::add` rewrites an `iii-sandbox` request to the configured adapter's package request in `add_configured_scoped`, before planning, so it never reaches the `EngineWorkerIsBuiltin` check. [Designer, plan triage] `compose::add iii-sandbox` therefore keeps working after `iii-sandbox` leaves `CONFIGURABLE_ENGINE_WORKERS`, and the remediation texts in 6.1, 7.7 and 9 stay valid.
 - Engine: add an `"iii-sandbox"` arm to `migration_guidance` (`engine/src/workers/config.rs:206-222`).
@@ -269,7 +270,7 @@ engine:
   - edit `engine-test` and `coverage` (:56-67): drop the `install-iii-worker` prerequisite and the `cargo test -p iii-worker …` line;
   - edit `build:` (:191): replace the `sandbox` prerequisite with `cargo build --release -p iii`, and drop the worker echo lines;
   - the SDK, lint, fmt, typecheck and console targets (:137-190) stay.
-- `engine/install.sh` keeps its companion download (`worker_target_for_host` and its bats cases stay) but runs it only for the companions the resolved release lists, with no warning or note when they are absent. 0.25+ releases have no such assets, so install.sh skips them, and a pinned 0.24.x install still gets both. [Designer, adversarial review]
+- `engine/install.sh` keeps its companion download (`worker_target_for_host` and its bats cases stay) but runs it only for the companions the resolved release lists, with no warning or note when they are absent. 0.26+ releases have no such assets, so install.sh skips them, and a pinned 0.25.x install still gets both. [Designer, adversarial review]
 
 ## 7. Compose changes
 
@@ -473,7 +474,7 @@ The crate cannot be split by module: from the VM entry points, imports reach 53k
 ## 9. Migration
 
 **User steps**
-1. `iii update` stops installing `iii-worker`/`iii-init` (both `BinarySpec`s go, 6.5) and notes that `~/.local/bin/iii-worker` and `iii-init` can be removed; it deletes nothing. [Designer, plan triage] The first `iii update` from 0.24 still runs the frozen 0.24 updater: it updates `iii`, then reports "asset not found" for `iii-init` and `iii-worker` and exits 1. The next `iii update` (now 0.25) is clean and prints the note. The upgrade guide and the 0.25.0 release notes say so. [Designer, adversarial review]
+1. `iii update` stops installing `iii-worker`/`iii-init` (both `BinarySpec`s go, 6.5) and notes that `~/.local/bin/iii-worker` and `iii-init` can be removed; it deletes nothing. [Designer, plan triage] The first `iii update` from 0.25 still runs the frozen 0.25 updater: it updates `iii`, then reports "asset not found" for `iii-init` and `iii-worker` and exits 1. The next `iii update` (now 0.26) is clean and prints the note. The upgrade guide and the 0.26.0 release notes say so. [Designer, adversarial review]
 2. `up` on a file with `engine.workers.iii-sandbox` fails with `SANDBOX_CONFIG_MOVED` (6.4). The error prints the replacement YAML (7.9).
 3. The first `up` installs `sandbox-builtin`. VM state moves to adapter-owned directories, so the first boot of each VM reinstalls dependencies. The upgrade guide lists the old directories.
 4. A stray `iii-worker sandbox-daemon` can no longer take over `sandbox::*` (6.2).
@@ -485,11 +486,12 @@ No step for `iii worker`: clap has rejected it since 0.23 (`engine/src/main.rs:6
 - They declare nothing new (7.1).
 - ide accepts `exit_code: null`.
 - sandbox-code-runner's startup probe (`src/main.rs:128-155`) asks `engine::functions::info` about `sandbox::create`. The router always registers that id, so the probe would log "iii-sandbox detected" even with no adapter.
-  - The probe moves to `sandbox::adapter::info` and checks `info != null`. On engines older than 0.25 it falls back to today's probe.
+  - The probe moves to `sandbox::adapter::info` and checks `info != null`. On engines older than 0.26 it falls back to today's probe.
   - Its remediation text (`compose::add worker=iii-sandbox`) stays valid (7.2).
+- sandbox-code-runner's fleet watcher (`src/fleet_watch.rs`) reads S301 and S303 from `sandbox::list` as "adapter absent", as it reads `function_not_found`. The router always registers `sandbox::list`, so without this the console keeps a dead fleet after an adapter crash and never shows the install hint. [Final review I1]
 
 **Docs to update**
-- iii repo, under `docs/next/` only; 0.25.0 rotates it to Latest [Designer, plan triage]:
+- iii repo, under `docs/next/` only; 0.26.0 rotates it to Latest [Designer, plan triage]:
   - `docs/next/creating-workers/sandboxes.mdx`
   - `docs/next/using-iii/{engine,compose,workers}.mdx`
   - `docs/next/upgrading/workers-to-compose.mdx`
@@ -500,7 +502,7 @@ No step for `iii worker`: clap has rejected it since 0.23 (`engine/src/main.rs:6
 - Workers repo [Designer, plan triage: only text that tells users to configure `engine.workers.iii-sandbox` changes; mere name mentions stay]:
   - `template/worker-compose.yaml:6-17`, which declares `sandbox-builtin`; `up` on a host with no adapter build then fails with `UNSUPPORTED_PLATFORM` (accepted; the template README says to remove the container there). `template/sync.sh` exempts `sandbox-builtin`. [Designer, plan triage]
   - `ide/tests/e2e/*` stays standalone: its mocks register `sandbox-mock::*` instead of `sandbox::*`, and its `config.yaml` replaces the `iii-sandbox` entry with `sandbox: {adapter: sandbox-mock, namespace: ide-e2e}`. `EXEC_SANDBOX_CASES`, `III_SANDBOX_FS_NAMESPACE` and the ide S-code table stay unchanged. [Designer, plan triage]
-  - the harness `shell_coder_sandbox` scenario, and `harness/tests/e2e/run-ci.sh:15`, whose companion check requires `iii-init` and `iii-worker` and fails once its pin moves to 0.25.0, whose release has neither [Designer, adversarial review]. Harness launchers that call `iii worker` or `worker::add` are already broken since 0.23 and stay out of scope. [Designer, plan triage]
+  - the harness `shell_coder_sandbox` scenario, and `harness/tests/e2e/run-ci.sh:15`, whose companion check requires `iii-init` and `iii-worker` and fails once its pin moves to 0.26.0, whose release has neither [Designer, adversarial review]. Harness launchers that call `iii worker` or `worker::add` are already broken since 0.23 and stay out of scope. [Designer, plan triage]
   - `computer/README.md`, `computer/images/desktop/Dockerfile` and `computer/ui/src/page/Launcher.tsx` (they configure `engine.workers.iii-sandbox`); `computer/src/config.rs:50-52` and `ade/ui/src/configuration-forms/specs/scalar.ts:149` (they send users to iii-sandbox's own configuration, which now belongs to `sandbox-builtin`)
   - `.github/workflows/_worker-e2e.yml:251-253`
   - `README.md:127` and `ide/{README.md, ARCHITECTURE.md, skills/SKILL.md, config.yaml}` hold only name mentions and stay
@@ -510,11 +512,11 @@ No step for `iii worker`: clap has rejected it since 0.23 (`engine/src/main.rs:6
 | Step | Repo | Lands | Why main stays green |
 |---|---|---|---|
 | 0 | iii | `iii-sandbox-contract`, internal (`publish = false`) | No behaviour change. Step 1 merges after it and copies its two merged fixtures [Designer, adversarial review] |
-| 1 | workers | `sandbox-builtin` (moved code, `sandbox-builtin::*`, `worker::*`) and the 8.5 pipeline. Adapter tests and `sandbox-isolation-e2e.sh` call `sandbox-builtin::*`; the script goes through `iii trigger`, with the id prefix in a variable, and the hidden `sandbox` CLI is deleted. Released to the registry as 1.0.0 once the required `sandbox-builtin-vm-linux` passes | Nothing consumes it yet; a 0.24.x engine has no router, so nothing can call `sandbox::*` on it |
+| 1 | workers | `sandbox-builtin` (moved code, `sandbox-builtin::*`, `worker::*`) and the 8.5 pipeline. Adapter tests and `sandbox-isolation-e2e.sh` call `sandbox-builtin::*`; the script goes through `iii trigger`, with the id prefix in a variable, and the hidden `sandbox` CLI is deleted. Released to the registry as 1.0.0 once the required `sandbox-builtin-vm-linux` passes | Nothing consumes it yet; a 0.25.x engine has no router, so nothing can call `sandbox::*` on it |
 | 2 | iii | Router, reserved prefix, `engine.sandbox` with its default binding, migration errors, Compose client, auto-install; remove `KNOWN_EXTERNAL` and the prefetch | Router tests use a fake adapter (`fake::*`); the Compose e2e (11) pulls `sandbox-builtin` 1.0.0. The reserved prefix would fail the end-to-end step of iii's `sandbox-isolation-linux` (the old daemon can no longer register), so step 2 deletes that step; step 1's `sandbox-builtin-vm-linux` runs the moved script [Designer, adversarial review] |
 | 3 | iii | Delete the VM crates, firmware, jobs and Makefile targets (`.cargo/config.toml` stays); `engine/install.sh` fetches companions only when the release lists them (6.5); update docs | Nothing references them after step 2 |
-| 4 | iii | Release engine 0.25.0 (steps 2 and 3) | The adapter is already in the registry |
-| 5 | workers | The sandbox-code-runner probe, the ide `exit_code` fix, template, the ide e2e mocks renamed to `sandbox-mock::*` with `sandbox: {adapter: sandbox-mock, namespace: ide-e2e}`, harness text and `run-ci.sh`, `III_RELEASE_TAG` pins, `_worker-e2e.yml`, the isolation e2e on `sandbox::*` on the script's own engine with an explicit `sandbox:` binding, not under Compose [Designer, plan triage] | Needs 0.25.0 |
+| 4 | iii | Release engine 0.26.0 (steps 2 and 3) | The adapter is already in the registry |
+| 5 | workers | The sandbox-code-runner probe, the ide `exit_code` fix, template, the ide e2e mocks renamed to `sandbox-mock::*` with `sandbox: {adapter: sandbox-mock, namespace: ide-e2e}`, harness text and `run-ci.sh`, `III_RELEASE_TAG` pins, `_worker-e2e.yml`, the isolation e2e on `sandbox::*` on the script's own engine with an explicit `sandbox:` binding, not under Compose [Designer, plan triage] | Needs 0.26.0 |
 
 Steps 2 and 3 are separate PRs in one engine release. Never release an engine without `iii-worker` before `sandbox-builtin` is in the registry. Step 2's router PR merges only once `sandbox-builtin` 1.0.0 resolves for all three targets and its Compose PR is approved, so step 2's two PRs and step 3 land back to back and the window with no stable tag from main stays short. [Designer, adversarial review]
 
@@ -540,7 +542,7 @@ Consumer code is unchanged, apart from the ide `exit_code` fix and the sandbox-c
 - Forwarding across namespaces passes errors and metadata through.
 - S301 and S302. S303 only on an engine whose config has no `sandbox` key. A Compose-managed engine without `engine.sandbox` is bound to `sandbox-builtin` (S1), and a config reload keeps the binding.
 - `invocation_stopped` on adapter disconnect.
-- Both migration messages, and the replacement YAML printed for a 0.24 file.
+- Both migration messages, and the replacement YAML printed for a 0.25 file.
 - The generated adapter container: exact marker, removed by `update`/`remove` once `needs(file)` is empty, resolved within `^<CONTRACT_MAJOR>` (S2).
 - `--frozen` refuses an undeclared adapter that a need requires.
 - A registry fixture with no build for the host: a need fails with `UNSUPPORTED_PLATFORM`.
@@ -548,9 +550,9 @@ Consumer code is unchanged, apart from the ide `exit_code` fix and the sandbox-c
 - `sandbox-builtin`'s types round-trip the contract's `sandbox_error_codes.json` and `wire_examples.json`.
 
 **Release check**
-- The 0.25.0 GitHub release has no `iii-worker-*`, `iii-init-*` or `libkrunfw-*` assets.
+- The 0.26.0 GitHub release has no `iii-worker-*`, `iii-init-*` or `libkrunfw-*` assets.
 - `cargo metadata` for the iii workspace lists no `msb_krun` package.
-- `iii update` fetches neither `iii-worker` nor `iii-init`. `engine/install.sh` fetches them only when the resolved release lists them; 0.25+ releases have no such assets, so install.sh skips them. [Designer, adversarial review]
+- `iii update` fetches neither `iii-worker` nor `iii-init`. `engine/install.sh` fetches them only when the resolved release lists them; 0.26+ releases have no such assets, so install.sh skips them. [Designer, adversarial review]
 
 ## 12. Risks and questions left to the builder
 
