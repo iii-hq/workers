@@ -49,7 +49,7 @@ pub struct WorkerConfig {
     /// Image booted for a sandbox-backed session when `sessions::start` omits
     /// `image`: a `custom_images` key in iii-sandbox's catalog
     /// (`sandbox::catalog::list`); the OCI ref behind it is set in
-    /// iii-sandbox's own configuration. Empty means a sandbox session must name
+    /// sandbox-builtin's configuration. Empty means a sandbox session must name
     /// its own image. The image must ship the tools the README's Sandbox
     /// desktop image section lists.
     pub sandbox_image: String,

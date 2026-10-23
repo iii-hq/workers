@@ -195,8 +195,8 @@ export const Launcher = forwardRef<LauncherHandle, LauncherProps>(
             }
             detail={
               imagesError
-                ? "The engine's iii-sandbox worker is not running. Add it under engine.workers in worker-compose.yaml, with a desktop image in custom_images; the computer worker's README has the snippet."
-                : 'iii-sandbox lists no desktop image. Add one under custom_images in its configuration, such as ghcr.io/trycua/linux:24.04-slim-20261013-36bc520.'
+                ? "No sandbox adapter is serving sandbox::*. Run `iii trigger compose::add worker=iii-sandbox`, then add a desktop image to sandbox-builtin's custom_images; the computer worker's README has the snippet."
+                : "iii-sandbox lists no desktop image. Add one to sandbox-builtin's custom_images, such as ghcr.io/trycua/linux:24.04-slim-20261013-36bc520."
             }
           />
         ) : (

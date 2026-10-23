@@ -19,7 +19,7 @@
 #   docker build -t ghcr.io/<you>/iii-desktop:latest computer/images/desktop
 #   docker push  ghcr.io/<you>/iii-desktop:latest
 #
-#   # engine config.yaml, under the iii-sandbox worker:
+#   # worker-compose.yaml, under containers.sandbox-builtin.config_override:
 #   #   custom_images:
 #   #     desktop: ghcr.io/<you>/iii-desktop:latest
 #   #   image_allowlist:

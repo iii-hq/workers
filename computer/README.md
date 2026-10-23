@@ -33,33 +33,25 @@ worker, persist with `state`, schedule with `cron`.
 iii trigger compose::add worker=computer
 ```
 
-To drive a throwaway desktop instead of your own machine, turn on the engine's
-sandbox worker: it boots the microVM the `image` driver runs in. `iii-sandbox`
-is built into the engine, so Compose cannot add it as a container
-(`compose::add` refuses it). In a Compose project it goes under
-`engine.workers` in `worker-compose.yaml`:
+To drive a throwaway desktop instead of your own machine, run the sandbox
+adapter: the `sandbox-builtin` worker serves the engine's `sandbox::*` calls in
+the microVM the `image` driver runs in. `iii trigger compose::add worker=iii-sandbox`
+installs it. To also name the desktop image, declare it yourself in
+`worker-compose.yaml`; an unmarked container is yours, so Compose never removes
+it:
 
 ```yaml
-engine:
-  workers:
-    iii-sandbox:
+containers:
+  sandbox-builtin:
+    worker: package://sandbox-builtin
+    version: '^1'
+    config_override:
       auto_install: true
-      image_allowlist: [desktop]
+      image_allowlist: [desktop, anthropic]
       custom_images:
         desktop: ghcr.io/trycua/linux:24.04-slim-20261013-36bc520
-```
-
-With an engine you run yourself (`iii -c config.yaml`), the same settings are a
-list entry in its `config.yaml` (the engine reloads it live):
-
-```yaml
-workers:
-  - name: iii-sandbox
-    config:
-      auto_install: true
-      image_allowlist: [desktop]
-      custom_images:
-        desktop: ghcr.io/trycua/linux:24.04-slim-20261013-36bc520
+        # Firefox and LibreOffice; give it computer's sandbox_memory_mb >= 2048.
+        anthropic: ghcr.io/anthropics/anthropic-quickstarts:computer-use-demo-latest
 ```
 
 `sandbox::catalog::list` shows what it can boot. For the image, see
