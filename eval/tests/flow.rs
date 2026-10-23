@@ -3108,11 +3108,24 @@ fn captured_report(name: &str) -> Value {
     serde_json::from_str(text).unwrap()
 }
 
-/// The captured passed report with the root transcript it preserved.
+/// The captured passed report with its run's transcript: the entries are
+/// serialized from the Harness's own message types, where the E2E keeps them
+/// (`detail.reports[].report.scenarios[].runs[].transcript.messages`).
 fn passed_report() -> Value {
     let mut report = captured_report("passed");
-    report["transcripts"] = json!([{"session_id": ROOT, "entries": rediscovery_transcript()}]);
+    report["detail"]["reports"][0]["report"]["scenarios"][0]["runs"][0]["transcript"]["messages"] =
+        json!(rediscovery_transcript());
     report
+}
+
+/// An `execution-get` report of `execution` with `runs` of one scenario.
+fn report_with_runs(execution: Value, runs: Value) -> Value {
+    json!({
+        "manifest": {"executions": [execution]},
+        "detail": {"reports": [{"scenario_id": "tool_contract_recovery", "report": {
+            "scenarios": [{"scenario_id": "tool_contract_recovery", "runs": runs}]
+        }}]},
+    })
 }
 
 /// Serves `report` as the `execution-get` answer of the execution it lists.
@@ -3211,23 +3224,28 @@ async fn analysis_survives_teardown_and_retention_from_imported_reports() {
     )));
     assert_eq!(imported.bundle, report);
     assert_eq!(imported.bundle_digest, ids::sha256_json(&report));
-    let manifest = &report["manifest"];
     let identity = &imported.identity;
     assert_eq!(
         identity.scenario_digest,
-        Some(ids::sha256_json(&manifest["scenario"]))
+        Some(ids::sha256_json(&json!([[
+            "tool_contract_recovery",
+            "b-tcr"
+        ]])))
     );
     assert_eq!(
         identity.contract_digest,
-        Some(ids::sha256_json(&manifest["contract"]))
+        Some(ids::sha256_json(&json!([[
+            "tool_contract_recovery",
+            "c-tcr"
+        ]])))
     );
     assert_eq!(
         identity.artifacts_digest,
-        Some(ids::sha256_json(&manifest["artifacts"]))
+        Some(ids::sha256_json(&report["detail"]["reports"]))
     );
     assert_eq!(
         identity.stack_digest,
-        Some(ids::sha256_json(&manifest["stack"]))
+        Some(ids::sha256_json(&json!("0.11.2")))
     );
     assert_eq!(identity.model.as_deref(), Some("task-model"));
     assert_eq!(identity.provider.as_deref(), Some("p"));
@@ -3266,9 +3284,12 @@ async fn analysis_survives_teardown_and_retention_from_imported_reports() {
         (state::EVIDENCE_SCOPE.to_string(), admission_key.clone()),
         serde_json::to_value(&copy).unwrap(),
     );
-    // What the source keeps after retention: no transcript, no coverage.
+    // What the source keeps after retention: the run without its transcript.
     let mut retained = captured_report("passed");
-    retained.as_object_mut().unwrap().remove("coverage");
+    retained["detail"]["reports"][0]["report"]["scenarios"][0]["runs"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("transcript");
     put_report(&h, &retained);
     let calls_before = h.world().calls.len();
     let late = changed(&h, json!({"execution_id": "exec-cap"})).await;
@@ -3280,8 +3301,8 @@ async fn analysis_survives_teardown_and_retention_from_imported_reports() {
     assert!(analyzed.analyzed);
     assert_eq!(
         signals(&analyzed),
-        ["coverage_gap", "repeated_contract_discovery"],
-        "findings come from the stored transcript and coverage"
+        ["repeated_contract_discovery"],
+        "findings come from the stored transcript"
     );
     assert!(analyzed.deepen);
     assert_eq!(
@@ -3294,70 +3315,110 @@ async fn analysis_survives_teardown_and_retention_from_imported_reports() {
 async fn first_pass_classifies_without_model_calls() {
     let h = Harness::start(World::new()).await;
     let calls_before = h.world().calls.len();
+    let run = |status: Option<&str>, technical: &str, messages: Option<Value>| {
+        let mut run = json!({"run_id": "r1", "session_id": "e2e_1",
+            "completion": "completed", "technical": technical});
+        if let Some(status) = status {
+            run["status"] = json!(status);
+        }
+        if let Some(messages) = messages {
+            run["transcript"] = json!({"messages": messages});
+        }
+        json!([run])
+    };
+    let clean = || {
+        Some(json!([
+            user("e_spawn_1", "Inspect the profile."),
+            assistant_text("e_t_child_0_assistant", "Done."),
+        ]))
+    };
     put_report(&h, &passed_report());
     put_report(&h, &captured_report("failed-infra"));
-    put_execution(
-        &h,
-        &execution(
-            "exec-defect",
-            "failed",
-            json!({"failure": {"kind": "assertion mismatch: no receipt in the reply"}}),
+    for (entry, runs) in [
+        // The agent failed its run under a valid technical outcome.
+        (
+            execution("exec-defect", "failed", json!({})),
+            run(Some("failed"), "valid", clean()),
         ),
-    );
-    put_execution(&h, &execution("exec-mute", "failed", json!({})));
-    put_report(
-        &h,
-        &json!({
-            "manifest": {"executions": [execution("exec-clean", "passed", json!({}))]},
-            "detail": {},
-            "transcripts": [{"session_id": CHILD, "entries": [
-                user("e_spawn_1", "Inspect the profile."),
-                assistant_text("e_t_child_0_assistant", "Done."),
-            ]}],
-        }),
-    );
-    for execution_id in [
+        // Free text that merely mentions infrastructure words stays the agent's.
+        (
+            execution(
+                "exec-provider",
+                "failed",
+                json!({"failure": {"reason": "assertion: wrong provider chosen after a timeout"}}),
+            ),
+            json!([]),
+        ),
+        // A structured infrastructure kind is the environment's.
+        (
+            execution(
+                "exec-timeout",
+                "failed",
+                json!({"failure": {"kind": "timeout"}}),
+            ),
+            json!([]),
+        ),
+        // A run that ran but was never assessed is a gap in the evaluation.
+        (
+            execution("exec-unassessed", "passed", json!({})),
+            run(None, "valid", clean()),
+        ),
+        (execution("exec-mute", "failed", json!({})), json!([])),
+        (
+            execution("exec-clean", "passed", json!({})),
+            run(Some("passed"), "valid", clean()),
+        ),
+    ] {
+        put_report(&h, &report_with_runs(entry, runs));
+    }
+    let all = [
         "exec-cap",
         "exec-infra",
         "exec-defect",
+        "exec-provider",
+        "exec-timeout",
+        "exec-unassessed",
         "exec-mute",
         "exec-clean",
-    ] {
+    ];
+    for execution_id in all {
         let response = changed(&h, json!({"execution_id": execution_id})).await;
         assert!(response.admitted, "{execution_id}: {response:?}");
     }
 
-    // A diagnostics signal and a coverage gap: pertinent, so deepening is flagged.
+    // A diagnostics signal on the run transcript: pertinent, deepening flagged.
     let cap = evidence_of(&h, "exec-cap");
-    assert_eq!(
-        classes(&cap),
-        [
-            FindingClassV1::ImprovementOpportunity,
-            FindingClassV1::EvaluationGap
-        ]
-    );
-    let gap = cap
-        .findings
-        .iter()
-        .find(|finding| finding.class == FindingClassV1::EvaluationGap)
-        .unwrap();
-    assert_eq!(gap.signal, "coverage_gap");
-    assert!(gap.observation.contains("never asserted"), "{gap:?}");
+    assert_eq!(classes(&cap), [FindingClassV1::ImprovementOpportunity]);
+    assert_eq!(signals(&cap), ["repeated_contract_discovery"]);
     assert!(cap.deepen);
 
-    // A failure the environment caused: not pertinent, no deepening.
+    // A run the infrastructure broke: not pertinent, no deepening.
     let infra = evidence_of(&h, "exec-infra");
     assert_eq!(
         classes(&infra),
         [FindingClassV1::InfrastructureOrEvaluatorFailure]
     );
-    assert!(infra.findings[0].observation.contains("teardown timeout"));
+    assert!(infra.findings[0]
+        .observation
+        .contains("infrastructure_error"));
     assert!(!infra.deepen);
+    let timeout = evidence_of(&h, "exec-timeout");
+    assert_eq!(
+        classes(&timeout),
+        [FindingClassV1::InfrastructureOrEvaluatorFailure]
+    );
+    assert!(!timeout.deepen);
 
-    // A failure the agent caused is a defect.
-    let defect = evidence_of(&h, "exec-defect");
-    assert_eq!(classes(&defect), [FindingClassV1::Defect]);
-    assert!(defect.deepen);
+    // Failures the agent caused are defects, and are deepened.
+    for execution_id in ["exec-defect", "exec-provider"] {
+        let defect = evidence_of(&h, execution_id);
+        assert_eq!(classes(&defect), [FindingClassV1::Defect], "{execution_id}");
+        assert!(defect.deepen, "{execution_id}");
+    }
+
+    let unassessed = evidence_of(&h, "exec-unassessed");
+    assert_eq!(classes(&unassessed), [FindingClassV1::EvaluationGap]);
+    assert!(unassessed.deepen);
 
     // A failure with no cause and nothing to read is insufficient evidence.
     let mute = evidence_of(&h, "exec-mute");
@@ -3369,16 +3430,16 @@ async fn first_pass_classifies_without_model_calls() {
     assert_eq!(classes(&clean), [FindingClassV1::ExpectedBehavior]);
     assert!(!clean.deepen);
 
-    for evidence in [&cap, &infra, &defect, &mute, &clean] {
-        assert!(evidence.analyzed, "{}", evidence.execution_id);
+    for execution_id in all {
+        let evidence = evidence_of(&h, execution_id);
+        assert!(evidence.analyzed, "{execution_id}");
         assert_eq!(
             evidence.deepen,
             evidence
                 .findings
                 .iter()
                 .any(|finding| finding.class.is_pertinent()),
-            "{}",
-            evidence.execution_id
+            "{execution_id}"
         );
     }
     // The first pass called no model, no analyst and started no campaign.
@@ -3413,6 +3474,7 @@ async fn missing_information_stays_unknown() {
         "model",
         "provider",
         "revision",
+        "runs",
         "transcripts",
         "child transcripts",
     ] {
@@ -3448,7 +3510,7 @@ async fn missing_information_stays_unknown() {
     // was preserved.
     let mut complete = passed_report();
     complete["manifest"]["executions"][0]["id"] = json!("exec-full");
-    complete["coverage"]["child_transcripts"] = json!("complete");
+    complete["detail"]["child_transcripts_complete"] = json!(true);
     put_report(&h, &complete);
     changed(&h, json!({"execution_id": "exec-full"})).await;
     let full = evidence_of(&h, "exec-full");
@@ -3472,8 +3534,9 @@ async fn reimport_does_not_duplicate_findings() {
     let mut h = Harness::start(World::new()).await;
     // The same transcript bundled twice yields each finding once.
     let mut report = passed_report();
-    let transcript = report["transcripts"][0].clone();
-    report["transcripts"] = json!([transcript.clone(), transcript]);
+    let runs = &mut report["detail"]["reports"][0]["report"]["scenarios"][0]["runs"];
+    let run = runs[0].clone();
+    runs.as_array_mut().unwrap().push(run);
     put_report(&h, &report);
     let event = json!({"execution_id": "exec-cap"});
     assert!(changed(&h, event.clone()).await.admitted);
@@ -3487,10 +3550,7 @@ async fn reimport_does_not_duplicate_findings() {
     fingerprints.sort();
     fingerprints.dedup();
     assert_eq!(fingerprints.len(), found, "{:?}", first.findings);
-    assert_eq!(
-        signals(&first),
-        ["coverage_gap", "repeated_contract_discovery"]
-    );
+    assert_eq!(signals(&first), ["repeated_contract_discovery"]);
     let writes = evidence_writes(&h);
 
     // Redelivered and restarted: the analyzed copy is neither re-imported
@@ -3500,7 +3560,7 @@ async fn reimport_does_not_duplicate_findings() {
     }
     h.restart();
     let mut changed_source = report.clone();
-    changed_source["coverage"]["gaps"] = json!(["another gap", "yet another gap"]);
+    changed_source["detail"]["coverage"] = json!({"gaps": ["another gap", "yet another gap"]});
     put_report(&h, &changed_source);
     assert!(!changed(&h, event.clone()).await.admitted);
     assert_eq!(evidence_of(&h, "exec-cap"), first);

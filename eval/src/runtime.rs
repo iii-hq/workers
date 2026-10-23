@@ -797,21 +797,66 @@ async fn return_to_cycle(deps: &Deps, claim: &AdmissionV1, status: &str) -> Resu
 // Durable evidence and the deterministic first pass
 // ---------------------------------------------------------------------------
 
-/// Failure causes that blame the environment or the evaluator, not the agent.
-const INFRA_FAILURE_MARKERS: [&str; 7] = [
-    "infra",
-    "evaluator",
+/// Structured failure kinds that blame the environment or the evaluator, not
+/// the agent. Matched whole: free text (a reason, an error message) never
+/// decides the class, so "wrong provider chosen" stays the agent's.
+const INFRA_FAILURE_KINDS: [&str; 8] = [
+    "infrastructure",
+    "infrastructure_error",
+    "evaluator_error",
     "timeout",
-    "container",
-    "provider",
-    "teardown",
-    "network",
+    "container_error",
+    "provider_error",
+    "network_error",
+    "teardown_error",
 ];
-const TRANSCRIPT_FIELDS: [&str; 3] = [
-    "/transcripts",
-    "/detail/transcripts",
-    "/artifacts/transcripts",
-];
+
+fn is_infra_kind(kind: &str) -> bool {
+    let kind = kind.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+    INFRA_FAILURE_KINDS.contains(&kind.as_str())
+}
+
+/// Every run of an `execution-get` report with its scenario id, in the shape
+/// `review::runs_of` reads: `detail.reports[].report.scenarios[].runs[]`.
+fn report_runs(bundle: &Value) -> Vec<(&str, &Value)> {
+    report_scenarios(bundle)
+        .flat_map(|scenario| {
+            let scenario_id = scenario["scenario_id"].as_str().unwrap_or_default();
+            scenario["runs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(move |run| (scenario_id, run))
+        })
+        .collect()
+}
+
+fn report_scenarios(bundle: &Value) -> impl Iterator<Item = &Value> {
+    bundle["detail"]["reports"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|report| {
+            report["report"]["scenarios"]
+                .as_array()
+                .into_iter()
+                .flatten()
+        })
+}
+
+/// The digest of what the reported scenarios declare in `field`, when any does.
+fn reported_digest(bundle: &Value, field: &str) -> Option<String> {
+    let declared: Vec<(&str, &Value)> = report_scenarios(bundle)
+        .filter(|scenario| !scenario[field].is_null())
+        .map(|scenario| {
+            (
+                scenario["scenario_id"].as_str().unwrap_or_default(),
+                &scenario[field],
+            )
+        })
+        .collect();
+    (!declared.is_empty()).then(|| ids::sha256_json(&declared))
+}
 
 /// The digest of the first value found at `pointers` in the execution entry,
 /// then in the bundle; `None` (unknown) when neither carries it.
@@ -831,7 +876,7 @@ fn text_in(entry: &Value, bundle: &Value, pointers: &[&str]) -> Option<String> {
 }
 
 fn evidence_identity(entry: &Value, bundle: &Value) -> EvidenceIdentityV1 {
-    EvidenceIdentityV1 {
+    let identity = EvidenceIdentityV1 {
         scenario_digest: digest_at(
             entry,
             bundle,
@@ -850,12 +895,22 @@ fn evidence_identity(entry: &Value, bundle: &Value) -> EvidenceIdentityV1 {
         artifacts_digest: digest_at(
             entry,
             bundle,
-            &["/artifacts", "/detail/artifacts", "/manifest/artifacts"],
+            &[
+                "/artifacts",
+                "/detail/artifacts",
+                "/manifest/artifacts",
+                "/detail/reports",
+            ],
         ),
         stack_digest: digest_at(
             entry,
             bundle,
-            &["/stack", "/detail/stack", "/manifest/stack"],
+            &[
+                "/stack",
+                "/detail/stack",
+                "/manifest/stack",
+                "/engine_version",
+            ],
         ),
         model: text_in(
             entry,
@@ -876,8 +931,16 @@ fn evidence_identity(entry: &Value, bundle: &Value) -> EvidenceIdentityV1 {
                 "/commit",
                 "/detail/revision",
                 "/manifest/revision",
+                "/harness_version",
+                "/e2e_revision",
             ],
         ),
+    };
+    EvidenceIdentityV1 {
+        scenario_digest: reported_digest(bundle, "behavior_sha256").or(identity.scenario_digest),
+        contract_digest: reported_digest(bundle, "contract_fingerprint")
+            .or(identity.contract_digest),
+        ..identity
     }
 }
 
@@ -930,44 +993,16 @@ async fn import_evidence(
     Ok(stored)
 }
 
-/// The transcripts the stored bundle preserved, by session id.
-fn stored_transcripts(bundle: &Value) -> Vec<(String, Vec<Value>)> {
-    let mut found = Vec::new();
-    for pointer in TRANSCRIPT_FIELDS {
-        match bundle.pointer(pointer) {
-            Some(Value::Array(items)) => {
-                for item in items {
-                    let session_id = text_at(item, &["/session_id", "/id"]).unwrap_or_default();
-                    if let Some(entries) = item["entries"]
-                        .as_array()
-                        .or_else(|| item["messages"].as_array())
-                    {
-                        found.push((session_id, entries.clone()));
-                    }
-                }
-            }
-            Some(Value::Object(sessions)) => {
-                for (session_id, value) in sessions {
-                    if let Some(entries) = value.as_array().or_else(|| value["entries"].as_array())
-                    {
-                        found.push((session_id.clone(), entries.clone()));
-                    }
-                }
-            }
-            _ => continue,
-        }
-        break;
-    }
-    found
-}
-
 /// The deterministic first pass: no model call and no new campaign. The
-/// diagnostics detectors run on every preserved transcript, the execution's
-/// status and failure cause add one signal, and whatever the copy does not
+/// diagnostics detectors run on every run transcript the stored report
+/// preserved (`detail.reports[].report.scenarios[].runs[].transcript`), each
+/// run's technical outcome and status add one signal, the execution's status
+/// and structured failure kind add another, and whatever the copy does not
 /// carry is recorded as unknown. Child-transcript coverage is complete only
 /// when the report says so.
 fn first_pass(evidence: &ExecutionEvidenceV1) -> (Vec<FindingV1>, Vec<String>, bool) {
     let bundle = &evidence.bundle;
+    let key = &evidence.admission_key;
     let entry = execution_entry(bundle, &evidence.execution_id)
         .cloned()
         .unwrap_or(Value::Null);
@@ -987,25 +1022,70 @@ fn first_pass(evidence: &ExecutionEvidenceV1) -> (Vec<FindingV1>, Vec<String>, b
             unknowns.push(format!("{field}: not in the imported report"));
         }
     }
-    let transcripts = stored_transcripts(bundle);
-    if transcripts.is_empty() {
-        unknowns.push("transcripts: none preserved in the imported report".into());
+    let runs = report_runs(bundle);
+    if runs.is_empty() {
+        unknowns.push("runs: no report run in the imported report".into());
     }
+    let mut transcripts = 0;
     let mut unreadable = 0;
-    for (session_id, entries) in &transcripts {
-        let detection = diagnostics::detect(session_id, entries);
-        unreadable += detection.unreadable_messages;
-        for diagnostic in detection.diagnostics {
-            let class = if diagnostic.rule_id == diagnostics::REPEATED_TOOL_ERROR {
-                FindingClassV1::Defect
-            } else {
-                FindingClassV1::ImprovementOpportunity
-            };
+    for (scenario_id, run) in &runs {
+        let run_id = run["run_id"].as_str().unwrap_or_default();
+        match run["transcript"]["messages"].as_array() {
+            Some(messages) => {
+                transcripts += 1;
+                let session_id = run["session_id"].as_str().unwrap_or(run_id);
+                let detection = diagnostics::detect(session_id, messages);
+                unreadable += detection.unreadable_messages;
+                for diagnostic in detection.diagnostics {
+                    let class = if diagnostic.rule_id == diagnostics::REPEATED_TOOL_ERROR {
+                        FindingClassV1::Defect
+                    } else {
+                        FindingClassV1::ImprovementOpportunity
+                    };
+                    findings.push(FindingV1 {
+                        fingerprint: diagnostic.fingerprint,
+                        class,
+                        signal: diagnostic.rule_id,
+                        observation: diagnostic.observation,
+                    });
+                }
+            }
+            None => unknowns.push(format!(
+                "transcript of run {scenario_id}/{run_id}: not preserved"
+            )),
+        }
+        let technical = text_at(run, &["/technical"]);
+        let status = text_at(run, &["/status"]).map(|status| status.to_ascii_lowercase());
+        let outcome = match (technical.as_deref(), status.as_deref()) {
+            (None, _) => {
+                unknowns.push(format!(
+                    "technical outcome of run {scenario_id}/{run_id}: not reported"
+                ));
+                None
+            }
+            (Some(technical), _) if technical != "valid" => Some((
+                FindingClassV1::InfrastructureOrEvaluatorFailure,
+                format!("run {scenario_id}/{run_id}: technical outcome {technical}"),
+            )),
+            (_, Some("failed")) => Some((
+                FindingClassV1::Defect,
+                format!(
+                    "run {scenario_id}/{run_id} failed with a valid technical outcome (completion {})",
+                    text_at(run, &["/completion"]).unwrap_or_else(|| "unknown".into())
+                ),
+            )),
+            (_, None) => Some((
+                FindingClassV1::EvaluationGap,
+                format!("run {scenario_id}/{run_id} ran but carries no assessment"),
+            )),
+            _ => None,
+        };
+        if let Some((class, observation)) = outcome {
             findings.push(FindingV1 {
-                fingerprint: diagnostic.fingerprint,
+                fingerprint: ids::sha256_json(&(key, "run_outcome", scenario_id, run_id, class)),
                 class,
-                signal: diagnostic.rule_id,
-                observation: diagnostic.observation,
+                signal: "run_outcome".into(),
+                observation,
             });
         }
     }
@@ -1014,72 +1094,73 @@ fn first_pass(evidence: &ExecutionEvidenceV1) -> (Vec<FindingV1>, Vec<String>, b
             "{unreadable} assistant entr(y/ies) could not be interpreted by the detectors"
         ));
     }
-    let complete = !transcripts.is_empty()
-        && (bundle.pointer("/child_transcripts_complete") == Some(&Value::Bool(true))
-            || bundle
-                .pointer("/coverage/child_transcripts")
-                .and_then(Value::as_str)
-                == Some("complete"));
+    if transcripts == 0 {
+        unknowns.push("transcripts: none preserved in the imported report".into());
+    }
+    let complete = transcripts > 0
+        && [
+            "/child_transcripts_complete",
+            "/detail/child_transcripts_complete",
+        ]
+        .iter()
+        .any(|pointer| bundle.pointer(pointer) == Some(&Value::Bool(true)));
     if !complete {
         unknowns.push("child transcripts: full coverage not established".into());
     }
-    for gap in ["/coverage/gaps", "/report/unasserted"]
+    for gap in ["/detail/coverage/gaps", "/detail/unasserted"]
         .iter()
         .filter_map(|pointer| bundle.pointer(pointer)?.as_array())
         .flatten()
     {
         let observation = text_at(gap, &[""]).unwrap_or_else(|| gap.to_string());
         findings.push(FindingV1 {
-            fingerprint: ids::sha256_json(&(&evidence.admission_key, "evaluation_gap", gap)),
+            fingerprint: ids::sha256_json(&(key, "evaluation_gap", gap)),
             class: FindingClassV1::EvaluationGap,
             signal: "coverage_gap".into(),
             observation: format!("not evaluated: {observation}"),
         });
     }
-    let failure = text_at(
-        &entry,
-        &[
-            "/failure/kind",
-            "/failure_kind",
-            "/error/kind",
-            "/failure/reason",
-            "/error",
-        ],
-    )
-    .or_else(|| text_at(bundle, &["/detail/failure/kind", "/detail/error"]))
-    .map(|cause| cause.to_ascii_lowercase());
-    let signal = match (status_of(&entry).as_str(), failure) {
-        ("failed", Some(cause))
-            if INFRA_FAILURE_MARKERS
-                .iter()
-                .any(|marker| cause.contains(marker)) =>
-        {
-            Some((
+    let failure_kind = text_at(&entry, &["/failure/kind", "/failure_kind", "/error/kind"])
+        .or_else(|| text_at(bundle, &["/detail/failure/kind"]));
+    let failure = failure_kind.clone().or_else(|| {
+        text_at(&entry, &["/failure/reason", "/error"])
+            .or_else(|| text_at(bundle, &["/detail/error"]))
+    });
+    let runs_explain = findings
+        .iter()
+        .any(|finding| finding.signal == "run_outcome");
+    let signal = if status_of(&entry) == "failed" {
+        match (failure_kind.as_deref(), failure) {
+            (Some(kind), _) if is_infra_kind(kind) => Some((
                 FindingClassV1::InfrastructureOrEvaluatorFailure,
-                format!("execution failed: {cause}"),
-            ))
+                format!("execution failed: {kind}"),
+            )),
+            _ if runs_explain => None,
+            (_, Some(cause)) => {
+                Some((FindingClassV1::Defect, format!("execution failed: {cause}")))
+            }
+            (_, None) if findings.is_empty() => Some((
+                FindingClassV1::InsufficientEvidence,
+                "execution failed without a recorded cause or diagnostic".into(),
+            )),
+            (_, None) => None,
         }
-        ("failed", Some(cause)) => {
-            Some((FindingClassV1::Defect, format!("execution failed: {cause}")))
-        }
-        ("failed", None) if findings.is_empty() => Some((
-            FindingClassV1::InsufficientEvidence,
-            "execution failed without a recorded cause or diagnostic".into(),
-        )),
-        ("failed", None) => None,
-        _ if !findings.is_empty() => None,
-        _ if transcripts.is_empty() => Some((
+    } else if !findings.is_empty() {
+        None
+    } else if transcripts == 0 {
+        Some((
             FindingClassV1::InsufficientEvidence,
             "execution passed but no transcript was preserved".into(),
-        )),
-        _ => Some((
+        ))
+    } else {
+        Some((
             FindingClassV1::ExpectedBehavior,
             "execution passed with no diagnostic".into(),
-        )),
+        ))
     };
     if let Some((class, observation)) = signal {
         findings.push(FindingV1 {
-            fingerprint: ids::sha256_json(&(&evidence.admission_key, "execution_status", class)),
+            fingerprint: ids::sha256_json(&(key, "execution_status", class)),
             class,
             signal: "execution_status".into(),
             observation,

@@ -7,18 +7,36 @@
         "run_id": "run-infra",
         "model": "task-model",
         "provider": "p",
-        "failure": { "kind": "Container teardown timeout" },
+        "harness_version": "4f2c9e1",
+        "engine_version": "0.11.2",
         "finished_at": 1792780200000
       }
-    ],
-    "scenario": {
-      "id": "crm-follow-up",
-      "steps": ["Schedule the follow-up from the old runbook."]
-    },
-    "stack": {
-      "engine": "0.11.2",
-      "workers": ["crm", "harness"]
-    }
+    ]
   },
-  "detail": {}
+  "detail": {
+    "run_id": "run-infra",
+    "reports": [
+      {
+        "scenario_id": "tool_contract_recovery",
+        "report": {
+          "scenarios": [
+            {
+              "scenario_id": "tool_contract_recovery",
+              "behavior_sha256": "b-tcr",
+              "contract_fingerprint": "c-tcr",
+              "runs": [
+                {
+                  "run_id": "r1",
+                  "session_id": "e2e_9",
+                  "status": "failed",
+                  "completion": "aborted",
+                  "technical": "infrastructure_error"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  }
 }
