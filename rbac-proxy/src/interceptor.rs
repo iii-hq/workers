@@ -518,6 +518,19 @@ impl Interceptor {
             return self.deny_invoke(&function_id, inv_id, &v);
         }
 
+        // An engine:: call reaches the trusted listener as is: queued, it would
+        // run later on the queue worker's own connection, as that worker. Only
+        // a direct call (no action, or void) goes through.
+        if target.starts_with("engine::") && !is_direct_call(&v) {
+            return self.reply_invoke_error(
+                &function_id,
+                inv_id,
+                &v,
+                "FORBIDDEN",
+                &format!("function '{function_id}' may only be called directly through rbac-proxy"),
+            );
+        }
+
         if target == "engine::workers::register" {
             return self.on_register_worker(v, inv_id).await;
         }
@@ -902,6 +915,14 @@ fn retain_supported_features(obj: &mut serde_json::Map<String, Value>) {
     }
 }
 
+/// No `action`, or a void one: the call runs now, on the caller's connection.
+fn is_direct_call(v: &Value) -> bool {
+    match v.get("action") {
+        None | Some(Value::Null) => true,
+        Some(action) => action.get("type").and_then(Value::as_str) == Some("void"),
+    }
+}
+
 /// `RegisterFunction.observe` (iii 0.25) declares how the function is
 /// observed: owner delivery, an args schema, and a `legacy_trigger_type` that
 /// makes it the stand-in for an old trigger type. None of it is gated by the
@@ -1035,6 +1056,40 @@ mod tests {
         assert_eq!(
             r["error"]["message"],
             "function 'secret::do' not allowed (add to rbac.expose_functions)"
+        );
+    }
+
+    #[tokio::test]
+    async fn queued_engine_call_is_refused() {
+        let i = interceptor(config_with(expose(&["api::*"]), None), session(None));
+        let frame = json!({
+            "type": "invokefunction",
+            "invocation_id": "22222222-2222-2222-2222-222222222222",
+            "function_id": "engine::workers::register",
+            "data": { "name": "browser:x", "runtime": "browser" },
+            "action": { "type": "enqueue", "queue": "default" }
+        });
+        let DownstreamAction::ReplyToClient(reply) = i.handle_downstream(&frame.to_string()).await
+        else {
+            panic!("expected a synthesized refusal");
+        };
+        let r: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(r["error"]["code"], "FORBIDDEN");
+    }
+
+    #[tokio::test]
+    async fn void_worker_registration_still_goes_through() {
+        let i = interceptor(config_with(expose(&["api::*"]), None), session(None));
+        let frame = json!({
+            "type": "invokefunction",
+            "function_id": "engine::workers::register",
+            "data": { "name": "browser:x", "runtime": "browser" },
+            "action": { "type": "void" }
+        });
+        let action = i.handle_downstream(&frame.to_string()).await;
+        assert!(
+            matches!(action, DownstreamAction::Forward(_)),
+            "got {action:?}"
         );
     }
 
