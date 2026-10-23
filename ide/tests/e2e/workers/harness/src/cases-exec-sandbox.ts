@@ -21,9 +21,8 @@ import { expect, expectEqual, type CaseContext, type TestCase } from './cases.ts
 //
 // tests/e2e/config.yaml binds the `sandbox-mock` adapter, so the fs
 // cases go through the router while sandbox::create gets S301 and every
-// case here logs SKIP. A real VM run binds `sandbox-builtin` instead
-// (`sandbox: {adapter: sandbox-builtin}`) on a host with hardware
-// virtualization; see the README prerequisites.
+// case here logs SKIP, on KVM hosts too. Real-VM ide coverage is the
+// template-stack check (spec 11).
 
 interface SandboxState {
   status: 'unknown' | 'available' | 'unavailable';

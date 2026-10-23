@@ -22,10 +22,8 @@ Modeled on `database/tests/e2e/`.
   the harness registers. The fs cases go through the engine's sandbox
   router; `sandbox::create` gets `S301`, so every case in
   `EXEC_SANDBOX_CASES` short-circuits with a `SKIP` log line and the rest
-  of the suite still runs. A real VM run binds `sandbox-builtin` instead
-  and needs hardware virtualization (Apple Silicon on macOS or `/dev/kvm`
-  on Linux); its first `sandbox::create` cold-pulls the `python` image, so
-  bump `HARNESS_TIMEOUT=300`.
+  of the suite still runs, on KVM hosts too. Real-VM ide coverage is the
+  template-stack check (spec 11).
 
 ## Run
 

@@ -13,7 +13,8 @@ workers:
 # bound adapter. This suite binds `sandbox-mock`, which the harness registers
 # in its own namespace, so the fs cases go through the router. The mock has
 # no create, so sandbox::create gets S301 and every EXEC_SANDBOX_CASES case
-# logs SKIP. A real VM run binds `sandbox-builtin` instead.
+# logs SKIP, on KVM hosts too. Real-VM ide coverage is the template-stack
+# check (spec 11).
 sandbox:
   adapter: sandbox-mock
   namespace: ide-e2e
