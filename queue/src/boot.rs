@@ -80,6 +80,9 @@ pub async fn start(project_iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::
     runtime.start().await?;
 
     crate::functions::register_all(&project_iii, adapter.clone(), runtime.clone());
+    // Kept until the trigger type is retired; old consumers bind it on 0.24
+    // and 0.25 engines.
+    #[allow(deprecated)]
     let _ = project_iii.register_trigger_type(
         RegisterTriggerType::new(
             TRIGGER_TYPE,
@@ -88,6 +91,10 @@ pub async fn start(project_iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::
         )
         .trigger_request_format::<SubscriberSpec>(),
     );
+    // The same subscribers through observe (iii 0.25): one more kind of
+    // subscriber in `trigger_handler`. On an engine without observe its hooks
+    // never run and the trigger type above carries everything.
+    crate::on_message::register(&project_iii, trigger_handler.clone());
 
     Ok(BootHandle {
         adapter,

@@ -147,6 +147,9 @@ pub fn register_config_trigger(
         .metadata(json!({ "internal": true })),
     );
 
+    // Deprecated in iii 0.25 (`configuration::on-updated`), still served by
+    // 0.24 and 0.25 engines; kept until this worker drops 0.24 support.
+    #[allow(deprecated)]
     iii.register_trigger(RegisterTriggerInput::new(
         "configuration".to_string(),
         CONFIG_FN_ID.to_string(),
@@ -332,7 +335,7 @@ mod tests {
     use crate::adapter::{QueueAdapter, TopicInfo};
     use crate::config::AdapterEntry;
     use crate::store::TopicStats;
-    use crate::trigger::{RegisteredSubscriber, SubscriberSpec};
+    use crate::trigger::{RegisteredSubscriber, SubscriberSpec, SubscriberTarget};
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -355,15 +358,13 @@ mod tests {
             self.enqueue_calls.fetch_add(1, Ordering::SeqCst);
         }
 
-        async fn subscribe(
+        async fn subscribe_target(
             &self,
             _topic: &str,
             _id: &str,
-            _function_id: &str,
-            _metadata: Option<serde_json::Value>,
+            _target: crate::trigger::SubscriberTarget,
             _condition_function_id: Option<String>,
             _queue_config: Option<crate::subscriber_config::SubscriberQueueConfig>,
-            _namespace: Option<String>,
         ) {
             self.subscribe_calls.fetch_add(1, Ordering::SeqCst);
         }
@@ -429,9 +430,7 @@ mod tests {
         trigger_handler
             .register_subscriber(RegisteredSubscriber {
                 trigger_id: "t1".to_string(),
-                function_id: "backend".to_string(),
-                metadata: None,
-                namespace: None,
+                target: SubscriberTarget::function("backend", None, None),
                 spec: SubscriberSpec {
                     queue: "demo".to_string(),
                     max_retries: None,
@@ -475,9 +474,7 @@ mod tests {
         trigger_handler
             .register_subscriber(RegisteredSubscriber {
                 trigger_id: "t1".to_string(),
-                function_id: "backend".to_string(),
-                metadata: None,
-                namespace: None,
+                target: SubscriberTarget::function("backend", None, None),
                 spec: SubscriberSpec {
                     queue: "demo".to_string(),
                     max_retries: None,

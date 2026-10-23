@@ -66,7 +66,7 @@ use uuid::Uuid;
 use crate::adapter::{FunctionQueueConfig, QueueAdapter, QueueMessage, TopicInfo};
 use crate::store::TopicStats;
 use crate::subscriber_config::SubscriberQueueConfig;
-use crate::trigger::Invoker;
+use crate::trigger::{Invoker, SubscriberTarget};
 
 use super::naming::{FnQueueNames, RabbitNames};
 use super::publisher::Publisher;
@@ -369,19 +369,17 @@ impl QueueAdapter for RabbitMQAdapter {
         }
     }
 
-    async fn subscribe(
+    async fn subscribe_target(
         &self,
         topic: &str,
         id: &str,
-        function_id: &str,
-        metadata: Option<Value>,
+        target: SubscriberTarget,
         condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
-        namespace: Option<String>,
     ) {
         let topic = topic.to_string();
         let id = id.to_string();
-        let function_id = function_id.to_string();
+        let function_id = target.function_id().to_string();
         let subscriptions = Arc::clone(&self.subscriptions);
 
         // Hold the write lock from the duplicate check through the insert:
@@ -446,7 +444,6 @@ impl QueueAdapter for RabbitMQAdapter {
 
         let topic_clone = topic.clone();
         let id_clone = id.clone();
-        let function_id_clone = function_id.clone();
         let consumer_tag_clone = consumer_tag.clone();
         let queue_name_clone = subscriber_queue.clone();
         let (cancel, cancelled) = oneshot::channel();
@@ -456,9 +453,7 @@ impl QueueAdapter for RabbitMQAdapter {
                 .run(
                     topic_clone,
                     id_clone,
-                    function_id_clone,
-                    metadata,
-                    namespace,
+                    target,
                     condition_function_id,
                     consumer_tag_clone,
                     queue_name_clone,

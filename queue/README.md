@@ -1,8 +1,9 @@
 # queue
 
 Durable function queues for iii. This worker registers the
-`durable:subscriber` trigger type and the queue/DLQ service functions that
-replace the legacy built-in queue worker.
+`durable:subscriber` trigger type, the `queue::on-message` observable function
+(iii 0.25 engines), and the queue/DLQ service functions that replace the
+legacy built-in queue worker.
 
 ## Install
 
@@ -28,6 +29,61 @@ Bind a function to `durable:subscriber` to consume a topic/queue:
 The worker also accepts the built-in subscriber `queue_config` shape for
 compatibility, including `maxRetries` and `backoffDelayMs`.
 
+## Observable Function: `queue::on-message`
+
+On an iii 0.25 engine, a consumer can observe `queue::on-message` instead of
+binding the trigger type. Its args are the `durable:subscriber` config above,
+validated the same way (`INVALID_ARGS` when the topic is missing or blank):
+
+```typescript
+iii.registerFunction('orders::process', async (order) => {
+  await fulfil(order)            // returning acks the message
+  return { ok: true }            // throwing retries it, then moves it to the DLQ
+})
+
+const observer = iii.observe(
+  {
+    function_id: 'queue::on-message',
+    args: { topic: 'orders.created', max_retries: 3, backoff_ms: 1000 },
+    filters: { 'input.priority': { $eq: 'high' } },   // optional
+  },
+  'orders::process',
+)
+await observer.ready()
+```
+
+- **Delivery.** Each observer is one more subscriber of its topic, next to the
+  `durable:subscriber` bindings: every subscriber (binding or observer)
+  receives every message, with the same payload. Only subscribers that share a
+  subscription identity (two triggers on one function, or bindings and
+  observers that name the same `group`) share one consumer: a group handles
+  each message once.
+  The worker hands each message to the observer with `obs.call`; the target's
+  result acks it, an error retries it with backoff and then moves it to the
+  topic's DLQ, exactly as for a trigger target.
+- **Filters** select messages per observer: a message the filters reject is
+  acked without invoking the target, as a `condition_function_id` returning
+  `false` is. `condition_function_id` still works and resolves in the queue
+  worker's namespace.
+- **Lifecycle.** `dispose()`, or the observing worker gone past the engine's
+  grace period, stops the observer's consumer like unregistering a trigger.
+  While the observer is suspended (its worker briefly disconnected, or its
+  target unregistered), messages stay queued and are retried like a message
+  for an unreachable trigger target. Outside a group, a subscription is keyed
+  by the observer id, which the SDK keeps across reconnects: its backlog survives a restart of
+  this worker (with a file-backed store) and is picked up by a later observer
+  with the same `id` option, once the previous one is disposed (the engine
+  refuses a second observer under a live id with `OBSERVER_ID_CONFLICT`).
+- **Timeouts.** The engine bounds each `obs.call` by
+  `observers.activation_timeout_ms` (30 s by default); a `durable:subscriber`
+  target gets 30 minutes. Raise that engine setting for consumers that run
+  longer, or a slow message is retried while its first delivery still runs.
+- Invoking `queue::on-message` directly is refused (`FORBIDDEN`): only this
+  worker delivers its messages.
+- On an engine without observe (0.24), `observe` fails with `UNSUPPORTED`; keep
+  using the `durable:subscriber` trigger type there. It stays registered on
+  every engine, and its old consumers behave as before.
+
 ## Functions
 
 | Function id | Input | Output |
@@ -42,6 +98,7 @@ compatibility, including `maxRetries` and `backoffDelayMs`.
 | `engine::queue::topic_stats` | `{ "topic" \| "queue" }` | `{ "depth", "consumer_count", "dlq_depth", "config" }` |
 | `engine::queue::dlq_topics` | `{}` | DLQ topic list |
 | `engine::queue::dlq_messages` | `{ "topic" \| "queue", "offset", "limit" }` | DLQ messages |
+| `queue::on-message` | observe only (see above); invoking it is refused | - |
 
 ### Namespace connections
 
