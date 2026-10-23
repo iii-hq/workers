@@ -727,6 +727,7 @@ pub async fn admit_execution(
         claimed_at: ids::now_ms(),
     };
     let (claim, claimed) = state::claim_admission(&deps.iii, &claim).await?;
+    import_evidence(deps, &claim, &bundle).await?;
     match claim.kind {
         AdmissionKindV1::Cycle => ensure_admitted_cycle(deps, &claim).await?,
         AdmissionKindV1::CandidateValidation => return_to_cycle(deps, &claim, &status).await?,
@@ -790,6 +791,303 @@ async fn return_to_cycle(deps: &Deps, claim: &AdmissionV1, status: &str) -> Resu
     let event = cycle_event(now, record.status, &format!("{marker}: {status}"));
     record.history.push(event);
     state::put_cycle(&deps.iii, &record).await
+}
+
+// ---------------------------------------------------------------------------
+// Durable evidence and the deterministic first pass
+// ---------------------------------------------------------------------------
+
+/// Failure causes that blame the environment or the evaluator, not the agent.
+const INFRA_FAILURE_MARKERS: [&str; 7] = [
+    "infra",
+    "evaluator",
+    "timeout",
+    "container",
+    "provider",
+    "teardown",
+    "network",
+];
+const TRANSCRIPT_FIELDS: [&str; 3] = [
+    "/transcripts",
+    "/detail/transcripts",
+    "/artifacts/transcripts",
+];
+
+/// The digest of the first value found at `pointers` in the execution entry,
+/// then in the bundle; `None` (unknown) when neither carries it.
+fn digest_at(entry: &Value, bundle: &Value, pointers: &[&str]) -> Option<String> {
+    [entry, bundle].into_iter().find_map(|source| {
+        pointers.iter().find_map(|pointer| {
+            source
+                .pointer(pointer)
+                .filter(|value| !value.is_null())
+                .map(ids::sha256_json)
+        })
+    })
+}
+
+fn text_in(entry: &Value, bundle: &Value, pointers: &[&str]) -> Option<String> {
+    text_at(entry, pointers).or_else(|| text_at(bundle, pointers))
+}
+
+fn evidence_identity(entry: &Value, bundle: &Value) -> EvidenceIdentityV1 {
+    EvidenceIdentityV1 {
+        scenario_digest: digest_at(
+            entry,
+            bundle,
+            &[
+                "/scenario",
+                "/test",
+                "/detail/scenario",
+                "/manifest/scenario",
+            ],
+        ),
+        contract_digest: digest_at(
+            entry,
+            bundle,
+            &["/contract", "/detail/contract", "/manifest/contract"],
+        ),
+        artifacts_digest: digest_at(
+            entry,
+            bundle,
+            &["/artifacts", "/detail/artifacts", "/manifest/artifacts"],
+        ),
+        stack_digest: digest_at(
+            entry,
+            bundle,
+            &["/stack", "/detail/stack", "/manifest/stack"],
+        ),
+        model: text_in(
+            entry,
+            bundle,
+            &["/model", "/detail/model", "/manifest/model"],
+        ),
+        provider: text_in(
+            entry,
+            bundle,
+            &["/provider", "/detail/provider", "/manifest/provider"],
+        ),
+        revision: text_in(
+            entry,
+            bundle,
+            &[
+                "/revision",
+                "/git_sha",
+                "/commit",
+                "/detail/revision",
+                "/manifest/revision",
+            ],
+        ),
+    }
+}
+
+/// Copies the execution's native report bundle into the loop scope under the
+/// admission key, before the source can be retained away, then runs the first
+/// pass over the stored copy only. Re-import keeps the first copy and never
+/// duplicates its findings.
+async fn import_evidence(
+    deps: &Deps,
+    claim: &AdmissionV1,
+    bundle: &Value,
+) -> Result<ExecutionEvidenceV1, EvalError> {
+    let _guard = deps.locks.guard(&claim.admission_key).await;
+    match state::get_evidence(&deps.iii, &claim.admission_key).await? {
+        Some(stored) if stored.analyzed => return Ok(stored),
+        Some(_) => {}
+        None => {
+            let entry = execution_entry(bundle, &claim.execution_id)
+                .cloned()
+                .unwrap_or(Value::Null);
+            let evidence = ExecutionEvidenceV1 {
+                admission_key: claim.admission_key.clone(),
+                execution_id: claim.execution_id.clone(),
+                imported_at: ids::now_ms(),
+                bundle_digest: ids::sha256_json(bundle),
+                bundle: bundle.clone(),
+                identity: evidence_identity(&entry, bundle),
+                analyzed: false,
+                findings: Vec::new(),
+                unknowns: Vec::new(),
+                child_transcripts_complete: false,
+                deepen: false,
+            };
+            state::put_evidence(&deps.iii, &evidence).await?;
+        }
+    }
+    let Some(mut stored) = state::get_evidence(&deps.iii, &claim.admission_key).await? else {
+        return Err(EvalError::State(format!(
+            "evidence {} was not stored",
+            claim.admission_key
+        )));
+    };
+    let (findings, unknowns, complete) = first_pass(&stored);
+    stored.deepen = findings.iter().any(|finding| finding.class.is_pertinent());
+    stored.findings = findings;
+    stored.unknowns = unknowns;
+    stored.child_transcripts_complete = complete;
+    stored.analyzed = true;
+    state::put_evidence(&deps.iii, &stored).await?;
+    Ok(stored)
+}
+
+/// The transcripts the stored bundle preserved, by session id.
+fn stored_transcripts(bundle: &Value) -> Vec<(String, Vec<Value>)> {
+    let mut found = Vec::new();
+    for pointer in TRANSCRIPT_FIELDS {
+        match bundle.pointer(pointer) {
+            Some(Value::Array(items)) => {
+                for item in items {
+                    let session_id = text_at(item, &["/session_id", "/id"]).unwrap_or_default();
+                    if let Some(entries) = item["entries"]
+                        .as_array()
+                        .or_else(|| item["messages"].as_array())
+                    {
+                        found.push((session_id, entries.clone()));
+                    }
+                }
+            }
+            Some(Value::Object(sessions)) => {
+                for (session_id, value) in sessions {
+                    if let Some(entries) = value.as_array().or_else(|| value["entries"].as_array())
+                    {
+                        found.push((session_id.clone(), entries.clone()));
+                    }
+                }
+            }
+            _ => continue,
+        }
+        break;
+    }
+    found
+}
+
+/// The deterministic first pass: no model call and no new campaign. The
+/// diagnostics detectors run on every preserved transcript, the execution's
+/// status and failure cause add one signal, and whatever the copy does not
+/// carry is recorded as unknown. Child-transcript coverage is complete only
+/// when the report says so.
+fn first_pass(evidence: &ExecutionEvidenceV1) -> (Vec<FindingV1>, Vec<String>, bool) {
+    let bundle = &evidence.bundle;
+    let entry = execution_entry(bundle, &evidence.execution_id)
+        .cloned()
+        .unwrap_or(Value::Null);
+    let mut findings = Vec::new();
+    let mut unknowns = Vec::new();
+    let identity = &evidence.identity;
+    for (field, value) in [
+        ("scenario", identity.scenario_digest.is_none()),
+        ("contract", identity.contract_digest.is_none()),
+        ("artifacts", identity.artifacts_digest.is_none()),
+        ("stack", identity.stack_digest.is_none()),
+        ("model", identity.model.is_none()),
+        ("provider", identity.provider.is_none()),
+        ("revision", identity.revision.is_none()),
+    ] {
+        if value {
+            unknowns.push(format!("{field}: not in the imported report"));
+        }
+    }
+    let transcripts = stored_transcripts(bundle);
+    if transcripts.is_empty() {
+        unknowns.push("transcripts: none preserved in the imported report".into());
+    }
+    let mut unreadable = 0;
+    for (session_id, entries) in &transcripts {
+        let detection = diagnostics::detect(session_id, entries);
+        unreadable += detection.unreadable_messages;
+        for diagnostic in detection.diagnostics {
+            let class = if diagnostic.rule_id == diagnostics::REPEATED_TOOL_ERROR {
+                FindingClassV1::Defect
+            } else {
+                FindingClassV1::ImprovementOpportunity
+            };
+            findings.push(FindingV1 {
+                fingerprint: diagnostic.fingerprint,
+                class,
+                signal: diagnostic.rule_id,
+                observation: diagnostic.observation,
+            });
+        }
+    }
+    if unreadable > 0 {
+        unknowns.push(format!(
+            "{unreadable} assistant entr(y/ies) could not be interpreted by the detectors"
+        ));
+    }
+    let complete = !transcripts.is_empty()
+        && (bundle.pointer("/child_transcripts_complete") == Some(&Value::Bool(true))
+            || bundle
+                .pointer("/coverage/child_transcripts")
+                .and_then(Value::as_str)
+                == Some("complete"));
+    if !complete {
+        unknowns.push("child transcripts: full coverage not established".into());
+    }
+    for gap in ["/coverage/gaps", "/report/unasserted"]
+        .iter()
+        .filter_map(|pointer| bundle.pointer(pointer)?.as_array())
+        .flatten()
+    {
+        let observation = text_at(gap, &[""]).unwrap_or_else(|| gap.to_string());
+        findings.push(FindingV1 {
+            fingerprint: ids::sha256_json(&(&evidence.admission_key, "evaluation_gap", gap)),
+            class: FindingClassV1::EvaluationGap,
+            signal: "coverage_gap".into(),
+            observation: format!("not evaluated: {observation}"),
+        });
+    }
+    let failure = text_at(
+        &entry,
+        &[
+            "/failure/kind",
+            "/failure_kind",
+            "/error/kind",
+            "/failure/reason",
+            "/error",
+        ],
+    )
+    .or_else(|| text_at(bundle, &["/detail/failure/kind", "/detail/error"]))
+    .map(|cause| cause.to_ascii_lowercase());
+    let signal = match (status_of(&entry).as_str(), failure) {
+        ("failed", Some(cause))
+            if INFRA_FAILURE_MARKERS
+                .iter()
+                .any(|marker| cause.contains(marker)) =>
+        {
+            Some((
+                FindingClassV1::InfrastructureOrEvaluatorFailure,
+                format!("execution failed: {cause}"),
+            ))
+        }
+        ("failed", Some(cause)) => {
+            Some((FindingClassV1::Defect, format!("execution failed: {cause}")))
+        }
+        ("failed", None) if findings.is_empty() => Some((
+            FindingClassV1::InsufficientEvidence,
+            "execution failed without a recorded cause or diagnostic".into(),
+        )),
+        ("failed", None) => None,
+        _ if !findings.is_empty() => None,
+        _ if transcripts.is_empty() => Some((
+            FindingClassV1::InsufficientEvidence,
+            "execution passed but no transcript was preserved".into(),
+        )),
+        _ => Some((
+            FindingClassV1::ExpectedBehavior,
+            "execution passed with no diagnostic".into(),
+        )),
+    };
+    if let Some((class, observation)) = signal {
+        findings.push(FindingV1 {
+            fingerprint: ids::sha256_json(&(&evidence.admission_key, "execution_status", class)),
+            class,
+            signal: "execution_status".into(),
+            observation,
+        });
+    }
+    findings.sort_by(|left, right| left.fingerprint.cmp(&right.fingerprint));
+    findings.dedup_by(|left, right| left.fingerprint == right.fingerprint);
+    (findings, unknowns, complete)
 }
 
 /// Recovers `e2e::dashboard::changed` events that never arrived: every

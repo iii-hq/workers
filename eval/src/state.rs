@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 
 use crate::contract::{
     AdmissionCheckpointV1, AdmissionV1, AnalysisAssetsV1, AnalysisRecordV1, CycleRecordV1,
-    MonitorConfigV1,
+    ExecutionEvidenceV1, MonitorConfigV1,
 };
 use crate::error::EvalError;
 
@@ -28,6 +28,9 @@ pub const CYCLE_SCOPE: &str = "eval_loop_cycle";
 /// checkpoint. Kept apart from the cycles so cycle listings carry neither.
 pub const ADMISSION_SCOPE: &str = "eval_loop_admission";
 pub const ADMISSION_CHECKPOINT_KEY: &str = "checkpoint";
+/// Imported native report bundles of admitted executions, keyed by admission
+/// key: the durable copy the first pass reads, independent of E2E retention.
+pub const EVIDENCE_SCOPE: &str = "eval_loop_evidence";
 const DISPATCH_TIMEOUT_MS: u64 = 10_000;
 
 /// A stored configuration that no longer parses under the current schema (a
@@ -146,6 +149,20 @@ pub async fn claim_admission(
             claim.admission_key
         ))
     })
+}
+
+pub async fn get_evidence(
+    iii: &IIIClient,
+    admission_key: &str,
+) -> Result<Option<ExecutionEvidenceV1>, EvalError> {
+    get(iii, EVIDENCE_SCOPE, admission_key).await
+}
+
+pub async fn put_evidence(
+    iii: &IIIClient,
+    evidence: &ExecutionEvidenceV1,
+) -> Result<(), EvalError> {
+    set(iii, EVIDENCE_SCOPE, &evidence.admission_key, evidence).await
 }
 
 pub async fn get_admission_checkpoint(

@@ -1116,6 +1116,81 @@ pub struct AdmissionCheckpointV1 {
     pub updated_at: i64,
 }
 
+/// The six classes the deterministic first pass sorts a finding into.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingClassV1 {
+    Defect,
+    ImprovementOpportunity,
+    EvaluationGap,
+    InfrastructureOrEvaluatorFailure,
+    ExpectedBehavior,
+    InsufficientEvidence,
+}
+
+impl FindingClassV1 {
+    /// Only these justify deepening the analysis.
+    pub fn is_pertinent(self) -> bool {
+        matches!(
+            self,
+            Self::Defect | Self::ImprovementOpportunity | Self::EvaluationGap
+        )
+    }
+}
+
+/// One classified first-pass finding; `fingerprint` makes re-import a no-op.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FindingV1 {
+    pub fingerprint: String,
+    pub class: FindingClassV1,
+    /// The diagnostics rule or execution signal it comes from.
+    pub signal: String,
+    pub observation: String,
+}
+
+/// Identity of the imported execution. `None` is unknown, never assumed.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceIdentityV1 {
+    pub scenario_digest: Option<String>,
+    pub contract_digest: Option<String>,
+    pub artifacts_digest: Option<String>,
+    pub stack_digest: Option<String>,
+    pub model: Option<String>,
+    pub provider: Option<String>,
+    pub revision: Option<String>,
+}
+
+/// The native report bundle of an admitted execution, copied into the loop
+/// scope at admission so analysis survives teardown and source retention,
+/// plus the deterministic first pass computed from this copy only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionEvidenceV1 {
+    pub admission_key: String,
+    pub execution_id: String,
+    pub imported_at: i64,
+    pub bundle_digest: String,
+    pub bundle: Value,
+    pub identity: EvidenceIdentityV1,
+    #[serde(default)]
+    pub analyzed: bool,
+    #[serde(default)]
+    pub findings: Vec<FindingV1>,
+    /// What the stored copy could not tell.
+    #[serde(default)]
+    pub unknowns: Vec<String>,
+    /// True only when every child transcript was preserved in the copy.
+    #[serde(default)]
+    pub child_transcripts_complete: bool,
+    /// Set only when a pertinent finding exists.
+    #[serde(default)]
+    pub deepen: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionAdmissionResponseV1 {
