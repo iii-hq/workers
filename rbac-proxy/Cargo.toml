@@ -2,7 +2,7 @@
 
 [package]
 name = "rbac-proxy"
-version = "1.0.17"
+version = "1.0.18"
 edition = "2021"
 publish = false
 
@@ -34,6 +34,10 @@ schemars = "0.8"
 
 # HTTP + WS proxy (the `console` proxy stack, verbatim).
 axum = { version = "0.7", features = ["ws"] }
+# The public listener is served over hyper directly, for a header deadline
+# (see server.rs `HEADER_READ_TIMEOUT`); both already come in through axum.
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "service"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
 

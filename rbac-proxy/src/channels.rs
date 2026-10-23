@@ -43,24 +43,25 @@ async fn bridge(client: WebSocket, engine_url: String, channel_id: String, query
         target.push_str(&q);
     }
 
-    let (engine, _resp) = match tokio_tungstenite::connect_async(&target).await {
-        Ok(pair) => pair,
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                channel_id = %channel_id,
-                "failed to dial engine channel socket; closing downstream (1011)"
-            );
-            let mut client = client;
-            let _ = client
-                .send(AxumMessage::Close(Some(axum::extract::ws::CloseFrame {
-                    code: 1011,
-                    reason: "engine channel dial failed".into(),
-                })))
-                .await;
-            return;
-        }
-    };
+    let (engine, _resp) =
+        match tokio_tungstenite::connect_async_with_config(&target, None, true).await {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    channel_id = %channel_id,
+                    "failed to dial engine channel socket; closing downstream (1011)"
+                );
+                let mut client = client;
+                let _ = client
+                    .send(AxumMessage::Close(Some(axum::extract::ws::CloseFrame {
+                        code: 1011,
+                        reason: "engine channel dial failed".into(),
+                    })))
+                    .await;
+                return;
+            }
+        };
 
     let (mut client_tx, mut client_rx) = client.split();
     let (mut engine_tx, mut engine_rx) = engine.split();

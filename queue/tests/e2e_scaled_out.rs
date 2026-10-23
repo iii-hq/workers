@@ -115,6 +115,9 @@ async fn start_instance(
 }
 
 fn subscribe(instance: &Instance, function_id: &str, topic: &str) {
+    // The old consumer path: `durable:subscriber` stays served on 0.24 and
+    // 0.25 engines.
+    #[allow(deprecated)]
     instance
         .iii
         .register_trigger(RegisterTriggerInput::new(

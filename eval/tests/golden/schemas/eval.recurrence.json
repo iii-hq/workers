@@ -1,0 +1,122 @@
+{
+  "function_id": "eval::recurrence",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "evaluation_id": {
+        "type": "string"
+      },
+      "suggestion_index": {
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "evaluation_id",
+      "suggestion_index"
+    ],
+    "title": "RecurrenceRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "RecurrencePatternV1": {
+        "additionalProperties": false,
+        "description": "One pattern over a set of analyses.",
+        "properties": {
+          "analyses_with": {
+            "description": "Analyses with at least one occurrence.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "occurrences": {
+            "description": "Occurrences summed over the analyses.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "pattern": {
+            "type": "string"
+          },
+          "per_analysis": {
+            "description": "Occurrences per analysis; absent when there is no analysis.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "analyses_with",
+          "occurrences",
+          "pattern"
+        ],
+        "type": "object"
+      },
+      "RecurrenceWindowV1": {
+        "additionalProperties": false,
+        "properties": {
+          "analyses": {
+            "description": "Analyses whose collection finished and whose Harness version is known.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "patterns": {
+            "items": {
+              "$ref": "#/definitions/RecurrencePatternV1"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "analyses",
+          "patterns"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "Whether the suggestion's patterns came back: the analyses on Harness versions before the one that shipped it against the ones from it on. Analyses are kept 30 days, so the earlier window is bounded by retention.",
+    "properties": {
+      "before": {
+        "$ref": "#/definitions/RecurrenceWindowV1"
+      },
+      "evaluation_id": {
+        "type": "string"
+      },
+      "from_version": {
+        "$ref": "#/definitions/RecurrenceWindowV1"
+      },
+      "suggestion_index": {
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "version": {
+        "description": "The version the suggestion shipped in, where the windows split.",
+        "type": "string"
+      },
+      "without_version": {
+        "description": "Analyses left out because they carry no (or no semantic) Harness version.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "before",
+      "evaluation_id",
+      "from_version",
+      "suggestion_index",
+      "version",
+      "without_version"
+    ],
+    "title": "RecurrenceResponseV1",
+    "type": "object"
+  }
+}

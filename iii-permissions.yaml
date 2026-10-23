@@ -184,6 +184,15 @@ rules:
   - '!session::on-config-change'
   # (coder::on-config-change retired: the code surface folded into the shell
   # worker, whose shell::on-config-change is already denied above.)
+  # storage: the secrets::changed sink and bucket management (rewrites which
+  # providers and credentials the worker uses; testBucket sends a candidate's
+  # credentials wherever the candidate points; getBucket returns stored
+  # entries) are the human's call, made from a bucket editor.
+  - '!storage::on-secret-change'
+  - '!storage::getBucket'
+  - '!storage::saveBucket'
+  - '!storage::deleteBucket'
+  - '!storage::testBucket'
   # harness: deny-by-default for in-run agents (harness.md § Agent exposure).
   # send/run let a model start arbitrary turns outside any max_turns guard;
   # compact rewrites a session's history (the console's control plane);
