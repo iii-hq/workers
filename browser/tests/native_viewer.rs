@@ -1220,6 +1220,114 @@ async fn act_scroll_moves_sideways_with_delta_x() {
     client.shutdown_async().await;
 }
 
+/// Sixty 300 px sections, each its own color; the title follows the scroll.
+const LONG_PAGE: &str = "<!doctype html><html><head><meta name=viewport content='width=device-width'>\
+    <title>long</title><style>body{margin:0}div{height:300px}</style></head><body><script>\
+    for(let i=0;i<60;i++){const d=document.createElement('div');d.style.background=\
+    `hsl(${47*i},70%,38%)`;document.body.appendChild(d)}let t;addEventListener('scroll',()=>\
+    {clearTimeout(t);t=setTimeout(()=>{document.title='long y='+scrollY},250)})</script></body></html>";
+
+/// Not a check: how long a scroll takes to show, from the `act` call to the
+/// next frame pushed on `browser::frame-event`, on a phone view at
+/// `frame_density` 2 (the iii app's drag on a folded Fold). Prints P50/P90
+/// of 20 scrolls. Run it by name, in a release build, with `--ignored
+/// --nocapture` (2026-10-23: P50 9 ms, P90 10 ms, before and after the P33
+/// fix alike).
+#[tokio::test]
+#[ignore]
+async fn measure_scroll_to_frame() {
+    let Some(h) = boot("  frame_density: 2\n").await else {
+        eprintln!("skipping: `iii` or Chromium not available");
+        return;
+    };
+    let client = connect(&h).await;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(u64, Instant)>();
+    client.register_function(
+        "iii::browser-test::measure-frames",
+        iii_sdk::RegisterFunction::new_async(move |frame: Value| {
+            let tx = tx.clone();
+            async move {
+                let _ = tx.send((frame["frame_seq"].as_u64().unwrap_or(0), Instant::now()));
+                Ok::<_, iii_sdk::errors::Error>(json!({ "ok": true }))
+            }
+        }),
+    );
+    let url = serve_html(LONG_PAGE);
+    let id = open(&client, &url).await;
+    client
+        .register_trigger(iii_sdk::protocol::RegisterTriggerInput::new(
+            "browser::frame-event".to_string(),
+            "iii::browser-test::measure-frames".to_string(),
+            json!({ "session_id": id }),
+        ))
+        .expect("frame trigger");
+    sleep(Duration::from_millis(500)).await;
+    let (_, resized) = tokio::join!(
+        call(
+            &client,
+            "browser::screencast::start",
+            json!({ "session_id": id,
+            "viewer_id": "android-measure", "lease_ms": 20000, "scale": 2.44 })
+        ),
+        call(
+            &client,
+            "browser::resize",
+            json!({ "session_id": id, "width": 443, "height": 795,
+            "device_scale_factor": 2.4375, "mobile": true, "fit": true })
+        ),
+    );
+    if resized["mode_changed"] == true {
+        call(
+            &client,
+            "browser::history",
+            json!({ "session_id": id, "action": "reload" }),
+        )
+        .await;
+    }
+    sleep(Duration::from_millis(1_500)).await;
+    let mut shown = Vec::new();
+    let mut acted = Vec::new();
+    for round in 0..20 {
+        while rx.try_recv().is_ok() {}
+        let before = call(&client, "browser::frame", json!({ "session_id": id })).await
+            ["frame_seq"]
+            .as_u64()
+            .unwrap_or(0);
+        let t0 = Instant::now();
+        call(
+            &client,
+            "browser::act",
+            json!({ "session_id": id, "action": "scroll", "x": 220,
+            "y": 400, "delta_y": if round % 10 < 5 { 300 } else { -300 }, "ghost_cursor": false }),
+        )
+        .await;
+        acted.push(t0.elapsed().as_millis() as u64);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match timeout(left, rx.recv()).await {
+                Ok(Some((seq, at))) if seq > before => {
+                    shown.push(at.duration_since(t0).as_millis() as u64);
+                    break;
+                }
+                Ok(Some(_)) => continue,
+                _ => panic!("round {round}: no frame after the scroll in 3 s"),
+            }
+        }
+        sleep(Duration::from_millis(400)).await;
+    }
+    let pct = |v: &mut Vec<u64>, p: f64| {
+        v.sort_unstable();
+        v[((v.len() as f64 - 1.0) * p).round() as usize]
+    };
+    eprintln!(
+        "scroll -> frame-event ms: P50 {} P90 {} min {} max {} | act returns P50 {} P90 {} | all {:?}",
+        pct(&mut shown.clone(), 0.5), pct(&mut shown.clone(), 0.9), shown.iter().min().unwrap(),
+        shown.iter().max().unwrap(), pct(&mut acted.clone(), 0.5), pct(&mut acted.clone(), 0.9), shown
+    );
+    client.shutdown_async().await;
+}
+
 /// Not a check: the cost of sharp frames, for the `frame_density` decision.
 /// Streams a text page at 412x915 CSS pixels from a browser launched at
 /// density 1 and one at density 2 (a viewer at scale 2), and prints the
