@@ -237,7 +237,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           # Only the source stack is pinned; registry validation retains its explicit cli_channel.
-          III_RELEASE_TAG: 'iii/v0.25.0'
+          III_RELEASE_TAG: 'iii/v0.26.0'
           III_INSTALL_URL: https://install.iii.dev/iii/main/install.sh
           III_INSTALL_BIN_DIR: ${{ github.workspace }}/target/iii/bin
         run: |

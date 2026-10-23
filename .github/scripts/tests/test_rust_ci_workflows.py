@@ -219,7 +219,7 @@ def test_other_engine_installers_use_the_atomic_configuration_release() -> None:
                         path.name, job_name, step.get("name"), engines
                     )
                 else:
-                    assert tag == "iii/v0.25.0", (
+                    assert tag == "iii/v0.26.0", (
                         path.name, job_name, step.get("name"), tag
                     )
                 covered.add(path.name)
