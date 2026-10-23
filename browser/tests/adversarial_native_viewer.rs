@@ -1579,7 +1579,6 @@ async fn the_badge_stays_while_a_console_still_watches() {
 /// A tab that idles to sleep between viewers is woken by the next start,
 /// which answers ok and holds the screencast, round after round.
 #[tokio::test]
-#[ignore = "finding 3: a tab woken by a viewer stays awake after the viewer stops, past its 2.5 s idle timer"]
 async fn a_viewer_joining_a_tab_asleep_from_idle_wakes_it() {
     let Some(h) = boot("  inactive_after_ms: 2500\n").await else {
         eprintln!("skipping: `iii` or Chromium not available");

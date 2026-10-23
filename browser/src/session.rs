@@ -2002,6 +2002,12 @@ impl Sessions {
             tasks: Mutex::new(Vec::new()),
         });
 
+        // Waking is using the tab: the new page's idle timer (started with
+        // the pumps) must count from now. Left at the tab's last use before
+        // it slept, its deadline was already past, so it fired before this
+        // page was live, found no page of its own to sleep, and ended: the
+        // tab then never slept again.
+        tab.touch();
         let pumps =
             match spawn_event_pumps(self.clone(), session.clone(), origin_gate_enabled).await {
                 Ok(pumps) => pumps,
@@ -2173,8 +2179,12 @@ impl Sessions {
         if still_live {
             return;
         }
-        let taken = self.browser.lock().await.take();
-        if let Some(shared) = taken {
+        // The slot stays locked until the process is gone: a tab woken
+        // meanwhile waits in `ensure_browser` instead of launching a second
+        // Chromium on the profile this one still holds (it exits at once,
+        // "profile in use").
+        let mut slot = self.browser.lock().await;
+        if let Some(shared) = slot.take() {
             shared.close().await;
             tracing::info!("browser closed (no live tabs)");
         }
@@ -3618,19 +3628,28 @@ async fn note_title(sessions: &Arc<Sessions>, session: &Arc<Session>, title: &st
 /// changes. Between those events and the deadline nothing wakes.
 fn spawn_idle_timer(sessions: Arc<Sessions>, session: Arc<Session>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        crate::deadline::until_due(&session.tab.activity, || {
-            let inactive_after_ms = sessions.config.load().inactive_after_ms;
-            // A recording holds a screencast consumer too.
-            if inactive_after_ms == 0 || session.screencast_on() {
-                return None;
+        loop {
+            crate::deadline::until_due(&session.tab.activity, || {
+                let inactive_after_ms = sessions.config.load().inactive_after_ms;
+                // A recording holds a screencast consumer too.
+                if inactive_after_ms == 0 || session.screencast_on() {
+                    return None;
+                }
+                let due_ms = session
+                    .last_used_ms()
+                    .saturating_add(inactive_after_ms as i64);
+                let wait = due_ms.saturating_sub(now_ms()).max(0) as u64;
+                Some(tokio::time::Instant::now() + std::time::Duration::from_millis(wait))
+            })
+            .await;
+            // Due before the page is live (still waking): it is not this
+            // timer's to sleep yet, so wait for the wake's touch and count
+            // again rather than end and leave the tab awake for good.
+            if sessions.get(&session.id).is_some() {
+                break;
             }
-            let due_ms = session
-                .last_used_ms()
-                .saturating_add(inactive_after_ms as i64);
-            let wait = due_ms.saturating_sub(now_ms()).max(0) as u64;
-            Some(tokio::time::Instant::now() + std::time::Duration::from_millis(wait))
-        })
-        .await;
+            session.tab.activity.notified().await;
+        }
         // On its own task: putting the tab to sleep aborts this timer with
         // the page's other tasks.
         tokio::spawn(async move {
