@@ -677,6 +677,10 @@ that names neither still pages down 600 px. A viewer sends its person's
 taps and drags with `ghost_cursor: false`: the green arrow that marks an
 agent's actions for whoever watches is for agents only.
 
+Every tab opens on `about:blank` before its first page; `browser::history`
+never steps back (or forward) onto it, so Back from a tab's first page
+answers `moved: false` at once.
+
 ## Element picking
 
 `browser::pick::start` puts the page in DevTools inspect mode (native hover

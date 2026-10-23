@@ -874,6 +874,87 @@ async fn mobile_resize_emulates_a_phone_the_page_can_see() {
     client.shutdown_async().await;
 }
 
+/// A tab opened on a url, regular or incognito, or opened blank and then
+/// sent somewhere, has no earlier page: Back answers `moved: false` at once
+/// instead of showing the `about:blank` the tab started from. Back and
+/// Forward between real pages still work.
+#[tokio::test]
+async fn back_from_the_first_page_never_shows_about_blank() {
+    let Some(h) = boot("  max_sessions: 4\n").await else {
+        eprintln!("skipping: `iii` or Chromium not available");
+        return;
+    };
+    let client = connect(&h).await;
+    let first = serve_html(STATIC_PAGE);
+    let second = serve_html(INPUT_PAGE);
+    let history = |id: &str, action: &str| json!({ "session_id": id, "action": action });
+
+    for incognito in [false, true] {
+        let started = call(
+            &client,
+            "browser::sessions::start",
+            json!({ "url": first, "incognito": incognito }),
+        )
+        .await;
+        let id = started["session_id"]
+            .as_str()
+            .expect("session_id")
+            .to_string();
+        let back = call(&client, "browser::history", history(&id, "back")).await;
+        assert_eq!(back["moved"], false, "incognito={incognito}: {back}");
+        assert_eq!(back["url"], first.as_str(), "incognito={incognito}: {back}");
+
+        call(
+            &client,
+            "browser::navigate",
+            json!({ "session_id": id, "url": second }),
+        )
+        .await;
+        let back = call(&client, "browser::history", history(&id, "back")).await;
+        assert_eq!(
+            (back["moved"].as_bool(), back["url"].as_str()),
+            (Some(true), Some(first.as_str())),
+            "{back}"
+        );
+        let again = call(&client, "browser::history", history(&id, "back")).await;
+        assert_eq!(again["moved"], false, "incognito={incognito}: {again}");
+        assert_eq!(
+            again["url"],
+            first.as_str(),
+            "incognito={incognito}: {again}"
+        );
+        let forward = call(&client, "browser::history", history(&id, "forward")).await;
+        assert_eq!(
+            (forward["moved"].as_bool(), forward["url"].as_str()),
+            (Some(true), Some(second.as_str())),
+            "{forward}"
+        );
+        call(
+            &client,
+            "browser::sessions::stop",
+            json!({ "session_id": id }),
+        )
+        .await;
+    }
+
+    // The app's new tab: opened blank, then sent to a page.
+    let started = call(&client, "browser::sessions::start", json!({})).await;
+    let id = started["session_id"]
+        .as_str()
+        .expect("session_id")
+        .to_string();
+    call(
+        &client,
+        "browser::navigate",
+        json!({ "session_id": id, "url": first }),
+    )
+    .await;
+    let back = call(&client, "browser::history", history(&id, "back")).await;
+    assert_eq!(back["moved"], false, "{back}");
+    assert_eq!(back["url"], first.as_str(), "{back}");
+    client.shutdown_async().await;
+}
+
 /// While someone watches, an agent's click shows the agent's cursor on the
 /// page; a person's own tap from a viewer (`ghost_cursor: false`) does not.
 #[tokio::test]

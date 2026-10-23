@@ -3297,11 +3297,18 @@ fn register_history(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                             .execute(cdp_page::GetNavigationHistoryParams::default())
                             .await
                             .map_err(|e| handler_err(format!("history read failed: {e}")))?;
-                        let target = if back {
-                            history.current_index - 1
-                        } else {
-                            history.current_index + 1
-                        };
+                        // Every tab opens on `about:blank` before its first
+                        // page, so Chromium's list starts with it; like the
+                        // tab's own stack, a step never lands there.
+                        let step = if back { -1 } else { 1 };
+                        let mut target = history.current_index + step;
+                        while usize::try_from(target)
+                            .ok()
+                            .and_then(|i| history.entries.get(i))
+                            .is_some_and(|entry| entry.url == "about:blank")
+                        {
+                            target += step;
+                        }
                         // The tab's own stack moves with Chromium's so the
                         // two stay aligned; it is also what remains after the
                         // page slept or the worker restarted.
