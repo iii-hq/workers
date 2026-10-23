@@ -234,7 +234,13 @@ async fn run_all(args: SuiteArgs, engine_cpus: Vec<usize>, load_cpus: Vec<usize>
         started_unix,
         engine: engine.display().to_string(),
         engine_version: command_line(&engine, &["--version"]).unwrap_or_default(),
-        git_rev: command_line(Path::new("git"), &["rev-parse", "--short", "HEAD"]),
+        // The engine's checkout, not the cwd: CI runs the suite from the workers checkout.
+        git_rev: engine.parent().and_then(|dir| {
+            command_line(
+                Path::new("git"),
+                &["-C", dir.to_str()?, "rev-parse", "--short", "HEAD"],
+            )
+        }),
         host_cpu: host_cpu_model(),
         host_cpus: unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) }.max(0) as usize,
         host_mem_mb: host_mem_mb(),
