@@ -213,6 +213,24 @@
         ],
         "type": "object"
       },
+      "CycleInconclusiveV1": {
+        "additionalProperties": false,
+        "description": "A cycle that ended inconclusive without a decision.",
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "reason": {
+            "description": "A stable reason code: `budget` when a limit of the cycle was reached.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail",
+          "reason"
+        ],
+        "type": "object"
+      },
       "CycleInputV1": {
         "description": "What started a loop cycle: a free objective, or an existing E2E execution. Both start the same cycle and land in the same history.",
         "oneOf": [
@@ -334,6 +352,17 @@
               "$ref": "#/definitions/CycleEventV1"
             },
             "type": "array"
+          },
+          "inconclusive": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CycleInconclusiveV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the cycle ended inconclusive without a decision, e.g. its budget."
           },
           "input": {
             "$ref": "#/definitions/CycleInputV1"

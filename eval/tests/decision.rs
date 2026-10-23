@@ -56,6 +56,7 @@ fn record() -> CycleRecordV1 {
         failure: None,
         plan: None,
         decision: None,
+        inconclusive: None,
     }
 }
 
