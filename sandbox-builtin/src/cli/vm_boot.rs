@@ -1193,8 +1193,7 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
             let handle = vm.exit_handle();
             std::thread::spawn(move || {
                 if crate::daemon_exit::blocking_wait_lifeline_eof(fd) {
-                    eprintln!("vm-boot: spawner lifeline closed; shutting down VM");
-                    handle.trigger();
+                    shut_down_vm(|| handle.trigger(), "spawner lifeline closed");
                 }
             });
         }
@@ -1202,8 +1201,7 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
             let handle = vm.exit_handle();
             std::thread::spawn(move || {
                 crate::daemon_exit::blocking_wait_pid_gone(pid);
-                eprintln!("vm-boot: spawner pid {pid} exited; shutting down VM");
-                handle.trigger();
+                shut_down_vm(|| handle.trigger(), &format!("spawner pid {pid} exited"));
             });
         }
         // Engine anchor: managed-worker VMs are detached from their
@@ -1215,8 +1213,7 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
             let handle = vm.exit_handle();
             std::thread::spawn(move || {
                 crate::daemon_exit::blocking_wait_pid_gone(pid);
-                eprintln!("vm-boot: engine pid {pid} exited; shutting down VM");
-                handle.trigger();
+                shut_down_vm(|| handle.trigger(), &format!("engine pid {pid} exited"));
             });
         }
     }
@@ -1227,6 +1224,16 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         args.vcpus, vcpu_label, args.ram
     );
     vm.enter().map_err(|e| format!("VM enter failed: {}", e))
+}
+
+/// The spawner or the engine is gone: shut the VM down, then say why. A worker
+/// VM's stderr is a pipe the dead spawner read, so `eprintln!` would panic on
+/// EPIPE and end this watcher before the trigger, leaving the VM running.
+#[cfg(unix)]
+fn shut_down_vm(trigger: impl FnOnce(), why: &str) {
+    use std::io::Write;
+    trigger();
+    let _ = writeln!(std::io::stderr(), "vm-boot: {why}; shutting down VM");
 }
 
 #[cfg(test)]
@@ -1426,5 +1433,40 @@ mod tests {
             DEFAULT_GUEST_PATH,
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
         );
+    }
+
+    /// A worker VM whose spawner (its stderr reader) died must still shut
+    /// down. Re-runs itself as a child test process so fd 2 can be a broken
+    /// pipe and `--nocapture` sends `eprintln!` there, as in `__vm-boot`.
+    #[cfg(unix)]
+    #[test]
+    fn shut_down_vm_triggers_when_stderr_is_a_broken_pipe() {
+        const CHILD: &str = "III_TEST_BROKEN_STDERR_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let mut fds = [0; 2];
+            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+            unsafe {
+                libc::close(fds[0]);
+                libc::dup2(fds[1], 2);
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let watcher = std::thread::spawn(move || {
+                shut_down_vm(move || tx.send(()).unwrap(), "spawner lifeline closed")
+            });
+            assert!(watcher.join().is_ok(), "the watcher panicked");
+            assert!(rx.try_recv().is_ok(), "the VM was never triggered");
+            return;
+        }
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "cli::vm_boot::tests::shut_down_vm_triggers_when_stderr_is_a_broken_pipe",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&child.stdout);
+        assert!(stdout.contains("1 passed"), "child test failed: {stdout}");
     }
 }
