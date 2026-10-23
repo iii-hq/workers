@@ -61,6 +61,7 @@ export type {
   CrossAlign,
   DotTone,
   ErrorCode,
+  Hue,
   ImageFit,
   ImeAction,
   MainArrange,

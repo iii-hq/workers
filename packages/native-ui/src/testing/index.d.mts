@@ -20,7 +20,7 @@ export declare class HostError extends Error {
   constructor(code: string, message: string)
 }
 
-/** The VM stopped for good: `watchdog` (a step passed its deadline), `memory`, `reported` (fatal reportError), `load`, `protocol`. */
+/** The VM stopped for good: `watchdog` (a step passed its deadline), `memory`, `reported` (fatal reportError), `load`, `protocol`, `catalog` (the bundle needs a newer catalogue than the host's). */
 export declare class VmFailure extends Error {
   readonly kind: string
 }
@@ -58,6 +58,13 @@ export interface TestHostOptions {
   bundle: string
   /** The app's namespace (default `demo`). */
   ns?: string
+  /**
+   * The catalogue this host renders (`init.catalog`; default the SDK's,
+   * `catalog.json` › catalogVersion). A bundle whose `ready` needs a newer
+   * one fails to load (`VmFailure` kind `catalog`), as the app shows
+   * "Needs a newer iii app".
+   */
+  catalog?: number
   appKey?: string
   /** `init.host` (default `android 0.1.0`) and `init.engine` (default `quickjs-emscripten 0.31.0`). */
   host?: string
@@ -158,7 +165,22 @@ export interface TestHost {
   typeWhileBusy(target: Target, text: string): void
   submit(target: Target): Promise<void>
   toggle(target: Target): Promise<void>
+  /** A Segmented's option, or a Lanes' lane (one per page): shown at once, then `select [index]`. */
   select(target: Target, index: number): Promise<void>
+  /** A tap on a link of a Markdown: `link [href]` (`href` must be in its text, before limits.maxMarkdownChars). */
+  link(target: Target, href: string): Promise<void>
+  /**
+   * Drags item `key` out of the List `source` (default: `target`, a reorder) and drops it on the List
+   * `target` at `index` (among the target's items once the item is out of its old place): `drop [key,
+   * index, source id]` on the target. Both Lists need the same `dragGroup`, and the target `onDrop`.
+   */
+  drop(target: Target, key: string | number, index: number, source?: Target): Promise<void>
+  /** A List's items as the host holds them. */
+  items(target: Target): Json[]
+  /** The keys of a List's items, in order. */
+  keys(target: Target): (string | number)[]
+  /** A Lanes as the host has it: titles, counts (null for none), the selected lane and the lanes' nodes. */
+  lanes(target: Target): { titles: string[]; counts: (string | null)[]; selected: number; lanes: NodeView[] }
   itemEmit(list: Target, key: string | number, node: Target | undefined, event: string, args?: Json[]): Promise<void>
   itemPress(list: Target, key: string | number, node?: Target): Promise<void>
   itemLongPress(list: Target, key: string | number, node?: Target): Promise<void>

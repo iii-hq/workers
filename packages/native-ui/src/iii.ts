@@ -103,7 +103,7 @@ export interface Iii {
   /** Calls a function of the app's own namespace (`<ns>::…`); any other fails with `forbidden`. */
   call<T = JsonValue>(fn: string, payload?: JsonValue, opts?: CallOptions): Promise<T>
   /**
-   * Binds a trigger type of the app's own namespace to `handler` (the host uses EngineSession.watch).
+   * Binds a trigger type of the app's own namespace (`<ns>::…` or `<ns>:…`) to `handler` (the host uses EngineSession.watch).
    * Bind before reading: whoever needs initial state reads after the `ready` Promise resolves.
    */
   on<P = JsonValue>(
@@ -141,16 +141,22 @@ export function host(): Readonly<JsonObject> | null {
   return hostInfo
 }
 
+/**
+ * Functions are `<ns>::…`; trigger types are `<ns>::…` or `<ns>:…` (a
+ * worker may name its triggers `kanban:ticket-changed`). Never `iii::` or
+ * `engine::`. The host's policy checks the same.
+ */
 function checkOwn(kind: 'call' | 'bind', id: string): void {
   if (typeof id !== 'string' || !id) throw new IiiError('invalid', `iii.${kind === 'call' ? 'call' : 'on'} needs an id`)
   const ns = app.ns
   if (!ns) return // before init, without a built-in namespace: the host decides
-  if (id.startsWith(`${ns}::`) && !id.startsWith('iii::') && !id.startsWith('engine::')) return
+  const prefix = kind === 'call' ? `${ns}::` : `${ns}:`
+  if (id.startsWith(prefix) && !id.startsWith('iii::') && !id.startsWith('engine::')) return
   throw new IiiError(
     'forbidden',
     kind === 'call'
       ? `${ns} may only call ${ns}::… functions (not ${id})`
-      : `${ns} may only bind ${ns}::… triggers (not ${id})`,
+      : `${ns} may only bind ${ns}:… or ${ns}::… triggers (not ${id})`,
   )
 }
 

@@ -144,9 +144,30 @@ describe('the capability object', () => {
     expect(h.prop('out', 'text')).toBe(
       'error forbidden: demo may only call demo::… functions (not engine::functions::list)',
     )
+    await h.press('call-colon')
+    expect(h.prop('out', 'text')).toBe('error forbidden: demo may only call demo::… functions (not demo:echo)')
     await h.press('bind-other')
-    expect(h.prop('out', 'text')).toBe('threw forbidden: demo may only bind demo::… triggers (not state::changed)')
+    expect(h.prop('out', 'text')).toBe(
+      'threw forbidden: demo may only bind demo:… or demo::… triggers (not state::changed)',
+    )
+    await h.press('bind-engine')
+    expect(h.prop('out', 'text')).toBe(
+      'threw forbidden: demo may only bind demo:… or demo::… triggers (not engine::functions-changed)',
+    )
+    await h.press('bind-longer-ns')
+    expect(h.prop('out', 'text')).toBe(
+      'threw forbidden: demo may only bind demo:… or demo::… triggers (not demos:changed)',
+    )
     expect(h.requests.length).toBe(sent)
+  })
+
+  it('binds trigger types of its namespace with one colon or two (D5), and the host takes both', async () => {
+    const h = await mounted('capabilities', { calls })
+    await h.press('bind-colon')
+    expect(h.prop('out', 'text')).toBe('bound demo:ticket-changed')
+    await h.press('bind-double-colon')
+    expect(h.prop('out', 'text')).toBe('bound demo::changed')
+    expect([...h.subscriptions.values()].map((s) => s.trigger)).toEqual(['demo:ticket-changed', 'demo::changed'])
   })
 
   it('reaches the host UI, the clipboard, URLs, files and storage', async () => {
