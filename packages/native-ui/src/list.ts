@@ -142,6 +142,16 @@ export interface ListProps<T extends object> extends Omit<ListBaseProps, 'childr
   templates: ReadonlyArray<(row: Bound<T>) => JSX.Element>
 }
 
+/**
+ * A handler with arguments inside a List template, typed: the host calls it
+ * with the item first, then the event's arguments, while the prop's type
+ * lists only the arguments. `onLink={itemHandler((c: Comment, href: string) => open(c, href))}`.
+ * (An argument-less handler needs none: `onPress={(item: Tab) => …}`.)
+ */
+export function itemHandler<T, A extends unknown[]>(handler: (item: T, ...args: A) => void): (...args: A) => void {
+  return handler as unknown as (...args: A) => void
+}
+
 /** A binding to `path` that also binds deeper paths (`row.a.b`). */
 function binding(path: string): unknown {
   return new Proxy(
