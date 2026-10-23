@@ -613,7 +613,8 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
             )?;
         }
 
-        let self_exe = std::env::current_exe().context("cannot locate iii-worker binary")?;
+        let self_exe =
+            std::env::current_exe().context("cannot locate the sandbox-builtin binary")?;
         #[cfg(target_os = "macos")]
         {
             let _ = super::platform::ensure_macos_entitlements(&self_exe);

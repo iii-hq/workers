@@ -88,7 +88,8 @@ pub async fn ensure_init_binary() -> anyhow::Result<PathBuf> {
 
     anyhow::bail!(
         "iii-init is not embedded in this build and was not found locally; \
-         run scripts/build-init.sh and rebuild with --features embed-init"
+         run BUILD_TARGET=<host target triple> scripts/build-init.sh and rebuild \
+         with --features embed-init"
     )
 }
 
@@ -150,6 +151,7 @@ mod tests {
     fn ensure_init_binary_fails_closed_without_an_embed() {
         let _g = lock_home();
         let result = with_clean_env(|| block_on(ensure_init_binary()));
-        assert!(result.unwrap_err().to_string().contains("not embedded"));
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not embedded") && err.contains("BUILD_TARGET="));
     }
 }
