@@ -679,9 +679,7 @@ async fn resume_analyses(deps: &Deps) -> Result<SweepResponseV1, EvalError> {
     Ok(response)
 }
 
-/// Startup recovery: publish
-/// indexes for records saved before a crash, then resume pending work. The
-/// validation runs wait for the first sweep: the boot never waits on the E2E.
+/// Startup recovery: resume the analyses and cycles left pending by a crash.
 pub async fn recover(deps: &Deps) -> Result<SweepResponseV1, EvalError> {
     deps.last_maintenance
         .store(ids::now_ms(), Ordering::Relaxed);
@@ -690,8 +688,8 @@ pub async fn recover(deps: &Deps) -> Result<SweepResponseV1, EvalError> {
     Ok(response)
 }
 
-/// Removes monitor results only — never sessions or E2E assets. Indexes of
-/// active analyses are kept.
+/// Removes monitor results only — never sessions or E2E assets. Active
+/// analyses are kept.
 async fn retain(deps: &Deps, records: Vec<AnalysisRecordV1>, now: i64) -> Result<u64, EvalError> {
     let mut terminal: Vec<_> = records
         .iter()
@@ -1101,7 +1099,7 @@ async fn collect(deps: &Deps, record: &AnalysisRecordV1) -> Result<Collected, Co
     }
 
     let root_entries = read_entries(deps, record, root).await?;
-    let window = observation_window(record, &root_entries).await?;
+    let window = observation_window(deps, record, &root_entries).await?;
     let mut limitations = Vec::new();
     if window.len() > 1 {
         limitations.push(format!(
@@ -1452,6 +1450,7 @@ async fn read_entries(
 /// The observed turn plus the earlier root turns no analysis has covered,
 /// newest first, so a wake continuation is analyzed as one run.
 async fn observation_window(
+    deps: &Deps,
     record: &AnalysisRecordV1,
     entries: &[Value],
 ) -> Result<Vec<String>, CollectError> {
@@ -1475,12 +1474,46 @@ async fn observation_window(
     let Some(position) = turns.iter().position(|(turn, _)| *turn == record.turn_id) else {
         return Ok(window);
     };
+    if position == 0 {
+        return Ok(window);
+    }
+    // The session's other analyses: an earlier turn one of them covered
+    // closes the window.
+    let analyses: Vec<AnalysisRecordV1> = state::list_records(&deps.iii)
+        .await?
+        .into_iter()
+        .filter(|other| {
+            other.session_id == record.session_id && other.evaluation_id != record.evaluation_id
+        })
+        .collect();
     let retained_since = ids::now_ms() - RETENTION_MS;
     for (turn, started) in turns[..position].iter().rev().take(WINDOW_LOOKBACK_TURNS) {
         // Turns from before the monitor observed, or older than retention
-        // (their indexes are gone), are history, not new occurrences.
+        // (their analyses are gone), are history, not new occurrences.
         if started.is_none_or(|started| started < record.observe_since.max(retained_since)) {
             break;
+        }
+        let key = ids::observation_key(&record.session_id, turn);
+        let of_turn: Vec<&AnalysisRecordV1> = analyses
+            .iter()
+            .filter(|other| other.observation_key == key)
+            .collect();
+        // The turn's latest analysis is the one no other analysis replaces.
+        let latest = of_turn.iter().find(|candidate| {
+            !of_turn
+                .iter()
+                .any(|other| other.supersedes.as_deref() == Some(candidate.evaluation_id.as_str()))
+        });
+        if let Some(latest) = latest {
+            // A turn whose own analysis lost the race to the next turn was
+            // never analyzed: it joins this window instead.
+            let superseded = latest
+                .failure
+                .as_ref()
+                .is_some_and(|failure| failure.code == "source_advanced");
+            if !superseded {
+                break;
+            }
         }
         window.push(turn.to_string());
     }

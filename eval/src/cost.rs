@@ -110,7 +110,7 @@ mod tests {
             "status": status, "step": 0, "created_at": created_at, "updated_at": created_at,
             "deadline": created_at, "observe_since": created_at,
             "counters": {"sessions": 0, "entries": 0, "diagnostics": 0, "suggestions": 0,
-                         "rejected_suggestions": 0, "validations": 0},
+                         "rejected_suggestions": 0},
             "stages": [], "usage": {"judge_calls": 0, "judge_input_tokens": 0,
                 "judge_output_tokens": 0, "judge_usage_complete": true}
         });

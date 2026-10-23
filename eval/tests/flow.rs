@@ -1325,6 +1325,50 @@ async fn a_turn_superseded_before_capture_joins_the_next_window() {
 }
 
 #[tokio::test]
+async fn an_earlier_turn_already_analyzed_is_left_out_of_the_next_window() {
+    let h = Harness::start(World::new()).await;
+    h.configure(true).await;
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    {
+        let mut world = h.world();
+        world.entries.insert(ROOT.into(), rediscovery_transcript());
+        world
+            .status
+            .insert(ROOT.into(), status(ROOT, TURN, "completed", None));
+    }
+    // TURN is analyzed to the end, its rediscovery counted once.
+    let first = h.end_turn(ROOT, TURN).await.evaluation_id.unwrap();
+    let first = investigated(&h, &first).await;
+    assert_eq!(
+        first.record.status,
+        EvalStatusV1::Completed,
+        "{:?}",
+        first.record.failure
+    );
+    assert_eq!(first.assets.snapshot.unwrap().diagnostics.len(), 1);
+
+    // The user continues: the next turn's window stops at the analyzed one.
+    {
+        let mut world = h.world();
+        let entries = world.entries.get_mut(ROOT).unwrap();
+        entries.push(user("e_idem_next", "And now the receipt."));
+        entries.push(assistant_text("e_t_next_0_assistant", "R-1."));
+        world
+            .status
+            .insert(ROOT.into(), status(ROOT, "t_next", "completed", None));
+    }
+    let next = h.end_turn(ROOT, "t_next").await.evaluation_id.unwrap();
+    h.drain().await;
+    let snapshot = h.result(&next).await.assets.snapshot.unwrap();
+    assert_eq!(snapshot.window_turn_ids, ["t_next"]);
+    assert!(
+        snapshot.diagnostics.is_empty(),
+        "the analyzed turn's signal is not counted again: {:?}",
+        snapshot.diagnostics
+    );
+}
+
+#[tokio::test]
 async fn provider_checks_are_reported() {
     let h = Harness::start(World::new()).await;
     h.configure(true).await;
@@ -2619,8 +2663,33 @@ async fn discarded_ids_are_not_registered() {
     registered.sort();
     offered.sort();
     assert_eq!(registered, offered);
-    // The removed state scopes are no longer written by anything the worker
-    // exposes; their old records stay inert (see `legacy_scopes_are_never_read`).
-    assert!(LEGACY_SCOPES.contains(&"eval_observation"));
-    assert!(LEGACY_SCOPES.contains(&"eval_suggestion"));
+
+    // Nor are their state scopes: a whole analysis, its sweep, recovery and
+    // deletion never touch the observation index or the review records.
+    let mut h = Harness::start(World::new()).await;
+    h.configure(true).await;
+    let evaluation_id = h.end_turn(ROOT, TURN).await.evaluation_id.unwrap();
+    investigated(&h, &evaluation_id).await;
+    runtime::sweep(&h.deps).await.unwrap();
+    h.restart();
+    runtime::recover(&h.deps).await.unwrap();
+    runtime::delete(&h.deps, EvaluationIdRequestV1 { evaluation_id })
+        .await
+        .unwrap();
+    let world = h.world();
+    assert!(world
+        .calls
+        .iter()
+        .any(|(function, _)| function.starts_with("state::")));
+    for (function, payload) in &world.calls {
+        let scope = payload["scope"].as_str().unwrap_or_default();
+        assert!(
+            scope != "eval_observation" && scope != "eval_suggestion",
+            "{function} touched the removed scope {scope}"
+        );
+    }
+    assert!(world
+        .state
+        .keys()
+        .all(|(scope, _)| scope != "eval_observation" && scope != "eval_suggestion"));
 }
