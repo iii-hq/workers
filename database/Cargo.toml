@@ -14,9 +14,10 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.24.6"
+# The iii 0.25 Rust SDK (observable functions).
+iii-sdk = "=0.25.0"
 iii-worker-paths = { path = "../crates/worker-paths" }
-iii-helpers = "=0.24.6"
+iii-helpers = "=0.25.0"
 iii-console-ui = { path = "../crates/console-ui" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }
@@ -58,7 +59,9 @@ rustls-pki-types = "1"
 rustls-webpki = { version = "0.103", default-features = false, features = ["std", "aws-lc-rs"] }
 
 # SQLite (sync; wrapped in spawn_blocking)
-rusqlite = { version = "0.31", features = ["bundled", "chrono", "column_decltype"] }
+# `limits` + `hooks`: every pooled connection runs with SQLITE_LIMIT_ATTACHED
+# = 0 and an authorizer that refuses ATTACH and schema-corrupting pragmas.
+rusqlite = { version = "0.31", features = ["bundled", "chrono", "column_decltype", "limits", "hooks"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.24"
 # Filesystem watch for sqlite native capture (inotify wake-up; the changelog
@@ -66,6 +69,15 @@ r2d2_sqlite = "0.24"
 notify = "8"
 # StreamExt for the mysql binlog stream (already in the tree via mysql_async).
 futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+
+# SSH tunnels (postgres/mysql behind a bastion): pure Rust on the same
+# aws-lc-rs provider as rustls, no OpenSSL. `rsa` adds RSA host and user keys
+# (ssh-rsa, rsa-sha2-*); zlib compression is not needed for a db tunnel.
+russh = { version = "0.64", default-features = false, features = ["aws-lc-rs", "rsa"] }
+# `database::formatSql`.
+sqlformat = "0.5"
+# Chat mention provider descriptor + search/get wire types (`@database(id=…)`).
+mention-contract = { path = "../crates/mention-contract" }
 
 [dev-dependencies]
 tempfile = "3"

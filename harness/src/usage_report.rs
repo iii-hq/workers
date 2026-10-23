@@ -14,8 +14,10 @@
 //!   when the count reaches 1, 2, 5, 10, 25 and 50, then every 50.
 //! * `harness_model_calls`: model calls (assistant messages, sub-agents
 //!   included) counted across every session in the same state store, with the tool
-//!   call, token and cost totals that go with them, reported on the same
-//!   milestones of the model-call count.
+//!   call, token and cost totals that go with them, the sub-agent sessions
+//!   spawned (each counted once, when its root's tree first shows it) and the
+//!   deepest sub-agent level reached, reported on the same milestones of the
+//!   model-call count.
 //! * `harness_turn_failed` once per session per outcome (`failed`,
 //!   `cancelled`, `max_turns`), which keeps the reason a run stopped exact.
 //!
@@ -246,6 +248,8 @@ pub struct Tally {
     #[serde(default)]
     pub sessions: u64,
     #[serde(default)]
+    pub subagents: u64,
+    #[serde(default)]
     pub usage: ModelUsage,
     #[serde(default)]
     pub by_model: Vec<ModelEntry>,
@@ -259,6 +263,7 @@ impl Tally {
         Tally {
             user_turns: self.user_turns.saturating_sub(base.user_turns),
             sessions: self.sessions.saturating_sub(base.sessions),
+            subagents: self.subagents.saturating_sub(base.subagents),
             usage: self.usage.since(&base.usage),
             by_model: self
                 .by_model
@@ -311,6 +316,10 @@ fn usage_of<'a>(list: &'a [ModelEntry], provider: &str, model: &str) -> Option<&
 pub struct Observed {
     #[serde(default)]
     pub session_id: String,
+    /// The session's depth in its tree: 0 for the root, 1 and more for
+    /// sub-agents.
+    #[serde(default)]
+    pub depth: u32,
     #[serde(default)]
     pub total: ModelUsage,
     #[serde(default)]
@@ -325,6 +334,7 @@ impl Observed {
         let prev_by_model = prev.map_or(&[][..], |p| &p.by_model);
         Self {
             session_id: u.session_id.clone(),
+            depth: u.depth,
             total: ModelUsage::observed(u, prev_total),
             by_model: u
                 .by_model
@@ -405,6 +415,12 @@ pub struct MachineRow {
     /// Sessions that completed at least one root turn.
     #[serde(default)]
     pub sessions: u64,
+    /// Sub-agent sessions across every session tree, each counted once.
+    #[serde(default)]
+    pub subagents: u64,
+    /// The deepest sub-agent level any session tree reached.
+    #[serde(default)]
+    pub subagent_max_depth: u32,
     /// Model usage across every session.
     #[serde(default)]
     pub usage: ModelUsage,
@@ -424,6 +440,10 @@ pub struct MachineRow {
 pub struct Fold {
     pub user_turns: u64,
     pub sessions: u64,
+    /// Sub-agent sessions new to the tree since the previous fold.
+    pub subagents: u64,
+    /// The deepest sub-agent level in the tree now.
+    pub subagent_max_depth: u32,
     pub usage: ModelUsage,
     pub by_model: Vec<ModelEntry>,
 }
@@ -440,6 +460,8 @@ impl MachineRow {
         Self {
             user_turns: self.user_turns + add.user_turns,
             sessions: self.sessions + add.sessions,
+            subagents: self.subagents + add.subagents,
+            subagent_max_depth: self.subagent_max_depth.max(add.subagent_max_depth),
             usage: self.usage.plus(&add.usage),
             by_model,
             ..self.clone()
@@ -466,6 +488,7 @@ impl MachineRow {
         Tally {
             user_turns: self.user_turns,
             sessions: self.sessions,
+            subagents: self.subagents,
             usage: self.usage.clone(),
             by_model: self.by_model.clone(),
         }
@@ -490,11 +513,16 @@ fn fold_for(
     let none = ModelUsage::default();
     let mut by_model = Vec::new();
     let mut usage = ModelUsage::default();
+    let (mut subagents, mut subagent_max_depth) = (0, 0);
     if let (false, Some(now)) = (legacy, observed) {
         // Per session: a session that shrank or left the tree adds nothing,
         // and takes nothing from another session's new usage.
         for s in now {
             let p = session_of(prev, &s.session_id);
+            if s.depth > 0 {
+                subagents += u64::from(p.is_none());
+                subagent_max_depth = subagent_max_depth.max(s.depth);
+            }
             usage = usage.plus(&s.total.since(p.map_or(&none, |p| &p.total)));
             for e in &s.by_model {
                 let before = p
@@ -515,6 +543,8 @@ fn fold_for(
     Fold {
         user_turns: 1,
         sessions,
+        subagents,
+        subagent_max_depth,
         usage,
         by_model,
     }
@@ -805,6 +835,9 @@ fn model_calls_payload(ns: &str, reached: u64, m: &MachineRow, delta: &Tally) ->
         "user_turns_delta": delta.user_turns,
         "sessions_total": m.sessions,
         "sessions_delta": delta.sessions,
+        "subagents_total": m.subagents,
+        "subagents_delta": delta.subagents,
+        "subagent_max_depth": m.subagent_max_depth,
         "by_model": by_model,
     })
 }
@@ -1022,6 +1055,7 @@ mod tests {
     fn on(session_id: &str, provider: &str, model: &str, u: ModelUsage) -> Observed {
         Observed {
             session_id: session_id.into(),
+            depth: 0,
             total: u.clone(),
             by_model: vec![ModelEntry {
                 provider: provider.into(),
@@ -1046,7 +1080,7 @@ mod tests {
                 user_turns: 1,
                 sessions: u64::from(first),
                 usage: session_usage,
-                by_model: Vec::new(),
+                ..Default::default()
             });
         }
         assert_eq!(m.user_turns, 3);
@@ -1166,6 +1200,8 @@ mod tests {
                     usage: usage(3, 1_000, 0.5),
                 },
             ],
+            subagents: 5,
+            subagent_max_depth: 3,
             ..Default::default()
         };
         let mut base = m.tally();
@@ -1181,8 +1217,12 @@ mod tests {
         };
         base.user_turns = 10;
         base.sessions = 2;
+        base.subagents = 2;
         base.by_model[1].usage = usage(1, 400, 0.25);
         let p = model_calls_payload("default", 100, &m, &m.tally().since(&base));
+        assert_eq!(p["subagents_total"], 5);
+        assert_eq!(p["subagents_delta"], 3);
+        assert_eq!(p["subagent_max_depth"], 3);
         assert_eq!(p["event"], MODEL_CALLS_EVENT);
         assert_eq!(p["dedupe_key"], "default:model_calls:100");
         assert_eq!(p["milestone"], 100);
@@ -1227,6 +1267,7 @@ mod tests {
         }];
         let now = Observed {
             session_id: "s_root".into(),
+            depth: 0,
             total: usage(5, 50, 0.5),
             by_model: vec![
                 ModelEntry {
@@ -1244,6 +1285,7 @@ mod tests {
         };
         let prev = vec![Observed {
             session_id: "s_root".into(),
+            depth: 0,
             total: usage(2, 20, 0.2),
             by_model: prev,
         }];
@@ -1254,6 +1296,41 @@ mod tests {
         assert_eq!((m1.usage.model_calls, m1.user_turns), (1, 0));
         assert_eq!((m2.usage.model_calls, m2.user_turns), (2, 1));
         assert_eq!(m.usage.model_calls, 3);
+    }
+
+    fn at_depth(session_id: &str, depth: u32) -> Observed {
+        Observed {
+            depth,
+            ..on(session_id, "anthropic", "m1", usage(1, 10, 0.1))
+        }
+    }
+
+    /// Prevents: a sub-agent counted on every turn of its tree instead of
+    /// once, or a legacy baseline counting the sub-agents it already had.
+    #[test]
+    fn a_sub_agent_counts_once_when_it_joins_the_tree() {
+        let prev = vec![at_depth("s_root", 0), at_depth("s_old", 1)];
+        let now = [
+            at_depth("s_root", 0),
+            at_depth("s_old", 1),
+            at_depth("s_child", 1),
+            at_depth("s_grandchild", 2),
+        ];
+        let add = fold_for(false, false, Some(&now), &prev, ("anthropic", "m1"));
+        assert_eq!((add.subagents, add.subagent_max_depth), (2, 2));
+
+        let again = fold_for(false, false, Some(&now), &now, ("anthropic", "m1"));
+        assert_eq!(again.subagents, 0);
+
+        let legacy = fold_for(false, true, Some(&now), &[], ("anthropic", "m1"));
+        assert_eq!((legacy.subagents, legacy.subagent_max_depth), (0, 0));
+
+        let m = MachineRow::default().fold(&add).fold(&Fold {
+            subagents: 1,
+            subagent_max_depth: 1,
+            ..one_turn()
+        });
+        assert_eq!((m.subagents, m.subagent_max_depth), (3, 2));
     }
 
     #[test]

@@ -34,13 +34,18 @@ pub mod browse;
 pub mod catalog;
 pub mod column_stats;
 pub mod commit_transaction;
+pub mod connections;
 pub mod diagram;
+pub mod distinct_values;
 pub mod execute;
 pub mod execute_batch;
 pub mod explain;
 pub mod filter;
+pub mod format_sql;
 pub mod health;
+pub mod insert_row;
 pub mod list_databases;
+pub mod mentions;
 pub mod prepare;
 pub mod query;
 pub mod rollback_transaction;
@@ -79,6 +84,51 @@ pub(crate) fn reject_tx_control_sql(sql: &str) -> Result<(), DbError> {
     Ok(())
 }
 
+/// The first keyword of a statement, uppercased, past whitespace and comments.
+pub(crate) fn first_keyword(sql: &str) -> String {
+    let mut rest = sql;
+    loop {
+        rest = rest.trim_start();
+        if let Some(after) = rest.strip_prefix("--") {
+            rest = after.split_once('\n').map_or("", |(_, tail)| tail);
+        } else if let Some(after) = rest.strip_prefix("/*") {
+            rest = after.split_once("*/").map_or("", |(_, tail)| tail);
+        } else {
+            break;
+        }
+    }
+    rest.chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect::<String>()
+        .to_ascii_uppercase()
+}
+
+/// Server-side prepared statements (`PREPARE` / `EXECUTE` / `DEALLOCATE`)
+/// live in the postgres session and would outlive the call on a pooled
+/// connection — the reset on recycle cannot drop them without breaking the
+/// driver's own statements. `database::prepareStatement` is the surface for
+/// that. Refused on every driver: mysql cannot run them over the prepared
+/// protocol and sqlite has no such statements, so nothing valid is lost.
+pub(crate) fn reject_session_prepared_sql(sql: &str) -> Result<(), DbError> {
+    reject_session_prepared_at(0, sql)
+}
+
+/// [`reject_session_prepared_sql`] for statement `index` of a batch.
+pub(crate) fn reject_session_prepared_at(index: usize, sql: &str) -> Result<(), DbError> {
+    if matches!(
+        first_keyword(sql).as_str(),
+        "PREPARE" | "EXECUTE" | "DEALLOCATE"
+    ) {
+        return Err(DbError::InvalidParam {
+            index,
+            reason: "PREPARE / EXECUTE / DEALLOCATE would outlive this call on a pooled \
+                     connection; use database::prepareStatement + database::runStatement"
+                .into(),
+        });
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub pools: Arc<RwLock<HashMap<String, Pool>>>,
@@ -89,9 +139,13 @@ pub struct AppState {
     pub handles: Arc<HandleRegistry>,
     pub transactions: TxRegistry,
     pub log: Logger,
-    /// `database::row-changed` bindings and their fan-out. Absent when the
-    /// worker runs without an engine connection (tests).
+    /// Routes `database::on-row-changed` events to observers (and bindings of
+    /// the old trigger type) after commit. Absent when the worker runs without an engine
+    /// connection (tests).
     pub row_changes: Option<Arc<crate::triggers::RowChangeBus>>,
+    /// Secret cache, per-connection build errors and what each pool was
+    /// built from (see `configuration::apply_config`).
+    pub runtime: Arc<crate::runtime::Runtime>,
 }
 
 impl AppState {
@@ -172,29 +226,87 @@ impl AppState {
         if let Some(name) = db {
             return Ok(name);
         }
-        let pools = self.pools.read().await;
-        if pools.len() == 1 {
-            return Ok(pools.keys().next().expect("len checked above").clone());
+        // Configured connections, failed ones included: a connection whose
+        // pool could not be built is still the caller's target, and its
+        // call should say why rather than pick another.
+        let mut names: Vec<String> = self.pools.read().await.keys().cloned().collect();
+        for name in self.runtime.errors().into_keys() {
+            if !names.contains(&name) {
+                names.push(name);
+            }
         }
-        if pools.contains_key(crate::config::DEFAULT_DB_NAME) {
+        if names.len() == 1 {
+            return Ok(names.remove(0));
+        }
+        if names.iter().any(|n| n == crate::config::DEFAULT_DB_NAME) {
             return Ok(crate::config::DEFAULT_DB_NAME.to_string());
         }
-        let mut available: Vec<String> = pools.keys().cloned().collect();
-        available.sort();
-        Err(DbError::MissingDb { available })
+        names.sort();
+        Err(DbError::MissingDb { available: names })
     }
 
     pub async fn pool(&self, db: &str) -> Result<Pool, DbError> {
         let pools = self.pools.read().await;
-        pools.get(db).cloned().ok_or_else(|| {
-            // Enumerate the registered handles so a caller that guessed wrong
-            // learns the right name from one failure instead of trial-and-error.
-            let mut available: Vec<String> = pools.keys().cloned().collect();
-            available.sort();
-            DbError::UnknownDb {
-                db: db.to_string(),
-                available,
+        if let Some(pool) = pools.get(db) {
+            return Ok(pool.clone());
+        }
+        // Configured but unbuildable: say why (the message names the field
+        // or reference, never a value).
+        if let Some(e) = self.runtime.error(db) {
+            return Err(DbError::ConfigError {
+                message: format!(
+                    "connection `{db}` is unavailable ({}): {}",
+                    serde_json::to_value(e.stage)
+                        .ok()
+                        .and_then(|v| v.as_str().map(str::to_string))
+                        .unwrap_or_default(),
+                    e.message
+                ),
+            });
+        }
+        // Enumerate the registered handles so a caller that guessed wrong
+        // learns the right name from one failure instead of trial-and-error.
+        let mut available: Vec<String> = pools.keys().cloned().collect();
+        for name in self.runtime.errors().into_keys() {
+            if !available.contains(&name) {
+                available.push(name);
             }
+        }
+        available.sort();
+        Err(DbError::UnknownDb {
+            db: db.to_string(),
+            available,
         })
+    }
+}
+
+#[cfg(test)]
+mod keyword_tests {
+    #[test]
+    fn first_keyword_skips_comments() {
+        assert_eq!(
+            super::first_keyword("  -- x\n /* y */ prepare p AS SELECT 1"),
+            "PREPARE"
+        );
+        assert_eq!(super::first_keyword("SELECT 1"), "SELECT");
+        assert_eq!(super::first_keyword(""), "");
+    }
+
+    #[test]
+    fn session_prepared_statements_are_refused() {
+        for sql in [
+            "PREPARE p AS SELECT 1",
+            "/* x */ execute p",
+            "DEALLOCATE ALL",
+        ] {
+            assert!(super::reject_session_prepared_sql(sql).is_err(), "{sql}");
+        }
+        assert!(super::reject_session_prepared_sql("SELECT 'PREPARE'").is_ok());
+        assert!(super::reject_session_prepared_sql("DO $$ BEGIN EXECUTE 'x'; END $$").is_ok());
+        let err = super::reject_session_prepared_at(2, "prepare q as select 1").unwrap_err();
+        assert!(matches!(
+            err,
+            crate::error::DbError::InvalidParam { index: 2, .. }
+        ));
     }
 }

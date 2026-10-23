@@ -7,6 +7,7 @@ import {
   readJudgeProvider,
   readProviderStates,
   runStep,
+  SignInRequiredError,
   scanMachine,
 } from '@/lib/onboarding/api'
 import {
@@ -169,6 +170,13 @@ export const DETECTED_KEY_NAMES = [
   ...JUDGE_OPTIONS.flatMap((option) => (option.envVar ? [option.envVar] : [])),
 ]
 
+function without(set: ReadonlySet<string>, value: string): ReadonlySet<string> {
+  if (!set.has(value)) return set
+  const next = new Set(set)
+  next.delete(value)
+  return next
+}
+
 async function settle<T>(
   promise: Promise<T>,
 ): Promise<{ value: T | null; error: string | null }> {
@@ -195,6 +203,14 @@ export function useOnboarding(
   const [scanning, setScanning] = useState(false)
   const [activity, setActivity] = useState<ActivityEntry[]>([])
   const [running, setRunning] = useState<ActivityGroup | null>(null)
+  /**
+   * Providers whose own sign-in a run found rejected: their rows offer a
+   * new sign-in instead of connecting again, until it lands or a scan
+   * finds the local sign-in again.
+   */
+  const [signInNeeded, setSignInNeeded] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  )
   const nextId = useRef(1)
   const onSettledRef = useRef(onSettled)
   onSettledRef.current = onSettled
@@ -245,8 +261,12 @@ export function useOnboarding(
     return next
   }, [])
 
-  /** Look at the machine again ("Scan again"). */
+  /**
+   * Look at the machine again ("Scan again"). A CLI signed in again since
+   * the run is worth one more Connect, so no sign-in is held against it.
+   */
   const rescan = useCallback(async () => {
+    setSignInNeeded(new Set())
     await refresh()
   }, [refresh])
 
@@ -350,12 +370,19 @@ export function useOnboarding(
             continue
           }
           patch(id, { status: 'done', note: result.note, progress: undefined })
+          if (step.kind === 'wait-models') {
+            setSignInNeeded((current) => without(current, step.providerId))
+          }
         } catch (error) {
           patch(id, {
             status: 'failed',
             note: readableError(error),
             progress: undefined,
           })
+          if (error instanceof SignInRequiredError) {
+            const { providerId } = error
+            setSignInNeeded((current) => new Set(current).add(providerId))
+          }
           ok = false
           break
         } finally {
@@ -471,6 +498,7 @@ export function useOnboarding(
     activity,
     running,
     run,
+    signInNeeded,
     skipStep,
     judgeInstalled,
     checkChromium,

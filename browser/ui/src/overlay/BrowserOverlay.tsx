@@ -1,6 +1,6 @@
 import { Card, type Host, IconButton } from '@iii-dev/console-ui'
 import { usePaneState } from '@iii-dev/console-ui/hooks'
-import { Maximize, X } from 'lucide-react'
+import { ExternalLink, Maximize, X } from 'lucide-react'
 import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
@@ -27,7 +27,7 @@ import {
   isStill,
   overshoot,
   type Point,
-  resizedFromBottomRight,
+  resizedFromTopRight,
   rubberBandPoint,
   type Sample,
   velocityFromSamples,
@@ -45,6 +45,7 @@ import {
   browserOverlaySessions,
   hideBrowserOverlay,
   openBrowserPane,
+  openBrowserWindow,
   showBrowserOverlay,
   subscribeBrowserOverlay,
 } from './overlay-store'
@@ -52,7 +53,7 @@ import {
 /**
  * The live preview: small picture-in-picture thumbnails of the tabs agents
  * opened, fed by the same screencast the browser page uses. The group sits
- * in a corner (top-right on touch layouts, bottom-right with a pointer)
+ * in the top-right corner
  * until dragged elsewhere — one finger or the mouse moves it, a released
  * swipe coasts and settles inside the viewport, a pinch resizes it. Each
  * card keeps its page's aspect ratio; the width and the spot stick across
@@ -436,7 +437,7 @@ export function BrowserOverlay({ host }: { host: Host }) {
       const node = rootRef.current
       if (node) {
         const bounds = boundsFor(
-          resizedFromBottomRight(node.getBoundingClientRect(), next),
+          resizedFromTopRight(node.getBoundingClientRect(), next),
           positionRef.current,
           { width: window.innerWidth, height: window.innerHeight },
         )
@@ -495,6 +496,10 @@ export function BrowserOverlay({ host }: { host: Host }) {
                 setExpanded(false)
                 openBrowserPane(host, sessionId)
               }}
+              onOpenWindow={() => {
+                setExpanded(false)
+                openBrowserWindow(host, sessionId)
+              }}
               onHide={() => {
                 setExpanded(false)
                 hideBrowserOverlay(sessionId)
@@ -520,6 +525,8 @@ interface CardProps {
   onReady: (sessionId: string, hasFrame: boolean) => void
   onClick: (sessionId: string, isFront: boolean) => void
   onExpand: () => void
+  /** The browser page in a workspace tab of its own. */
+  onOpenWindow: () => void
   onHide: () => void
 }
 
@@ -533,6 +540,7 @@ function PreviewCard({
   onReady,
   onClick,
   onExpand,
+  onOpenWindow,
   onHide,
 }: CardProps) {
   // ponytail: every fanned-out card streams its own screencast; fine for
@@ -592,6 +600,16 @@ function PreviewCard({
             }}
           >
             <Maximize size={16} aria-hidden />
+          </IconButton>
+          <IconButton
+            label="Open in a new workspace tab"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation()
+              onOpenWindow()
+            }}
+          >
+            <ExternalLink size={16} aria-hidden />
           </IconButton>
           <IconButton
             label="Hide preview"

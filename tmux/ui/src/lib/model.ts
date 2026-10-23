@@ -12,6 +12,9 @@ import type {
   PortsSnapshot,
   Session,
   SessionsSnapshot,
+  SubagentStatus,
+  SubagentTranscript,
+  TranscriptItem,
   Window,
 } from './types'
 
@@ -20,6 +23,21 @@ export interface AgentBadge {
   id: string
   label: string
   state: AgentState
+  sinceMs: number
+  subagents: SubagentStatus[]
+}
+
+/** A sub-agent at work, as a row under its window. */
+export interface SubagentRow {
+  key: string
+  /** The sub-agent's id, as `tmux::subagents::transcript` takes it. */
+  id: string
+  paneId: string
+  /** The agent that runs it, e.g. `Claude Code`. */
+  agentLabel: string
+  description: string
+  kind: string | null
+  depth: number
   sinceMs: number
 }
 
@@ -39,6 +57,8 @@ export interface WindowRow {
   /** The session's current window (tmux state, synced with every client). */
   active: boolean
   agents: AgentBadge[]
+  /** Every agent's sub-agents at work in the window, oldest first. */
+  subagents: SubagentRow[]
   compose: ComposeBadge | null
   /** Distinct listening ports of every process under the window's panes. */
   ports: number[]
@@ -50,6 +70,8 @@ export interface AgentCounts {
   working: number
   waiting: number
   idle: number
+  /** Sub-agents at work under those agents. */
+  subagents: number
 }
 
 export interface SessionRow {
@@ -84,6 +106,33 @@ export function agentStateTone(state: AgentState): 'accent' | 'warn' | 'ink' {
   return 'ink'
 }
 
+/** `1 sub-agent`, `3 sub-agents`. */
+export function subagentCountLabel(count: number): string {
+  return `${count} sub-agent${count === 1 ? '' : 's'}`
+}
+
+/** The heading of one transcript item. */
+export function transcriptItemLabel(item: Pick<TranscriptItem, 'kind' | 'tool' | 'error'>, agentLabel: string): string {
+  switch (item.kind) {
+    case 'user':
+      return `Message from ${agentLabel}`
+    case 'text':
+      return 'Sub-agent'
+    case 'thinking':
+      return 'Thinking'
+    case 'tool_call':
+      return item.tool ?? 'Tool call'
+    case 'tool_result':
+      return `${item.tool ?? 'Tool'} ${item.error ? 'failed' : 'result'}`
+  }
+}
+
+/** How long the transcript view waits before asking again. */
+export function transcriptPollMs(transcript: Pick<SubagentTranscript, 'working'> | null, failed: boolean): number {
+  if (failed) return 5_000
+  return transcript && !transcript.working ? 10_000 : 2_000
+}
+
 export function windowLabel(window: Pick<Window, 'index' | 'name'>): string {
   return `${window.index}:${window.name}`
 }
@@ -96,17 +145,32 @@ export function composeWsPort(ports: PortsSnapshot | null, namespace: string, pi
 
 function windowRow(session: Session, window: Window, ports: PortsSnapshot | null): WindowRow {
   const agents: AgentBadge[] = []
+  const subagents: SubagentRow[] = []
   const portSet = new Set<number>()
   let compose: ComposeBadge | null = null
   for (const pane of window.panes) {
     if (pane.agent) {
+      const running = pane.agent.subagents ?? []
       agents.push({
         paneId: pane.id,
         id: pane.agent.id,
         label: pane.agent.label,
         state: pane.agent.state,
         sinceMs: pane.agent.since_ms,
+        subagents: running,
       })
+      for (const sub of running) {
+        subagents.push({
+          key: `${pane.id}/${sub.id}`,
+          id: sub.id,
+          paneId: pane.id,
+          agentLabel: pane.agent.label,
+          description: sub.description,
+          kind: sub.kind,
+          depth: Math.max(1, sub.depth),
+          sinceMs: sub.since_ms,
+        })
+      }
     }
     if (pane.compose && !compose) {
       compose = {
@@ -118,6 +182,7 @@ function windowRow(session: Session, window: Window, ports: PortsSnapshot | null
     for (const listener of pane.ports) portSet.add(listener.port)
   }
   agents.sort((a, b) => STATE_ORDER[a.state] - STATE_ORDER[b.state] || a.label.localeCompare(b.label))
+  subagents.sort((a, b) => a.sinceMs - b.sinceMs || a.key.localeCompare(b.key))
   const activePane = window.panes.find((pane) => pane.active) ?? window.panes[0]
   return {
     key: window.id,
@@ -127,6 +192,7 @@ function windowRow(session: Session, window: Window, ports: PortsSnapshot | null
     label: windowLabel(window),
     active: window.active,
     agents,
+    subagents,
     compose,
     ports: [...portSet].sort((a, b) => a - b),
     command: activePane?.command ?? '',
@@ -144,8 +210,11 @@ export function buildSessionTree(
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((session) => {
       const windows = [...session.windows].sort((a, b) => a.index - b.index).map((w) => windowRow(session, w, ports))
-      const agents: AgentCounts = { working: 0, waiting: 0, idle: 0 }
-      for (const row of windows) for (const agent of row.agents) agents[agent.state] += 1
+      const agents: AgentCounts = { working: 0, waiting: 0, idle: 0, subagents: 0 }
+      for (const row of windows) {
+        for (const agent of row.agents) agents[agent.state] += 1
+        agents.subagents += row.subagents.length
+      }
       return {
         key: session.id,
         session,

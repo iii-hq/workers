@@ -231,9 +231,13 @@ message. Three moments report:
   messages, sub-agents included) counted across every session in the state
   store. Model calls move several at a time, so a report goes out at the
   highest milestone passed. It carries `model_calls_total`, tool call and tool
-  call error totals, token totals, `cost_usd`, `user_turns_total` and
-  `sessions_total`, all across the state store, and `by_model`: model calls,
-  tool calls, tokens and cost per provider and model that generated them.
+  call error totals, token totals, `cost_usd`, `user_turns_total`,
+  `sessions_total` and `subagents_total`, all across the state store, and
+  `by_model`: model calls, tool calls, tokens and cost per provider and model
+  that generated them. `subagents_total` counts each sub-agent session one
+  time, when it is first seen in its root's session tree.
+  `subagent_max_depth` is the deepest sub-agent level that any session tree
+  reached. It has no `*_delta`.
 
 Every counter on both events, in total and in each `by_model` entry, has a
 matching `*_delta` (for example `tool_calls_delta`, `cost_usd_delta`): the

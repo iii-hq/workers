@@ -1,6 +1,6 @@
 //! `storage::presignUrl` — short-lived URL for browser direct upload/download.
 
-use super::{err_to_str, AppState};
+use super::{err_to_str, validate_key, AppState};
 use crate::backend::{PresignMethod, PresignReq as BackendPresignReq};
 use crate::error::{backend_error_to_storage, StorageError};
 use chrono::{DateTime, Utc};
@@ -44,11 +44,7 @@ pub struct PresignResp {
 }
 
 pub async fn handle(state: &AppState, req: PresignReq) -> Result<PresignResp, String> {
-    if req.key.is_empty() {
-        return Err(err_to_str(StorageError::ConfigError {
-            message: "key must not be empty".into(),
-        }));
-    }
+    validate_key(&req.key).map_err(err_to_str)?;
     if req.expires_in_seconds < MIN_EXPIRY || req.expires_in_seconds > MAX_EXPIRY {
         return Err(err_to_str(StorageError::InvalidPresignParams {
             reason: format!(
@@ -72,6 +68,22 @@ pub async fn handle(state: &AppState, req: PresignReq) -> Result<PresignResp, St
         return Err(err_to_str(StorageError::InvalidPresignParams {
             reason: "response_content_disposition and response_content_type are only valid for GET presigns".into(),
         }));
+    }
+    for (field, value) in [
+        (
+            "response_content_disposition",
+            req.response_content_disposition.as_deref(),
+        ),
+        (
+            "response_content_type",
+            req.response_content_type.as_deref(),
+        ),
+    ] {
+        if value.is_some_and(|v| v.chars().any(char::is_control)) {
+            return Err(err_to_str(StorageError::InvalidPresignParams {
+                reason: format!("{field} must not contain control characters (CR, LF, …)"),
+            }));
+        }
     }
     let backend = state.backend(&req.bucket).await.map_err(err_to_str)?;
     let resp = backend
@@ -116,6 +128,22 @@ mod tests {
 
     fn req(v: serde_json::Value) -> PresignReq {
         serde_json::from_value(v).unwrap()
+    }
+
+    #[tokio::test]
+    async fn header_overrides_with_control_characters_are_refused() {
+        for field in ["response_content_disposition", "response_content_type"] {
+            let mut payload = json!({"bucket":"uploads","key":"k","method":"GET"});
+            payload[field] = json!("attachment\r\nSet-Cookie: x=1");
+            let err = handle(&state(), req(payload)).await.unwrap_err();
+            assert!(
+                err.contains("INVALID_PRESIGN_PARAMS") && err.contains(field),
+                "{err}"
+            );
+        }
+        let ok = json!({"bucket":"uploads","key":"k","method":"GET",
+                        "response_content_disposition":"attachment; filename=\"a b.mp4\""});
+        handle(&state(), req(ok)).await.unwrap();
     }
 
     #[tokio::test]

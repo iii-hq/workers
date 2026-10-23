@@ -291,6 +291,12 @@ pub trait Invoker: Send + Sync + 'static {
         EngineChanges::never()
     }
 
+    /// Whether a function-queue job whose target is not registered goes back to the broker
+    /// instead of being held: see [`IiiInvoker::with_worker_namespace`].
+    fn hands_back_unavailable(&self) -> bool {
+        false
+    }
+
     /// Capture the engine epoch immediately before a restart-sensitive
     /// invocation. `None` disables restart watching for this invocation.
     async fn connection_epoch(&self) -> Result<Option<u64>, String> {
@@ -309,6 +315,7 @@ pub trait Invoker: Send + Sync + 'static {
 pub struct IiiInvoker {
     iii: Arc<IIIClient>,
     events: EngineEvents,
+    worker_namespace: Option<String>,
 }
 
 impl IiiInvoker {
@@ -319,6 +326,7 @@ impl IiiInvoker {
         Self {
             iii,
             events: EngineEvents::default(),
+            worker_namespace: None,
         }
     }
 
@@ -326,6 +334,18 @@ impl IiiInvoker {
     pub fn with_engine_events(mut self, events: EngineEvents) -> Self {
         self.events = events;
         self
+    }
+
+    /// [`RunJobsIn::Worker`](crate::config::RunJobsIn::Worker): a function-queue job runs in this
+    /// worker's own namespace, whichever namespace enqueued it, and one whose function is not
+    /// registered here goes back to the broker for another worker.
+    pub fn with_worker_namespace(mut self, namespace: String) -> Self {
+        self.worker_namespace = Some(namespace);
+        self
+    }
+
+    fn job_namespace<'a>(&'a self, enqueued_in: &'a str) -> &'a str {
+        self.worker_namespace.as_deref().unwrap_or(enqueued_in)
     }
 }
 
@@ -373,7 +393,7 @@ impl Invoker for IiiInvoker {
                     action: None,
                     timeout_ms: Some(timeout_ms),
                 }
-                .namespace(namespace),
+                .namespace(self.job_namespace(namespace)),
             )
             .await
             .map(Some)
@@ -414,7 +434,7 @@ impl Invoker for IiiInvoker {
                 function_id: "engine::functions::info".to_string(),
                 payload: json!({
                     "function_id": function_id,
-                    "namespace": namespace,
+                    "namespace": self.job_namespace(namespace),
                 }),
                 action: None,
                 timeout_ms: Some(5_000),
@@ -435,6 +455,10 @@ impl Invoker for IiiInvoker {
 
     fn engine_changes(&self) -> EngineChanges {
         self.events.subscribe()
+    }
+
+    fn hands_back_unavailable(&self) -> bool {
+        self.worker_namespace.is_some()
     }
 
     async fn connection_epoch(&self) -> Result<Option<u64>, String> {
@@ -552,6 +576,31 @@ impl SubscriberTarget {
         }
     }
 
+    /// Whether a subscription opened for `other` delivers exactly as one
+    /// opened for `self` would: the same function, metadata and namespace.
+    /// Never for an observer: each observer's `obs.call` is its own.
+    fn delivers_like(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Function {
+                    function_id,
+                    metadata,
+                    namespace,
+                },
+                Self::Function {
+                    function_id: other_function_id,
+                    metadata: other_metadata,
+                    namespace: other_namespace,
+                },
+            ) => {
+                function_id == other_function_id
+                    && metadata == other_metadata
+                    && namespace == other_namespace
+            }
+            _ => false,
+        }
+    }
+
     /// What this subscriber is, for validation messages.
     fn kind(&self) -> &'static str {
         match self {
@@ -604,6 +653,12 @@ pub struct SubscriberSpec {
     pub condition_function_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_config: Option<SubscriberQueueConfig>,
+    /// Consumer group: the registrations on this topic with the same group
+    /// share one durable queue, so each message is handled once by the group,
+    /// whatever their function, namespace or worker. Without it a
+    /// subscription is its function's (or binding's) in its namespace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -630,11 +685,22 @@ impl RegisteredSubscriber {
     /// `default` keeps the legacy suffix-less identity for ordinary keys, so
     /// existing deployments stay attached to their durable queues.
     ///
-    /// An observer is keyed by its id, which its SDK keeps across reconnects
-    /// (and which a consumer can pin with the `id` observe option), under a
-    /// prefix no trigger key starts with in practice: an observer never
-    /// shares a subscription with a trigger or with another observer.
+    /// A [`SubscriberSpec::group`] is the identity instead: `@` and the group,
+    /// whatever the function, namespace or kind of subscriber. An escaped base
+    /// never starts with an unescaped `@`, so a group never meets a function's
+    /// key.
+    ///
+    /// An observer outside a group is keyed by its id, which its SDK keeps
+    /// across reconnects (and which a consumer can pin with the `id` observe
+    /// option), under a prefix no trigger key starts with in practice: it
+    /// never shares a subscription with a trigger or with another observer.
     fn subscription_key(&self) -> String {
+        if let Some(group) = self.spec.group.as_deref().filter(|g| !g.is_empty()) {
+            return format!(
+                "{SUBSCRIPTION_NAMESPACE_SEPARATOR}{}",
+                escape_subscription_key_segment(group)
+            );
+        }
         let (function_id, metadata, namespace) = match &self.target {
             SubscriberTarget::Function {
                 function_id,
@@ -714,6 +780,9 @@ impl std::fmt::Display for RegisterError {
 pub struct QueueTriggerHandler {
     adapter: Arc<SwappableAdapter>,
     registrations: Arc<Mutex<HashMap<String, RegisteredSubscriber>>>,
+    /// The registration each live adapter subscription delivers into, by
+    /// `(queue, key)`. Locked only under `registrations`.
+    served_by: Arc<Mutex<HashMap<(String, String), String>>>,
 }
 
 impl QueueTriggerHandler {
@@ -721,7 +790,26 @@ impl QueueTriggerHandler {
         Self {
             adapter,
             registrations: Arc::new(Mutex::new(HashMap::new())),
+            served_by: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Open the adapter subscription for `key`, delivering into `registration`.
+    async fn subscribe_for(&self, registration: &RegisteredSubscriber, key: &str) {
+        let queue_config = merged_queue_config(&registration.spec);
+        self.adapter
+            .subscribe_target(
+                &registration.spec.queue,
+                key,
+                registration.target.clone(),
+                registration.spec.condition_function_id.clone(),
+                Some(queue_config),
+            )
+            .await;
+        self.served_by.lock().await.insert(
+            (registration.spec.queue.clone(), key.to_string()),
+            registration.trigger_id.clone(),
+        );
     }
 
     /// Snapshot of every currently registered subscriber -- consumed by the
@@ -752,16 +840,7 @@ impl QueueTriggerHandler {
             if !seen.insert((registration.spec.queue.clone(), key.clone())) {
                 continue; // registrations sharing a key share one subscription
             }
-            let queue_config = merged_queue_config(&registration.spec);
-            self.adapter
-                .subscribe_target(
-                    &registration.spec.queue,
-                    &key,
-                    registration.target.clone(),
-                    registration.spec.condition_function_id.clone(),
-                    Some(queue_config),
-                )
-                .await;
+            self.subscribe_for(&registration, &key).await;
         }
     }
 
@@ -797,16 +876,7 @@ impl QueueTriggerHandler {
             .values()
             .any(|r| r.spec.queue == registration.spec.queue && r.subscription_key() == key);
         if !already_live {
-            let queue_config = merged_queue_config(&registration.spec);
-            self.adapter
-                .subscribe_target(
-                    &registration.spec.queue,
-                    &key,
-                    registration.target.clone(),
-                    registration.spec.condition_function_id.clone(),
-                    Some(queue_config),
-                )
-                .await;
+            self.subscribe_for(&registration, &key).await;
         }
 
         registrations.insert(registration.trigger_id.clone(), registration);
@@ -830,13 +900,35 @@ impl QueueTriggerHandler {
             return;
         };
         let key = registration.subscription_key();
-        let still_shared = registrations
+        let served = (registration.spec.queue.clone(), key.clone());
+        let next = registrations
             .values()
-            .any(|r| r.spec.queue == registration.spec.queue && r.subscription_key() == key);
-        if !still_shared {
-            self.adapter
-                .unsubscribe(&registration.spec.queue, &key)
-                .await;
+            .find(|r| r.spec.queue == registration.spec.queue && r.subscription_key() == key)
+            .cloned();
+        let served_this =
+            self.served_by.lock().await.get(&served) == Some(&registration.trigger_id);
+        match next {
+            None => {
+                self.adapter
+                    .unsubscribe(&registration.spec.queue, &key)
+                    .await;
+                self.served_by.lock().await.remove(&served);
+            }
+            // The shared subscription delivered into the registration that left. One that stays
+            // with the same target (a re-registration) keeps it as it is; one with another target
+            // (a group member in another namespace, or an observer, say) gets it re-opened toward
+            // itself.
+            Some(next) if served_this => {
+                if next.target.delivers_like(&registration.target) {
+                    self.served_by.lock().await.insert(served, next.trigger_id);
+                } else {
+                    self.adapter
+                        .unsubscribe(&registration.spec.queue, &key)
+                        .await;
+                    self.subscribe_for(&next, &key).await;
+                }
+            }
+            Some(_) => {}
         }
     }
 }
@@ -1234,6 +1326,7 @@ mod tests {
                 backoff_ms: None,
                 condition_function_id: None,
                 queue_config: None,
+                group: None,
             },
         };
 
@@ -1241,6 +1334,49 @@ mod tests {
             registration.subscription_key(),
             r"backend\@v1\\path@tenant\@east\\prod"
         );
+        let mut grouped = registration.clone();
+        grouped.spec.group = Some(r"bill@ing".to_string());
+        assert_eq!(grouped.subscription_key(), r"@bill\@ing");
+    }
+
+    /// A consumer group is one subscription, whatever the namespaces of its
+    /// members, and it keeps delivering when the member it delivered into
+    /// leaves while others stay.
+    #[tokio::test]
+    async fn a_group_is_one_subscription_across_namespaces_and_outlives_a_member() {
+        let (handler, mock) = handler_with_mock();
+        let group = json!({"queue": "demo", "group": "billing"});
+        let mut a = trigger_config("t-a", "backend", group.clone());
+        a.namespace = Some("ns-a".to_string());
+        handler.register_trigger(a).await.unwrap();
+        let mut b = trigger_config("t-b", "backend", group);
+        b.namespace = Some("ns-b".to_string());
+        handler.register_trigger(b).await.unwrap();
+        assert_eq!(
+            mock.calls().len(),
+            1,
+            "the second member shares the subscription"
+        );
+        assert!(matches!(
+            &mock.calls()[0],
+            Call::Subscribe { id, namespace, .. }
+                if id == "@billing" && namespace.as_deref() == Some("ns-a")
+        ));
+
+        handler.unregister("t-a").await;
+        let calls = mock.calls();
+        assert!(matches!(&calls[1], Call::Unsubscribe { id, .. } if id == "@billing"));
+        assert!(matches!(
+            &calls[2],
+            Call::Subscribe { id, namespace, .. }
+                if id == "@billing" && namespace.as_deref() == Some("ns-b")
+        ));
+
+        handler.unregister("t-b").await;
+        assert!(matches!(
+            mock.calls().last().unwrap(),
+            Call::Unsubscribe { id, .. } if id == "@billing"
+        ));
     }
 
     /// The SDK mints a fresh trigger id per registration, so a restarted
@@ -1457,6 +1593,50 @@ mod tests {
         assert_eq!(left[0].trigger_id, "t1");
     }
 
+    /// A `group` is one subscription for observers too: an observer that
+    /// names a trigger's group shares its consumer, and takes it over when
+    /// the trigger it delivered into leaves.
+    #[tokio::test]
+    async fn an_observer_in_a_group_shares_it_and_takes_it_over() {
+        let (handler, mock) = handler_with_mock();
+        handler
+            .register_trigger(trigger_config(
+                "t1",
+                "backend",
+                json!({"queue": "demo", "group": "billing"}),
+            ))
+            .await
+            .unwrap();
+        handler
+            .register_subscriber(RegisteredSubscriber {
+                trigger_id: observer_key("obs"),
+                target: SubscriberTarget::Observer(Arc::new(NamedObserver("obs"))),
+                spec: serde_json::from_value(json!({"topic": "demo", "group": "billing"})).unwrap(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            mock.calls().len(),
+            1,
+            "the observer shares the subscription"
+        );
+
+        handler.unregister("t1").await;
+        let calls = mock.calls();
+        assert!(matches!(&calls[1], Call::Unsubscribe { id, .. } if id == "@billing"));
+        assert!(matches!(
+            &calls[2],
+            Call::SubscribeObserver { id, observer_id, .. }
+                if id == "@billing" && observer_id == "obs"
+        ));
+
+        handler.unregister(&observer_key("obs")).await;
+        assert!(matches!(
+            mock.calls().last().unwrap(),
+            Call::Unsubscribe { id, .. } if id == "@billing"
+        ));
+    }
+
     #[tokio::test]
     async fn register_rejects_empty_queue() {
         let (handler, _mock) = handler_with_mock();
@@ -1597,6 +1777,7 @@ mod tests {
                 backoff_delay_ms: Some(25),
                 ..Default::default()
             }),
+            group: None,
         };
         let merged = merged_queue_config(&spec);
         assert_eq!(merged.max_retries, Some(2));

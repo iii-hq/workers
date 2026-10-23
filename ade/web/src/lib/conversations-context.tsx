@@ -8,6 +8,11 @@ import {
   useRef,
   useState,
 } from 'react'
+import { DEFAULT_AGENT_ID } from '@/components/chat/agent-defaults'
+import {
+  type PromptChatApi,
+  startExamplePrompt,
+} from '@/components/onboarding/example-prompt'
 import {
   isApprovalGateAvailable,
   useApprovalGateStatus,
@@ -287,7 +292,33 @@ export function ConversationsProvider({
         )?.model
         return typeof model === 'string' && model.trim() ? model.trim() : null
       },
+      startChat(request) {
+        const text = request.text.trim()
+        if (!text)
+          return Promise.reject(new Error('startChat: text is required'))
+        const api = promptChatApiRef.current
+        if (!api) return Promise.reject(new Error('startChat: no chat store'))
+        return startExamplePrompt(api, {
+          title: text,
+          agent: request.agent?.trim() || DEFAULT_AGENT_ID,
+          prompt: text,
+          models: request.models ?? [],
+        })
+      },
     }
+  }
+  // What a worker-started chat needs from the store, as the wizard's example
+  // prompts use it; a ref, so the adapter above (made once) sees the latest.
+  const promptChatApiRef = useRef<PromptChatApi | null>(null)
+  promptChatApiRef.current = {
+    createNew: api.createNew,
+    prefillWorkingDir: api.prefillWorkingDir,
+    setAgentProfile: api.setAgentProfile,
+    setModel: api.setModel,
+    setThinkingLevel: api.setThinkingLevel,
+    openConversation: (sessionId) =>
+      conversationAdapterRef.current?.selectConversation(sessionId),
+    modelOptions,
   }
 
   useEffect(() => {

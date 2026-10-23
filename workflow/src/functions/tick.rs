@@ -144,6 +144,23 @@ fn build_opening(template: Option<&str>, input_json: &str) -> String {
     }
 }
 
+/// The `harness::send` `session` init for a node session. Titled so the console
+/// shows which agent ran; the orchestrator session goes into metadata so it nests
+/// under the launching chat. harness::send applies title/metadata/kind on
+/// create/ensure, and SessionCreatedEvent carries the title — so it shows live
+/// and on reload. Always `automation`: a node's opening is machine-written (often
+/// upstream LLM output), never the user's words, so memory must not extract it.
+fn node_session(title: String, caller_session_id: Option<&str>, run_id: &str) -> Value {
+    let mut session = json!({ "title": title, "kind": "automation" });
+    if let Some(caller) = caller_session_id {
+        session["metadata"] = json!({
+            "parent_session_id": caller,
+            "workflow_run_id": run_id,
+        });
+    }
+    session
+}
+
 // ---------------------------------------------------------------------------
 // fire_node
 // ---------------------------------------------------------------------------
@@ -233,18 +250,11 @@ pub(crate) async fn fire_node(
             "functions": functions,
         },
     });
-    // Title the node session so the console shows which agent ran; stamp the
-    // orchestrator session into metadata so it nests under the launching chat.
-    // harness::send applies SessionInit.title/metadata on create/ensure, and
-    // SessionCreatedEvent carries the title — so it shows live and on reload.
-    let mut session_init = json!({ "title": node_title });
-    if let Some(caller) = record.caller_session_id.as_deref() {
-        session_init["metadata"] = json!({
-            "parent_session_id": caller,
-            "workflow_run_id": record.run_id,
-        });
-    }
-    send_payload["session"] = session_init;
+    send_payload["session"] = node_session(
+        node_title,
+        record.caller_session_id.as_deref(),
+        &record.run_id,
+    );
 
     let resp = deps
         .iii
@@ -911,6 +921,24 @@ mod tests {
         assert!(out.contains("[1,2,3]"));
         // An empty template behaves like no template (no leading blank prose).
         assert!(build_opening(Some(""), "[1,2,3]").starts_with("<workflow_input"));
+    }
+
+    // Prevents: memory extracting a node's machine-written opening as the user's
+    // words, because the session defaulted to kind `user`.
+    #[test]
+    fn node_session_is_automation_and_nests_under_the_caller() {
+        assert_eq!(
+            node_session("plan · m".into(), Some("s_chat"), "run_1"),
+            json!({
+                "title": "plan · m",
+                "kind": "automation",
+                "metadata": { "parent_session_id": "s_chat", "workflow_run_id": "run_1" },
+            })
+        );
+        assert_eq!(
+            node_session("plan · m".into(), None, "run_1"),
+            json!({ "title": "plan · m", "kind": "automation" })
+        );
     }
 
     // -----------------------------------------------------------------------

@@ -6,7 +6,7 @@
     "properties": {
       "bank": {
         "default": null,
-        "description": "Bank to preview; a directory's bank (`<name>-<6 hex>`) reads `default_bank` under it, as its turns do. Omitted: the calling session's bank, else the configured default.",
+        "description": "Bank to preview; a directory's bank (`<name>-<6 hex>`) reads `default_bank` under it, as its turns do. Omitted: the calling session's bank with its layers (its agent profile's bank too), else the configured default.",
         "type": [
           "string",
           "null"
@@ -159,7 +159,7 @@
       "PreviewMemory": {
         "properties": {
           "bank": {
-            "description": "The bank holding it, when not `bank`: the default bank, read under a bank the session's directory chose.",
+            "description": "The bank holding it, when not `bank`: the default bank, read under a bank the session's directory chose, or its agent profile's bank.",
             "type": [
               "string",
               "null"

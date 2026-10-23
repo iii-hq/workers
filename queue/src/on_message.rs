@@ -3,7 +3,7 @@
 //!
 //! The function is owner-delivered. Its observers' args are a
 //! `durable:subscriber` trigger's config ([`SubscriberSpec`]:
-//! `{ topic, max_retries?, backoff_ms?, condition_function_id?, queue_config? }`).
+//! `{ topic, max_retries?, backoff_ms?, condition_function_id?, queue_config?, group? }`).
 //! [`OnMessageObservers`] is its [`ObserveHandler`]: each observer added
 //! becomes one more subscriber of the [`QueueTriggerHandler`] that serves the
 //! trigger type, validated by the same code, with a
@@ -45,8 +45,9 @@ pub const ON_MESSAGE_FN: &str = "queue::on-message";
 
 pub const ON_MESSAGE_DESCRIPTION: &str =
     "One invocation per message published to a durable queue topic. Observe it with args \
-     { topic, max_retries?, backoff_ms?, condition_function_id?, queue_config? } (the \
-     durable:subscriber trigger config); every observer receives every message of its topic. \
+     { topic, max_retries?, backoff_ms?, condition_function_id?, queue_config?, group? } (the \
+     durable:subscriber trigger config); every observer receives every message of its topic, \
+     except that subscribers naming the same group share one queue and handle each message once. \
      Your target receives the published data; returning acks the message, an error retries it \
      with backoff and then moves it to the topic's DLQ. Only the queue worker delivers its \
      messages: invoking it directly is refused.";
@@ -433,6 +434,7 @@ mod tests {
             "backoffDelayMs",
             "condition_function_id",
             "queue_config",
+            "group",
         ] {
             assert!(properties.contains_key(name), "missing {name}");
         }

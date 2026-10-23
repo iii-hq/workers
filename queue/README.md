@@ -24,6 +24,7 @@ Bind a function to `durable:subscriber` to consume a topic/queue:
 | `max_retries` | no | `3` | Maximum failed deliveries before the message moves to DLQ. |
 | `backoff_ms` | no | `1000` | Base retry delay in milliseconds. Retries use exponential backoff. |
 | `condition_function_id` | no | - | Function invoked first. Only explicit `false` skips the handler. |
+| `group` | no | - | Consumer group. Registrations on the topic with the same group share one durable queue, so each message is handled once by the group, whatever their function, namespace or worker. Without it a subscription belongs to its function (or harness binding) in its namespace. |
 
 The worker also accepts the built-in subscriber `queue_config` shape for
 compatibility, including `maxRetries` and `backoffDelayMs`.
@@ -53,8 +54,10 @@ await observer.ready()
 
 - **Delivery.** Each observer is one more subscriber of its topic, next to the
   `durable:subscriber` bindings: every subscriber (binding or observer)
-  receives every message, with the same payload. Only bindings that share a
-  subscription identity (two triggers on one function) share one consumer.
+  receives every message, with the same payload. Only subscribers that share a
+  subscription identity (two triggers on one function, or bindings and
+  observers that name the same `group`) share one consumer: a group handles
+  each message once.
   The worker hands each message to the observer with `obs.call`; the target's
   result acks it, an error retries it with backoff and then moves it to the
   topic's DLQ, exactly as for a trigger target.
@@ -66,8 +69,8 @@ await observer.ready()
   grace period, stops the observer's consumer like unregistering a trigger.
   While the observer is suspended (its worker briefly disconnected, or its
   target unregistered), messages stay queued and are retried like a message
-  for an unreachable trigger target. A subscription is keyed by the observer
-  id, which the SDK keeps across reconnects: its backlog survives a restart of
+  for an unreachable trigger target. Outside a group, a subscription is keyed
+  by the observer id, which the SDK keeps across reconnects: its backlog survives a restart of
   this worker (with a file-backed store) and is picked up by a later observer
   with the same `id` option, once the previous one is disposed (the engine
   refuses a second observer under a live id with `OBSERVER_ID_CONFLICT`).
@@ -143,6 +146,16 @@ wait is event-driven: the worker binds the engine's
 internal `queue::on-engine-change` function) and re-checks the target once per
 change, never on a timer. The same feed drives the
 `redeliver_on_engine_restart` restart check.
+
+`run_jobs_in` (read at boot) says which namespace runs a function-queue job:
+
+- `enqueuer` (default): the namespace the job was enqueued in.
+- `worker`: the namespace of the queue worker that takes the job, whichever
+  namespace enqueued it. A job whose function is not registered there goes
+  back to the broker (unspent) after one engine change or a second, for another
+  worker. Use it when one app is scaled out as several namespaces, each with
+  its own queue worker. Needs the `rabbitmq` adapter and
+  `engine::functions::info`.
 
 `poll_interval_ms` is deprecated and ignored (still accepted so existing
 definitions validate): consumers wake on enqueue, and a backed-off retry is

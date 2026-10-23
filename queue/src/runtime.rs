@@ -972,13 +972,17 @@ async fn process_standard_message(
     invoker: Arc<dyn Invoker>,
     message: QueueMessage,
 ) {
-    wait_for_function(
+    if !wait_for_function(
         &invoker,
         queue,
         &message.function_id,
         message.namespace.as_deref().unwrap_or(DEFAULT_NAMESPACE),
     )
-    .await;
+    .await
+    {
+        hand_back(queue, &adapter, &message).await;
+        return;
+    }
     let Ok(_permit) = active.acquire_owned().await else {
         return;
     };
@@ -1017,13 +1021,17 @@ async fn process_fifo_message(
 ) {
     let mut attempt = message.attempt;
     loop {
-        wait_for_function(
+        if !wait_for_function(
             &invoker,
             queue,
             &message.function_id,
             message.namespace.as_deref().unwrap_or(DEFAULT_NAMESPACE),
         )
-        .await;
+        .await
+        {
+            hand_back(queue, &adapter, &message).await;
+            return;
+        }
         let Ok(permit) = active.clone().acquire_owned().await else {
             return;
         };
@@ -1124,7 +1132,8 @@ async fn invoke_checkpointed_message_across_engine_restarts(
                     redeliveries,
                     "engine connection lost with the invocation in flight; holding until the target re-registers, then re-invoking"
                 );
-                wait_for_function(
+                // In flight here: hold until the target is back, even when jobs run in the worker.
+                while !wait_for_function(
                     invoker,
                     queue,
                     &message.function_id,
@@ -1133,7 +1142,8 @@ async fn invoke_checkpointed_message_across_engine_restarts(
                         .as_deref()
                         .unwrap_or(DEFAULT_NAMESPACE),
                 )
-                .await;
+                .await
+                {}
             }
         }
     }
@@ -1206,12 +1216,17 @@ fn scrub_relevance_tags(header: &str) -> Option<String> {
 /// between a negative check and the wait is not missed. There is no overall
 /// deadline: a restored job waits as long as its worker takes to boot,
 /// without spending retry budget.
+///
+/// An invoker that [hands back](Invoker::hands_back_unavailable) unavailable
+/// jobs (`run_jobs_in: worker`) re-checks once, after one engine change or
+/// [`HAND_BACK_AFTER`], and returns `false` when the target is still missing:
+/// the caller gives the job back to the broker for another worker.
 async fn wait_for_function(
     invoker: &Arc<dyn Invoker>,
     queue: &str,
     function_id: &str,
     namespace: &str,
-) {
+) -> bool {
     let mut changes = invoker.engine_changes();
     let mut waiting = false;
     loop {
@@ -1220,7 +1235,7 @@ async fn wait_for_function(
                 if waiting {
                     tracing::info!(queue = %queue, function_id = %function_id, "function queue target became available");
                 }
-                return;
+                return true;
             }
             Ok(false) => {
                 if !waiting {
@@ -1235,7 +1250,27 @@ async fn wait_for_function(
                 }
             }
         }
+        if invoker.hands_back_unavailable() {
+            let _ = tokio::time::timeout(HAND_BACK_AFTER, changes.changed()).await;
+            return invoker.function_available(function_id, namespace).await == Ok(true);
+        }
         changes.changed().await;
+    }
+}
+
+/// How long a worker keeps a job whose function it does not host before giving it back.
+// ponytail: a job that no live worker hosts bounces about once a second per worker; route jobs
+// by function (a queue per function) if that load ever matters.
+const HAND_BACK_AFTER: Duration = Duration::from_secs(1);
+
+/// Return a job to the broker, unspent, for a worker that hosts its function.
+async fn hand_back(queue: &str, adapter: &Arc<dyn QueueAdapter>, message: &QueueMessage) {
+    tracing::debug!(queue = %queue, function_id = %message.function_id, "function not registered in this worker's namespace; handing the job back");
+    if let Err(err) = adapter
+        .release_function_queue(queue, message.delivery_id)
+        .await
+    {
+        tracing::error!(queue = %queue, function_id = %message.function_id, error = %err, "function queue hand-back failed");
     }
 }
 

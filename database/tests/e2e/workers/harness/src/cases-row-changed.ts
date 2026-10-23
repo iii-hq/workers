@@ -113,6 +113,76 @@ export const ROW_CHANGED_CASES: TestCase[] = [
     },
   },
   {
+    // A binding made by calling the engine function rather than over a
+    // worker connection (the CLI, a code-runner script) has no owner. The
+    // worker's own trigger type serves it on every engine; the 0.25 engine's
+    // legacy shim would leave it pending.
+    name: 'row-changed binding made through engine::register_trigger fires',
+    async run({ driver, dialect, call, iii }) {
+      const table = 'e2e_row_changed_ownerless'
+      const functionId = `harness::row_changed_ownerless_${driver}`
+      const events: RowChangedEvent[] = []
+
+      await call('database::execute', { db: driver, sql: `DROP TABLE IF EXISTS ${table}` })
+      await call('database::execute', {
+        db: driver,
+        sql: `CREATE TABLE ${table} (id ${dialect.idColumnDDL()}, n INT NOT NULL)`,
+      })
+      const fnRef = iii.registerFunction(
+        functionId,
+        async (payload: RowChangedEvent) => {
+          events.push(payload)
+          return null
+        },
+        { description: 'Ownerless row-changed binding E2E sink.' },
+      )
+      const created = await iii.trigger<Record<string, unknown>, { id: string }>({
+        function_id: 'engine::register_trigger',
+        payload: {
+          trigger_type: 'database::row-changed',
+          function_id: functionId,
+          config: { db: driver, table },
+        },
+      })
+      expect(typeof created?.id === 'string', `engine::register_trigger returns an id: ${JSON.stringify(created)}`)
+
+      try {
+        // Live once the engine lists it as served (a parked binding is not
+        // listed).
+        const deadline = Date.now() + EVENT_TIMEOUT_MS
+        let listed = false
+        while (!listed && Date.now() < deadline) {
+          const registered = await iii.trigger<
+            Record<string, never>,
+            { registered_triggers: Array<{ id: string; status?: string }> }
+          >({ function_id: 'engine::registered-triggers::list', payload: {} })
+          listed = registered.registered_triggers.some(
+            (t) => t.id === created.id && (t.status === undefined || t.status === 'active'),
+          )
+          if (!listed) await sleep(50)
+        }
+        expect(listed, 'the ownerless binding is active, not pending')
+
+        await call('database::execute', {
+          db: driver,
+          sql: `INSERT INTO ${table} (n) VALUES (${dialect.placeholder(1)})`,
+          params: [1],
+        })
+        while (events.length === 0 && Date.now() < deadline + EVENT_TIMEOUT_MS) await sleep(20)
+        expectEqual(events.length, 1, 'the ownerless binding hears the insert')
+        expectEqual(events[0].op, 'insert', 'ownerless binding op')
+        expectEqual(events[0].affected_rows, 1, 'ownerless binding affected_rows')
+      } finally {
+        await iii.trigger({
+          function_id: 'engine::unregister_trigger',
+          payload: { id: created.id, trigger_type: 'database::row-changed' },
+        })
+        fnRef.unregister()
+        await call('database::execute', { db: driver, sql: `DROP TABLE IF EXISTS ${table}` })
+      }
+    },
+  },
+  {
     name: 'row-changed filters ops and emits committed mutations only',
     async run({ driver, dialect, call, iii }) {
       const table = 'e2e_row_changed'

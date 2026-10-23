@@ -252,13 +252,8 @@ impl RabbitMQAdapter {
         let connection = Arc::new(
             Connection::connect(&config.amqp_url, ConnectionProperties::default())
                 .await
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "Failed to connect to RabbitMQ at {}: {}",
-                        config.amqp_url,
-                        e
-                    )
-                })?,
+                // Never the URL: it carries the password.
+                .map_err(|e| anyhow::anyhow!("Failed to connect to RabbitMQ: {}", e))?,
         );
 
         let channel = connection
@@ -1225,6 +1220,35 @@ impl QueueAdapter for RabbitMQAdapter {
             .await
             .map(|_| ())
             .map_err(|e| anyhow::anyhow!("Failed to ack: {}", e))?;
+        delivery.settled.store(true, Ordering::Release);
+        self.delivery_map.write().await.remove(&delivery_id);
+        Ok(())
+    }
+
+    async fn release_function_queue(
+        &self,
+        queue_name: &str,
+        delivery_id: u64,
+    ) -> anyhow::Result<()> {
+        let delivery = self.delivery_map.read().await.get(&delivery_id).cloned();
+        let Some(delivery) = delivery else {
+            return Ok(());
+        };
+        let _operation = delivery.operation.lock().await;
+        if delivery.settled.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if delivery.queue_name != queue_name {
+            anyhow::bail!("delivery {delivery_id} does not belong to queue '{queue_name}'");
+        }
+        delivery
+            .delivery
+            .nack(BasicNackOptions {
+                requeue: true,
+                ..BasicNackOptions::default()
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to requeue: {}", e))?;
         delivery.settled.store(true, Ordering::Release);
         self.delivery_map.write().await.remove(&delivery_id);
         Ok(())

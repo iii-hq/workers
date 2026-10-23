@@ -46,6 +46,8 @@ client that only the Console drives.
 - `panes::capture` returns whatever is on a pane's screen, which can include
   anything the person typed or a program printed; it needs approval and its
   text should not be repeated beyond what the question needs.
+- `subagents::transcript` returns a sub-agent's conversation, tool calls and
+  their output; it needs approval for the same reason.
 - The worker never types into panes. `tmux::terminal::*` is the Console
   page's own terminal and is denied to agents.
 - Agent state is a reading of the screen: `waiting` means a prompt that needs
@@ -67,6 +69,7 @@ client that only the Console drives.
 - `tmux::windows::rename` / `tmux::windows::kill` — rename or kill a window by id (`@3`) or index.
 - `tmux::panes::select` — make a pane (`%5`) active; `zoom: true` zooms the window on it, `zoom: false` unzooms (every client of that window follows).
 - `tmux::panes::capture` — a pane's visible screen with colour escapes, its size, cursor and alternate-screen flag.
+- `tmux::subagents::transcript` — what one sub-agent of a pane's Claude Code or Codex has done (`pane`, `subagent` from `agent.subagents[].id`): its task, messages, reasoning, tool calls and results, oldest first.
 - `tmux::ports::list` — listening TCP ports with process, iii role, worker, compose namespace and pane, plus each `iii compose` stack.
 
 ## Reactive triggers

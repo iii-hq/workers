@@ -24,3 +24,4 @@ dependencies:
   provider-openai: "latest"
   ide: "latest"
   ade: "latest"
+  fp: "latest"

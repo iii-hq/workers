@@ -25,11 +25,13 @@ jobs:
         with:
           python-version: '3.11'
       - name: Check Bash syntax
-        run: bash -n template/sync.sh
+        run: bash -n template/sync.sh && bash -n template/init.sh
       - name: Install YAML parsers
         run: python -m pip install --quiet ruamel.yaml==0.18.16 PyYAML==6.0.3
       - name: Test synchronization and local worker configuration
         run: python -m unittest discover -s template/tests -p test_sync.py -v
+      - name: Test fresh project init, local workers and free ports
+        run: python -m unittest discover -s template/tests -p test_init.py -v
       - name: Validate local Compose, configuration and upstream instructions
         run: python -m unittest discover -s template/tests -p test_template.py -v
 
@@ -55,3 +57,5 @@ jobs:
         run: python -m pip install --quiet ruamel.yaml==0.18.16
       - name: Test direct script execution with Bash 3.2
         run: python -m unittest discover -s template/tests -p test_sync.py -v
+      - name: Test init.sh with Bash 3.2
+        run: python -m unittest discover -s template/tests -p test_init.py -v

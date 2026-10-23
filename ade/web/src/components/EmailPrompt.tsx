@@ -22,7 +22,7 @@ const SUBSCRIBE_TIMEOUT_MS = 20_000
  * The browser sends the address to `console::subscribe` over the engine
  * WebSocket and nowhere else. The console worker adds it to the product update
  * list and announces it for the engine to write to this machine's person; the
- * browser never talks to the list or to the analytics vendor.
+ * browser never sends the address to the list or to the analytics vendor.
  */
 export function EmailPrompt() {
   const { open, onSnooze, onDismiss, onSubscribed } = useEmailPrompt()

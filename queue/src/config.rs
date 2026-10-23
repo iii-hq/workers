@@ -28,6 +28,27 @@ pub struct QueueConfig {
     /// configuration worker and restored when this worker restarts.
     #[serde(default)]
     pub queue_configs: BTreeMap<String, FunctionQueueConfig>,
+    /// The namespace a function-queue job runs in. Read at boot.
+    #[serde(default, skip_serializing_if = "RunJobsIn::is_enqueuer")]
+    pub run_jobs_in: RunJobsIn,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RunJobsIn {
+    /// The namespace the job was enqueued in.
+    #[default]
+    Enqueuer,
+    /// The namespace of the queue worker that takes the job, whichever namespace enqueued it. A
+    /// job whose function is not registered there goes back to the broker, unspent, for another
+    /// worker. For one app scaled out as several namespaces, each with its own queue worker.
+    Worker,
+}
+
+impl RunJobsIn {
+    fn is_enqueuer(&self) -> bool {
+        *self == Self::Enqueuer
+    }
 }
 
 impl QueueConfig {
@@ -51,6 +72,7 @@ impl QueueConfig {
                 })),
             }),
             queue_configs: BTreeMap::new(),
+            run_jobs_in: RunJobsIn::Enqueuer,
         }
     }
 
@@ -61,6 +83,13 @@ impl QueueConfig {
     pub fn validate(&self) -> Result<(), String> {
         for (name, config) in &self.queue_configs {
             config.validate(name)?;
+        }
+        // Only a shared broker can give a job back for another worker.
+        if self.run_jobs_in == RunJobsIn::Worker && self.effective_adapter_name() != "rabbitmq" {
+            return Err(format!(
+                "run_jobs_in worker needs the rabbitmq adapter, not '{}'",
+                self.effective_adapter_name()
+            ));
         }
         Ok(())
     }
@@ -177,6 +206,24 @@ mod tests {
         assert_eq!(
             adapter_config_value(&c),
             Some(serde_json::json!({"redis_url": "redis://x"}))
+        );
+    }
+
+    #[test]
+    fn run_jobs_in_defaults_to_enqueuer_and_worker_needs_rabbitmq() {
+        assert_eq!(QueueConfig::default().run_jobs_in, RunJobsIn::Enqueuer);
+        assert!(QueueConfig::default()
+            .to_json()
+            .get("run_jobs_in")
+            .is_none());
+        let c: QueueConfig =
+            serde_yaml::from_str("{adapter: {name: rabbitmq}, run_jobs_in: worker}").unwrap();
+        assert_eq!(c.run_jobs_in, RunJobsIn::Worker);
+        assert_eq!(QueueConfig::from_json(&c.to_json()).unwrap(), c);
+        let builtin: QueueConfig = serde_yaml::from_str("{run_jobs_in: worker}").unwrap();
+        assert!(
+            builtin.validate().is_err(),
+            "only a shared broker can give a job back"
         );
     }
 

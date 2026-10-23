@@ -185,6 +185,9 @@ impl TriggerHandler for ChangedHandler {
 }
 
 pub fn register_changed_trigger(iii: &IIIClient, monitor: Arc<Monitor>) {
+    // `register_trigger_type` is deprecated in iii-sdk 0.25. Kept until the
+    // trigger type is retired; old consumers bind it on 0.24 and 0.25 engines.
+    #[allow(deprecated)]
     let _handle = iii.register_trigger_type(
         RegisterTriggerType::new(
             CHANGED,

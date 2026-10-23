@@ -13,8 +13,8 @@
 //! (`history_max_entries` / `history_max_bytes`) — an unbounded value grows
 //! until the `state` worker can no longer serve it over its engine
 //! connection, which takes `state::*` down for everyone. History is a
-//! convenience, not an audit log — for an audit trail, bind the
-//! `database::row-changed` trigger instead.
+//! convenience, not an audit log — for an audit trail, observe
+//! `database::on-row-changed` instead.
 
 use super::query::err_to_str;
 use crate::config::WorkerConfig;

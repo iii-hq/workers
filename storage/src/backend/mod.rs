@@ -32,6 +32,128 @@ pub trait Backend: Send + Sync {
 
     /// Provider tag used in error envelopes.
     fn provider(&self) -> &'static str;
+
+    /// Whether a presigned GET from this backend is fetchable by a client
+    /// (`storage::listBuckets` `direct_downloads`).
+    fn direct_downloads(&self) -> bool {
+        true
+    }
+
+    /// Reach the bucket the way `storage::testBucket` does: list at most one
+    /// object at the root. Failures say which stage failed.
+    async fn probe(&self) -> Result<(), ProbeFailure> {
+        match self
+            .list(ListReq {
+                prefix: String::new(),
+                delimiter: Some("/".into()),
+                cursor: None,
+                limit: 1,
+            })
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(BackendError::NotFound) => Err(ProbeFailure::missing("the bucket does not exist")),
+            Err(BackendError::AuthFailed(message)) => {
+                Err(ProbeFailure::new(crate::material::Stage::Auth, message))
+            }
+            Err(other) => Err(ProbeFailure::new(
+                crate::material::Stage::List,
+                other.to_string(),
+            )),
+        }
+    }
+
+    /// Create the provider-side bucket when it does not exist: `Ok(true)`
+    /// when this call created it, `Ok(false)` when it was already there.
+    async fn ensure_bucket(&self) -> Result<bool, BackendError> {
+        Err(BackendError::Provider {
+            inner_code: Some("CREATE_BUCKET_UNSUPPORTED".into()),
+            message: format!(
+                "creating the bucket is not supported for {} buckets",
+                self.provider()
+            ),
+        })
+    }
+}
+
+/// An error and its causes, `: `-joined (SDK errors' Display alone hides
+/// why), skipping a cause whose text the chain already holds.
+pub fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut out = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let text = cause.to_string();
+        if !out.contains(&text) {
+            out.push_str(": ");
+            out.push_str(&text);
+        }
+        source = cause.source();
+    }
+    out
+}
+
+/// Why a probe failed, as data for `storage::testBucket`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeFailure {
+    pub stage: crate::material::Stage,
+    pub message: String,
+    /// The provider said the bucket does not exist.
+    pub bucket_missing: bool,
+}
+
+impl ProbeFailure {
+    pub fn new(stage: crate::material::Stage, message: impl Into<String>) -> Self {
+        Self {
+            stage,
+            message: message.into(),
+            bucket_missing: false,
+        }
+    }
+
+    pub fn missing(message: impl Into<String>) -> Self {
+        Self {
+            stage: crate::material::Stage::Bucket,
+            message: message.into(),
+            bucket_missing: true,
+        }
+    }
+}
+
+/// A byte range of an object: `length` bytes from `offset`, or to the end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ByteRange {
+    pub offset: u64,
+    pub length: Option<u64>,
+}
+
+impl ByteRange {
+    /// The `[start, end)` span this range covers in an object of `size`
+    /// bytes, clamped to the end. An offset past the end is
+    /// `InvalidRange`; an offset equal to the size is an empty span.
+    pub fn span(&self, size: u64) -> Result<(u64, u64), BackendError> {
+        if self.offset > size {
+            return Err(BackendError::InvalidRange {
+                offset: self.offset,
+                size,
+            });
+        }
+        let end = match self.length {
+            Some(length) => self.offset.saturating_add(length).min(size),
+            None => size,
+        };
+        Ok((self.offset, end))
+    }
+
+    /// `ObjectTooLarge` when the span is longer than `cap`.
+    pub fn check_cap(start: u64, end: u64, cap: Option<u64>) -> Result<(), BackendError> {
+        match cap {
+            Some(cap) if end - start > cap => Err(BackendError::ObjectTooLarge {
+                actual_size: end - start,
+                cap,
+            }),
+            _ => Ok(()),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -57,17 +179,24 @@ pub struct GetReq {
     /// If set, the backend MUST return `BackendError::ObjectTooLarge` (with the
     /// real size) instead of buffering an object whose advertised content_length
     /// exceeds this cap. Prevents memory amplification when callers only accept
-    /// inline-sized objects.
+    /// inline-sized objects. With `range`, the cap applies to the bytes
+    /// returned, not to the object.
     pub max_inline_bytes: Option<u64>,
+    /// Read only these bytes. `None` reads the whole object.
+    pub range: Option<ByteRange>,
 }
 
 #[derive(Debug, Clone)]
 pub struct GetResp {
+    /// The bytes read: the whole object, or the requested range.
     pub body: Vec<u8>,
     pub content_type: String,
     pub etag: String,
     pub last_modified: DateTime<Utc>,
+    /// The object's total size.
     pub size: u64,
+    /// Where `body` starts in the object (0 for a whole read).
+    pub offset: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -177,6 +306,10 @@ pub enum BackendError {
     #[error("object too large: {actual_size} > {cap}")]
     ObjectTooLarge { actual_size: u64, cap: u64 },
 
+    /// A ranged read whose offset is past the end of the object.
+    #[error("offset {offset} past the end of a {size}-byte object")]
+    InvalidRange { offset: u64, size: u64 },
+
     /// Wraps any other provider-side error. `inner_code` is the SDK's stable
     /// code (e.g. AWS error code, GCS HTTP status, CF API error number).
     #[error("provider error: {message}")]
@@ -241,24 +374,27 @@ pub mod mock {
         }
 
         async fn get(&self, req: GetReq) -> Result<GetResp, BackendError> {
-            // Mirror real backends: reject oversized objects BEFORE returning
+            // Mirror real backends: reject oversized reads BEFORE returning
             // the body so handler tests exercise the same cap path as production.
             let cap = req.max_inline_bytes;
+            let range = req.range;
             self.calls.lock().unwrap().push(MockCall::Get(req));
-            let resp = self
+            let mut resp = self
                 .responses
                 .lock()
                 .unwrap()
                 .get
                 .clone()
                 .unwrap_or_else(|| Err(BackendError::NotFound))?;
-            if let Some(c) = cap {
-                if resp.size > c {
-                    return Err(BackendError::ObjectTooLarge {
-                        actual_size: resp.size,
-                        cap: c,
-                    });
-                }
+            let (start, end) = match range {
+                Some(range) => range.span(resp.size)?,
+                None => (0, resp.size),
+            };
+            ByteRange::check_cap(start, end, cap)?;
+            if range.is_some() {
+                let body_end = (end as usize).min(resp.body.len());
+                resp.body = resp.body[(start as usize).min(body_end)..body_end].to_vec();
+                resp.offset = start;
             }
             Ok(resp)
         }
@@ -353,6 +489,10 @@ pub mod mock {
                 BackendError::ObjectTooLarge { actual_size, cap } => BackendError::ObjectTooLarge {
                     actual_size: *actual_size,
                     cap: *cap,
+                },
+                BackendError::InvalidRange { offset, size } => BackendError::InvalidRange {
+                    offset: *offset,
+                    size: *size,
                 },
                 BackendError::Provider {
                     inner_code,

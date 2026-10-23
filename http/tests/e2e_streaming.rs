@@ -45,6 +45,7 @@ async fn register_stream_backend(iii: &Arc<IIIClient>, api_path: &str, http_meth
         }),
     );
 
+    #[allow(deprecated)] // an old consumer: binds the `http` trigger type
     iii.register_trigger(RegisterTriggerInput::new(
         iii_http::TRIGGER_TYPE.to_string(),
         function_id,
@@ -88,6 +89,7 @@ async fn register_late_stream_backend(iii: &Arc<IIIClient>, api_path: &str, http
         }),
     );
 
+    #[allow(deprecated)] // an old consumer: binds the `http` trigger type
     iii.register_trigger(RegisterTriggerInput::new(
         iii_http::TRIGGER_TYPE.to_string(),
         function_id,

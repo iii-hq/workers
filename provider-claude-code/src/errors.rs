@@ -67,6 +67,29 @@ fn is_context_overflow_message(message: &str) -> bool {
         || m.contains("context length")
 }
 
+/// The `claude` CLI renews its own token when it runs; this provider never does.
+pub const SIGN_IN_EXPIRED: &str =
+    "Your Claude Code sign-in has expired. Run `claude` once to renew it, then try again.";
+
+/// Anthropic turned the OAuth token down (revoked, replaced, or corrupted).
+pub const SIGN_IN_REJECTED: &str =
+    "Claude Code rejected the current sign-in. Run `claude` and /login, then try again.";
+
+/// Anthropic accepted the token but refused this request (403): signing in
+/// again does not change that.
+pub const REQUEST_REFUSED: &str =
+    "Anthropic refused this request for the current Claude Code sign-in.";
+
+/// A sign-in that cannot be used, as `provider/auth_expired`: the setup wizard
+/// reads that code as "sign in again" instead of waiting for models.
+pub fn auth_expired(message: impl Into<String>) -> Error {
+    Error::Remote {
+        code: "provider/auth_expired".to_string(),
+        message: message.into(),
+        stacktrace: None,
+    }
+}
+
 /// Invalid handler input surfaced on the bus in the `{ code, message }`
 /// convention (same shape RouterError uses on the router side).
 pub fn invalid_request(message: impl Into<String>) -> Error {

@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod agents;
 pub mod binary;
 pub mod collector;
@@ -11,4 +12,5 @@ pub mod model;
 pub mod procs;
 pub mod terminal;
 pub mod tmux_cli;
+pub mod transcript;
 pub mod ui;

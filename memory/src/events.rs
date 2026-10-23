@@ -23,7 +23,7 @@ pub const ITEM_CHANGED: &str = "memory::item-changed";
 pub const ITEM_CHANGED_DESC: &str =
     "A memory was created, updated, superseded, or deleted in a memory bank. \
      Payload: { event_type, bank, memory, reason? } (reason on consolidation changes, and \
-     `redacted: <labels>` when secrets were redacted on save/update). Bind \
+     `redacted: <labels>` when secrets or invisible characters were removed on save/update). Bind \
      console/live views here.";
 
 pub const BANK_CHANGED: &str = "memory::bank-changed";

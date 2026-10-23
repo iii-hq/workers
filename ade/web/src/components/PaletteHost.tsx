@@ -243,14 +243,15 @@ export function PaletteHost({
       }
     })
 
-    // A worker-level command needs its page registered (the worker is here);
-    // a page-level one is registered by a mounted page, which is the same
-    // thing said twice. The same page in two panes registers twice: one row.
+    // A worker-level command lives exactly as long as its worker's script
+    // (the loader tears it down with the rest), so it is listed whether or
+    // not that worker registers a page under the id — a worker whose UI is
+    // an overlay has none. The same page in two panes registers twice: one
+    // row.
     const seenCommands = new Set<string>()
     const pageCommandRows: PaletteEntry[] = []
     for (const entry of pageCommands) {
       const page = extPages.find((candidate) => candidate.id === entry.pageId)
-      if (entry.source !== 'page' && !page) continue
       if (entry.command.enabled?.() === false) continue
       if (seenCommands.has(entry.key)) continue
       seenCommands.add(entry.key)

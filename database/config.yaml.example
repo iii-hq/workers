@@ -26,13 +26,48 @@ databases:
   #     needs: GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.*
   # analytics:
   #   url: postgres://user:pass@localhost:5432/analytics
+  #   tls: { mode: disable }      # a local server without TLS (default: require)
   #   capture: native
   # events:
   #   url: sqlite:./data/events.db
   #   capture: native
   # orders:
   #   url: mysql://user:pass@localhost:3306/orders
+  #   tls: { mode: disable }
   #   capture: native
+
+  # The structured form (what connection editors write), mutually exclusive
+  # with `url`. Sensitive values may be literals or references resolved
+  # through the secrets worker: secret://NAME (vault) or env://NAME; each
+  # secret must list `database` among its consumers.
+  # shop:
+  #   driver: postgres            # postgres | mysql | sqlite
+  #   host: db.example.com
+  #   port: 5432                  # default 5432 / 3306
+  #   user: app
+  #   password: secret://DATABASE_SHOP_PASSWORD
+  #   database: shop              # sqlite: the file path
+  #   tls:
+  #     mode: verify-full         # disable | prefer | require (default) | verify-ca | verify-full
+  #     ca_cert: /etc/ssl/internal-ca.pem      # path | inline PEM | secret:// | env://
+  #     client_cert: secret://SHOP_CLIENT_CERT # mutual TLS (with client_key)
+  #     client_key: secret://SHOP_CLIENT_KEY
+  #   display: { icon: database, color: "#22C55E" }
+  #   folder: /home/me/shop/queries
+  # Behind a bastion: the host/port above are as the SSH server sees them.
+  # private:
+  #   driver: mysql
+  #   host: mysql-private
+  #   user: app
+  #   password: env://PRIVATE_MYSQL_PASSWORD
+  #   database: shop
+  #   ssh:
+  #     host: bastion.example.com
+  #     port: 22
+  #     user: tunnel
+  #     private_key: secret://BASTION_KEY        # OpenSSH or PEM, inline, path or reference
+  #     passphrase: secret://BASTION_KEY_PASSPHRASE
+  #     host_key: "SHA256:…"                     # pin; omit to accept and read it from testConnection
 
 # Console query history caps (per database, stored on the `state` worker).
 # Whichever cap hits first, oldest entries are dropped; 0 disables recording.

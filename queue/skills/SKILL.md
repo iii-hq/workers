@@ -96,7 +96,9 @@ iii.observe(
 )
 ```
 
-Every subscriber of a topic (binding or observer) receives every message.
+Every subscriber of a topic (binding or observer) receives every message;
+subscribers that name the same `group` share one queue, so the group handles
+each message once.
 `dispose()` stops the observer's consumer. Invoking `queue::on-message`
 directly is refused. Engines without observe (0.24) answer `UNSUPPORTED`: use
 the trigger there.

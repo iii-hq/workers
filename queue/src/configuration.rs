@@ -437,6 +437,7 @@ mod tests {
                     backoff_ms: None,
                     condition_function_id: None,
                     queue_config: None,
+                    group: None,
                 },
             })
             .await
@@ -480,6 +481,7 @@ mod tests {
                     backoff_ms: None,
                     condition_function_id: None,
                     queue_config: None,
+                    group: None,
                 },
             })
             .await

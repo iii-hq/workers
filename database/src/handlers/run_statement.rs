@@ -38,6 +38,8 @@ pub async fn handle(state: &AppState, req: RunReq) -> Result<QueryResp, String> 
         rows,
         row_count,
         columns: result.columns,
+        truncated: false,
+        elapsed_ms: result.elapsed_ms,
     })
 }
 
@@ -64,6 +66,7 @@ mod tests {
             transactions: crate::transaction::TxRegistry::new(),
             log: iii_helpers::observability::Logger::new(),
             row_changes: None,
+            runtime: Default::default(),
         }
     }
 
@@ -82,6 +85,7 @@ mod tests {
             transactions: crate::transaction::TxRegistry::new(),
             log: iii_helpers::observability::Logger::new(),
             row_changes: None,
+            runtime: Default::default(),
         };
         (st, tmp)
     }

@@ -258,7 +258,7 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
   })
 
   // Rung after every layout write, this tab's own included: an injected page
-  // (onboarding) opens a screen over the bus, not through `persist`. Invalidate,
+  // (learn-iii) opens a screen over the bus, not through `persist`. Invalidate,
   // never set the pushed state. A read issued while local writes are pending
   // keeps the optimistic value (`readForQuery`), so the ring re-reads once the
   // queue has settled; writes queued after the ring rebase on the server copy.

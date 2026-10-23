@@ -348,6 +348,17 @@ pub trait QueueAdapter: Send + Sync + 'static {
         Ok(()) // no-op by default
     }
 
+    /// Give a delivery back to the broker unspent (no attempt counted), so another consumer can
+    /// take it: a worker that runs jobs in its own namespace does so with a job whose function is
+    /// not registered there.
+    async fn release_function_queue(
+        &self,
+        _queue_name: &str,
+        _delivery_id: u64,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("this queue adapter cannot give a delivery back")
+    }
+
     /// Negative-acknowledge a message. When `attempt < max_retries`, the
     /// adapter should route to retry. When `attempt >= max_retries`, the
     /// adapter should route to the DLQ.
@@ -541,6 +552,17 @@ impl QueueAdapter for SwappableAdapter {
         self.current()
             .await
             .ack_function_queue(queue_name, delivery_id)
+            .await
+    }
+
+    async fn release_function_queue(
+        &self,
+        queue_name: &str,
+        delivery_id: u64,
+    ) -> anyhow::Result<()> {
+        self.current()
+            .await
+            .release_function_queue(queue_name, delivery_id)
             .await
     }
 

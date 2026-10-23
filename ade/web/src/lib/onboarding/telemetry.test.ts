@@ -6,6 +6,7 @@ vi.mock('@/lib/iii-client', () => ({
 }))
 
 import {
+  finishStep,
   reportSetupStep,
   SETUP_TOUR_ID,
   STEP_TOPIC,
@@ -55,5 +56,47 @@ describe('setup telemetry', () => {
     trigger.mockRejectedValueOnce(new Error('no queue worker'))
     expect(() => reportSetupStep('welcome', 1)).not.toThrow()
     await vi.waitFor(() => expect(trigger).toHaveBeenCalled())
+  })
+
+  it('names each Explore iii choice as a substep of Finish', () => {
+    expect(
+      finishStep({ kind: 'example', title: 'Build a link shortener' }),
+    ).toEqual({
+      outcome: 'example_prompt',
+      substep_id: 'build-a-link-shortener',
+      step_title: 'Build a link shortener',
+    })
+    expect(finishStep({ kind: 'tour' })).toEqual({
+      outcome: 'tour',
+      substep_id: 'tour',
+      step_title: 'Take the learn-iii tour',
+    })
+    expect(finishStep({ kind: 'own' })).toEqual({
+      outcome: 'own',
+      substep_id: 'own',
+      step_title: 'Explore on my own',
+    })
+    expect(finishStep({ kind: 'finish' })).toEqual({
+      outcome: 'finished',
+      substep_id: 'finish',
+      step_title: 'Finish',
+    })
+  })
+
+  it('slugs an example title to letters, digits and single dashes', () => {
+    expect(
+      finishStep({ kind: 'example', title: '  Explain THIS project!  ' })
+        .substep_id,
+    ).toBe('explain-this-project')
+  })
+
+  it('lets a substep title the step, under the same step id', () => {
+    const message = setupStepMessage('finish', 6, finishStep({ kind: 'own' }))
+    expect(message).toMatchObject({
+      step_id: 'finish',
+      step_title: 'Explore on my own',
+      substep_id: 'own',
+      step_number: 6,
+    })
   })
 })

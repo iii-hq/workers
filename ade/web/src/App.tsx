@@ -80,6 +80,7 @@ import {
 } from '@/lib/pane-focus'
 import { subscribePanelOpen, subscribeScreenOpen } from '@/lib/panel-context'
 import { loadEdgeAddDiscovered, saveEdgeAddDiscovered } from '@/lib/storage'
+import { trackScreens } from '@/lib/telemetry'
 import { cn } from '@/lib/utils'
 import {
   clearTabDirty,
@@ -218,7 +219,21 @@ export function App({
     [],
   )
   const workspace = useWorkspaceTabs()
-  const { activeTabId } = workspace
+  const { activeTabId, layoutSource } = workspace
+  // One report per change of what the active workspace shows: switching tabs
+  // or changing a panel's screen.
+  // The tab id is in the key so a switch between two tabs that show the same
+  // screens still reports.
+  const activeScreens = JSON.stringify([
+    activeTabId,
+    workspace.activeTab.screens,
+  ])
+  // The local layout shows before the server one replaces it: report only
+  // the hydrated layout.
+  useEffect(() => {
+    if (layoutSource === 'pending') return
+    trackScreens(JSON.parse(activeScreens)[1])
+  }, [activeScreens, layoutSource])
   const workspaceRef = useRef(workspace)
   workspaceRef.current = workspace
   // Per-workspace phone panel, derived so a tab switch renders its own panel first.
@@ -389,7 +404,6 @@ export function App({
   // on the real tabs, not the local copy. `#/traces` and worker pages have
   // no deep link here: `#/traces` and `#/worker/<scope>` boot the standalone
   // shell instead (main.tsx).
-  const layoutSource = workspace.layoutSource
   useEffect(() => {
     if (layoutSource === 'pending') return
     const consume = () => {
@@ -1757,9 +1771,9 @@ function Header({
         onOpenPalette={onOpenPalette}
       />
 
-      {/* onboarding-menu-bar: tour anchor (workers/onboarding) — a selector,
+      {/* learn-iii-menu-bar: tour anchor (workers/learn-iii) — a selector,
           not styling. Do not remove. */}
-      <header className="onboarding-menu-bar hidden h-14 shrink-0 items-center justify-between gap-3 pr-6 pl-3 sm:flex">
+      <header className="learn-iii-menu-bar hidden h-14 shrink-0 items-center justify-between gap-3 pr-6 pl-3 sm:flex">
         <div className="flex min-w-0 flex-1 items-center gap-3">
           <Wordmark />
           <TabStrip
@@ -1781,8 +1795,8 @@ function Header({
             onClick={onOpenPalette}
             aria-label={hoverTitle('Search and commands', 'palette.toggle')}
             title={hoverTitle('Search and commands', 'palette.toggle')}
-            /* onboarding-palette: tour anchor (workers/onboarding). Do not remove. */
-            className="onboarding-palette relative flex h-10 items-center justify-center rounded-md border border-transparent bg-transparent px-2 text-ink-faint transition-[transform,color,background-color] [transition-duration:var(--motion-duration-control)] [transition-timing-function:var(--motion-ease-standard)] hover:bg-surface-hover hover:text-ink focus-visible:border-rule-focus focus-visible:outline-none active:scale-[0.97]"
+            /* learn-iii-palette: tour anchor (workers/learn-iii). Do not remove. */
+            className="learn-iii-palette relative flex h-10 items-center justify-center rounded-md border border-transparent bg-transparent px-2 text-ink-faint transition-[transform,color,background-color] [transition-duration:var(--motion-duration-control)] [transition-timing-function:var(--motion-ease-standard)] hover:bg-surface-hover hover:text-ink focus-visible:border-rule-focus focus-visible:outline-none active:scale-[0.97]"
           >
             <KeyCombo
               binding={bindingsFor('palette.toggle')[0] ?? 'Mod+K'}
@@ -1796,8 +1810,8 @@ function Header({
             aria-label="ADE settings"
             title="ADE settings"
             className={cn(
-              // onboarding-settings: tour anchor (workers/onboarding). Do not remove.
-              'onboarding-settings relative flex size-10 items-center justify-center rounded-md border font-sans text-sm',
+              // learn-iii-settings: tour anchor (workers/learn-iii). Do not remove.
+              'learn-iii-settings relative flex size-10 items-center justify-center rounded-md border font-sans text-sm',
               settingsOpen
                 ? 'border-transparent bg-ink text-bg'
                 : 'border-transparent bg-transparent text-ink-faint hover:bg-surface-hover hover:text-ink',
