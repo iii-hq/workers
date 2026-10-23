@@ -52,8 +52,11 @@ What `register` does:
 - the handler answers `{path}` with `{content, hash, size}` (it ignores the
   engine's `_caller_worker_id`) and any other path with the error code
   `UNKNOWN_NATIVE_UI_ASSET`;
-- with the watch env var set, polls `<dir>/<file of the bundle path>` every
-  second; on a new non-empty bundle under 1 MiB it swaps the served bytes,
+- with the watch env var set, checks `<dir>/<file of the bundle path>` every
+  250 ms: a `stat` each time, and a read and a hash only when the size or
+  mtime changed (or the mtime is under 2 s old, which a coarse filesystem
+  clock cannot tell apart); on a new non-empty bundle under 1 MiB whose hash
+  differs it swaps the served bytes,
   unregisters the function and registers it again with `dev: true` and the
   new hash (the SDK refuses a second registration of a live id, so the old
   one goes first). The app's dev poll (`engine::functions::info` every

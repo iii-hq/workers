@@ -26,7 +26,7 @@
 //! authoring error should fail the first unit test, not log on a device.
 //!
 //! In development, `III_<NS>_NATIVE_UI_WATCH` (`1`/`true` = `native-ui/dist`,
-//! or a directory) makes the worker poll the built bundle every second; when
+//! or a directory) makes the worker check the built bundle every 250 ms; when
 //! it changes, the served bytes swap and the function is registered again
 //! with `dev: true` and the new hash, which the app's dev poll picks up.
 //!
@@ -36,7 +36,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::FunctionRef;
@@ -58,7 +58,13 @@ const MAX_TITLE_CHARS: usize = 40;
 const MAX_BLURB_CHARS: usize = 120;
 const MAX_PATH_LEN: usize = 512;
 const MAX_ICON_LEN: usize = 64;
-const WATCH_POLL: Duration = Duration::from_millis(1000);
+/// How often the dev watcher looks at the built bundle. Each look is one
+/// `stat`; the file is read and hashed only when it may have changed.
+const WATCH_POLL: Duration = Duration::from_millis(250);
+/// A bundle whose mtime is this recent is read again even with the same size
+/// and mtime: a filesystem with a coarse mtime cannot tell two same-size
+/// writes within one tick apart (git's "racy" entries).
+const RACY_WINDOW: Duration = Duration::from_secs(2);
 
 /// Input of `<ns>::native-ui`: the app asks for the bundle by its path.
 /// Transport fields the engine adds (`_caller_worker_id`) are ignored.
@@ -477,6 +483,65 @@ fn parse_watch_target(raw: &str, default_dir: &Path) -> Option<PathBuf> {
     Some(path)
 }
 
+/// What the watcher compares before it reads the bundle: its size and mtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Stamp {
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+/// Whether the bundle must be read and hashed: a first look, a new size or
+/// mtime, no mtime at all, or an mtime too recent to trust.
+fn needs_read(previous: Option<&Stamp>, stamp: &Stamp, now: SystemTime) -> bool {
+    let Some(modified) = stamp.modified else {
+        return true;
+    };
+    if previous != Some(stamp) {
+        return true;
+    }
+    // A clock that went back, or an mtime in the future, reads as recent.
+    now.duration_since(modified)
+        .map_or(true, |age| age < RACY_WINDOW)
+}
+
+/// The dev watcher's view of the built bundle: a `stat` per look, a read and
+/// a hash only when [`needs_read`] says so.
+struct Watch {
+    file: PathBuf,
+    last: Option<Stamp>,
+    /// Reads so far (the tests check the cheap path).
+    reads: u64,
+}
+
+impl Watch {
+    fn new(file: PathBuf) -> Self {
+        Self {
+            file,
+            last: None,
+            reads: 0,
+        }
+    }
+
+    /// The next bundle to serve, when the file changed to one the app would
+    /// take and its hash differs from `current_hash`.
+    async fn next(&mut self, current_hash: &str) -> Option<BundleState> {
+        let Ok(meta) = tokio::fs::metadata(&self.file).await else {
+            self.last = None;
+            return None;
+        };
+        let stamp = Stamp {
+            len: meta.len(),
+            modified: meta.modified().ok(),
+        };
+        if !needs_read(self.last.as_ref(), &stamp, SystemTime::now()) {
+            return None;
+        }
+        self.last = Some(stamp);
+        self.reads += 1;
+        poll_once(&self.file, current_hash).await
+    }
+}
+
 /// Reads the built bundle; the next state when it changed and the app would
 /// take it, `None` otherwise (missing, unchanged, empty, too large).
 async fn poll_once(file: &Path, current_hash: &str) -> Option<BundleState> {
@@ -512,13 +577,13 @@ fn spawn_watcher(
         .next()
         .unwrap_or("native.js")
         .to_string();
-    let file = dir.join(file_name);
+    let mut watch = Watch::new(dir.join(file_name));
     tokio::spawn(async move {
-        tracing::info!(file = %file.display(), "native ui watch enabled: hot reload on rebuild");
+        tracing::info!(file = %watch.file.display(), "native ui watch enabled: hot reload on rebuild");
         loop {
             tokio::time::sleep(WATCH_POLL).await;
             let current = served.state.read().await.hash.clone();
-            let Some(next) = poll_once(&file, &current).await else {
+            let Some(next) = watch.next(&current).await else {
                 continue;
             };
             *served.state.write().await = next.clone();
@@ -704,6 +769,93 @@ mod tests {
         );
         std::fs::write(&file, "x".repeat(MAX_BUNDLE_BYTES + 1)).unwrap();
         assert_eq!(poll_once(&file, "x").await, None, "too large for the app");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_watcher_reads_only_when_the_bundle_may_have_changed() {
+        let now = SystemTime::now();
+        let old = Stamp {
+            len: 10,
+            modified: Some(now - Duration::from_secs(60)),
+        };
+        assert!(needs_read(None, &old, now), "the first look reads");
+        assert!(
+            !needs_read(Some(&old), &old, now),
+            "same size and old mtime"
+        );
+        let bigger = Stamp { len: 11, ..old };
+        assert!(needs_read(Some(&old), &bigger, now), "a new size");
+        let touched = Stamp {
+            modified: Some(now - Duration::from_secs(30)),
+            ..old
+        };
+        assert!(needs_read(Some(&old), &touched, now), "a new mtime");
+        let recent = Stamp {
+            len: 10,
+            modified: Some(now - Duration::from_millis(500)),
+        };
+        assert!(
+            needs_read(Some(&recent), &recent, now),
+            "a recent mtime is not trusted"
+        );
+        let future = Stamp {
+            len: 10,
+            modified: Some(now + Duration::from_secs(5)),
+        };
+        assert!(
+            needs_read(Some(&future), &future, now),
+            "an mtime ahead of the clock"
+        );
+        let no_mtime = Stamp {
+            len: 10,
+            modified: None,
+        };
+        assert!(
+            needs_read(Some(&no_mtime), &no_mtime, now),
+            "no mtime: always read"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_watcher_stats_before_it_reads() {
+        let dir = std::env::temp_dir().join(format!("iii-native-ui-watch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("native.js");
+        let mut watch = Watch::new(file.clone());
+        assert_eq!(watch.next("").await, None, "no file yet");
+        assert_eq!(watch.reads, 0);
+
+        std::fs::write(&file, BUNDLE).unwrap();
+        let settled = SystemTime::now() - Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(settled)
+            .unwrap();
+        let first = watch.next("").await.unwrap();
+        assert_eq!(first.hash, sha256_hex(BUNDLE));
+        assert_eq!(watch.reads, 1);
+        for _ in 0..3 {
+            assert_eq!(watch.next(&first.hash).await, None);
+        }
+        assert_eq!(watch.reads, 1, "an unchanged, settled file is only stat-ed");
+
+        std::fs::write(&file, "(()=>{globalThis.v=2})();").unwrap();
+        let second = watch.next(&first.hash).await.unwrap();
+        assert_eq!(second.hash, sha256_hex("(()=>{globalThis.v=2})();"));
+        assert_eq!(watch.reads, 2);
+        // Still recent: read again, but the same hash is no reload.
+        assert_eq!(watch.next(&second.hash).await, None);
+        assert_eq!(watch.reads, 3);
+
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(
+            watch.next(&second.hash).await,
+            None,
+            "a rebuild in progress"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

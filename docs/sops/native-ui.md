@@ -259,7 +259,9 @@ pnpm --dir <worker>/native-ui watch                     # rebuild dist/native.js
 cd <worker> && III_<NS>_NATIVE_UI_WATCH=1 cargo run     # serve each new bundle
 ```
 
-With the env var set, the worker polls the bundle every second: `1` or
+With the env var set, the worker checks the bundle every 250 ms (a `stat`;
+it reads and hashes the file only when its size or mtime changed, so an
+idle loop costs nothing): `1` or
 `true` watch `native-ui/dist`; a path ending in `.js` watches its directory;
 any other value is a directory, relative to the worker's working directory;
 unset, empty, `0` or `false` turn it off. The first registration is always
