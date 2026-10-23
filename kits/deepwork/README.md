@@ -42,14 +42,14 @@ Applying can take minutes. If the command times out, the apply keeps running, so
 
 The kit ships without models because it can't know your providers. Add a `model: <provider>::<model>` line to these files:
 
-- `agents/deepwork-lead.md`
+- `agents/deepwork-lead.md` (optional: without a pin, `lead_model=auto` picks a lighter sibling of the orchestrator's model from the same provider, or the orchestrator's own model when its provider lists no prices; `lead_model=<provider>::<model>` names one from any provider)
 - `agents/deepwork-impl.md`
 - `agents/deepwork-adversary.md`
 - `agents/deepwork-worker.md` (optional)
 
 Use the `provider::model` form so `reasoning_effort` reaches the provider. Kit updates keep your edits.
 
-A tier without its own model uses the one set on Default (`agents/default.md`). If Default has none, it uses the orchestrator's model. An unpinned lead spends one turn per phase on that model. With `judges=`, `deepwork-verifier` must resolve no model at all, Default included, or the run won't start.
+A tier without its own model uses the one set on Default (`agents/default.md`). If Default has none, it uses the orchestrator's model, also when `lead_model` runs the leads on a lighter one (the leads pass the orchestrator's model to their phases). An unpinned lead spends one turn per phase on that model. With `judges=`, `deepwork-verifier` must resolve no model at all, Default included, or the run won't start.
 
 ## Run it
 
@@ -104,9 +104,9 @@ You must pass `model`, because the profile sets none. Every model the run uses n
    4. Verify and Review run in parallel on the same commit. Verify runs the distinct `Verify:` commands, the full suite and the linter once, keeping every card's acceptance expectations. Review checks the combined diff, scope, test coverage and behaviour, without rerunning the commands. With `judges=`, the judges replace Verify.
    5. When both pass, the cards become Done/verified. With `verify=off`, the batch still writes tests, skips the check and marks the cards accepted; it does not claim they passed.
 
-   A rejected batch goes back to its batch worker with all reasons. It repairs code or tests within the cards' combined scope, commits, and checks again, up to `attempts`. It does not replay every implementation or cherry-pick integrated commits again. A batch still failing after those attempts (or missing, or inconclusive) does not end the run: its cards stay In progress, the round closes, and the next round repairs that batch first, with every reason, before any other wave. Only when rounds run out are its cards parked as unverified in Backlog, their changes kept on the run branch and named in the report. Blocked or stuck batch leads keep those outcomes.
+   A rejected batch goes back to its batch worker with all reasons. It repairs code or tests within the cards' combined scope, commits, and checks again, up to `attempts`. It does not replay every implementation or cherry-pick integrated commits again. A batch still failing after those attempts (or missing, or inconclusive) does not end the run: its cards stay In progress, the round closes, and the next round repairs that batch first, with every reason, before any other wave. Only when rounds run out are its cards parked as unverified in Backlog, their changes kept on the run branch and named in the report. Blocked or stuck batch leads keep those outcomes. Checks grade every card: a card that passed goes to Done/verified even when the batch failed, unless it shares a file with a failing card, and the repair checks only the failing cards (the verified ones may not change).
 
-   Both `isolation=ticket` and `isolation=shared` use this gate, including a one-card wave. Reading and research cards keep their Work → Verify flow. No later wave starts while a batch is being validated.
+   Both `isolation=ticket` and `isolation=shared` use this gate, including a one-card wave. Reading and research cards keep their Work → Verify flow. With `isolation=ticket` the next wave codes in its own worktrees while a batch is being validated, and a card whose dependency is in that batch can start then; its integration waits for the batch. With `isolation=shared` no later wave starts while a batch is being validated.
 5. **Branch review.** Once the queue is empty, one reviewer checks the whole diff for missing work. It reuses the latest verified batch's suite/lint evidence when the commit and commands still match, otherwise it runs them. Its findings become cards for the next round. A defect in code the run committed is always a fix card with regression coverage, never a loose end.
 6. **Finish.** By default the branch and worktree stay as they are, without a question. With `approve=on`, you pick one: merge into your branch, push and open a PR, open a PR and merge when CI is green, or keep the branch. To discard the branch, type `Discard` (the card holds four options).
 7. **Land.** After either PR option, Deepwork watches the PR's checks (`gh pr checks --watch`, as a background job, for up to an hour). On green, the merge option squash-merges the PR and deletes the remote branch, and the plain option comments `CI green` on the run ticket. A repository with no checks counts as green. If a check fails and rounds remain, Deepwork reads the failed log, makes one `Fix CI: <check>` ticket, runs a round for it, pushes the fix and watches again. Otherwise it reports `CI: <state>, PR open` and keeps the worktree. It needs `gh`, signed in.

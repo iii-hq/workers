@@ -29,7 +29,7 @@ With a `Worktree:`, commit only explicit changed paths: `git add -- <paths>`, th
 
 ## Aggregate batch
 
-The task has exact `Batch`, `Range`, `Inputs`, and `Commit` lines. Read ticket R and every Batch card with `kanban::ticket::get`, including human comments, then fetch every Inputs state reference before changing files.
+The task has exact `Batch`, `Range`, `Inputs`, and `Commit` lines. Read every Batch card with `kanban::ticket::get`, including human comments, then fetch every Inputs state reference before changing files. Never change a path of a card on a `Verified:` line: it is already verified.
 
 On the first attempt, add all coverage required by each card's `Tests:` line and Acceptance. On a Retry, address every supplied reason by repairing tests or code only within the union of all Batch cards' `Files:`. Never weaken, skip, delete, or relax a test or acceptance criterion. Do not alter unrelated files.
 
