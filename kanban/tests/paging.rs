@@ -258,3 +258,34 @@ fn the_schemas_carry_offset_and_total() {
             .contains(&json!("total"))
     );
 }
+
+#[test]
+fn a_read_says_the_newest_write_it_holds() {
+    let mut board = board(3);
+    let config = config();
+    let view = board_view(&board, &config, &BoardGetInput::default());
+    let newest = board
+        .tickets
+        .values()
+        .map(|ticket| ticket.updated_at.clone())
+        .max()
+        .unwrap();
+    assert_eq!(view.as_of, newest);
+    // The next write is stamped after it, whatever the clock says.
+    let stamp = iii_kanban::board::next_at(&board, 0);
+    assert!(stamp > view.as_of, "{stamp} is after {}", view.as_of);
+    // A deleted ticket's write counts too; an empty board is before every write.
+    let id = board.tickets.keys().next().unwrap().clone();
+    iii_kanban::board::delete_ticket(&mut board, &id, "user", &at(500));
+    assert_eq!(
+        board_view(&board, &config, &BoardGetInput::default()).as_of,
+        at(500)
+    );
+    assert_eq!(
+        board_view(&Board::empty(), &config, &BoardGetInput::default()).as_of,
+        "1970-01-01T00:00:00.000Z"
+    );
+    let schema =
+        serde_json::to_value(schemars::schema_for!(iii_kanban::functions::BoardView)).unwrap();
+    assert!(schema["properties"]["as_of"].is_object());
+}

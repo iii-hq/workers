@@ -473,7 +473,12 @@ pub struct BoardView {
     pub id_prefix: String,
     pub data_path_resolved: String,
     pub board_file: String,
+    /// When this read was answered.
     pub updated_at: String,
+    /// The newest `updated_at` among the tickets this read holds (deleted ones included), or the Unix epoch on an
+    /// empty board. Every write is stamped after the newest one on the board, so a write stamped after `as_of` is
+    /// not in this read, even when it was stamped before `updated_at` (the read does not wait for writes in flight).
+    pub as_of: String,
     /// Every project, archived ones included, by name.
     pub projects: Vec<ProjectView>,
     /// Every release, by target date (none last) then name.
@@ -573,6 +578,21 @@ pub struct ActivityList {
 }
 
 /* ── plumbing ─────────────────────────────────────────────────────────── */
+
+/// The `updated_at` of the newest ticket write on `board` (compared as instants, like `next_at`; a value that
+/// does not parse counts as the oldest), or the Unix epoch on an empty board.
+pub fn newest_write(board: &Board) -> String {
+    board
+        .tickets
+        .values()
+        .max_by_key(|ticket| {
+            chrono::DateTime::parse_from_rfc3339(&ticket.updated_at)
+                .map(|at| at.timestamp_millis())
+                .unwrap_or(i64::MIN)
+        })
+        .map(|ticket| ticket.updated_at.clone())
+        .unwrap_or_else(|| "1970-01-01T00:00:00.000Z".to_string())
+}
 
 fn not_found(id: &str) -> Error {
     Error::Handler(format!("ticket not found: {id}"))
@@ -818,6 +838,7 @@ pub fn board_view(board: &Board, config: &KanbanConfig, input: &BoardGetInput) -
         data_path_resolved: config.data_path_resolved().display().to_string(),
         board_file: config.board_file().display().to_string(),
         updated_at: board::now(),
+        as_of: newest_write(board),
         projects: plan::project_views(board, &context, true),
         releases: plan::release_views(board, &context),
     }
