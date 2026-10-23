@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0
+
+- Dev cards run one Code phase each. The existing wave is the batch boundary: integrate successful cards, write their regression tests together, then verify and review the combined result. `Tests:` replaces `Test first:`; test-first proof is no longer required. Plain reading/research cards keep their existing flow.
+- Cards remain In progress until their batch passes, for both isolation modes. A batch rejection retries aggregate repairs and checks, without replaying all implementations. Exhausted or inconclusive checks park the integrated cards as unverified; their changes and evidence remain on the run branch. With `verify=off`, tests are written but not checked, and cards are accepted.
+- Identical verification commands run once per batch. The branch review reuses suite/lint evidence only for the same commit and commands. `release=` remains board filing; it does not collect unrelated release cards for validation.
+- Finish existing runs before updating: the phase and card contracts changed. This update changes the kit sources; an installed kit needs to be updated separately.
+
 ## 0.4.4
 
 - The docs and prompts no longer say a stop leaves `shell::exec_bg` jobs running. A harness and ide that reap background jobs on stop kill the stopped tree's jobs (MOT-5407); with older ones they still keep running, so workers are still told to `shell::kill` a job before their write. The orchestrator knows a parked lead whose job is killed may wake sooner.
