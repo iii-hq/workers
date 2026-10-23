@@ -78,7 +78,7 @@
         ]
       },
       "daily_cost_cap_usd": {
-        "description": "US dollars of known investigation cost per UTC day after which automatic observation admits nothing until the next day; absent means no cap. A manual `eval::analyze-session` is never refused by it.",
+        "description": "US dollars of known investigation cost per UTC day after which automatic observation admits nothing until the next day; absent means no cap.",
         "format": "double",
         "type": [
           "number",

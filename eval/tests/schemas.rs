@@ -14,7 +14,6 @@ fn catalog_matches_the_registered_surface() {
         [
             "eval::configure",
             "eval::config",
-            "eval::analyze-session",
             "eval::start",
             "eval::list",
             "eval::status",
@@ -28,7 +27,6 @@ fn catalog_matches_the_registered_surface() {
             "eval::recurrence",
             "eval::reproduce",
             "eval::step",
-            "eval::on-turn-completed",
             "eval::sweep",
         ]
     );

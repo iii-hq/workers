@@ -560,6 +560,12 @@ fn suggestion(evidence_entry: &str) -> Value {
     })
 }
 
+/// An analysis `Harness::end_turn` seeded or found.
+struct Seeded {
+    evaluation_id: Option<String>,
+    reused: bool,
+}
+
 struct Harness {
     world: Arc<Mutex<World>>,
     deps: Deps,
@@ -676,15 +682,133 @@ impl Harness {
         .await
     }
 
-    async fn end_turn(&self, session_id: &str, turn_id: &str) -> WakeResponseV1 {
-        runtime::wake(
-            &self.deps,
-            serde_json::from_value(json!({"session_id": session_id, "turn_id": turn_id,
-                "terminal": true, "status": "completed", "timestamp": ids::now_ms()}))
-            .unwrap(),
+    /// Stands in for the admission the worker no longer has (it never
+    /// consults or admits user chats): an analysis of the turn is seeded in
+    /// state and its first step enqueued, so the rest of the pipeline is
+    /// still exercised. The same turn again reuses its analysis. An analyst
+    /// session's turn re-enqueues its analysis' current step, as the
+    /// harness' wake-up of the investigation does.
+    async fn end_turn(&self, session_id: &str, turn_id: &str) -> Seeded {
+        if let Some(evaluation_id) = session_id.strip_prefix(ids::ANALYST_PREFIX) {
+            if let Some(record) = state::get_record(&self.iii, evaluation_id)
+                .await
+                .unwrap()
+                .filter(|record| !record.status.is_terminal())
+            {
+                eval::queue::enqueue_step(&self.iii, evaluation_id, record.step)
+                    .await
+                    .unwrap();
+            }
+            return Seeded {
+                evaluation_id: Some(evaluation_id.into()),
+                reused: true,
+            };
+        }
+        self.seed(session_id, turn_id, AnalysisOriginV1::Automatic, false)
+            .await
+    }
+
+    async fn seed(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        origin: AnalysisOriginV1,
+        reanalyze: bool,
+    ) -> Seeded {
+        let observation_key = ids::observation_key(session_id, turn_id);
+        let mut supersedes = None;
+        if let Some(index) = state::get_observation(&self.iii, &observation_key)
+            .await
+            .unwrap()
+        {
+            if !reanalyze {
+                return Seeded {
+                    evaluation_id: Some(index.evaluation_id),
+                    reused: true,
+                };
+            }
+            supersedes = Some(index.evaluation_id);
+        }
+        let config = state::get_config(&self.iii)
+            .await
+            .unwrap()
+            .expect("configure the monitor before seeding an analysis");
+        let now = ids::now_ms();
+        let record = AnalysisRecordV1 {
+            schema_version: RECORD_SCHEMA_VERSION,
+            evaluation_id: ids::evaluation_id(),
+            observation_key: observation_key.clone(),
+            origin,
+            session_id: session_id.into(),
+            turn_id: turn_id.into(),
+            source_title: None,
+            model: config.model.clone(),
+            code_root: config.code_repository.clone(),
+            config_revision: config.revision.clone(),
+            rules_version: RULES_VERSION.into(),
+            criteria_version: runtime::criteria_version(),
+            status: EvalStatusV1::Queued,
+            step: 0,
+            created_at: now,
+            updated_at: now,
+            deadline: now + 30 * 60 * 1_000,
+            observe_since: config
+                .enabled_since
+                .filter(|_| config.enabled)
+                .unwrap_or(now),
+            completed_at: None,
+            counters: AnalysisCountersV1::default(),
+            stages: vec![StageTimeV1 {
+                status: EvalStatusV1::Queued,
+                at: now,
+            }],
+            usage: MonitorUsageV1::default(),
+            coverage: None,
+            routing: None,
+            pending_reason: None,
+            judge_call: None,
+            analyst: None,
+            failure: None,
+            supersedes,
+            harness_version: match origin {
+                AnalysisOriginV1::Automatic => self.harness_version(),
+                AnalysisOriginV1::Manual => None,
+            },
+            signals: BTreeMap::new(),
+        };
+        state::put_record(&self.iii, &record).await.unwrap();
+        state::put_observation(
+            &self.iii,
+            &state::ObservationIndexV1 {
+                observation_key,
+                session_id: session_id.into(),
+                turn_id: turn_id.into(),
+                evaluation_id: record.evaluation_id.clone(),
+                admitted_at: now,
+            },
         )
         .await
-        .unwrap()
+        .unwrap();
+        eval::queue::enqueue_step(&self.iii, &record.evaluation_id, 0)
+            .await
+            .unwrap();
+        Seeded {
+            evaluation_id: Some(record.evaluation_id),
+            reused: false,
+        }
+    }
+
+    /// The version of this namespace's Harness the engine lists, which an
+    /// automatic analysis ran on.
+    fn harness_version(&self) -> Option<String> {
+        let namespace = self.iii.namespace().unwrap_or_else(|| "default".into());
+        let workers = self.world().workers.clone()?;
+        workers["workers"]
+            .as_array()?
+            .iter()
+            .find(|worker| worker["name"] == "harness" && worker["namespace"] == namespace.as_str())
+            .and_then(|worker| worker["version"].as_str())
+            .map(str::to_string)
     }
 
     async fn result(&self, evaluation_id: &str) -> EvalResultResponseV1 {
@@ -724,45 +848,12 @@ async fn full_flow_with_pending_children_lost_reply_and_validated_references() {
     ]});
     let h = Harness::start(world).await;
 
-    // Inactive by default: no configuration, nothing admitted.
-    assert_eq!(
-        h.end_turn(ROOT, TURN).await.outcome,
-        WakeOutcomeV1::Disabled
-    );
-    h.configure(false).await;
-    assert_eq!(
-        h.end_turn(ROOT, TURN).await.outcome,
-        WakeOutcomeV1::Disabled
-    );
     let config = h.configure(true).await;
-
-    // Progress and descendant events never admit an analysis.
-    let progress = runtime::wake(
-        &h.deps,
-        serde_json::from_value(json!({"session_id": ROOT, "turn_id": "t_x", "terminal": false}))
-            .unwrap(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(progress.outcome, WakeOutcomeV1::Progress);
-    let child = runtime::wake(
-        &h.deps,
-        serde_json::from_value(
-            json!({"session_id": CHILD, "turn_id": "t_child", "terminal": true,
-            "parent": {"session_id": ROOT, "turn_id": TURN, "function_call_id": "c9"}}),
-        )
-        .unwrap(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(child.outcome, WakeOutcomeV1::Descendant);
-
     let admitted = h.end_turn(ROOT, TURN).await;
-    assert_eq!(admitted.outcome, WakeOutcomeV1::Admitted);
+    assert!(!admitted.reused);
     let evaluation_id = admitted.evaluation_id.unwrap();
-    // A redelivered event reuses the analysis.
     let again = h.end_turn(ROOT, TURN).await;
-    assert_eq!(again.outcome, WakeOutcomeV1::Reused);
+    assert!(again.reused);
     assert_eq!(again.evaluation_id.as_deref(), Some(evaluation_id.as_str()));
     assert_eq!(h.records(), 1);
 
@@ -788,17 +879,11 @@ async fn full_flow_with_pending_children_lost_reply_and_validated_references() {
     assert_eq!(analyst.session_id, ids::analyst_session(&evaluation_id));
     assert!(analyst.turn_id.is_some());
 
-    // The investigation's own turn-completed wakes it, never observes it.
-    let own = h
-        .end_turn(&analyst.session_id, analyst.turn_id.as_deref().unwrap())
+    // The investigation's own turn completion only wakes it.
+    h.end_turn(&analyst.session_id, analyst.turn_id.as_deref().unwrap())
         .await;
-    assert_eq!(own.outcome, WakeOutcomeV1::MonitorSession);
     h.drain().await;
-    assert_eq!(
-        h.records(),
-        1,
-        "the monitor's own session is never admitted"
-    );
+    assert_eq!(h.records(), 1);
 
     let EvalResultResponseV1 { record, assets, .. } = h.result(&evaluation_id).await;
     assert_eq!(
@@ -1006,15 +1091,9 @@ async fn unavailable_providers_fail_their_stage_and_keep_the_evidence() {
 
     // A malformed Jev answer is a failure too, never "expected behavior".
     h.world().judge = JudgeMode::Malformed;
-    let again = runtime::analyze_session(
-        &h.deps,
-        serde_json::from_value(json!({"session_id": ROOT, "reanalyze": true})).unwrap(),
-    )
-    .await
-    .unwrap();
-    assert!(!again.reused);
+    let again = reanalyze(&h).await;
     h.drain().await;
-    let record = h.result(&again.evaluation_id).await.record;
+    let record = h.result(&again).await.record;
     assert_eq!(record.failure.unwrap().code, "judge_invalid_response");
 
     // The chosen LLM failing is reported at the investigating stage.
@@ -1023,19 +1102,14 @@ async fn unavailable_providers_fail_their_stage_and_keep_the_evidence() {
         world.judge = JudgeMode::Answer("needs_investigation", 0.9);
         world.analyst_fails = true;
     }
-    let third = runtime::analyze_session(
-        &h.deps,
-        serde_json::from_value(json!({"session_id": ROOT, "reanalyze": true})).unwrap(),
-    )
-    .await
-    .unwrap();
+    let third = reanalyze(&h).await;
     h.drain().await;
-    let record = h.result(&third.evaluation_id).await.record;
+    let record = h.result(&third).await.record;
     let analyst = record.analyst.unwrap();
     h.end_turn(&analyst.session_id, analyst.turn_id.as_deref().unwrap())
         .await;
     h.drain().await;
-    let EvalResultResponseV1 { record, assets, .. } = h.result(&third.evaluation_id).await;
+    let EvalResultResponseV1 { record, assets, .. } = h.result(&third).await;
     let failure = record.failure.unwrap();
     assert_eq!(
         (failure.stage, failure.code.as_str()),
@@ -1138,7 +1212,7 @@ async fn recovery_republishes_lost_indexes_and_deadlines_fail_pending_work() {
     assert_eq!(recovered.reconciled, 1);
     assert_eq!(recovered.requeued, 1);
     let again = h.end_turn(ROOT, TURN).await;
-    assert_eq!(again.outcome, WakeOutcomeV1::Reused);
+    assert!(again.reused);
     assert_eq!(h.records(), 1);
 
     // Pending past the deadline: the sweep fails it with the stage and reason.
@@ -1273,75 +1347,6 @@ async fn validation_links_reference_e2e_executions_without_a_verdict() {
     let EvalResultResponseV1 { record, assets, .. } = h.result(&evaluation_id).await;
     assert_eq!(record.counters.validations, 1);
     assert_eq!(assets.validations, [link]);
-}
-
-#[tokio::test]
-async fn manual_analysis_rules() {
-    let h = Harness::start(World::new()).await;
-    let analyze = |session_id: &str, reanalyze: bool| {
-        serde_json::from_value::<AnalyzeSessionRequestV1>(
-            json!({"session_id": session_id, "reanalyze": reanalyze}),
-        )
-        .unwrap()
-    };
-    // Needs a configured model, works while paused.
-    assert!(runtime::analyze_session(&h.deps, analyze(ROOT, false))
-        .await
-        .is_err());
-    h.configure(false).await;
-    let first = runtime::analyze_session(&h.deps, analyze(ROOT, false))
-        .await
-        .unwrap();
-    assert!(!first.reused);
-    let same = runtime::analyze_session(&h.deps, analyze(ROOT, false))
-        .await
-        .unwrap();
-    assert!(same.reused);
-    assert_eq!(same.evaluation_id, first.evaluation_id);
-    // Reanalysis waits for the previous analysis to end.
-    assert!(runtime::analyze_session(&h.deps, analyze(ROOT, true))
-        .await
-        .is_err());
-    // The monitor's own sessions are never analyzed.
-    assert!(
-        runtime::analyze_session(&h.deps, analyze(&ids::analyst_session("eval_x"), false))
-            .await
-            .is_err()
-    );
-    // A still-running source is refused.
-    h.world()
-        .status
-        .insert("s_busy".into(), status("s_busy", "t_busy", "running", None));
-    assert!(runtime::analyze_session(&h.deps, analyze("s_busy", false))
-        .await
-        .is_err());
-    // A deleted analysis keeps blocking automatic re-admission.
-    h.drain().await;
-    let record = h.result(&first.evaluation_id).await.record;
-    assert_eq!(
-        record.status,
-        EvalStatusV1::Investigating,
-        "the default Jev answer is needs_investigation"
-    );
-    runtime::cancel(
-        &h.deps,
-        EvaluationIdRequestV1 {
-            evaluation_id: first.evaluation_id.clone(),
-        },
-    )
-    .await
-    .unwrap();
-    runtime::delete(
-        &h.deps,
-        EvaluationIdRequestV1 {
-            evaluation_id: first.evaluation_id.clone(),
-        },
-    )
-    .await
-    .unwrap();
-    h.configure(true).await;
-    assert_eq!(h.end_turn(ROOT, TURN).await.outcome, WakeOutcomeV1::Reused);
-    assert_eq!(h.records(), 0);
 }
 
 #[tokio::test]
@@ -1492,32 +1497,9 @@ async fn a_turn_superseded_before_capture_joins_the_next_window() {
 }
 
 #[tokio::test]
-async fn capacity_rejections_and_provider_checks_are_reported() {
+async fn provider_checks_are_reported() {
     let h = Harness::start(World::new()).await;
     h.configure(true).await;
-    let admitted = h.end_turn(ROOT, TURN).await.evaluation_id.unwrap();
-    {
-        // Fill the monitor up to its cap of unfinished analyses.
-        let mut world = h.world();
-        let record = world
-            .state
-            .get(&(state::ANALYSIS_SCOPE.to_string(), admitted))
-            .unwrap()
-            .clone();
-        for index in 0..runtime::limits().max_active_analyses {
-            let mut copy = record.clone();
-            copy["evaluation_id"] = json!(format!("eval_filler_{index}"));
-            world.state.insert(
-                (
-                    state::ANALYSIS_SCOPE.to_string(),
-                    format!("eval_filler_{index}"),
-                ),
-                copy,
-            );
-        }
-    }
-    let rejected = h.end_turn(ROOT, "t_more").await;
-    assert_eq!(rejected.outcome, WakeOutcomeV1::AtCapacity);
     let monitor = runtime::monitor_state(
         &h.deps,
         MonitorStateRequestV1 {
@@ -1526,12 +1508,6 @@ async fn capacity_rejections_and_provider_checks_are_reported() {
     )
     .await
     .unwrap();
-    let rejection = monitor.last_rejection.unwrap();
-    assert_eq!(
-        (rejection.session_id.as_str(), rejection.turn_id.as_str()),
-        (ROOT, "t_more")
-    );
-    assert_eq!(rejection.reason, RejectionReasonV1::AtCapacity);
     let triage = monitor.triage.unwrap();
     assert!(triage.available);
     assert_eq!(triage.models, ["jev-test-1"]);
@@ -1582,14 +1558,19 @@ async fn investigated(h: &Harness, evaluation_id: &str) -> EvalResultResponseV1 
     h.result(evaluation_id).await
 }
 
+/// A manual reanalysis of the root session's latest turn.
 async fn reanalyze(h: &Harness) -> String {
-    runtime::analyze_session(
-        &h.deps,
-        serde_json::from_value(json!({"session_id": ROOT, "reanalyze": true})).unwrap(),
-    )
-    .await
-    .unwrap()
-    .evaluation_id
+    let turn_id = h
+        .world()
+        .status
+        .get(ROOT)
+        .and_then(|status| status["turn_id"].as_str())
+        .unwrap_or(TURN)
+        .to_string();
+    h.seed(ROOT, &turn_id, AnalysisOriginV1::Manual, true)
+        .await
+        .evaluation_id
+        .unwrap()
 }
 
 #[tokio::test]
@@ -1935,7 +1916,7 @@ async fn cost_block(h: &Harness) -> MonitorCostV1 {
 }
 
 #[tokio::test]
-async fn the_daily_cost_cap_stops_automatic_admission_and_only_that() {
+async fn the_daily_cost_cap_is_validated_and_reported() {
     let h = Harness::start(World::new()).await;
     for invalid in [json!(0), json!(-1.5)] {
         let error = configure_capped(&h, invalid).await.unwrap_err();
@@ -1979,11 +1960,6 @@ async fn the_daily_cost_cap_stops_automatic_admission_and_only_that() {
     let cost = cost_block(&h).await;
     assert_eq!((cost.today_usd, cost.today_unknown), (0.06, 1));
     assert!(!cost.capped, "0.06 is under the 0.10 cap");
-    // Still under the cap: automatic observation admits another turn.
-    assert_eq!(
-        h.end_turn(ROOT, "t_before").await.outcome,
-        WakeOutcomeV1::Admitted
-    );
 
     let third = reanalyze(&h).await;
     investigated(&h, &third).await;
@@ -2000,35 +1976,6 @@ async fn the_daily_cost_cap_stops_automatic_admission_and_only_that() {
             stats.unknown
         ),
         (2, Some(0.06), Some(0.06), Some(0.06), 1)
-    );
-
-    // Capped: a new turn is not admitted, and the reason is recorded.
-    let records = h.records();
-    let refused = h.end_turn(ROOT, "t_next").await;
-    assert_eq!(refused.outcome, WakeOutcomeV1::CostCap);
-    assert_eq!(refused.evaluation_id, None);
-    assert_eq!(h.records(), records);
-    let rejection = runtime::monitor_state(&h.deps, MonitorStateRequestV1::default())
-        .await
-        .unwrap()
-        .last_rejection
-        .unwrap();
-    assert_eq!(
-        (rejection.turn_id.as_str(), rejection.reason),
-        ("t_next", RejectionReasonV1::CostCap)
-    );
-    // A redelivered event of an admitted turn is still reused, not refused.
-    assert_eq!(h.end_turn(ROOT, TURN).await.outcome, WakeOutcomeV1::Reused);
-    // A manual analysis is the user's choice: never refused by the cap.
-    let manual = reanalyze(&h).await;
-    assert!(manual.starts_with("eval_"));
-
-    // Raising the cap resumes automatic observation.
-    configure_capped(&h, json!(5)).await.unwrap();
-    assert!(!cost_block(&h).await.capped);
-    assert_eq!(
-        h.end_turn(ROOT, "t_next").await.outcome,
-        WakeOutcomeV1::Admitted
     );
 }
 
@@ -2073,12 +2020,6 @@ async fn the_cap_is_checked_where_the_money_is_spent_and_deleting_gives_nothing_
     }
     let cost = cost_block(&h).await;
     assert_eq!((cost.today_usd, cost.capped), (0.12, true));
-    assert_eq!(
-        h.end_turn(ROOT, "t_after").await.outcome,
-        WakeOutcomeV1::CostCap
-    );
-    // A manual analysis is still the user's choice.
-    assert!(reanalyze(&h).await.starts_with("eval_"));
 }
 
 #[tokio::test]
@@ -2155,19 +2096,11 @@ async fn a_reanalysis_records_what_it_replaces_and_the_list_filters_by_turn() {
 }
 
 #[tokio::test]
-async fn admission_records_the_harness_version_and_collection_the_signals() {
+async fn collection_records_the_signals() {
     let h = Harness::start(World::new()).await;
     h.configure(true).await;
-    // Another namespace runs another Harness: only this one's counts.
-    let namespace = h.iii.namespace().unwrap_or_else(|| "default".into());
-    h.world().workers = Some(json!({"workers": [
-        {"name": "harness", "namespace": "elsewhere", "version": "9.9.9"},
-        {"name": "eval", "namespace": namespace, "version": "0.2.16"},
-        {"name": "harness", "namespace": namespace, "version": "1.8.42"},
-    ]}));
     let evaluation_id = h.end_turn(ROOT, TURN).await.evaluation_id.unwrap();
     let admitted = h.result(&evaluation_id).await.record;
-    assert_eq!(admitted.harness_version.as_deref(), Some("1.8.42"));
     assert!(admitted.signals.is_empty(), "nothing is collected yet");
 
     h.drain().await;
@@ -2189,24 +2122,6 @@ async fn admission_records_the_harness_version_and_collection_the_signals() {
         "{:?}",
         record.signals
     );
-
-    // An engine that cannot list its workers never blocks an admission.
-    h.world().workers = None;
-    runtime::cancel(
-        &h.deps,
-        EvaluationIdRequestV1 {
-            evaluation_id: evaluation_id.clone(),
-        },
-    )
-    .await
-    .unwrap();
-    let again = reanalyze(&h).await;
-    let record = h.result(&again).await.record;
-    assert_eq!(record.harness_version, None);
-    assert!(serde_json::to_value(&record)
-        .unwrap()
-        .get("harness_version")
-        .is_none());
 }
 
 #[tokio::test]
@@ -3894,53 +3809,17 @@ async fn a_replay_reproduces_the_signal_and_the_proposed_change_removes_it() {
 }
 
 #[tokio::test]
-async fn only_user_chats_are_analyzed_automatically_and_the_rest_by_hand() {
-    // What session-manager holds for each session the monitor must not observe
-    // on its own, as measured: an E2E run, a sentinel investigation and the
-    // monitor's own session (both stamped `console` by the console), an E2E
-    // from before the kind existed, and a scripted session with no surface.
-    let cases = [
-        ("e2e", json!({"e2e_run_id": "r1", "e2e_scenario": "kanban"})),
-        (
-            "automation",
-            json!({"sentinel": true, "sentinel_group_id": "grp_1", "surface": "console"}),
-        ),
-        (
-            "automation",
-            json!({"origin": "eval_monitor", "source_session_id": "s", "surface": "console"}),
-        ),
-        (
-            "user",
-            json!({"e2e_run_id": "r1", "e2e_execution_kind": "harness_turn", "surface": "console"}),
-        ),
-        ("user", json!({"parent_session_id": "p", "depth": 1})),
-        ("user", json!({})),
-        ("user", json!({"surface": "cli"})),
-    ];
-    for (kind, metadata) in cases {
-        let mut world = World::new();
-        world.sessions.insert(ROOT.into(), (kind, metadata.clone()));
-        let h = Harness::start(world).await;
-        h.configure(true).await;
-        let skipped = h.end_turn(ROOT, TURN).await;
-        assert_eq!(
-            skipped.outcome,
-            WakeOutcomeV1::NotUserChat,
-            "{kind} {metadata}"
-        );
-        assert!(skipped.evaluation_id.is_none());
-        assert_eq!(h.records(), 0, "{kind} {metadata}: nothing admitted");
-        // A manual analysis still covers it.
-        let manual = runtime::analyze_session(
-            &h.deps,
-            serde_json::from_value(json!({"session_id": ROOT})).unwrap(),
-        )
-        .await
-        .unwrap();
-        assert!(!manual.reused, "{kind} {metadata}");
-        assert_eq!(h.records(), 1, "{kind} {metadata}");
+async fn user_chats_are_never_admitted() {
+    // The worker no longer observes chats: no admission entry is offered, and
+    // a finished chat from any client, configured or not, never becomes an
+    // analysis nor makes the worker read its session record.
+    let offered: Vec<&str> = eval::surface::catalog()
+        .iter()
+        .map(|spec| spec.function_id)
+        .collect();
+    for removed in ["eval::on-turn-completed", "eval::analyze-session"] {
+        assert!(!offered.contains(&removed), "{removed} in {offered:?}");
     }
-    // A plain chat from each client, with the keys it writes.
     for metadata in [
         json!({"surface": "console", "model": "anthropic::m", "fs_scope": {"root": "/w"},
             "agent_profile": {"id": "default"}}),
@@ -3952,17 +3831,23 @@ async fn only_user_chats_are_analyzed_automatically_and_the_rest_by_hand() {
             .sessions
             .insert(ROOT.into(), ("user", metadata.clone()));
         let h = Harness::start(world).await;
+        runtime::sweep(&h.deps).await.unwrap();
         h.configure(true).await;
-        assert_eq!(
-            h.end_turn(ROOT, TURN).await.outcome,
-            WakeOutcomeV1::Admitted,
-            "{metadata}"
+        runtime::recover(&h.deps).await.unwrap();
+        runtime::sweep(&h.deps).await.unwrap();
+        h.drain().await;
+        assert_eq!(h.records(), 0, "{metadata}: nothing admitted");
+        let world = h.world();
+        assert!(
+            world.calls_to("session::get").is_empty(),
+            "{metadata}: the session record is never consulted"
         );
+        assert!(world.calls_to("eval::step").is_empty(), "{metadata}");
     }
 }
 
 #[tokio::test]
-async fn replay_spend_is_reported_but_never_caps_automatic_observation() {
+async fn replay_spend_is_reported_but_never_reaches_the_cap() {
     let (h, evaluation_id) = replayable(World::new(), turn_record(TURN)).await;
     // A cap each of the three samples (0.001) would pass together.
     configure_capped(&h, json!(0.002)).await.unwrap();
@@ -3996,11 +3881,6 @@ async fn replay_spend_is_reported_but_never_caps_automatic_observation() {
         (0.0, 1, 0)
     );
     assert_eq!((cost.cap_usd, cost.capped), (Some(0.002), false));
-    assert_eq!(
-        h.end_turn(ROOT, "t_after_replay").await.outcome,
-        WakeOutcomeV1::Admitted,
-        "replays spent more than the cap, and observation went on"
-    );
 
     // What an analysis spends still counts against the cap.
     h.world().cost_usd = Some(0.06);
@@ -4010,10 +3890,6 @@ async fn replay_spend_is_reported_but_never_caps_automatic_observation() {
     assert_eq!((cost.today_capture_usd, cost.capped), (0.06, true));
     assert!((cost.today_replay_usd - 0.003).abs() < 1e-9, "{cost:?}");
     assert!((cost.today_usd - 0.063).abs() < 1e-9, "{cost:?}");
-    assert_eq!(
-        h.end_turn(ROOT, "t_after_capture").await.outcome,
-        WakeOutcomeV1::CostCap
-    );
 }
 
 #[tokio::test]
