@@ -142,7 +142,7 @@ export const SANDBOX_BREAK_CASES: TestCase[] = [
         'sandbox write succeeds at 2 MiB despite 1 MiB host cap',
       );
       const calls = getCapturedCalls();
-      const writeCall = calls.find((c) => c.function_id === 'sandbox::fs::write');
+      const writeCall = calls.find((c) => c.function_id === 'sandbox-mock::fs::write');
       expect(writeCall !== undefined, 'mock received the sandbox write call');
     },
   },

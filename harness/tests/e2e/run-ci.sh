@@ -12,12 +12,10 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 harness_root=$(cd -- "$script_dir/../.." && pwd)
 repo_root=$(cd -- "$harness_root/.." && pwd)
 iii_bin_dir=$(cd -- "$(dirname -- "$III_BIN")" && pwd)
-for binary in iii iii-init iii-worker; do
-  [[ -x "$iii_bin_dir/$binary" ]] || {
-    echo "installed iii companion is not executable: $iii_bin_dir/$binary" >&2
-    exit 2
-  }
-done
+[[ -x "$iii_bin_dir/iii" ]] || {
+  echo "installed iii is not executable: $iii_bin_dir/iii" >&2
+  exit 2
+}
 export PATH="$iii_bin_dir:$PATH"
 artifacts_dir=${HARNESS_E2E_ARTIFACTS_DIR:-"$repo_root/target/harness-e2e"}
 e2e_bin=${HARNESS_E2E_BIN:-"$harness_root/target/release/harness-e2e"}

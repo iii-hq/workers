@@ -19,10 +19,11 @@ import { expect, expectEqual, type CaseContext, type TestCase } from './cases.ts
 //   3. teardown: the last case calls sandbox::stop on the shared
 //      sandbox.
 //
-// To run: the engine config (tests/e2e/config.yaml) must list
-// `iii-sandbox` under workers, and the host must support
-// hardware virtualization. See README §Sandbox-backed exec for the
-// host-virt requirement.
+// tests/e2e/config.yaml binds the `sandbox-mock` adapter, so the fs
+// cases go through the router while sandbox::create gets S301 and every
+// case here logs SKIP. A real VM run binds `sandbox-builtin` instead
+// (`sandbox: {adapter: sandbox-builtin}`) on a host with hardware
+// virtualization; see the README prerequisites.
 
 interface SandboxState {
   status: 'unknown' | 'available' | 'unavailable';

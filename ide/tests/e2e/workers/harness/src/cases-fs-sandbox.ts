@@ -15,11 +15,8 @@ let nextResponse: any = null;
 let nextErrorMessage: string | null = null;
 let sandboxWriteDrainedBytes: Buffer | null = null;
 let sandboxReadBytesToServe: Buffer | null = null;
-let mockSdk: IIIClient | null = null;
-let mockRefs: Array<{ unregister(): void }> = [];
 
 export function resetMocks(): void {
-  refreshSandboxMocks();
   captured.length = 0;
   nextResponse = null;
   nextErrorMessage = null;
@@ -49,25 +46,19 @@ export function getCapturedCalls(): readonly CapturedCall[] {
 
 export const SANDBOX_ID = '11111111-2222-3333-4444-555555555555';
 
-export function setupSandboxMocks(iii: IIIClient): void {
-  mockSdk = iii;
-  refreshSandboxMocks();
-}
-
-function refreshSandboxMocks(): void {
-  const sdk = mockSdk;
-  if (sdk === null) return;
-  // The real iii-sandbox worker can register the same fs ids after the harness
-  // starts; re-own them before each mock case so wire-shape tests stay isolated.
-  for (const ref of mockRefs) {
-    ref.unregister();
-  }
-  mockRefs = [];
-
+// The harness is the `sandbox-mock` adapter (config.yaml binds it): ide calls
+// sandbox::fs::* in `default` and the engine's router forwards each call to
+// the sandbox-mock::fs::* id registered here, in the harness's namespace.
+export function setupSandboxMocks(sdk: IIIClient): void {
+  sdk.registerFunction('sandbox-mock::adapter::info', async () => ({
+    adapter: 'sandbox-mock',
+    adapter_version: '0.0.0',
+    contract: { major: 1, minor: 0 },
+  }));
   const simpleOps = ['ls', 'stat', 'mkdir', 'rm', 'chmod', 'mv', 'grep', 'sed'];
   for (const op of simpleOps) {
-    const ref = sdk.registerFunction(`sandbox::fs::${op}`, async (payload: any) => {
-      captured.push({ function_id: `sandbox::fs::${op}`, payload });
+    sdk.registerFunction(`sandbox-mock::fs::${op}`, async (payload: any) => {
+      captured.push({ function_id: `sandbox-mock::fs::${op}`, payload });
       if (nextErrorMessage !== null) {
         const m = nextErrorMessage;
         nextErrorMessage = null;
@@ -77,10 +68,9 @@ function refreshSandboxMocks(): void {
       nextResponse = null;
       return r ?? {};
     });
-    mockRefs.push(ref);
   }
-  mockRefs.push(sdk.registerFunction('sandbox::fs::write', async (payload: any) => {
-    captured.push({ function_id: 'sandbox::fs::write', payload });
+  sdk.registerFunction('sandbox-mock::fs::write', async (payload: any) => {
+    captured.push({ function_id: 'sandbox-mock::fs::write', payload });
     sandboxWriteDrainedBytes = null;
     if (nextErrorMessage !== null) {
       const m = nextErrorMessage;
@@ -93,9 +83,9 @@ function refreshSandboxMocks(): void {
     const r = nextResponse;
     nextResponse = null;
     return r ?? { bytes_written: drained.length, path: payload.path };
-  }));
-  mockRefs.push(sdk.registerFunction('sandbox::fs::read', async (payload: any) => {
-    captured.push({ function_id: 'sandbox::fs::read', payload });
+  });
+  sdk.registerFunction('sandbox-mock::fs::read', async (payload: any) => {
+    captured.push({ function_id: 'sandbox-mock::fs::read', payload });
     if (nextErrorMessage !== null) {
       const m = nextErrorMessage;
       nextErrorMessage = null;
@@ -122,14 +112,11 @@ function refreshSandboxMocks(): void {
         mtime: 1700000000,
       }
     );
-  }));
-  // NOTE: we deliberately do NOT mock `sandbox::exec` here. The
-  // exec-side e2e cases (cases-exec-sandbox.ts) drive the *real*
-  // iii-sandbox worker so the test exercises the full
-  // shell -> sandbox::exec -> microVM -> response path, not just
-  // shell's wire shape. The fs::* mocks above remain because the
-  // fs-sandbox cases test wire-level forwarding shape only and would
-  // otherwise need a real sandbox per case (slow cold-boot churn).
+  });
+  // NOTE: no sandbox-mock::create / exec / stop. The exec-side cases
+  // (cases-exec-sandbox.ts) need a real VM: here sandbox::create gets S301
+  // and they SKIP; a real VM run binds sandbox-builtin instead. The fs
+  // mocks test wire-level forwarding shape only, without a VM per case.
 }
 
 export const FS_SANDBOX_CASES: TestCase[] = [
@@ -149,7 +136,7 @@ export const FS_SANDBOX_CASES: TestCase[] = [
       expectEqual(r.entries.length, 1, 'response.entries len');
       expectEqual(r.entries[0].name, 'a.txt', 'forwarded entry name');
       expectEqual(captured.length, 1, 'mock invocation count');
-      expectEqual(captured[0].function_id, 'sandbox::fs::ls', 'forwarded function id');
+      expectEqual(captured[0].function_id, 'sandbox-mock::fs::ls', 'forwarded function id');
       expectEqual(captured[0].payload.sandbox_id, SANDBOX_ID, 'sandbox_id injected');
       expectEqual(captured[0].payload.path, '/x', 'path forwarded');
     },

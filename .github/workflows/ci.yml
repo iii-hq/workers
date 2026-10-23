@@ -12,7 +12,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   # Atomic worker initialization requires configuration::ensure (MOT-4736).
-  III_RELEASE_TAG: 'iii/v0.24.0-rc.2'
+  III_RELEASE_TAG: 'iii/v0.25.0'
 
 jobs:
   scripts-tests:
