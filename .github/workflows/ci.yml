@@ -466,17 +466,6 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
 
-      # The copied fixtures pin this worker's wire shape to the contract's.
-      # Comparing them with the contract's own copies on iii main keeps a
-      # later 1.x from shipping a shape the contract has moved past.
-      - name: Contract drift check
-        run: |
-          set -euo pipefail
-          for f in sandbox_error_codes.json wire_examples.json; do
-            curl -fsSL "https://raw.githubusercontent.com/iii-hq/iii/main/crates/iii-sandbox-contract/tests/fixtures/$f" \
-              | diff -u - "tests/fixtures/$f"
-          done
-
       - name: Install libcap-ng (sandbox-builtin)
         run: |
           sudo apt-get install -y libcap-ng-dev \
@@ -512,6 +501,18 @@ jobs:
         run: |
           III_BIN="$III_ENGINE_BIN" ADAPTER_BIN=target/debug/sandbox-builtin \
             WORK="$RUNNER_TEMP/sandbox-isolation" bash scripts/sandbox-isolation-e2e.sh
+
+      # The copied fixtures pin this worker's wire shape to the contract's.
+      # Comparing them with the contract's own copies on iii main keeps a
+      # later 1.x from shipping a shape the contract has moved past. It runs
+      # last so a drift (or a contract not on main yet) never hides the VM results.
+      - name: Contract drift check
+        run: |
+          set -euo pipefail
+          for f in sandbox_error_codes.json wire_examples.json; do
+            curl -fsSL "https://raw.githubusercontent.com/iii-hq/iii/main/crates/iii-sandbox-contract/tests/fixtures/$f" \
+              | diff -u - "tests/fixtures/$f"
+          done
 
       - name: Upload isolation e2e logs
         if: failure()
