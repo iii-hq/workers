@@ -1,11 +1,13 @@
 //! Worker boot and shutdown wiring.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::{IIIClient, RegisterTriggerType};
 use serde::Deserialize;
 use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
 
 use crate::adapter::{QueueAdapter, SwappableAdapter};
 use crate::adapters::builtin::BuiltinAdapter;
@@ -32,10 +34,17 @@ pub struct BootHandle {
     pub config: ConfigCell,
     pub apply_lock: ApplyLock,
     pub runtime: FunctionQueueRuntime,
+    connection_supervisor: JoinHandle<()>,
 }
 
 impl BootHandle {
     pub async fn shutdown(self) {
+        {
+            // Under the apply lock, so an adapter rebuild is never cut halfway.
+            let _guard = self.apply_lock.write().await;
+            self.connection_supervisor.abort();
+            let _ = self.connection_supervisor.await;
+        }
         self.runtime.shutdown().await;
         self.trigger_handler.shutdown().await;
     }
@@ -96,13 +105,70 @@ pub async fn start(project_iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::
     // never run and the trigger type above carries everything.
     crate::on_message::register(&project_iii, trigger_handler.clone());
 
+    let connection_supervisor = tokio::spawn(supervise_connection(
+        adapter.clone(),
+        runtime.clone(),
+        trigger_handler.clone(),
+    ));
+
     Ok(BootHandle {
         adapter,
         trigger_handler,
         config,
         apply_lock,
         runtime,
+        connection_supervisor,
     })
+}
+
+const RECONNECT_INITIAL: Duration = Duration::from_secs(1);
+/// How long the supervisor watches one adapter before re-reading the
+/// current one, so an adapter swapped in by a configuration change is
+/// watched too.
+const SUPERVISE_INTERVAL: Duration = Duration::from_secs(5);
+const RECONNECT_MAX: Duration = Duration::from_secs(30);
+
+/// Rebuilds the adapter whenever its broker connection is lost (a RabbitMQ
+/// restart, say), so queues, consumers and subscribers come back without
+/// restarting the worker. Retries with backoff until the broker answers.
+async fn supervise_connection(
+    adapter: Arc<SwappableAdapter>,
+    runtime: FunctionQueueRuntime,
+    trigger_handler: QueueTriggerHandler,
+) {
+    loop {
+        let lost = adapter.current().await;
+        if tokio::time::timeout(SUPERVISE_INTERVAL, lost.connection_lost())
+            .await
+            .is_err()
+        {
+            continue;
+        }
+        // A configuration swap may already have replaced it.
+        let current = adapter.current().await;
+        if !Arc::ptr_eq(&lost, &current) {
+            continue;
+        }
+        tracing::warn!("queue adapter connection lost; reconnecting");
+        let mut backoff = RECONNECT_INITIAL;
+        loop {
+            match runtime.reconnect_adapter(&lost, &trigger_handler).await {
+                Ok(()) => {
+                    tracing::info!("queue adapter reconnected");
+                    break;
+                }
+                Err(error) => {
+                    tracing::error!(
+                        error = %error,
+                        retry_in_ms = backoff.as_millis() as u64,
+                        "queue adapter reconnect failed"
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(RECONNECT_MAX);
+                }
+            }
+        }
+    }
 }
 
 /// Adapter factory: resolves `config`'s effective adapter name to a live

@@ -131,6 +131,26 @@ impl RabbitMqContainer {
     pub fn amqp_url(&self) -> String {
         format!("amqp://127.0.0.1:{}/%2f", self.host_port)
     }
+
+    /// Closes every client connection from the broker side, as a broker
+    /// restart does, while the broker itself keeps running on the same port.
+    pub fn close_all_connections(&self) {
+        let output = Command::new("docker")
+            .args([
+                "exec",
+                &self.container_id,
+                "rabbitmqctl",
+                "close_all_connections",
+                "e2e: broker dropped connections",
+            ])
+            .output()
+            .expect("run rabbitmqctl in the broker container");
+        assert!(
+            output.status.success(),
+            "rabbitmqctl close_all_connections failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 #[cfg(feature = "rabbitmq")]

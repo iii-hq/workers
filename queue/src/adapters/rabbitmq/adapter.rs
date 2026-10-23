@@ -58,7 +58,7 @@ use async_trait::async_trait;
 use lapin::{message::Delivery, options::*, Channel, Connection, ConnectionProperties};
 use serde_json::Value;
 use tokio::{
-    sync::{oneshot, Mutex, RwLock},
+    sync::{oneshot, watch, Mutex, RwLock},
     task::JoinHandle,
 };
 use uuid::Uuid;
@@ -75,8 +75,16 @@ use super::topology::TopologyManager;
 use super::types::{priority_from_data, Job, QueueMode, RabbitMQConfig};
 use super::worker::Worker;
 
+/// How often [`RabbitMQAdapter::connection_lost`] re-checks the connection
+/// status, in case the error hook never fires.
+const CONNECTION_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub struct RabbitMQAdapter {
     connection: Arc<Connection>,
+    /// Flips to `true` from the connection's error hook. The connection never
+    /// recovers on its own: the worker rebuilds the adapter (see
+    /// `boot::supervise_connection`).
+    lost: watch::Receiver<bool>,
     publisher: Arc<Publisher>,
     retry_handler: Arc<RetryHandler>,
     topology: Arc<TopologyManager>,
@@ -130,6 +138,20 @@ impl RabbitMQAdapter {
     async fn resolve_dlq_name_for_topic(&self, topic: &str) -> (String, bool) {
         let is_function_queue = self.function_queue_configs.read().await.contains_key(topic);
         Self::resolve_dlq_name(topic, is_function_queue)
+    }
+
+    fn is_connected(&self) -> bool {
+        self.connection.status().connected() && !*self.lost.borrow()
+    }
+
+    /// Fails fast and says why while the connection is down, instead of a
+    /// channel error per call.
+    fn ensure_connected(&self) -> anyhow::Result<()> {
+        if self.is_connected() {
+            Ok(())
+        } else {
+            anyhow::bail!("RabbitMQ connection is down; the queue worker is reconnecting")
+        }
     }
 
     async fn operation_channel(&self, operation: &str) -> anyhow::Result<Channel> {
@@ -255,6 +277,18 @@ impl RabbitMQAdapter {
                 // Never the URL: it carries the password.
                 .map_err(|e| anyhow::anyhow!("Failed to connect to RabbitMQ: {}", e))?,
         );
+        let (lost_tx, lost) = watch::channel(false);
+        let mut events = Box::pin(connection.events_listener());
+        tokio::spawn(async move {
+            use futures::StreamExt;
+            while let Some(event) = events.next().await {
+                if let lapin::Event::Error(err) = event {
+                    tracing::error!(error = %err, "RabbitMQ connection lost; the queue worker will reconnect");
+                    let _ = lost_tx.send(true);
+                    return;
+                }
+            }
+        });
 
         let channel = connection
             .create_channel()
@@ -283,6 +317,7 @@ impl RabbitMQAdapter {
 
         Ok(Self {
             connection,
+            lost,
             publisher,
             retry_handler,
             topology,
@@ -341,6 +376,10 @@ impl QueueAdapter for RabbitMQAdapter {
         // the priority is resolved once here from the adapter-level
         // `priority_field`. Each subscriber queue honors it only if declared with
         // `max_priority`, and clamps it to its own `x-max-priority`.
+        if let Err(e) = self.ensure_connected() {
+            tracing::error!(error = %e, topic = %topic, "Message not published to RabbitMQ");
+            return;
+        }
         let priority = priority_from_data(&data, self.config.priority_field.as_deref());
         let job = Job::new(topic, data, self.config.max_attempts, traceparent, baggage)
             .with_priority(priority);
@@ -881,6 +920,7 @@ impl QueueAdapter for RabbitMQAdapter {
         namespace: Option<String>,
         priority: Option<u8>,
     ) -> anyhow::Result<()> {
+        self.ensure_connected()?;
         let names = FnQueueNames::new(queue_name);
 
         let payload = serde_json::to_vec(&data).map_err(|err| {
@@ -1160,6 +1200,10 @@ impl QueueAdapter for RabbitMQAdapter {
             matching
         };
 
+        // Once the connection is gone the broker has already dropped these
+        // consumers and requeued their unacked deliveries, so cancel and
+        // requeue failures are expected and must not block the rebuild.
+        let connected = self.is_connected();
         let mut errors = Vec::new();
         for handle in &matching {
             if handle
@@ -1171,6 +1215,8 @@ impl QueueAdapter for RabbitMQAdapter {
                     .channel
                     .basic_cancel(&handle.consumer_tag, BasicCancelOptions::default())
                     .await
+                    .map_err(|err| err.to_string())
+                    .or_else(|err| if connected { Err(err) } else { Ok(()) })
                 {
                     handle.cancelled.store(false, Ordering::Release);
                     errors.push(format!(
@@ -1184,10 +1230,12 @@ impl QueueAdapter for RabbitMQAdapter {
 
         for handle in matching {
             let _ = handle.task.await;
-            if let Err(err) =
-                requeue_rabbitmq_deliveries(&self.delivery_map, Some(handle.consumer_id)).await
-            {
-                errors.push(err.to_string());
+            if connected {
+                if let Err(err) =
+                    requeue_rabbitmq_deliveries(&self.delivery_map, Some(handle.consumer_id)).await
+                {
+                    errors.push(err.to_string());
+                }
             }
         }
         if errors.is_empty() {
@@ -1467,6 +1515,23 @@ impl QueueAdapter for RabbitMQAdapter {
             .into_iter()
             .map(|(name, count)| TopicInfo { name, depth: count })
             .collect())
+    }
+
+    async fn connection_lost(&self) {
+        let mut lost = self.lost.clone();
+        loop {
+            if !self.is_connected() {
+                return;
+            }
+            tokio::select! {
+                changed = lost.changed() => {
+                    if changed.is_err() {
+                        tokio::time::sleep(CONNECTION_CHECK_INTERVAL).await;
+                    }
+                }
+                _ = tokio::time::sleep(CONNECTION_CHECK_INTERVAL) => {}
+            }
+        }
     }
 
     async fn shutdown(&self) {

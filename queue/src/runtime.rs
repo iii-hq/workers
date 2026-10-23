@@ -423,6 +423,37 @@ impl FunctionQueueRuntime {
             .await
     }
 
+    /// Rebuild the adapter from the live configuration after its broker
+    /// connection was lost: the same replacement path as an adapter swap
+    /// (function queue consumers rebuilt, subscribers resubscribed, the old
+    /// adapter shut down), with the configuration unchanged.
+    pub async fn reconnect_adapter(
+        &self,
+        lost: &Arc<dyn QueueAdapter>,
+        trigger_handler: &QueueTriggerHandler,
+    ) -> anyhow::Result<()> {
+        // Connect before taking the lock, with a deadline: the broker client
+        // has none of its own, and enqueue and define wait on this lock.
+        let current = self.config.read().await.clone();
+        let adapter = tokio::time::timeout(
+            RECONNECT_CONNECT_TIMEOUT,
+            crate::boot::build_adapter(&current, self.invoker.clone()),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("connecting the queue adapter timed out"))??;
+        let _guard = self.apply_lock.write().await;
+        // A configuration swap may have replaced the lost adapter meanwhile.
+        if !Arc::ptr_eq(lost, &self.adapter.current().await)
+            || self.config.read().await.as_ref() != current.as_ref()
+        {
+            adapter.shutdown().await;
+            return Ok(());
+        }
+        let name = crate::boot::adapter_identity_name(&current).to_string();
+        self.apply_config_locked((*current).clone(), Some((adapter, name)), trigger_handler)
+            .await
+    }
+
     async fn apply_config_locked(
         &self,
         next: QueueConfig,
@@ -769,6 +800,8 @@ impl FunctionQueueRuntime {
         }
     }
 }
+
+const RECONNECT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 async fn run_supervised_consumer(
     queue: String,
