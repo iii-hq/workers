@@ -95,11 +95,14 @@ inline; `kanban::board::get` returns every configured column with its ticket
 summaries (no description or thread). Both list reads take `updated_since`
 and `compact`, and the board takes `statuses` and a per-column `limit`, so an
 agent reads the active lanes in one small call and the `done` column only for
-what changed:
+what changed. `offset` pages a long column (per column on the board), and the
+board's columns and the list carry `total`, the matches before `offset` and
+`limit`:
 
 ```bash
 iii trigger kanban::board::get --json '{"statuses":["todo","in_progress","in_review"],"compact":true}'
 iii trigger kanban::ticket::list --json '{"status":"done","updated_since":"2026-09-10T00:00:00.000Z","compact":true}'
+iii trigger kanban::ticket::list --json '{"status":"done","offset":100,"limit":100}'
 ```
 
 The writes (`kanban::ticket::create`, `kanban::ticket::update`,

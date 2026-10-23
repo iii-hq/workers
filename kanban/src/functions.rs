@@ -88,9 +88,12 @@ pub struct BoardGetInput {
     /// Only tickets updated after this ISO timestamp — what changed since your last read.
     #[serde(default)]
     pub updated_since: Option<String>,
-    /// At most this many tickets per column, from the top of the column.
+    /// At most this many tickets per column, from the top of the column (after `offset`).
     #[serde(default)]
     pub limit: Option<u64>,
+    /// Skip this many tickets of each column before `limit`: the next page of a long column starts at the rows you have. Each column's `total` says how many there are.
+    #[serde(default)]
+    pub offset: Option<u64>,
     /// Return the compact row (id, key, title, status, priority, assignee, comment_count) instead of the full summary.
     #[serde(default)]
     pub compact: bool,
@@ -166,8 +169,12 @@ pub struct TicketListInput {
     /// Only tickets updated after this ISO timestamp.
     #[serde(default)]
     pub updated_since: Option<String>,
+    /// At most this many tickets (after `offset`), in board order.
     #[serde(default)]
     pub limit: Option<u64>,
+    /// Skip this many tickets before `limit`: the next page starts at the rows you have. `total` says how many there are.
+    #[serde(default)]
+    pub offset: Option<u64>,
     /// Return the compact row (id, key, title, status, priority, assignee, comment_count) instead of the full summary.
     #[serde(default)]
     pub compact: bool,
@@ -446,6 +453,8 @@ pub struct BoardColumnView {
     pub id: String,
     pub label: String,
     pub tickets: Vec<TicketRow>,
+    /// Tickets in the column that pass the filters, before `offset` and `limit`.
+    pub total: u64,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -474,7 +483,10 @@ pub struct BoardView {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct TicketList {
     pub tickets: Vec<TicketRow>,
+    /// Rows returned.
     pub count: u64,
+    /// Tickets that pass the filters, before `offset` and `limit`.
+    pub total: u64,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -755,6 +767,7 @@ pub fn board_view(board: &Board, config: &KanbanConfig, input: &BoardGetInput) -
         .map(|status| status.trim())
         .filter(|status| !status.is_empty())
         .collect();
+    // Every matching ticket of a column: its count is the column's total, then the page is cut.
     let filter = |status: Option<String>| TicketFilter {
         status,
         include_deleted: input.include_deleted,
@@ -762,7 +775,6 @@ pub fn board_view(board: &Board, config: &KanbanConfig, input: &BoardGetInput) -
         parent_id: input.parent_id.clone(),
         project_id: input.project_id.clone(),
         release_id: input.release_id.clone(),
-        limit: limit(input.limit),
         ..TicketFilter::default()
     };
     let context = BoardContext::from(config);
@@ -771,13 +783,18 @@ pub fn board_view(board: &Board, config: &KanbanConfig, input: &BoardGetInput) -
             .columns
             .iter()
             .filter(|column| wanted.is_empty() || wanted.contains(&column.id.as_str()))
-            .map(|column| BoardColumnView {
-                id: column.id.clone(),
-                label: column.label.clone(),
-                tickets: board::list_tickets(board, &filter(Some(column.id.clone())))
-                    .into_iter()
-                    .map(|ticket| row(ticket, input.compact))
-                    .collect(),
+            .map(|column| {
+                let matching = board::list_tickets(board, &filter(Some(column.id.clone())));
+                let total = matching.len() as u64;
+                BoardColumnView {
+                    id: column.id.clone(),
+                    label: column.label.clone(),
+                    tickets: board::page(matching, limit(input.offset), limit(input.limit))
+                        .into_iter()
+                        .map(|ticket| row(ticket, input.compact))
+                        .collect(),
+                    total,
+                }
             })
             .collect(),
         ticket_count: board::list_tickets(
@@ -919,26 +936,34 @@ async fn ticket_get(ctx: Arc<Ctx>, input: TicketGetInput) -> Result<TicketGetVie
         .ok_or_else(|| not_found(&input.id))
 }
 
-async fn ticket_list(ctx: Arc<Ctx>, input: TicketListInput) -> Result<TicketList, Error> {
-    let board = read(&ctx).await?;
+/// What `kanban::ticket::list` returns — pure, so paging is testable without an engine.
+pub fn ticket_list_view(board: &Board, input: &TicketListInput) -> TicketList {
     let filter = TicketFilter {
-        status: input.status,
-        assignee: input.assignee,
+        status: input.status.clone(),
+        assignee: input.assignee.clone(),
         include_deleted: input.include_deleted,
-        updated_since: input.updated_since,
-        parent_id: input.parent_id,
-        project_id: input.project_id,
-        release_id: input.release_id,
-        limit: limit(input.limit),
+        updated_since: input.updated_since.clone(),
+        parent_id: input.parent_id.clone(),
+        project_id: input.project_id.clone(),
+        release_id: input.release_id.clone(),
+        ..TicketFilter::default()
     };
-    let tickets: Vec<TicketRow> = board::list_tickets(&board, &filter)
+    let matching = board::list_tickets(board, &filter);
+    let total = matching.len() as u64;
+    let tickets: Vec<TicketRow> = board::page(matching, limit(input.offset), limit(input.limit))
         .into_iter()
         .map(|ticket| row(ticket, input.compact))
         .collect();
-    Ok(TicketList {
+    TicketList {
         count: tickets.len() as u64,
+        total,
         tickets,
-    })
+    }
+}
+
+async fn ticket_list(ctx: Arc<Ctx>, input: TicketListInput) -> Result<TicketList, Error> {
+    let board = read(&ctx).await?;
+    Ok(ticket_list_view(&board, &input))
 }
 
 async fn ticket_links(ctx: Arc<Ctx>, input: TicketLinksInput) -> Result<TicketLinks, Error> {
@@ -1400,7 +1425,7 @@ pub fn register_functions(ctx: &Arc<Ctx>) {
     register(
         ctx,
         "kanban::board::get",
-        "Read the board: every configured column with its tickets, the done column, every project and release with its counts, plus the resolved paths and priorities. Narrow it with statuses, updated_since, limit and parent_id / project_id / release_id (empty string = none), and ask for compact rows to keep the response small.",
+        "Read the board: every configured column with its tickets and their total, the done column, every project and release with its counts, plus the resolved paths and priorities. Narrow it with statuses, updated_since, limit and parent_id / project_id / release_id (empty string = none), page a long column with offset and limit, and ask for compact rows to keep the response small.",
         board_get,
     );
     register(
@@ -1418,7 +1443,7 @@ pub fn register_functions(ctx: &Arc<Ctx>) {
     register(
         ctx,
         "kanban::ticket::list",
-        "List tickets, optionally narrowed to a column, an assignee, an updated_since timestamp, a parent (its subtasks), a project or a release (empty string = none); compact rows carry only id, key, title, status, priority, assignee and comment_count.",
+        "List tickets in board order, optionally narrowed to a column, an assignee, an updated_since timestamp, a parent (its subtasks), a project or a release (empty string = none); offset and limit page the result and total counts every match; compact rows carry only id, key, title, status, priority, assignee and comment_count.",
         ticket_list,
     );
     register(
