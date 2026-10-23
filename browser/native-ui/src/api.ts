@@ -30,7 +30,8 @@ export const LIFECYCLE = [
 /**
  * The RemoteScreen wire of the browser (design §6.7, exact): frames by
  * trigger, a seed read, a leased viewer that renews every 6 s, the resize
- * that makes the tab a phone the size of the view, and the input gestures.
+ * that makes the tab a phone the size of the view, and the input gestures
+ * (a person's own: the worker draws no agent cursor for them).
  */
 export const WIRE = {
   frames: { trigger: 'browser::frame-event', config: { session_id: '$session' } },
@@ -56,8 +57,24 @@ export const WIRE = {
   },
   input: {
     fn: 'browser::act',
-    tap: { session_id: '$session', action: 'click', x: '$x', y: '$y', button: 'left', click_count: '$count' },
-    scroll: { session_id: '$session', action: 'scroll', x: '$x', y: '$y', delta_x: '$dx', delta_y: '$dy' },
+    tap: {
+      session_id: '$session',
+      action: 'click',
+      x: '$x',
+      y: '$y',
+      button: 'left',
+      click_count: '$count',
+      ghost_cursor: false,
+    },
+    scroll: {
+      session_id: '$session',
+      action: 'scroll',
+      x: '$x',
+      y: '$y',
+      delta_x: '$dx',
+      delta_y: '$dy',
+      ghost_cursor: false,
+    },
     type: { session_id: '$session', action: 'type', text: '$text' },
     key: { session_id: '$session', action: 'press', key: '$key' },
   },

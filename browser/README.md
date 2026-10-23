@@ -673,7 +673,9 @@ the configured viewport, so a viewer resizes again when it reattaches.
 
 `browser::act` `scroll` takes `delta_x` (positive scrolls right) next to
 `delta_y`; a scroll that names only `delta_x` moves sideways only, and one
-that names neither still pages down 600 px.
+that names neither still pages down 600 px. A viewer sends its person's
+taps and drags with `ghost_cursor: false`: the green arrow that marks an
+agent's actions for whoever watches is for agents only.
 
 ## Element picking
 

@@ -874,6 +874,54 @@ async fn mobile_resize_emulates_a_phone_the_page_can_see() {
     client.shutdown_async().await;
 }
 
+/// While someone watches, an agent's click shows the agent's cursor on the
+/// page; a person's own tap from a viewer (`ghost_cursor: false`) does not.
+#[tokio::test]
+async fn a_viewers_own_tap_draws_no_agent_cursor() {
+    let Some(h) = boot("  max_sessions: 4\n").await else {
+        eprintln!("skipping: `iii` or Chromium not available");
+        return;
+    };
+    let client = connect(&h).await;
+    let url = serve_html(INPUT_PAGE);
+    let id = open(&client, &url).await;
+    call(
+        &client,
+        "browser::screencast::start",
+        json!({ "session_id": id, "viewer_id": "android-cursor" }),
+    )
+    .await;
+    let cursor = "!!document.getElementById('iii-ghost-cursor')";
+    for action in [
+        json!({ "session_id": id, "action": "click", "x": 50, "y": 60, "ghost_cursor": false }),
+        json!({ "session_id": id, "action": "scroll", "x": 50, "y": 60, "delta_y": 40, "ghost_cursor": false }),
+    ] {
+        call(&client, "browser::act", action).await;
+    }
+    let events = evaluate(&client, &id, "window.__events.join(' ')").await;
+    assert!(
+        events.as_str().unwrap_or_default().contains("click"),
+        "the tap did not land: {events}"
+    );
+    assert_eq!(
+        evaluate(&client, &id, cursor).await,
+        false,
+        "a viewer's tap drew the agent cursor"
+    );
+    call(
+        &client,
+        "browser::act",
+        json!({ "session_id": id, "action": "click", "x": 50, "y": 60 }),
+    )
+    .await;
+    assert_eq!(
+        evaluate(&client, &id, cursor).await,
+        true,
+        "an agent's click lost its cursor"
+    );
+    client.shutdown_async().await;
+}
+
 /// `act scroll` with `delta_x` moves the page sideways (and only sideways
 /// when `delta_y` is left out); `delta_y` still scrolls down.
 #[tokio::test]

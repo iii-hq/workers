@@ -1364,8 +1364,14 @@ async fn dispatch_hover(session: &Session, x: f64, y: f64) -> Result<(), Error> 
 
 /// Press at (x1, y1), glide to (x2, y2) over a few steps, release. The
 /// interpolated moves make the drag read as a real gesture so listeners that
-/// track pointer movement (drawing surfaces, sliders) follow it.
-async fn dispatch_drag(session: &Session, x1: f64, y1: f64, x2: f64, y2: f64) -> Result<(), Error> {
+/// track pointer movement (drawing surfaces, sliders) follow it. `ghost`
+/// draws the agent's cursor along the way.
+async fn dispatch_drag(
+    session: &Session,
+    (x1, y1): (f64, f64),
+    (x2, y2): (f64, f64),
+    ghost: bool,
+) -> Result<(), Error> {
     use input::{DispatchMouseEventParams, DispatchMouseEventType, MouseButton};
     let send = |params| async {
         session
@@ -1391,7 +1397,9 @@ async fn dispatch_drag(session: &Session, x1: f64, y1: f64, x2: f64, y2: f64) ->
         .build()
         .map_err(handler_err)?;
     send(pressed).await?;
-    move_ghost_cursor(session, x1, y1, true).await;
+    if ghost {
+        move_ghost_cursor(session, x1, y1, true).await;
+    }
     const STEPS: i64 = 8;
     for step in 1..=STEPS {
         let t = step as f64 / STEPS as f64;
@@ -1406,7 +1414,9 @@ async fn dispatch_drag(session: &Session, x1: f64, y1: f64, x2: f64, y2: f64) ->
         send(step_move).await?;
         // Glide the ghost cursor with the drag so a viewer watching the
         // stream sees the gesture, not a jump to the end.
-        move_ghost_cursor(session, xi, yi, false).await;
+        if ghost {
+            move_ghost_cursor(session, xi, yi, false).await;
+        }
     }
     let released = DispatchMouseEventParams::builder()
         .r#type(DispatchMouseEventType::MouseReleased)
@@ -1485,6 +1495,9 @@ async fn press_key(session: &Session, name: &str) -> Result<(), Error> {
 }
 
 async fn perform_in(session: &Session, req: &act::ActInput, group: &str) -> Result<String, Error> {
+    // The agent's cursor marks an agent's action; a person's own tap from a
+    // viewer asks for none.
+    let ghost = req.ghost_cursor.unwrap_or(true);
     let detail = match req.action.as_str() {
         "click" => {
             let (x, y) = action_point(session, req, group).await?;
@@ -1497,7 +1510,9 @@ async fn perform_in(session: &Session, req: &act::ActInput, group: &str) -> Resu
             } else {
                 dispatch_click(session, x, y, button, clicks).await?;
             }
-            move_ghost_cursor(session, x, y, true).await;
+            if ghost {
+                move_ghost_cursor(session, x, y, true).await;
+            }
             settle(session, false).await;
             if tap {
                 format!("tapped x{clicks} at ({x:.0}, {y:.0})")
@@ -1508,7 +1523,9 @@ async fn perform_in(session: &Session, req: &act::ActInput, group: &str) -> Resu
         "hover" => {
             let (x, y) = action_point(session, req, group).await?;
             dispatch_hover(session, x, y).await?;
-            move_ghost_cursor(session, x, y, false).await;
+            if ghost {
+                move_ghost_cursor(session, x, y, false).await;
+            }
             format!("hovering at ({x:.0}, {y:.0})")
         }
         "type" => {
@@ -1607,7 +1624,7 @@ async fn perform_in(session: &Session, req: &act::ActInput, group: &str) -> Resu
                 (Some(x), Some(y)) => (x, y),
                 _ => return Err(handler_err("drag needs x2 and y2")),
             };
-            dispatch_drag(session, x1, y1, x2, y2).await?;
+            dispatch_drag(session, (x1, y1), (x2, y2), ghost).await?;
             format!("dragged ({x1:.0}, {y1:.0}) to ({x2:.0}, {y2:.0})")
         }
         other => {
