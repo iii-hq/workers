@@ -791,7 +791,7 @@ dependencies = [
 
 [[package]]
 name = "iii-cron"
-version = "0.21.26"
+version = "0.21.27"
 dependencies = [
  "anyhow",
  "async-trait",
