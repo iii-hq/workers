@@ -267,8 +267,8 @@ it reads and hashes the file only when its size or mtime changed, so an
 idle loop costs nothing): `1` or
 `true` watch `native-ui/dist`; a path ending in `.js` watches its directory;
 any other value is a directory, relative to the worker's working directory;
-unset, empty, `0` or `false` turn it off. The first registration is always
-`dev: false`; it skips a missing, empty, unchanged or over-1-MiB file. On a new bundle it swaps the served
+unset, empty, `0` or `false` turn it off. With the watch on, the first registration
+is already `dev: true` (so the app polls before the first rebuild too); without it, `dev: false`. It skips a missing, empty, unchanged or over-1-MiB file. On a new bundle it swaps the served
 bytes and registers the function again with `dev: true` and the new hash;
 while one of the app's pages is visible, the iii app asks for the
 descriptor every 1.5 s and reloads the app when the hash changes (the

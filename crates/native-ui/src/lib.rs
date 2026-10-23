@@ -26,9 +26,10 @@
 //! authoring error should fail the first unit test, not log on a device.
 //!
 //! In development, `III_<NS>_NATIVE_UI_WATCH` (`1`/`true` = `native-ui/dist`,
-//! or a directory) makes the worker check the built bundle every 250 ms; when
-//! it changes, the served bytes swap and the function is registered again
-//! with `dev: true` and the new hash, which the app's dev poll picks up.
+//! or a directory) registers the function with `dev: true` from the start and
+//! makes the worker check the built bundle every 250 ms; when it changes, the
+//! served bytes swap and the function is registered again with the new hash,
+//! which the app's dev poll picks up.
 //!
 //! A separate crate from `iii-console-ui` on purpose: the descriptor needs
 //! sha256, and adding `sha2` there would change the `Cargo.lock` of every
@@ -227,7 +228,10 @@ impl NativeUi {
     /// Panics without [`app`](Self::app) and [`bundle`](Self::bundle).
     pub fn register(self, iii: &Arc<IIIClient>) -> NativeUiHandle {
         let (app, path, source) = self.parts();
-        let state = BundleState::of(source.to_string(), false);
+        // With the watch on, the bundle may change under the app from the first look: the descriptor says
+        // `dev: true` from the start, so the app polls it before the first rebuild too.
+        let watch = watch_target(&self.watch_env, &self.watch_default_dir);
+        let state = BundleState::of(source.to_string(), watch.is_some());
         let served = Arc::new(Served {
             path: path.to_string(),
             state: RwLock::new(state.clone()),
@@ -252,7 +256,7 @@ impl NativeUi {
             served: served.clone(),
             function: Arc::new(Mutex::new(Some(function))),
         };
-        if let Some(dir) = watch_target(&self.watch_env, &self.watch_default_dir) {
+        if let Some(dir) = watch {
             spawn_watcher(iii.clone(), spec, served, handle.function.clone(), dir);
         }
         handle

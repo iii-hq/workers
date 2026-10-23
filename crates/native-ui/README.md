@@ -52,7 +52,7 @@ What `register` does:
 - the handler answers `{path}` with `{content, hash, size}` (it ignores the
   engine's `_caller_worker_id`) and any other path with the error code
   `UNKNOWN_NATIVE_UI_ASSET`;
-- with the watch env var set, checks `<dir>/<file of the bundle path>` every
+- with the watch env var set, registers it with `dev: true` from the start, and checks `<dir>/<file of the bundle path>` every
   250 ms: a `stat` each time, and a read and a hash only when the size or
   mtime changed (or the mtime is under 2 s old, which a coarse filesystem
   clock cannot tell apart); on a new non-empty bundle under 1 MiB whose hash
