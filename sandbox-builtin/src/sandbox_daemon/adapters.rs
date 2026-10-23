@@ -56,8 +56,9 @@ pub(crate) fn require_overlay_capable(has_embedded_init: bool) -> Result<(), San
         return Ok(());
     }
     Err(SandboxError::BootFailed(
-        "sandbox isolation requires an iii-worker built with an embedded iii-init \
-         (official release builds, or `make sandbox-debug` locally); without it the \
+        "sandbox isolation requires a sandbox-builtin built with an embedded iii-init \
+         (official release builds, or run scripts/build-init.sh and build with \
+         --features embed-init locally); without it the \
          sandbox root cannot be isolated from the shared image cache"
             .to_string(),
     ))
