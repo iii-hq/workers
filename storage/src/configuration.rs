@@ -832,6 +832,9 @@ pub fn register_config_trigger(
         .metadata(json!({ "internal": true })),
     );
 
+    // Deprecated in iii 0.25 (`configuration::on-updated` is its observable
+    // successor); 0.25 engines still serve the `configuration` trigger type.
+    #[allow(deprecated)]
     iii.register_trigger(RegisterTriggerInput::new(
         "configuration".to_string(),
         CONFIG_FN_ID.to_string(),
@@ -886,6 +889,8 @@ pub fn register_secret_trigger(iii: &IIIClient, state: AppState, runtime: Arc<St
     );
     // `secrets::changed` belongs to the secrets worker: when it is absent the
     // engine parks this binding and activates it once the type registers.
+    // `register_trigger` is deprecated in 0.25; kept for engines without observe.
+    #[allow(deprecated)]
     if let Err(error) = iii.register_trigger(RegisterTriggerInput::new(
         crate::secrets::CHANGED_TRIGGER_TYPE.to_string(),
         SECRET_FN_ID.to_string(),

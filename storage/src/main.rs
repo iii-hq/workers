@@ -306,6 +306,9 @@ async fn main() -> Result<()> {
         );
     }
 
+    // Deprecated in iii-sdk 0.25. Kept until the object trigger types are
+    // retired; old consumers bind them on 0.24 and 0.25 engines.
+    #[allow(deprecated)]
     let _ = iii.register_trigger_type(RegisterTriggerType::new(
         "storage::object-created",
         "Fires when an object is written to a configured bucket whose notifications source is wired up.",
@@ -315,6 +318,7 @@ async fn main() -> Result<()> {
             reconfigure_gate: state.reconfigure_gate.clone(),
         },
     ));
+    #[allow(deprecated)]
     let _ = iii.register_trigger_type(RegisterTriggerType::new(
         "storage::object-deleted",
         "Fires when an object is removed from a configured bucket whose notifications source is wired up.",
