@@ -61,7 +61,22 @@ What `register` does:
 
 The builder panics on what the app would refuse: a namespace outside
 `^[a-z0-9][a-z0-9_-]{0,63}$`, a title outside 1–40 characters or a blurb
-outside 1–120, an icon that is not a kebab-case Lucide name, a bundle path
-outside `[a-z0-9._/-]`, over 512 bytes, without `.js`, with `.`/`..`
-segments or not under `<ns>/`, an empty bundle or one above 1 MiB, catalog
-0. `NativeUi::metadata()` gives the descriptor for a worker's own tests.
+outside 1–120 (or only whitespace), an icon that is not a kebab-case Lucide
+name of at most 64 bytes, a bundle path outside `[a-z0-9._/-]`, over 512
+bytes, with a leading `/`, without `.js`, with empty, `.` or `..` segments
+or not under `<ns>/`, an empty bundle or one above 1 MiB, catalog 0, and
+`metadata()` or `register` before `.app` and `.bundle`.
+`NativeUi::metadata()` gives the descriptor for a worker's own tests.
+
+- The watch env var: unset, empty, `0` or `false` (any case) is off; `1` or
+  `true` is the default dir; a path ending in `.js` is its directory; any
+  other value is a directory, relative to the working directory. The first
+  registration is always `dev: false`.
+- The watcher is a `tokio::spawn`ed task: `register` needs a tokio runtime
+  when the env var is set.
+- `NativeUiHandle`: `function_id()`, `hash()` (async: the served bundle's,
+  which the watcher changes), `unregister()` (the watcher stops at the next
+  change it finds). Dropping the handle does not unregister.
+- Also public: `DESCRIPTOR_VERSION` (1), `UNKNOWN_ASSET`,
+  `MAX_BUNDLE_BYTES` (1 MiB), `sha256_hex(&str)`, and the handler's
+  `NativeUiInput {path}` and `NativeUiContent {content, hash, size}`.

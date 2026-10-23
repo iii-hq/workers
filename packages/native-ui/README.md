@@ -9,10 +9,12 @@ decides **how and when** (layout, virtualized lists, gestures, text editing,
 phone/tablet/Mac arrangement).
 
 Design and wire contract: `ide/projects/worker-native-ui/design.md` (§4 the
-capability object, §5 the protocol, §6 the catalogue, §10 this package).
-The machine schema is [`catalog.json`](catalog.json); the ide repo keeps a
-byte-identical copy. How a worker ships an app end to end:
-[`docs/sops/native-ui.md`](../../docs/sops/native-ui.md).
+capability object, §5 the protocol, §6 the catalogue, §10 this package);
+the platform as the app builds it (the VM, what the host decides, the
+`RemoteScreen`): `ide/docs/worker-native-ui.md`. The machine schema is
+[`catalog.json`](catalog.json); the ide repo keeps a byte-identical copy at
+`native/catalog/catalog.json`, checked by a unit test there. How a worker
+ships an app end to end: [`docs/sops/native-ui.md`](../../docs/sops/native-ui.md).
 
 **Linked by `workspace:*`, never published.**
 
@@ -102,13 +104,24 @@ One component per catalogue type, with the catalogue's names: `Column`,
 - **Slots**: `children` is slot 0; the other slots are props named after
   them (`actions`, `top`, `bottom`, `leading`, `trailing`, `list`, `detail`,
   `emptyDetail`, `header`, `empty`, `footer`). Where slot 0 has another name
-  (`EmptyState.actions`, `Page.body`, `Sheet.content`), that prop works too.
+  (`EmptyState.actions`, `StatusPanel.action`, `Page.body`,
+  `Sheet.content`), that prop works too.
 - **Text**: the JSX children of `Text`, `Button`, `Badge` and `Chip` become
   their `text` (`<Text>Count {n()}</Text>`). Text anywhere else is not shown
   (a warning in the log).
 - `Switch` and `Segmented` show the person's change at once; if the app
   does not take it (the `checked`/`selected` prop stays), the SDK sends the
   app's value back.
+- `RemoteScreen` is only configured from the script (`session`, `wire`,
+  `enabled`, `mode`, `mobile`, `keyboard`, `placeholder`, `maxScale`):
+  frames and gestures go between the worker and the native view and never
+  through the VM. Every function and the trigger in its `wire` must be in
+  the app's namespace, or the view stays empty (the host logs why). Its
+  events: `onReady()`, `onFrame(width, height, modeChanged)` (reload the
+  page once when `modeChanged`), `onLongPress(x, y)` in page coordinates,
+  `onKeyboard(false)` when the person closes the keyboard, `onError(message)`
+  when the stream fails. The wire of the browser and the placeholders:
+  design §6.7 and §6.8, `catalog.json` › `remoteScreen`.
 
 ### TextField: the text belongs to the host
 
@@ -159,7 +172,9 @@ const tabs = createList<Tab>({ key: 'key', kind: 'kind' })
   order, else one splice between the common head and tail), `splice`,
   `update(key, patch)`, `remove(key)`, `get(key)`. Treat items as immutable
   JSON; change them through the source.
-- `TextField`, `List`, `RemoteScreen` and `Sheet` cannot sit in a template.
+- `TextField`, `List`, `RemoteScreen` and `Sheet` cannot sit in a template:
+  the host draws a neutral placeholder there. Neither the SDK nor the
+  harness checks it.
 
 ### The capability object
 
@@ -168,13 +183,14 @@ the host checks:
 
 | | |
 |---|---|
-| `iii.call(fn, payload?, { timeoutMs? })` | A function of the app's own namespace (`<ns>::…`). Any other is refused here, before it reaches the host, with `IiiError` `forbidden`. `timeoutMs` defaults to 30 000, at most 120 000. |
+| `iii.app` | `{ key: 'worker:<ns>', ns }` |
+| `iii.call(fn, payload?, { timeoutMs? })` | A function of the app's own namespace (`<ns>::…`; never `iii::…` or `engine::…`). Any other is refused here, before it reaches the host, with `IiiError` `forbidden`; the host checks again. `timeoutMs` defaults to 30 000, at most 120 000. |
 | `iii.on(type, config, handler)` | Binds a trigger type of the app's namespace (another throws `forbidden` at once). Returns an unsubscribe function with a `ready` promise: bind first, read initial state after `ready`. |
 | `iii.nav` | `push`, `pop`, `replace`, `popToRoot` over the pages of `defineApp`. |
 | `iii.env`, `iii.onEnv` | `windowClass` (`compact`/`wide`, the 720 dp cut), `posture`, `platform`, `visible`, `theme`, `locale`, `online`; reactive in Solid scopes. Use `visible` to stop work nobody sees. |
 | `iii.ui` | `toast`, `actionMenu` (an action sheet on the phone, an NSMenu on the Mac; resolves with the index or -1), `confirm`, `prompt`, `focus`. |
-| `iii.clipboard.writeText`, `iii.openUrl` (asks the person; http, https, mailto), `iii.share`, `iii.saveFile` | |
-| `iii.storage` | Key/value on the device per (environment, worker): keys up to 128 characters, values up to 64 KiB, 256 KiB in all. |
+| `iii.clipboard.writeText`, `iii.openUrl`, `iii.share`, `iii.saveFile` | `openUrl` always asks the person, with the address in view, and takes only http, https and mailto (another scheme rejects here with `forbidden`); `share` and `saveFile` take up to 25 MiB. |
+| `iii.storage` | `get`, `set`, `remove`, `keys`: key/value on the device per (environment, worker); keys up to 128 characters, values up to 64 KiB of JSON, 256 KiB in all (`quota`). |
 | `iii.reportError(err, { fatal? })` | Not fatal: the log. Fatal: the app's failure screen with Restart. |
 
 A failed request rejects with `IiiError` (`code` is one of the catalogue's
@@ -182,9 +198,10 @@ A failed request rejects with `IiiError` (`code` is one of the catalogue's
 
 ### Hooks
 
-- `useCall(fn, payload?, { enabled?, timeoutMs? })`: a Solid resource that
-  calls again when `payload()` changes; `payload()` returning `undefined`
-  means "do not call now".
+- `useCall(fn, payload?, { enabled?, timeoutMs? })`: returns
+  `[resource, { refetch, mutate }]`, a Solid resource that calls again when
+  `payload()` changes; `payload()` returning `undefined` means "do not call
+  now"; without `payload` it calls once.
 - `useTrigger(type, config, handler, { enabled? })`: binds while the scope
   lives and `enabled()` holds; `config()` returning `null` unbinds.
 - `useEnv()`, `useNav()`, `usePage()`.
@@ -218,7 +235,10 @@ import { buildNativeUi } from '@iii-dev/native-ui/build'
 await buildNativeUi({ entry: 'src/app.tsx', outfile: 'dist/native.js', ns: 'browser', watch: process.argv.includes('--watch') })
 ```
 
-esbuild bundles to one minified IIFE (ES2020, platform neutral, `browser`
+Options: `entry`, `outfile`, `ns` (required; it must match
+`^[a-z0-9][a-z0-9_-]{0,63}$`, exported as `NS_PATTERN`), `minify` (default
+`true`), `smoke` (default `true`), `watch` (default `false`), `log` (default
+`console`). esbuild bundles to one IIFE (ES2020, platform neutral, `browser`
 and `production` conditions); `.tsx`/`.jsx` go through `babel-preset-solid`
 in universal mode against `@iii-dev/native-ui/renderer` and
 `@babel/preset-typescript`. `ns` is compiled in, so `iii.call` knows the
@@ -232,9 +252,12 @@ namespace before the host's `init`. Then:
 - the file is written only then, atomically, so the worker's hot-reload
   poller never serves a broken or half-written bundle.
 
-It resolves with `{ outfile, bytes, sha256, warnings, ready }`. `watch:
-true` rebuilds on every change and logs each result; a failed rebuild
-leaves the last good bundle in place.
+It resolves with `{ outfile, bytes, sha256, warnings, ready }`. With
+`watch: true` it resolves with `{ stop() }` instead, rebuilds on every
+change and logs each result; a failed rebuild leaves the last good bundle in
+place. The same module exports `checkBundle(source, { ns, smoke })` (the
+size and smoke checks on a bundle you already have) and `nativeUiPlugin()`
+(the esbuild plugin, for a build of your own).
 
 ## Test harness
 
@@ -255,6 +278,19 @@ await host.tick(150)                   // the fake clock: timers and microtasks
 expect(host.tree()).toMatchInlineSnapshot()
 ```
 
+Options, with their defaults: `bundle` (required), `ns` (`demo`), `appKey`
+(`worker:<ns>`), `host` and `engine` (what `init` says: `android 0.1.0`,
+`quickjs-emscripten 0.31.0`), `env` (merged over `DEFAULT_ENV`), `calls`,
+`ui` (the dialogs' answers; without one, `actionMenu` −1, `confirm` false,
+`prompt` null, `openUrl` true), `storage`, `now` (the fake clock's start,
+0), `rawRequests`, `ids` (seeds the SDK's node, request and subscription
+counters), `strict` (true), `autoInit` (send `init` with the first action,
+true), `memoryLimit` (64 MiB), `stackSize` (1 MiB), `stepBudgetMs` (250),
+`loadBudgetMs` (2000), `maxMessageBytes` (8 MiB), `log` (every console line).
+A `call` whose function is not in `calls` answers `function_not_found`; a
+`calls` handler that throws answers its `code` (throw a `HostError(code,
+message)`), or `invocation_failed`.
+
 The bundle runs in `quickjs-emscripten` with the device VM's globals (timers
 on a fake clock, `console`, `performance.now`, no `eval`), its heap cap and
 per-step deadline, turn by turn like the app's loop (deliver, timers,
@@ -268,25 +304,41 @@ action (`strict: false` to only record them). `rawRequests: true` exposes a
 test-only `__iiiui_request(method, args)` in the VM that skips the SDK's own
 checks, to show what the host answers to a request the SDK would refuse.
 
-API: `mount`, `unmount`, `back`, `tick`, `settle`, `deliver`, `respond`,
-`fail`, `env`, `emitTrigger`, `press`, `longPress`, `emit`, `type`,
+API: `mount` (resolves with the page instance), `unmount`, `back`, `tick`,
+`settle`, `deliver`, `respond`, `fail`, `env`, `emitTrigger` (resolves with
+how many subscriptions got it), `press`, `longPress`, `emit`, `type`,
 `typeWhileBusy`, `submit`, `toggle`, `select`, `itemPress`,
 `itemLongPress`, `itemEmit`, `find`, `findAll`, `prop`, `tree`, `memory`,
 `dispose`; and the records `messages`, `ops`, `toVm`, `transcript`,
 `requests`, `pending`, `logs`, `errors`, `exceptions`, `violations`,
 `toasts`, `menus`, `dialogs`, `clipboard`, `shared`, `saved`, `opened`,
-`focusRequests`, `subscriptions`, `storage`, `deck`, `droppedWrites`.
+`focusRequests`, `subscriptions`, `storage`, `deck`, `droppedWrites`; the
+state `ready` (the bundle's `ready` info), `roots`, `failed` (a `VmFailure`'s
+kind and message once the VM stopped: `watchdog`, `memory`, `reported`,
+`load`, `protocol`), `envState`, `clock`, `initInfo()`. The module also
+exports `HostError`, `VmFailure`, `DEFAULT_ENV`, `createDecoder`,
+`decodeMessage` (a json-v0 message of either direction as named entries, for assertions) and `HostTree`.
 Types: `src/testing/index.d.mts`.
 
 ## Conformance files
 
 `conformance/*.json` are flows the harness produced from
-`conformance/apps/*.tsx`, for the hosts to replay in their own unit tests:
-`toVm` and `fromVm` hold the exact json-v0 messages of each direction,
-`order` interleaves them, `tree` is the host's tree of every card at the
-end, `host` what else the host did (writes it dropped, menus). Every string
-of design §5.7 comes out of a flow byte for byte;
-`conformance/design-examples.json` lists them with their decoded form.
+`conformance/apps/*.tsx`, for the hosts to replay in their own unit tests.
+A flow has `name`, `description`, `catalog`, `encoding` (`json-v0`), `app`,
+`ns`; `toVm` and `fromVm` hold the exact json-v0 messages of each
+direction, `order` interleaves them, `tree` is the host's tree of every card
+at the end, `host` what else the host did (`droppedWrites`, `toasts`,
+`menus`, `errors`), and `designExamples` the design strings it produced.
+Every string of design §5.7 comes out of a flow byte for byte;
+`conformance/design-examples.json` lists them (`id`, `dir`, `message`,
+`decoded`, `flow`).
+
+The ide repo copies these files into
+`android/app/src/test/resources/workerui/conformance/`, replays each flow
+through the Android host, and turns every `fromVm` into the binary form the
+device's VM writes (`bin/*.bin`, written by `native/iiiui/test`'s
+`iiiui_test --convert`): a change here is a change there, in the same
+piece of work (`ide/native/README.md` › Conformance fixtures).
 
 | File | Flow |
 |---|---|
@@ -324,10 +376,21 @@ of design §5.7 comes out of a flow byte for byte;
 ## Working on the package
 
 ```bash
-pnpm -F @iii-dev/native-ui test          # vitest: units, harness, runtime, build, conformance, example
+pnpm -F @iii-dev/native-ui test          # vitest: units, catalog, harness, runtime, build, conformance, example
 pnpm -F @iii-dev/native-ui typecheck     # the VM code (no DOM, no Node) and the Node code
-node packages/native-ui/scripts/gen-catalog.mjs       # after a catalog.json change (orchestrated, with the ide copy)
+pnpm -F @iii-dev/native-ui gen           # scripts/gen-catalog.mjs: src/generated/ after a catalog.json change
 node packages/native-ui/scripts/gen-conformance.mjs   # after a change that moves bytes on the wire
+pnpm -F @iii-dev/native-ui build:example # examples/hello/dist/native.js (also takes --watch)
 ```
 
-A test fails when `src/generated/` or `conformance/` is stale.
+Both generators take `--check` (exit 1 when their output is stale), and a
+test (`test/catalog.test.ts`, `test/conformance.test.ts`) fails when
+`src/generated/` or `conformance/` is stale. `examples/hello` is tested by
+`test/example.test.ts`. A `catalog.json` change is orchestrated with the ide
+copy (`native/catalog/catalog.json`) and its generated Kotlin.
+
+No CI job runs these vitest suites or the typecheck yet, and
+`discover_changed_workers.py` has no rule for `packages/`: a change here does
+not rebuild the workers that bundle the SDK (the `browser`). Run the tests,
+and the tests of the apps that use it (`pnpm --dir browser/native-ui test`),
+by hand.
