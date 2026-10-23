@@ -8,8 +8,11 @@ name: Load Benchmarks
 # Results land on iii-hq/iii's gh-pages branch (loadtest/index.json +
 # loadtest/runs/<id>.json) and iii.dev/benchmarks is rebuilt from them.
 #
-# An iii release sends a repository_dispatch of type iii-release whose
-# client_payload.ref is its iii/v* tag.
+# iii's create-tag.yml sends every release, prereleases included, as a
+# repository_dispatch of type iii-release with client_payload.version (the
+# event it sends iii-hq/templates), through III_CI_APP, which must be installed
+# on this repository with Contents: write. The run builds tag iii/v<version>;
+# a dispatch without a version fails at checkout instead of benchmarking main.
 #
 # Secret III_PAGES_TOKEN: a token for iii-hq/iii with contents: write (push
 # gh-pages) and actions: write (dispatch deploy-website.yml). Only publishing
@@ -64,7 +67,7 @@ jobs:
     runs-on: ${{ vars.LOADTEST_RUNNER || 'iii-loadtest-16-cores' }}
     timeout-minutes: 300
     env:
-      III_REF: ${{ github.event.client_payload.ref || inputs.iii_ref || 'main' }}
+      III_REF: ${{ github.event_name == 'repository_dispatch' && format('iii/v{0}', github.event.client_payload.version) || inputs.iii_ref || 'main' }}
       PROFILES: ${{ inputs.profiles || 'host,1x512,2x1024,4x2048' }}
       SCENARIOS: ${{ inputs.scenarios || 'rpc,fanout,filters,observers,emit,local,overload,connections' }}
       QUICK: ${{ inputs.quick && '--quick' || '' }}

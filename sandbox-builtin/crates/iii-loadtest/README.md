@@ -125,9 +125,11 @@ The building blocks are subcommands of their own:
 ## In CI, and on iii.dev/benchmarks
 
 This repository's `.github/workflows/loadtest.yml` runs the full matrix (`host,1x512,2x1024,4x2048`) every Monday
-against iii `main`, on every iii release (an `iii-release` repository dispatch whose `client_payload.ref` names the
-`iii/v*` tag), and on demand. A manual run can pick the iii ref (`iii_ref`), profiles and scenarios, and `quick`
-checks the pipeline without publishing. Each run:
+against iii `main`, on every iii release, prereleases included (iii's `create-tag.yml` sends an `iii-release`
+repository dispatch whose `client_payload.version` names the release; the run builds tag `iii/v<version>`), and on
+demand. That dispatch comes from iii's `III_CI_APP`, which must be installed on this repository with Contents: write.
+A manual run can pick the iii ref (`iii_ref`), profiles and scenarios, and `quick` checks the pipeline without
+publishing. Each run:
 1. Checks out iii-hq/iii at that ref and builds the engine there; builds `iii-loadtest` and the static guest init (`scripts/build-init.sh`) here.
 2. Runs the suite with `sandbox-builtin/firmware/libkrunfw-linux-x86_64.so`.
 3. Puts `report.md` in the job summary and keeps `results.json`, the summary and every engine log as an artifact for 90 days.
