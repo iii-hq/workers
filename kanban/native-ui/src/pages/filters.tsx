@@ -20,6 +20,7 @@ import {
   Segmented,
   Show,
   Spinner,
+  StatusPanel,
   Text,
   TextField,
 } from '@iii-dev/native-ui'
@@ -40,9 +41,11 @@ import {
   boardRows,
   complete,
   filters,
+  loadError,
   matchContext,
   meta,
   nameOf,
+  online,
   projects,
   readAll,
   readingAll,
@@ -184,12 +187,32 @@ export function FiltersPage() {
       <Show
         when={complete()}
         fallback={
-          <Column gap={8} padding={24} align="center">
-            <Spinner />
-            <Text role="small" tone="muted">
-              {readingAll() ? 'Reading the whole board…' : 'Waiting for the board…'}
-            </Text>
-          </Column>
+          <Show
+            when={!readingAll() && loadError()}
+            fallback={
+              <Column gap={8} padding={24} align="center">
+                <Spinner />
+                <Text role="small" tone="muted">
+                  Reading the whole board…
+                </Text>
+              </Column>
+            }
+          >
+            {(message: () => string) => (
+              <StatusPanel
+                testTag="filters-error"
+                variant="alert"
+                headline="Couldn't read the whole board"
+                detail={message()}
+                padding={[8, 12]}
+                action={
+                  <Button small enabled={online()} onPress={readAll}>
+                    Retry
+                  </Button>
+                }
+              />
+            )}
+          </Show>
         }
       >
         <Scroll>

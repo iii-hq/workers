@@ -64,6 +64,29 @@ describe('filters', () => {
     expect(host.prop('filters', 'active')).not.toBe(true)
   })
 
+  it('a whole read that fails says so on the filters page, and Retry reads again', async () => {
+    const fake = sample()
+    for (let i = 0; i < 60; i++) fake.add({ title: `Done ${i}`, status: 'done' })
+    let fail = true
+    const real = (p: Record<string, unknown>) => fake.answer('kanban::board::get', p)
+    const { host } = await start({ fake })
+    fake.overrides['board::get'] = (p) => {
+      if (fail && !p.limit) throw new Error('board.json is being rewritten')
+      delete fake.overrides['board::get']
+      return real(p)
+    }
+    await host.press('filters')
+    await host.settle()
+    expect(host.find(onTop(host, 'filters-error')).props).toMatchObject({
+      headline: "Couldn't read the whole board",
+      detail: 'board.json is being rewritten',
+    })
+    fail = false
+    await host.press(onTop(host, { type: 'Button', text: 'Retry' }))
+    await host.settle()
+    expect(host.prop(onTop(host, 'filters-page'), 'subtitle')).toBe('65 of 65 tickets')
+  })
+
   it('labels: any or all of them', async () => {
     const { host } = await start()
     await host.press('filters')

@@ -43,6 +43,7 @@ import {
 } from '@iii-dev/native-ui'
 import { type ActivityFilter, counts, type TimelineRow, timeline } from '../activity'
 import { type Brief, kanban, type Summary, type Ticket } from '../api'
+import type { WriteKind } from '../board'
 import {
   agoLong,
   hueOf,
@@ -261,7 +262,11 @@ export function TicketView(props: { ticketKey: string }) {
   const openTicket = (key: string) => void iii.nav.push('ticket', { key })
 
   /** One write of this ticket: on screen and on the board when it lands; a failure says why and reads again. */
-  const save = async (work: () => Promise<Ticket | null>, failure = "Couldn't save"): Promise<boolean> => {
+  const save = async (
+    work: () => Promise<Ticket | null>,
+    failure = "Couldn't save",
+    kind: WriteKind = {},
+  ): Promise<boolean> => {
     if (!online()) {
       toast(OFFLINE, 'error')
       return false
@@ -270,7 +275,7 @@ export function TicketView(props: { ticketKey: string }) {
     try {
       const next = await work()
       if (next) {
-        wrote(next)
+        wrote(next, kind)
         show(next)
       }
       return !!next
@@ -288,11 +293,11 @@ export function TicketView(props: { ticketKey: string }) {
   }
 
   /** A write on other tickets (subtasks): one after the other; then this ticket is read again either way. */
-  const each = async (children: readonly Brief[], work: (child: Brief) => Promise<Ticket>) => {
+  const each = async (children: readonly Brief[], work: (child: Brief) => Promise<Ticket>, moves = false) => {
     if (!online()) return toast(OFFLINE, 'error')
     setBusy((b) => b + 1)
     try {
-      for (const child of children) wrote(await work(child))
+      for (const child of children) wrote(await work(child), moves ? { moved: true, from: child.status } : {})
     } catch (err) {
       toast(readable(err), 'error')
     } finally {
@@ -311,7 +316,7 @@ export function TicketView(props: { ticketKey: string }) {
     })
     const column = cols[choice]
     if (column && column.id !== t.status && editable()) {
-      const next = await moveTicket(t.id, column.id)
+      const next = await moveTicket(t.id, column.id, undefined, t.status)
       if (next) show(next)
     }
   }
@@ -432,6 +437,7 @@ export function TicketView(props: { ticketKey: string }) {
     await save(
       () => (restoring ? kanban.restore(t.id) : kanban.remove(t.id)),
       restoring ? "Couldn't restore" : "Couldn't delete",
+      restoring ? { entered: true } : {},
     )
   }
 
@@ -879,7 +885,7 @@ function CommentCard(props: {
 function DoneWarning(props: {
   ticket: Ticket
   busy: boolean
-  onEach: (children: readonly Brief[], work: (child: Brief) => Promise<Ticket>) => Promise<void>
+  onEach: (children: readonly Brief[], work: (child: Brief) => Promise<Ticket>, moves?: boolean) => Promise<void>
   onShow: (t: Ticket) => boolean
 }) {
   const warning = () => {
@@ -888,7 +894,7 @@ function DoneWarning(props: {
   }
   const doneLabel = () => statusLabel(columns(), meta()?.done ?? '')
   const moveBack = async (back: string) => {
-    const next = await moveTicket(props.ticket.id, back)
+    const next = await moveTicket(props.ticket.id, back, undefined, props.ticket.status)
     if (next) props.onShow(next)
   }
   const closeAll = async (open: readonly Brief[]) => {
@@ -897,7 +903,7 @@ function DoneWarning(props: {
       message: `They move to ${doneLabel()}. ${props.ticket.key} stays where it is.`,
       confirm: `Close ${plural(open.length, 'subtask')}`,
     })
-    if (ok) await props.onEach(open, (c) => kanban.move(c.id, meta()?.done ?? ''))
+    if (ok) await props.onEach(open, (c) => kanban.move(c.id, meta()?.done ?? ''), true)
   }
   const detachAll = async (open: readonly Brief[]) => {
     const ok = await iii.ui.confirm({

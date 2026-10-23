@@ -5,7 +5,7 @@
  * screen.
  */
 import { describe, expect, it } from 'vitest'
-import { callsOf, cards, keysOf, sample, start } from './fake'
+import { callsOf, cards, keysOf, onTop, sample, start } from './fake'
 
 describe('the board follows kanban:change', () => {
   it('creates, moves, updates, deletes and restores what others do', async () => {
@@ -104,6 +104,63 @@ describe('the board follows kanban:change', () => {
     await host.env({ visible: true })
     await host.settle()
     expect(keysOf(host, 'todo')).toEqual(['KAN-2', 'KAN-6'])
+  })
+})
+
+describe('this app’s own writes keep a partial lane’s count', () => {
+  /** Done holds 61 tickets, 50 of them read; KAN-60 is past the first page, and KAN-4's text links to it. */
+  async function partialDone() {
+    const fake = sample()
+    for (let i = 0; i < 60; i++) fake.add({ title: `Done ${i}`, status: 'done' })
+    const review = fake.get('KAN-4')
+    if (review) review.description = 'Follows up on KAN-60.'
+    // No events: the answer of the write alone must keep the count (an event can come before or after it).
+    const started = await start({ fake, live: false })
+    expect(started.host.lanes('lanes').counts[4]).toBe('61')
+    return started
+  }
+
+  /** KAN-60 as a page on top, opened from the link in KAN-4's description. */
+  async function openUnread(host: Awaited<ReturnType<typeof start>>['host']) {
+    await host.itemPress('lane:in_review', 't4')
+    await host.settle()
+    await host.link('description', '#kanban-ticket/KAN-60')
+    await host.settle()
+    expect(host.deck.at(-1)).toMatchObject({ name: 'ticket', params: { key: 'KAN-60' } })
+  }
+
+  it('a ticket created in it counts', async () => {
+    const { host } = await partialDone()
+    await host.select('lanes', 4)
+    await host.press('new-ticket')
+    await host.type(onTop(host, 'new-title'), 'Already done')
+    await host.press(onTop(host, 'create'))
+    await host.settle()
+    expect(host.lanes('lanes').counts[4]).toBe('62')
+  })
+
+  it('a ticket moved out of its unread part counts in both lanes, from its own screen', async () => {
+    const { host, answers } = await partialDone()
+    await openUnread(host)
+    answers.menus.push('To do')
+    await host.press(onTop(host, 'status'))
+    await host.settle()
+    expect(host.lanes('lanes').counts.slice(1, 5)).toEqual(['2', '1', '1', '60'])
+    expect(keysOf(host, 'todo')).toEqual(['KAN-2', 'KAN-60'])
+  })
+
+  it('a ticket deleted and restored from its screen counts out and back in', async () => {
+    const { host, answers } = await partialDone()
+    await openUnread(host)
+    answers.menus.push('Delete ticket…')
+    answers.confirms.push(true)
+    await host.press(onTop(host, 'ticket-menu'))
+    await host.settle()
+    expect(host.lanes('lanes').counts[4]).toBe('60')
+    answers.confirms.push(true)
+    await host.press(onTop(host, 'restore'))
+    await host.settle()
+    expect(host.lanes('lanes').counts[4]).toBe('61')
   })
 })
 
