@@ -2633,7 +2633,7 @@ explanation, never stated as a proven cause; correlated events do not prove caus
 or in a deterministic diagnostic; never cite anything else;\n\
 - name a plausible Harness component without inventing file paths or line numbers;\n\
 - propose a concrete change to {change} and its expected effect, with conditions;\n\
-- carry a `check` that lets a person replay the step where the behavior happened, before \
+- carry a `check` that lets a person check the step where the behavior happened, before \
 anyone writes code: `decision_point` is the assistant entry (`…_<step>_assistant`) whose reply \
 shows the behavior, and it must also be one of this suggestion's `evidence` entries; `signal` \
 says how to recognize the behavior in one reply: {\"rule\": \"contract_rediscovery\"} when the \
@@ -3281,7 +3281,7 @@ pub fn validate_suggestions(
         }
         reasons.extend(code::validate_refs(code_root, &suggestion.code_refs));
         if reasons.is_empty() {
-            // A malformed check costs the replay, not the suggestion.
+            // A malformed check drops only the check, not the suggestion.
             if let Some(check) = &suggestion.check {
                 let problem = validate_check(check)
                     .err()
@@ -3302,7 +3302,7 @@ pub fn validate_suggestions(
                     suggestion.check = None;
                     suggestion
                         .limitations
-                        .push_str(&format!(" (The replay check was dropped: {problem}.)"));
+                        .push_str(&format!(" (The check was dropped: {problem}.)"));
                 }
             }
             // A session that came from the E2E already names its scenario.

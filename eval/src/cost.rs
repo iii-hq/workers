@@ -195,11 +195,7 @@ mod tests {
     #[test]
     fn the_spend_outlives_the_analyses_that_made_it() {
         let records = [record(NOON - 1_000, "completed", true, Some(0.25))];
-        let spent = |since, usd| DailySpendV1 {
-            since,
-            usd,
-            ..Default::default()
-        };
+        let spent = |since, usd| DailySpendV1 { since, usd };
         let cap = Some(&config(Some(1.0)));
         // Two analyses were deleted: the stored one alone is far from the cap.
         let cost = summarize(&records, cap, Some(&spent(5 * DAY_MS, 1.1)), NOON);
