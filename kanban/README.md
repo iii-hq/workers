@@ -98,7 +98,8 @@ and `compact`, and the board takes `statuses` and a per-column `limit`, so an
 agent reads the active lanes in one small call and the `done` column only for
 what changed. `offset` pages a long column (per column on the board), and the
 board's columns and the list carry `total`, the matches before `offset` and
-`limit`:
+`limit`. A board read also says `as_of`, the newest write it holds: a client
+that keeps the board live replays the events stamped after it:
 
 ```bash
 iii trigger kanban::board::get --json '{"statuses":["todo","in_progress","in_review"],"compact":true}'
