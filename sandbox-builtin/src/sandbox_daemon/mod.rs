@@ -78,9 +78,10 @@ Shlex is NOT bash. For bash semantics use sandbox::run with lang:"shell".
 
 # Errors
 
-Errors return JSON encoded inside error.message. Parse once:
+Errors return JSON encoded inside error.message, after a "handler error: "
+prefix. Parse from the first "{":
 
-  const detail = JSON.parse(err.message);
+  const detail = JSON.parse(err.message.slice(err.message.indexOf("{")));
   // detail.code, detail.type, detail.message, detail.docs_url
   // detail.fix       ready-to-send next-call payload (null if not auto-fixable)
   // detail.fix_note  one-liner explaining why fix is null

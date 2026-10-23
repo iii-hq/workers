@@ -10,10 +10,11 @@ installs this adapter when a project needs it.
 ## Install
 
 Compose adds it on its own when a project needs sandboxes or VM workers. To
-add it by hand:
+add it by hand, use the `iii-sandbox` alias, which pins the adapter to the
+sandbox contract major the engine speaks:
 
 ```bash
-iii trigger compose::add worker=sandbox-builtin
+iii trigger compose::add worker=iii-sandbox
 ```
 
 Calling `sandbox::*` through the router needs iii 0.26 or later; the
