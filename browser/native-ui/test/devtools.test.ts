@@ -106,7 +106,7 @@ describe('the console', () => {
     expect(all.at(-1)).toBe('650')
   })
 
-  it('filters by level (errors include exceptions) and by pattern, seeding again', async () => {
+  it('filters by level (errors include exceptions) and by text, seeding again', async () => {
     const fake = new FakeBrowser(TABS)
     fake.consoleLog = [entry(1), entry(2, 'error', 'boom'), entry(3, 'warning')]
     const host = await consoleOf(fake)
@@ -118,24 +118,30 @@ describe('the console', () => {
     expect(keys(host, 'console-list')).toEqual(['2', '5'])
 
     await host.select('console-level', 0)
-    await host.type('console-filter', 'BOOM|uncaught')
+    await host.type('console-filter', 'BOOM')
     await host.tick(299)
     expect(callsOf(host, 'browser::console::read')).toHaveLength(3)
     await host.tick(1)
+    // The worker gets the text as a literal, case-insensitive (its pattern is a Rust regex).
     expect(callsOf(host, 'browser::console::read').at(-1)).toEqual({
       session_id: 't1',
-      pattern: 'BOOM|uncaught',
+      pattern: '(?i)BOOM',
       limit: 200,
     })
-    // The live filter is case-insensitive, like the web panel.
+    // The live filter is a case-insensitive substring, never a regex run in the VM.
     await host.emitTrigger('browser::console-event', { session_id: 't1', entry: entry(6, 'log', 'big Boom') })
     await host.emitTrigger('browser::console-event', { session_id: 't1', entry: entry(7, 'log', 'quiet') })
     expect(keys(host, 'console-list').at(-1)).toBe('6')
 
-    await host.type('console-filter', '(')
+    // Regex syntax is just text: escaped for the worker, matched literally live.
+    await host.type('console-filter', 'a.b (x)|y')
     await host.tick(300)
-    expect(host.find('console-filter').props?.error).toBe('Not a valid pattern')
-    expect(callsOf(host, 'browser::console::read')).toHaveLength(4)
+    expect(host.find('console-filter').props?.error).toBeUndefined()
+    expect(callsOf(host, 'browser::console::read').at(-1)?.pattern).toBe('(?i)a\\.b \\(x\\)\\|y')
+    await host.emitTrigger('browser::console-event', { session_id: 't1', entry: entry(8, 'log', 'aXb (x)|y') })
+    await host.emitTrigger('browser::console-event', { session_id: 't1', entry: entry(9, 'log', 'see A.B (X)|Y here') })
+    expect(keys(host, 'console-list').at(-1)).toBe('9')
+    expect(keys(host, 'console-list')).not.toContain('8')
   })
 
   it('unbinds while hidden and catches up from the last seq when visible', async () => {

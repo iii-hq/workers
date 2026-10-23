@@ -1,8 +1,7 @@
 /**
  * Adversarial pass over the Browser app's mobile UI script (browser/native-ui).
- * Each test asserts the correct behaviour. A test that the current code fails
- * is skipped with its finding number, so this file passes as committed; the
- * findings are listed in the commit message and the report.
+ * Each test asserts the correct behaviour; a `// finding N` test failed on the
+ * code the pass attacked and guards its fix, a `// held` one passed already.
  */
 import type { TestHost } from '@iii-dev/native-ui/testing'
 import { describe, expect, it } from 'vitest'
@@ -35,15 +34,15 @@ async function go(host: TestHost, text: string) {
 
 const navigates = (host: TestHost) => callsOf(host, 'browser::navigate').map((p) => String(p.url))
 
-const keysOf = (host: TestHost, list: string) =>
-  (host.find(list).items ?? []).map((r) => (r as { key: string }).key)
+const keysOf = (host: TestHost, list: string) => (host.find(list).items ?? []).map((r) => (r as { key: string }).key)
 
 /** Delivers `count` events of `trigger` (to every subscription bound to it), in chunks. */
 async function flood(host: TestHost, trigger: string, make: (i: number) => unknown, count: number, chunk = 500) {
   const subs = [...host.subscriptions].filter(([, s]) => s.trigger === trigger).map(([id]) => id)
   for (let i = 0; i < count; i += chunk) {
     const entries: unknown[][] = []
-    for (let j = i; j < Math.min(count, i + chunk); j++) for (const sub of subs) entries.push([9, sub, make(j) as never])
+    for (let j = i; j < Math.min(count, i + chunk); j++)
+      for (const sub of subs) entries.push([9, sub, make(j) as never])
     await host.deliver(entries)
   }
 }
@@ -69,7 +68,7 @@ const networkEntry = (seq: number, extra: Record<string, unknown> = {}) => ({
 
 describe('adversarial: the address bar', () => {
   // finding 1: the bar sends any `scheme://` to browser::navigate; the worker's allowlist is the only gate.
-  it.skip('javascript: and data: addresses never reach browser::navigate', async () => {
+  it('javascript: and data: addresses never reach browser::navigate', async () => {
     const { host } = await opened('t1')
     await go(host, 'javascript://alert(1)')
     await go(host, 'data://text/html,<script>alert(1)</script>')
@@ -77,7 +76,7 @@ describe('adversarial: the address bar', () => {
   })
 
   // finding 2: chrome:, intent: and about: pass the bar unchanged.
-  it.skip('browser-internal and app-launching addresses never reach browser::navigate', async () => {
+  it('browser-internal and app-launching addresses never reach browser::navigate', async () => {
     const { host } = await opened('t1')
     await go(host, 'chrome://settings')
     await go(host, 'intent://example.com/#Intent;scheme=https;end')
@@ -87,7 +86,7 @@ describe('adversarial: the address bar', () => {
 
   // finding 3: file: is sent, and the worker's default allowlist (http, https, file) accepts it.
   // The existing 'a refused address' test relies on the worker refusing file:; the owner must decide where the gate sits.
-  it.skip('a file: address is refused by the bar, not sent to the worker', async () => {
+  it('a file: address is refused by the bar, not sent to the worker', async () => {
     const { host } = await opened('t1')
     await go(host, 'file:///etc/hosts')
     expect(navigates(host)).toEqual([])
@@ -103,16 +102,17 @@ describe('adversarial: the address bar', () => {
   })
 
   // finding 17: NUL, BEL and ESC pass trim() and reach navigate.
-  it.skip('control characters in an address never reach browser::navigate', async () => {
+  it('control characters in an address never reach browser::navigate', async () => {
     const { host } = await opened('t1')
     await go(host, 'example.com\u0000')
     await go(host, 'exa\u0007mple.com')
     await go(host, 'example.com/\u001b[31mred')
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: the test looks for control characters
     expect(navigates(host).filter((u) => /[\u0000-\u001f\u007f]/.test(u))).toEqual([])
   })
 
   // finding 18: an address with no host is still navigated.
-  it.skip('an address with no host is not navigated', async () => {
+  it('an address with no host is not navigated', async () => {
     const { host } = await opened('t1')
     await go(host, 'https://')
     await go(host, 'https://?q=1')
@@ -138,7 +138,7 @@ describe('adversarial: the address bar', () => {
 
 describe('adversarial: data from the worker', () => {
   // finding 4: a history visit's URL goes to navigate without the address rules.
-  it.skip('a history pick of a javascript: URL is not navigated', async () => {
+  it('a history pick of a javascript: URL is not navigated', async () => {
     const fake = new FakeBrowser(TABS)
     fake.visits = [{ url: 'javascript:alert(1)', title: 'x', timestamp: 1 }]
     const { host } = await opened('t1', { fake, ui: answers(7) })
@@ -149,7 +149,7 @@ describe('adversarial: data from the worker', () => {
 
   // finding 5: sessions::list is sent without timeoutMs, so the documented 30 s default never applies, and
   // `reading` (state.ts refresh) never clears: the tab list stops reading for good.
-  it.skip('a hung sessions::list is given up at the call timeout, and the list reads again', async () => {
+  it('a hung sessions::list is given up at the call timeout, and the list reads again', async () => {
     const { host, fake } = await start({ tabs: TABS })
     fake.hold('browser::sessions::list')
     await host.emit('tabs', 'refresh')
@@ -162,7 +162,7 @@ describe('adversarial: data from the worker', () => {
   })
 
   // finding 6: sessions::start is sent without timeoutMs; `starting` (state.ts newTab) never clears, so New tab stays disabled.
-  it.skip('a hung sessions::start is given up at the call timeout, and New tab comes back', async () => {
+  it('a hung sessions::start is given up at the call timeout, and New tab comes back', async () => {
     const { host, fake } = await start({ tabs: TABS })
     fake.hold('browser::sessions::start')
     await host.press('new-tab')
@@ -173,7 +173,7 @@ describe('adversarial: data from the worker', () => {
   })
 
   // finding 7: a non-string title makes tabTitle throw in rowsOf; the whole tab list goes blank, with no error.
-  it.skip('a session whose title is not a string does not break the tab list', async () => {
+  it('a session whose title is not a string does not break the tab list', async () => {
     const odd = { session_id: 'odd', url: 'https://odd.example/', title: 42 } as unknown as FakeTab
     const { host } = await start({ fake: new FakeBrowser([odd, ...TABS]) })
     expect(host.failed).toBeNull()
@@ -181,7 +181,7 @@ describe('adversarial: data from the worker', () => {
   })
 
   // finding 8: one null entry throws in applyList; every tab is replaced by "Couldn't read the tabs".
-  it.skip('a null entry in the session list does not hide the other tabs', async () => {
+  it('a null entry in the session list does not hide the other tabs', async () => {
     const fake = new FakeBrowser(TABS)
     fake.overrides['browser::sessions::list'] = () => ({ sessions: [null, ...TABS] })
     const { host } = await start({ fake })
@@ -190,15 +190,19 @@ describe('adversarial: data from the worker', () => {
   })
 
   // finding 9: a handoff is shown in the top slot whatever the tab's state; it stays after the tab stopped.
-  it.skip('a handoff banner is cleared when the open tab stops', async () => {
+  it('a handoff banner is cleared when the open tab stops', async () => {
     const { host } = await opened('t1')
-    await host.emitTrigger('browser::handoff-requested', { session_id: 't1', handoff_id: 'h1', instructions: 'Sign in' })
+    await host.emitTrigger('browser::handoff-requested', {
+      session_id: 't1',
+      handoff_id: 'h1',
+      instructions: 'Sign in',
+    })
     await host.emitTrigger('browser::session-stopped', { session_id: 't1', reason: 'crashed', timestamp: 1 })
     expect(exists(host, 'handoff')).toBe(false)
   })
 
   // finding 10: the load-error panel is not gated on the tab being closed; it stays after the tab stopped.
-  it.skip('a load error is not shown on a tab that stopped', async () => {
+  it('a load error is not shown on a tab that stopped', async () => {
     const fake = new FakeBrowser(TABS)
     fake.overrides['browser::navigate'] = (p) => ({ ok: false, url: p.url, error: 'net::ERR_ABORTED' })
     const { host } = await opened('t1', { fake })
@@ -209,7 +213,7 @@ describe('adversarial: data from the worker', () => {
   })
 
   // finding 11: a tab held for the first read and stopped before any read lists it stays as a row.
-  it.skip('a new tab stopped before the list lists it is not kept as a row', async () => {
+  it('a new tab stopped before the list lists it is not kept as a row', async () => {
     const fake = new FakeBrowser(TABS)
     const { host } = await start({ fake })
     fake.hold('browser::sessions::list')
@@ -223,7 +227,7 @@ describe('adversarial: data from the worker', () => {
   })
 
   // finding 12: the live filter runs the user's JS regex in the VM; a catastrophic pattern runs for seconds, unbounded.
-  it.skip('a catastrophic filter pattern does not stall the app on a live entry', async () => {
+  it('a catastrophic filter pattern does not stall the app on a live entry', async () => {
     const { host } = await opened('t1', { ui: answers(5) })
     await host.press('tab-menu')
     await host.settle()
@@ -236,7 +240,7 @@ describe('adversarial: data from the worker', () => {
   })
 
   // finding 13: a start answer without a session_id opens a keyless, selected tab; no error is shown.
-  it.skip('a start answer without a session_id is a toast, and no tab opens', async () => {
+  it('a start answer without a session_id is a toast, and no tab opens', async () => {
     const fake = new FakeBrowser(TABS)
     fake.overrides['browser::sessions::start'] = () => ({ url: 'https://new.example/' })
     const { host } = await start({ fake })
@@ -247,7 +251,7 @@ describe('adversarial: data from the worker', () => {
   })
 
   // finding 14: two entries with one session_id are two rows with one List key (the test host reports a protocol violation).
-  it.skip('two entries with the same session_id show one row', async () => {
+  it('two entries with the same session_id show one row', async () => {
     const fake = new FakeBrowser(TABS)
     fake.overrides['browser::sessions::list'] = () => ({ sessions: [TABS[0], TABS[0], ...TABS.slice(1)] })
     const { host } = await start({ fake })
@@ -256,7 +260,7 @@ describe('adversarial: data from the worker', () => {
   })
 
   // finding 15: a read answer with a duplicated seq puts two rows under one List key.
-  it.skip('a console read answer with a duplicated seq does not break the list', async () => {
+  it('a console read answer with a duplicated seq does not break the list', async () => {
     const fake = new FakeBrowser(TABS)
     fake.overrides['browser::console::read'] = () => ({
       entries: [consoleEntry(1), consoleEntry(1), consoleEntry(2)],
@@ -272,7 +276,7 @@ describe('adversarial: data from the worker', () => {
   })
 
   // finding 16: a session without a session_id is listed under an undefined key (not selectable, no error).
-  it.skip('a session without a session_id is skipped, not listed under an undefined key', async () => {
+  it('a session without a session_id is skipped, not listed under an undefined key', async () => {
     const fake = new FakeBrowser(TABS)
     fake.overrides['browser::sessions::list'] = () => ({ sessions: [{ url: 'https://nokey.example/' }, ...TABS] })
     const { host } = await start({ fake })
@@ -281,14 +285,14 @@ describe('adversarial: data from the worker', () => {
   })
 
   // finding 19: a long press with non-numeric coordinates reaches browser::act.
-  it.skip('a long press with non-numeric coordinates sends no click', async () => {
+  it('a long press with non-numeric coordinates sends no click', async () => {
     const { host } = await opened('t1', { ui: answers(0) })
     await host.emit('screen', 'longPress', ['abc', null])
     expect(callsOf(host, 'browser::act').filter((p) => typeof p.x !== 'number' || typeof p.y !== 'number')).toEqual([])
   })
 
   // finding 20: a menu left open while the tab stopped still zooms the dead session when its choice is made.
-  it.skip('a menu choice after the tab stopped sends no zoom to it', async () => {
+  it('a menu choice after the tab stopped sends no zoom to it', async () => {
     let answer: (value: number) => void = () => {}
     const { host } = await opened('t1', {
       ui: { actionMenu: () => new Promise<number>((resolve) => (answer = resolve)) },
@@ -302,7 +306,7 @@ describe('adversarial: data from the worker', () => {
   })
 
   // finding 21: a non-string mime_type throws in networkRow; the live row is dropped and a TypeError reported.
-  it.skip('a network entry with a non-string mime_type is still listed', async () => {
+  it('a network entry with a non-string mime_type is still listed', async () => {
     const { host } = await opened('t1', { ui: answers(6) })
     await host.press('tab-menu')
     await host.settle()
@@ -311,19 +315,20 @@ describe('adversarial: data from the worker', () => {
   })
 
   // finding 23: a stop reason naming an Object property (constructor, toString) is looked up in the CLOSED map.
-  it.skip('a stop reason that names an Object property shows the generic closed title', async () => {
+  it('a stop reason that names an Object property shows the generic closed title', async () => {
     const { host } = await opened('t1')
     await host.emitTrigger('browser::session-stopped', { session_id: 't1', reason: 'constructor', timestamp: 1 })
     expect(host.find('tab-closed').props?.title).toBe('This tab was closed')
   })
 
   // finding 24: control characters and bidi overrides reach the title as they came.
-  it.skip('control characters and bidi overrides are removed from a tab title', async () => {
+  it('control characters and bidi overrides are removed from a tab title', async () => {
     const { host } = await start({
-      tabs: [{ session_id: 'bidi', url: 'https://example.org/', title: 'Ex‮ample\u0007 Domain\u001b[0m' }],
+      tabs: [{ session_id: 'bidi', url: 'https://example.org/', title: 'Ex\u202eample\u0007 Domain\u001b[0m' }],
     })
     const title = String(rows(host).find((r) => r.key === 'bidi')?.title ?? '')
-    expect(title).not.toMatch(/[\u0000-\u001f\u007f‪-‮⁦-⁩]/)
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: the test looks for control characters
+    expect(title).not.toMatch(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/)
   })
 
   // held: a console event for another tab is ignored; duplicates show once, late ones are dropped.
@@ -354,7 +359,7 @@ describe('adversarial: data from the worker', () => {
 
 describe('adversarial: memory', () => {
   // finding 22: while the first console read is out, every live entry is kept (`early`), unbounded.
-  it.skip('a page logging 40,000 lines while the first console read is out stays within the heap budget', async () => {
+  it('a page logging 40,000 lines while the first console read is out stays within the heap budget', async () => {
     const { host, fake } = await opened('t1', { ui: answers(5) })
     fake.hold('browser::console::read')
     await host.press('tab-menu')

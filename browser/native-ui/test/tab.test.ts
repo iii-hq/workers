@@ -168,12 +168,12 @@ describe('the address bar', () => {
     expect(host.find('tab').props).toMatchObject({ title: 'Loaded page', subtitle: 'iii.dev' })
   })
 
-  it('takes URLs only, like the web bar: a local host gets http, a scheme passes', async () => {
+  it('takes URLs only, like the web bar: a local host gets http, the rest https', async () => {
     const { host } = await opened('t1')
     for (const [typed, url] of [
       ['localhost:3000/app', 'http://localhost:3000/app'],
       ['192.168.1.20', 'http://192.168.1.20'],
-      ['ftp://files.example/x', 'ftp://files.example/x'],
+      ['HTTPS://Example.org/A', 'HTTPS://Example.org/A'],
       ['  example.org ', 'https://example.org'],
     ]) {
       await host.press('address')
@@ -181,6 +181,19 @@ describe('the address bar', () => {
       await host.press('address-go')
       expect(callsOf(host, 'browser::navigate').at(-1)?.url).toBe(url)
     }
+  })
+
+  it('opens web addresses only (D10): any other scheme is refused in words, before the worker', async () => {
+    const { host } = await opened('t1')
+    for (const typed of ['ftp://files.example/x', 'file:///etc/hosts', 'about:blank', 'view-source:https://a.b']) {
+      await host.press('address')
+      await host.type('address-field', typed)
+      await host.press('address-go')
+      expect(host.toasts.at(-1)).toEqual({ text: 'Only web addresses open here', kind: 'error' })
+      expect(exists(host, 'address')).toBe(true)
+    }
+    expect(callsOf(host, 'browser::navigate')).toEqual([])
+    expect(host.find('address').props?.text).toBe('example.com/')
   })
 
   it('Cancel, or the field losing focus, goes back to the pill without navigating', async () => {
@@ -224,19 +237,19 @@ describe('the address bar', () => {
     expect(host.find('tab').props?.title).toBe('Back up')
   })
 
-  it('a refused address (scheme or origin policy) is a toast in words', async () => {
+  it('an address the worker refuses (origin policy) is a toast in words', async () => {
     const fake = new FakeBrowser(TABS)
     fake.overrides['browser::navigate'] = () => {
-      throw Object.assign(new Error("scheme 'file' is not allowed (allowed_schemes: http, https)"), {
+      throw Object.assign(new Error("origin 'https://blocked.example' is denied by origin_policies"), {
         code: 'invocation_failed',
       })
     }
     const { host } = await opened('t1', { fake })
     await host.press('address')
-    await host.type('address-field', 'file:///etc/hosts')
+    await host.type('address-field', 'blocked.example')
     await host.submit('address-field')
     expect(host.toasts.at(-1)).toEqual({
-      text: "scheme 'file' is not allowed (allowed_schemes: http, https)",
+      text: "origin 'https://blocked.example' is denied by origin_policies",
       kind: 'error',
     })
     expect(host.find('address').props?.text).toBe('example.com/')
@@ -263,6 +276,33 @@ describe('the address bar', () => {
     expect(host.toasts).toHaveLength(2)
     expect(host.find('address').props?.text).toBe('example.com/next')
     expect(callsOf(host, 'browser::history').map((p) => p.action)).toEqual(['back', 'forward', 'forward'])
+  })
+
+  it('a navigate or a history move the engine never answers gives up, and the bar recovers', async () => {
+    const { host, fake } = await opened('t1')
+    fake.hold('browser::history')
+    await host.press('back')
+    expect(exists(host, 'back-busy')).toBe(true)
+    await host.tick(45_000)
+    expect(exists(host, 'back')).toBe(true)
+    expect(host.find('forward').props?.enabled ?? true).toBe(true)
+    expect(host.toasts.at(-1)).toEqual({ text: "The engine didn't answer in time", kind: 'error' })
+
+    fake.hold('browser::navigate')
+    await host.press('address')
+    await host.type('address-field', 'slow.example')
+    await host.submit('address-field')
+    expect(loading(host)).toBe(true)
+    await host.tick(45_000)
+    expect(loading(host)).toBe(false)
+    expect(host.toasts.at(-1)).toEqual({ text: "The engine didn't answer in time", kind: 'error' })
+    // The late answers change nothing.
+    fake.release('browser::history')
+    fake.release('browser::navigate')
+    await host.settle()
+    expect(host.failed).toBeNull()
+    const timeouts = host.requests.filter((r) => r.method === 'call').map((r) => r.args.timeoutMs)
+    expect(timeouts.every((t) => typeof t === 'number')).toBe(true)
   })
 
   it('moves between the bottom (compact) and the top (wide) as one node, keeping a half-typed address', async () => {
@@ -407,12 +447,12 @@ describe('a mode change during a navigation of the app', () => {
 
     fake.hold('browser::navigate')
     await host.press('address')
-    await host.type('address-field', 'file:///etc/hosts')
+    await host.type('address-field', 'blocked.example')
     await host.submit('address-field')
     await host.emit('screen', 'frame', [412, 780, true])
-    fake.waiting('browser::navigate')[0].reject(new Error("scheme 'file' is not allowed"))
+    fake.waiting('browser::navigate')[0].reject(new Error("origin 'https://blocked.example' is denied"))
     await host.settle()
-    expect(host.toasts.at(-1)).toEqual({ text: "scheme 'file' is not allowed", kind: 'error' })
+    expect(host.toasts.at(-1)).toEqual({ text: "origin 'https://blocked.example' is denied", kind: 'error' })
     expect(host.find('address').props?.text).toBe('Type an address')
     expect(reloads(host, 'b')).toEqual([])
   })

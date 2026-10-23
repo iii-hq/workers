@@ -5,7 +5,7 @@
  * payloads the console UI uses in ui/src/lib/browser.ts).
  */
 
-import { iii, type JsonObject, type JsonValue, type Unsubscribe } from '@iii-dev/native-ui'
+import { IiiError, iii, type JsonObject, type JsonValue, type Unsubscribe } from '@iii-dev/native-ui'
 
 export const TRIGGER = {
   sessionStarted: 'browser::session-started',
@@ -241,14 +241,35 @@ export interface HandoffResolved {
 
 // ── Calls ───────────────────────────────────────────────────────────────────
 
+/** Every call the app waits on (a list read, a new tab, a find…). */
+export const CALL_TIMEOUT_MS = 30_000
 /** navigate and history block until the page loads (the worker caps it at 30 s by default). */
-const LOAD_TIMEOUT = { timeoutMs: 45_000 }
+const LOAD_TIMEOUT = 45_000
 
-const call = <T>(fn: string, payload: JsonObject, opts?: { timeoutMs: number }) =>
-  iii.call<T>(`browser::${fn}`, payload, opts)
+/**
+ * Calls `browser::<fn>` with an explicit timeout, and settles at that
+ * timeout on its own too: the UI state behind a call (the list's read, New
+ * tab, the history buttons, the loading bar) must recover even when the
+ * host does not enforce it. A late answer is dropped.
+ */
+function call<T>(fn: string, payload: JsonObject, timeoutMs = CALL_TIMEOUT_MS): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new IiiError('timeout', "The engine didn't answer in time")), timeoutMs)
+    iii.call<T>(`browser::${fn}`, payload, { timeoutMs }).then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (err: unknown) => {
+        clearTimeout(timer)
+        reject(err)
+      },
+    )
+  })
+}
 
 export const browser = {
-  list: () => call<{ sessions?: SessionInfo[] }>('sessions::list', {}).then((r) => r?.sessions ?? []),
+  list: () => call<{ sessions?: unknown }>('sessions::list', {}).then((r) => sessionsOf(r?.sessions)),
   /** `preview: false`: this app shows the tab itself, consoles need not pop a preview of it. */
   start: (incognito: boolean) =>
     call<StartResult>('sessions::start', incognito ? { incognito: true, preview: false } : { preview: false }),
@@ -291,6 +312,30 @@ export const browser = {
     call<{ ok: boolean }>('handoff::confirm', { session_id: session, handoff_id: handoff }),
   chromiumStatus: () => call<ChromiumStatus>('chromium::status', {}),
   chromiumInstall: () => call<InstallResult>('chromium::install', {}),
+}
+
+/**
+ * The worker's sessions as the app trusts them: an entry that is not an
+ * object with a string `session_id` is skipped (the others still show), a
+ * field of the wrong type is dropped, and a repeated id keeps its last entry.
+ */
+export function sessionsOf(raw: unknown): SessionInfo[] {
+  if (!Array.isArray(raw)) return []
+  const byId = new Map<string, SessionInfo>()
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue
+    const e = entry as Record<string, unknown>
+    const id = e.session_id
+    if (typeof id !== 'string' || !id) continue
+    const s: SessionInfo = { session_id: id, url: typeof e.url === 'string' ? e.url : '' }
+    if (typeof e.title === 'string') s.title = e.title
+    if (typeof e.read_only === 'boolean') s.read_only = e.read_only
+    if (typeof e.incognito === 'boolean') s.incognito = e.incognito
+    if (typeof e.active === 'boolean') s.active = e.active
+    byId.delete(id)
+    byId.set(id, s)
+  }
+  return [...byId.values()]
 }
 
 function readOpts(opts: { pattern?: string; sinceSeq?: number; limit: number }): JsonObject {

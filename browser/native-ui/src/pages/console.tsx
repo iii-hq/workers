@@ -1,7 +1,7 @@
 /**
- * The console of a tab (design §8.4), its own card: a level filter, a
- * pattern, and the entries (seed then live, newest 500). A long press
- * copies an entry.
+ * The console of a tab (design §8.4), its own card: a level filter, a text
+ * filter (case-insensitive, never a regex in the VM), and the entries (seed
+ * then live, newest 500). A long press copies an entry.
  */
 
 import {
@@ -27,7 +27,7 @@ import {
 } from '@iii-dev/native-ui'
 import { tabTitle } from '../address'
 import { browser, type ConsoleEntry, TRIGGER } from '../api'
-import { createFeed, patternTest, SEED_LIMIT } from '../feed'
+import { createFeed, SEED_LIMIT, textFilter, workerPattern } from '../feed'
 import { clock, readable } from '../format'
 import { sessionOf } from '../state'
 
@@ -58,43 +58,40 @@ export function levelMatches(want: string, level: string): boolean {
 }
 
 export function consoleRow(e: ConsoleEntry): ConsoleRow {
-  const level = String(e.level ?? 'log')
+  const level = typeof e.level === 'string' && e.level ? e.level : 'log'
+  const source = typeof e.source === 'string' ? e.source : ''
   return {
     key: String(e.seq),
     kind: level === 'error' || level === 'exception' ? 2 : level === 'warning' ? 1 : level === 'debug' ? 3 : 0,
-    time: clock(e.timestamp),
+    time: typeof e.timestamp === 'number' ? clock(e.timestamp) : '',
     level,
-    text: String(e.text ?? ''),
-    source: e.source ?? '',
-    hasSource: !!e.source,
+    text: typeof e.text === 'string' ? e.text : e.text == null ? '' : String(e.text),
+    source,
+    hasSource: source !== '',
   }
 }
 
-/** Debounces a pattern field (300 ms) into the filter the feed uses; a bad regex keeps the last good one. */
+/**
+ * Debounces a filter field (300 ms) into the filter the feed uses: a
+ * case-insensitive substring, live (`textFilter`) and in the worker's reads
+ * (`workerPattern`, the text escaped).
+ */
 export function usePattern(): {
   text: () => string
   typed: (text: string) => void
   filter: () => string
-  bad: () => boolean
 } {
   const [text, setText] = createSignal('')
   const [filter, setFilter] = createSignal('')
-  const [bad, setBad] = createSignal(false)
   let timer: number | undefined
   onCleanup(() => clearTimeout(timer))
   return {
     text,
     filter,
-    bad,
     typed: (value) => {
       setText(value)
       clearTimeout(timer)
-      timer = setTimeout(() => {
-        const p = value.trim()
-        const ok = patternTest(p) !== null
-        setBad(!ok)
-        if (ok) setFilter(p)
-      }, 300)
+      timer = setTimeout(() => setFilter(value.trim()), 300)
     },
   }
 }
@@ -123,11 +120,11 @@ export function ConsolePage(props: { params: JsonObject }) {
     read: (sinceSeq) =>
       browser.consoleRead(session, {
         level: want() || undefined,
-        pattern: pattern.filter(),
+        pattern: workerPattern(pattern.filter()),
         sinceSeq,
         limit: SEED_LIMIT,
       }),
-    matches: (e) => levelMatches(want(), e.level) && (patternTest(pattern.filter())?.(e.text) ?? true),
+    matches: (e) => levelMatches(want(), String(e.level)) && textFilter(pattern.filter())(e.text),
     row: consoleRow,
   })
   const name = () => {
@@ -165,9 +162,8 @@ export function ConsolePage(props: { params: JsonObject }) {
             testTag="console-filter"
             value={pattern.text()}
             onChange={pattern.typed}
-            placeholder="Filter (regex)"
+            placeholder="Filter"
             leadingIcon="search"
-            error={pattern.bad() ? 'Not a valid pattern' : null}
             mono
             clearable
             autocorrect={false}

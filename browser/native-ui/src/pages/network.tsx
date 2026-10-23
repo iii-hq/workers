@@ -1,6 +1,6 @@
 /**
  * The network of a tab (design §8.4), its own card: failed only, a URL
- * pattern, and the requests (seed then live, newest 500). The worker keeps
+ * filter (case-insensitive text), and the requests (seed then live, newest 500). The worker keeps
  * no headers, bodies or timings: a request is its method, status, URL and
  * type. A long press copies the URL.
  */
@@ -26,7 +26,7 @@ import {
 } from '@iii-dev/native-ui'
 import { tabTitle } from '../address'
 import { browser, type NetworkEntry, TRIGGER } from '../api'
-import { createFeed, patternTest, SEED_LIMIT } from '../feed'
+import { createFeed, SEED_LIMIT, textFilter, workerPattern } from '../feed'
 import { sessionOf } from '../state'
 import { copyMenu, usePattern } from './console'
 
@@ -42,13 +42,14 @@ export interface NetworkRow {
 
 export function networkRow(e: NetworkEntry): NetworkRow {
   const status = typeof e.status === 'number' && e.status > 0 ? e.status : null
+  const failed = e.failed === true
   return {
     key: String(e.seq),
-    kind: e.failed ? 1 : status === null ? 2 : status >= 400 ? 3 : 0,
-    method: String(e.method ?? 'GET').toUpperCase(),
-    status: e.failed ? e.error || 'Failed' : status === null ? '…' : String(status),
-    url: String(e.url ?? ''),
-    type: (e.mime_type ?? '').split(';')[0].trim(),
+    kind: failed ? 1 : status === null ? 2 : status >= 400 ? 3 : 0,
+    method: (typeof e.method === 'string' && e.method ? e.method : 'GET').toUpperCase(),
+    status: failed ? (typeof e.error === 'string' && e.error) || 'Failed' : status === null ? '…' : String(status),
+    url: typeof e.url === 'string' ? e.url : '',
+    type: typeof e.mime_type === 'string' ? e.mime_type.split(';')[0].trim() : '',
   }
 }
 
@@ -63,11 +64,11 @@ export function NetworkPage(props: { params: JsonObject }) {
     read: (sinceSeq) =>
       browser.networkRead(session, {
         failedOnly: failedOnly(),
-        pattern: pattern.filter(),
+        pattern: workerPattern(pattern.filter()),
         sinceSeq,
         limit: SEED_LIMIT,
       }),
-    matches: (e) => (!failedOnly() || e.failed) && (patternTest(pattern.filter())?.(e.url) ?? true),
+    matches: (e) => (!failedOnly() || e.failed === true) && textFilter(pattern.filter())(e.url),
     row: networkRow,
   })
   const name = () => {
@@ -99,9 +100,8 @@ export function NetworkPage(props: { params: JsonObject }) {
             testTag="network-filter"
             value={pattern.text()}
             onChange={pattern.typed}
-            placeholder="Filter URLs (regex)"
+            placeholder="Filter URLs"
             leadingIcon="search"
-            error={pattern.bad() ? 'Not a valid pattern' : null}
             mono
             clearable
             autocorrect={false}

@@ -19,7 +19,7 @@ import {
   Text,
   TextField,
 } from '@iii-dev/native-ui'
-import { displayUrl, isBlank, isSecure, toUrl } from '../address'
+import { displayUrl, isBlank, isSecure, NOT_WEB, stripControls, webAddress } from '../address'
 import { browser } from '../api'
 import { readable } from '../format'
 import { type HistoryAction, history, navigate, type OpenTab, sessionOf } from '../state'
@@ -76,11 +76,15 @@ function AddressBar(props: { tab: OpenTab }) {
     stopBlur()
     tab.setEditing(false)
   }
+  // D10: web addresses only. The console UI's rule adds the scheme; anything
+  // that is not then http(s) with a host is refused here, before the worker.
   const go = (text: string) => {
     stopBlur()
-    const url = toUrl(text)
     tab.setEditing(false)
+    if (!stripControls(text).trim()) return
+    const url = webAddress(text)
     if (url) void navigate(tab, url)
+    else iii.ui.toast(NOT_WEB, 'error')
   }
   // Focus left the field (Back, a tap on the page): back to the pill, unless
   // the person was reaching for Go or Cancel (their press comes right after).

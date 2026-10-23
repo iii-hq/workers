@@ -257,6 +257,8 @@ async function tabMenu(item: TabRow): Promise<void> {
       { label: 'Close tab', icon: 'x' },
     ],
   })
+  // The tab may have stopped while the menu was open: nothing goes to a dead session.
+  if (choice < 0 || !sessionOf(item.key)) return
   try {
     if (choice === 0) select(item.key)
     else if (choice === 1) {

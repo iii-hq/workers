@@ -6,7 +6,7 @@
  */
 
 import { createList, createSignal, iii } from '@iii-dev/native-ui'
-import { displayUrl, isBlank, tabTitle } from './address'
+import { displayUrl, isBlank, NOT_WEB, tabTitle, webUrl } from './address'
 import {
   browser,
   type HistoryResult,
@@ -136,7 +136,8 @@ function applyList(fresh: SessionInfo[]): void {
   for (const id of [...closing]) if (!ids.has(id)) closing.delete(id)
   // The open tab left the list without the event (missed while hidden): it was closed.
   const sel = selected()
-  if (sel && !ids.has(sel)) openTabs.get(sel)?.setClosed((c) => c ?? 'closed')
+  const gone = sel && !ids.has(sel) ? openTabs.get(sel) : undefined
+  if (gone && !gone.closed()) markClosed(gone, 'closed')
   for (const s of list) {
     const tab = openTabs.get(s.session_id)
     if (!tab) continue
@@ -180,11 +181,14 @@ export async function newTab(incognito = false): Promise<void> {
   setStarting(true)
   try {
     const started = await browser.start(incognito)
+    if (typeof started?.session_id !== 'string' || !started.session_id) {
+      throw new Error("The browser worker didn't open a tab")
+    }
     const info: SessionInfo = {
       session_id: started.session_id,
-      url: started.url || 'about:blank',
-      incognito: started.incognito ?? incognito,
-      read_only: started.read_only,
+      url: typeof started.url === 'string' && started.url ? started.url : 'about:blank',
+      incognito: typeof started.incognito === 'boolean' ? started.incognito : incognito,
+      read_only: started.read_only === true,
       active: true,
     }
     held = info
@@ -225,18 +229,42 @@ export async function closeTab(id: string): Promise<void> {
 /** A lifecycle event (bound without a filter): the open tab hears its own, the list re-reads. */
 export function lifecycle(type: string, payload: SessionStopped | SessionUpdated | Navigated): void {
   const id = payload.session_id
-  const tab = typeof id === 'string' ? openTabs.get(id) : undefined
-  if (type === TRIGGER.sessionStopped && typeof id === 'string') reloadAfterLoad.delete(id)
-  if (tab) {
-    if (type === TRIGGER.sessionStopped) {
-      if (id === selected() && !closing.has(id)) tab.setClosed((payload as SessionStopped).reason || 'closed')
-    } else if (type === TRIGGER.sessionUpdated) {
-      updated(tab, payload as SessionUpdated)
-    } else if (type === TRIGGER.navigated) {
-      navigated(tab, (payload as Navigated).url)
-    }
+  if (typeof id !== 'string' || !id) return
+  const tab = openTabs.get(id)
+  if (type === TRIGGER.sessionStopped) {
+    const reason = (payload as SessionStopped).reason
+    stopped(id, typeof reason === 'string' && reason ? reason : 'closed')
+  } else if (tab && !tab.closed()) {
+    if (type === TRIGGER.sessionUpdated) updated(tab, payload as SessionUpdated)
+    else if (type === TRIGGER.navigated) navigated(tab, (payload as Navigated).url)
   }
   refreshSoon()
+}
+
+/**
+ * Tab `id` stopped (closed here or elsewhere, crashed, expired, idle): its
+ * row goes now, a tab just opened is no longer held for the next read, a
+ * reload it waited for is dropped, and its page says why and acts no more.
+ */
+function stopped(id: string, reason: string): void {
+  reloadAfterLoad.delete(id)
+  if (held?.session_id === id) held = null
+  setSessions((list) => (list.some((s) => s.session_id === id) ? list.filter((s) => s.session_id !== id) : list))
+  const tab = openTabs.get(id)
+  if (tab && !closing.has(id) && !tab.closed()) markClosed(tab, reason)
+}
+
+/** The page of a tab that stopped: the reason, and no banner, panel, bar or wait left over. */
+function markClosed(tab: OpenTab, reason: string): void {
+  tab.setClosed(reason)
+  tab.setHandoffs([])
+  tab.setError(null)
+  tab.setFind(null)
+  tab.setEditing(false)
+  tab.setKeyboard(false)
+  if (tab.settleTimer !== undefined) clearTimeout(tab.settleTimer)
+  tab.settleTimer = undefined
+  tab.setLoading(false)
 }
 
 // ── The open tab ────────────────────────────────────────────────────────────
@@ -336,21 +364,35 @@ export function openTab(id: string): OpenTab {
   return tab
 }
 
-/** The page the app loads: the bar shows while the call is out. */
-export async function navigate(tab: OpenTab, url: string): Promise<void> {
+/**
+ * The page the app loads: the bar shows while the call is out. Every path
+ * that navigates (the bar, Retry, a history pick) comes here, and only a web
+ * address (http or https with a host, D10) of a tab still open goes out.
+ */
+export async function navigate(tab: OpenTab, address: string): Promise<void> {
+  const url = webUrl(address)
+  if (!url) {
+    iii.ui.toast(NOT_WEB, 'error')
+    return
+  }
+  if (tab.closed()) return
   tab.navigating++
   tab.setLoading(true)
   tab.setError(null)
   tab.setUrl(url)
   try {
     const result = await browser.navigate(tab.id, url)
+    if (tab.closed()) return
     // A page that did not load keeps the address it was asked for (the tab shows Chromium's error page).
-    if (result && result.ok === false) tab.setError({ url, detail: result.error || 'The page did not load.' })
-    else {
-      if (result?.url) tab.setUrl(result.url)
-      if (result?.title) tab.setTitle(result.title)
+    if (result && result.ok === false) {
+      const detail = typeof result.error === 'string' && result.error ? result.error : 'The page did not load.'
+      tab.setError({ url, detail })
+    } else {
+      if (typeof result?.url === 'string' && result.url) tab.setUrl(result.url)
+      if (typeof result?.title === 'string' && result.title) tab.setTitle(result.title)
     }
   } catch (err) {
+    if (tab.closed()) return
     // A refusal (scheme or origin policy) throws: a toast, the address stays as it was.
     iii.ui.toast(readable(err), 'error')
     const info = sessionOf(tab.id)
@@ -374,16 +416,17 @@ const NO_MOVE: Record<HistoryAction, string> = {
 
 /** Back, forward, reload: the button waits as a spinner; nothing to move to says so. */
 export async function history(tab: OpenTab, action: HistoryAction): Promise<HistoryResult | null> {
-  if (tab.busy()) return null
+  if (tab.busy() || tab.closed()) return null
   tab.setBusy(action)
   tab.setError(null)
   try {
     const result = await browser.history(tab.id, action)
-    if (result?.url) tab.setUrl(result.url)
+    if (tab.closed()) return null
+    if (typeof result?.url === 'string' && result.url) tab.setUrl(result.url)
     if (result && !result.moved && NO_MOVE[action]) iii.ui.toast(NO_MOVE[action])
     return result
   } catch (err) {
-    iii.ui.toast(readable(err), 'error')
+    if (!tab.closed()) iii.ui.toast(readable(err), 'error')
     return null
   } finally {
     tab.setBusy(null)
@@ -462,6 +505,7 @@ export function framed(tab: OpenTab, width: number, modeChanged?: unknown): void
 }
 
 function reloadForMode(tab: OpenTab): void {
+  if (tab.closed()) return
   if (tab.navigating > 0) {
     reloadAfterLoad.add(tab.id)
     return

@@ -27,15 +27,16 @@ import {
 import { hostOf, isWebUrl, tabTitle } from '../address'
 import { browser, type HandoffRequested, type HandoffResolved, listen, TRIGGER, WIRE } from '../api'
 import { readable, stamp } from '../format'
-import { closeTab, framed, type Handoff, history, navigate, openTab, select, sessionOf } from '../state'
+import { closeTab, framed, type Handoff, history, navigate, type OpenTab, openTab, select, sessionOf } from '../state'
 import { Bars } from './bars'
 
-const CLOSED: Record<string, string> = {
-  crashed: 'it crashed',
-  expired: 'it expired',
-  idle: 'it was idle',
-  stopped: 'elsewhere',
-}
+/** Why a tab stopped, in words (own entries only: a reason is the worker's text). */
+const CLOSED = new Map<string, string>([
+  ['crashed', 'it crashed'],
+  ['expired', 'it expired'],
+  ['idle', 'it was idle'],
+  ['stopped', 'elsewhere'],
+])
 
 export function TabPage(props: { id: string }) {
   const tab = openTab(props.id)
@@ -171,31 +172,35 @@ export function TabPage(props: { id: string }) {
       subtitle: hostOf(tab.url()) || undefined,
       actions: items.map(([action]) => action),
     })
-    await run(items[choice]?.[1])
+    await run(tab, items[choice]?.[1])
   }
 
   // A long press on the page, at (x, y) in page coordinates.
-  const pageMenu = async (x: number, y: number) => {
-    const items: [MenuAction, () => unknown][] = readOnly()
-      ? [[{ label: 'Copy page URL', icon: 'copy' }, copyUrl]]
-      : [
-          [{ label: 'Right-click here', icon: 'mouse-pointer-click' }, () => browser.click(tab.id, x, y, 'right')],
-          [
-            { label: 'Type here', icon: 'type' },
-            async () => {
-              await browser.click(tab.id, x, y, 'left')
-              tab.setKeyboard(true)
-            },
-          ],
-          [{ label: 'Copy page URL', icon: 'copy' }, copyUrl],
-        ]
+  const pageMenu = async (x: unknown, y: unknown) => {
+    // Clicks need a point on the page; without one, only the address is offered.
+    const px = typeof x === 'number' && Number.isFinite(x) ? x : null
+    const py = typeof y === 'number' && Number.isFinite(y) ? y : null
+    const items: [MenuAction, () => unknown][] =
+      readOnly() || px === null || py === null
+        ? [[{ label: 'Copy page URL', icon: 'copy' }, copyUrl]]
+        : [
+            [{ label: 'Right-click here', icon: 'mouse-pointer-click' }, () => browser.click(tab.id, px, py, 'right')],
+            [
+              { label: 'Type here', icon: 'type' },
+              async () => {
+                await browser.click(tab.id, px, py, 'left')
+                tab.setKeyboard(true)
+              },
+            ],
+            [{ label: 'Copy page URL', icon: 'copy' }, copyUrl],
+          ]
     const choice = await iii.ui.actionMenu(null, { actions: items.map(([action]) => action) })
-    await run(items[choice]?.[1])
+    await run(tab, items[choice]?.[1])
   }
 
   const title = () => tabTitle(tab.title(), tab.url())
   const closedTitle = () => {
-    const why = CLOSED[tab.closed() ?? '']
+    const why = CLOSED.get(tab.closed() ?? '')
     return why ? `This tab was closed (${why})` : 'This tab was closed'
   }
 
@@ -225,7 +230,7 @@ export function TabPage(props: { id: string }) {
         <Column testTag="tab-top">
           <Column testTag="bars-top">{wide() ? bars : null}</Column>
           <Progress testTag="loading" visible={tab.loading() && !tab.closed()} tone="accent" />
-          <Show when={handoff()}>
+          <Show when={!tab.closed() && handoff()}>
             {(h: () => Handoff) => (
               <StatusPanel
                 testTag="handoff"
@@ -241,7 +246,7 @@ export function TabPage(props: { id: string }) {
               />
             )}
           </Show>
-          <Show when={tab.error()}>
+          <Show when={!tab.closed() && tab.error()}>
             {(e: () => { url: string; detail: string }) => (
               <StatusPanel
                 testTag="load-error"
@@ -258,7 +263,7 @@ export function TabPage(props: { id: string }) {
               />
             )}
           </Show>
-          <Show when={viewError()}>
+          <Show when={!tab.closed() && viewError()}>
             {(message: () => string) => (
               <StatusPanel
                 testTag="view-error"
@@ -318,8 +323,9 @@ export function TabPage(props: { id: string }) {
 }
 
 /** Runs a menu choice; a failure is a toast in words. */
-async function run(action: (() => unknown) | undefined): Promise<void> {
-  if (!action) return
+async function run(tab: OpenTab, action: (() => unknown) | undefined): Promise<void> {
+  // The tab may have stopped while the menu was open: nothing goes to a dead session.
+  if (!action || tab.closed()) return
   try {
     await action()
   } catch (err) {
