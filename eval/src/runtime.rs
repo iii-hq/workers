@@ -472,6 +472,8 @@ async fn create_cycle(
         history: vec![cycle_event(now, CycleStatusV1::Queued, detail)],
         result: None,
         failure: None,
+        plan: None,
+        decision: None,
     };
     state::put_cycle(&deps.iii, &record).await?;
     queue::enqueue_step(&deps.iii, &record.cycle_id, record.step).await?;

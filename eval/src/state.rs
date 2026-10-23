@@ -12,6 +12,7 @@ use crate::contract::{
     AdmissionCheckpointV1, AdmissionV1, AnalysisAssetsV1, AnalysisRecordV1, CycleRecordV1,
     ExecutionEvidenceV1, MonitorConfigV1,
 };
+use crate::decision;
 use crate::error::EvalError;
 
 pub const CONFIG_SCOPE: &str = "eval_monitor";
@@ -110,7 +111,11 @@ pub async fn get_cycle(
     get(iii, CYCLE_SCOPE, cycle_id).await
 }
 
+/// Every write passes [`decision::check_write`] against the stored record: a
+/// frozen plan or a recorded decision is never overwritten.
 pub async fn put_cycle(iii: &IIIClient, record: &CycleRecordV1) -> Result<(), EvalError> {
+    let stored = get_cycle(iii, &record.cycle_id).await?;
+    decision::check_write(stored.as_ref(), record)?;
     set(iii, CYCLE_SCOPE, &record.cycle_id, record).await
 }
 

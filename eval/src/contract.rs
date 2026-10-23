@@ -945,6 +945,86 @@ pub struct CycleRecordV1 {
     pub result: Option<CycleResultV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<String>,
+    /// The plan frozen before any result, with its `policy_revision`: what
+    /// the decision is keyed by. Once set it never changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<CyclePlanV1>,
+    /// The decision on the cycle's pair, recorded once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<CycleDecisionV1>,
+}
+
+/// How many measured runs each side needs and the inputs they run on.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SamplingPlanV1 {
+    pub runs_per_side: u32,
+    /// The inputs/seeds both sides must run on; empty means only that the
+    /// two sides report the same ones.
+    #[serde(default)]
+    pub seeds: Vec<String>,
+}
+
+/// What a cycle commits to before any result is recorded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CyclePlanV1 {
+    pub objective: String,
+    /// The metric, its direction, the minimum effect and the scenario.
+    pub criterion: CriterionV1,
+    /// Correctness conditions the candidate must preserve: one that regresses
+    /// rejects the candidate whatever the metric did, one that goes
+    /// unmeasured makes the decision inconclusive. With `min_effect` 0 any
+    /// loss is a regression.
+    #[serde(default)]
+    pub preserved: Vec<CriterionV1>,
+    /// The controls the cycle runs next to the pair.
+    #[serde(default)]
+    pub controls: Vec<String>,
+    pub sampling: SamplingPlanV1,
+    /// The revision of the policy the cycle runs under; both sides must
+    /// report it.
+    pub policy_revision: String,
+    pub frozen_at: i64,
+}
+
+/// One side of the compared pair: the E2E execution and what it ran on.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionSideV1 {
+    pub execution: E2eExecutionRefV1,
+    #[serde(default)]
+    pub seeds: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_revision: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionOutcomeV1 {
+    /// The pair is comparable, every preserved condition held and the metric
+    /// moved by the minimum effect the wanted way.
+    Accepted,
+    /// A preserved condition was lost, or the metric did not improve.
+    Rejected,
+    /// An incompatible pair, a technical failure or a missing measure.
+    Inconclusive,
+}
+
+/// The cycle's decision and the evidence it rests on, computed in code.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CycleDecisionV1 {
+    pub outcome: DecisionOutcomeV1,
+    pub reason: String,
+    /// The frozen plan's `policy_revision` the decision was made under.
+    pub policy_revision: String,
+    pub comparability: ComparabilityV1,
+    /// The plan's criterion, judged.
+    pub primary: EvidenceV1,
+    /// Each preserved condition, judged, in the plan's order.
+    pub preserved: Vec<EvidenceV1>,
+    pub decided_at: i64,
 }
 
 /// Starts a cycle from exactly one of `objective` or `execution_id`.

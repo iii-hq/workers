@@ -4,6 +4,7 @@
 pub mod code;
 pub mod contract;
 pub mod cost;
+pub mod decision;
 pub mod diagnostics;
 pub mod error;
 pub mod events;
