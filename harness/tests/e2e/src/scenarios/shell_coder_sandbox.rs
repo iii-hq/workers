@@ -65,7 +65,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let sandbox_name = sandbox_name(run_id);
     ScenarioSpec {
         id: ID,
-        version: 4,
+        version: 5,
         prompt: format!(
             "Perform this verification entirely in the current workspace and in the stated order.\n\n\
              1. Add the `shell` worker from the public registry and wait for that add operation to \
@@ -126,7 +126,10 @@ fn evaluate<'a>(
 
         let shell_surface_ready = context.function_exists("shell::exec").await?;
         let coder_surface_ready = context.function_exists("coder::create-file").await?;
-        let sandbox_surface_ready = context.function_exists("sandbox::create").await?;
+        let sandbox_surface_ready = context
+            .trigger_value("sandbox::adapter::info", json!({}))
+            .await?["info"]
+            .is_object();
         let surfaces_ready = shell_surface_ready && coder_surface_ready && sandbox_surface_ready;
         let worker_setup = worker_adds.complete() && surfaces_ready;
 
@@ -357,7 +360,8 @@ fn registry_add_evidence(
                 if shell_calls.contains(call_id) && compose_add_succeeded(message, "ide") {
                     evidence.shell_succeeded = true;
                 }
-                if sandbox_calls.contains(call_id) && compose_add_succeeded(message, "iii-sandbox")
+                if sandbox_calls.contains(call_id)
+                    && compose_add_succeeded(message, "sandbox-builtin")
                 {
                     evidence.sandbox_succeeded = true;
                     evidence.ordered |= ordered_sandbox_calls.contains(call_id);
@@ -834,7 +838,7 @@ mod tests {
                     assistant_calls(vec![add_call("call-shell", "ide")]),
                     add_result("call-shell", "ide", "ok"),
                     assistant_calls(vec![add_call("call-sandbox", "iii-sandbox")]),
-                    add_result("call-sandbox", "iii-sandbox", "ok"),
+                    add_result("call-sandbox", "sandbox-builtin", "ok"),
                 ]),
                 RegistryAddEvidence {
                     shell_succeeded: true,
@@ -848,7 +852,7 @@ mod tests {
                     assistant_calls(vec![add_call("call-shell", "ide")]),
                     add_result("call-shell", "ide", "failed"),
                     assistant_calls(vec![add_call("call-sandbox", "iii-sandbox")]),
-                    add_result("call-sandbox", "iii-sandbox", "ok"),
+                    add_result("call-sandbox", "sandbox-builtin", "ok"),
                 ]),
                 RegistryAddEvidence {
                     shell_succeeded: false,
@@ -864,7 +868,7 @@ mod tests {
                         add_call("call-sandbox", "iii-sandbox"),
                     ]),
                     add_result("call-shell", "ide", "ok"),
-                    add_result("call-sandbox", "iii-sandbox", "ok"),
+                    add_result("call-sandbox", "sandbox-builtin", "ok"),
                 ]),
                 RegistryAddEvidence {
                     shell_succeeded: true,
