@@ -341,8 +341,8 @@ fn validate_compose_base_image(worker_dir: &Path) -> Result<(), String> {
 /// Builds the VM for an installed bundle worker without starting it.
 ///
 /// For a caller that supervises its own children — compose stops them, watches
-/// them exit, and captures their output — and therefore needs the handle rather
-/// than a detached VM tracked by a pid file. Every bundle gate applies: the
+/// them exit, and captures their output — and therefore needs the handle.
+/// Every bundle gate applies: the
 /// operator kill switch, the manifest re-validation that assumes the install
 /// dir may have been tampered with since install, and the start-time resource
 /// clamp.
@@ -374,8 +374,7 @@ pub async fn bundle_vm_command(
 /// same container key), so the VM state and the engine URL come from the
 /// caller.
 pub struct VmOverride<'a> {
-    /// Per-caller VM state: rootfs (or overlay trampoline), boot script, pid
-    /// file.
+    /// Per-caller VM state: rootfs (or overlay trampoline) and boot script.
     pub state_dir: PathBuf,
     /// Engine URL the guest connects to.
     pub engine_url: &'a str,
