@@ -156,7 +156,6 @@ pub fn build_vm_command(
     let env_pairs: Vec<(String, String)> = env.into_iter().collect();
     let env_stdin = iii_supervisor::env_channel::encode_frame(&env_pairs)
         .map_err(|e| format!("cannot pass the worker environment to the VM: {e}"))?;
-    let shell_sock = rootfs.join("shell.sock");
 
     let mut cmd = tokio::process::Command::new(&self_exe);
     cmd.arg("__vm-boot");
@@ -168,7 +167,6 @@ pub fn build_vm_command(
         exec_path,
         vcpus,
         ram_mib,
-        &shell_sock,
         source_sync,
         mounts,
         args,
@@ -238,7 +236,6 @@ fn vm_boot_args_dev(
     exec_path: &str,
     vcpus: u32,
     ram_mib: u32,
-    shell_sock: &Path,
     source_sync: Option<&Path>,
     mounts: &[(String, String)],
     exec_args: &[String],
@@ -255,8 +252,6 @@ fn vm_boot_args_dev(
     out.push(OsString::from(vcpus.to_string()));
     out.push(OsString::from("--ram"));
     out.push(OsString::from(ram_mib.to_string()));
-    out.push(OsString::from("--shell-sock"));
-    out.push(shell_sock.as_os_str().to_owned());
     if let Some(source_sync) = source_sync {
         out.push(OsString::from("--source-sync"));
         out.push(source_sync.as_os_str().to_owned());
@@ -310,7 +305,6 @@ mod tests {
             "/bin/sh",
             2,
             2048,
-            Path::new("/tmp/shell.sock"),
             Some(Path::new("/host/src")),
             &mounts,
             &exec_args,
@@ -322,7 +316,8 @@ mod tests {
         assert_eq!(parsed.workdir, "/workspace");
         assert_eq!(parsed.vcpus, 2);
         assert_eq!(parsed.ram, 2048);
-        assert_eq!(parsed.shell_sock.as_deref(), Some("/tmp/shell.sock"));
+        // No shell channel: nothing on the host execs into a worker VM.
+        assert_eq!(parsed.shell_sock, None);
         assert_eq!(parsed.source_sync.as_deref(), Some("/host/src"));
         assert!(parsed.env.is_empty());
         assert!(parsed.env_stdin);
