@@ -448,6 +448,7 @@ struct Target {
     /// The next activation stays running (the old process keeps running)
     /// until the test lets it land.
     hold: bool,
+    fail_after_pin: bool,
 }
 
 fn harness_row(pid: u32, version: &str) -> Value {
@@ -491,6 +492,10 @@ impl Target {
                         id.clone(),
                         json!({"operation_id": id, "status": "succeeded"}),
                     );
+                }
+                if std::mem::take(&mut self.fail_after_pin) {
+                    self.operations.get_mut(&id).unwrap()["status"] = json!("failed");
+                    return Err("activation failed after changing the target".into());
                 }
                 Ok(json!({"operation_id": id, "status": "accepted", "requested": 1}))
             }
@@ -765,8 +770,15 @@ fn spawn(program: &str, args: &[&str]) -> (Proc, u32, String) {
         .spawn()
         .expect("spawn a local process");
     let pid = child.id();
-    let digest = sha256(&std::fs::read(format!("/proc/{pid}/exe")).expect("read /proc exe"));
-    (Proc(child), pid, digest)
+    let child = Proc(child);
+    let digest = sha256(&std::fs::read(program).unwrap());
+    for _ in 0..100 {
+        if std::fs::read(format!("/proc/{pid}/exe")).is_ok_and(|bytes| sha256(&bytes) == digest) {
+            return (child, pid, digest);
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("the fixture child did not exec its expected binary");
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {
@@ -918,6 +930,7 @@ impl Rig {
                 ..Dashboard::default()
             },
             hold: false,
+            fail_after_pin: false,
         }));
         let shared = target.clone();
         let theirs = fake_engine::start(move |frame: Value| {
@@ -998,7 +1011,7 @@ impl Rig {
     async fn configure_with(&self, promotion: bool, max_spend_usd: f64) {
         let mut config = json!({
             "subject": {"provider": "p", "model": "m"}, "where": "harness",
-            "runs_per_side": RUNS, "technical_retries": 0, "max_scenarios": 1,
+            "runs_per_side": RUNS, "technical_retries": 0, "max_scenarios": 2,
             "estimated_usd_per_run": 0.5,
             "min_effect": {"tokens": 1000.0, "pass_rate_pp": 10.0},
             "budget": {"max_spend_usd": max_spend_usd, "max_duration_ms": 3_600_000, "max_calls": 50,
@@ -1965,7 +1978,7 @@ async fn a_budget_that_cannot_cover_the_canary_never_activates() {
     };
     rig.configure(true).await;
     let (cycle_id, _) = Box::pin(rig.reach_artifact()).await;
-    // Leave less than one canary run's reservation once the rc run settles.
+    // Leave one finalize build and less than one canary reservation.
     let usage = runtime::cycle_result(
         &rig.deps,
         CycleIdRequestV1 {
@@ -1979,7 +1992,7 @@ async fn a_budget_that_cannot_cover_the_canary_never_activates() {
     .unwrap();
     state::update_ledger(&rig.iii, &cycle_id, |ledger| {
         let mut ledger = ledger.unwrap();
-        ledger.budget.max_spend_usd = usage.spend_usd + 0.5;
+        ledger.budget.max_spend_usd = usage.spend_usd + 1.5;
         Ok((Some(ledger), ()))
     })
     .await
@@ -2141,6 +2154,163 @@ async fn to_held_activation(rig: &mut Rig) -> String {
         "the intent was persisted"
     );
     cycle_id
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn round2_failed_or_cancelled_activation_restores_its_partial_change() {
+    for (status, stopped) in [("failed", false), ("cancelled", false), ("failed", true)] {
+        let Some(mut rig) = Rig::start(status).await else {
+            return;
+        };
+        rig.configure(true).await;
+        let cycle_id = Box::pin(to_held_activation(&mut rig)).await;
+        land_activation(&rig);
+        {
+            let mut target = rig.target();
+            let operation = target.adds()[0]["operation_id"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            target.operations.get_mut(&operation).unwrap()["status"] = json!(status);
+            if stopped {
+                target.harness["state"] = json!("failed");
+                target.harness["pid"] = Value::Null;
+            }
+        }
+        rig.tick().await;
+        rig.tick().await;
+        let record = rig.cycle(&cycle_id).await;
+        assert_eq!(
+            record.outcome.as_ref().map(|outcome| outcome.code),
+            Some(OutcomeCodeV1::RolledBack),
+            "{status}: {:?}",
+            record.history
+        );
+        assert_eq!(rig.target().adds().len(), 2);
+        assert!(
+            phases(&record).ends_with(&["rollback_requested".into(), "rollback_confirmed".into(),])
+        );
+        assert!(record.outcome.unwrap().detail.contains(&rig.prior_digest));
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn round2_an_activation_error_after_the_persisted_intent_still_restores() {
+    let Some(mut rig) = Rig::start("intenterror").await else {
+        return;
+    };
+    rig.configure(true).await;
+    let (cycle_id, _) = Box::pin(rig.reach_artifact()).await;
+    rig.target().fail_after_pin = true;
+    let rc = System {
+        workers_revision: String::new(),
+        harness_version: RC.into(),
+        binary: Some(format!("sha256:{}", rig.candidate_digest)),
+    };
+    rig.world()
+        .e2e
+        .finish("plan-3", "passed", side(TOKENS, FIXED), &rc);
+    rig.changed("plan-3").await;
+    rig.tick().await;
+    let record = rig.cycle(&cycle_id).await;
+    assert_eq!(
+        record.outcome.as_ref().unwrap().code,
+        OutcomeCodeV1::RolledBack
+    );
+    assert!(record.activation_intent.is_some());
+    assert!(!phases(&record).contains(&"activation_requested".into()));
+    assert!(phases(&record).contains(&"rollback_confirmed".into()));
+    assert_eq!(rig.target().adds().len(), 2);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn round2_a_lost_canary_reply_never_selects_an_ambiguous_label() {
+    let Some(mut rig) = Rig::start("canarylabel").await else {
+        return;
+    };
+    rig.configure(true).await;
+    let cycle_id = Box::pin(rig.reach_canary()).await;
+    state::update_cycle(&rig.iii, &cycle_id, |stored| {
+        let mut next = stored.clone();
+        let entry = next
+            .executions
+            .iter_mut()
+            .find(|entry| entry.role == ExecutionRoleV1::Canary)
+            .unwrap();
+        entry.execution_id = None;
+        entry.state = ExecutionStateV1::Dispatching;
+        Ok((Some(next), ()))
+    })
+    .await
+    .unwrap();
+    let stable = rig.stable(&rig.candidate_digest.clone());
+    {
+        let mut target = rig.target();
+        let (_, label, parameters) = target.e2e.dispatched[0].clone();
+        target.e2e.executions.insert(
+            "aaa-hijack".into(),
+            bundle(
+                "aaa-hijack",
+                &label,
+                "passed",
+                &parameters,
+                side(TOKENS, FIXED),
+                &stable,
+            ),
+        );
+    }
+    rig.tick().await;
+    let record = rig.cycle(&cycle_id).await;
+    let entry = record
+        .executions
+        .iter()
+        .find(|entry| entry.role == ExecutionRoleV1::Canary)
+        .unwrap();
+    assert!(
+        entry.execution_id.is_none(),
+        "ambiguous canary was bound to {:?}",
+        entry.execution_id
+    );
+    assert!(record.canary.is_none());
+    assert!(!record.status.is_terminal());
+    assert_eq!(rig.target().e2e.dispatched.len(), 1);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn round2_a_prior_package_must_match_its_running_executable_before_activation() {
+    let Some(mut rig) = Rig::start("priorbytes").await else {
+        return;
+    };
+    rig.configure(true).await;
+    let (cycle_id, _) = Box::pin(rig.reach_artifact()).await;
+    {
+        let mut target = rig.target();
+        target.harness = harness_row(target.pids[STABLE], PRIOR);
+    }
+    let rc = rig.stable(&rig.candidate_digest.clone());
+    let rc = System {
+        harness_version: RC.into(),
+        ..rc
+    };
+    rig.world()
+        .e2e
+        .finish("plan-3", "passed", side(TOKENS, FIXED), &rc);
+    rig.changed("plan-3").await;
+    let record = rig.cycle(&cycle_id).await;
+    assert!(
+        rig.target().adds().is_empty(),
+        "activation must not start with an unproved rollback"
+    );
+    assert!(record.activation_intent.is_none());
+    assert_eq!(
+        record.outcome.as_ref().unwrap().code,
+        OutcomeCodeV1::Inconclusive
+    );
+    assert!(!phases(&record).contains(&"rollback_destination".into()));
 }
 
 async fn assert_restored_only_after_landing(rig: &Rig, cycle_id: &str) {

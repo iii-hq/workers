@@ -850,12 +850,7 @@ pub(crate) async fn reconcile_label(deps: &Deps, label: &str) -> Result<Option<S
         BUS_TIMEOUT_MS,
     )
     .await?;
-    Ok(listed["executions"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|entry| entry["label"] == label)
-        .and_then(|entry| entry["id"].as_str().map(str::to_string)))
+    Ok(evidence::unique_execution_id(&listed, label))
 }
 
 pub(crate) fn running(execution_id: String) -> impl FnMut(&mut CycleExecutionV1) {
@@ -1883,6 +1878,25 @@ async fn admit_owned(
             false,
         ));
     };
+    if let Some(expected) = entry.execution_id.as_deref() {
+        if expected != execution_id {
+            return Ok((
+                not_admitted(
+                    format!("{label} belongs to execution {expected}, not {execution_id}"),
+                    owner_id,
+                ),
+                false,
+            ));
+        }
+    } else if reconcile_label(deps, label).await?.as_deref() != Some(execution_id) {
+        return Ok((
+            not_admitted(
+                format!("{label} does not identify only execution {execution_id}"),
+                owner_id,
+            ),
+            true,
+        ));
+    }
     if entry.state == ExecutionStateV1::Imported {
         return Ok((
             not_admitted("already imported into its cycle", owner_id),

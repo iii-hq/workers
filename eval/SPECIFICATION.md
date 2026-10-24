@@ -64,7 +64,7 @@ There are exactly two inputs, and both converge on one `CycleRecordV1`:
      pin differing;
    - every preserved criterion holds;
    - the planned metric moved by the minimum effect under the frozen
-     sampling and stop rules (`e2e-loop-rules/3`).
+     sampling and stop rules (`e2e-loop-rules/4`).
 
    Effort counts only on completed, passed runs. A cost reduction is never
    claimed while a cost is unknown.
@@ -79,7 +79,8 @@ There are exactly two inputs, and both converge on one `CycleRecordV1`:
     Compose target. It is never the operator's own Harness by default.
     - Requested and confirmed are recorded apart.
     - Confirmed means the target runs the approved executable digest.
-    - The prior executable is validated first as the rollback destination.
+    - The prior executable must match its Registry artifact before becoming
+      the rollback destination.
     - The canary is reserved before anything is activated.
 11. **Canary.** The canary runs on the activated target through that
     Engine's own E2E (`where: harness`). Its ownership and route are recorded
@@ -94,16 +95,17 @@ There are exactly two inputs, and both converge on one `CycleRecordV1`:
       pending on the activated target (never claimed stable, no new E2E is
       started) until a cycle limit turns it into a restoration of the prior.
 12. **Never abandon an activation.** The activation's operation id is
-    persisted (`cycle.activation_intent`) before the pin is sent. A cancel or
-    a budget limit after that turns into a recovery (`cycle.recovery`), which
+    persisted (`cycle.activation_intent`) before the pin is sent. A cancel,
+    a budget limit or an activation error after that turns into a recovery (`cycle.recovery`), which
     needs no model or E2E budget:
     - the original operation is reconciled read-only
       (`read_compose_operation`) and never sent again;
     - running or unknown waits; unknown past the reconcile grace ends
       `inconclusive` with the target not proved, never restored by
       assumption;
-    - failed or cancelled means the candidate is not active; succeeded counts
-      only once the candidate's executable is proved;
+    - failed or cancelled settles the operation but does not prove its
+      partial effects were undone; the prior must still be restored;
+      succeeded counts only once the candidate's executable is proved;
     - the prior is then pinned and proved by its executable digest.
 
     Until that is proved the cycle is not terminal.

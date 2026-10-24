@@ -162,7 +162,7 @@ the prior executable before the cycle ends. See `SPECIFICATION.md` and
 
 ## Decision and budget
 
-Decisions are made once, in code, by the frozen plan (`e2e-loop-rules/3`):
+Decisions are made once, in code, by the frozen plan (`e2e-loop-rules/4`):
 
 - An incompatible pair, a side that did not run what it had to, a technical
   failure or a missing measure is inconclusive.
@@ -173,6 +173,16 @@ Decisions are made once, in code, by the frozen plan (`e2e-loop-rules/3`):
 Every dispatch is reserved first: proposal, actor, judge, E2E runs (counting
 retries) and official builds. A reservation that is found again is never
 dispatched twice. An unreported cost stays charged at its estimate.
+An E2E report cannot release that reservation: its budget charge is at
+least the estimate, even when the candidate reports a lower cost. The
+reported value remains available separately; an invalid run cost makes
+the total unknown.
+
+Lost dispatches currently reconcile by a mutable E2E label. A known
+execution id cannot be replaced, and ambiguous or partial listings are
+refused, but a sole label match does not prove dispatch origin while the
+original execution has not appeared. Control-plane renames remain trusted
+until E2E provides immutable creation correlation (KAN-466).
 
 ## State scopes
 

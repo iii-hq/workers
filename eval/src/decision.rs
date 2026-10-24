@@ -265,13 +265,19 @@ pub fn sign_test_p(reached: u32, pairs: u32) -> f64 {
     if reached > pairs {
         return 0.0;
     }
-    // C(n, i) / 2^n accumulated term by term from i = n downwards.
+    if reached <= pairs / 2 {
+        return 1.0 - sign_test_p(pairs - reached + 1, pairs);
+    }
+    // Start at the requested upper-tail term in log space: 2^-n alone
+    // underflows for large samples, even when their tail is near one.
     let n = f64::from(pairs);
-    let mut term = 0.5_f64.powi(pairs as i32);
+    let log_term = (0..pairs - reached).fold(-n * std::f64::consts::LN_2, |sum, i| {
+        sum + (n - f64::from(i)).ln() - f64::from(i + 1).ln()
+    });
+    let mut term = log_term.exp();
     let mut tail = term;
-    for i in (reached..pairs).rev() {
-        // C(n, i) = C(n, i + 1) * (i + 1) / (n - i)
-        term *= f64::from(i + 1) / (n - f64::from(i));
+    for i in reached..pairs {
+        term *= (n - f64::from(i)) / f64::from(i + 1);
         tail += term;
     }
     tail.min(1.0)
@@ -1165,6 +1171,30 @@ mod tests {
         assert!((sign_test_p(3, 3) - 0.125).abs() < 1e-12);
         assert!((sign_test_p(9, 10) - 11.0 / 1024.0).abs() < 1e-12);
         assert_eq!(sign_test_p(0, 4), 1.0);
+    }
+
+    #[test]
+    fn a_large_sample_does_not_turn_one_outlier_into_significance() {
+        let criterion = CriterionV1 {
+            criterion_id: Some("done".into()),
+            min_effect: 0.01,
+            min_runs: 1_100,
+            ..criterion(CriterionMetricV1::CriterionScore, DirectionV1::Increase)
+        };
+        let runs = |improved: bool| {
+            (0..1_100)
+                .map(|at| EvidenceRunV1 {
+                    criteria: BTreeMap::from([("done".into(), f64::from(improved && at == 0))]),
+                    ..run(true, None, "passed")
+                })
+                .collect()
+        };
+        let (found, reason, _) = outcome(runs(false), runs(true), &criterion);
+        assert_eq!(found, ValidationOutcomeV1::Inconclusive, "{reason}");
+        assert!(sign_test_p(1, 1_100) > 0.99);
+        assert!(sign_test_p(550, 1_100) > 0.5);
+        assert!(sign_test_p(550, 1_100) < 0.52);
+        assert!(sign_test_p(600, 1_100) < SIGN_TEST_ALPHA);
     }
 
     #[test]

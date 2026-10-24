@@ -112,8 +112,8 @@ pub fn activation_in_flight(record: &CycleRecordV1) -> bool {
 
 /// The read-only reconciliation of an activation operation during a
 /// recovery: running or unknown waits (unknown ends unproved after the
-/// grace, never assumed); failed or cancelled means the candidate is not
-/// active, so the prior is pinned (normally nothing to send) and proved;
+/// grace, never assumed); failed or cancelled settles the operation, so its
+/// partial effects can be restored by pinning and proving the prior;
 /// succeeded is activation only once the candidate's executable is proved.
 async fn reconcile_activation(
     promotion: &Promotion,
@@ -543,12 +543,7 @@ async fn canary_on_target(
             )
             .await
             .map_err(as_unknown)?;
-            let found = listed["executions"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .find(|summary| summary["label"] == label.as_str())
-                .and_then(|summary| summary["id"].as_str().map(str::to_string));
+            let found = evidence::unique_execution_id(&listed, &label);
             return match found {
                 Some(execution_id) => {
                     set_id(execution_id.clone()).await.map_err(as_unknown)?;
@@ -798,10 +793,15 @@ async fn next(
                     build_run_id: None,
                 })
                 .await?;
+            if binary != prior.binary_sha256 {
+                return Err(PromotionError::rejected(
+                    "the target's prior executable does not match its Registry artifact; rollback is not proved",
+                ));
+            }
             Next::Phase(PromotionPhase::RollbackDestination(ValidatedArtifact {
                 version,
                 archive_sha256: prior.archive_sha256,
-                binary_sha256: binary,
+                binary_sha256: prior.binary_sha256,
             }))
         }
         Some(PromotionPhase::RollbackDestination(prior)) => {
@@ -1109,6 +1109,15 @@ pub async fn promotion_stage(
                 stopped.push(PromotionPhase::Stopped(Stopped::at(step, &error)));
             }
             transition_with(deps, record, |next| {
+                if next.recovery.is_none() && activation_in_flight(next) {
+                    let reason = format!("promotion failed at {step}: {}", error.reason);
+                    next.recovery = Some(reason.clone());
+                    return Ok((
+                        CycleStatusV1::Running,
+                        CycleStageV1::Promotion,
+                        format!("{reason}; restoring the prior executable"),
+                    ));
+                }
                 next.promotion = Some(stopped.clone());
                 next.outcome = Some(CycleOutcomeV1 {
                     code: OutcomeCodeV1::Inconclusive,

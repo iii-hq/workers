@@ -1441,6 +1441,11 @@ impl Promotion {
             candidate
         };
         match classify_target(&observed, prior, candidate) {
+            TargetIs::Unknown { .. }
+                if destination == prior
+                    && matches!(observed.state.as_str(), "failed" | "stopped")
+                    && [prior.version.as_str(), candidate.version.as_str()]
+                        .contains(&observed.version.as_deref().unwrap_or_default()) => {}
             TargetIs::Unknown { reason } => return Err(PromotionError::inconclusive(reason)),
             TargetIs::Other { reason } => return Err(PromotionError::rejected(reason)),
             TargetIs::Prior if destination == prior => {

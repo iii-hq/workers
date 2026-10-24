@@ -7,6 +7,7 @@ use eval::contract::*;
 use eval::cost::{self, Reservation};
 use eval::decision;
 use eval::error::EvalError;
+use eval::evidence;
 
 fn budget() -> CycleBudgetV1 {
     CycleBudgetV1 {
@@ -23,6 +24,13 @@ fn work(work_id: &str, estimated_usd: f64, candidate: bool) -> CycleWorkV1 {
         kind: CycleWorkKindV1::E2e,
         estimated_usd,
         candidate,
+    }
+}
+
+fn trusted_work(work_id: &str, estimated_usd: f64) -> CycleWorkV1 {
+    CycleWorkV1 {
+        kind: CycleWorkKindV1::Investigation,
+        ..work(work_id, estimated_usd, false)
     }
 }
 
@@ -87,7 +95,7 @@ fn an_unusable_estimate_is_an_invalid_request_not_a_budget_limit() {
 fn an_unknown_cost_stays_charged_at_its_estimate_and_settles_once() {
     let mut ledger = cost::new_ledger("c", budget(), 0);
     cost::reserve(&mut ledger, &work("a", 0.4, false), 1).unwrap();
-    cost::reserve(&mut ledger, &work("b", 0.3, false), 1).unwrap();
+    cost::reserve(&mut ledger, &trusted_work("b", 0.3), 1).unwrap();
     assert!(cost::settle(&mut ledger, "a", None, 2).unwrap());
     assert!(cost::settle(&mut ledger, "b", Some(0.1), 2).unwrap());
     assert!(
@@ -98,6 +106,37 @@ fn an_unknown_cost_stays_charged_at_its_estimate_and_settles_once() {
     assert!((usage.spend_usd - 0.5).abs() < 1e-9, "{}", usage.spend_usd);
     assert_eq!(usage.unknown_cost, 1);
     assert!(cost::settle(&mut ledger, "missing", None, 3).is_err());
+}
+
+#[test]
+fn an_e2e_report_cannot_release_its_reserved_estimate() {
+    let mut ledger = cost::new_ledger("c", budget(), 0);
+    cost::reserve(&mut ledger, &work("e2e", 1.0, false), 1).unwrap();
+    cost::settle(&mut ledger, "e2e", Some(0.0), 2).unwrap();
+
+    let usage = cost::usage(&ledger, 2);
+    assert_eq!(usage.spend_usd, 1.0);
+    assert!(matches!(
+        cost::reserve(&mut ledger, &trusted_work("next", 0.01), 3).unwrap(),
+        Reservation::OverLimit(_)
+    ));
+    assert_eq!(ledger.reservations["e2e"].cost_usd, Some(0.0));
+
+    let mut trusted = cost::new_ledger("trusted", budget(), 0);
+    cost::reserve(&mut trusted, &trusted_work("analysis", 0.5), 1).unwrap();
+    cost::settle(&mut trusted, "analysis", Some(0.1), 2).unwrap();
+    assert_eq!(cost::usage(&trusted, 2).spend_usd, 0.1);
+}
+
+#[test]
+fn a_report_with_any_invalid_native_cost_is_unknown() {
+    let bundle = serde_json::json!({"detail": {"reports": [{"report": {
+        "scenarios": [{"runs": [
+            {"cost": {"total_usd": 1.0}},
+            {"cost": {"total_usd": -1.0}}
+        ]}]
+    }}]}});
+    assert_eq!(evidence::reported_cost(&bundle), None);
 }
 
 #[test]

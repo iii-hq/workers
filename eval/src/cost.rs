@@ -1,7 +1,9 @@
 //! A cycle's budget: every piece of work is reserved before it is
 //! dispatched, and an unreported cost stays charged at its estimate.
 
-use crate::contract::{CycleBudgetV1, CycleLedgerV1, CycleUsageV1, CycleWorkV1, WorkReservationV1};
+use crate::contract::{
+    CycleBudgetV1, CycleLedgerV1, CycleUsageV1, CycleWorkKindV1, CycleWorkV1, WorkReservationV1,
+};
 use crate::error::EvalError;
 
 pub fn new_ledger(cycle_id: &str, budget: CycleBudgetV1, started_at: i64) -> CycleLedgerV1 {
@@ -25,9 +27,14 @@ pub fn usage(ledger: &CycleLedgerV1, now: i64) -> CycleUsageV1 {
     for reservation in ledger.reservations.values() {
         usage.calls += 1;
         usage.candidates += u32::from(reservation.work.candidate);
-        usage.spend_usd += reservation
+        let reported = reservation
             .cost_usd
             .unwrap_or(reservation.work.estimated_usd);
+        usage.spend_usd += if reservation.work.kind == CycleWorkKindV1::E2e {
+            reported.max(reservation.work.estimated_usd)
+        } else {
+            reported
+        };
         if reservation.settled_at.is_some() && reservation.cost_usd.is_none() {
             usage.unknown_cost += 1;
         }

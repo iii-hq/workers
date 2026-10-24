@@ -492,12 +492,40 @@ async fn objective_freezes_a_plan_reserves_dispatches_and_imports_the_baseline_i
     .usage
     .unwrap();
     assert_eq!((usage.calls, usage.unknown_cost), (1, 0));
-    assert!((usage.spend_usd - 0.2).abs() < 1e-9);
+    assert!((usage.spend_usd - 0.5).abs() < 1e-9);
     // Redelivery changes nothing.
     h.changed("plan-1").await;
     h.drain().await;
     assert_eq!(h.cycle(&cycle_id).await.analyses.len(), 1);
     assert_eq!(h.world().starts, 1);
+}
+
+#[tokio::test]
+async fn a_terminal_execution_cannot_steal_an_owned_label() {
+    let h = Harness::start(World::new()).await;
+    h.configure(10.0).await;
+    let cycle_id = h.start_cycle(json!({"objective": OBJECTIVE})).await;
+    h.drain().await;
+    let label = format!("eval:{cycle_id}:baseline");
+    h.world()
+        .executions
+        .insert("evil".into(), bundle("evil", &label, "passed", full()));
+
+    let response = h.changed("evil").await;
+    assert!(!response.admitted);
+    assert!(response.reason.contains("plan-1"), "{}", response.reason);
+    h.drain().await;
+
+    let record = h.cycle(&cycle_id).await;
+    assert_eq!(record.status, CycleStatusV1::Waiting);
+    assert_eq!(record.executions[0].execution_id.as_deref(), Some("plan-1"));
+    assert!(record.analyses.is_empty());
+    let ledger = state::get_ledger(&h.iii, &cycle_id).await.unwrap().unwrap();
+    assert_eq!(ledger.reservations.len(), 1);
+    assert!(ledger
+        .reservations
+        .values()
+        .all(|entry| entry.settled_at.is_none()));
 }
 
 #[tokio::test]
@@ -574,6 +602,30 @@ async fn an_unanswered_dispatch_is_reconciled_by_label_and_never_dispatched_twic
     let record = h.cycle(&cycle_id).await;
     assert_eq!(record.stage, CycleStageV1::AwaitingExecution);
     assert_eq!(record.executions[0].execution_id.as_deref(), Some("plan-1"));
+    assert_eq!(h.world().starts, 1);
+}
+
+#[tokio::test]
+async fn an_unanswered_dispatch_is_not_reconciled_from_an_ambiguous_label() {
+    let mut world = World::new();
+    world.unanswered_start = true;
+    let h = Harness::start(world).await;
+    h.configure(10.0).await;
+    let cycle_id = h.start_cycle(json!({"objective": OBJECTIVE})).await;
+    h.drain().await;
+    let label = format!("eval:{cycle_id}:baseline");
+    h.world()
+        .executions
+        .insert("evil".into(), bundle("evil", &label, "passed", full()));
+
+    runtime::sweep(&h.deps).await.unwrap();
+    h.drain().await;
+
+    let record = h.cycle(&cycle_id).await;
+    assert_eq!(record.status, CycleStatusV1::Waiting);
+    assert_eq!(record.executions[0].state, ExecutionStateV1::Dispatching);
+    assert!(record.executions[0].execution_id.is_none());
+    assert!(record.analyses.is_empty());
     assert_eq!(h.world().starts, 1);
 }
 

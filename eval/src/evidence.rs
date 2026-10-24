@@ -44,6 +44,21 @@ pub fn summary<'a>(bundle: &'a Value, execution_id: &str) -> Option<&'a Value> {
         .find(|entry| entry["id"] == execution_id)
 }
 
+/// A label identifies work only when the complete listing has one match.
+pub(crate) fn unique_execution_id(listed: &Value, label: &str) -> Option<String> {
+    if !listed["next_cursor"].is_null() {
+        return None;
+    }
+    let mut matches = listed["executions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|entry| entry["label"] == label)
+        .filter_map(|entry| entry["id"].as_str().map(str::to_string));
+    let execution_id = matches.next();
+    execution_id.filter(|_| matches.next().is_none())
+}
+
 pub fn status_of(summary: &Value) -> String {
     text_at(summary, "/status")
         .unwrap_or_default()
@@ -402,8 +417,11 @@ pub fn reported_cost(bundle: &Value) -> Option<f64> {
         return None;
     }
     runs.iter()
-        .map(|(_, run)| run["cost"]["total_usd"].as_f64())
-        .sum()
+        .try_fold(0.0, |total, (_, run)| {
+            let cost = run["cost"]["total_usd"].as_f64()?;
+            (cost.is_finite() && cost >= 0.0).then_some(total + cost)
+        })
+        .filter(|total| total.is_finite())
 }
 
 /// The canonical cases the execution's runs reported.
