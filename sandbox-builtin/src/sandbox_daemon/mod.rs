@@ -105,7 +105,7 @@ If detail.fix is non-null, your next call is fn(detail.fix).
 use std::sync::Arc;
 
 use iii_helpers::observability::OtelConfig;
-use iii_sdk::runtime::{FunctionRef, WorkerMetadata};
+use iii_sdk::runtime::{FunctionRef, IIIConnectionState, WorkerMetadata};
 use iii_sdk::{IIIClient, InitOptions, RegisterFunction, register_worker_from_env};
 
 use crate::sandbox_daemon::config::{SandboxConfig, parse_config};
@@ -168,15 +168,19 @@ pub async fn serve() -> anyhow::Result<()> {
         }
     };
     tracing::info!(reason, "sandbox-builtin shutting down");
-    // shutdown_async does not wait for the SDK's own flush, so the spans of the
-    // last calls were lost. Bounded: a dead engine cannot take them anyway.
-    let _ = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        iii_helpers::observability::flush_otel(),
-    )
-    .await;
+    flush_telemetry(&iii, iii_helpers::observability::flush_otel()).await;
     iii.shutdown_async().await;
     Ok(())
+}
+
+/// shutdown_async does not wait for the SDK's own flush, so the spans of the
+/// last calls were lost. Only while the engine is connected, and bounded: a
+/// gone engine cannot take them, and every exit would wait out the bound.
+async fn flush_telemetry(iii: &IIIClient, flush: impl std::future::Future<Output = ()>) {
+    if iii.get_connection_state() == IIIConnectionState::Connected {
+        // A live engine takes them in about 200 ms.
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(500), flush).await;
+    }
 }
 
 /// Register every function and spawn the idle reaper; returns the sandboxes.
@@ -662,6 +666,17 @@ mod registration_tests {
             ("sandbox-builtin", env!("CARGO_PKG_VERSION"), CONTRACT_MAJOR)
         );
         assert_eq!(env!("CARGO_PKG_VERSION_MAJOR"), CONTRACT_MAJOR.to_string());
+    }
+
+    /// With the engine gone the flush can never finish, so an exit skips it
+    /// instead of waiting out its bound.
+    #[tokio::test]
+    async fn an_exit_without_the_engine_skips_the_telemetry_flush() {
+        let iii = iii_sdk::IIIClient::new("ws://127.0.0.1:9");
+        let exit = flush_telemetry(&iii, std::future::pending());
+        tokio::time::timeout(std::time::Duration::from_millis(100), exit)
+            .await
+            .expect("the exit waited for a flush with no engine");
     }
 }
 
