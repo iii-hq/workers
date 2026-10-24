@@ -149,20 +149,19 @@ const SLOT_COOLDOWN: Duration = Duration::from_millis(250);
 /// size — plenty of room for bursty stdin without runaway growth.
 const VM_WRITE_CAPACITY: usize = 1024;
 
-/// Bound on each VM → client channel. Unlike the shared VM-bound
-/// queue, a slow client on this side must NOT stall the single
-/// `vm_reader_task` (that would starve every other client of
-/// responses). The reader uses `try_send` and drops frames with a
-/// warning when the bound is hit — the cost of an unresponsive client
-/// is lost output on its own session, never a hang on anyone else's.
+/// Bound on each VM → client channel: how far a session's client may
+/// fall behind before `vm_reader_task`, which serves every session,
+/// has to wait for it or drop it (see [`SLOW_CLIENT_GRACE`]).
 const CLIENT_WRITE_CAPACITY: usize = 1024;
 
 /// How long `vm_reader_task` waits for room in a full client channel
-/// before it disconnects that client. Waiting is backpressure: the
-/// guest's writes block and nothing is lost, where dropping frames
-/// cut a large `fs::read` short with a clean end. The bound keeps a
-/// client that stopped reading from stalling every other session for
-/// long; its session then ends without a terminal frame.
+/// while that client's session is the VM's only one. Waiting is
+/// backpressure: the guest's writes block and nothing is lost, so a
+/// large `fs::read` with a slow consumer still arrives whole. With
+/// another session live, waiting would hold up its frames too, so the
+/// slow client is disconnected at once instead. Either way the dropped
+/// session ends without a terminal frame, which its client reports as
+/// a failed stream, never as a short one.
 const SLOW_CLIENT_GRACE: Duration = Duration::from_secs(10);
 
 /// Maximum number of distinct `corr_id`s a single client can register
@@ -372,23 +371,29 @@ async fn vm_reader_task(
                 .map(|e| (e.sender.clone(), e.kick.clone()))
         };
         if let Some((tx, kick)) = route {
-            // A full channel stalls vm_reader_task, and so every other
-            // session, but only up to SLOW_CLIENT_GRACE: a slow client
-            // gets backpressure instead of a silently short stream, and
-            // a stuck one is disconnected. See `CLIENT_WRITE_CAPACITY`
-            // for sizing rationale.
+            // Waiting on a full channel stalls every session, so only a
+            // VM's sole session gets it; see SLOW_CLIENT_GRACE.
             match tx.try_send(frame) {
                 Ok(()) => {}
                 Err(mpsc::error::TrySendError::Full(frame)) => {
-                    if tokio::time::timeout(SLOW_CLIENT_GRACE, tx.send(frame))
-                        .await
-                        .is_err()
+                    let alone = routes.lock().expect("routes mutex poisoned").len() == 1;
+                    if !alone
+                        || tokio::time::timeout(SLOW_CLIENT_GRACE, tx.send(frame))
+                            .await
+                            .is_err()
                     {
-                        tracing::warn!(
-                            "shell_relay: client for corr_id {corr_id} read nothing for \
-                             {SLOW_CLIENT_GRACE:?}; disconnecting it"
-                        );
-                        kick.notify_one();
+                        // Unrouted, its later frames are dropped as an unknown corr_id's.
+                        let dropped = routes
+                            .lock()
+                            .expect("routes mutex poisoned")
+                            .remove(&corr_id);
+                        if dropped.is_some() {
+                            tracing::warn!(
+                                "shell_relay: client for corr_id {corr_id} fell \
+                                 {CLIENT_WRITE_CAPACITY} frames behind; disconnecting it"
+                            );
+                            kick.notify_one();
+                        }
                     }
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => {
@@ -540,9 +545,9 @@ async fn client_session(
         return;
     }
 
-    // Per-client response channel. vm_reader_task pushes here with
-    // `try_send` (drop on full); we forward everything to the socket
-    // below. See [`CLIENT_WRITE_CAPACITY`] for sizing rationale.
+    // Per-client response channel. vm_reader_task pushes here, and
+    // drops this client if it falls a full channel behind (see
+    // [`SLOW_CLIENT_GRACE`]); we forward everything to the socket below.
     let (client_tx, mut client_rx) = mpsc::channel::<FrameBytes>(CLIENT_WRITE_CAPACITY);
 
     // Writer: drain mpsc into client socket.
@@ -1196,6 +1201,70 @@ mod tests {
             chunks += 1;
         }
         assert_eq!(chunks, FRAMES);
+    }
+
+    /// A client that stops reading must not hold up another session's
+    /// frames: once its channel is full while another session is live, it
+    /// is disconnected instead of waited for.
+    #[tokio::test]
+    async fn a_stalled_client_does_not_hold_up_another_session() {
+        let (sock, vm_guest_sim, _tmp) = boot().await;
+        // Guest simulator: once both sessions have asked, floods the first
+        // and then ends the second.
+        let mut writer = vm_guest_sim.try_clone().unwrap();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let mut reader = std::io::BufReader::new(vm_guest_sim);
+            let mut ids = Vec::new();
+            while ids.len() < 2 {
+                match read_frame_blocking(&mut reader) {
+                    Ok(Some((corr_id, _, _))) => ids.push(corr_id),
+                    _ => return,
+                }
+            }
+            let chunk = ShellMessage::Stdout {
+                data_b64: "A".repeat(1024),
+            };
+            let chunk = encode_frame(ids[0], 0, &chunk).unwrap();
+            for _ in 0..2 * CLIENT_WRITE_CAPACITY {
+                if writer.write_all(&chunk).is_err() {
+                    return;
+                }
+            }
+            let end = encode_frame(ids[1], FLAG_TERMINAL, &ShellMessage::Exited { code: 0 });
+            let _ = writer.write_all(&end.unwrap());
+        });
+        let request = ShellMessage::Request {
+            cmd: "/bin/cat".into(),
+            args: vec![],
+            env: vec![],
+            cwd: None,
+            tty: false,
+            rows: 24,
+            cols: 80,
+        };
+        let mut sessions = Vec::new();
+        for _ in 0..2 {
+            let mut client = tokio::net::UnixStream::connect(&sock).await.unwrap();
+            let mut hs = [0u8; 4];
+            client.read_exact(&mut hs).await.unwrap();
+            let corr_id = u32::from_be_bytes(hs) + 1;
+            client
+                .write_all(&encode_frame(corr_id, 0, &request).unwrap())
+                .await
+                .unwrap();
+            sessions.push(client);
+            // So the guest sees the stalled session's request first.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        // The first client never reads; the second gets its end well inside SLOW_CLIENT_GRACE.
+        let end = tokio::time::timeout(Duration::from_secs(3), read_frame(&mut sessions[1]))
+            .await
+            .expect("the other session was held up behind the stalled one")
+            .unwrap()
+            .expect("frame");
+        assert!(end[8] & FLAG_TERMINAL != 0);
     }
 
     #[tokio::test]
