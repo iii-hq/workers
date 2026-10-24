@@ -690,9 +690,8 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
     // Pre-fetch the manifest so we can tell the user UP FRONT what they're
     // about to wait for (layer count + total compressed bytes). The
     // `client.pull(...)` call below is one blocking network operation
-    // with no per-byte progress hook, so without this summary the only
-    // signal the wait UI has is the 3s heartbeat (elapsed time only).
-    // Knowing "1247 MiB across 5 layers" lets the user gauge how long
+    // with no per-byte progress hook, so this summary is the first
+    // signal in the log. Knowing "1247 MiB across 5 layers" lets the user gauge how long
     // the pull will realistically take. Best-effort: if the registry
     // returns an Image Index (multi-platform manifest) we skip the
     // summary rather than do the full platform resolution dance — the
@@ -737,8 +736,7 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
         // A background task reads the counter every 2s and emits a
         // real progress line:
         //   "Pulling <image>: 412.6/1247.3 MiB (33%, 41.2 MiB/s, 10s)"
-        // The wait UI's `tail:` row picks up the latest one and shows
-        // genuine download progress instead of just elapsed time.
+        // so the adapter's log shows genuine download progress.
         let pull_result = pull_with_progress(&client, &reference, image, host_arch).await;
 
         match pull_result {
@@ -785,14 +783,6 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
     );
 
     let layer_count = image_data.layers.len();
-    let pb = indicatif::ProgressBar::new(layer_count as u64);
-    pb.set_style(
-        indicatif::ProgressStyle::with_template(
-            "  [{bar:40.cyan/blue}] {pos}/{len} layers extracted",
-        )
-        .unwrap()
-        .progress_chars("=> "),
-    );
 
     // Set up the atomic-extract staging dir AFTER pull succeeds. Doing this
     // before pull would leak the temp dir on network/auth failure.
@@ -835,29 +825,16 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
     };
 
     let mut total_size: u64 = 0;
-    use std::io::IsTerminal;
-    let mirror_layer_lines = !std::io::stderr().is_terminal();
     let extract_result: Result<()> = (|| {
         for (i, layer) in image_data.layers.iter().enumerate() {
             extract_layer_with_limits(&layer.data, &extract_root, i, layer_count, &mut total_size)?;
-            pb.inc(1);
-            // On TTY, indicatif's progress bar handles the live row.
-            // On non-TTY (engine-captured log file), the bar produces
-            // nothing — so we mirror each completed layer as a plain
-            // eprintln to keep the `tail:` row in `iii worker add
-            // --wait` refreshing with concrete progress. The TTY
-            // branch SKIPS this print so it doesn't scroll the bar's
-            // row off as the bar is also being redrawn.
-            if mirror_layer_lines {
-                eprintln!(
-                    "  Extracted layer {}/{} ({:.1} MiB total)",
-                    i + 1,
-                    layer_count,
-                    total_size as f64 / (1024.0 * 1024.0),
-                );
-            }
+            eprintln!(
+                "  Extracted layer {}/{} ({:.1} MiB total)",
+                i + 1,
+                layer_count,
+                total_size as f64 / (1024.0 * 1024.0),
+            );
         }
-        pb.finish();
 
         let config_json = &image_data.config.data;
         let config_path = extract_root.join(".oci-config.json");
@@ -876,8 +853,7 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
         match extract_result {
             Ok(()) => {
                 // If `final_dir` already exists (leftover from a prior
-                // interrupted run, or a race with another `iii worker add`),
-                // remove it so the rename can succeed. We're claiming this
+                // interrupted run), remove it so the rename can succeed. We're claiming this
                 // dir atomically — stale contents are replaced wholesale.
                 if final_dir.exists() {
                     std::fs::remove_dir_all(&final_dir).with_context(|| {
@@ -949,13 +925,12 @@ pub fn read_oci_env(rootfs: &std::path::Path) -> Vec<(String, String)> {
 // ─────────────────────────────────────────────────────────────────────────────
 // Streaming pull with byte-level progress
 //
-// `oci_client::Client::pull` is one blocking call with no per-byte hook,
-// which forced our wait UI to fall back on an elapsed-time-only heart-
-// beat. Re-implement the pull at the layer level: fetch the manifest
+// `oci_client::Client::pull` is one blocking call with no per-byte hook.
+// Re-implement the pull at the layer level: fetch the manifest
 // (resolving multi-platform), pull the config blob, then stream each
 // layer via `pull_blob_stream`, counting bytes into a shared
 // `AtomicU64`. A background task reads the counter every 2s and emits
-// a real progress line that the wait UI's `tail:` row surfaces.
+// a real progress line to stderr.
 // ─────────────────────────────────────────────────────────────────────────────
 
 async fn pull_with_progress(
@@ -990,16 +965,6 @@ async fn pull_with_progress(
     let total_for_heartbeat = total_bytes;
     let image_for_heartbeat = image.to_string();
     let attempt_started = std::time::Instant::now();
-    // Skip the per-second heartbeat eprintlns when stderr is a TTY: the
-    // caller (`handle_oci_pull_and_add`) wraps this whole call in a
-    // `Spinner` whose 100ms tick redraws the same row. Heartbeat
-    // eprintlns from here would scroll the spinner row off and produce
-    // visual chaos. The non-TTY path (engine-spawned subprocess →
-    // `~/.iii/logs/<name>/stderr.log`) NEEDS these lines because the
-    // wait UI tails that file for the `tail:` row, and there's no
-    // spinner there.
-    use std::io::IsTerminal;
-    let emit_heartbeat = !std::io::stderr().is_terminal();
     // Scope guard: aborts the heartbeat task on Drop. Without this, every
     // `?` operator between here and the explicit `drop(heartbeat)` at the
     // end of this function (config-blob fetch, every layer's
@@ -1018,9 +983,9 @@ async fn pull_with_progress(
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
         // Default `Burst` would replay missed ticks back-to-back if
         // the runtime worker thread was held off (e.g., a blocking
-        // syscall elsewhere). The wait UI would suddenly see N
-        // identical "Pulling X.X/Y.Y MiB" lines in milliseconds, which
-        // looks like a glitch rather than honest progress.
+        // syscall elsewhere). The log would suddenly get N identical
+        // "Pulling X.X/Y.Y MiB" lines in milliseconds, which looks like
+        // a glitch rather than honest progress.
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await; // first tick is instant; consume it
         loop {
@@ -1032,13 +997,11 @@ async fn pull_with_progress(
                 let total_mb = total_for_heartbeat as f64 / (1024.0 * 1024.0);
                 let pct = (dl as u128 * 100 / total_for_heartbeat.max(1) as u128).min(100) as u64;
                 let rate = mb / elapsed as f64;
-                if emit_heartbeat {
-                    eprintln!(
-                        "  Pulling {}: {:.1}/{:.1} MiB ({}%, {:.1} MiB/s, {}s)",
-                        image_for_heartbeat, mb, total_mb, pct, rate, elapsed
-                    );
-                }
-            } else if emit_heartbeat {
+                eprintln!(
+                    "  Pulling {}: {:.1}/{:.1} MiB ({}%, {:.1} MiB/s, {}s)",
+                    image_for_heartbeat, mb, total_mb, pct, rate, elapsed
+                );
+            } else {
                 // Registry didn't report layer sizes — show what we've
                 // got so the user at least sees activity.
                 eprintln!(
@@ -1110,18 +1073,14 @@ async fn pull_with_progress(
     drop(heartbeat); // explicit: AbortOnDrop fires here
 
     // Final 100% line so the user sees the pull cleanly conclude
-    // before the extract eprintlns start. Gated on non-TTY for the same
-    // reason as the heartbeat: on TTY the outer Spinner provides the
-    // signal; here this line would just collide with it.
+    // before the extract eprintlns start.
     let final_mb = downloaded.load(Ordering::Relaxed) as f64 / (1024.0 * 1024.0);
     let total_mb = total_bytes as f64 / (1024.0 * 1024.0);
     let final_elapsed = attempt_started.elapsed().as_secs().max(1);
-    if emit_heartbeat {
-        eprintln!(
-            "  Pulling {}: {:.1}/{:.1} MiB (100%, {:.1}s total)",
-            image, final_mb, total_mb, final_elapsed as f64
-        );
-    }
+    eprintln!(
+        "  Pulling {}: {:.1}/{:.1} MiB (100%, {:.1}s total)",
+        image, final_mb, total_mb, final_elapsed as f64
+    );
 
     Ok(ImageData {
         layers,

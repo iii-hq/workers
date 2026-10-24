@@ -4,167 +4,12 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! Integration tests for project auto-detection, manifest loading, and script inference.
-//!
-//! Covers requirements PROJ-01 through PROJ-05:
-//! - PROJ-01: TypeScript detection from package.json
-//! - PROJ-02: Rust detection from Cargo.toml
-//! - PROJ-03: Python detection from pyproject.toml / requirements.txt
-//! - PROJ-04: Package manager differentiation (bun vs npm default)
-//! - PROJ-05: Script inference and manifest loading
+//! Integration tests for manifest loading and script inference (PROJ-05).
 
-use sandbox_builtin::cli::project::{
-    WORKER_MANIFEST, auto_detect_project, infer_scripts, load_from_manifest, load_project_info,
-};
+use sandbox_builtin::cli::project::{WORKER_MANIFEST, infer_scripts, load_from_manifest};
 
 // ---------------------------------------------------------------------------
-// Group 1: auto_detect_project tests (PROJ-01 through PROJ-04)
-// ---------------------------------------------------------------------------
-
-/// PROJ-01: Detects TypeScript/npm project from package.json without bun lockfile.
-#[test]
-fn auto_detect_typescript_npm_from_package_json() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("package.json"), "{}").unwrap();
-
-    let result = auto_detect_project(dir.path());
-    assert!(result.is_some(), "expected Some for package.json project");
-    let info = result.unwrap();
-    assert_eq!(info.kind.as_deref(), Some("typescript"));
-    assert_eq!(info.name, "node (npm)");
-    assert!(
-        info.install_cmd.contains("npm"),
-        "install_cmd should contain 'npm': {}",
-        info.install_cmd
-    );
-}
-
-/// PROJ-01, PROJ-04: Detects TypeScript/bun project from package.json + bun.lock.
-#[test]
-fn auto_detect_typescript_bun_from_bun_lock() {
-    // A bun lockfile promotes auto-detection to `kind: bun` so the
-    // default rootfs is the bun-native oven/bun:latest image rather
-    // than node-plus-bun-bootstrap.
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("package.json"), "{}").unwrap();
-    std::fs::write(dir.path().join("bun.lock"), "").unwrap();
-
-    let result = auto_detect_project(dir.path());
-    assert!(result.is_some(), "expected Some for bun project");
-    let info = result.unwrap();
-    assert_eq!(info.name, "bun");
-    assert_eq!(info.kind.as_deref(), Some("bun"));
-    assert!(
-        info.install_cmd.contains("bun") || info.run_cmd.contains("bun"),
-        "bun commands should reference 'bun': install={}, run={}",
-        info.install_cmd,
-        info.run_cmd
-    );
-}
-
-/// PROJ-04: Detects TypeScript/bun project from package.json + bun.lockb (binary lockfile).
-#[test]
-fn auto_detect_typescript_bun_from_bun_lockb() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("package.json"), "{}").unwrap();
-    std::fs::write(dir.path().join("bun.lockb"), "").unwrap();
-
-    let result = auto_detect_project(dir.path());
-    assert!(result.is_some(), "expected Some for bun.lockb project");
-    let info = result.unwrap();
-    assert_eq!(info.name, "bun");
-    assert_eq!(info.kind.as_deref(), Some("bun"));
-    assert!(
-        info.install_cmd.contains("bun") || info.run_cmd.contains("bun"),
-        "bun commands should reference 'bun': install={}, run={}",
-        info.install_cmd,
-        info.run_cmd
-    );
-}
-
-/// PROJ-02: Detects Rust project from Cargo.toml.
-#[test]
-fn auto_detect_rust_from_cargo_toml() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
-
-    let result = auto_detect_project(dir.path());
-    assert!(result.is_some(), "expected Some for Cargo.toml project");
-    let info = result.unwrap();
-    assert_eq!(info.name, "rust");
-    assert_eq!(info.kind.as_deref(), Some("rust"));
-    assert!(
-        info.install_cmd.contains("cargo"),
-        "install_cmd should contain 'cargo': {}",
-        info.install_cmd
-    );
-}
-
-/// PROJ-03: Detects Python project from pyproject.toml.
-#[test]
-fn auto_detect_python_from_pyproject_toml() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("pyproject.toml"), "[project]").unwrap();
-
-    let result = auto_detect_project(dir.path());
-    assert!(result.is_some(), "expected Some for pyproject.toml project");
-    let info = result.unwrap();
-    assert_eq!(info.name, "python");
-    assert_eq!(info.kind.as_deref(), Some("python"));
-}
-
-/// PROJ-03: Detects Python project from requirements.txt.
-#[test]
-fn auto_detect_python_from_requirements_txt() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("requirements.txt"), "flask").unwrap();
-
-    let result = auto_detect_project(dir.path());
-    assert!(
-        result.is_some(),
-        "expected Some for requirements.txt project"
-    );
-    let info = result.unwrap();
-    assert_eq!(info.name, "python");
-    assert_eq!(info.kind.as_deref(), Some("python"));
-}
-
-/// Returns None for an empty directory with no recognizable project markers.
-#[test]
-fn auto_detect_unknown_project_returns_none() {
-    let dir = tempfile::tempdir().unwrap();
-    assert!(
-        auto_detect_project(dir.path()).is_none(),
-        "expected None for empty directory"
-    );
-}
-
-/// PROJ-04: Without bun.lock, auto_detect defaults to npm. With bun.lock, detects bun.
-///
-/// NOTE: auto_detect_project does NOT detect yarn (yarn.lock) or pnpm (pnpm-lock.yaml)
-/// from lockfiles. It only differentiates bun (bun.lock/bun.lockb) from the npm default.
-/// The infer_scripts function supports yarn/pnpm but only when called from a manifest
-/// with an explicit package_manager field.
-#[test]
-fn package_manager_detection_bun_vs_npm_default() {
-    // Without bun lockfile -> defaults to npm
-    let npm_dir = tempfile::tempdir().unwrap();
-    std::fs::write(npm_dir.path().join("package.json"), "{}").unwrap();
-    let npm_info = auto_detect_project(npm_dir.path()).unwrap();
-    assert_eq!(npm_info.name, "node (npm)");
-
-    // With bun.lock -> promotes to `kind: bun` (not `node (bun)`);
-    // auto-detection prefers the native bun runtime when the user
-    // already has a bun lockfile on disk.
-    let bun_dir = tempfile::tempdir().unwrap();
-    std::fs::write(bun_dir.path().join("package.json"), "{}").unwrap();
-    std::fs::write(bun_dir.path().join("bun.lock"), "").unwrap();
-    let bun_info = auto_detect_project(bun_dir.path()).unwrap();
-    assert_eq!(bun_info.name, "bun");
-}
-
-// ---------------------------------------------------------------------------
-// Group 2: infer_scripts tests (PROJ-05)
+// Group 1: infer_scripts tests (PROJ-05)
 // ---------------------------------------------------------------------------
 
 /// PROJ-05: Infer scripts for TypeScript/bun runtime.
@@ -245,7 +90,7 @@ fn infer_scripts_unknown_returns_entry() {
 }
 
 // ---------------------------------------------------------------------------
-// Group 3: Manifest loading and load_project_info (PROJ-05 augmentation)
+// Group 2: Manifest loading (PROJ-05 augmentation)
 // ---------------------------------------------------------------------------
 
 /// PROJ-05: load_from_manifest with explicit scripts and env filtering.
@@ -307,28 +152,5 @@ runtime:
         info.run_cmd.contains("bun src/index.ts"),
         "run_cmd should contain 'bun src/index.ts': {}",
         info.run_cmd
-    );
-}
-
-/// PROJ-05: load_project_info prefers manifest over auto-detection when both exist.
-#[test]
-fn load_project_info_prefers_manifest_over_auto_detect() {
-    let dir = tempfile::tempdir().unwrap();
-    // Create package.json (would auto-detect as node/npm)
-    std::fs::write(dir.path().join("package.json"), "{}").unwrap();
-    // Create manifest (should take precedence)
-    let yaml = r#"
-name: manifest-worker
-runtime:
-  kind: typescript
-  package_manager: npm
-  entry: src/index.ts
-"#;
-    std::fs::write(dir.path().join(WORKER_MANIFEST), yaml).unwrap();
-
-    let info = load_project_info(dir.path()).unwrap();
-    assert_eq!(
-        info.name, "manifest-worker",
-        "manifest should take precedence over auto-detection"
     );
 }

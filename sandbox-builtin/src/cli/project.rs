@@ -4,7 +4,7 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! Project auto-detection and manifest loading for worker dev sessions.
+//! `iii.worker.yaml` loading and validation for worker VMs.
 
 use colored::Colorize;
 use std::collections::HashMap;
@@ -38,11 +38,10 @@ const SUPPORTED_KINDS: &[&str] = &["typescript", "javascript", "bun", "python", 
 // The typed struct defines the supported fields (mirroring the formal sections
 // in docs/creating-workers/worker-manifest.mdx), carries the deprecated legacy
 // fields (runtime.kind/package_manager/entry/language, top-level config/
-// language/entry — warned, still honored), and catches unknown keys via
-// `#[serde(flatten)]` maps. `validate_manifest_keys` / `warn_deprecated_
-// manifest_keys` below are thin wrappers over it for the add/start paths.
-// `env` and `dependencies` are arbitrary user-defined maps — their inner keys
-// are never allowlist-checked.
+// language/entry — still honored), and catches unknown keys via
+// `#[serde(flatten)]` maps. `validate_manifest_keys` below is a thin wrapper
+// over it for the start path. `env` and `dependencies` are arbitrary
+// user-defined maps — their inner keys are never allowlist-checked.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Max size of a local `iii.worker.yaml` we will read, mirroring the bundle
@@ -145,8 +144,8 @@ pub fn infer_scripts(kind: &str, package_manager: &str, entry: &str) -> (String,
         // per-VM `target` dir is never shared (no CARGO_TARGET_DIR), so debug's
         // full debuginfo (130 MB binaries) + `incremental=true` churn pile up
         // per worker (MOT-3459 Defect 1). Release defaults to no debuginfo and
-        // `incremental=false`. Must match the auto-detect path below and keep
-        // build/run on the same profile (mismatch = a second full target tree).
+        // `incremental=false`. Keep build/run on the same profile (mismatch =
+        // a second full target tree).
         ("rust", _) => (
             "command -v cargo >/dev/null || (curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y)".to_string(),
             "[ -f \"$HOME/.cargo/env\" ] && . \"$HOME/.cargo/env\"; cargo build --release".to_string(),
@@ -154,14 +153,6 @@ pub fn infer_scripts(kind: &str, package_manager: &str, entry: &str) -> (String,
         ),
         _ => (String::new(), String::new(), entry.to_string()),
     }
-}
-
-pub fn load_project_info(path: &std::path::Path) -> Option<ProjectInfo> {
-    let manifest_path = path.join(WORKER_MANIFEST);
-    if manifest_path.exists() {
-        return load_from_manifest(&manifest_path);
-    }
-    auto_detect_project(path)
 }
 
 /// Resolve `scripts.install` from a manifest's `scripts` section. Returns
@@ -190,8 +181,8 @@ fn install_skipped_warning(manifest_path: &std::path::Path) -> String {
 
 /// Read, size-cap, and parse an `iii.worker.yaml` exactly once.
 ///
-/// Returns `Ok(None)` when the manifest is absent (the auto-detect path), so
-/// callers can branch without a second `exists()` check. Returns `Err` when
+/// Returns `Ok(None)` when the manifest is absent, so callers can branch
+/// without a second `exists()` check. Returns `Err` when
 /// the file exceeds [`MAX_LOCAL_MANIFEST_BYTES`] or fails to read/parse — the
 /// size cap mirrors the bundle path and bounds every downstream read, since
 /// callers thread the returned `Value` instead of re-reading.
@@ -223,13 +214,11 @@ pub fn read_manifest_doc(
 /// collected and sorted so a manifest with several mistakes surfaces them all
 /// in one run, or an `invalid manifest shape` error when a section has the
 /// wrong type (e.g. `runtime: node` where a mapping is required). Pure — emits
-/// NO warnings — so it can run on both the `add` and the `start` paths (start
-/// would otherwise re-warn about deprecated keys on every engine boot).
+/// NO warnings.
 ///
 /// An empty manifest (`null`) or empty mapping returns `Ok(())`: there are no
-/// keys to police. Missing `name` is a separate required-field rule —
-/// [`require_manifest_name`], enforced on the add path. A non-mapping top
-/// level (a list, a bare scalar) is a shape error.
+/// keys to police; [`load_from_manifest`] then refuses it for its missing
+/// `name`. A non-mapping top level (a list, a bare scalar) is a shape error.
 pub fn validate_manifest_keys(
     doc: &serde_yaml::Value,
     manifest_path: &std::path::Path,
@@ -245,7 +234,7 @@ pub fn validate_manifest_keys(
     }
     let manifest = super::worker_manifest::WorkerManifest::from_value(doc)
         .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
-    let (unknown, _deprecated) = manifest.classify_keys();
+    let unknown = manifest.unknown_keys();
     if unknown.is_empty() {
         return Ok(());
     }
@@ -264,15 +253,14 @@ pub fn load_from_manifest(manifest_path: &std::path::Path) -> Option<ProjectInfo
     let content = std::fs::read_to_string(manifest_path).ok()?;
     let doc: serde_yaml::Value = serde_yaml::from_str(&content).ok()?;
     // Typed view — the manifest schema's single source of truth. A shape
-    // mismatch (e.g. `runtime: node`) yields None here; on the add/start
-    // paths `validate_manifest_keys` has already surfaced the precise error.
+    // mismatch (e.g. `runtime: node`) yields None here; on the start path
+    // `validate_manifest_keys` has already surfaced the precise error.
     let manifest = super::worker_manifest::WorkerManifest::from_value(&doc).ok()?;
     let name = manifest.name.clone()?;
 
     let rt = manifest.runtime.clone().unwrap_or_default();
     // Prefer `runtime.kind`; fall back to the legacy `runtime.language` so
-    // older manifests keep working. Deprecation warnings come from
-    // `warn_deprecated_manifest_keys` on the `worker add` path.
+    // older manifests keep working.
     let kind = rt.kind.as_deref().or(rt.language.as_deref()).unwrap_or("");
     let package_manager = rt.package_manager.as_deref().unwrap_or("");
     let entry = rt.entry.as_deref().unwrap_or("");
@@ -349,58 +337,6 @@ pub fn load_from_manifest(manifest_path: &std::path::Path) -> Option<ProjectInfo
         env,
         base_image,
     })
-}
-
-pub fn auto_detect_project(path: &std::path::Path) -> Option<ProjectInfo> {
-    let info = if path.join("package.json").exists() {
-        if path.join("bun.lock").exists() || path.join("bun.lockb").exists() {
-            // A bun lockfile on disk means the user is committed to
-            // bun. Pick `kind: bun` so the oven/bun:latest rootfs gets
-            // used — no bun bootstrap script needed.
-            ProjectInfo {
-                name: "bun".into(),
-                kind: Some("bun".into()),
-                setup_cmd: String::new(),
-                install_cmd: "bun install".into(),
-                run_cmd: "bun run dev".into(),
-                env: HashMap::new(),
-                base_image: None,
-            }
-        } else {
-            ProjectInfo {
-                name: "node (npm)".into(),
-                kind: Some("typescript".into()),
-                setup_cmd: "command -v node >/dev/null || (curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs)".into(),
-                install_cmd: "npm install".into(),
-                run_cmd: "npm run dev".into(),
-                env: HashMap::new(),
-                base_image: None,
-            }
-        }
-    } else if path.join("Cargo.toml").exists() {
-        ProjectInfo {
-            name: "rust".into(),
-            kind: Some("rust".into()),
-            setup_cmd: "command -v cargo >/dev/null || (curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y)".into(),
-            install_cmd: "[ -f \"$HOME/.cargo/env\" ] && . \"$HOME/.cargo/env\"; cargo build --release".into(),
-            run_cmd: "[ -f \"$HOME/.cargo/env\" ] && . \"$HOME/.cargo/env\"; cargo run --release".into(),
-            env: HashMap::new(),
-            base_image: None,
-        }
-    } else if path.join("pyproject.toml").exists() || path.join("requirements.txt").exists() {
-        ProjectInfo {
-            name: "python".into(),
-            kind: Some("python".into()),
-            setup_cmd: "command -v python3 >/dev/null || (apt-get update && apt-get install -y python3 python3-pip python3-venv)".into(),
-            install_cmd: "python3 -m pip install -e .".into(),
-            run_cmd: "python3 -m iii".into(),
-            env: HashMap::new(),
-            base_image: None,
-        }
-    } else {
-        return None;
-    };
-    Some(info)
 }
 
 #[cfg(test)]
@@ -513,7 +449,7 @@ scripts:
     }
 
     #[test]
-    fn load_manifest_auto_detects_scripts() {
+    fn load_manifest_infers_scripts() {
         let dir = tempfile::tempdir().unwrap();
         let manifest_path = dir.path().join("iii.worker.yaml");
         let yaml = r#"
@@ -603,9 +539,7 @@ env:
     #[test]
     fn load_manifest_accepts_legacy_language_field() {
         // Backwards compat: old manifests with `runtime.language`
-        // keep working and parse equivalently. The deprecation warning
-        // now comes from `validate_manifest_keys` on the `worker add`
-        // path, not from `load_from_manifest`.
+        // keep working and parse equivalently.
         let dir = tempfile::tempdir().unwrap();
         let manifest_path = dir.path().join("iii.worker.yaml");
         let yaml = r#"
@@ -686,67 +620,6 @@ runtime:
         assert!(setup.contains("nodejs") || setup.contains("nodesource"));
         assert!(install.contains("npm install"));
         assert!(run.contains("npx tsx src/index.ts"));
-    }
-
-    #[test]
-    fn auto_detect_project_node_npm() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
-        let info = auto_detect_project(dir.path()).unwrap();
-        assert_eq!(info.name, "node (npm)");
-        assert_eq!(info.kind.as_deref(), Some("typescript"));
-        assert!(info.install_cmd.contains("npm"));
-    }
-
-    #[test]
-    fn auto_detect_project_bun_lockfile() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
-        std::fs::write(dir.path().join("bun.lock"), "").unwrap();
-        let info = auto_detect_project(dir.path()).unwrap();
-        assert_eq!(info.name, "bun");
-        assert_eq!(info.kind.as_deref(), Some("bun"));
-        assert!(info.run_cmd.contains("bun"));
-    }
-
-    #[test]
-    fn auto_detect_project_rust() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
-        let info = auto_detect_project(dir.path()).unwrap();
-        assert_eq!(info.name, "rust");
-        assert_eq!(info.kind.as_deref(), Some("rust"));
-    }
-
-    #[test]
-    fn auto_detect_project_python() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("pyproject.toml"), "[project]").unwrap();
-        let info = auto_detect_project(dir.path()).unwrap();
-        assert_eq!(info.name, "python");
-        assert_eq!(info.kind.as_deref(), Some("python"));
-    }
-
-    #[test]
-    fn auto_detect_project_unknown_returns_none() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(auto_detect_project(dir.path()).is_none());
-    }
-
-    #[test]
-    fn load_project_info_prefers_manifest() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
-        let yaml = r#"
-name: manifest-worker
-runtime:
-  kind: typescript
-  package_manager: npm
-  entry: src/index.ts
-"#;
-        std::fs::write(dir.path().join("iii.worker.yaml"), yaml).unwrap();
-        let info = load_project_info(dir.path()).unwrap();
-        assert_eq!(info.name, "manifest-worker");
     }
 
     #[test]
@@ -886,38 +759,28 @@ resources:
 
     #[test]
     fn validate_keys_supports_description() {
-        // `description` is read by managed.rs and documented in workers.mdx;
-        // it must be a supported top-level field, not an unknown key.
+        // `description` is documented in workers.mdx; it must be a
+        // supported top-level field, not an unknown key.
         let d = doc("name: w\ndescription: does things\n");
         assert!(validate_manifest_keys(&d, &dummy_manifest_path()).is_ok());
         let m = super::super::worker_manifest::WorkerManifest::from_value(&d).unwrap();
-        let (unknown, deprecated) = m.classify_keys();
+        let unknown = m.unknown_keys();
         assert!(
             unknown.is_empty(),
             "description must not be unknown: {unknown:?}"
-        );
-        assert!(
-            !deprecated.iter().any(|d| d == "description"),
-            "description must not be deprecated: {deprecated:?}"
         );
     }
 
     #[test]
     fn validate_keys_accepts_publish_metadata_keys() {
         // iii/deploy/manifest/tags are release-CI metadata carried by workers
-        // in the workers repo; `worker add` must accept them (neither unknown
-        // nor deprecated) so one manifest satisfies both validators.
+        // in the workers repo; they must be accepted (not unknown) so one
+        // manifest satisfies both validators.
         let d = doc("iii: v1\nname: w\ndeploy: binary\nmanifest: Cargo.toml\ntags:\n  - api\n");
         assert!(validate_manifest_keys(&d, &dummy_manifest_path()).is_ok());
         let m = super::super::worker_manifest::WorkerManifest::from_value(&d).unwrap();
-        let (unknown, deprecated) = m.classify_keys();
+        let unknown = m.unknown_keys();
         assert!(unknown.is_empty(), "got: {unknown:?}");
-        for key in ["iii", "deploy", "manifest", "tags"] {
-            assert!(
-                !deprecated.iter().any(|x| x == key),
-                "`{key}` must not be deprecated: {deprecated:?}"
-            );
-        }
     }
 
     #[test]
@@ -963,7 +826,7 @@ resources:
     #[test]
     fn validate_keys_empty_is_ok_non_mapping_is_shape_error() {
         // Empty file (null) and empty mapping: nothing to police; missing
-        // `name` is require_manifest_name's job on the add path.
+        // `name` is load_from_manifest's to refuse.
         assert!(validate_manifest_keys(&doc("{}"), &dummy_manifest_path()).is_ok());
         assert!(validate_manifest_keys(&doc(""), &dummy_manifest_path()).is_ok());
         // A list or bare scalar was never a functional manifest — with the
@@ -989,9 +852,8 @@ resources:
 
     #[test]
     fn validate_keys_unknown_errors_even_with_deprecated_present() {
-        // The deprecation-collection path must not swallow the hard error when
-        // both a deprecated and an unknown key are present. (The interaction
-        // with III_NO_DEPRECATION_WARN is covered separately below.)
+        // An accepted deprecated key must not hide the hard error for an
+        // unknown one next to it.
         let d = doc("name: w\nconfig:\n  port: 3000\nruntimee:\n  kind: bun\n");
         let err = validate_manifest_keys(&d, &dummy_manifest_path()).unwrap_err();
         assert!(err.contains("runtimee"), "got: {err}");

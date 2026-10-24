@@ -4,33 +4,26 @@
 //! Typed `iii.worker.yaml` manifest.
 //!
 //! Single source of truth for the manifest schema: the [`WorkerManifest`]
-//! struct drives (a) key classification for `worker add` validation
-//! (`project::validate_manifest_keys` / `warn_deprecated_manifest_keys`
-//! delegate here), (b) the machine-readable JSON Schema served by
-//! `worker::schema { function_id: "iii.worker.yaml" }`, and (c) the dry-run
-//! `worker::validate` trigger so an LLM can author → check → `worker::add`
-//! without a failed install.
+//! struct drives the unknown-key check of `project::validate_manifest_keys`.
 //!
 //! Design notes:
-//! - Deprecated fields are REAL typed fields (so readers stay clean and the
-//!   schema can describe them) while every section carries a
-//!   `#[serde(flatten)]` catch-all map — non-empty catch-all = unknown keys =
-//!   hard error at add time. This preserves the warn-vs-reject split that
-//!   `#[serde(deny_unknown_fields)]` cannot express.
+//! - Deprecated fields are REAL typed fields (so readers stay clean and they
+//!   are still accepted) while every section carries a `#[serde(flatten)]`
+//!   catch-all map — non-empty catch-all = unknown keys = hard error. This
+//!   keeps deprecated keys accepted, which `#[serde(deny_unknown_fields)]`
+//!   cannot express.
 //! - Parsing goes Value-first then `from_value`: serde_yaml 0.9 detects
 //!   duplicate mapping keys only at the `Value` layer (typed maps silently
 //!   last-win), so the two-step keeps duplicate keys a hard error.
 
 use std::collections::BTreeMap;
 
-use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::Value as JsonValue;
 use serde_yaml::Value as YamlValue;
 
 /// Strip control characters from a manifest key before it is echoed into a
-/// terminal-bound error or warning. Manifest keys are third-party (users run
-/// `iii worker add ./cloned-worker`), so an unknown key like `"\x1b]2;…\x07"`
+/// terminal-bound error or warning. Manifest keys are third-party (a cloned
+/// worker's `iii.worker.yaml`), so an unknown key like `"\x1b]2;…\x07"`
 /// must not reach the user's terminal raw. Mirrors the established
 /// terminal-sanitization pattern in `engine/src/cli_trigger/help.rs`.
 /// `is_control` covers only Cc, so the invisible Cf-category spoofing chars
@@ -53,169 +46,82 @@ pub(crate) fn sanitize_key(s: &str) -> String {
 
 // Every field defines an accepted, type-checked manifest key; not all are read.
 #[allow(dead_code)]
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
-#[schemars(
-    description = "The `iii.worker.yaml` manifest at a worker project's root. Tells iii how to provision, install, and start the worker. Required for local-path `worker::add`. Unknown keys are rejected at add time; deprecated keys warn but still work."
-)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct WorkerManifest {
     /// Required. Worker id; a single path segment (alphanumerics, '-', '_', '.').
-    #[schemars(
-        description = "Required. Worker id; must be a single path segment (alphanumerics, '-', '_', '.')."
-    )]
     pub name: Option<String>,
 
-    #[schemars(
-        description = "Optional one-line human/LLM-readable summary; shown when installing or inspecting the worker."
-    )]
     pub description: Option<String>,
 
-    #[schemars(
-        description = "Optional runtime details. The only supported sub-field is `base_image`; the rest are deprecated legacy inference knobs."
-    )]
     pub runtime: Option<RuntimeSection>,
 
-    #[schemars(
-        description = "Lifecycle scripts: `start` runs the worker (required in practice), `install` installs dependencies, `setup` provisions the sandbox once."
-    )]
     pub scripts: Option<ScriptsSection>,
 
-    #[schemars(
-        description = "Optional string->string env vars injected into the worker process. III_URL / III_ENGINE_URL are set by the engine and ignored here."
-    )]
     pub env: Option<BTreeMap<String, String>>,
 
-    #[schemars(
-        description = "Optional map of other-worker-name -> semver range, resolved against the registry and installed before this worker, e.g. { iii-state: \"^0.19\" }. No self-references."
-    )]
     pub dependencies: Option<BTreeMap<String, String>>,
 
-    #[schemars(
-        description = "Optional sandbox sizing: `cpus` (default 2) and `memory` in MiB (default 2048)."
-    )]
     pub resources: Option<ResourcesSection>,
 
     // Registry publish metadata. The workers-repo release CI requires these
     // keys (deploy/manifest pick the release artifact type and version
-    // source; tags provide discovery aliases); the engine accepts them so one
-    // iii.worker.yaml can satisfy both validators, but never reads them at
-    // add/start time.
-    #[schemars(
-        description = "Registry publish metadata: manifest format marker, e.g. `v1`. Accepted and ignored by the engine."
-    )]
+    // source; tags provide discovery aliases); they are accepted so one
+    // iii.worker.yaml can satisfy both validators, but never read at start.
     pub iii: Option<String>,
 
-    #[schemars(
-        description = "Registry publish metadata: release artifact type (`binary` | `image` | `bundle`), consumed by the workers-repo release CI. Accepted and ignored by the engine."
-    )]
     pub deploy: Option<String>,
 
-    #[schemars(
-        description = "Registry publish metadata: file the release version is read from (e.g. `Cargo.toml`, `package.json`, `pyproject.toml`), consumed by the workers-repo release CI. Accepted and ignored by the engine."
-    )]
     pub manifest: Option<String>,
 
-    #[schemars(
-        description = "Registry publish metadata: search aliases for agent and user discovery (e.g. `sql`, `postgres`). Accepted and ignored by the engine."
-    )]
     pub tags: Option<Vec<String>>,
 
-    #[schemars(
-        description = "Registry publish metadata: SPDX license id the Registry publishes the worker under (e.g. `Apache-2.0`), required by the workers-repo release CI. Accepted and ignored by the engine."
-    )]
     pub license: Option<String>,
 
-    #[schemars(
-        with = "Option<JsonValue>",
-        description = "DEPRECATED — set per-worker config directly in your project's config.yaml entry instead. Copied verbatim into config.yaml at add time."
-    )]
     pub config: Option<YamlValue>,
 
-    #[schemars(
-        description = "DEPRECATED legacy scaffolder field — use explicit `scripts.start` instead."
-    )]
     pub language: Option<String>,
 
-    #[schemars(
-        description = "DEPRECATED legacy scaffolder field — use explicit `scripts.start` instead."
-    )]
     pub entry: Option<String>,
 
     #[serde(flatten)]
-    #[schemars(skip)]
     pub unknown: BTreeMap<String, YamlValue>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
-#[schemars(description = "Runtime environment details.")]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct RuntimeSection {
-    #[schemars(
-        description = "Optional OCI rootfs override, e.g. \"oven/bun:1\" or \"ghcr.io/astral-sh/uv:bookworm-slim\". Alphanumerics plus `._-/:@+`, max 512 chars."
-    )]
     pub base_image: Option<String>,
 
-    #[schemars(
-        description = "DEPRECATED — define `scripts.setup`/`install`/`start` explicitly instead. Legacy script inference: typescript|javascript|bun|python|rust."
-    )]
     pub kind: Option<String>,
 
-    #[schemars(
-        description = "DEPRECATED — define explicit `scripts` instead. Legacy inference: npm|yarn|pnpm|bun (only meaningful with kind typescript/javascript)."
-    )]
     pub package_manager: Option<String>,
 
-    #[schemars(
-        description = "DEPRECATED — put the entrypoint in `scripts.start` instead (e.g. start: \"npx tsx src/index.ts\")."
-    )]
     pub entry: Option<String>,
 
-    #[schemars(
-        description = "DEPRECATED — rename to `runtime.kind` (itself deprecated; prefer explicit `scripts`)."
-    )]
     pub language: Option<String>,
 
     #[serde(flatten)]
-    #[schemars(skip)]
     pub unknown: BTreeMap<String, YamlValue>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
-#[schemars(
-    description = "Explicit lifecycle scripts (the documented, supported way to run a worker). When omitted, legacy inference from runtime.kind/package_manager applies (deprecated)."
-)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct ScriptsSection {
-    #[schemars(
-        description = "Optional one-time sandbox provisioning, e.g. \"apt-get update && apt-get install -y build-essential\". Runs once when the sandbox is created."
-    )]
     pub setup: Option<String>,
 
-    #[schemars(
-        description = "Optional dependency install, e.g. \"npm install\". Omitting it skips dependency install (warned); an explicit \"\" opts out silently."
-    )]
     pub install: Option<String>,
 
-    #[schemars(
-        description = "Command that runs the worker process, e.g. \"node src/index.js\" or \"npx tsx watch src/index.ts\". Required unless legacy runtime.kind inference applies."
-    )]
     pub start: Option<String>,
 
     #[serde(flatten)]
-    #[schemars(skip)]
     pub unknown: BTreeMap<String, YamlValue>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
-#[schemars(description = "Optional CPU/memory requests for the worker's sandbox.")]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct ResourcesSection {
-    #[schemars(description = "Optional integer vCPUs. Default 2; bundle workers are capped at 4.")]
     pub cpus: Option<u32>,
 
-    #[schemars(
-        description = "Optional memory in MiB. Default 2048; bundle workers are capped at 4096."
-    )]
     pub memory: Option<u32>,
 
     #[serde(flatten)]
-    #[schemars(skip)]
     pub unknown: BTreeMap<String, YamlValue>,
 }
 
@@ -418,40 +324,13 @@ impl WorkerManifest {
         serde_yaml::from_value(doc.clone()).map_err(|e| format!("invalid manifest shape: {e}"))
     }
 
-    /// Classify every manifest key into `(unknown, deprecated)` dotted paths,
-    /// sanitized for terminal display and sorted. The single source of truth
-    /// for add-time key validation and the `worker::validate` report.
-    pub fn classify_keys(&self) -> (Vec<String>, Vec<String>) {
-        let mut unknown: Vec<String> = Vec::new();
-        let mut deprecated: Vec<String> = Vec::new();
-
-        for k in self.unknown.keys() {
-            unknown.push(sanitize_key(k));
-        }
-        if self.config.is_some() {
-            deprecated.push("config".into());
-        }
-        if self.language.is_some() {
-            deprecated.push("language".into());
-        }
-        if self.entry.is_some() {
-            deprecated.push("entry".into());
-        }
+    /// Every unknown manifest key as a dotted path, sanitized for terminal
+    /// display and sorted.
+    pub fn unknown_keys(&self) -> Vec<String> {
+        let mut unknown: Vec<String> = self.unknown.keys().map(|k| sanitize_key(k)).collect();
         if let Some(rt) = &self.runtime {
             for k in rt.unknown.keys() {
                 unknown.push(format!("runtime.{}", sanitize_key(k)));
-            }
-            if rt.kind.is_some() {
-                deprecated.push("runtime.kind".into());
-            }
-            if rt.package_manager.is_some() {
-                deprecated.push("runtime.package_manager".into());
-            }
-            if rt.entry.is_some() {
-                deprecated.push("runtime.entry".into());
-            }
-            if rt.language.is_some() {
-                deprecated.push("runtime.language".into());
             }
         }
         if let Some(s) = &self.scripts {
@@ -465,14 +344,9 @@ impl WorkerManifest {
             }
         }
         unknown.sort();
-        deprecated.sort();
-        (unknown, deprecated)
+        unknown
     }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// worker::validate — dry-run manifest validation for LLM/automation callers.
-// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -486,13 +360,11 @@ mod tests {
     }
 
     #[test]
-    fn classify_keys_matches_legacy_validator_semantics() {
+    fn unknown_keys_skip_the_accepted_deprecated_ones() {
         let doc: YamlValue =
             serde_yaml::from_str("name: w\nruntime:\n  kind: bun\n  foo: 1\nconfig: {}\nbad: 2\n")
                 .unwrap();
         let m = WorkerManifest::from_value(&doc).unwrap();
-        let (unknown, deprecated) = m.classify_keys();
-        assert_eq!(unknown, vec!["bad", "runtime.foo"]);
-        assert_eq!(deprecated, vec!["config", "runtime.kind"]);
+        assert_eq!(m.unknown_keys(), vec!["bad", "runtime.foo"]);
     }
 }
