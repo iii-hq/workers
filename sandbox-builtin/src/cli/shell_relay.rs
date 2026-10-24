@@ -162,6 +162,16 @@ const CLIENT_WRITE_CAPACITY: usize = 1024;
 /// below [`SEND_WINDOW`], so the guest never waits on a batch.
 const CREDIT_BATCH: u32 = SEND_WINDOW / 4;
 
+/// How long a client may take no frame at all before its session is
+/// treated as abandoned and ended (its guest side SIGKILLed): a caller that
+/// never reads an `fs::read` channel must not hold a relay slot and a guest
+/// thread until the sandbox is reaped. A slow reader still takes a frame
+/// far more often than this.
+#[cfg(not(test))]
+const CLIENT_STALL: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const CLIENT_STALL: Duration = Duration::from_secs(1);
+
 /// Maximum number of distinct `corr_id`s a single client can register
 /// routes for concurrently. Each registered id pins an entry in the
 /// shared `routes` map plus a `Vec` slot in the client's `owned_ids`.
@@ -529,8 +539,15 @@ async fn client_session(
     let writer_fut = async move {
         let mut delivered: HashMap<u32, u32> = HashMap::new();
         while let Some(frame) = client_rx.recv().await {
-            if client_write.write_all(&frame).await.is_err() {
-                break;
+            match tokio::time::timeout(CLIENT_STALL, client_write.write_all(&frame)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => break,
+                Err(_) => {
+                    tracing::warn!(
+                        "shell_relay: a client took nothing for {CLIENT_STALL:?}; ending it"
+                    );
+                    break;
+                }
             }
             let corr_id = u32::from_be_bytes([frame[4], frame[5], frame[6], frame[7]]);
             if frame[8] & FLAG_TERMINAL != 0 {
@@ -1281,6 +1298,52 @@ mod tests {
         .await
         .expect("the overrun session was never cut");
         assert!(cut, "the overrun session ended as if whole");
+    }
+
+    /// A client that takes no frame for CLIENT_STALL is ended and its
+    /// session SIGKILLed, so an `fs::read` nobody reads cannot hold a relay
+    /// slot and a guest thread until the sandbox is reaped.
+    #[tokio::test]
+    async fn a_client_that_takes_nothing_is_ended_and_its_session_killed() {
+        let (sock, vm_guest_sim, _tmp) = boot().await;
+        let mut writer = vm_guest_sim.try_clone().unwrap();
+        let (killed_tx, killed_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let mut reader = std::io::BufReader::new(vm_guest_sim);
+            let Ok(Some((corr_id, _, _))) = read_frame_blocking(&mut reader) else {
+                return;
+            };
+            // A window of large frames: more than any socket buffer holds.
+            let chunk = ShellMessage::Stdout {
+                data_b64: "A".repeat(64 * 1024),
+            };
+            let chunk = encode_frame(corr_id, 0, &chunk).unwrap();
+            for _ in 0..SEND_WINDOW {
+                writer.write_all(&chunk).unwrap();
+            }
+            while let Ok(Some((id, _, msg))) = read_frame_blocking(&mut reader) {
+                if id == corr_id && msg == (ShellMessage::Signal { signal: 9 }) {
+                    let _ = killed_tx.send(());
+                    return;
+                }
+            }
+        });
+        let (mut idle, _) = open_session(&sock, &cat_request()).await;
+        let started = Instant::now();
+        tokio::task::spawn_blocking(move || killed_rx.recv_timeout(Duration::from_secs(5)))
+            .await
+            .unwrap()
+            .expect("the stalled session was never SIGKILLed");
+        assert!(started.elapsed() >= CLIENT_STALL);
+        let closed = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Ok(Some(_)) = read_frame(&mut idle).await {}
+        })
+        .await;
+        assert!(
+            closed.is_ok(),
+            "the relay kept the stalled client connected"
+        );
     }
 
     /// A client over the cap waits briefly for a slot instead of being
