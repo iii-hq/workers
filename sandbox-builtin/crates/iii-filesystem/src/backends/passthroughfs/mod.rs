@@ -651,6 +651,29 @@ impl DynFileSystem for PassthroughFs {
         create_ops::do_link(self, ctx, inode, newparent, newname)
     }
 
+    /// The guest init reports the VM's exit code with this ioctl, as on
+    /// libkrun's own passthrough; without it every VM exited 0, whatever its
+    /// worker returned. Any other ioctl is ENOSYS, as before.
+    fn ioctl(
+        &self,
+        _ctx: Context,
+        _inode: u64,
+        _handle: u64,
+        _flags: u32,
+        cmd: u32,
+        arg: u64,
+        _in_size: u32,
+        _out_size: u32,
+        exit_code: &Arc<std::sync::atomic::AtomicI32>,
+    ) -> io::Result<Vec<u8>> {
+        // VIRTIO_IOC_EXIT_CODE_REQ: `_IO('v', 2)` in the Linux guest.
+        if cmd != 0x7602 {
+            return Err(platform::enosys());
+        }
+        exit_code.store(arg as i32, Ordering::SeqCst);
+        Ok(Vec::new())
+    }
+
     // Skipped in v1 (D-11): mknod, fallocate, lseek,
     // xattr ops, copyfilerange -- all use the default ENOSYS from the trait,
     // which also keeps them from mutating a read-only share.
@@ -779,6 +802,33 @@ mod tests {
         }
         let _ = check;
     };
+
+    /// The guest init's exit-code ioctl sets the VM's exit code; any other
+    /// ioctl stays ENOSYS and leaves it alone.
+    #[test]
+    fn exit_code_ioctl_sets_the_vm_exit_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let fs = PassthroughFs::builder()
+            .root_dir(dir.path())
+            .build()
+            .unwrap();
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        let code = Arc::new(std::sync::atomic::AtomicI32::new(i32::MAX));
+
+        assert!(
+            fs.ioctl(ctx, 1, 0, 0, 0x7602, 3, 0, 0, &code)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(code.load(Ordering::SeqCst), 3);
+        let other = fs.ioctl(ctx, 1, 0, 0, 0x7603, 9, 0, 0, &code).unwrap_err();
+        assert_eq!(other.raw_os_error(), Some(platform::LINUX_ENOSYS));
+        assert_eq!(code.load(Ordering::SeqCst), 3);
+    }
 
     #[test]
     fn destroy_clears_leaked_readdir_bufs() {

@@ -25,6 +25,7 @@ fn run() -> Result<(), iii_init::InitError> {
     // Block-image overlay mode (shared read-only base image + writable
     // upper) when the host signals it via III_BLOCK_ROOT_*; otherwise the
     // legacy per-worker virtiofs rootfs + tmpfs-pivot path.
+    iii_init::supervisor::hold_virtiofs_root();
     if iii_init::root_pivot::overlay_root_requested() {
         iii_init::root_pivot::overlay_root()?;
     } else {
