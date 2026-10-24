@@ -36,6 +36,7 @@ struct World {
     catalog: Value,
     starts: usize,
     unanswered_start: bool,
+    executions_next_cursor: Option<String>,
 }
 
 fn tests_row(
@@ -105,6 +106,7 @@ impl World {
                 scenario("subagent_validation_failure", "sha256:sub", "subagent:seed-1", 2)]}),
             starts: 0,
             unanswered_start: false,
+            executions_next_cursor: None,
         }
     }
 
@@ -162,8 +164,10 @@ impl World {
                 self.starts += 1;
                 let id = format!("plan-{}", self.starts);
                 let label = data["label"].as_str().unwrap_or_default().to_string();
-                self.executions
-                    .insert(id.clone(), bundle(&id, &label, "running", Vec::new()));
+                let mut execution = bundle(&id, &label, "running", Vec::new());
+                execution["manifest"]["executions"][0]["idempotency_key"] =
+                    data["idempotency_key"].clone();
+                self.executions.insert(id.clone(), execution);
                 // An answer that names no execution is as ambiguous as none.
                 if self.unanswered_start {
                     return Some(Ok(json!({})));
@@ -187,10 +191,15 @@ impl World {
                             .as_str()
                             .unwrap_or_default()
                             .contains(query)
+                            || summary["idempotency_key"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .contains(query)
                     })
                     .collect();
                 executions.sort_by(|a, b| b["started_at"].as_str().cmp(&a["started_at"].as_str()));
-                json!({"executions": executions, "total": executions.len(), "next_cursor": null})
+                json!({"executions": executions, "total": executions.len(),
+                    "next_cursor": self.executions_next_cursor})
             }
             "e2e::dashboard::execution-cancel" => json!({}),
             "sentinel::reports::ingest" => {
@@ -365,10 +374,11 @@ impl Harness {
             .as_str()
             .unwrap_or_default()
             .to_string();
-        world.executions.insert(
-            execution_id.into(),
-            bundle(execution_id, &label, status, runs),
-        );
+        let idempotency_key =
+            world.executions[execution_id]["manifest"]["executions"][0]["idempotency_key"].clone();
+        let mut finished = bundle(execution_id, &label, status, runs);
+        finished["manifest"]["executions"][0]["idempotency_key"] = idempotency_key;
+        world.executions.insert(execution_id.into(), finished);
     }
 
     fn count(&self, scope: &str) -> usize {
@@ -444,6 +454,7 @@ async fn objective_freezes_a_plan_reserves_dispatches_and_imports_the_baseline_i
     );
     let start = &calls[started_at].1;
     assert_eq!(start["label"], format!("eval:{cycle_id}:baseline"));
+    assert_eq!(start["idempotency_key"], format!("{cycle_id}:baseline"));
     assert_eq!(
         start["parameters"]["scenarios"],
         json!(["context_pressure"])
@@ -513,7 +524,11 @@ async fn a_terminal_execution_cannot_steal_an_owned_label() {
 
     let response = h.changed("evil").await;
     assert!(!response.admitted);
-    assert!(response.reason.contains("plan-1"), "{}", response.reason);
+    assert!(
+        response.reason.contains("idempotency key"),
+        "{}",
+        response.reason
+    );
     h.drain().await;
 
     let record = h.cycle(&cycle_id).await;
@@ -526,6 +541,24 @@ async fn a_terminal_execution_cannot_steal_an_owned_label() {
         .reservations
         .values()
         .all(|entry| entry.settled_at.is_none()));
+}
+
+#[tokio::test]
+async fn a_native_child_owned_by_a_plan_is_never_admitted_as_another_cycle() {
+    let h = Harness::start(World::new()).await;
+    let mut child = bundle("native-child", "", "passed", full());
+    child["manifest"]["executions"][0]["parent_plan_execution_id"] = json!("plan-parent");
+    h.world().executions.insert("native-child".into(), child);
+
+    let response = h.changed("native-child").await;
+
+    assert!(!response.admitted);
+    assert!(
+        response.reason.contains("plan-parent"),
+        "{}",
+        response.reason
+    );
+    assert!(state::list_cycles(&h.iii).await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -583,7 +616,7 @@ async fn an_unconfigured_loop_or_an_exhausted_budget_dispatches_nothing() {
 }
 
 #[tokio::test]
-async fn an_unanswered_dispatch_is_reconciled_by_label_and_never_dispatched_twice() {
+async fn an_unanswered_dispatch_is_reconciled_by_key_after_a_label_rename() {
     let mut world = World::new();
     world.unanswered_start = true;
     let h = Harness::start(world).await;
@@ -596,7 +629,9 @@ async fn an_unanswered_dispatch_is_reconciled_by_label_and_never_dispatched_twic
         (CycleStatusV1::Waiting, CycleStageV1::Baseline)
     );
     assert_eq!(record.executions[0].state, ExecutionStateV1::Dispatching);
-    // The sweep reconciles it by its label.
+    h.world().executions.get_mut("plan-1").unwrap()["manifest"]["executions"][0]["label"] =
+        json!("renamed after dispatch");
+    // The sweep reconciles it by the immutable key despite the rename.
     runtime::sweep(&h.deps).await.unwrap();
     h.drain().await;
     let record = h.cycle(&cycle_id).await;
@@ -606,7 +641,7 @@ async fn an_unanswered_dispatch_is_reconciled_by_label_and_never_dispatched_twic
 }
 
 #[tokio::test]
-async fn an_unanswered_dispatch_is_not_reconciled_from_an_ambiguous_label() {
+async fn an_unanswered_dispatch_refuses_the_same_label_with_a_foreign_key() {
     let mut world = World::new();
     world.unanswered_start = true;
     let h = Harness::start(world).await;
@@ -614,9 +649,10 @@ async fn an_unanswered_dispatch_is_not_reconciled_from_an_ambiguous_label() {
     let cycle_id = h.start_cycle(json!({"objective": OBJECTIVE})).await;
     h.drain().await;
     let label = format!("eval:{cycle_id}:baseline");
-    h.world()
-        .executions
-        .insert("evil".into(), bundle("evil", &label, "passed", full()));
+    h.world().executions.remove("plan-1");
+    let mut foreign = bundle("evil", &label, "passed", full());
+    foreign["manifest"]["executions"][0]["idempotency_key"] = json!("foreign:dispatch");
+    h.world().executions.insert("evil".into(), foreign);
 
     runtime::sweep(&h.deps).await.unwrap();
     h.drain().await;
@@ -627,6 +663,34 @@ async fn an_unanswered_dispatch_is_not_reconciled_from_an_ambiguous_label() {
     assert!(record.executions[0].execution_id.is_none());
     assert!(record.analyses.is_empty());
     assert_eq!(h.world().starts, 1);
+}
+
+#[tokio::test]
+async fn an_unanswered_dispatch_refuses_duplicate_or_partial_key_results() {
+    for partial in [false, true] {
+        let mut world = World::new();
+        world.unanswered_start = true;
+        let h = Harness::start(world).await;
+        h.configure(10.0).await;
+        let cycle_id = h.start_cycle(json!({"objective": OBJECTIVE})).await;
+        h.drain().await;
+        let key = format!("{cycle_id}:baseline");
+        if partial {
+            h.world().executions_next_cursor = Some("more".into());
+        } else {
+            let mut duplicate = bundle("duplicate", "other label", "running", Vec::new());
+            duplicate["manifest"]["executions"][0]["idempotency_key"] = json!(key);
+            h.world().executions.insert("duplicate".into(), duplicate);
+        }
+
+        runtime::sweep(&h.deps).await.unwrap();
+        h.drain().await;
+
+        let record = h.cycle(&cycle_id).await;
+        assert_eq!(record.executions[0].state, ExecutionStateV1::Dispatching);
+        assert!(record.executions[0].execution_id.is_none());
+        assert_eq!(h.world().starts, 1);
+    }
 }
 
 #[tokio::test]

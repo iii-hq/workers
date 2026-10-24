@@ -44,8 +44,9 @@ pub fn summary<'a>(bundle: &'a Value, execution_id: &str) -> Option<&'a Value> {
         .find(|entry| entry["id"] == execution_id)
 }
 
-/// A label identifies work only when the complete listing has one match.
-pub(crate) fn unique_execution_id(listed: &Value, label: &str) -> Option<String> {
+/// An immutable dispatch key identifies work only when the complete listing
+/// has one match.
+pub(crate) fn unique_execution_id(listed: &Value, idempotency_key: &str) -> Option<String> {
     if !listed["next_cursor"].is_null() {
         return None;
     }
@@ -53,7 +54,7 @@ pub(crate) fn unique_execution_id(listed: &Value, label: &str) -> Option<String>
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|entry| entry["label"] == label)
+        .filter(|entry| entry["idempotency_key"] == idempotency_key)
         .filter_map(|entry| entry["id"].as_str().map(str::to_string));
     let execution_id = matches.next();
     execution_id.filter(|_| matches.next().is_none())

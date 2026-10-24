@@ -853,7 +853,7 @@
       },
       "CycleExecutionV1": {
         "additionalProperties": false,
-        "description": "One E2E execution the cycle owns. Recorded before dispatch; `label` is deterministic (`eval:<cycle_id>:<role>[:n]`), the only correlation the E2E keeps.",
+        "description": "One E2E execution the cycle owns. Recorded before dispatch; `work_id` is sent to the E2E as its immutable idempotency key. `label` is display only.",
         "properties": {
           "admission_key": {
             "type": [
@@ -1741,7 +1741,7 @@
             "type": "string"
           },
           {
-            "description": "Ownership recorded, `execution-start` called or about to be: its id may be unknown; it is reconciled by `label`, never dispatched again.",
+            "description": "Ownership recorded, `execution-start` called or about to be: its id may be unknown; it is reconciled by `work_id`, never dispatched again.",
             "enum": [
               "dispatching"
             ],

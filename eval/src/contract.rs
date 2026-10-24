@@ -17,7 +17,7 @@ use crate::promotion::{PromotionConfig, PromotionJournal};
 
 /// Identity of the detectors, first pass and coverage rules; part of every
 /// `policy_revision`.
-pub const RULES_VERSION: &str = "e2e-loop-rules/4";
+pub const RULES_VERSION: &str = "e2e-loop-rules/5";
 pub const CYCLE_SCHEMA_VERSION: u32 = 1;
 pub const DEFAULT_LIST_LIMIT: u32 = 50;
 pub const MAX_LIST_LIMIT: u32 = 200;
@@ -356,7 +356,7 @@ pub enum ExecutionRoleV1 {
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionStateV1 {
     /// Ownership recorded, `execution-start` called or about to be: its id
-    /// may be unknown; it is reconciled by `label`, never dispatched again.
+    /// may be unknown; it is reconciled by `work_id`, never dispatched again.
     Dispatching,
     Running,
     /// Terminal and its reports copied into the loop's evidence.
@@ -365,9 +365,8 @@ pub enum ExecutionStateV1 {
     Lost,
 }
 
-/// One E2E execution the cycle owns. Recorded before dispatch; `label` is
-/// deterministic (`eval:<cycle_id>:<role>[:n]`), the only correlation the
-/// E2E keeps.
+/// One E2E execution the cycle owns. Recorded before dispatch; `work_id` is
+/// sent to the E2E as its immutable idempotency key. `label` is display only.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CycleExecutionV1 {

@@ -432,6 +432,7 @@ async fn canary_on_target(
     let as_unknown =
         |error: crate::error::EvalError| PromotionError::inconclusive(error.to_string());
     let label = ids::execution_label(&record.cycle_id, CANARY);
+    let work_id = format!("{}:{CANARY}", record.cycle_id);
     let namespace = target.namespace.as_str();
     let plan = record
         .plan
@@ -440,17 +441,17 @@ async fn canary_on_target(
     let entry = record
         .executions
         .iter()
-        .find(|entry| entry.label.as_deref() == Some(label.as_str()))
+        .find(|entry| entry.work_id.as_deref() == Some(work_id.as_str()))
         .cloned();
     let set_id = |execution_id: String| {
-        let label = label.clone();
+        let work_id = work_id.clone();
         async move {
             state::update_cycle(&deps.iii, &record.cycle_id, |stored| {
                 let mut next = stored.clone();
                 if let Some(entry) = next
                     .executions
                     .iter_mut()
-                    .find(|entry| entry.label.as_deref() == Some(label.as_str()))
+                    .find(|entry| entry.work_id.as_deref() == Some(work_id.as_str()))
                 {
                     entry.execution_id = Some(execution_id.clone());
                     entry.state = ExecutionStateV1::Running;
@@ -462,7 +463,7 @@ async fn canary_on_target(
     };
     let Some(entry) = entry else {
         let work = CycleWorkV1 {
-            work_id: format!("{}:{CANARY}", record.cycle_id),
+            work_id: work_id.clone(),
             kind: CycleWorkKindV1::E2e,
             estimated_usd: plan.estimated_usd,
             candidate: false,
@@ -502,7 +503,7 @@ async fn canary_on_target(
             client,
             namespace,
             "e2e::dashboard::execution-start",
-            json!({ "label": label, "parameters": parameters }),
+            json!({ "label": label, "idempotency_key": work.work_id, "parameters": parameters }),
             START_TIMEOUT_MS,
         )
         .await
@@ -538,17 +539,17 @@ async fn canary_on_target(
                 client,
                 namespace,
                 "e2e::dashboard::executions-list",
-                json!({ "query": label, "limit": 100 }),
+                json!({ "query": work_id, "limit": 100 }),
                 BUS_TIMEOUT_MS,
             )
             .await
             .map_err(as_unknown)?;
-            let found = evidence::unique_execution_id(&listed, &label);
+            let found = evidence::unique_execution_id(&listed, &work_id);
             return match found {
                 Some(execution_id) => {
                     set_id(execution_id.clone()).await.map_err(as_unknown)?;
                     Ok(Next::Wait(format!(
-                        "canary {execution_id} found by its label"
+                        "canary {execution_id} found by its idempotency key"
                     )))
                 }
                 None if ids::now_ms() - entry.dispatched_at.unwrap_or(record.updated_at)
@@ -572,6 +573,16 @@ async fn canary_on_target(
         Ok(bundle) => bundle,
         Err(error) => return Ok(unknown(format!("the target E2E cannot be read: {error}"))),
     };
+    let Some(summary) = evidence::summary(&bundle, &execution_id) else {
+        return Ok(unknown(
+            "the target E2E did not return the canary summary".into(),
+        ));
+    };
+    if evidence::text_at(summary, "/idempotency_key").as_deref() != Some(work_id.as_str()) {
+        return Ok(unknown(
+            "the target E2E canary has a different idempotency key".into(),
+        ));
+    }
     match evidence::readiness(&bundle, &execution_id) {
         Readiness::Open(why) => Ok(Next::Wait(format!("canary {execution_id}: {why}"))),
         Readiness::Abnormal(why) => Ok(unknown(format!("canary {execution_id}: {why}"))),

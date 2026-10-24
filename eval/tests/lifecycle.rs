@@ -219,10 +219,11 @@ impl Dashboard {
                     harness_version: String::new(),
                     binary: None,
                 };
-                self.executions.insert(
-                    id.clone(),
-                    bundle(&id, &label, "running", &parameters, Vec::new(), &system),
-                );
+                let mut execution =
+                    bundle(&id, &label, "running", &parameters, Vec::new(), &system);
+                execution["manifest"]["executions"][0]["idempotency_key"] =
+                    data["idempotency_key"].clone();
+                self.executions.insert(id.clone(), execution);
                 self.dispatched.push((id.clone(), label, parameters));
                 json!({"execution_id": id})
             }
@@ -243,6 +244,10 @@ impl Dashboard {
                             .as_str()
                             .unwrap_or_default()
                             .contains(query)
+                            || summary["idempotency_key"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .contains(query)
                     })
                     .collect();
                 json!({"executions": executions, "next_cursor": null})
@@ -253,16 +258,17 @@ impl Dashboard {
     }
 
     fn finish(&mut self, id: &str, status: &str, runs: Vec<(&str, Vec<Value>)>, system: &System) {
+        let idempotency_key =
+            self.executions[id]["manifest"]["executions"][0]["idempotency_key"].clone();
         let (_, label, parameters) = self
             .dispatched
             .iter()
             .find(|(dispatched, _, _)| dispatched == id)
             .cloned()
             .expect("dispatched");
-        self.executions.insert(
-            id.into(),
-            bundle(id, &label, status, &parameters, runs, system),
-        );
+        let mut execution = bundle(id, &label, status, &parameters, runs, system);
+        execution["manifest"]["executions"][0]["idempotency_key"] = idempotency_key;
+        self.executions.insert(id.into(), execution);
     }
 }
 
@@ -2227,7 +2233,7 @@ async fn round2_an_activation_error_after_the_persisted_intent_still_restores() 
 
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
-async fn round2_a_lost_canary_reply_never_selects_an_ambiguous_label() {
+async fn a_lost_canary_reply_uses_only_its_immutable_key() {
     let Some(mut rig) = Rig::start("canarylabel").await else {
         return;
     };
@@ -2250,17 +2256,17 @@ async fn round2_a_lost_canary_reply_never_selects_an_ambiguous_label() {
     {
         let mut target = rig.target();
         let (_, label, parameters) = target.e2e.dispatched[0].clone();
-        target.e2e.executions.insert(
-            "aaa-hijack".into(),
-            bundle(
-                "aaa-hijack",
-                &label,
-                "passed",
-                &parameters,
-                side(TOKENS, FIXED),
-                &stable,
-            ),
+        target.e2e.executions.remove("canary-1");
+        let mut hijack = bundle(
+            "aaa-hijack",
+            &label,
+            "running",
+            &parameters,
+            Vec::new(),
+            &stable,
         );
+        hijack["manifest"]["executions"][0]["idempotency_key"] = json!("foreign:canary");
+        target.e2e.executions.insert("aaa-hijack".into(), hijack);
     }
     rig.tick().await;
     let record = rig.cycle(&cycle_id).await;
@@ -2271,11 +2277,37 @@ async fn round2_a_lost_canary_reply_never_selects_an_ambiguous_label() {
         .unwrap();
     assert!(
         entry.execution_id.is_none(),
-        "ambiguous canary was bound to {:?}",
+        "foreign canary was bound to {:?}",
         entry.execution_id
     );
     assert!(record.canary.is_none());
     assert!(!record.status.is_terminal());
+    assert_eq!(rig.target().e2e.dispatched.len(), 1);
+
+    {
+        let mut target = rig.target();
+        let (_, _, parameters) = target.e2e.dispatched[0].clone();
+        target.e2e.executions.remove("aaa-hijack");
+        let mut recovered = bundle(
+            "recovered",
+            "renamed canary",
+            "running",
+            &parameters,
+            Vec::new(),
+            &stable,
+        );
+        recovered["manifest"]["executions"][0]["idempotency_key"] =
+            json!(format!("{cycle_id}:canary"));
+        target.e2e.executions.insert("recovered".into(), recovered);
+    }
+    rig.tick().await;
+    let record = rig.cycle(&cycle_id).await;
+    let entry = record
+        .executions
+        .iter()
+        .find(|entry| entry.role == ExecutionRoleV1::Canary)
+        .unwrap();
+    assert_eq!(entry.execution_id.as_deref(), Some("recovered"));
     assert_eq!(rig.target().e2e.dispatched.len(), 1);
 }
 

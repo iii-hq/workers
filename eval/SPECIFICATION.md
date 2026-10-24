@@ -64,7 +64,7 @@ There are exactly two inputs, and both converge on one `CycleRecordV1`:
      pin differing;
    - every preserved criterion holds;
    - the planned metric moved by the minimum effect under the frozen
-     sampling and stop rules (`e2e-loop-rules/4`).
+     sampling and stop rules (`e2e-loop-rules/5`).
 
    Effort counts only on completed, passed runs. A cost reduction is never
    claimed while a cost is unknown.

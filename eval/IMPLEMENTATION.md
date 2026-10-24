@@ -30,7 +30,7 @@
 
 | Effect | Identity, persisted before the effect | Reconciliation |
 |---|---|---|
-| E2E execution | Label `eval:<cycle_id>:<baseline\|candidate\|artifact\|canary>`, work id and route. | Matched by label in `executions-list`. Declared lost after 10 minutes, never re-dispatched. |
+| E2E execution | Display label `eval:<cycle_id>:<baseline\|candidate\|artifact\|canary>`, immutable `work_id` and route. | `work_id` is sent as `idempotency_key` and is the only reconciliation key. Duplicate or partial listings are refused. Declared lost after 10 minutes, never re-dispatched. |
 | Proposal / candidate actor | `proposal_identity` / `identity`: session and idempotency key. | `start` reads `harness::status` before any `harness::send`. |
 | Judge | Request id stored in `cycle.triage`. | A request found after a restart is never re-sent; that step is unknown. |
 | Candidate publication | Deterministic branch, non-forced push, 30 s bound. | A retry reconciles. |

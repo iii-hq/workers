@@ -72,11 +72,11 @@ and cannot pin a candidate. `docker` and `github` need a
      `policy_revision`.
    `max_scenarios` includes the configured controls. If controls leave no
    room for a primary scenario, coverage is unavailable and nothing runs.
-7. The baseline is reserved in the cycle's ledger. Ownership of
-   `eval:<cycle_id>:baseline` is recorded in the cycle. Only then is
-   `e2e::dashboard::execution-start {label, parameters}` called. An
-   ambiguous answer is reconciled by that label through `executions-list`
-   and is never dispatched again.
+7. The baseline is reserved in the cycle's ledger. Its stable `work_id` and
+   display label are recorded in the cycle. Only then is
+   `e2e::dashboard::execution-start {label, idempotency_key: work_id,
+   parameters}` called. An ambiguous answer is reconciled only by that
+   immutable key through `executions-list` and is never dispatched again.
 
 ## Execution input and analysis
 
@@ -84,7 +84,8 @@ and cannot pin a candidate. `docker` and `github` need a
   `execution-get`.
 - An execution is admitted once per execution/run/attempt (compare-and-set),
   and only when its status is terminal and every report slot has reported.
-- An execution labeled `eval:<cycle_id>:...` returns to that cycle. An
+- An execution whose immutable idempotency key names recorded cycle work
+  returns to that cycle. An
   execution started through `eval::start` converges on that cycle. Any other
   execution starts one cycle.
 - The sweep recovers missed events from a checkpoint. The checkpoint never
@@ -162,7 +163,7 @@ the prior executable before the cycle ends. See `SPECIFICATION.md` and
 
 ## Decision and budget
 
-Decisions are made once, in code, by the frozen plan (`e2e-loop-rules/4`):
+Decisions are made once, in code, by the frozen plan (`e2e-loop-rules/5`):
 
 - An incompatible pair, a side that did not run what it had to, a technical
   failure or a missing measure is inconclusive.
@@ -178,11 +179,10 @@ least the estimate, even when the candidate reports a lower cost. The
 reported value remains available separately; an invalid run cost makes
 the total unknown.
 
-Lost dispatches currently reconcile by a mutable E2E label. A known
-execution id cannot be replaced, and ambiguous or partial listings are
-refused, but a sole label match does not prove dispatch origin while the
-original execution has not appeared. Control-plane renames remain trusted
-until E2E provides immutable creation correlation (KAN-466).
+Lost dispatches reconcile by the E2E's immutable idempotency key. Mutable
+labels are display metadata: renames do not lose work, and a matching label
+with a different key cannot claim a reservation. Known execution ids cannot
+be replaced; duplicate or partial key listings are refused.
 
 ## State scopes
 

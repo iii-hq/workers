@@ -841,16 +841,20 @@ async fn coverage_stage(
     )
     .await
 }
-/// The id of the execution listed under `label`, if the E2E lists it.
-pub(crate) async fn reconcile_label(deps: &Deps, label: &str) -> Result<Option<String>, EvalError> {
+/// The id of the execution listed under an immutable dispatch key, if the E2E
+/// lists it exactly once on a complete page.
+pub(crate) async fn reconcile_dispatch(
+    deps: &Deps,
+    idempotency_key: &str,
+) -> Result<Option<String>, EvalError> {
     let listed: Value = call(
         deps,
         "e2e::dashboard::executions-list",
-        json!({ "query": label, "limit": EXECUTIONS_PAGE }),
+        json!({ "query": idempotency_key, "limit": EXECUTIONS_PAGE }),
         BUS_TIMEOUT_MS,
     )
     .await?;
-    Ok(evidence::unique_execution_id(&listed, label))
+    Ok(evidence::unique_execution_id(&listed, idempotency_key))
 }
 
 pub(crate) fn running(execution_id: String) -> impl FnMut(&mut CycleExecutionV1) {
@@ -869,6 +873,20 @@ pub(crate) fn update_entry(
         .executions
         .iter_mut()
         .find(|entry| entry.label.as_deref() == Some(label))
+    {
+        change(entry);
+    }
+}
+
+fn update_work_entry(
+    record: &mut CycleRecordV1,
+    work_id: &str,
+    mut change: impl FnMut(&mut CycleExecutionV1),
+) {
+    if let Some(entry) = record
+        .executions
+        .iter_mut()
+        .find(|entry| entry.work_id.as_deref() == Some(work_id))
     {
         change(entry);
     }
@@ -923,9 +941,10 @@ async fn baseline_stage(
 }
 
 /// Reserve, record ownership, then `execution-start` with `parameters` and
-/// the deterministic label `eval:<cycle_id>:<name>`. A reservation found
+/// the deterministic label `eval:<cycle_id>:<name>` and immutable idempotency
+/// key `work_id`. A reservation found
 /// again never dispatches twice: an entry already `dispatching` is
-/// reconciled by its label in the E2E listing. Answered, the cycle waits
+/// reconciled by its idempotency key in the E2E listing. Answered, the cycle waits
 /// for the execution; unanswered, it waits at its current stage, polled.
 pub(crate) async fn dispatch(
     deps: &Deps,
@@ -966,7 +985,7 @@ pub(crate) async fn dispatch(
     if let Some(entry) = record
         .executions
         .iter()
-        .find(|entry| entry.label.as_deref() == Some(&label))
+        .find(|entry| entry.work_id.as_deref() == Some(&work_id))
     {
         if let Some(execution_id) = &entry.execution_id {
             return wait(
@@ -975,16 +994,16 @@ pub(crate) async fn dispatch(
             )
             .await;
         }
-        if let Some(execution_id) = reconcile_label(deps, &label).await? {
+        if let Some(execution_id) = reconcile_dispatch(deps, &work_id).await? {
             return wait(
-                format!("{name} {execution_id} found by its label"),
+                format!("{name} {execution_id} found by its idempotency key"),
                 Some(execution_id),
             )
             .await;
         }
         if ids::now_ms() - entry.dispatched_at.unwrap_or(record.updated_at) < RECONCILE_GRACE_MS {
             return wait(
-                format!("dispatch of {label} unanswered; reconciling by label"),
+                format!("dispatch of {label} unanswered; reconciling by idempotency key"),
                 None,
             )
             .await;
@@ -1048,7 +1067,7 @@ pub(crate) async fn dispatch(
     let started: Result<Value, EvalError> = call(
         deps,
         "e2e::dashboard::execution-start",
-        json!({ "label": label, "parameters": parameters }),
+        json!({ "label": label, "idempotency_key": work_id, "parameters": parameters }),
         START_TIMEOUT_MS,
     )
     .await;
@@ -1739,8 +1758,8 @@ async fn wake(
         CycleStageV1::Analysis,
         detail,
         |next| {
-            if let Some((label, claim)) = &mark {
-                update_entry(next, label, |entry| {
+            if let Some((work_id, claim)) = &mark {
+                update_work_entry(next, work_id, |entry| {
                     entry.execution_id = Some(claim.execution_id.clone());
                     entry.state = ExecutionStateV1::Imported;
                     entry.admission_key = Some(claim.admission_key.clone());
@@ -1755,9 +1774,9 @@ async fn wake(
 }
 
 /// Re-reads `execution-get` (the source of truth) and admits a complete
-/// execution once per execution/run/attempt. An execution a cycle
-/// dispatched (its label names the cycle, which recorded it before the
-/// dispatch) returns to that cycle and never starts another; any other
+/// execution once per execution/run/attempt. An execution a cycle dispatched
+/// (its immutable idempotency key names work recorded before the dispatch)
+/// returns to that cycle and never starts another; any other
 /// normal terminal execution starts one cycle, or wakes the cycle already
 /// started from it. The flag tells the sweep to hold its checkpoint.
 pub async fn admit_execution(
@@ -1772,9 +1791,42 @@ pub async fn admit_execution(
         ));
     };
     let label = evidence::text_at(summary, "/label").unwrap_or_default();
+    let idempotency_key = evidence::text_at(summary, "/idempotency_key");
     let readiness = evidence::readiness(&bundle, execution_id);
+    if let Some(parent) = evidence::text_at(summary, "/parent_plan_execution_id") {
+        return Ok((
+            not_admitted(
+                format!("native child execution belongs to plan {parent}"),
+                None,
+            ),
+            false,
+        ));
+    }
+    if let Some((owner, _)) = idempotency_key
+        .as_deref()
+        .and_then(|key| key.split_once(':'))
+    {
+        if ids::is_cycle(owner) {
+            return admit_owned(
+                deps,
+                owner,
+                idempotency_key.as_deref().unwrap_or_default(),
+                &label,
+                execution_id,
+                &bundle,
+                readiness,
+            )
+            .await;
+        }
+    }
     if let Some(owner) = ids::label_cycle(&label) {
-        return admit_owned(deps, owner, &label, execution_id, &bundle, readiness).await;
+        return Ok((
+            not_admitted(
+                "a display label cannot establish ownership without the recorded idempotency key",
+                Some(owner.to_string()),
+            ),
+            false,
+        ));
     }
     match readiness {
         Readiness::Open(why) => return Ok((not_admitted(why, None), true)),
@@ -1855,6 +1907,7 @@ pub async fn admit_execution(
 async fn admit_owned(
     deps: &Deps,
     owner: &str,
+    work_id: &str,
     label: &str,
     execution_id: &str,
     bundle: &Value,
@@ -1863,18 +1916,24 @@ async fn admit_owned(
     let owner_id = Some(owner.to_string());
     let Some(record) = state::get_cycle(&deps.iii, owner).await? else {
         return Ok((
-            not_admitted(format!("its label names unknown cycle {owner}"), None),
+            not_admitted(
+                format!("its idempotency key names unknown cycle {owner}"),
+                None,
+            ),
             false,
         ));
     };
     let Some(entry) = record
         .executions
         .iter()
-        .find(|entry| entry.label.as_deref() == Some(label))
+        .find(|entry| entry.work_id.as_deref() == Some(work_id))
         .cloned()
     else {
         return Ok((
-            not_admitted(format!("cycle {owner} never recorded {label}"), owner_id),
+            not_admitted(
+                format!("cycle {owner} never recorded idempotency key {work_id}"),
+                owner_id,
+            ),
             false,
         ));
     };
@@ -1888,10 +1947,10 @@ async fn admit_owned(
                 false,
             ));
         }
-    } else if reconcile_label(deps, label).await?.as_deref() != Some(execution_id) {
+    } else if reconcile_dispatch(deps, work_id).await?.as_deref() != Some(execution_id) {
         return Ok((
             not_admitted(
-                format!("{label} does not identify only execution {execution_id}"),
+                format!("{work_id} does not identify only execution {execution_id}"),
                 owner_id,
             ),
             true,
@@ -1908,7 +1967,7 @@ async fn admit_owned(
             if entry.execution_id.is_none() {
                 state::update_cycle(&deps.iii, owner, |stored| {
                     let mut next = stored.clone();
-                    update_entry(&mut next, label, running(execution_id.into()));
+                    update_work_entry(&mut next, work_id, running(execution_id.into()));
                     Ok((Some(next), ()))
                 })
                 .await?;
@@ -1926,7 +1985,7 @@ async fn admit_owned(
                     CycleStageV1::Done,
                     &detail,
                     |next| {
-                        update_entry(next, label, |entry| {
+                        update_work_entry(next, work_id, |entry| {
                             entry.execution_id = Some(execution_id.into());
                             entry.state = ExecutionStateV1::Lost;
                         });
@@ -1947,7 +2006,7 @@ async fn admit_owned(
             let woken = wake(
                 deps,
                 owner,
-                Some((label.to_string(), stored)),
+                Some((work_id.to_string(), stored)),
                 &format!("{label} ({execution_id}) completed and was imported"),
             )
             .await?;
