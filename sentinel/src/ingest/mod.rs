@@ -693,8 +693,10 @@ impl<D: Db, E: EngineRegistry> Ingest<D, E> {
             if let Some(group_id) = &group_id {
                 // Only ever the expected group's own label: its fingerprint
                 // carries the expectation, so no real defect group can be
-                // labelled by it, and `set_triage` never overwrites.
-                if expected {
+                // labelled by it, and `set_triage` never overwrites. A
+                // deduped observation names the group it was first counted
+                // in, which this request's expectation does not describe.
+                if expected && kind != ReportOutcomeV1::Deduped {
                     let triage =
                         report_adapter::expected_triage(observation, &redactor, captured_at_ms);
                     self.store.set_triage(group_id, &triage).await?;

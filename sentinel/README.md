@@ -170,7 +170,7 @@ observation may do:
 | `[]` | `unexpected` | opens or counts its group under the normal lifecycle |
 | entries, one matches | `expected` | its own group (never a real defect's), triaged `test_traffic` by rule, never moves a state |
 | entries, none match | `expected_mismatch` | like `unexpected`: a different failure than the one provoked |
-| absent | `insufficient_evidence` | counted without moving the group (no regression, no ignore expiry), left to triage |
+| absent | `insufficient_evidence` | counted without moving the group (no regression, no ignore expiry), untriaged: the triage sweep skips report groups |
 
 An observation with neither a message nor an exception type (a score that
 dropped, say) records nothing: no runtime error is made up for it. Each
@@ -276,6 +276,7 @@ docker run -d --rm -p 127.0.0.1:5439:5432 -e POSTGRES_PASSWORD=pg postgres:17-al
 SENTINEL_TEST_POSTGRES_URL=postgres://postgres:pg@127.0.0.1:5439/postgres cargo test
 ```
 
-Report-sourced groups retain deterministic triage and any existing label, but
-do not enter the background model sweep. Eval owns their budgeted semantic
-analysis; importing a report must not start hidden model spending later.
+Report-sourced groups keep the `test_traffic` label of an expected failure,
+but never enter the background triage sweep, rule or model. Eval owns their
+budgeted semantic analysis; importing a report must not start hidden model
+spending later, nor crowd trace and log groups out of the sweep.

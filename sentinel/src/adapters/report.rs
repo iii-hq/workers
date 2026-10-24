@@ -170,10 +170,12 @@ pub fn redact(
     redactor: &Redactor,
     redactions: &mut u64,
 ) -> ReportObservationV1 {
+    // Redacted, then capped: a cap first could cut a secret where its
+    // pattern needs the rest of it, and keep the part it cut in clear.
     let mut text = |value: &str, max: usize| {
-        let (value, hits) = redactor.redact(&cap_bytes(value.to_string(), max));
+        let (value, hits) = redactor.redact(value);
         *redactions += hits;
-        value
+        cap_bytes(value, max)
     };
     ReportObservationV1 {
         execution_id: text(&observation.execution_id, ID_MAX_BYTES),

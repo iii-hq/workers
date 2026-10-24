@@ -775,7 +775,9 @@ impl<D: Db> Store<D> {
     /// Groups first seen before `seen_before_ms` that nobody has triaged
     /// yet, oldest first, skipping the first `offset`. Status does not
     /// matter: an ignored group still shows when it comes back, and its kind
-    /// is the same either way.
+    /// is the same either way. Report groups are not the sweep's: Eval owns
+    /// their paid analysis, and leaving them out keeps them from crowding
+    /// trace and log groups out of every page.
     pub async fn untriaged_groups(
         &self,
         seen_before_ms: i64,
@@ -790,7 +792,8 @@ impl<D: Db> Store<D> {
                  (SELECT COUNT(*) FROM sentinel_group_sessions s WHERE s.group_id = g.id) \
                  AS sessions_affected \
                  FROM sentinel_groups g \
-                 WHERE g.triage IS NULL AND g.archived = 0 AND g.first_seen_ms <= ? \
+                 WHERE g.triage IS NULL AND g.archived = 0 AND g.source <> 'report' \
+                 AND g.first_seen_ms <= ? \
                  ORDER BY g.first_seen_ms, g.id LIMIT ? OFFSET ?",
                 vec![
                     json!(seen_before_ms),

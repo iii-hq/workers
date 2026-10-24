@@ -482,3 +482,49 @@ async fn an_observation_that_cannot_name_its_occurrence_is_refused() {
         0
     );
 }
+
+#[tokio::test]
+async fn a_reimport_that_expects_the_failure_never_labels_the_group_it_was_counted_in() {
+    let h = harness().await;
+    // First sent with no contract, as Eval sends an E2E failure today.
+    let mut seen = observation(ReportSideV1::Candidate);
+    seen.expected_errors = None;
+    let first = h.send(vec![seen.clone()]).await;
+    let group_id = first.results[0].group_id.clone().unwrap();
+    let again = h.send(vec![expected(seen)]).await;
+    assert_eq!(again.results[0].outcome, ReportOutcomeV1::Deduped);
+    let detail = h
+        .service
+        .get(GroupGetRequestV1::new(&group_id))
+        .await
+        .unwrap();
+    assert!(detail.group.triage.is_none(), "{:?}", detail.group.triage);
+}
+
+#[tokio::test]
+async fn a_secret_the_message_cap_would_cut_is_still_redacted() {
+    let h = harness().await;
+    // The cap (64 KiB, with its 3-byte marker) falls right before the `@`
+    // the URL-credential rule needs: capping first would keep the password.
+    let secret = "postgres://admin:hunter2";
+    let max = h.config.evidence.message_max_bytes as usize;
+    let mut leaky = observation(ReportSideV1::Candidate);
+    leaky.message = format!("{}{secret}@db:5432/app", "x".repeat(max - 3 - secret.len()));
+    let response = h.send(vec![leaky]).await;
+    let result = &response.results[0];
+    let evidence = h
+        .service
+        .evidence(EvidenceGetRequestV1 {
+            occurrence_id: result.occurrence_id.clone().unwrap(),
+            ..EvidenceGetRequestV1::default()
+        })
+        .await
+        .unwrap();
+    assert!(!json!(evidence.evidence).to_string().contains("hunter2"));
+    let detail = h
+        .service
+        .get(GroupGetRequestV1::new(result.group_id.as_deref().unwrap()))
+        .await
+        .unwrap();
+    assert!(!detail.message_sample.contains("hunter2"));
+}

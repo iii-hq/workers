@@ -206,10 +206,6 @@ impl<D: Db, E: EngineRegistry> Triage<D, E> {
                 }
                 missing = Some(json!({ "id": function, "registered_now": false }));
             }
-            // Eval owns paid analysis of imported E2E reports, under its reservation.
-            if group.source == "report" {
-                continue;
-            }
             asking.push(evaluation(&group, missing, now_ms));
         }
 

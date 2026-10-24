@@ -221,6 +221,56 @@ async fn report_groups_never_start_an_unbudgeted_background_judgment() {
 }
 
 #[tokio::test]
+async fn report_groups_never_crowd_a_live_trace_out_of_the_sweep() {
+    let setup = setup(vec!["judge::evaluate"], judge(|_| "defect")).await;
+    // More than a page of older report groups the sweep never labels.
+    for index in 0..sentinel::triage::BATCH + 2 {
+        setup
+            .store
+            .record_occurrence(&OccurrenceWrite {
+                fingerprint: format!("report-fingerprint-{index}"),
+                source: ErrorSourceV1::Report,
+                dedupe_key: format!("report-occurrence-{index}"),
+                at_ms: 0,
+                namespace: "e2e".into(),
+                service_name: "harness".into(),
+                function_id: None,
+                exception_type: None,
+                title: "run failure".into(),
+                message: format!("unexpected runtime error {index}"),
+                trace_id: None,
+                span_id: None,
+                session_id: None,
+                turn_id: None,
+                worker_version: None,
+                evidence: None,
+                namespace_ambiguous: false,
+                pending_occurrence_id: None,
+            })
+            .await
+            .unwrap();
+    }
+    group(
+        &setup.store,
+        "live-trace",
+        "fp::get",
+        "index out of bounds",
+        &[1],
+    )
+    .await;
+    setup
+        .triage
+        .sweep(&WorkerConfig::default(), 10 * MINUTE)
+        .await
+        .unwrap();
+    assert_eq!(
+        calls(&setup),
+        1,
+        "the live trace is judged on the first sweep"
+    );
+}
+
+#[tokio::test]
 async fn a_start_up_race_is_labelled_by_rule_without_asking_the_judge() {
     let setup = setup(vec!["state::get", "judge::evaluate"], judge(|_| "defect")).await;
     group(

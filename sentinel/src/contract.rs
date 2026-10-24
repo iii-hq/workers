@@ -350,8 +350,8 @@ pub struct ReportObservationResultV1 {
     pub occurrence_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_status: Option<GroupStatusV1>,
-    /// The group's triage, when it has one. Reuse it rather than judging the
-    /// same occurrence again; absent until the triage sweep reaches it.
+    /// The group's triage, when it has one: `test_traffic` for an expected
+    /// failure. The triage sweep never labels report groups.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub triage: Option<GroupTriageV1>,
 }
