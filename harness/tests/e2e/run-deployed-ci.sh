@@ -413,7 +413,6 @@ wait_for_model "$HARNESS_E2E_JUDGE_PROVIDER" "$HARNESS_E2E_JUDGE_MODEL"
 
 verify_args=(
   --lock "$compose_file"
-  --catalog "$repo_root/worker-compose.yaml"
   --required harness
   --required database
   --worker "$release_worker"

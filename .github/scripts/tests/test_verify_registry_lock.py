@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -106,3 +107,12 @@ def test_rejects_compose_file_with_wrong_release_pin(tmp_path: Path):
     result = run_verify_compose(tmp_path, "1.8.8", ["harness"])
     assert result.returncode != 0
     assert "artifact_mismatch" in result.stderr
+
+
+def test_the_deployed_lane_passes_only_files_the_repo_has():
+    """run-deployed-ci.sh once passed a --catalog the repo no longer had."""
+    repo = Path(__file__).parents[3]
+    script = (repo / "harness/tests/e2e/run-deployed-ci.sh").read_text()
+    for rel in re.findall(r'"\$repo_root/([^"$]+)"', script):
+        if not rel.startswith("target/"):
+            assert (repo / rel).exists(), rel
