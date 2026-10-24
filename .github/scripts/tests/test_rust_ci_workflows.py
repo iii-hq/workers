@@ -325,9 +325,8 @@ def test_sandbox_builtin_vm_linux_is_a_required_shaped_kvm_job() -> None:
     assert "sandbox-builtin-macos" in workflow("ci.yml")["jobs"]
 
 
-def test_sandbox_builtin_rust_steps_build_init_first_and_keep_the_worker_alive() -> None:
+def test_sandbox_builtin_rust_steps_build_init_first() -> None:
     rust = str(workflow("ci.yml")["jobs"]["rust"]["steps"])
     assert "cargo test --locked --lib fails_closed" in rust
     assert rust.index("BUILD_TARGET=x86_64-unknown-linux-gnu scripts/build-init.sh") < rust.index(
         "--features embed-init,embed-libkrunfw -- -D warnings")
-    assert "III_ENGINE_PID" in str(workflow("ci.yml")["jobs"]["interface-smoke"])

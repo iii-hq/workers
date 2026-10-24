@@ -9,15 +9,11 @@ use sandbox_builtin::{Cli, Commands};
 
 /// A `stderr` tracing writer that never reports I/O errors back to the fmt
 /// layer. The fmt layer's sole error path is an `eprintln!`, which PANICS
-/// when stderr is *also* a broken pipe — precisely the engine-death case for
-/// the spawned `sandbox-daemon`: the engine
-/// consumed both fds 1 and 2, so when it dies the connection thread's very
-/// next reconnect log would panic the process (exit 101) before the
-/// engine-gone reaper runs. Swallowing the write error keeps the daemon alive;
-/// it then dup2's fds 1/2 onto its durable exit log
-/// (`daemon_exit::redirect_stdio_to_exit_log`) and these same writes land there
-/// as forensics. For one-shot CLI use it just turns a `… | head` EPIPE into a
-/// silent drop instead of a panic — strictly better either way.
+/// when stderr is *also* a broken pipe: Compose owns the adapter's stdout and
+/// stderr pipes, so once Compose is gone the next log line would panic the
+/// adapter (exit 101) before it stops its VMs. Swallowing the write error
+/// keeps it running until its shutdown signal; for a hand run it turns a
+/// `… | head` EPIPE into a silent drop instead of a panic.
 struct ResilientStderr;
 
 impl std::io::Write for ResilientStderr {

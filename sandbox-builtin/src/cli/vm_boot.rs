@@ -1362,19 +1362,16 @@ fn boot_vm(
         );
     }
 
-    // Lifeline cascade: when the spawner attached a lifeline pipe (the
-    // sandbox daemon does, for every VM it boots), tear the VM down the
-    // instant the spawner dies — ANY death, SIGKILL included. Without this,
-    // VMs are setsid'd session leaders that nothing ever reaps once their
-    // daemon is gone. Routed through the same ExitHandle as SIGTERM/SIGINT
-    // so the on_exit cleanup (socket fingerprints) runs instead of
-    // an abrupt process::exit. Plain OS threads, because libkrun owns the
-    // main thread once `enter()` runs; if the spawner died during boot the
-    // first read/poll fires immediately. The spawner-pid poll backstops the
-    // one lifeline failure mode (a write end leaked through the macOS
-    // non-atomic CLOEXEC window delaying EOF). Detached spawners (the
-    // managed-worker start path) attach neither env, preserving their
-    // adopt-orphan semantics.
+    // Lifeline cascade: the adapter attaches a lifeline pipe to every VM it
+    // boots, so tear the VM down the instant the adapter dies — ANY death,
+    // SIGKILL included. Without this, VMs are session leaders that nothing
+    // ever reaps once their adapter is gone. Routed through the same
+    // ExitHandle as SIGTERM/SIGINT so the on_exit cleanup (socket
+    // fingerprints) runs instead of an abrupt process::exit. Plain OS
+    // threads, because libkrun owns the main thread once `enter()` runs; if
+    // the spawner died during boot the first read/poll fires immediately.
+    // The spawner-pid poll backstops the one lifeline failure mode (a write
+    // end leaked through the macOS non-atomic CLOEXEC window delaying EOF).
     #[cfg(unix)]
     {
         if let Some(fd) = crate::daemon_exit::take_early_lifeline() {
@@ -1392,18 +1389,6 @@ fn boot_vm(
                 shut_down_vm(|| handle.trigger(), &format!("spawner pid {pid} exited"));
             });
         }
-        // Engine anchor: managed-worker VMs are detached from their
-        // (transient) spawner by design, but nothing the engine started may
-        // outlive the engine — a real `killall -9 iii` left worker VMs
-        // running. III_ENGINE_PID flows down the whole spawn tree env, so
-        // watch it directly; hand-run VMs (no engine env) stay unwatched.
-        if let Some(pid) = crate::daemon_exit::engine_pid_from_env() {
-            let handle = vm.exit_handle();
-            std::thread::spawn(move || {
-                crate::daemon_exit::blocking_wait_pid_gone(pid);
-                shut_down_vm(|| handle.trigger(), &format!("engine pid {pid} exited"));
-            });
-        }
     }
 
     let vcpu_label = if args.vcpus == 1 { "vCPU" } else { "vCPUs" };
@@ -1414,7 +1399,7 @@ fn boot_vm(
     vm.enter().map_err(|e| format!("VM enter failed: {}", e))
 }
 
-/// The spawner or the engine is gone: shut the VM down, then say why. A worker
+/// The spawner is gone: shut the VM down, then say why. A worker
 /// VM's stderr is a pipe the dead spawner read, so `eprintln!` would panic on
 /// EPIPE and end this watcher before the trigger, leaving the VM running.
 #[cfg(unix)]

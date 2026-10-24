@@ -1269,13 +1269,6 @@ jobs:
           elif [[ "$WORKER" == judge-clef ]]; then
             export III_CLEF_CHECKPOINT_DIR="$PWD/judge-clef/tests/fixtures/tiny"
           fi
-          # sandbox-builtin exits when its engine does. Started with & here, it
-          # would otherwise watch its spawn parent (this step's shell) and exit
-          # when the step ends, before the interface is collected.
-          if [[ "$WORKER" == sandbox-builtin ]]; then
-            III_ENGINE_PID="$(cat iii-engine.pid)"
-            export III_ENGINE_PID
-          fi
           # Run from inside the worker dir — this is what makes a relative
           # default db path (sqlite:./data/iii.db) resolve against a clean
           # checkout with no data/ dir, reproducing the publish boot exactly.
