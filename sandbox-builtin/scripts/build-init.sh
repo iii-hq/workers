@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the guest init (crates/iii-init) as a static musl binary into
-# target/<musl triple>/release/iii-init, where crates/iii-filesystem/build.rs
-# picks it up for `--features embed-init`.
+# ${CARGO_TARGET_DIR:-target}/<musl triple>/release/iii-init, where
+# crates/iii-filesystem/build.rs picks it up for `--features embed-init`.
 #
 # Usage: BUILD_TARGET=<host target triple> scripts/build-init.sh
 # The guest always runs Linux, so only the arch of BUILD_TARGET matters
@@ -19,5 +19,6 @@ esac
 
 rustup target add "$triple"
 cargo build --locked -p iii-init --release --target "$triple"
-test -s "target/$triple/release/iii-init"
-echo "built target/$triple/release/iii-init"
+init="${CARGO_TARGET_DIR:-target}/$triple/release/iii-init"
+test -s "$init"
+echo "built $init"
