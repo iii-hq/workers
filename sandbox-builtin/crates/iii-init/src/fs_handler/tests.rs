@@ -501,6 +501,42 @@ fn collect_messages(rx: std::sync::mpsc::Receiver<Vec<u8>>) -> Vec<ShellMessage>
     msgs
 }
 
+/// A read stream waits for room in a full writer channel instead of dropping
+/// frames: under the host relay's backpressure a dropped chunk was a short
+/// file, and a dropped FsEnd a read that never ended.
+#[test]
+fn read_stream_waits_for_a_full_writer_instead_of_dropping_frames() {
+    let dir = tmpdir();
+    let f = dir.path().join("big.bin");
+    let payload: Vec<u8> = (0u8..=255).cycle().take(20 * 64 * 1024).collect();
+    std::fs::write(&f, &payload).unwrap();
+    let (writer, frame_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
+    let path = f.to_string_lossy().into_owned();
+    let stream = std::thread::spawn(move || streaming::handle_read_start(path, &writer, 7));
+
+    // A slow host: it starts draining only once the channel is long full.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let frames: Vec<Vec<u8>> = frame_rx.iter().collect();
+    stream.join().unwrap().unwrap();
+
+    let mut collected = Vec::new();
+    let mut ended = false;
+    for frame in &frames {
+        match iii_shell_proto::decode_frame_body(&frame[4..]).unwrap().2 {
+            ShellMessage::FsChunk { data_b64 } => {
+                use base64::Engine;
+                let chunk = base64::engine::general_purpose::STANDARD.decode(data_b64);
+                collected.extend_from_slice(&chunk.unwrap());
+            }
+            ShellMessage::FsEnd => ended = true,
+            _ => {}
+        }
+    }
+    assert!(ended, "FsEnd never sent");
+    assert_eq!(collected.len(), payload.len());
+    assert_eq!(collected, payload);
+}
+
 #[test]
 fn read_stream_delivers_meta_then_chunks_then_end() {
     let dir = tmpdir();
