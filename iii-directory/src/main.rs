@@ -441,6 +441,8 @@ fn setup_auto_download(
             let cache = cache_inner.clone();
             let in_flight = in_flight_inner.clone();
             async move {
+                // The installed set may have changed; the next read refetches it.
+                cache.invalidate().await;
                 if change.is_connect() {
                     // Off the trigger's path: a download takes seconds.
                     tokio::spawn(async move {

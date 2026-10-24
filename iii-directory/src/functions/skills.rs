@@ -220,7 +220,8 @@ pub struct SkillGetOutput {
 // doesn't hit `compose::status` on every read.  The cache is:
 //
 //   1. Populated lazily on first read.
-//   2. Invalidated when the `worker` trigger fires an `add`/`remove`.
+//   2. Invalidated on every `engine::workers-available` event (with
+//      auto_download on) and after an auto-download writes skills.
 //   3. On error / daemon-down, falls back to the last-known set.
 //      If no cached set exists yet, returns `None` (meaning: unfiltered).
 
