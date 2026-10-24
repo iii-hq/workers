@@ -156,7 +156,6 @@ pub fn build_vm_command(
     let env_pairs: Vec<(String, String)> = env.into_iter().collect();
     let env_stdin = iii_supervisor::env_channel::encode_frame(&env_pairs)
         .map_err(|e| format!("cannot pass the worker environment to the VM: {e}"))?;
-    let control_sock = rootfs.join("control.sock");
     let shell_sock = rootfs.join("shell.sock");
 
     let mut cmd = tokio::process::Command::new(&self_exe);
@@ -169,7 +168,6 @@ pub fn build_vm_command(
         exec_path,
         vcpus,
         ram_mib,
-        &control_sock,
         &shell_sock,
         source_sync,
         mounts,
@@ -240,7 +238,6 @@ fn vm_boot_args_dev(
     exec_path: &str,
     vcpus: u32,
     ram_mib: u32,
-    control_sock: &Path,
     shell_sock: &Path,
     source_sync: Option<&Path>,
     mounts: &[(String, String)],
@@ -258,8 +255,6 @@ fn vm_boot_args_dev(
     out.push(OsString::from(vcpus.to_string()));
     out.push(OsString::from("--ram"));
     out.push(OsString::from(ram_mib.to_string()));
-    out.push(OsString::from("--control-sock"));
-    out.push(control_sock.as_os_str().to_owned());
     out.push(OsString::from("--shell-sock"));
     out.push(shell_sock.as_os_str().to_owned());
     if let Some(source_sync) = source_sync {
@@ -315,7 +310,6 @@ mod tests {
             "/bin/sh",
             2,
             2048,
-            Path::new("/tmp/control.sock"),
             Path::new("/tmp/shell.sock"),
             Some(Path::new("/host/src")),
             &mounts,
@@ -328,7 +322,6 @@ mod tests {
         assert_eq!(parsed.workdir, "/workspace");
         assert_eq!(parsed.vcpus, 2);
         assert_eq!(parsed.ram, 2048);
-        assert_eq!(parsed.control_sock.as_deref(), Some("/tmp/control.sock"));
         assert_eq!(parsed.shell_sock.as_deref(), Some("/tmp/shell.sock"));
         assert_eq!(parsed.source_sync.as_deref(), Some("/host/src"));
         assert!(parsed.env.is_empty());

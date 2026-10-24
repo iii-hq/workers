@@ -9,11 +9,9 @@
 //!
 //! Sits in the `__vm-boot` process (same lifetime as the VM) and
 //! bridges client connections on a Unix socket with the host end of a
-//! socketpair that's wired through libkrun into the guest. Unlike the
-//! supervisor control proxy (`vm_boot::spawn_control_proxy`), which is
-//! strictly one-request-at-a-time, this relay fans out multiple
-//! concurrent exec sessions on the same port by routing frames on
-//! their `corr_id` (see `iii_supervisor::shell_protocol`).
+//! socketpair that's wired through libkrun into the guest. The relay
+//! fans out multiple concurrent exec sessions on the same port by
+//! routing frames on their `corr_id` (see `iii_supervisor::shell_protocol`).
 //!
 //! Design: the relay does **not** parse JSON payloads, only the
 //! fixed-size frame header.
@@ -35,9 +33,8 @@
 //! workload.
 //!
 //! Authorization: connecting peers must share our euid (checked via
-//! `SO_PEERCRED` on Linux, `getpeereid` on macOS/BSD). Same trust
-//! model as the control proxy — `iii worker exec` is a local-owner
-//! affordance, not a network service.
+//! `SO_PEERCRED` on Linux, `getpeereid` on macOS/BSD). Exec is a
+//! local-owner affordance, not a network service.
 
 use std::collections::{HashMap, HashSet};
 use std::os::unix::net::UnixStream as StdUnixStream;
@@ -175,11 +172,6 @@ const MAX_OWNED_IDS_PER_CLIENT: usize = 256;
 
 /// Identity of a bound Unix socket, recorded at bind time so a later
 /// cleanup can refuse to unlink the path if it's been replaced.
-///
-/// Mirrors `vm_boot::SocketFingerprint` but is its own type because
-/// extracting the original into a shared helper is out of scope for
-/// this PR. If a third caller needs this shape, fold both into a
-/// `cli::socket_util` module.
 #[derive(Debug, Clone)]
 pub struct ShellSocketFingerprint {
     /// Absolute path we bound.
@@ -207,8 +199,8 @@ impl ShellSocketFingerprint {
 /// Spawn the relay tasks on `runtime` and return the bound socket's
 /// fingerprint so the caller can clean it up on VM exit.
 ///
-/// `sock_path` — where clients connect (e.g.
-/// `~/.iii/managed/<name>/shell.sock`).
+/// `sock_path` — where clients connect (e.g. a sandbox's or worker VM's
+/// `shell.sock`).
 /// `vm_stream` — the host end of the socketpair whose guest half is
 /// wired into libkrun as the `iii.exec` virtio-console port.
 ///
@@ -224,17 +216,17 @@ pub fn spawn(
     // with the current tokio reactor, which panics with "there is no
     // reactor running" if called outside a runtime context. Since
     // `__vm-boot` dispatches on a dedicated `std::thread` (see
-    // iii-worker/src/main.rs — workaround for msb_krun's nested
+    // src/main.rs — workaround for msb_krun's nested
     // tokio::block_on in virtio-blk Drop), we're on a plain OS thread
     // holding only a `Handle`. Enter the runtime for the duration of
     // the setup so the reactor is reachable; the spawned tasks already
     // run inside the runtime and don't need the guard.
     let _runtime_guard = runtime.enter();
 
-    // Narrow umask so the bound socket inode is born with 0o600 mode
-    // (same reasoning as `vm_boot::spawn_control_proxy`). Best-effort;
-    // `set_permissions` below corrects any platform that ignores
-    // umask on socket(2).
+    // Narrow umask so the bound socket inode is born with 0o600 mode, so
+    // no other local user can connect in the window before
+    // `set_permissions`. Best-effort; `set_permissions` below corrects
+    // any platform that ignores umask on socket(2).
     prepare_sock_dir(&sock_path)?;
 
     let fingerprint = {
@@ -846,10 +838,6 @@ async fn read_exact_or_eof<R: AsyncReadExt + Unpin>(
 /// `SO_PEERCRED` (Linux) / `getpeereid` (macOS/BSD): does the
 /// connecting peer share our euid? Tokio's `UnixStream` exposes the
 /// raw fd, so we reuse the libc incantation directly.
-///
-/// Duplicated from `vm_boot::peer_uid_matches` because that copy is
-/// nested inside `spawn_control_proxy`. If we grow a third user, this
-/// is a 30-line extract into a shared util.
 fn peer_uid_matches_tokio(stream: &tokio::net::UnixStream, expected: u32) -> bool {
     use std::os::unix::io::AsRawFd;
     let fd = stream.as_raw_fd();

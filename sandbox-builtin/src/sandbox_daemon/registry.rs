@@ -62,8 +62,7 @@ impl SandboxState {
 pub const DEFAULT_MAX_EXEC_IN_FLIGHT: u32 = 4;
 
 /// Path of a sandbox's network-activity beacon, derived from its shell
-/// socket the same way the launcher derives `control.sock` and
-/// `vm-boot.stderr.log`. Single source of truth for the file name: the
+/// socket the same way the launcher derives `vm-boot.stderr.log`. Single source of truth for the file name: the
 /// launcher passes it to `__vm-boot` (whose smoltcp stack refreshes the
 /// mtime on relayed guest payload) and the reaper stats it. The file lives
 /// in the sandbox's overlay base dir, so `OverlayLayout::cleanup` reclaims

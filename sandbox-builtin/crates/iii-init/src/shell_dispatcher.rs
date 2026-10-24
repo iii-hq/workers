@@ -6,8 +6,7 @@
 
 //! Guest-side dispatcher for the `iii.exec` virtio-console shell channel.
 //!
-//! Runs on a dedicated thread alongside the existing supervisor control
-//! thread. Reads multiplexed frames from the port (one stream, many
+//! Runs on a dedicated thread alongside the worker. Reads multiplexed frames from the port (one stream, many
 //! concurrent sessions distinguished by `corr_id`), spawns child
 //! processes in pipe mode or TTY mode, and streams their output back
 //! on the same port. TTY mode allocates a pseudo-terminal via

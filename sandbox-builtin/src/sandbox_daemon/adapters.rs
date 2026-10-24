@@ -90,11 +90,7 @@ pub(crate) async fn prepare_overlay_lower(base_rootfs: &Path) -> Result<PathBuf,
 /// so the older `--cpus` / `--memory-mb` and missing `--exec` caused clap to
 /// reject the args, the child to exit instantly, and a 30s `shell.sock` wait
 /// that ended in an opaque S300.
-pub(crate) fn vm_boot_args(
-    params: &BootParams,
-    rootfs_lower: &Path,
-    control_sock: &Path,
-) -> Vec<OsString> {
+pub(crate) fn vm_boot_args(params: &BootParams, rootfs_lower: &Path) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         "--rootfs".into(),
         params.rootfs.clone().into(),
@@ -127,8 +123,6 @@ pub(crate) fn vm_boot_args(
         params.memory_mb.to_string().into(),
         "--shell-sock".into(),
         params.shell_sock.clone().into(),
-        "--control-sock".into(),
-        control_sock.into(),
     ];
     if params.network {
         args.push("--network".into());
@@ -273,16 +267,10 @@ impl VmLauncher for IiiWorkerLauncher {
             "boot_phase: read-only base erofs"
         );
 
-        // `--control-sock` is what flips the in-VM iii-init into
-        // supervisor mode so it binds `shell.sock`. Pairing the control
-        // socket with the shell socket in the same sandbox dir keeps
-        // reaper semantics simple.
-        let control_sock = params.shell_sock.with_file_name("control.sock");
-
         let env_stdin = env_stdin_frame(params)?;
         let mut cmd = tokio::process::Command::new(&bin);
         cmd.arg("__vm-boot")
-            .args(vm_boot_args(params, &rootfs_lower, &control_sock))
+            .args(vm_boot_args(params, &rootfs_lower))
             .stdin(std::process::Stdio::piped());
 
         // Capture stderr to a per-sandbox log. Dropping to /dev/null
@@ -943,14 +931,10 @@ mod sandbox_boot_shape_tests {
     }
 
     fn args(network: bool) -> Vec<String> {
-        vm_boot_args(
-            &params(network),
-            Path::new(LOWER),
-            Path::new("/tmp/iii-sandbox/sb/control.sock"),
-        )
-        .iter()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect()
+        vm_boot_args(&params(network), Path::new(LOWER))
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
     }
 
     fn value_of(args: &[String], flag: &str) -> Option<String> {
@@ -1009,11 +993,7 @@ mod sandbox_boot_shape_tests {
         }
 
         let mut argv = vec![OsString::from("test")];
-        argv.extend(vm_boot_args(
-            &params(true),
-            Path::new(LOWER),
-            Path::new("/c.sock"),
-        ));
+        argv.extend(vm_boot_args(&params(true), Path::new(LOWER)));
         let parsed = Wrapper::try_parse_from(argv)
             .expect("__vm-boot must accept the sandbox args")
             .args;
@@ -1104,7 +1084,7 @@ mod sandbox_boot_shape_tests {
         let mut p = params(false);
         p.rootfs = td.path().to_path_buf();
         let mut argv = vec![OsString::from("test")];
-        argv.extend(vm_boot_args(&p, Path::new(LOWER), Path::new("/c.sock")));
+        argv.extend(vm_boot_args(&p, Path::new(LOWER)));
         let parsed = Wrapper::try_parse_from(argv).unwrap().args;
 
         let fs = crate::cli::vm_boot::root_share(&parsed).unwrap();

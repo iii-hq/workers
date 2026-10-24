@@ -4,16 +4,12 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! iii-supervisor library facade.
-//!
-//! The binary (`src/main.rs`) is thin: parse args, hand off to the
-//! pieces exposed here. Tests and host-side integrators import these
-//! modules directly — notably `protocol` is consumed by `iii-worker`'s
-//! `supervisor_ctl` for wire-compatible RPC.
+//! The host↔guest channels of a sandbox-builtin VM, shared by iii-init
+//! (guest) and sandbox-builtin (host): the worker env frame, the
+//! shell-exec protocol, source sync, and the guest's lookup of the
+//! virtio-console ports that carry them.
 
-pub mod child;
-pub mod control;
 pub mod env_channel;
-pub mod protocol;
 pub mod shell_protocol;
 pub mod source_sync;
+pub mod virtio;

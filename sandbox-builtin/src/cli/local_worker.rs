@@ -56,11 +56,8 @@ pub fn parse_manifest_resources(manifest_path: &Path) -> (u32, u32) {
 
 /// Build the boot script that `iii-init` will exec as the worker command.
 ///
-/// No supervisor wrapping: the in-VM `iii-init` binary absorbs the
-/// supervisor role (see `iii_init::supervisor`) and opens the control
-/// channel itself when the host sets `III_CONTROL_PORT`. That removes
-/// the separate `/opt/iii/supervisor` binary and its install plumbing
-/// that this function used to emit as `exec /opt/iii/supervisor ...`.
+/// No supervisor wrapping: the in-VM `iii-init` binary (PID 1) starts
+/// and reaps the worker itself (see `iii_init::supervisor`).
 ///
 /// `is_bundle` controls workspace behavior:
 ///   * local-path workers copy host source into a guest-local `/workspace`;
@@ -200,11 +197,7 @@ fi"#
         ));
     }
 
-    // Exec the user command directly. When the host has configured a
-    // control port (III_CONTROL_PORT env set by vm_boot), `iii-init`
-    // enters supervisor mode and wraps this command internally with
-    // restart/shutdown RPC handling. When no control port is set,
-    // iii-init takes its legacy path and just supervises the one
+    // Exec the user command directly; iii-init supervises the one
     // process until it exits.
     // `exec` binds tighter than `&&`/`;`: a compound run_cmd like
     // "pip install -e . && python -m src.main" would parse as
@@ -627,8 +620,6 @@ pub(crate) async fn start_worker_impl(
 
     // 7. Build boot script. No supervisor wrap is emitted — the in-VM
     //    `iii-init` binary absorbs that role (see iii_init::supervisor).
-    //    Fast-restart is enabled whenever vm_boot wires the control port,
-    //    which sets `III_CONTROL_PORT` in the guest env for iii-init.
     let script = build_libkrun_local_script(&project, is_prepared, is_bundle, overlay);
 
     // Both modes exec `bash /opt/iii/dev-run.sh`; only the SOURCE of that file

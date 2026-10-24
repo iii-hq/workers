@@ -10,8 +10,8 @@
 //! The frame carries the worker's variables and the worker command
 //! (`III_WORKER_CMD`). The rest of iii-init's plumbing (`III_BLOCK_ROOT_*`,
 //! `III_WORKER_WORKDIR`, ...) still arrives on the kernel command line. The
-//! frame is exported into PID 1's environment, and the worker, supervisor
-//! restarts and `iii worker exec` sessions inherit it from there.
+//! frame is exported into PID 1's environment, and the worker and the
+//! `sandbox::exec` sessions inherit it from there.
 
 use std::fs::OpenOptions;
 use std::io::{self, Read};
@@ -84,7 +84,7 @@ pub fn load_worker_env() -> Result<(), InitError> {
 /// iii-init gets here.
 fn wait_for_port(name: &str, deadline: Instant) -> Option<PathBuf> {
     loop {
-        if let Some(path) = iii_supervisor::control::find_virtio_port_by_name(name) {
+        if let Some(path) = iii_supervisor::virtio::find_virtio_port_by_name(name) {
             return Some(path);
         }
         if Instant::now() >= deadline {
