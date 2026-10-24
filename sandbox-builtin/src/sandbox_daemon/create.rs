@@ -13,6 +13,10 @@ use std::path::PathBuf;
 use std::time::Instant;
 use uuid::Uuid;
 
+/// The smallest guest that boots and runs an exec; at 40 MiB the guest
+/// kernel deadlocks on memory, and 48 is the least that booted.
+const MIN_MEMORY_MB: u32 = 64;
+
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(example = "create_request_example")]
 pub struct CreateRequest {
@@ -25,10 +29,10 @@ pub struct CreateRequest {
     /// catalog key. Unknown values return S100 with the allowed set in
     /// the error message.
     pub image: String,
-    /// vCPU count; daemon/image default applies when omitted.
+    /// vCPU count, at least 1; daemon/image default applies when omitted.
     #[serde(default)]
     pub cpus: Option<u32>,
-    /// Memory cap in MiB; daemon/image default applies when omitted.
+    /// Memory cap in MiB, at least 64; daemon/image default applies when omitted.
     #[serde(default)]
     pub memory_mb: Option<u32>,
     /// Human label surfaced by `sandbox::list`; not an identifier.
@@ -128,6 +132,17 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
 
     let cpus = req.cpus.unwrap_or(cfg.default_cpus);
     let memory_mb = req.memory_mb.unwrap_or(cfg.default_memory_mb);
+    // Below these the VM fails later, at boot or at its first exec, as S300.
+    if cpus == 0 {
+        return Err(SandboxError::InvalidRequest(
+            "cpus must be at least 1".to_string(),
+        ));
+    }
+    if memory_mb < MIN_MEMORY_MB {
+        return Err(SandboxError::InvalidRequest(format!(
+            "memory_mb must be at least {MIN_MEMORY_MB}, got {memory_mb}"
+        )));
+    }
     if let Some(cap) = cfg.per_image_caps.get(&req.image) {
         if cpus > cap.max_cpus {
             return Err(SandboxError::ResourceLimit(format!(
@@ -323,6 +338,50 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code().as_str(), "S100");
+    }
+
+    /// cpus 0 and a guest too small to boot are bad requests, not a later S300.
+    #[tokio::test]
+    async fn unbootable_cpus_or_memory_is_s001_at_create() {
+        /// Fails the preflight, the step right after the resource checks.
+        struct NoInit;
+        #[async_trait::async_trait]
+        impl VmLauncher for NoInit {
+            fn preflight(&self) -> Result<(), SandboxError> {
+                Err(SandboxError::BootFailed("no embedded init".into()))
+            }
+            async fn boot(&self, _p: &BootParams) -> Result<BootHandle, SandboxError> {
+                unreachable!("the preflight fails first")
+            }
+        }
+        let cfg = cfg_with_python_allowed();
+        let reg = SandboxRegistry::new();
+        let launcher = NoInit;
+        for (cpus, memory_mb, code) in [
+            (Some(0), None, "S001"),
+            (None, Some(32), "S001"),
+            (None, Some(MIN_MEMORY_MB - 1), "S001"),
+            // Valid: gets as far as the preflight.
+            (Some(1), Some(MIN_MEMORY_MB), "S300"),
+        ] {
+            let req = CreateRequest {
+                image: "python".into(),
+                cpus,
+                memory_mb,
+                name: None,
+                network: None,
+                idle_timeout_secs: None,
+                env: crate::sandbox_daemon::exec::EnvShape::default(),
+            };
+            let err = handle_create(req, &cfg, &reg, &launcher, |_| {})
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err.code().as_str(),
+                code,
+                "cpus={cpus:?} memory_mb={memory_mb:?}: {err}"
+            );
+        }
     }
 
     #[tokio::test]
