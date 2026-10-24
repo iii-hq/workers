@@ -109,6 +109,10 @@ pub struct RunResponse {
     pub timed_out: bool,
     pub duration_ms: u64,
     pub success: bool,
+    /// As `ExecResponse::stdout_truncated`.
+    pub stdout_truncated: bool,
+    /// As `ExecResponse::stderr_truncated`.
+    pub stderr_truncated: bool,
     /// Present only if `keep_sandbox: true` was set on the request.
     /// Otherwise null (sandbox auto-stopped).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -303,6 +307,8 @@ async fn run_inner<S: VmStopper>(
         timed_out: resp.timed_out,
         duration_ms: resp.duration_ms,
         success: resp.success,
+        stdout_truncated: resp.stdout_truncated,
+        stderr_truncated: resp.stderr_truncated,
         sandbox_id: if keep_sandbox { Some(sandbox_id) } else { None },
     })
 }

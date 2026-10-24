@@ -92,6 +92,8 @@ fn ok_response(stdout: &str) -> ExecResponse {
         timed_out: false,
         duration_ms: 1,
         success: true,
+        stdout_truncated: false,
+        stderr_truncated: false,
     }
 }
 
@@ -375,6 +377,8 @@ async fn exec_timeout_response_passes_through_unchanged() {
         timed_out: true,
         duration_ms: 30_000,
         success: false,
+        stdout_truncated: false,
+        stderr_truncated: false,
     }));
 
     let resp = handle_exec(build_req(id, "/bin/sleep"), &reg, &runner)

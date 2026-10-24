@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const CONTRACT_MAJOR: u32 = 1;
-pub const CONTRACT_MINOR: u32 = 0;
+pub const CONTRACT_MINOR: u32 = 1;
 
 /// Worker-VM function suffixes, called as `<adapter>::<suffix>`.
 pub const WORKER_PREPARE: &str = "worker::prepare";

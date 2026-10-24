@@ -81,7 +81,7 @@ fn constants_match_the_contract() {
     let fixture: serde_json::Map<String, Value> = serde_json::from_str(FIXTURE).unwrap();
     let version = serde_json::to_value(ContractVersion::CURRENT).unwrap();
     assert_eq!(version, fixture["ContractVersion"]);
-    assert_eq!((CONTRACT_MAJOR, CONTRACT_MINOR), (1, 0));
+    assert_eq!((CONTRACT_MAJOR, CONTRACT_MINOR), (1, 1));
     assert_eq!(
         [
             WORKER_PREPARE,
