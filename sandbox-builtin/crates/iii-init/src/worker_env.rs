@@ -104,7 +104,12 @@ fn read_env_frame(
         .write(true)
         .custom_flags(libc::O_NONBLOCK)
         .open(port_path)?;
-    read_frame_patient(&mut port, started, deadline)
+    let pairs = read_frame_patient(&mut port, started, deadline);
+    // Held open for PID 1's life: the guest kernel then refuses another open
+    // of the port (EBUSY), where a second open would hit an `.expect` in the
+    // host's console device and kill the VM. Close-on-exec, so no worker inherits it.
+    std::mem::forget(port);
+    pairs
 }
 
 /// Reads one frame from a non-blocking reader, tolerating the transient EOF
@@ -302,6 +307,32 @@ mod tests {
         let mut port = Scripted(VecDeque::from(vec![Ok(header)]));
         let err = read_within(&mut port, 1_000).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    /// Once the frame is read the port stays open, so a guest process that
+    /// opens it again gets EBUSY instead of taking the VM down.
+    #[test]
+    fn the_port_stays_open_after_the_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("iii.env");
+        nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU).unwrap();
+        // Read-write, so this open does not wait for a reader.
+        let mut host = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&fifo)
+            .unwrap();
+        host.write_all(&encode_frame(&env()).unwrap()).unwrap();
+        let now = Instant::now();
+        let read = read_env_frame(&fifo, now, now + Duration::from_secs(5));
+        assert_eq!(read.unwrap(), env());
+        drop(host);
+        // A FIFO with no reader left refuses a non-blocking writer (ENXIO).
+        let writer = OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&fifo);
+        assert!(writer.is_ok(), "the port was closed: {writer:?}");
     }
 
     #[test]
