@@ -306,8 +306,14 @@ pub fn plan_calls(message: &AssistantMessage, expose: ExposeMode) -> Vec<Planned
                             // Wrapper presentation belongs to the transcript,
                             // never to the target function's request. Older
                             // recovery logic hoists flattened target args, so
-                            // explicitly strip the new display-only field.
-                            map.remove("description");
+                            // explicitly strip the new display-only field —
+                            // but only from the wrapper: a call named after
+                            // the target carries the target's own arguments,
+                            // and `description` is a real field of many
+                            // (kanban::ticket::create/update among them).
+                            if function_id == AGENT_TRIGGER_NAME {
+                                map.remove("description");
+                            }
                             Value::Object(map)
                         }
                     };
@@ -585,6 +591,32 @@ mod tests {
         assert_eq!(
             calls[0].arguments,
             json!({ "trigger_type": "state", "config": { "key": "k" } })
+        );
+    }
+
+    #[test]
+    fn a_call_named_after_the_target_keeps_its_description_argument() {
+        // In agent_trigger exposure a model may call the target by name with
+        // its arguments. `description` is then the target's field (a ticket's
+        // body), not the wrapper's display label, and must reach the target.
+        let msg = assistant_with(vec![ContentBlock::FunctionCall {
+            id: "fc_1".into(),
+            function_id: "kanban::ticket::create".into(),
+            arguments: json!({
+                "title": "deepwork: a run",
+                "description": "Goal: the run's goal",
+                "status": "in_progress"
+            }),
+        }]);
+        let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
+        assert_eq!(calls[0].function_id, "kanban::ticket::create");
+        assert_eq!(
+            calls[0].arguments,
+            json!({
+                "title": "deepwork: a run",
+                "description": "Goal: the run's goal",
+                "status": "in_progress"
+            })
         );
     }
 
