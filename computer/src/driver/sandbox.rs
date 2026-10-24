@@ -305,20 +305,7 @@ impl Driver for IiiSandboxHost {
             q = self.jpeg_quality
         );
         let out = self.exec_sh(&script).await?;
-        let b64 = out.stdout.trim();
-        if b64.is_empty() {
-            return Err(format!(
-                "screenshot: empty capture (stderr: {})",
-                out.stderr.trim()
-            ));
-        }
-        let bytes = STANDARD
-            .decode(b64)
-            .map_err(|e| format!("screenshot: invalid base64 from guest: {e}"))?;
-        if bytes.is_empty() {
-            return Err("screenshot: guest returned an empty image".to_string());
-        }
-        Ok(Shot::new(bytes))
+        Ok(Shot::new(decode_jpeg(&out)?))
     }
 
     async fn left_click(&self, x: i64, y: i64) -> Result<(), String> {
@@ -414,6 +401,34 @@ impl Driver for IiiSandboxHost {
             }
         }
     }
+}
+
+/// The JPEG a screenshot's base64 stdout carries.
+fn decode_jpeg(out: &ExecOut) -> Result<Vec<u8>, String> {
+    let b64 = out.stdout.trim();
+    if b64.is_empty() {
+        return Err(format!(
+            "screenshot: empty capture (stderr: {})",
+            out.stderr.trim()
+        ));
+    }
+    let bytes = STANDARD
+        .decode(b64)
+        .map_err(|e| format!("screenshot: invalid base64 from guest: {e}"))?;
+    if bytes.is_empty() {
+        return Err("screenshot: guest returned an empty image".to_string());
+    }
+    // An adapter that does not flag a cut output (contract 1.0) still cuts it
+    // at its cap, on a base64 boundary: only the missing end-of-image shows it.
+    if !bytes.ends_with(&[0xFF, 0xD9]) {
+        return Err(format!(
+            "screenshot: the guest's JPEG ends after {} bytes without its end marker, \
+             likely cut at sandbox::exec's output cap; lower screenshot_quality for a \
+             smaller capture",
+            bytes.len()
+        ));
+    }
+    Ok(bytes)
 }
 
 /// The subset of a `sandbox::exec` reply we act on.
@@ -553,6 +568,19 @@ mod tests {
         let err = bad.unwrap_err();
         assert!(err.contains("exited 2"), "{err}");
         assert!(err.contains("boom"), "{err}");
+    }
+
+    /// A JPEG cut short with no flag saying so (a contract 1.0 adapter) fails.
+    #[test]
+    fn a_jpeg_without_its_end_marker_is_refused() {
+        let out = |bytes: &[u8]| ExecOut {
+            stdout: STANDARD.encode(bytes),
+            stderr: String::new(),
+        };
+        let whole = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0xFF, 0xD9];
+        assert_eq!(decode_jpeg(&out(&whole)).unwrap(), whole);
+        let err = decode_jpeg(&out(&whole[..6])).unwrap_err();
+        assert!(err.contains("screenshot_quality"), "{err}");
     }
 
     #[test]
