@@ -29,21 +29,15 @@ if [[ ! "$iii_port" =~ ^[0-9]+$ ]] || ((iii_port < 1 || iii_port > 65535)); then
 fi
 iii_url="ws://127.0.0.1:$iii_port"
 engine_config_template=${HARNESS_E2E_ENGINE_CONFIG:-"$script_dir/stack-config/engine.yaml"}
-# iii-worker's lifecycle helpers mutate config.yaml in their project root.
-# Use that same isolated path for the engine reload watcher.
+# The engine's own copy, in the isolated run dir its reload watcher follows.
 engine_config="$run_dir/config.yaml"
 database_config=${HARNESS_E2E_DATABASE_CONFIG:-"$script_dir/stack-config/database.yaml"}
 
 mkdir -p "$run_dir" "$logs_dir" "$run_dir/database"
 cp "$engine_config_template" "$engine_config"
-# The engine expands environment placeholders itself, but iii-worker reads the
-# same project file directly and expects the manager port to already be numeric.
-sed -i "s/\${HARNESS_E2E_PORT}/$iii_port/g" "$engine_config"
+# The engine expands the ${HARNESS_E2E_*} placeholders in it itself.
 export HARNESS_E2E_RUN_DIR="$run_dir"
 export HARNESS_E2E_PORT="$iii_port"
-# Built-in iii-worker daemons otherwise fall back to the fixed 49134 default,
-# which breaks isolated runs that select a different port.
-export III_ENGINE_URL="$iii_url"
 
 pids=()
 
@@ -151,7 +145,6 @@ start_provider() {
 
 start_process engine "$III_BIN" -c "$engine_config"
 wait_for_function engine::workers::list
-wait_for_function worker::add
 
 start_process database \
   "$repo_root/database/target/release/database" \

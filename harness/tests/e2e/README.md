@@ -265,8 +265,9 @@ runner; the current workflow does not inject those files.
 
 The source launcher performs a clean first boot with isolated configuration,
 session, queue, state and log directories. The Registry launcher uses the same
-isolated layout, installs the exact dispatched versions and records the
-resolved `iii.lock`, worker list and bootstrap logs. The
+isolated layout, installs the exact dispatched versions through `compose::add`
+and records the resulting `worker-compose.yaml`, its lock, worker list and
+bootstrap logs. The
 `shell_coder_sandbox` scenario tests Registry installation through
 `compose::add`; the explicit [Harness quickstart validator](../quickstart/README.md)
 covers the same Compose path from the CLI.

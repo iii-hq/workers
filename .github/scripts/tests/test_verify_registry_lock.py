@@ -12,13 +12,13 @@ SCRIPT = Path(__file__).parents[1] / "verify_registry_lock.py"
 
 
 def run_verify(tmp_path: Path, versions: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    lock = tmp_path / "iii.lock"
+    lock = tmp_path / "worker-compose.yaml"
     lock.write_text(
         yaml.safe_dump(
             {
-                "workers": {
-                    "harness": {"version": "1.8.0"},
-                    "state": {"version": "0.22.0"},
+                "containers": {
+                    "harness": {"worker": "package://harness", "version": "1.8.0"},
+                    "state": {"worker": "package://state", "version": "0.22.0"},
                 }
             }
         )

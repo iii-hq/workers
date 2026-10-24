@@ -69,6 +69,7 @@ log_dir="$artifact_dir/logs"
 stack_dir="$artifact_dir/stack"
 run_root=$(mktemp -d "${TMPDIR:-/tmp}/harness-e2e-registry.XXXXXX")
 project_dir="$run_root/project"
+compose_file="$project_dir/worker-compose.yaml"
 e2e_home="$run_root/home"
 mkdir -p "$project_dir" "$e2e_home"
 
@@ -80,6 +81,7 @@ export III_WORKER_TAG="$worker_tag"
 
 iii_bin=""
 engine_pid=""
+compose_pid=""
 failure_reason=""
 failure_phase=bootstrap
 cli_version=unknown
@@ -137,29 +139,32 @@ write_deployment_result() {
 }
 
 snapshot_stack() {
-  for output in config.yaml iii.lock workers.json; do
+  for output in config.yaml worker-compose.yaml worker-compose.lock workers.json; do
     [[ -f "$project_dir/$output" ]] && cp "$project_dir/$output" "$stack_dir/$output"
   done
 }
 
-stop_workers() {
-  [[ -n "$iii_bin" && -n "$engine_pid" && -f "$project_dir/config.yaml" ]] || return 0
-  kill -0 "$engine_pid" 2>/dev/null || return 0
+engine_alive() {
+  [[ -n "$iii_bin" && -n "$engine_pid" ]] && kill -0 "$engine_pid" 2>/dev/null
+}
 
-  mapfile -t workers < <(python3 - "$project_dir/config.yaml" <<'PY'
-import sys
-from pathlib import Path
-import yaml
-
-config = yaml.safe_load(Path(sys.argv[1]).read_text()) or {}
-for worker in config.get("workers") or []:
-    if isinstance(worker, dict) and worker.get("name"):
-        print(worker["name"])
-PY
-  )
-  ((${#workers[@]} > 0)) || return 0
-  (cd "$project_dir" && "$iii_bin" worker remove -y "${workers[@]}") \
-    >"$log_dir/worker-remove.log" 2>&1 || true
+# Ask the daemon to stop the project's workers first; killing the daemon
+# alone would leave them supervised by nothing until the orphan sweep.
+stop_compose() {
+  [[ -n "$compose_pid" ]] || return 0
+  if engine_alive && kill -0 "$compose_pid" 2>/dev/null; then
+    "$iii_bin" trigger compose::down --port "$engine_port" \
+      --json "$(jq -cn --arg file "$compose_file" '{file: $file}')" \
+      >"$log_dir/compose-down.log" 2>&1 || true
+  fi
+  kill -0 "$compose_pid" 2>/dev/null || return 0
+  kill -- "-$compose_pid" 2>/dev/null || kill "$compose_pid" 2>/dev/null || true
+  for _ in {1..20}; do
+    kill -0 "$compose_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  kill -KILL -- "-$compose_pid" 2>/dev/null || kill -KILL "$compose_pid" 2>/dev/null || true
+  wait "$compose_pid" 2>/dev/null || true
 }
 
 stop_engine() {
@@ -192,24 +197,17 @@ stop_owned_orphans() {
 # log alone cannot explain a lost notification. Collected before teardown so
 # failed scenario jobs ship them in the diagnostics artifact.
 collect_worker_logs() {
-  [[ -n "$iii_bin" && -n "$engine_pid" ]] || return 0
-  kill -0 "$engine_pid" 2>/dev/null || return 0
-  local name
+  engine_alive && [[ -n "$compose_pid" ]] || return 0
+  local response name
+  response=$(timeout 20 "$iii_bin" trigger compose::logs --port "$engine_port" \
+    --json "$(jq -cn --arg file "$compose_file" '{file: $file, tail: 1000}')" \
+    2>>"$log_dir/compose-logs.log") || return 0
   while IFS= read -r name; do
-    [[ -n "$name" ]] || continue
-    (cd "$project_dir" && timeout 20 "$iii_bin" worker logs "$name") \
-      >"$log_dir/worker-$name.log" 2>&1 || true
-  done < <(python3 - "$project_dir/config.yaml" <<'PY'
-import sys
-from pathlib import Path
-import yaml
-
-config = yaml.safe_load(Path(sys.argv[1]).read_text()) or {}
-for worker in config.get("workers") or []:
-    if isinstance(worker, dict) and worker.get("name"):
-        print(worker["name"])
-PY
-  )
+    [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || continue
+    jq -r --arg name "$name" \
+      '.containers[] | select(.container == $name) | .entries[] | "[\(.stream)] \(.message)"' \
+      <<<"$response" >"$log_dir/worker-$name.log" 2>/dev/null || true
+  done < <(jq -r '.containers[]?.container' <<<"$response" 2>/dev/null || true)
 }
 
 cleanup() {
@@ -218,7 +216,7 @@ cleanup() {
   set +e
   snapshot_stack
   collect_worker_logs
-  stop_workers
+  stop_compose
   stop_engine
   stop_owned_orphans
   if ((status == 0)); then
@@ -309,12 +307,22 @@ fi
 iii_bin=$(command -v iii)
 cli_version=$("$iii_bin" --version 2>&1)
 printf '%s\n' "$cli_version" >"$artifact_dir/cli-version.txt"
+"$iii_bin" compose --help >/dev/null 2>&1 \
+  || die "the installed iii CLI ($cli_version) has no compose command"
 
 printf 'workers: []\n' >"$project_dir/config.yaml"
 (cd "$project_dir" && exec setsid "$iii_bin" -c config.yaml --no-update-check) \
   >"$log_dir/engine.log" 2>&1 &
 engine_pid=$!
 wait_for_engine
+
+# An empty project; compose::add declares every worker below.
+printf 'engine:\n  url: ws://127.0.0.1:%s\ncontainers: {}\n' "$engine_port" >"$compose_file"
+(cd "$project_dir" && exec setsid "$iii_bin" compose \
+  --engine "ws://127.0.0.1:$engine_port" --namespace default --file "$compose_file" --up) \
+  >"$log_dir/compose.log" 2>&1 &
+compose_pid=$!
+wait_for_functions compose::add
 
 # Auxiliary E2E workers are not released as part of this operation and may not
 # expose a candidate tag, so keep them on their stable channel unless the
@@ -329,18 +337,45 @@ for provider in "$HARNESS_E2E_PROVIDER" "$HARNESS_E2E_JUDGE_PROVIDER"; do
   fi
 done
 
+# Declares workers (and everything the registry resolves for them) in the
+# compose file and waits for the daemon to reconcile the project. Compose
+# admits the mutation with status "accepted" and reports its end through
+# compose::operation; older releases answer synchronously with "ok".
+compose_add() {
+  local payload response status operation_id
+  payload=$(jq -cn --arg file "$compose_file" '{file: $file, workers: $ARGS.positional}' \
+    --args "$@")
+  response=$(timeout --signal=TERM --kill-after=15s "$((add_timeout_seconds + 30))" \
+    "$iii_bin" trigger compose::add --port "$engine_port" \
+    --timeout-ms "$((add_timeout_seconds * 1000))" --json "$payload") || return 1
+  printf '%s\n' "$response"
+  status=$(jq -r '.status // empty' <<<"$response" 2>/dev/null || true)
+  case "$status" in
+    ok) return 0 ;;
+    accepted)
+      operation_id=$(jq -r '.operation_id // empty' <<<"$response" 2>/dev/null || true)
+      [[ -n "$operation_id" ]] || return 1
+      python3 "$harness_root/tests/quickstart/wait_for_compose_operation.py" \
+        --iii-bin "$iii_bin" \
+        --engine-port "$engine_port" \
+        --operation-id "$operation_id" \
+        --timeout-seconds "$add_timeout_seconds"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 # The registry's /resolve sits at ~7s per call and a stack install issues
 # dozens of them; one transient network blip fails the whole add. Retry the
-# full command — worker add is idempotent (re-adds are no-ops).
+# full add — re-adding the same selectors changes nothing.
 add_with_retry() {
   local label=$1; shift
   local attempt
   for attempt in 1 2 3; do
-    if (cd "$project_dir" && timeout --signal=TERM --kill-after=15s "$add_timeout_seconds" \
-      "$iii_bin" worker add "$@") 2>&1 | tee -a "$log_dir/$label.log"; then
+    if compose_add "$@" 2>&1 | tee -a "$log_dir/$label.log"; then
       return 0
     fi
-    log "worker add ($label) failed on attempt $attempt; retrying in 15s"
+    log "compose::add ($label) failed on attempt $attempt; retrying in 15s"
     sleep 15
   done
   return 1
@@ -348,25 +383,25 @@ add_with_retry() {
 
 failure_phase=registry
 log "Installing stable E2E support stack: ${workers[*]}"
-add_with_retry worker-add "${workers[@]}"
+add_with_retry compose-add "${workers[@]}"
 
 # Apply every exact version selected by Release Control after installing the
 # support stack, so Registry dependency resolution cannot overwrite a pin.
 while IFS=$'\t' read -r candidate_worker candidate_version; do
   log "Installing exact stack candidate: ${candidate_worker}@${candidate_version}"
   add_with_retry "candidate-${candidate_worker}" \
-    "${candidate_worker}@${candidate_version}" --force
+    "${candidate_worker}@${candidate_version}"
 done < <(jq -r --arg release_worker "$release_worker" '
   to_entries
   | sort_by([if .key == $release_worker then 0 else 1 end])[]
   | [.key, .value]
   | @tsv
 ' <<<"$stack_versions")
-lock_digest=$(sha256sum "$project_dir/iii.lock" | awk '{print $1}')
+lock_digest=$(sha256sum "$project_dir/worker-compose.lock" | awk '{print $1}')
 
 failure_phase=e2e
 wait_for_functions \
-  harness::send harness::status worker::add database::query state::get \
+  harness::send harness::status database::query state::get \
   queue::define session::messages context::assemble router::models::get \
   directory::skills::list
 wait_for_triggers cron
@@ -377,7 +412,7 @@ wait_for_model "$HARNESS_E2E_JUDGE_PROVIDER" "$HARNESS_E2E_JUDGE_MODEL"
   --json '{}' >"$project_dir/workers.json"
 
 verify_args=(
-  --lock "$project_dir/iii.lock"
+  --lock "$compose_file"
   --catalog "$repo_root/worker-compose.yaml"
   --required harness
   --required database
