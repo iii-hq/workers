@@ -1,7 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useState } from 'react'
 import { fn } from 'storybook/test'
-import type { InstallStage } from '@/hooks/use-harness-status'
 import type { AgentEntry } from '@/lib/backend/directory-prompts'
 import { EmptyState, type EmptyStateProps } from './EmptyState'
 import {
@@ -9,25 +8,6 @@ import {
   type SystemPromptState,
   withAgentChoice,
 } from './system-prompt-selection'
-
-/** Mid-download progress for the live install console. */
-const installingStages: InstallStage[] = [
-  { stage: 'started', worker: 'harness', at: 1 },
-  { stage: 'downloading', worker: 'harness', progress: 0.62, at: 2 },
-]
-
-/** A run that downloaded, then failed at the shim step. */
-const failedStages: InstallStage[] = [
-  { stage: 'started', worker: 'harness', at: 1 },
-  { stage: 'downloading', worker: 'harness', progress: 1, at: 2 },
-  { stage: 'downloaded', worker: 'harness', at: 3 },
-  {
-    stage: 'failed',
-    worker: 'harness',
-    error: { code: 'W900', message: 'registry unreachable' },
-    at: 4,
-  },
-]
 
 const agents: AgentEntry[] = [
   {
@@ -219,17 +199,12 @@ export const NoHarness: Story = {
 
 export const Installing: Story = {
   name: 'installing (console)',
-  args: { variant: 'installing', stages: installingStages },
-}
-
-export const InstallingNoEvents: Story = {
-  name: 'installing (no progress events)',
-  args: { variant: 'installing', stages: [] },
+  args: { variant: 'installing' },
 }
 
 export const InstallFailed: Story = {
   name: 'install failed',
-  args: { variant: 'install-failed', stages: failedStages },
+  args: { variant: 'install-failed', errorMessage: 'registry unreachable' },
 }
 
 export const Dock: Story = {

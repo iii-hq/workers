@@ -5,7 +5,7 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useWorkerLifecycle } from '@/hooks/use-worker-lifecycle'
+import { useWorkersChanged } from '@/hooks/use-workers-changed'
 import { getDefaultBackend } from '@/lib/backend'
 import { configurationFormFamily } from '@/lib/configuration-family'
 import { notifyHarnessConfigSaved } from '@/lib/harness-config-events'
@@ -51,25 +51,24 @@ export function useConfigurationsList() {
   })
 }
 
-/** Browser-local handler id bound to the `worker` lifecycle trigger. */
+/** Browser-local handler id bound to `engine::workers-available`. */
 const WORKER_REGISTRY_WATCH_FN = 'console::workers-config-watch'
 
 /**
  * Keep the worker configuration list fresh when workers are added or removed
- * out of band — e.g. `iii trigger compose::add worker=harness` run in a terminal — purely off
- * the engine's `worker` lifecycle trigger (its push channel). No polling.
- * Each event re-pulls `configuration::list` so a freshly-installed worker's
- * entry appears once it registers.
+ * out of band — e.g. `iii trigger compose::add worker=harness` run in a
+ * terminal — purely off the engine's `engine::workers-available` trigger (its
+ * push channel). No polling. Each event re-pulls `configuration::list` so a
+ * freshly-installed worker's entry appears once it registers.
  */
 export function useWorkerRegistryReactivity(): void {
   const qc = useQueryClient()
   const enabled = getDefaultBackend().id === 'real'
 
-  useWorkerLifecycle({
+  useWorkersChanged({
     enabled,
     fnId: WORKER_REGISTRY_WATCH_FN,
-    operations: ['add', 'remove'],
-    onEvent: () => {
+    onChange: () => {
       qc.invalidateQueries({ queryKey: configurationKeys.list() })
     },
   })

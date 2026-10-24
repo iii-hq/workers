@@ -5,7 +5,6 @@ import { Terminal } from '@/components/chat/sandbox/terminal/Terminal'
 import { Button } from '@/components/ui/Button'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { Wordmark } from '@/components/ui/Wordmark'
-import type { InstallStage } from '@/hooks/use-harness-status'
 import {
   type AgentEntry,
   type KitUpdateEntry,
@@ -15,7 +14,6 @@ import {
 import { serialRefresh } from '@/lib/backend/serial-refresh'
 import { getIiiClient } from '@/lib/iii-client'
 import { requestPanelOpen } from '@/lib/panel-context'
-import { normalizeErrorMessage } from '@/lib/providers'
 import { cn } from '@/lib/utils'
 import type {
   AgentProfileChangeOptions,
@@ -62,9 +60,7 @@ export type EmptyStateVariant =
 export interface EmptyStateProps {
   variant: EmptyStateVariant
   density?: 'route' | 'dock'
-  /** Console lines for `installing` / `install-failed`. */
-  stages?: InstallStage[]
-  /** Surfaced under the console when an add fails with no stage detail. */
+  /** Surfaced under the console when an add fails. */
   errorMessage?: string | null
   /** `no-harness` primary CTA. */
   onInstallHarness?: () => void
@@ -109,7 +105,6 @@ const BODY_CLASS = 'text-pretty font-sans text-base/7 text-ink-faint'
 export function EmptyState({
   variant,
   density = 'route',
-  stages = [],
   errorMessage,
   onInstallHarness,
   onRetryInstall,
@@ -175,7 +170,6 @@ export function EmptyState({
         {variant === 'installing' || variant === 'install-failed' ? (
           <InstallingBody
             failed={variant === 'install-failed'}
-            stages={stages}
             errorMessage={errorMessage}
             onRetryInstall={onRetryInstall}
           />
@@ -713,12 +707,10 @@ function NoHarnessBody({
 
 function InstallingBody({
   failed,
-  stages,
   errorMessage,
   onRetryInstall,
 }: {
   failed: boolean
-  stages: InstallStage[]
   errorMessage?: string | null
   onRetryInstall?: () => void
 }) {
@@ -729,13 +721,13 @@ function InstallingBody({
       </h1>
       <p className={BODY_CLASS}>
         {failed
-          ? "the worker manager couldn't finish adding harness. you can retry here, or run it from your terminal."
+          ? "compose couldn't finish adding harness. you can retry here, or run it from your terminal."
           : 'adding the harness worker. this mirrors what the cli does — you could run the same command in your terminal.'}
       </p>
-      <InstallConsole stages={stages} running={!failed} />
+      <InstallConsole running={!failed} />
       {failed ? (
         <div className="flex flex-col gap-3">
-          {errorMessage && stages.length === 0 ? (
+          {errorMessage ? (
             <span className="font-mono text-[12.5px] text-alert break-all">
               {errorMessage}
             </span>
@@ -752,73 +744,21 @@ function InstallingBody({
 }
 
 /**
- * Live install console — `Terminal` chrome over the streamed `worker`
- * lifecycle stages, framed as the equivalent `iii trigger compose::add worker=harness` run.
+ * Install console — `Terminal` chrome framed as the equivalent
+ * `iii trigger compose::add worker=harness` run.
  */
-function InstallConsole({
-  stages,
-  running,
-}: {
-  stages: InstallStage[]
-  running: boolean
-}) {
+function InstallConsole({ running }: { running: boolean }) {
   return (
     <Terminal command={HARNESS_INSTALL_COMMAND}>
       <div className="bg-bg px-3 py-3 font-mono text-[12.5px] leading-[1.6] flex flex-col gap-0.5">
-        {stages.length === 0 ? (
+        {running ? (
           <div className="text-ink-faint italic animate-pulse">
-            · connecting to the worker manager…
+            · adding harness to the compose project…
           </div>
         ) : (
-          stages.map((s, i) => (
-            // biome-ignore lint/suspicious/noArrayIndexKey: append-only log; entries never reorder or get removed
-            <StageLine key={`${s.stage}-${s.at}-${i}`} stage={s} />
-          ))
+          <div className="text-alert">× compose::add did not finish</div>
         )}
-        {running && stages.length > 0 ? (
-          <div className="text-ink-ghost animate-pulse">· working…</div>
-        ) : null}
       </div>
     </Terminal>
   )
-}
-
-function StageLine({ stage }: { stage: InstallStage }) {
-  const failed = stage.stage === 'failed'
-  const done = stage.stage === 'done'
-  const tone = failed ? 'text-alert' : done ? 'text-accent' : 'text-ink-faint'
-  const symbol = failed ? '×' : done ? '✓' : '→'
-  const showProgress = typeof stage.progress === 'number' && !done && !failed
-  return (
-    <div className={cn('flex items-baseline gap-2', tone)}>
-      <span aria-hidden className="text-ink-ghost">
-        {symbol}
-      </span>
-      <span className="break-all">{stageLabel(stage)}</span>
-      {showProgress ? (
-        <span className="ml-auto text-ink-ghost tabular-nums">
-          {Math.round((stage.progress ?? 0) * 100)}%
-        </span>
-      ) : null}
-    </div>
-  )
-}
-
-function stageLabel(stage: InstallStage): string {
-  switch (stage.stage) {
-    case 'started':
-      return 'resolving harness from the registry…'
-    case 'downloading':
-      return 'downloading harness…'
-    case 'downloaded':
-      return 'downloaded'
-    case 'done':
-      return 'done · harness ready'
-    case 'failed':
-      return stage.error
-        ? `failed · ${normalizeErrorMessage(stage.error)}`
-        : 'failed'
-    default:
-      return stage.stage
-  }
 }

@@ -248,7 +248,6 @@ function installDrafts() {
       present: true,
       loading: false,
       installing: false,
-      stages: [],
       error: null,
     },
     shellAvailable: false,
