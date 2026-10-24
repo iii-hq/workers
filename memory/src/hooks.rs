@@ -415,11 +415,13 @@ pub(crate) async fn injection(
         bm25_max = bm25_max.max(b.bm25_max(&query, keep).await);
     }
     let (mut hits, mut top, mut held) = (Vec::new(), Vec::new(), HashMap::new());
-    let mut evidence = HashMap::new();
-    for (name, b, layered) in sources {
+    // Per memory, its best-scored copy: the source and the score.
+    let mut best: HashMap<String, (usize, f32)> = HashMap::new();
+    let (mut evidence, mut names) = (HashMap::new(), Vec::new());
+    for (i, (name, b, layered)) in sources.into_iter().enumerate() {
         let keep = |m: &Memory| keeps(name, layered, m);
         // Every candidate: `select` cuts the merged ranking.
-        let (found, mut found_evidence) = b
+        let (found, found_evidence) = b
             .recall_evidence(
                 &query,
                 qv,
@@ -432,22 +434,38 @@ pub(crate) async fn injection(
             .await;
         let found: Vec<(Memory, f32)> = found.into_iter().filter(|(m, _)| keep(m)).collect();
         let strongest = b.top_memories(cfg.recall_limit, keep).await;
-        // The first bank holding a memory holds it and its evidence, as
-        // `merge_ranked` keeps the first copy.
-        for m in found.iter().map(|(m, _)| m).chain(&strongest) {
+        // The floor's memories are held by the first bank holding them.
+        for m in &strongest {
             held.entry(m.id.clone()).or_insert(name);
         }
-        for (m, _) in &found {
-            if let Some(e) = found_evidence.remove(&m.id) {
-                evidence.entry(m.id.clone()).or_insert(e);
+        for (m, s) in &found {
+            // A tie keeps the earlier source, as `merge_ranked` keeps the first copy.
+            let at = best.entry(m.id.clone()).or_insert((i, *s));
+            if *s > at.1 {
+                *at = (i, *s);
             }
         }
-        hits.extend(found);
+        evidence.extend(found_evidence.into_iter().map(|(id, e)| ((id, i), e)));
+        hits.extend(found.into_iter().map(|(m, s)| (m, s, i)));
         top.extend(strongest);
+        names.push(name);
+    }
+    // A memory several banks hold is ranked once, by its best-scored copy: a
+    // bank's weak copy, past its own `recall_limit`, never shadowed another
+    // bank's. The copy's evidence and bank go with it.
+    hits.retain(|(m, _, i)| best[&m.id].0 == *i);
+    let mut best_evidence = HashMap::new();
+    let mut ranked = Vec::with_capacity(hits.len());
+    for (m, s, i) in hits {
+        held.insert(m.id.clone(), names[i]);
+        if let Some(e) = evidence.remove(&(m.id.clone(), i)) {
+            best_evidence.insert(m.id.clone(), e);
+        }
+        ranked.push((m, s));
     }
     let hits = select(
-        merge_ranked(hits, usize::MAX),
-        &evidence,
+        merge_ranked(ranked, usize::MAX),
+        &best_evidence,
         seen,
         cfg.recall_limit,
     );
@@ -1490,6 +1508,143 @@ Formal."
             (at_max / at_double - 2.0).abs() < 1e-3,
             "the caller's scale divides: {at_max} vs {at_double}"
         );
+    }
+
+    /// Deps over a store in `dir` and no engine: embeddings off, so
+    /// nothing in `injection` reaches the client.
+    fn offline_deps(dir: &std::path::Path, cfg: WorkerConfig) -> Deps {
+        let iii = Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:1"));
+        let sets = crate::events::register_trigger_types(&iii);
+        let store = crate::store::Store::open(dir.to_path_buf()).unwrap();
+        Deps {
+            emitter: Arc::new(crate::events::Emitter::new(sets, iii.clone())),
+            iii,
+            store: Arc::new(tokio::sync::RwLock::new(Arc::new(store))),
+            config: Arc::new(tokio::sync::RwLock::new(Arc::new(cfg))),
+        }
+    }
+
+    fn offline_cfg(recall_limit: usize) -> WorkerConfig {
+        WorkerConfig {
+            recall_limit,
+            embeddings_enabled: false,
+            ..WorkerConfig::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_memory_both_banks_hold_is_injected_from_the_copy_inside_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = offline_deps(dir.path(), offline_cfg(3));
+        let store = deps.store().await;
+        let (repo, _) = store.ensure_bank("w-abc123", None).await.unwrap();
+        let (layer, _) = store.ensure_bank("agent-x", None).await.unwrap();
+        for n in 0..3 {
+            repo.commit(memory(&format!("fp-r{n}"), &format!("kiwi kiwi kiwi r{n}")))
+                .await
+                .unwrap();
+        }
+        // The turn bank ranks this copy fourth, past the limit; the layer,
+        // holding only it, ranks it first. Older than the rest, so the turn
+        // bank's floor (its strongest memories) never holds it.
+        let twin = Memory {
+            updated_at: 0,
+            ..memory(
+                "fp-twin",
+                "kiwi was mentioned once, among a long run of other words that dilute the match",
+            )
+        };
+        repo.commit(twin.clone()).await.unwrap();
+        layer.commit(twin).await.unwrap();
+
+        let out = injection(
+            &deps,
+            &offline_cfg(3),
+            "w-abc123",
+            &["agent-x".to_string()],
+            Some("kiwi"),
+            &HashSet::new(),
+        )
+        .await;
+        let injected: Vec<(String, String)> = out
+            .memories
+            .iter()
+            .map(|(m, _, bank)| (m.id.clone(), bank.clone()))
+            .collect();
+        assert_eq!(
+            injected,
+            vec![
+                ("fp-twin".into(), "agent-x".into()),
+                ("fp-r0".into(), "w-abc123".into()),
+                ("fp-r1".into(), "w-abc123".into()),
+            ],
+            "the layer's copy ranks inside the limit, so it is the one injected, and its bank holds it"
+        );
+    }
+
+    #[tokio::test]
+    async fn without_a_shared_memory_the_global_top_of_both_banks_is_injected() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = offline_cfg(3);
+        let deps = offline_deps(dir.path(), cfg.clone());
+        let store = deps.store().await;
+        let (repo, _) = store.ensure_bank("w-abc123", None).await.unwrap();
+        let (layer, _) = store.ensure_bank("agent-x", None).await.unwrap();
+        let filler = "and some other words to dilute the match";
+        for (bank, name, kiwis) in [
+            (&repo, "r0", 4),
+            (&repo, "r1", 2),
+            (&repo, "r2", 1),
+            (&repo, "r3", 1),
+            (&layer, "l0", 3),
+            (&layer, "l1", 2),
+            (&layer, "l2", 1),
+            (&layer, "l3", 1),
+        ] {
+            let text = format!("{} {name} {filler}", "kiwi ".repeat(kiwis).trim_end());
+            bank.commit(memory(&format!("fp-{name}"), &text))
+                .await
+                .unwrap();
+        }
+        let query = "kiwi";
+        // Today's flow: each source cut to the limit, then one ranking.
+        let shared = repo
+            .bm25_max(query, |_| true)
+            .await
+            .max(layer.bm25_max(query, |_| true).await);
+        let mut hits = Vec::new();
+        for b in [&repo, &layer] {
+            hits.extend(
+                b.recall_scaled(
+                    query,
+                    None,
+                    "",
+                    cfg.recall_limit,
+                    cfg.decay_half_life_days,
+                    false,
+                    shared,
+                )
+                .await,
+            );
+        }
+        let top: Vec<String> = merge_ranked(hits, cfg.recall_limit)
+            .into_iter()
+            .map(|(m, _)| m.id)
+            .collect();
+
+        let out = injection(
+            &deps,
+            &cfg,
+            "w-abc123",
+            &["agent-x".to_string()],
+            Some(query),
+            &HashSet::new(),
+        )
+        .await;
+        let injected: Vec<String> = out.memories.iter().map(|(m, _, _)| m.id.clone()).collect();
+        assert_eq!(injected, top);
+        let banks: HashSet<&str> = out.memories.iter().map(|(_, _, b)| b.as_str()).collect();
+        assert_eq!(banks.len(), 2, "both banks reach the top: {injected:?}");
     }
 
     #[test]
