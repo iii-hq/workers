@@ -168,6 +168,13 @@ pub async fn serve() -> anyhow::Result<()> {
         }
     };
     tracing::info!(reason, "sandbox-builtin shutting down");
+    // shutdown_async does not wait for the SDK's own flush, so the spans of the
+    // last calls were lost. Bounded: a dead engine cannot take them anyway.
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        iii_helpers::observability::flush_otel(),
+    )
+    .await;
     iii.shutdown_async().await;
     Ok(())
 }
