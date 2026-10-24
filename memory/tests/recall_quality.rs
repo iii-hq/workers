@@ -1024,6 +1024,27 @@ async fn injection_gate(vectors_file: &str, baseline_file: &str) {
             stale_alone, 0,
             "{mode}: a stale line injected without the current one\n{report}"
         );
+        // A needed line recall ranks but the hook drops: only the three
+        // reached through a bare `user` alone (no stemming: "release" is not
+        // "releases"), in lexical mode. A new loss fails here, not only in
+        // the snapshot.
+        let lost = summaries["all"]
+            .positives
+            .as_ref()
+            .map(|p| p.injection_loss.clone())
+            .unwrap_or_default();
+        let known: &[&str] = match mode {
+            "lexical" => &[
+                "q-en-work-release-days: en-work-deploy-window",
+                "q-en-work-late-week-rollout: en-work-deploy-window",
+                "q-id-job-title: id-role",
+            ],
+            _ => &[],
+        };
+        assert_eq!(
+            lost, known,
+            "{mode}: injection dropped a needed line recall ranks\n{report}"
+        );
         // Nothing relevant, nothing injected: a greeting, or a task in the
         // first person the bank shares no word with.
         if mode == "lexical" {
