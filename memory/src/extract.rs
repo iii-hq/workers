@@ -437,6 +437,127 @@ fn near_duplicate(a: &str, b: &str) -> bool {
     a.intersection(&b).count() * 5 >= a.union(&b).count() * 4
 }
 
+/// Weekday and month names: values even when lowercase or sentence-initial
+/// ("may" left out: a verb far more often than a month).
+const CALENDAR: &[&str] = &[
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+    "january",
+    "february",
+    "march",
+    "april",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+];
+
+/// Words that state a change: the vocabulary memory-consolidate's judge is
+/// given, inflected; English only.
+const CHANGE_MARKERS: &[&str] = &[
+    "now",
+    "longer",
+    "anymore",
+    "moved",
+    "switched",
+    "instead",
+    "rescheduled",
+    "replaced",
+    "migrated",
+];
+
+/// Words a text capitalizes past a sentence's first word: names.
+fn names(text: &str) -> BTreeSet<String> {
+    let (mut out, mut initial) = (BTreeSet::new(), true);
+    for piece in text.split_inclusive(|c: char| !c.is_alphanumeric()) {
+        let w = piece.trim_end_matches(|c: char| !c.is_alphanumeric());
+        if !initial && w.starts_with(char::is_uppercase) {
+            out.insert(w.to_lowercase());
+        }
+        initial = (initial && w.is_empty()) || piece.ends_with(['.', '!', '?']);
+    }
+    out
+}
+
+/// What pins a statement to one value: numbers, negations, names, dates.
+fn values(text: &str, names: &BTreeSet<String>) -> BTreeSet<String> {
+    content_words(text)
+        .into_iter()
+        .filter(|w| {
+            w.bytes().any(|b| b.is_ascii_digit())
+                || NEGATIONS.contains(&w.as_str())
+                || names.contains(w)
+                || CALENDAR.contains(&stem(w).as_ref())
+        })
+        .map(|w| stem(&w).into_owned())
+        .collect()
+}
+
+/// The other content words, stemmed, without the `user` subject.
+fn words(text: &str, values: &BTreeSet<String>) -> BTreeSet<String> {
+    content_words(text)
+        .iter()
+        .map(|w| stem(w).into_owned())
+        .filter(|w| w != "user" && !values.contains(w))
+        .collect()
+}
+
+/// The same fact reworded, for injection: equal values, two other words or
+/// more each, three in five of the shorter's shared; with no number, name
+/// or date to anchor them, only a [`near_duplicate`]. Looser than
+/// extraction's on purpose: a hidden line is back next turn, a merge is forever.
+// shortcut: text alone joins siblings with the same values ("billing" and
+// "ledger" service on Postgres 16); the injection step keeps twins whose entity
+// tags differ, add a subject check here if untagged siblings collapse.
+#[cfg_attr(not(test), allow(dead_code))] // the injection selection is the caller
+pub(crate) fn same_fact(a: &str, b: &str) -> bool {
+    let n = &names(a) | &names(b);
+    let (va, vb) = (values(a, &n), values(b, &n));
+    if va != vb {
+        return false;
+    }
+    let (wa, wb) = (words(a, &va), words(b, &vb));
+    let shorter = wa.len().min(wb.len());
+    if shorter < 2 {
+        return false;
+    }
+    if va.iter().all(|v| NEGATIONS.contains(&v.as_str())) {
+        return near_duplicate(a, b);
+    }
+    wa.intersection(&wb).count() * 5 >= shorter * 3
+}
+
+/// `new` restates `old` as a change: a change word, other values, and at
+/// least half of `old`'s other words. The caller checks which is newer.
+#[cfg_attr(not(test), allow(dead_code))] // the injection selection is the caller
+pub(crate) fn supersedes(old: &str, new: &str) -> bool {
+    if !crate::index::tokenize(new)
+        .iter()
+        .any(|t| CHANGE_MARKERS.contains(&t.as_str()))
+    {
+        return false; // raw tokens: "now" is a stopword
+    }
+    let n = &names(old) | &names(new);
+    let (vo, vn) = (values(old, &n), values(new, &n));
+    if vo == vn {
+        return false;
+    }
+    let marks: BTreeSet<String> = CHANGE_MARKERS
+        .iter()
+        .map(|w| stem(w).into_owned())
+        .collect();
+    let old_words: BTreeSet<String> = words(old, &vo).difference(&marks).cloned().collect();
+    !old_words.is_empty() && old_words.intersection(&words(new, &vn)).count() * 2 >= old_words.len()
+}
+
 /// The first live memory among `candidates` that `text` restates.
 fn near_twin<'a>(
     text: &str,
@@ -2954,6 +3075,146 @@ mod tests {
         ];
         for (a, b) in different {
             assert!(!near_duplicate(a, b), "{a} !~ {b}");
+        }
+    }
+
+    #[test]
+    fn same_fact_joins_rewordings_around_the_same_values() {
+        let migrate = [
+            "The project applies database migrations with pnpm migrate:v2 before each deploy.",
+            "Database migrations in this project run through pnpm migrate:v2 before each deploy.",
+            "Before each deploy, apply the database migrations using pnpm migrate:v2.",
+        ];
+        for (i, a) in migrate.iter().enumerate() {
+            for b in &migrate[i + 1..] {
+                assert!(same_fact(a, b), "{a} ~ {b}");
+                assert!(same_fact(b, a), "{b} ~ {a}");
+            }
+        }
+        let same = [
+            (
+                "User ships to production only on Tuesdays and Thursdays, between 10:00 and 15:00 local time.",
+                "User deploys to production only on Tuesday and Thursday, from 10:00 to 15:00 local time.",
+            ),
+            (
+                "ledger-sync uses pnpm as its package manager.",
+                "The ledger-sync project uses pnpm as its package manager.",
+            ),
+            (
+                "ledger-sync is deployed every Thursday.",
+                "The ledger-sync project is deployed every Thursday.",
+            ),
+        ];
+        for (a, b) in same {
+            assert!(same_fact(a, b), "{a} ~ {b}");
+        }
+    }
+
+    #[test]
+    fn same_fact_keeps_facts_apart() {
+        let different = [
+            (
+                "ledger-sync is deployed every Thursday.",
+                "ledger-sync is deployed every Friday.",
+            ),
+            (
+                "The ledger-sync project uses Postgres 16.",
+                "The ledger-sync project uses Postgres 17.",
+            ),
+            (
+                "The user likes cilantro a lot.",
+                "The user does not like cilantro a lot.",
+            ),
+            (
+                "The user wants green tea.",
+                "The user no longer wants green tea.",
+            ),
+            ("Uses pnpm.", "Uses npm."),
+            (
+                "The project uses pnpm as its package manager.",
+                "The project uses npm as its package manager.",
+            ),
+            // Lowercase days still pin the value.
+            (
+                "the team standup is at 09:30 on thursday.",
+                "the team standup is at 09:30 on friday.",
+            ),
+            (
+                "The team standup is at 09:30.",
+                "The gym class is at 09:30.",
+            ),
+            (
+                "The user is allergic to peanuts, tree nuts and sesame.",
+                "The user is allergic to shellfish, tree nuts and sesame.",
+            ),
+        ];
+        for (a, b) in different {
+            assert!(!same_fact(a, b), "{a} !~ {b}");
+            assert!(!same_fact(b, a), "{b} !~ {a}");
+        }
+    }
+
+    #[test]
+    fn same_fact_by_text_alone_joins_same_value_siblings() {
+        // Known limit: two services on one database share every value and most
+        // words. The text cannot tell them apart; the injection step keeps
+        // twins that carry different entity tags.
+        assert!(same_fact(
+            "The billing service uses Postgres 16.",
+            "The ledger service uses Postgres 16."
+        ));
+    }
+
+    #[test]
+    fn supersedes_needs_a_marker_new_values_and_most_old_words() {
+        let changes = [
+            (
+                "The nightly backup runs at 02:00.",
+                "The nightly backup now runs at 04:00.",
+            ),
+            ("The user lives in Lisbon.", "The user now lives in Porto."),
+            (
+                "The user wants green tea.",
+                "The user no longer wants green tea.",
+            ),
+        ];
+        for (old, new) in changes {
+            assert!(supersedes(old, new), "{old} -> {new}");
+        }
+        let not = [
+            // The same pairs without a marker.
+            (
+                "The nightly backup runs at 02:00.",
+                "The nightly backup runs at 04:00.",
+            ),
+            ("The user lives in Lisbon.", "The user lives in Porto."),
+            (
+                "The user wants green tea.",
+                "The user does not want green tea.",
+            ),
+            // The marker is only in the older text.
+            (
+                "The nightly backup now runs at 02:00.",
+                "The nightly backup runs at 04:00.",
+            ),
+            // Equal values.
+            (
+                "The nightly backup runs at 02:00.",
+                "The nightly backup now runs at 02:00 sharp.",
+            ),
+            // A marker and new values, but not the same subject.
+            (
+                "CI runs lint before tests.",
+                "CI now runs on GitHub Actions.",
+            ),
+            // golden evt-passport vs evt-dentist-moved: another appointment.
+            (
+                "User has a passport renewal appointment at 14:00 on 2026-10-27.",
+                "User moved her dentist appointment from 2026-10-15 to 9:30 on 2026-10-20.",
+            ),
+        ];
+        for (old, new) in not {
+            assert!(!supersedes(old, new), "{old} -/-> {new}");
         }
     }
 
