@@ -1140,6 +1140,13 @@ async fn embed_golden(model: &str, dims: usize, provider: &str, file: &str) {
         items: BTreeMap::new(),
     });
     vectors.items.retain(|key, _| wanted.contains(key));
+    // New vectors are cut to `dims`: one file of two widths scores 0.0 across them.
+    assert!(
+        vectors.items.is_empty() || vectors.dims == dims,
+        "{file} holds {}-dim vectors, {dims} were asked for: delete it to re-embed the \
+         whole file",
+        vectors.dims
+    );
     if items.is_empty() {
         println!("{file}: every text already has a vector");
         std::fs::write(&path, serde_json::to_string(&vectors).unwrap() + "\n").unwrap();
