@@ -517,7 +517,6 @@ fn words(text: &str, values: &BTreeSet<String>) -> BTreeSet<String> {
 // shortcut: text alone joins siblings with the same values ("billing" and
 // "ledger" service on Postgres 16); the injection step keeps twins whose entity
 // tags differ, add a subject check here if untagged siblings collapse.
-#[cfg_attr(not(test), allow(dead_code))] // the injection selection is the caller
 pub(crate) fn same_fact(a: &str, b: &str) -> bool {
     let n = &names(a) | &names(b);
     let (va, vb) = (values(a, &n), values(b, &n));
@@ -537,7 +536,6 @@ pub(crate) fn same_fact(a: &str, b: &str) -> bool {
 
 /// `new` restates `old` as a change: a change word, other values, and at
 /// least half of `old`'s other words. The caller checks which is newer.
-#[cfg_attr(not(test), allow(dead_code))] // the injection selection is the caller
 pub(crate) fn supersedes(old: &str, new: &str) -> bool {
     if !crate::index::tokenize(new)
         .iter()

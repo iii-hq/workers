@@ -531,24 +531,61 @@ const SEMANTIC_Z: f32 = 2.0;
 // ranked past it (stale_alone > 0).
 const POOL_PER_SLOT: usize = 4;
 
+/// When a memory's fact was last stated; pin and tag edits never move it.
+fn last_stated(m: &Memory) -> u64 {
+    m.created_at.max(m.stated_at.unwrap_or(m.updated_at))
+}
+
+/// Both tagged and sharing no entity: a change to one says nothing of the other.
+fn unrelated(a: &Memory, b: &Memory) -> bool {
+    !a.entities.is_empty()
+        && !b.entities.is_empty()
+        && !a.entities.iter().any(|e| b.entities.contains(e))
+}
+
+/// Both tagged and neither's entities within the other's: two subjects.
+fn two_subjects(a: &Memory, b: &Memory) -> bool {
+    let within = |x: &Memory, y: &Memory| x.entities.iter().all(|e| y.entities.contains(e));
+    !a.entities.is_empty() && !b.entities.is_empty() && !within(a, b) && !within(b, a)
+}
+
 /// What a turn is told from its ranked hits (every candidate, best first):
 /// those with evidence ([`Evidence`], why each matched) that stand with the
-/// turn's best, at most `limit`; nothing when none has any. `seen` holds
-/// the memory lines the window shows; it is not read yet.
+/// turn's best, the current statement of a changed fact, one line per fact,
+/// at most `limit`; nothing when none has any. `seen` holds the memory lines
+/// the window shows: a rewording of one is not sent again.
 pub fn select(
     hits: Vec<(Memory, f32)>,
     evidence: &HashMap<String, Evidence>,
-    _seen: &HashSet<String>,
+    seen: &HashSet<String>,
     limit: usize,
 ) -> Vec<(Memory, f32)> {
     let none = Evidence::default();
     let ev = |m: &Memory| evidence.get(&m.id).unwrap_or(&none);
+    // Every question word `a` matched, `b` matched too.
+    let within = |a: &Evidence, b: &Evidence| a.matched.iter().all(|t| b.matched.contains(t));
     // Evidence: a word of the question, or a meaning above the model's floor.
     let mut pool: Vec<(Memory, f32)> = hits
         .into_iter()
         .filter(|(m, _)| !ev(m).matched.is_empty() || ev(m).cosine.is_some())
         .take(POOL_PER_SLOT.saturating_mul(limit))
         .collect();
+    // Before the cut, so a stale best hit never sets the bar.
+    let stale: HashSet<String> = pool
+        .iter()
+        .filter(|(old, _)| {
+            !old.pinned
+                && pool.iter().any(|(new, _)| {
+                    last_stated(new) > last_stated(old)
+                        && !unrelated(old, new)
+                        // An older line answering a word the newer lacks stays.
+                        && within(ev(old), ev(new))
+                        && extract::supersedes(&old.text, &new.text)
+                })
+        })
+        .map(|(m, _)| m.id.clone())
+        .collect();
+    pool.retain(|(m, _)| !stale.contains(&m.id));
     // Visible hits count toward `best`: a strong one already shown still sets the bar.
     let best = pool
         .iter()
@@ -563,8 +600,28 @@ pub fn select(
             // No vector to weigh it against meaning matches: judge its words, as in lexical mode.
             || (!e.vector && words > 0 && e.lexical >= RELEVANCE_SHARE)
     });
-    pool.truncate(limit);
-    pool
+    // After the cut, so a low-relevance twin never takes the fact down with it.
+    let mut kept: Vec<(Memory, f32)> = Vec::new();
+    for (m, s) in pool {
+        let e = ev(&m);
+        let line = memory_line_text(&m);
+        let twin = !m.pinned
+            && (kept.iter().any(|(k, _)| {
+                !two_subjects(k, &m) && within(e, ev(k)) && extract::same_fact(&k.text, &m.text)
+            }) || seen.iter().any(|t| {
+                *t != line
+                    && {
+                        let words = crate::index::tokenize(t);
+                        e.matched.iter().all(|w| words.contains(w))
+                    }
+                    && extract::same_fact(t, &m.text)
+            }));
+        if !twin {
+            kept.push((m, s));
+        }
+    }
+    kept.truncate(limit);
+    kept
 }
 
 /// A plain user-role text message for `append_messages`.
@@ -1758,22 +1815,27 @@ Formal."
         );
     }
 
-    /// `select` over hits ranked in the order given, nothing visible: the
-    /// ids it keeps.
-    fn selected(hits: Vec<(&str, Evidence)>, limit: usize) -> Vec<String> {
+    /// `select` over hits ranked in the order given: the ids it keeps.
+    fn kept(hits: Vec<(Memory, Evidence)>, seen: &HashSet<String>, limit: usize) -> Vec<String> {
         let evidence: HashMap<String, Evidence> = hits
             .iter()
-            .map(|(id, e)| (id.to_string(), e.clone()))
+            .map(|(m, e)| (m.id.clone(), e.clone()))
             .collect();
         let ranked = hits
-            .iter()
+            .into_iter()
             .enumerate()
-            .map(|(i, (id, _))| (memory(id, id), 1.0 / (i + 1) as f32))
+            .map(|(i, (m, _))| (m, 1.0 / (i + 1) as f32))
             .collect();
-        select(ranked, &evidence, &HashSet::new(), limit)
+        select(ranked, &evidence, seen, limit)
             .into_iter()
             .map(|(m, _)| m.id)
             .collect()
+    }
+
+    /// [`kept`] for memories whose text is their id, nothing visible.
+    fn selected(hits: Vec<(&str, Evidence)>, limit: usize) -> Vec<String> {
+        let hits = hits.into_iter().map(|(id, e)| (memory(id, id), e));
+        kept(hits.collect(), &HashSet::new(), limit)
     }
 
     /// `words` of the question's `terms` matched, at `relevance`, all of it
@@ -1887,6 +1949,248 @@ Formal."
         // The window shows the best already, so the turn is told nothing.
         let sent = unseen(picked.into_iter().map(|(m, _)| m).collect(), &seen);
         assert!(sent.is_empty(), "{sent:?}");
+    }
+
+    #[test]
+    fn a_hit_past_the_pool_cap_neither_sets_the_bar_nor_hides_a_line() {
+        // One slot: the bar and the pair passes see the best 4 admitted hits.
+        let at = |relevance| Evidence {
+            vector: true,
+            ..words(1, 4, relevance)
+        };
+        let past_the_cap = |last: (Memory, Evidence)| {
+            let mut hits = vec![(stated("fp-old", BACKUP_OLD, 1), at(1.0))];
+            hits.extend((1..POOL_PER_SLOT).map(|n| {
+                let id = format!("fp-{n}");
+                (memory(&id, &id), at(1.0))
+            }));
+            hits.push(last);
+            kept(hits, &HashSet::new(), 1)
+        };
+        assert_eq!(
+            past_the_cap((memory("fp-far", "far"), at(10.0))),
+            ["fp-old"]
+        );
+        assert_eq!(
+            past_the_cap((stated("fp-new", BACKUP_NEW, 2), at(1.0))),
+            ["fp-old"]
+        );
+    }
+
+    /// One deploy step, worded three ways.
+    const MIGRATE: [&str; 3] = [
+        "The project applies database migrations with pnpm migrate:v2 before each deploy.",
+        "Database migrations in this project run through pnpm migrate:v2 before each deploy.",
+        "Before each deploy, apply the database migrations using pnpm migrate:v2.",
+    ];
+
+    #[test]
+    fn rewordings_collapse_to_the_highest_ranked() {
+        let e = words(2, 3, 1.0);
+        let hits = vec![
+            (memory("fp-mig1", MIGRATE[1]), e.clone()),
+            (
+                memory("fp-standup", "The team standup is at 09:30."),
+                e.clone(),
+            ),
+            (memory("fp-mig0", MIGRATE[0]), e.clone()),
+            (memory("fp-mig2", MIGRATE[2]), e),
+        ];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-mig1", "fp-standup"]);
+    }
+
+    #[test]
+    fn a_rewording_of_a_visible_line_is_not_sent() {
+        let shown = memory("fp-shown", "ledger-sync uses pnpm as its package manager.");
+        let seen: HashSet<String> = [memory_line_text(&shown)].into();
+        let reworded = memory(
+            "fp-reworded",
+            "The ledger-sync project uses pnpm as its package manager.",
+        );
+        let hit = |matched: &[&str]| {
+            let e = Evidence {
+                matched: matched.iter().map(|w| w.to_string()).collect(),
+                ..words(0, 3, 1.0)
+            };
+            vec![(reworded.clone(), e)]
+        };
+        assert_eq!(
+            kept(hit(&["pnpm", "package"]), &HashSet::new(), 6),
+            ["fp-reworded"]
+        );
+        assert!(kept(hit(&["pnpm", "package"]), &seen, 6).is_empty());
+        // It answers "project", a word of the question the visible line lacks.
+        assert_eq!(kept(hit(&["pnpm", "project"]), &seen, 6), ["fp-reworded"]);
+    }
+
+    #[test]
+    fn a_twin_naming_a_question_word_the_survivor_lacks_stays() {
+        let mig0 = || memory("fp-mig0", MIGRATE[0]);
+        let mig1 = || memory("fp-mig1", MIGRATE[1]);
+        let hits = vec![(mig0(), words(1, 3, 1.0)), (mig1(), words(2, 3, 1.0))];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-mig0", "fp-mig1"]);
+        // The other way round, the survivor names every word its twin does.
+        let hits = vec![(mig1(), words(2, 3, 1.0)), (mig0(), words(1, 3, 1.0))];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-mig1"]);
+    }
+
+    #[test]
+    fn differently_tagged_twins_both_stay() {
+        let service = |name: &str, entities: &[&str]| Memory {
+            entities: entities.iter().map(|e| e.to_string()).collect(),
+            ..memory(
+                &format!("fp-{name}"),
+                &format!("The {name} service uses Postgres 16."),
+            )
+        };
+        let pair = |billing: &[&str], ledger: &[&str]| {
+            let e = words(2, 3, 1.0);
+            let hits = vec![
+                (service("billing", billing), e.clone()),
+                (service("ledger", ledger), e),
+            ];
+            kept(hits, &HashSet::new(), 6)
+        };
+        assert_eq!(pair(&["billing"], &["ledger"]), ["fp-billing", "fp-ledger"]);
+        // Untagged, or one's entities within the other's: the text decides.
+        assert_eq!(pair(&[], &[]), ["fp-billing"]);
+        assert_eq!(pair(&["billing"], &["billing", "postgres"]), ["fp-billing"]);
+    }
+
+    #[test]
+    fn a_pinned_twin_is_never_dropped() {
+        let e = words(2, 3, 1.0);
+        let pinned = Memory {
+            pinned: true,
+            ..memory("fp-mig2", MIGRATE[2])
+        };
+        let hits = vec![(memory("fp-mig0", MIGRATE[0]), e.clone()), (pinned, e)];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-mig0", "fp-mig2"]);
+    }
+
+    #[test]
+    fn a_low_relevance_twin_never_takes_the_fact_down() {
+        // Ranked first on its boosts, but one word of four and under half
+        // the best: the cut drops it, and its twin delivers the fact.
+        let hits = vec![
+            (memory("fp-mig0", MIGRATE[0]), words(1, 4, 0.2)),
+            (memory("fp-mig1", MIGRATE[1]), words(1, 4, 1.0)),
+        ];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-mig1"]);
+    }
+
+    const BACKUP_OLD: &str = "The nightly backup runs at 02:00.";
+    const BACKUP_NEW: &str = "The nightly backup now runs at 04:00.";
+
+    /// A memory whose fact was last stated at `at`.
+    fn stated(id: &str, text: &str, at: u64) -> Memory {
+        Memory {
+            created_at: at,
+            updated_at: at,
+            stated_at: Some(at),
+            ..memory(id, text)
+        }
+    }
+
+    #[test]
+    fn the_newer_statement_hides_the_older() {
+        // The older ranks first: the clock decides, not the rank.
+        let e = words(2, 3, 1.0);
+        let hits = vec![
+            (stated("fp-old", BACKUP_OLD, 1), e.clone()),
+            (stated("fp-new", BACKUP_NEW, 2), e),
+        ];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-new"]);
+    }
+
+    #[test]
+    fn a_stale_top_hit_does_not_set_the_bar() {
+        // One word of four each, the older over twice the newer's relevance.
+        let at = |relevance| Evidence {
+            vector: true,
+            ..words(1, 4, relevance)
+        };
+        let hits = vec![
+            (stated("fp-old", BACKUP_OLD, 1), at(2.5)),
+            (stated("fp-new", BACKUP_NEW, 2), at(1.0)),
+        ];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-new"]);
+    }
+
+    #[test]
+    fn a_pinned_older_fact_is_never_hidden() {
+        let e = words(2, 3, 1.0);
+        let old = Memory {
+            pinned: true,
+            ..stated("fp-old", BACKUP_OLD, 1)
+        };
+        let hits = vec![(old, e.clone()), (stated("fp-new", BACKUP_NEW, 2), e)];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-old", "fp-new"]);
+    }
+
+    #[test]
+    fn equal_last_stated_keeps_both() {
+        let pair = |new: Memory| {
+            let e = words(2, 3, 1.0);
+            let hits = vec![(stated("fp-old", BACKUP_OLD, 1), e.clone()), (new, e)];
+            kept(hits, &HashSet::new(), 6)
+        };
+        // A pin or tag edit moves `updated_at`, never when the fact was stated.
+        let edited = Memory {
+            updated_at: 9,
+            ..stated("fp-new", BACKUP_NEW, 1)
+        };
+        assert_eq!(pair(edited.clone()), ["fp-old", "fp-new"]);
+        // A record from before `stated_at` existed goes by its last update.
+        let legacy = Memory {
+            stated_at: None,
+            ..edited
+        };
+        assert_eq!(pair(legacy), ["fp-new"]);
+    }
+
+    #[test]
+    fn a_change_without_a_marker_keeps_both() {
+        let e = words(2, 3, 1.0);
+        let hits = vec![
+            (
+                stated("fp-lisbon", "The user lives in Lisbon.", 1),
+                e.clone(),
+            ),
+            (stated("fp-porto", "The user lives in Porto.", 2), e),
+        ];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-lisbon", "fp-porto"]);
+    }
+
+    #[test]
+    fn a_supersede_needs_a_shared_entity_when_both_are_tagged() {
+        let tagged = |m: Memory, entities: &[&str]| Memory {
+            entities: entities.iter().map(|e| e.to_string()).collect(),
+            ..m
+        };
+        let pair = |old: &[&str], new: &[&str]| {
+            let e = words(2, 3, 1.0);
+            let hits = vec![
+                (tagged(stated("fp-old", BACKUP_OLD, 1), old), e.clone()),
+                (tagged(stated("fp-new", BACKUP_NEW, 2), new), e),
+            ];
+            kept(hits, &HashSet::new(), 6)
+        };
+        assert_eq!(pair(&["billing-db"], &["ledger-db"]), ["fp-old", "fp-new"]);
+        assert_eq!(
+            pair(&["billing-db"], &["ledger-db", "billing-db"]),
+            ["fp-new"]
+        );
+        assert_eq!(pair(&["billing-db"], &[]), ["fp-new"]);
+    }
+
+    #[test]
+    fn an_older_line_answering_a_word_the_newer_lacks_stays() {
+        let hits = vec![
+            (stated("fp-old", BACKUP_OLD, 1), words(2, 3, 1.0)),
+            (stated("fp-new", BACKUP_NEW, 2), words(1, 3, 1.0)),
+        ];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-old", "fp-new"]);
     }
 
     /// 2025-10-14T12:00:00Z — the same calendar day from UTC-11 to UTC+11.

@@ -15,34 +15,34 @@
           "unmeasured": 32
         },
         "positives": {
-          "duplicate_queries": 8,
+          "duplicate_queries": 1,
           "expected_injected": 0.7714,
           "injection_loss": [],
-          "irrelevant_injected": 204,
+          "irrelevant_injected": 201,
           "needed": 70,
           "queries": 62,
           "stale_alone": 0,
-          "stale_with_current": 11
+          "stale_with_current": 6
         }
       },
       "category:dated-event": {
         "positives": {
-          "duplicate_queries": 2,
+          "duplicate_queries": 1,
           "expected_injected": 0.8571,
           "injection_loss": [],
-          "irrelevant_injected": 23,
+          "irrelevant_injected": 22,
           "needed": 7,
           "queries": 6,
           "stale_alone": 0,
-          "stale_with_current": 1
+          "stale_with_current": 0
         }
       },
       "category:durable-old": {
         "positives": {
-          "duplicate_queries": 1,
+          "duplicate_queries": 0,
           "expected_injected": 1.0,
           "injection_loss": [],
-          "irrelevant_injected": 17,
+          "irrelevant_injected": 15,
           "needed": 6,
           "queries": 6,
           "stale_alone": 0,
@@ -51,7 +51,7 @@
       },
       "category:identity": {
         "positives": {
-          "duplicate_queries": 1,
+          "duplicate_queries": 0,
           "expected_injected": 0.5,
           "injection_loss": [],
           "irrelevant_injected": 41,
@@ -63,10 +63,10 @@
       },
       "category:lexical": {
         "positives": {
-          "duplicate_queries": 1,
+          "duplicate_queries": 0,
           "expected_injected": 1.0,
           "injection_loss": [],
-          "irrelevant_injected": 43,
+          "irrelevant_injected": 44,
           "needed": 14,
           "queries": 14,
           "stale_alone": 0,
@@ -75,7 +75,7 @@
       },
       "category:paraphrase": {
         "positives": {
-          "duplicate_queries": 2,
+          "duplicate_queries": 0,
           "expected_injected": 0.625,
           "injection_loss": [],
           "irrelevant_injected": 57,
@@ -87,14 +87,14 @@
       },
       "category:temporal-update": {
         "positives": {
-          "duplicate_queries": 1,
+          "duplicate_queries": 0,
           "expected_injected": 0.9091,
           "injection_loss": [],
-          "irrelevant_injected": 23,
+          "irrelevant_injected": 22,
           "needed": 11,
           "queries": 10,
           "stale_alone": 0,
-          "stale_with_current": 10
+          "stale_with_current": 6
         }
       },
       "kind:first-person": {
@@ -137,22 +137,22 @@
           "unmeasured": 32
         },
         "positives": {
-          "duplicate_queries": 7,
+          "duplicate_queries": 1,
           "expected_injected": 0.9167,
           "injection_loss": [],
-          "irrelevant_injected": 51,
+          "irrelevant_injected": 47,
           "needed": 36,
           "queries": 31,
           "stale_alone": 0,
-          "stale_with_current": 6
+          "stale_with_current": 1
         }
       },
       "lang:pt": {
         "positives": {
-          "duplicate_queries": 1,
+          "duplicate_queries": 0,
           "expected_injected": 0.6176,
           "injection_loss": [],
-          "irrelevant_injected": 153,
+          "irrelevant_injected": 154,
           "needed": 34,
           "queries": 31,
           "stale_alone": 0,
@@ -167,14 +167,14 @@
           "unmeasured": 20
         },
         "positives": {
-          "duplicate_queries": 8,
+          "duplicate_queries": 1,
           "expected_injected": 0.76,
           "injection_loss": [],
-          "irrelevant_injected": 135,
+          "irrelevant_injected": 132,
           "needed": 50,
           "queries": 43,
           "stale_alone": 0,
-          "stale_with_current": 8
+          "stale_with_current": 4
         }
       },
       "split:test": {
@@ -192,7 +192,7 @@
           "needed": 20,
           "queries": 19,
           "stale_alone": 0,
-          "stale_with_current": 3
+          "stale_with_current": 2
         }
       }
     },
@@ -200,43 +200,43 @@
       "all": {
         "negatives": {
           "negative_clean_rate": 0.7188,
-          "negative_injected": 11,
+          "negative_injected": 10,
           "negatives": 32,
           "unmeasured": 0
         },
         "positives": {
-          "duplicate_queries": 4,
+          "duplicate_queries": 1,
           "expected_injected": 0.6143,
           "injection_loss": [
             "q-en-work-release-days: en-work-deploy-window",
             "q-en-work-late-week-rollout: en-work-deploy-window",
             "q-id-job-title: id-role"
           ],
-          "irrelevant_injected": 139,
+          "irrelevant_injected": 140,
           "needed": 70,
           "queries": 62,
           "stale_alone": 0,
-          "stale_with_current": 9
+          "stale_with_current": 5
         }
       },
       "category:dated-event": {
         "positives": {
-          "duplicate_queries": 0,
+          "duplicate_queries": 1,
           "expected_injected": 0.8571,
           "injection_loss": [],
-          "irrelevant_injected": 14,
+          "irrelevant_injected": 15,
           "needed": 7,
           "queries": 6,
           "stale_alone": 0,
-          "stale_with_current": 1
+          "stale_with_current": 0
         }
       },
       "category:durable-old": {
         "positives": {
-          "duplicate_queries": 1,
+          "duplicate_queries": 0,
           "expected_injected": 1.0,
           "injection_loss": [],
-          "irrelevant_injected": 14,
+          "irrelevant_injected": 13,
           "needed": 6,
           "queries": 6,
           "stale_alone": 0,
@@ -245,12 +245,12 @@
       },
       "category:identity": {
         "positives": {
-          "duplicate_queries": 2,
+          "duplicate_queries": 0,
           "expected_injected": 0.4375,
           "injection_loss": [
             "q-id-job-title: id-role"
           ],
-          "irrelevant_injected": 30,
+          "irrelevant_injected": 31,
           "needed": 16,
           "queries": 12,
           "stale_alone": 0,
@@ -259,7 +259,7 @@
       },
       "category:lexical": {
         "positives": {
-          "duplicate_queries": 1,
+          "duplicate_queries": 0,
           "expected_injected": 1.0,
           "injection_loss": [],
           "irrelevant_injected": 26,
@@ -293,7 +293,7 @@
           "needed": 11,
           "queries": 10,
           "stale_alone": 0,
-          "stale_with_current": 8
+          "stale_with_current": 5
         }
       },
       "kind:first-person": {
@@ -315,7 +315,7 @@
       "kind:incidental-word": {
         "negatives": {
           "negative_clean_rate": 0.0,
-          "negative_injected": 9,
+          "negative_injected": 8,
           "negatives": 8,
           "unmeasured": 0
         }
@@ -331,12 +331,12 @@
       "lang:en": {
         "negatives": {
           "negative_clean_rate": 0.7188,
-          "negative_injected": 11,
+          "negative_injected": 10,
           "negatives": 32,
           "unmeasured": 0
         },
         "positives": {
-          "duplicate_queries": 2,
+          "duplicate_queries": 1,
           "expected_injected": 0.5833,
           "injection_loss": [
             "q-en-work-release-days: en-work-deploy-window",
@@ -347,15 +347,15 @@
           "needed": 36,
           "queries": 31,
           "stale_alone": 0,
-          "stale_with_current": 5
+          "stale_with_current": 1
         }
       },
       "lang:pt": {
         "positives": {
-          "duplicate_queries": 2,
+          "duplicate_queries": 0,
           "expected_injected": 0.6471,
           "injection_loss": [],
-          "irrelevant_injected": 120,
+          "irrelevant_injected": 121,
           "needed": 34,
           "queries": 31,
           "stale_alone": 0,
@@ -370,7 +370,7 @@
           "unmeasured": 0
         },
         "positives": {
-          "duplicate_queries": 3,
+          "duplicate_queries": 1,
           "expected_injected": 0.52,
           "injection_loss": [
             "q-en-work-release-days: en-work-deploy-window",
@@ -381,25 +381,25 @@
           "needed": 50,
           "queries": 43,
           "stale_alone": 0,
-          "stale_with_current": 6
+          "stale_with_current": 3
         }
       },
       "split:test": {
         "negatives": {
           "negative_clean_rate": 0.75,
-          "negative_injected": 4,
+          "negative_injected": 3,
           "negatives": 12,
           "unmeasured": 0
         },
         "positives": {
-          "duplicate_queries": 1,
+          "duplicate_queries": 0,
           "expected_injected": 0.85,
           "injection_loss": [],
-          "irrelevant_injected": 50,
+          "irrelevant_injected": 51,
           "needed": 20,
           "queries": 19,
           "stale_alone": 0,
-          "stale_with_current": 3
+          "stale_with_current": 2
         }
       }
     }

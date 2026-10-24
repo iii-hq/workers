@@ -90,8 +90,9 @@ pub const RECALL_ID: &str = "memory::recall";
 pub const RECALL_DESC: &str =
     "Search a bank's memories relevant to a query (BM25 + entities + corroboration + \
      recency; no LLM). The same scorer the pre-generate hook uses; the hook injects only \
-     the hits with evidence, and memory::preview shows exactly what it injects. mode \
-     lexical/semantic returns one raw arm (plain BM25, or cosine).";
+     the hits with evidence, one line per fact and the newer of a stated change, and \
+     memory::preview shows exactly what it injects. mode lexical/semantic returns one raw \
+     arm (plain BM25, or cosine).";
 
 pub const RULE_LIST_ID: &str = "memory::rule::list";
 pub const RULE_LIST_DESC: &str =
