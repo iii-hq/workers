@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.1
+
+- A card's scope includes its fallout: edits outside `Files:` and `Tests:` that only keep the project consistent with the card's change and add no behaviour (another use of a name it renamed, removed or re-typed, a regenerated golden or snapshot, a test or schema registry entry for a surface it added, removed or re-typed). The code phase finds and updates other uses of a name it changes, the batch worker may repair fallout on a retry, and review accepts a path outside the union whose whole diff is fallout, recording it in `checks`; anything else outside the union still fails, as does a weakened assertion. In run KAN-456, three batches whose checks were all green failed on scope alone (a schema registry, its goldens, a test fixture) until the orchestrator widened every card by comment; each cost a repair round. The harness-e2e scenario `deepwork_scope_fallout` pins it: a card that renames a field while a fixture outside its `Files:` builds the old one. On 0.5.0 the batch failed, the repair was refused as out of scope and the run ended with that card unverified and the suite red (15/100); on 0.5.1 the first batch was verified with the fixture recorded as fallout, twice (100/100), and `deepwork_batch_repair` still scored 100/100.
+
 ## 0.5.0
 
 - Dev cards run one Code phase each. The existing wave is the batch boundary: integrate successful cards, write their regression tests together, then verify and review the combined result. `Tests:` replaces `Test first:`; test-first proof is no longer required. Plain reading/research cards keep their existing flow.

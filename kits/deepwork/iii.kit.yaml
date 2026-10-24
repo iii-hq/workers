@@ -1,6 +1,6 @@
 iii: v1
 name: iii/deepwork
-version: 0.5.0
+version: 0.5.1
 description: "Multi-agent workflows on iii with the kanban board as the task list: parallel implementation tickets, tests and independent verification/review once per integrated wave, and bounded rounds. Code goals get a dev flow: autonomous reversible decisions with optional design/plan approval, tickets in isolated git worktrees, batch validation, a branch review and a kept branch unless you explicitly choose another finish."
 license: Apache-2.0
 repo: https://github.com/iii-hq/workers/tree/main/kits/deepwork
