@@ -551,9 +551,11 @@ fn two_subjects(a: &Memory, b: &Memory) -> bool {
 
 /// What a turn is told from its ranked hits (every candidate, best first):
 /// those with evidence ([`Evidence`], why each matched) that stand with the
-/// turn's best, the current statement of a changed fact, one line per fact,
-/// at most `limit`; nothing when none has any. `seen` holds the memory lines
-/// the window shows: a rewording of one is not sent again.
+/// turn's best, one line per fact, at most `limit`; nothing when none has
+/// any. An older statement of a changed fact is never told: when it stands,
+/// the current statement takes its place, whatever the newer's own rank or
+/// relevance. `seen` holds the memory lines the window shows: a rewording of
+/// one is not sent again.
 pub fn select(
     hits: Vec<(Memory, f32)>,
     evidence: &HashMap<String, Evidence>,
@@ -565,33 +567,40 @@ pub fn select(
     // Every question word `a` matched, `b` matched too.
     let within = |a: &Evidence, b: &Evidence| a.matched.iter().all(|t| b.matched.contains(t));
     // Evidence: a word of the question, or a meaning above the model's floor.
-    let mut pool: Vec<(Memory, f32)> = hits
+    let pool: Vec<(Memory, f32)> = hits
         .into_iter()
         .filter(|(m, _)| !ev(m).matched.is_empty() || ev(m).cosine.is_some())
         .take(POOL_PER_SLOT.saturating_mul(limit))
         .collect();
-    // Before the cut, so a stale best hit never sets the bar.
-    let stale: HashSet<String> = pool
+    // Each stale line's newest superseder in `pool` (reversed: a tie goes to the better-ranked).
+    let newest: Vec<Option<usize>> = pool
         .iter()
-        .filter(|(old, _)| {
-            !old.pinned
-                && pool.iter().any(|(new, _)| {
-                    last_stated(new) > last_stated(old)
-                        && !unrelated(old, new)
-                        // An older line answering a word the newer lacks stays.
-                        && within(ev(old), ev(new))
-                        && extract::supersedes(&old.text, &new.text)
-                })
+        .map(|(old, _)| {
+            if old.pinned {
+                return None;
+            }
+            let newer = pool.iter().enumerate().filter(|(_, (new, _))| {
+                last_stated(new) > last_stated(old)
+                    && !unrelated(old, new)
+                    // An older line answering a word the newer lacks stays.
+                    && within(ev(old), ev(new))
+                    && extract::supersedes(&old.text, &new.text)
+            });
+            newer
+                .rev()
+                .max_by_key(|(_, (new, _))| last_stated(new))
+                .map(|(j, _)| j)
         })
-        .map(|(m, _)| m.id.clone())
         .collect();
-    pool.retain(|(m, _)| !stale.contains(&m.id));
-    // Visible hits count toward `best`: a strong one already shown still sets the bar.
+    // Without the stale lines, so a stale best hit never sets the bar. Visible
+    // hits count: a strong one already shown still sets it.
     let best = pool
         .iter()
-        .map(|(m, _)| ev(m).relevance)
+        .zip(&newest)
+        .filter(|(_, newer)| newer.is_none())
+        .map(|((m, _), _)| ev(m).relevance)
         .fold(0.0, f32::max);
-    pool.retain(|(m, _)| {
+    let stands = |m: &Memory| {
         let e = ev(m);
         let words = e.matched.len();
         (words > 0 && words >= e.terms.min(2))
@@ -599,10 +608,23 @@ pub fn select(
             || e.z.is_some_and(|z| z >= SEMANTIC_Z)
             // No vector to weigh it against meaning matches: judge its words, as in lexical mode.
             || (!e.vector && words > 0 && e.lexical >= RELEVANCE_SHARE)
-    });
+    };
+    // A line that stands, told by the statement nothing in `pool` supersedes
+    // (later statements are newer, so this ends), once, at its first place.
+    let mut order: Vec<usize> = Vec::new();
+    for (i, (m, _)) in pool.iter().enumerate() {
+        let mut current = i;
+        while let Some(newer) = newest[current] {
+            current = newer;
+        }
+        if stands(m) && !order.contains(&current) {
+            order.push(current);
+        }
+    }
+    let mut pool: Vec<Option<(Memory, f32)>> = pool.into_iter().map(Some).collect();
     // After the cut, so a low-relevance twin never takes the fact down with it.
     let mut kept: Vec<(Memory, f32)> = Vec::new();
-    for (m, s) in pool {
+    for (m, s) in order.into_iter().filter_map(|i| pool[i].take()) {
         let e = ev(&m);
         let line = memory_line_text(&m);
         let twin = !m.pinned
@@ -2129,6 +2151,48 @@ Formal."
             (stated("fp-new", BACKUP_NEW, 2), at(1.0)),
         ];
         assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-new"]);
+    }
+
+    #[test]
+    fn an_older_line_that_passes_the_cut_is_told_as_its_newer() {
+        // The newer has no vector yet: on its words alone, it falls short.
+        let vector = |e: Evidence| Evidence { vector: true, ..e };
+        let hits = vec![
+            (memory("fp-other", "fp-other"), vector(words(2, 4, 7.0))),
+            (stated("fp-old", BACKUP_OLD, 1), vector(words(1, 4, 5.5))),
+            (stated("fp-new", BACKUP_NEW, 2), words(1, 4, 0.45)),
+        ];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-other", "fp-new"]);
+    }
+
+    #[test]
+    fn the_newer_takes_the_older_lines_slot_within_the_limit() {
+        let e = || words(2, 3, 1.0);
+        let hits = vec![
+            (memory("fp-a", "fp-a"), e()),
+            (stated("fp-old", BACKUP_OLD, 1), e()),
+            (memory("fp-b", "fp-b"), e()),
+            (stated("fp-new", BACKUP_NEW, 2), e()),
+        ];
+        assert_eq!(kept(hits, &HashSet::new(), 2), ["fp-a", "fp-new"]);
+    }
+
+    #[test]
+    fn an_older_line_is_told_as_the_statement_nothing_supersedes() {
+        // The middle line replaces the oldest and is replaced in turn; the
+        // newest shares no entity with the oldest, so only the chain links them.
+        let tagged = |m: Memory, entity: &str| Memory {
+            entities: vec![entity.into()],
+            ..m
+        };
+        let newest = "The nightly backup now runs at 05:00.";
+        let e = || words(2, 3, 1.0);
+        let hits = vec![
+            (tagged(stated("fp-old", BACKUP_OLD, 1), "billing-db"), e()),
+            (stated("fp-mid", BACKUP_NEW, 2), e()),
+            (tagged(stated("fp-new", newest, 3), "ledger-db"), e()),
+        ];
+        assert_eq!(kept(hits, &HashSet::new(), 1), ["fp-new"]);
     }
 
     #[test]
