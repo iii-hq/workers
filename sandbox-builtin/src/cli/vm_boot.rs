@@ -100,8 +100,8 @@ pub struct VmBootArgs {
     /// forwarded to the VM's port, replies are forwarded back. The
     /// in-VM `iii-supervisor` reads/writes the other end.
     ///
-    /// When absent, the VM boots without a control port and all
-    /// restarts fall back to the full `iii-worker start` path.
+    /// When absent, the VM boots without a control port and every
+    /// restart is a full VM restart.
     #[arg(long)]
     pub control_sock: Option<String>,
 
@@ -138,10 +138,10 @@ pub struct VmBootArgs {
     pub nofile_limit: u64,
 
     /// Unix socket path where this `__vm-boot` process will listen for
-    /// `iii worker exec` clients. Separate from `--control-sock`
-    /// because exec-style sessions are multiplexed (many concurrent
-    /// requests on one virtio-console port), which the single-request
-    /// control proxy doesn't support.
+    /// exec and fs clients (`sandbox::exec`, `sandbox::fs::*`).
+    /// Separate from `--control-sock` because exec-style sessions are
+    /// multiplexed (many concurrent requests on one virtio-console
+    /// port), which the single-request control proxy doesn't support.
     ///
     /// When set, `__vm-boot` creates a second `socketpair(AF_UNIX)`,
     /// wires one end into the VM as a named virtio-console port
@@ -150,9 +150,8 @@ pub struct VmBootArgs {
     /// connecting clients and the VM. The in-VM `iii-init` shell
     /// dispatcher reads/writes the other end.
     ///
-    /// When absent, the VM boots without an exec port and
-    /// `iii worker exec <name>` refuses with a clear "unavailable"
-    /// error rather than silently hanging on a missing socket.
+    /// When absent, the VM boots without an exec port, and an exec
+    /// client fails on the missing socket rather than hanging.
     #[arg(long)]
     pub shell_sock: Option<String>,
 
@@ -1768,6 +1767,23 @@ mod tests {
         ]);
         assert!(cli.args.env_stdin);
         assert!(cli.args.env.is_empty());
+    }
+
+    /// `__vm-boot --help` names no command of the retired `iii worker` CLI.
+    #[test]
+    fn help_names_no_iii_worker_command() {
+        #[derive(clap::Parser)]
+        struct TestCli {
+            #[command(flatten)]
+            args: VmBootArgs,
+        }
+        let help = <TestCli as clap::CommandFactory>::command()
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("--shell-sock"), "{help}");
+        for retired in ["iii-worker", "iii worker"] {
+            assert!(!help.contains(retired), "{retired}: {help}");
+        }
     }
 
     #[test]
