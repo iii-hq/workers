@@ -64,9 +64,10 @@ pub struct WorkerManifest {
     pub resources: Option<ResourcesSection>,
 
     // Registry publish metadata. The workers-repo release CI requires these
-    // keys (deploy/manifest pick the release artifact type and version
-    // source; tags provide discovery aliases); they are accepted so one
-    // iii.worker.yaml can satisfy both validators, but never read at start.
+    // keys (language and deploy/manifest pick the release artifact type and
+    // version source; tags provide discovery aliases; config is the
+    // published default config); they are accepted so one iii.worker.yaml
+    // can satisfy both validators, but never read at start.
     pub iii: Option<String>,
 
     pub deploy: Option<String>,
@@ -80,8 +81,6 @@ pub struct WorkerManifest {
     pub config: Option<YamlValue>,
 
     pub language: Option<String>,
-
-    pub entry: Option<String>,
 
     #[serde(flatten)]
     pub unknown: BTreeMap<String, YamlValue>,
@@ -172,7 +171,6 @@ fn shape_problems(doc: &YamlValue) -> Vec<String> {
         "name",
         "description",
         "language",
-        "entry",
         "iii",
         "deploy",
         "manifest",
@@ -361,10 +359,12 @@ mod tests {
 
     #[test]
     fn unknown_keys_skip_the_accepted_deprecated_ones() {
-        let doc: YamlValue =
-            serde_yaml::from_str("name: w\nruntime:\n  kind: bun\n  foo: 1\nconfig: {}\nbad: 2\n")
-                .unwrap();
+        let doc: YamlValue = serde_yaml::from_str(
+            "name: w\nruntime:\n  kind: bun\n  foo: 1\nconfig: {}\nbad: 2\nentry: w.ts\n",
+        )
+        .unwrap();
         let m = WorkerManifest::from_value(&doc).unwrap();
-        assert_eq!(m.unknown_keys(), vec!["bad", "runtime.foo"]);
+        // Top-level `entry` was the iii-worker spelling of `runtime.entry`.
+        assert_eq!(m.unknown_keys(), vec!["bad", "entry", "runtime.foo"]);
     }
 }
