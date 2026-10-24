@@ -14,7 +14,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -59,12 +59,14 @@ pub struct WorkerVms {
     roots: Vec<PathBuf>,
     /// Keyed by `vm_id`. An exited VM stays, so `status` can report it.
     slots: Mutex<HashMap<String, Slot>>,
+    /// Names each `start` call in its `Slot::Preparing` reservation.
+    starts: AtomicU64,
 }
 
 #[derive(Clone)]
 enum Slot {
-    /// `start` is building the VM that will boot as this instance.
-    Preparing(u64),
+    /// `start` call `.1` is building the VM that will boot as instance `.0`.
+    Preparing(u64, u64),
     Booted(Arc<Vm>),
     /// `destroy` is removing the state of what was this instance.
     Destroying(u64),
@@ -101,6 +103,7 @@ impl WorkerVms {
             token,
             roots,
             slots: Mutex::default(),
+            starts: AtomicU64::new(0),
         }
     }
 
@@ -154,13 +157,14 @@ impl WorkerVms {
         let (package, host_path, run_override) = source_parts(&req.source);
         let dir = self.admit(host_path)?;
         let id = vm_id(&req.state_key);
+        let start = self.starts.fetch_add(1, Ordering::SeqCst);
         {
             let mut slots = self.slots();
             refuse_busy(&id, slots.get(&id))?;
             let next = stored_instance(&self.base.join(&id))? + 1;
-            slots.insert(id.clone(), Slot::Preparing(next));
+            slots.insert(id.clone(), Slot::Preparing(next, start));
         }
-        let _unreserve = Unreserve(self, &id);
+        let _unreserve = Unreserve(self, &id, start);
         validate_source(&dir, package, run_override).map_err(SandboxError::SourceRejected)?;
         let over = VmOverride {
             state_dir: self.base.join(&id).join("root"),
@@ -172,25 +176,33 @@ impl WorkerVms {
             None => local_vm_command(&req.worker_name, &dir, run_override, over).await,
         }
         .map_err(SandboxError::BootFailed)?;
-        self.launch(&req.state_key, built.command, built.env_stdin)
+        self.launch(&req.state_key, built.command, built.env_stdin, Some(start))
     }
 
     /// Spawn `cmd` as the next instance of `state_key`'s VM, its output pumped
     /// into `console.log`, and write `env_stdin` (the `--env-stdin` frame) to
-    /// its stdin.
+    /// its stdin. `start` names the `start` call whose reservation this fills.
     pub(crate) fn launch(
         &self,
         state_key: &str,
         cmd: Command,
         env_stdin: Vec<u8>,
+        start: Option<u64>,
     ) -> Result<WorkerStartResponse, SandboxError> {
         let id = vm_id(state_key);
         let dir = self.base.join(&id);
         // Held to the insert, so two launches of one key cannot both spawn.
         let mut slots = self.slots();
-        // A `Preparing` entry is the reservation of the `start` calling this.
-        if !matches!(slots.get(&id), Some(Slot::Preparing(_))) {
-            refuse_busy(&id, slots.get(&id))?;
+        match (slots.get(&id), start) {
+            (Some(Slot::Preparing(_, held)), Some(start)) if *held == start => {}
+            // `worker::stop` cancelled the reservation while the VM was being built.
+            (slot, Some(_)) => {
+                refuse_busy(&id, slot)?;
+                return Err(SandboxError::BootFailed(
+                    "worker::stop cancelled this start before its VM booted".to_string(),
+                ));
+            }
+            (slot, None) => refuse_busy(&id, slot)?,
         }
         let instance = stored_instance(&dir)? + 1;
         let (console, lifeline, mut child) = spawn(&dir, instance, cmd).map_err(|e| {
@@ -258,9 +270,27 @@ impl WorkerVms {
     }
 
     /// SIGTERM, then SIGKILL after `grace_ms`; `grace_ms: 0` kills at once.
-    /// Returns the final status; an exited VM returns it as is.
+    /// Returns the final status; an exited VM returns it as is, and one still
+    /// preparing is cancelled before it boots.
     pub async fn stop(&self, req: WorkerStopRequest) -> Result<WorkerStatus, SandboxError> {
         self.authorize(&req.auth)?;
+        // A boot still preparing is cancelled: its `start` finds the reservation
+        // gone and never launches, so the start retried after this boots the only VM.
+        {
+            let mut slots = self.slots();
+            if matches!(slots.get(&req.vm_id), Some(Slot::Preparing(i, _)) if *i == req.instance) {
+                slots.remove(&req.vm_id);
+                return Ok(WorkerStatus {
+                    vm_id: req.vm_id,
+                    instance: req.instance,
+                    state: State::Stopped,
+                    exit_code: None,
+                    signal: None,
+                    started_at_ms: 0,
+                    ended_at_ms: Some(now_ms()),
+                });
+            }
+        }
         let vm = booted(&req.vm_id, self.lookup(&req.vm_id, req.instance)?)?;
         if vm.ended.borrow().is_none() {
             vm.stopping.store(true, Ordering::SeqCst);
@@ -482,7 +512,7 @@ fn source_parts(source: &WorkerSource) -> (Option<&str>, &str, Option<&str>) {
 fn booted(vm_id: &str, slot: Slot) -> Result<Arc<Vm>, SandboxError> {
     match slot {
         Slot::Booted(vm) => Ok(vm),
-        Slot::Preparing(instance) | Slot::Destroying(instance) => Err(SandboxError::StateBusy {
+        Slot::Preparing(instance, _) | Slot::Destroying(instance) => Err(SandboxError::StateBusy {
             vm_id: vm_id.to_string(),
             instance,
         }),
@@ -502,12 +532,12 @@ fn refuse_busy(vm_id: &str, slot: Option<&Slot>) -> Result<(), SandboxError> {
 
 /// Drops `start`'s `Preparing` entry if it never launched (an error, or the
 /// call was dropped), so the key stays startable.
-struct Unreserve<'a>(&'a WorkerVms, &'a str);
+struct Unreserve<'a>(&'a WorkerVms, &'a str, u64);
 
 impl Drop for Unreserve<'_> {
     fn drop(&mut self) {
         let mut slots = self.0.slots();
-        if matches!(slots.get(self.1), Some(Slot::Preparing(_))) {
+        if matches!(slots.get(self.1), Some(Slot::Preparing(_, start)) if *start == self.2) {
             slots.remove(self.1);
         }
     }
@@ -516,14 +546,14 @@ impl Drop for Unreserve<'_> {
 impl Slot {
     fn instance(&self) -> u64 {
         match self {
-            Slot::Preparing(instance) | Slot::Destroying(instance) => *instance,
+            Slot::Preparing(instance, _) | Slot::Destroying(instance) => *instance,
             Slot::Booted(vm) => vm.instance,
         }
     }
 
     fn busy(&self) -> bool {
         match self {
-            Slot::Preparing(_) | Slot::Destroying(_) => true,
+            Slot::Preparing(..) | Slot::Destroying(_) => true,
             Slot::Booted(vm) => vm.ended.borrow().is_none(),
         }
     }
@@ -531,7 +561,7 @@ impl Slot {
     fn status(&self, vm_id: &str) -> WorkerStatus {
         let (state, ended, started_at_ms) = match self {
             // Nothing has started yet. `lookup` never hands out `Destroying`.
-            Slot::Preparing(_) | Slot::Destroying(_) => (State::Preparing, None, 0),
+            Slot::Preparing(..) | Slot::Destroying(_) => (State::Preparing, None, 0),
             Slot::Booted(vm) => {
                 let ended = *vm.ended.borrow();
                 let state = match ended {
@@ -849,7 +879,10 @@ mod tests {
             assert_eq!(err.code().as_str(), "S505", "{err}");
 
             // A known VM: without the token, a stale instance is S505, not S503.
-            let known = vms.launch("k", sh("exit 0"), Vec::new()).unwrap().vm_id;
+            let known = vms
+                .launch("k", sh("exit 0"), Vec::new(), None)
+                .unwrap()
+                .vm_id;
             assert_eq!(
                 code(vms.start(start_req(auth, "k", local(t))).await),
                 "S505"
@@ -872,7 +905,7 @@ mod tests {
         let t = t.path();
         let vms = vms(t, Some("t"), vec![]);
         let started = vms
-            .launch("k", sh("echo hi; sleep 30"), Vec::new())
+            .launch("k", sh("echo hi; sleep 30"), Vec::new(), None)
             .unwrap();
         let id = started.vm_id;
         assert_eq!((id.as_str(), started.instance), (vm_id("k").as_str(), 1));
@@ -896,13 +929,18 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let t = t.path();
         let first = vms(t, Some("t"), vec![]);
-        let id = first.launch("k", sh("sleep 30"), Vec::new()).unwrap().vm_id;
+        let id = first
+            .launch("k", sh("sleep 30"), Vec::new(), None)
+            .unwrap()
+            .vm_id;
         first.stop(stop_req("t", &id, 1, 0)).await.unwrap();
         drop(first);
 
         let vms = vms(t, Some("t"), vec![]);
         assert_eq!(
-            vms.launch("k", sh("exit 0"), Vec::new()).unwrap().instance,
+            vms.launch("k", sh("exit 0"), Vec::new(), None)
+                .unwrap()
+                .instance,
             2
         );
         assert_eq!(code(vms.status(status_req("t", &id, 1))), "S503");
@@ -914,7 +952,12 @@ mod tests {
         let t = t.path();
         let vms = vms(t, Some("t"), vec![]);
         let id = vms
-            .launch("k", sh("trap '' TERM; echo ready; sleep 30"), Vec::new())
+            .launch(
+                "k",
+                sh("trap '' TERM; echo ready; sleep 30"),
+                Vec::new(),
+                None,
+            )
             .unwrap()
             .vm_id;
         // The trap is set once `ready` is out.
@@ -932,9 +975,12 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
-        let id = vms.launch("k", sh("sleep 30"), Vec::new()).unwrap().vm_id;
+        let id = vms
+            .launch("k", sh("sleep 30"), Vec::new(), None)
+            .unwrap()
+            .vm_id;
 
-        let busy = vms.launch("k", sh("exit 0"), Vec::new()).unwrap_err();
+        let busy = vms.launch("k", sh("exit 0"), Vec::new(), None).unwrap_err();
         assert_eq!(busy.code().as_str(), "S502");
         assert_eq!(
             busy.to_payload()["fix"],
@@ -942,6 +988,36 @@ mod tests {
         );
         assert_eq!(code(vms.start(start_req("t", "k", local(t))).await), "S502");
         assert_eq!(code(vms.destroy(destroy_req("t", "k"))), "S502");
+
+        vms.stop(stop_req("t", &id, 1, 0)).await.unwrap();
+    }
+
+    /// Compose's S502 stop-and-retry against a start still preparing (one whose
+    /// caller is gone): the stop cancels it, its build then launches nothing,
+    /// and the retry boots the only VM.
+    #[tokio::test]
+    async fn stop_cancels_a_start_still_preparing() {
+        let t = tempfile::tempdir().unwrap();
+        let vms = vms(t.path(), Some("t"), vec![]);
+        let id = vm_id("k");
+        vms.slots().insert(id.clone(), Slot::Preparing(1, 7));
+        assert_eq!(
+            code(vms.launch("k", sh("exit 0"), Vec::new(), None)),
+            "S502"
+        );
+
+        let stopped = vms.stop(stop_req("t", &id, 1, 0)).await.unwrap();
+        assert!(matches!(stopped.state, State::Stopped), "{stopped:?}");
+        assert_eq!(stopped.instance, 1);
+        // The cancelled start's build ends.
+        let cancelled = vms.launch("k", sh("sleep 30"), Vec::new(), Some(7));
+        assert_eq!(code(cancelled), "S300");
+        let retried = vms.launch("k", sh("sleep 30"), Vec::new(), None).unwrap();
+        assert_eq!(retried.instance, 1);
+        assert_eq!(
+            code(vms.launch("k", sh("sleep 30"), Vec::new(), Some(7))),
+            "S502"
+        );
 
         vms.stop(stop_req("t", &id, 1, 0)).await.unwrap();
     }
@@ -954,7 +1030,10 @@ mod tests {
         let id = vm_id("k");
         vms.slots().insert(id.clone(), Slot::Destroying(1));
 
-        assert_eq!(code(vms.launch("k", sh("exit 0"), Vec::new())), "S502");
+        assert_eq!(
+            code(vms.launch("k", sh("exit 0"), Vec::new(), None)),
+            "S502"
+        );
         assert_eq!(code(vms.start(start_req("t", "k", local(t))).await), "S502");
         assert_eq!(code(vms.destroy(destroy_req("t", "k"))), "S502");
         assert_eq!(code(vms.status(status_req("t", &id, 1))), "S504");
@@ -966,7 +1045,10 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![]);
-        let id = vms.launch("k", sh("exit 7"), Vec::new()).unwrap().vm_id;
+        let id = vms
+            .launch("k", sh("exit 7"), Vec::new(), None)
+            .unwrap()
+            .vm_id;
         wait_ended(&vms, &id, 1).await;
         // A file where the base dir was: ENOTDIR, which root cannot bypass.
         let base = t.join("workers");
@@ -995,7 +1077,10 @@ mod tests {
     async fn exit_code_is_recorded() {
         let t = tempfile::tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
-        let id = vms.launch("k", sh("exit 7"), Vec::new()).unwrap().vm_id;
+        let id = vms
+            .launch("k", sh("exit 7"), Vec::new(), None)
+            .unwrap()
+            .vm_id;
         let status = wait_ended(&vms, &id, 1).await;
         assert!(matches!(status.state, State::Exited), "{status:?}");
         assert_eq!((status.exit_code, status.signal), (Some(7), None));
@@ -1026,7 +1111,10 @@ mod tests {
         std::os::unix::fs::symlink(t.join("target"), dir.join("console.log")).unwrap();
 
         let vms = vms(t, Some("t"), vec![]);
-        assert_eq!(code(vms.launch("k", sh("echo pwned"), Vec::new())), "S300");
+        assert_eq!(
+            code(vms.launch("k", sh("echo pwned"), Vec::new(), None)),
+            "S300"
+        );
         assert_eq!(std::fs::read_to_string(t.join("target")).unwrap(), "keep");
     }
 
@@ -1040,6 +1128,7 @@ mod tests {
                 "k",
                 sh(r#"yes "$(printf %01000d 0)" | head -n 11000"#),
                 Vec::new(),
+                None,
             )
             .unwrap()
             .vm_id;
@@ -1179,7 +1268,7 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let id = vms
-            .launch("k", sh("echo a; sleep 0.3; echo b >&2"), Vec::new())
+            .launch("k", sh("echo a; sleep 0.3; echo b >&2"), Vec::new(), None)
             .unwrap()
             .vm_id;
 
@@ -1195,7 +1284,10 @@ mod tests {
     async fn follow_on_an_exited_instance_drains_and_returns() {
         let t = tempfile::tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
-        let id = vms.launch("k", sh("echo a"), Vec::new()).unwrap().vm_id;
+        let id = vms
+            .launch("k", sh("echo a"), Vec::new(), None)
+            .unwrap()
+            .vm_id;
         let status = wait_ended(&vms, &id, 1).await;
         assert!(matches!(status.state, State::Exited), "{status:?}");
 
@@ -1215,7 +1307,7 @@ mod tests {
         let frame = iii_supervisor::env_channel::encode_frame(&env).unwrap();
         // Drops the 4-byte length prefix; ends only at EOF, so the pipe was closed.
         let id = vms
-            .launch("k", sh("tail -c +5; echo"), frame)
+            .launch("k", sh("tail -c +5; echo"), frame, None)
             .unwrap()
             .vm_id;
         wait_ended(&vms, &id, 1).await;
@@ -1228,7 +1320,7 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let id = vms
-            .launch("k", sh("echo a; echo b; sleep 30"), Vec::new())
+            .launch("k", sh("echo a; echo b; sleep 30"), Vec::new(), None)
             .unwrap()
             .vm_id;
         wait_record(&t.path().join("workers").join(&id), "b").await;
@@ -1247,7 +1339,7 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let id = vms
-            .launch("k", sh("echo a; sleep 30"), Vec::new())
+            .launch("k", sh("echo a; sleep 30"), Vec::new(), None)
             .unwrap()
             .vm_id;
         wait_record(&t.path().join("workers").join(&id), "a").await;
