@@ -1025,9 +1025,9 @@ async fn injection_gate(vectors_file: &str, baseline_file: &str) {
             "{mode}: a stale line injected without the current one\n{report}"
         );
         // A needed line recall ranks but the hook drops: only the three
-        // reached through a bare `user` alone (no stemming: "release" is not
-        // "releases"), in lexical mode. A new loss fails here, not only in
-        // the snapshot.
+        // paraphrases that share no word with their question, reached through
+        // a bare `user` alone, in lexical mode. A new loss fails here, not
+        // only in the snapshot.
         let lost = summaries["all"]
             .positives
             .as_ref()
