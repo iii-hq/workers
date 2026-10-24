@@ -611,10 +611,6 @@ pub(crate) async fn start_worker_impl(
                 e
             ));
         }
-        // Reclaim orphaned legacy-clone artifacts (dep cache + prepared
-        // marker) and stamp the overlay layout marker. Idempotent and a no-op
-        // for a worker already on the overlay layout.
-        crate::cli::overlay::migrate_to_overlay(&managed_dir);
     } else if needs_rootfs_clone(&managed_dir) {
         eprintln!("  Preparing sandbox...");
         if managed_dir.exists()
@@ -1373,8 +1369,8 @@ resources:
     }
 
     /// Absence case: `needs_rootfs_clone(nonexistent_path)` must be true.
-    /// Covers the first-start path where the parent `~/.iii/managed/`
-    /// exists but the per-worker subdir has never been created.
+    /// Covers the first-start path where the worker's state dir has never
+    /// been created.
     #[test]
     fn needs_rootfs_clone_true_when_managed_dir_absent() {
         let tmp = tempfile::tempdir().unwrap();

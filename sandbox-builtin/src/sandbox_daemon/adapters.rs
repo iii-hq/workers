@@ -1122,39 +1122,4 @@ mod sandbox_boot_shape_tests {
         assert_eq!(err.raw_os_error(), Some(30), "expected EROFS, got {err:?}");
         assert!(std::fs::read_dir(td.path()).unwrap().next().is_none());
     }
-
-    #[test]
-    fn read_only_rootfs_skips_the_managed_layout_migration() {
-        use clap::Parser;
-
-        #[derive(Parser)]
-        struct Wrapper {
-            #[command(flatten)]
-            args: crate::cli::vm_boot::VmBootArgs,
-        }
-
-        let sandbox = tempfile::tempdir().unwrap();
-        let mut p = params(false);
-        p.rootfs = sandbox.path().to_path_buf();
-        let mut argv = vec![OsString::from("test")];
-        argv.extend(vm_boot_args(&p, Path::new(LOWER), Path::new("/c.sock")));
-        let mut parsed = Wrapper::try_parse_from(argv).unwrap().args;
-
-        crate::cli::vm_boot::migrate_rootfs_layout(&parsed);
-        assert!(
-            std::fs::read_dir(sandbox.path()).unwrap().next().is_none(),
-            "the sandbox trampoline must stay untouched"
-        );
-
-        // Control: without --rootfs-readonly (a managed worker dir) the
-        // migration still runs and stamps the layout marker.
-        let managed = tempfile::tempdir().unwrap();
-        parsed.rootfs = managed.path().display().to_string();
-        parsed.rootfs_readonly = false;
-        crate::cli::vm_boot::migrate_rootfs_layout(&parsed);
-        assert_eq!(
-            crate::cli::overlay::read_layout(managed.path()).as_deref(),
-            Some(crate::cli::overlay::LAYOUT_OVERLAY)
-        );
-    }
 }

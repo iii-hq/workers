@@ -278,16 +278,6 @@ pub(crate) fn root_share(args: &VmBootArgs) -> Result<iii_filesystem::Passthroug
         .map_err(|e| format!("PassthroughFs failed for '{}': {}", args.rootfs, e))
 }
 
-/// Overlay mode, host side: migrate a managed worker's on-disk layout (GC of
-/// orphaned legacy clone artifacts, then the layout marker). A read-only
-/// rootfs is a sandbox trampoline, not a managed worker dir: there is nothing
-/// to migrate and nothing may be written there.
-pub(crate) fn migrate_rootfs_layout(args: &VmBootArgs) {
-    if !args.rootfs_readonly {
-        crate::cli::overlay::migrate_to_overlay(std::path::Path::new(&args.rootfs));
-    }
-}
-
 /// Raise the process fd limit (RLIMIT_NOFILE) to accommodate PassthroughFs.
 fn raise_fd_limit() {
     use nix::libc;
@@ -942,7 +932,6 @@ fn boot_vm(
             .rootfs_lower
             .clone()
             .expect("overlay_mode implies --rootfs-lower");
-        migrate_rootfs_layout(args);
         eprintln!("iii: overlay base erofs -> /dev/vda: {lower_img}");
         // Disk attach ORDER is the guest device order: the lower MUST be the
         // first disk (/dev/vda) and the upper the second (/dev/vdb). iii-init

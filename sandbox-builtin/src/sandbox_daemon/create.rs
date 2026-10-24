@@ -162,15 +162,7 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
     // launcher cannot boot an isolated root (no embedded iii-init).
     launcher.preflight()?;
 
-    // Rootfs path may come from the unified cache
-    // (`~/.iii/cache/<slug>/`) or a legacy sandbox path
-    // (`~/.iii/managed/<image>/rootfs/`) consulted as a fallback so
-    // pre-unification rootfses stay hot.
-    let hints = rootfs_cache::CacheHints {
-        legacy_preset: Some(&req.image),
-        ..Default::default()
-    };
-    let rootfs = match rootfs_cache::resolve_cached(&oci_ref, &hints) {
+    let rootfs = match rootfs_cache::resolve_cached(&oci_ref) {
         Some(path) => path,
         None => {
             if !cfg.auto_install {

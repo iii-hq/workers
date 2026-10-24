@@ -240,21 +240,19 @@ fn apply_whiteout(
     let _ = std::fs::remove_dir_all(&target);
 }
 
-/// OCI image to use as rootfs for each `runtime.kind` value.
-///
-/// Returns `(image_ref, cache_dir_name)`. Keep in sync with
-/// `project::SUPPORTED_KINDS` and `project::infer_scripts`.
-pub fn oci_image_for_kind(kind: &str) -> (&'static str, &'static str) {
+/// OCI image to use as rootfs for each `runtime.kind` value. Keep in sync
+/// with `project::SUPPORTED_KINDS` and `project::infer_scripts`.
+pub fn oci_image_for_kind(kind: &str) -> &'static str {
     match kind {
-        "typescript" | "javascript" => ("docker.io/iiidev/node:latest", "node"),
+        "typescript" | "javascript" => "docker.io/iiidev/node:latest",
         // `kind: bun` gets the oven image by default — ships bun
         // preinstalled so no bootstrap is needed and startup is fast.
         // Users can still override with `runtime.base_image` for a
         // pinned version (e.g. `oven/bun:1.3`).
-        "bun" => ("docker.io/oven/bun:latest", "bun"),
-        "python" => ("docker.io/iiidev/python:latest", "python"),
-        "rust" => ("docker.io/library/rust:slim-bookworm", "rust"),
-        _ => ("docker.io/iiidev/node:latest", "node"),
+        "bun" => "docker.io/oven/bun:latest",
+        "python" => "docker.io/iiidev/python:latest",
+        "rust" => "docker.io/library/rust:slim-bookworm",
+        _ => "docker.io/iiidev/node:latest",
     }
 }
 
@@ -282,13 +280,6 @@ pub fn rootfs_slug_for_image(image: &str) -> String {
     slug_from_text(&canonicalize_oci_ref(image.trim()))
 }
 
-/// Pre-canonicalization slug. Only used by `rootfs_cache` to locate
-/// rootfses left on disk by the pre-fix hashing scheme so upgrading
-/// users don't re-pull on their first post-upgrade run.
-pub fn raw_rootfs_slug_for_image(image: &str) -> String {
-    slug_from_text(image.trim())
-}
-
 /// Parse `image` as an OCI reference and return its canonical whole
 /// form (registry/namespace/repo:tag with all defaults materialized).
 /// Falls back to the raw string when the parser rejects it, so edge-
@@ -300,9 +291,8 @@ fn canonicalize_oci_ref(raw: &str) -> String {
         .unwrap_or_else(|_| raw.to_string())
 }
 
-/// Sanitize + hash. Kept private so the two public entry points
-/// (`rootfs_slug_for_image`, `raw_rootfs_slug_for_image`) are the only
-/// callers and the canonicalization boundary stays crisp.
+/// Sanitize + hash. Kept private so `rootfs_slug_for_image` is the only
+/// caller and the canonicalization boundary stays crisp.
 fn slug_from_text(s: &str) -> String {
     let hash = fnv1a64(s.as_bytes());
     // Single-pass emit + coalesce runs of `-`; O(n) vs the previous
@@ -343,50 +333,24 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 
 /// Determine the rootfs path for a given `runtime.kind`, optionally
 /// overriding the default base image. If the rootfs doesn't exist
-/// locally, pulls the OCI image and extracts it.
+/// locally, pulls the OCI image and extracts it into the rootfs cache.
 ///
 /// `base_image_override` comes from `runtime.base_image` in
-/// `iii.worker.yaml`. When `Some`, the override's image ref is pulled
-/// into a slug-derived cache dir so it doesn't clobber the kind-default
-/// rootfs (e.g. a `base_image: oven/bun:1` worker gets its own
-/// `~/.iii/rootfs/oven-bun-1/` instead of replacing the shared
-/// `~/.iii/rootfs/bun/` that every default `kind: bun` worker uses).
+/// `iii.worker.yaml`.
 pub async fn prepare_rootfs(kind: &str, base_image_override: Option<&str>) -> Result<PathBuf> {
-    let (oci_image, legacy_slug): (String, String) = match base_image_override {
-        Some(img) if !img.trim().is_empty() => {
-            let slug = rootfs_slug_for_image(img.trim());
-            if slug.is_empty() {
-                anyhow::bail!(
-                    "base_image {:?} produced an empty rootfs slug — use a normal image reference like `oven/bun:1`",
-                    img
-                );
-            }
-            (img.trim().to_string(), slug)
-        }
-        _ => {
-            let (img, name) = oci_image_for_kind(kind);
-            (img.to_string(), name.to_string())
-        }
+    let oci_image = match base_image_override.map(str::trim) {
+        Some(img) if !img.is_empty() => img.to_string(),
+        _ => oci_image_for_kind(kind).to_string(),
     };
 
-    // Delegate cache lookup + pull to the unified rootfs cache. Legacy
-    // `~/.iii/rootfs/<kind>/` and `~/.iii/images/<sha>/` layouts are
-    // consulted as fallbacks so pre-unification users don't re-pull.
     let image_for_log = oci_image.clone();
-    let slug_for_log = legacy_slug.clone();
-    let hints = crate::cli::rootfs_cache::CacheHints {
-        legacy_kind: Some(&legacy_slug),
-        consult_images_cache: true,
-        ..Default::default()
-    };
-    let rootfs_dir = crate::cli::rootfs_cache::ensure_rootfs(&oci_image, &hints, move || {
-        eprintln!("  Pulling rootfs {} ({})...", slug_for_log, image_for_log);
+    let rootfs_dir = crate::cli::rootfs_cache::ensure_rootfs(&oci_image, move || {
+        eprintln!("  Pulling rootfs {image_for_log}...");
     })
     .await?;
 
     // Post-populate runtime-expected dirs even on a cache hit; these are
-    // idempotent and cheap, and covers the case where a legacy rootfs
-    // predates the workspace/ convention.
+    // idempotent and cheap.
     let workspace = rootfs_dir.join("workspace");
     std::fs::create_dir_all(&workspace).ok();
 
@@ -836,10 +800,8 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
     // The atomic unit is `dest` itself, NOT its parent. The staging dir
     // lives as a SIBLING of `dest` so the final rename(temp, dest) touches
     // only the one dir the caller asked for — it must never clobber the
-    // parent, which may house other unrelated cache entries (e.g.
-    // `~/.iii/rootfs/` is shared across base images like `node`, `bun`,
-    // `python`; similarly `~/.iii/images/<hash>/` may have a sibling
-    // `digest.txt` added in a later task).
+    // parent, which houses every other image's entry
+    // (`~/.iii/cache/<slug>/`, plus their `.erofs` and `.lock` siblings).
     let dest_parent = dest.parent();
     let dest_basename = dest
         .file_name()
@@ -1480,60 +1442,46 @@ mod tests {
         );
     }
 
-    /// Guard the pre-canonicalization escape hatch used by
-    /// `rootfs_cache::legacy_candidates`. When the raw form differs
-    /// from the canonical form, the two slugs must differ so upgrading
-    /// users' existing rootfses remain findable through the legacy
-    /// path.
-    #[test]
-    fn raw_slug_differs_from_canonical_when_shorthand() {
-        let raw = raw_rootfs_slug_for_image("iiidev/node:latest");
-        let canonical = rootfs_slug_for_image("iiidev/node:latest");
-        assert_ne!(raw, canonical);
-        assert!(raw.starts_with("iiidev-node-latest-"));
-        assert!(canonical.starts_with("docker.io-iiidev-node-latest-"));
-    }
-
     #[test]
     fn test_oci_image_for_kind_defaults_to_node() {
-        let (image, name) = oci_image_for_kind("unknown_kind");
-        assert_eq!(image, "docker.io/iiidev/node:latest");
-        assert_eq!(name, "node");
+        assert_eq!(
+            oci_image_for_kind("unknown_kind"),
+            "docker.io/iiidev/node:latest"
+        );
     }
 
     #[test]
     fn test_oci_image_for_typescript() {
-        let (image, name) = oci_image_for_kind("typescript");
-        assert_eq!(image, "docker.io/iiidev/node:latest");
-        assert_eq!(name, "node");
+        assert_eq!(
+            oci_image_for_kind("typescript"),
+            "docker.io/iiidev/node:latest"
+        );
     }
 
     #[test]
     fn test_oci_image_for_bun() {
-        let (image, name) = oci_image_for_kind("bun");
-        assert_eq!(image, "docker.io/oven/bun:latest");
-        assert_eq!(name, "bun");
+        assert_eq!(oci_image_for_kind("bun"), "docker.io/oven/bun:latest");
     }
 
     #[test]
     fn test_oci_image_for_python() {
-        let (image, name) = oci_image_for_kind("python");
-        assert_eq!(image, "docker.io/iiidev/python:latest");
-        assert_eq!(name, "python");
+        assert_eq!(
+            oci_image_for_kind("python"),
+            "docker.io/iiidev/python:latest"
+        );
     }
 
     #[test]
     fn test_oci_image_for_rust() {
-        let (image, name) = oci_image_for_kind("rust");
-        assert_eq!(image, "docker.io/library/rust:slim-bookworm");
-        assert_eq!(name, "rust");
+        assert_eq!(
+            oci_image_for_kind("rust"),
+            "docker.io/library/rust:slim-bookworm"
+        );
     }
 
     #[test]
     fn test_oci_image_for_go() {
-        let (image, name) = oci_image_for_kind("go");
-        assert_eq!(image, "docker.io/iiidev/node:latest");
-        assert_eq!(name, "node");
+        assert_eq!(oci_image_for_kind("go"), "docker.io/iiidev/node:latest");
     }
 
     #[test]

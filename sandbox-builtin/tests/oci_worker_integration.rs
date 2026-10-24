@@ -417,41 +417,44 @@ fn extract_layer_handles_directories_without_owner_write() {
 
 #[test]
 fn oci_image_for_typescript() {
-    let (image, name) = oci_image_for_kind("typescript");
-    assert_eq!(image, "docker.io/iiidev/node:latest");
-    assert_eq!(name, "node");
+    assert_eq!(
+        oci_image_for_kind("typescript"),
+        "docker.io/iiidev/node:latest"
+    );
 }
 
 #[test]
 fn oci_image_for_javascript() {
-    let (image, name) = oci_image_for_kind("javascript");
-    assert_eq!(image, "docker.io/iiidev/node:latest");
-    assert_eq!(name, "node");
+    assert_eq!(
+        oci_image_for_kind("javascript"),
+        "docker.io/iiidev/node:latest"
+    );
 }
 
 #[test]
 fn oci_image_for_python() {
-    let (image, name) = oci_image_for_kind("python");
-    assert_eq!(image, "docker.io/iiidev/python:latest");
-    assert_eq!(name, "python");
+    assert_eq!(
+        oci_image_for_kind("python"),
+        "docker.io/iiidev/python:latest"
+    );
 }
 
 #[test]
 fn oci_image_for_rust() {
-    let (image, name) = oci_image_for_kind("rust");
-    assert_eq!(image, "docker.io/library/rust:slim-bookworm");
-    assert_eq!(name, "rust");
+    assert_eq!(
+        oci_image_for_kind("rust"),
+        "docker.io/library/rust:slim-bookworm"
+    );
 }
 
 #[test]
 fn oci_image_for_unknown_defaults_to_node() {
-    let (image, name) = oci_image_for_kind("go");
-    assert_eq!(image, "docker.io/iiidev/node:latest");
-    assert_eq!(name, "node");
+    assert_eq!(oci_image_for_kind("go"), "docker.io/iiidev/node:latest");
 
-    let (image2, name2) = oci_image_for_kind("unknown_lang");
-    assert_eq!(image2, "docker.io/iiidev/node:latest");
-    assert_eq!(name2, "node");
+    assert_eq!(
+        oci_image_for_kind("unknown_lang"),
+        "docker.io/iiidev/node:latest"
+    );
 }
 
 // =============================================================================

@@ -11,9 +11,10 @@
 //! per-sandbox upper), so two sandboxes never share a writable root and the
 //! cached image is not the guest-visible root.
 
+use sandbox_builtin::cli::rootfs_cache;
 use sandbox_builtin::sandbox_daemon::config::SandboxConfig;
 use sandbox_builtin::sandbox_daemon::{
-    SandboxError,
+    SandboxError, catalog,
     create::{BootHandle, BootParams, CreateRequest, VmLauncher, handle_create},
     exec::EnvShape,
     registry::SandboxRegistry,
@@ -50,11 +51,12 @@ impl Drop for HomeGuard {
 }
 fn fake_home_with_cached_image(image: &str) -> (HomeGuard, PathBuf) {
     let td = tempfile::tempdir().unwrap();
-    let rootfs = td.path().join(".iii/managed").join(image).join("rootfs");
-    std::fs::create_dir_all(rootfs.join("bin")).unwrap();
     let orig = std::env::var_os("HOME");
     // SAFETY: #[serial]; no other thread in this binary touches env.
     unsafe { std::env::set_var("HOME", td.path()) };
+    let oci_ref = catalog::resolve_image(image, &Default::default()).unwrap();
+    let rootfs = rootfs_cache::canonical_path(&oci_ref);
+    std::fs::create_dir_all(rootfs.join("bin")).unwrap();
     (HomeGuard(td, orig), rootfs)
 }
 

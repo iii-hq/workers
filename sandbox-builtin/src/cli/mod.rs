@@ -6,7 +6,6 @@
 
 pub(crate) mod app;
 pub mod bundle_download;
-pub(crate) mod config_file;
 pub(crate) mod erofs;
 pub mod firmware;
 pub mod local_worker;
