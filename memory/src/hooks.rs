@@ -536,11 +536,18 @@ fn last_stated(m: &Memory) -> u64 {
     m.created_at.max(m.stated_at.unwrap_or(m.updated_at))
 }
 
-/// Both tagged and sharing no entity: a change to one says nothing of the other.
+/// Both tagged and sharing no entity: a change to one says nothing of the
+/// other. `user`, which every user fact carries, is no subject of its own.
 fn unrelated(a: &Memory, b: &Memory) -> bool {
-    !a.entities.is_empty()
-        && !b.entities.is_empty()
-        && !a.entities.iter().any(|e| b.entities.contains(e))
+    let subjects = |m: &Memory| {
+        m.entities
+            .iter()
+            .filter(|e| *e != crate::scope::LAYER_ENTITY)
+            .cloned()
+            .collect::<HashSet<String>>()
+    };
+    let (a, b) = (subjects(a), subjects(b));
+    !a.is_empty() && !b.is_empty() && a.is_disjoint(&b)
 }
 
 /// Both tagged and neither's entities within the other's: two subjects.
@@ -2260,6 +2267,12 @@ Formal."
             ["fp-new"]
         );
         assert_eq!(pair(&["billing-db"], &[]), ["fp-new"]);
+        // `user`, which every user fact carries, makes no two of them one subject.
+        assert_eq!(
+            pair(&["ana", "user"], &["pedro", "user"]),
+            ["fp-old", "fp-new"]
+        );
+        assert_eq!(pair(&["user"], &["porto", "user"]), ["fp-new"]);
     }
 
     #[test]
