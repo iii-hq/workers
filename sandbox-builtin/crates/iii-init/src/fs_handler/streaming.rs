@@ -244,7 +244,7 @@ pub fn handle_read_start(path: String, writer: &Writer, corr_id: u32) -> Result<
         mtime: md.mtime(),
     };
     // Send FsMeta — after this any error must go as a wire FsError frame.
-    if !send_stream_frame(writer, corr_id, 0, &ShellMessage::FsMeta(meta)) {
+    if !crate::shell_dispatcher::send_frame(writer, corr_id, 0, &ShellMessage::FsMeta(meta)) {
         return Ok(());
     }
 
@@ -252,7 +252,7 @@ pub fn handle_read_start(path: String, writer: &Writer, corr_id: u32) -> Result<
         Ok(f) => f,
         Err(e) => {
             let fe = FsError::from_io(&path, e);
-            send_stream_frame(
+            crate::shell_dispatcher::send_frame(
                 writer,
                 corr_id,
                 FLAG_TERMINAL,
@@ -273,7 +273,7 @@ pub fn handle_read_start(path: String, writer: &Writer, corr_id: u32) -> Result<
             Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(e) => {
                 let fe = FsError::from_io(&path, e);
-                send_stream_frame(
+                crate::shell_dispatcher::send_frame(
                     writer,
                     corr_id,
                     FLAG_TERMINAL,
@@ -287,28 +287,14 @@ pub fn handle_read_start(path: String, writer: &Writer, corr_id: u32) -> Result<
         };
         let encoded = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
         let chunk = ShellMessage::FsChunk { data_b64: encoded };
-        if !send_stream_frame(writer, corr_id, 0, &chunk) {
+        if !crate::shell_dispatcher::send_frame(writer, corr_id, 0, &chunk) {
             return Ok(());
         }
     }
 
     // Terminal FsEnd.
-    send_stream_frame(writer, corr_id, FLAG_TERMINAL, &ShellMessage::FsEnd);
+    crate::shell_dispatcher::send_frame(writer, corr_id, FLAG_TERMINAL, &ShellMessage::FsEnd);
     Ok(())
-}
-
-/// Send one frame of a read stream, waiting for room in the writer channel.
-/// `send_frame` drops a frame when the channel is full, which here is a
-/// silently short file, or, for `FsEnd`, a read that never ends; only this
-/// stream's thread waits. `false` once the writer thread is gone.
-fn send_stream_frame(writer: &Writer, corr_id: u32, flags: u8, msg: &ShellMessage) -> bool {
-    match iii_shell_proto::encode_frame(corr_id, flags, msg) {
-        Ok(frame) => writer.send(frame).is_ok(),
-        Err(e) => {
-            eprintln!("iii-init: fs read frame encode failed: {e}");
-            false
-        }
-    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
