@@ -24,6 +24,12 @@ pub(crate) struct SandboxExecResponse {
     pub exit_code: Option<i32>,
     pub duration_ms: u64,
     pub timed_out: bool,
+    // Contract 1.1: the adapter cut the stream at its output cap. A 1.0
+    // adapter sends neither key.
+    #[serde(default)]
+    pub stdout_truncated: bool,
+    #[serde(default)]
+    pub stderr_truncated: bool,
     // The engine wire also has `success` (== exit_code == Some(0) && !timed_out);
     // we drop it on this side because it's derived.
 }
@@ -119,10 +125,8 @@ impl ExecBackend for SandboxExecBackend {
             exit_code: parsed.exit_code,
             duration_ms: parsed.duration_ms,
             timed_out: parsed.timed_out,
-            // sandbox::exec doesn't expose host-side truncation; spec says
-            // sandbox jobs report these as false uniformly.
-            stdout_truncated: false,
-            stderr_truncated: false,
+            stdout_truncated: parsed.stdout_truncated,
+            stderr_truncated: parsed.stderr_truncated,
         })
     }
 }
@@ -234,6 +238,22 @@ mod tests {
         assert_eq!(obj["cmd"].as_str(), Some("echo"));
         assert_eq!(obj["args"][0].as_str(), Some("hi"));
         assert_eq!(obj["timeout_ms"].as_u64(), Some(4000));
+    }
+
+    /// A contract 1.1 adapter's truncation flags reach the caller.
+    #[tokio::test]
+    async fn truncation_flags_pass_through() {
+        let stub = StubFwd::ok(json!({
+            "stdout": "x", "stderr": "", "exit_code": 0,
+            "duration_ms": 1, "timed_out": false,
+            "stdout_truncated": true, "stderr_truncated": false,
+        }));
+        let out = backend(stub, Uuid::new_v4())
+            .run(&["yes".into()], 1000, &ExecOverrides::default())
+            .await
+            .unwrap();
+        assert!(out.stdout_truncated);
+        assert!(!out.stderr_truncated);
     }
 
     #[tokio::test]

@@ -397,6 +397,8 @@ pub(crate) async fn spawn_sandbox_job(
                     Ok(p) => {
                         h.record.stdout = p.stdout;
                         h.record.stderr = p.stderr;
+                        h.record.stdout_truncated = p.stdout_truncated;
+                        h.record.stderr_truncated = p.stderr_truncated;
                         h.record.exit_code = p.exit_code;
                         if !already_killed {
                             h.record.status = if p.timed_out {
@@ -775,6 +777,31 @@ mod sandbox_path_tests {
         assert_eq!(r.record.argv, vec!["echo", "ok"]);
 
         // Cleanup to avoid polluting other tests via the global JOBS map.
+        drop(r);
+        jobs::JOBS.map.lock().await.remove(&resp.job_id);
+    }
+
+    /// The job keeps the adapter's truncation flags.
+    #[tokio::test]
+    async fn sandbox_job_keeps_the_truncation_flags() {
+        let fwd: Arc<dyn TriggerFwd> = Arc::new(ImmediateOk(Mutex::new(Some(json!({
+            "stdout": "x",
+            "stderr": "y",
+            "exit_code": 0,
+            "duration_ms": 5,
+            "timed_out": false,
+            "stdout_truncated": true,
+            "stderr_truncated": true,
+        })))));
+        let resp =
+            handle_sandbox_for_test(cfg_open(), fwd, Uuid::new_v4(), vec!["yes".into()], 5000)
+                .await
+                .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let h = jobs::get(&resp.job_id).await.expect("job exists");
+        let r = h.lock().await;
+        assert!(r.record.stdout_truncated && r.record.stderr_truncated);
+
         drop(r);
         jobs::JOBS.map.lock().await.remove(&resp.job_id);
     }
