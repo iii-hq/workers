@@ -248,12 +248,6 @@
         "description": "Where an error event came from. Part of the fingerprint: the same text seen as a span and as a log is two groups, because one has a trace to investigate and the other does not.",
         "oneOf": [
           {
-            "enum": [
-              "report"
-            ],
-            "type": "string"
-          },
-          {
             "description": "A span with status `error`.",
             "enum": [
               "trace"
@@ -268,9 +262,16 @@
             "type": "string"
           },
           {
-            "description": "Reserved for the adapters the spec designs but v1 does not implement.",
+            "description": "Reserved for the adapter the spec designs but v1 does not implement.",
             "enum": [
               "harness-turn"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "An observation from an E2E report, sent by `sentinel::reports::ingest`.",
+            "enum": [
+              "report"
             ],
             "type": "string"
           }
@@ -484,6 +485,16 @@
             "format": "double",
             "type": "number"
           },
+          "criterion": {
+            "description": "The criterion the chosen kind stands for, verbatim — what the label claims and, read beside `confidence`, how far it can be trusted.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "evidence": {
+            "description": "The redacted state the decision was made from."
+          },
           "kind": {
             "$ref": "#/definitions/TriageKindV1"
           },
@@ -494,8 +505,26 @@
               "null"
             ]
           },
+          "question": {
+            "description": "Which question decided it: [`crate::triage::JUDGE_QUESTION`], or the rule that settled it without a judge.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "source": {
             "$ref": "#/definitions/TriageSourceV1"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/TriageUsageV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Tokens the judge reported for this evaluation; absent for a rule."
           }
         },
         "required": [
@@ -908,6 +937,31 @@
             "type": "string"
           }
         ]
+      },
+      "TriageUsageV1": {
+        "additionalProperties": false,
+        "description": "What one judge evaluation consumed, as the judge reports it. A counter the provider did not report stays absent rather than zero.",
+        "properties": {
+          "input_tokens": {
+            "default": null,
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "output_tokens": {
+            "default": null,
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
       }
     },
     "properties": {

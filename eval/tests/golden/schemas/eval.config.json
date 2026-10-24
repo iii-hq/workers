@@ -2,318 +2,79 @@
   "function_id": "eval::config",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "properties": {
-      "check_providers": {
-        "default": false,
-        "description": "Also ask the triage provider whether it answers (`judge::models::list`).",
-        "type": "boolean"
-      }
-    },
-    "title": "MonitorStateRequestV1",
+    "title": "ConfigRequestV1",
     "type": "object"
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "additionalProperties": false,
     "definitions": {
-      "AnalysisCostStatsV1": {
+      "ActivationTarget": {
         "additionalProperties": false,
-        "description": "Cost of the completed analyses that investigated with the configured model, provider and code access (or lack of it).",
+        "description": "The explicit local Engine whose Compose daemon runs the Harness to activate. Never defaulted: it must not be the operator's own Harness by accident. The caller connects the [`IIIClient`] it hands to [`Promotion::new`] to `engine_url`.",
         "properties": {
-          "count": {
-            "description": "Analyses with a known cost; `min`, `median` and `max` come from them.",
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "max": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "median": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "min": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "unknown": {
-            "description": "Analyses that investigated but reported no cost.",
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "count",
-          "unknown"
-        ],
-        "type": "object"
-      },
-      "CapacityRejectionV1": {
-        "additionalProperties": false,
-        "properties": {
-          "at": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "reason": {
-            "allOf": [
-              {
-                "$ref": "#/definitions/RejectionReasonV1"
-              }
-            ],
-            "default": "at_capacity",
-            "description": "Why the turn was not admitted; rows saved before the cost cap existed read as `at_capacity`."
-          },
-          "session_id": {
+          "compose_file": {
+            "description": "The compose file on the daemon host.",
             "type": "string"
           },
-          "turn_id": {
+          "engine_url": {
+            "description": "`ws://127.0.0.1:<port>`.",
+            "type": "string"
+          },
+          "namespace": {
             "type": "string"
           }
         },
         "required": [
-          "at",
-          "session_id",
-          "turn_id"
+          "compose_file",
+          "engine_url",
+          "namespace"
         ],
         "type": "object"
       },
-      "MonitorConfigV1": {
+      "CandidateConfigV1": {
         "additionalProperties": false,
+        "description": "Operator configuration. Model and provider come from here, never from code.",
         "properties": {
-          "code_repository": {
-            "description": "The codebase directory the investigation reads (see `ConfigureRequestV1`).",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "daily_cost_cap_usd": {
-            "description": "The daily cap on known investigation cost (see `ConfigureRequestV1`).",
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "enabled": {
-            "type": "boolean"
-          },
-          "enabled_since": {
-            "description": "When automatic observation last went from paused to on; analyses use it to bound which earlier turns they may report. Unchanged by edits that keep observation on.",
-            "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "model": {
-            "$ref": "#/definitions/MonitorModelV1"
-          },
-          "revision": {
-            "description": "SHA-256 of the effective configuration; analyses keep the revision they were admitted with.",
+          "base_sha": {
+            "description": "Exact 40-hex commit the candidate is based on.",
             "type": "string"
           },
-          "updated_at": {
-            "format": "int64",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "enabled",
-          "model",
-          "revision",
-          "updated_at"
-        ],
-        "type": "object"
-      },
-      "MonitorCostV1": {
-        "additionalProperties": false,
-        "description": "The monitor's own spend. Only the investigation's LLM cost is in dollars; Jev's usage is reported in tokens on each record.",
-        "properties": {
-          "cap_usd": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "capped": {
-            "description": "A cap is set and `today_capture_usd`, plus the median cost of each investigation still running, reached it: automatic observation admits and investigates nothing until the next UTC day.",
-            "type": "boolean"
-          },
-          "per_analysis": {
-            "allOf": [
-              {
-                "$ref": "#/definitions/AnalysisCostStatsV1"
-              }
-            ],
-            "description": "What one investigation has cost, from the history."
-          },
-          "since": {
-            "description": "Start (ms since the Unix epoch) of the UTC day the `today_*` values cover. The monitor has no timezone setting, so a day is a UTC day.",
-            "format": "int64",
-            "type": "integer"
-          },
-          "today_capture_usd": {
-            "description": "The capture bucket, the only one the cap compares: the larger of the day's persisted capture spend (deleting an analysis does not give it back) and the sum of the stored analyses' `usage.llm_cost_usd`. A day persisted before the buckets counts entirely as capture.",
+          "max_cost_usd": {
             "format": "double",
             "type": "number"
           },
-          "today_replay_unknown": {
-            "description": "Replay samples of the day without a cost, failed ones included. They add nothing to `today_replay_usd`, but their cost is unknown, not zero.",
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "today_replay_usd": {
-            "description": "The replay bucket: the known cost of the day's `eval::reproduce` samples. Never capped.",
-            "format": "double",
-            "type": "number"
-          },
-          "today_unknown": {
-            "description": "Analyses of the day whose investigation started but reported no cost. They add nothing to `today_capture_usd`, but their cost is unknown, not zero.",
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "today_usd": {
-            "description": "Everything the monitor is known to have spent since `since`: `today_capture_usd` + `today_replay_usd`. The cap does not compare this.",
-            "format": "double",
-            "type": "number"
-          }
-        },
-        "required": [
-          "capped",
-          "per_analysis",
-          "since",
-          "today_capture_usd",
-          "today_replay_unknown",
-          "today_replay_usd",
-          "today_unknown",
-          "today_usd"
-        ],
-        "type": "object"
-      },
-      "MonitorLimitsV1": {
-        "additionalProperties": false,
-        "properties": {
-          "analysis_budget_ms": {
-            "description": "Whole-analysis budget from admission, queue wait included.",
+          "max_output_tokens": {
             "format": "uint64",
             "minimum": 0.0,
             "type": "integer"
           },
-          "assets_bytes": {
+          "max_total_tokens": {
             "format": "uint64",
             "minimum": 0.0,
             "type": "integer"
           },
-          "investigation_code_max_total_tokens": {
-            "description": "Total-token cap of an investigation that has code access.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "investigation_code_max_turns": {
-            "description": "Generate-step cap of an investigation that has code access.",
+          "max_turns": {
             "format": "uint32",
             "minimum": 0.0,
             "type": "integer"
           },
-          "investigation_max_output_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "investigation_max_total_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "investigation_max_turns": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "judge_timeout_ms": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "max_active_analyses": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "model_context_bytes": {
-            "description": "Serialized JSON shown to a model (bytes, not tokens).",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "queue_concurrency": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "retention_days": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "retention_max_terminal": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "analysis_budget_ms",
-          "assets_bytes",
-          "investigation_code_max_total_tokens",
-          "investigation_code_max_turns",
-          "investigation_max_output_tokens",
-          "investigation_max_total_tokens",
-          "investigation_max_turns",
-          "judge_timeout_ms",
-          "max_active_analyses",
-          "model_context_bytes",
-          "queue_concurrency",
-          "retention_days",
-          "retention_max_terminal"
-        ],
-        "type": "object"
-      },
-      "MonitorModelV1": {
-        "additionalProperties": false,
-        "description": "The Harness model the user chose for investigations. Credentials stay in the provider worker; this request never carries a key.",
-        "properties": {
           "model": {
             "type": "string"
           },
           "provider": {
             "type": "string"
           },
-          "provider_options": {
-            "additionalProperties": true,
-            "description": "Provider-native options, namespaced by the selected provider id.",
+          "publish_remote": {
+            "description": "Already configured remote the candidate branch may be pushed to; `None` disables [`publish`].",
             "type": [
-              "object",
+              "string",
               "null"
             ]
+          },
+          "repository": {
+            "description": "Absolute path of the Workers repository.",
+            "type": "string"
           },
           "thinking_level": {
             "anyOf": [
@@ -324,6 +85,293 @@
                 "type": "null"
               }
             ]
+          },
+          "worktrees_dir": {
+            "description": "Absolute directory for candidate worktrees; inside the repository only when git ignores it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "base_sha",
+          "max_cost_usd",
+          "max_output_tokens",
+          "max_total_tokens",
+          "max_turns",
+          "model",
+          "provider",
+          "repository",
+          "worktrees_dir"
+        ],
+        "type": "object"
+      },
+      "CycleBudgetV1": {
+        "additionalProperties": false,
+        "description": "The limits of one cycle, covering every kind of its work.",
+        "properties": {
+          "max_calls": {
+            "description": "Dispatched work items, retries included.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_candidates": {
+            "description": "Candidates the cycle may try.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_duration_ms": {
+            "description": "Wall time since the cycle was created.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "max_spend_usd": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "max_calls",
+          "max_candidates",
+          "max_duration_ms",
+          "max_spend_usd"
+        ],
+        "type": "object"
+      },
+      "JudgeConfigV1": {
+        "additionalProperties": false,
+        "properties": {
+          "estimated_usd": {
+            "description": "What one grouped question is reserved at.",
+            "format": "double",
+            "type": "number"
+          },
+          "provider": {
+            "description": "The judge provider (`judge::evaluate` hub routing), e.g. `typesafe`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "estimated_usd",
+          "provider"
+        ],
+        "type": "object"
+      },
+      "LoopConfigV1": {
+        "additionalProperties": false,
+        "description": "Everything a cycle needs to spend on the E2E. Nothing has a default: an unconfigured loop selects coverage but dispatches nothing.",
+        "properties": {
+          "budget": {
+            "$ref": "#/definitions/CycleBudgetV1"
+          },
+          "candidate": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CandidateConfigV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The bounded read-only proposal and the isolated candidate actor; absent: a cycle stops before any proposal, inconclusive."
+          },
+          "controls": {
+            "default": [],
+            "description": "Control scenarios every plan also runs and preserves (pass rate and every spec criterion), e.g. `minimal_path`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "estimated_usd_per_run": {
+            "description": "What one run is reserved at before dispatch; an unreported actual cost stays charged at it, never at zero.",
+            "format": "double",
+            "type": "number"
+          },
+          "judge": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/JudgeConfigV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Semantic triage of ambiguous findings through `judge::evaluate`; absent: an ambiguous finding stays inconclusive."
+          },
+          "max_scenarios": {
+            "description": "Scenarios one plan may run at most.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "min_effect": {
+            "$ref": "#/definitions/MinEffectV1"
+          },
+          "promotion": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/PromotionConfig"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Official release and explicit local activation; absent: an accepted source candidate is never merged, published or activated."
+          },
+          "release_build_estimate_usd": {
+            "description": "What one official build (rc or finalization) is reserved at; its cost is not reported, so it stays charged at this. Required with `promotion`.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "runs_per_side": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "stack": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/StackV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Required for `docker` and `github`; refused for `harness`, which runs on its own stack."
+          },
+          "subject": {
+            "$ref": "#/definitions/SubjectV1"
+          },
+          "technical_retries": {
+            "format": "uint8",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "validation": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ValidationConfigV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The stacks that pin the Harness under test; required to validate a candidate. With it, the baseline runs the candidate's base commit."
+          },
+          "where": {
+            "$ref": "#/definitions/WhereV1"
+          }
+        },
+        "required": [
+          "budget",
+          "estimated_usd_per_run",
+          "max_scenarios",
+          "min_effect",
+          "runs_per_side",
+          "subject",
+          "technical_retries",
+          "where"
+        ],
+        "type": "object"
+      },
+      "MinEffectV1": {
+        "additionalProperties": false,
+        "description": "The minimum effect a plan freezes for each metric it can target.",
+        "properties": {
+          "pass_rate_pp": {
+            "description": "Percentage points of pass rate.",
+            "format": "double",
+            "type": "number"
+          },
+          "tokens": {
+            "description": "Total tokens per run.",
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "pass_rate_pp",
+          "tokens"
+        ],
+        "type": "object"
+      },
+      "PromotionConfig": {
+        "additionalProperties": false,
+        "description": "What a cycle may choose about a promotion: which archive target to digest and which local Engine to activate. Nothing here names a service or a credential.",
+        "properties": {
+          "artifact_target": {
+            "description": "The Registry `binaries` key whose archive is digested, e.g. `x86_64-unknown-linux-gnu`.",
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/definitions/ActivationTarget"
+          }
+        },
+        "required": [
+          "artifact_target",
+          "target"
+        ],
+        "type": "object"
+      },
+      "StackV1": {
+        "additionalProperties": false,
+        "description": "A stack in the E2E's own shape (`ExecutionStack`), e.g. `package://harness` pinned to `commit:<40 hex>` of `iii-hq/workers` path `harness`.",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "yaml": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "yaml"
+        ],
+        "type": "object"
+      },
+      "StoredConfigV1": {
+        "additionalProperties": false,
+        "description": "The stored configuration. `revision` (SHA-256 of the config and the rules) is the `policy_revision` every plan freezes.",
+        "properties": {
+          "config": {
+            "$ref": "#/definitions/LoopConfigV1"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "config",
+          "revision",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "SubjectV1": {
+        "additionalProperties": false,
+        "description": "The model the E2E subject runs on. Credentials stay in the providers.",
+        "properties": {
+          "agent": {
+            "description": "Agent profile the subject runs under; absent uses the E2E default.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
           }
         },
         "required": [
@@ -331,24 +379,6 @@
           "provider"
         ],
         "type": "object"
-      },
-      "RejectionReasonV1": {
-        "oneOf": [
-          {
-            "description": "The unfinished-analyses cap was reached.",
-            "enum": [
-              "at_capacity"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "The day's known cost reached `daily_cost_cap_usd`.",
-            "enum": [
-              "cost_cap"
-            ],
-            "type": "string"
-          }
-        ]
       },
       "ThinkingLevel": {
         "oneOf": [
@@ -371,110 +401,73 @@
           }
         ]
       },
-      "TriageAvailabilityV1": {
+      "ValidationConfigV1": {
         "additionalProperties": false,
-        "description": "What `judge::models::list` answered for the triage provider. The key stays in the provider; this only reports whether it answers.",
+        "description": "E2E stacks in the E2E's own shape that pin only the Harness: everything else (Engine, evaluator, other workers) stays fixed between the sides.",
         "properties": {
-          "available": {
-            "type": "boolean"
-          },
-          "checked_at": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "code": {
-            "description": "The provider's error code (`missing_key`, `provider_unavailable`…), or `unreachable` when the hub did not answer.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "models": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "provider": {
+          "artifact_stack_template": {
+            "description": "Stack YAML pinning an immutable Registry version; `{version}` is replaced by it.",
             "type": "string"
+          },
+          "source_stack_template": {
+            "description": "Stack YAML pinning a source revision; `{commit}` is replaced by the 40-hex sha.",
+            "type": "string"
+          },
+          "stack_name": {
+            "type": "string"
+          },
+          "where": {
+            "$ref": "#/definitions/WhereV1"
           }
         },
         "required": [
-          "available",
-          "checked_at",
-          "models",
-          "provider"
+          "artifact_stack_template",
+          "source_stack_template",
+          "stack_name",
+          "where"
         ],
         "type": "object"
+      },
+      "WhereV1": {
+        "description": "Where the E2E runs a dispatched execution (`ExecutionParameters.where`).",
+        "oneOf": [
+          {
+            "enum": [
+              "docker",
+              "github"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The E2E's own Harness: observes the current stack, cannot pin a candidate commit.",
+            "enum": [
+              "harness"
+            ],
+            "type": "string"
+          }
+        ]
       }
     },
     "properties": {
       "config": {
         "anyOf": [
           {
-            "$ref": "#/definitions/MonitorConfigV1"
+            "$ref": "#/definitions/StoredConfigV1"
           },
           {
             "type": "null"
           }
         ],
-        "description": "`null` until the user configures the monitor."
+        "description": "`null` until `eval::configure`."
       },
-      "cost": {
-        "allOf": [
-          {
-            "$ref": "#/definitions/MonitorCostV1"
-          }
-        ],
-        "description": "What the investigations cost so far, to decide before enabling."
-      },
-      "last_rejection": {
-        "anyOf": [
-          {
-            "$ref": "#/definitions/CapacityRejectionV1"
-          },
-          {
-            "type": "null"
-          }
-        ],
-        "description": "The latest turn not admitted: the monitor was at capacity or the daily cost cap was reached (`reason`)."
-      },
-      "limits": {
-        "allOf": [
-          {
-            "$ref": "#/definitions/MonitorLimitsV1"
-          }
-        ],
-        "description": "The limits this version enforces, so the console never restates them."
-      },
-      "observer_bound": {
-        "description": "False when the `harness::turn-completed` binding was refused locally: automatic observation is unavailable even if `config.enabled` is true. The SDK does not wait for the engine's acknowledgement, so true means the binding was requested, not confirmed.",
-        "type": "boolean"
-      },
-      "observer_error": {
-        "type": [
-          "string",
-          "null"
-        ]
-      },
-      "triage": {
-        "anyOf": [
-          {
-            "$ref": "#/definitions/TriageAvailabilityV1"
-          },
-          {
-            "type": "null"
-          }
-        ],
-        "description": "Present when the request asked to check the triage provider."
+      "rules_version": {
+        "type": "string"
       }
     },
     "required": [
-      "cost",
-      "limits",
-      "observer_bound"
+      "rules_version"
     ],
-    "title": "MonitorStateResponseV1",
+    "title": "ConfigResponseV1",
     "type": "object"
   }
 }

@@ -4,11 +4,9 @@ use iii_sdk::errors::Error as SdkError;
 pub enum EvalError {
     #[error("invalid request: {0}")]
     InvalidRequest(String),
-    #[error("evaluation not found: {0}")]
+    #[error("not found: {0}")]
     NotFound(String),
-    #[error("session not found: {0}")]
-    SessionNotFound(String),
-    #[error("evaluation conflict: {0}")]
+    #[error("conflict: {0}")]
     Conflict(String),
     #[error("dependency error: {0}")]
     Dependency(String),

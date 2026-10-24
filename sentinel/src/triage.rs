@@ -19,6 +19,7 @@
 //! that is not deployed or fails leaves the groups untriaged, and a later
 //! sweep asks again.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -30,10 +31,14 @@ use crate::registry::{EngineRegistry, Registry};
 use crate::store::{Db, Store, UntriagedGroup};
 use crate::{
     GroupStatusV1, GroupTriageV1, SentinelError, TriageConfigV1, TriageKindV1, TriageSourceV1,
-    WorkerConfig,
+    TriageUsageV1, WorkerConfig,
 };
 
 pub const JUDGE_FUNCTION_ID: &str = "judge::evaluate";
+/// The `question` recorded on a judge label: the one Choice question below.
+pub const JUDGE_QUESTION: &str = "sentinel.triage.kind";
+/// The `question` recorded on a label the registry settled.
+pub const RULE_QUESTION: &str = "sentinel.triage.registered_now";
 /// Groups per sweep, and so per judge call.
 pub const BATCH: usize = 128;
 /// The judge's own budget for one batch; 60 groups took four seconds.
@@ -166,10 +171,19 @@ impl<D: Db, E: EngineRegistry> Triage<D, E> {
                     // The function exists, so the caller was right: it was
                     // unavailable. Briefly is a restart; for longer, the
                     // worker was down or in another namespace.
-                    let kind = if group.last_seen_ms - group.first_seen_ms <= window_ms {
-                        TriageKindV1::Transient
+                    let (kind, criterion) = if group.last_seen_ms - group.first_seen_ms <= window_ms
+                    {
+                        (
+                            TriageKindV1::Transient,
+                            "The missing function is registered now and every occurrence \
+                                 fell inside the start-up window.",
+                        )
                     } else {
-                        TriageKindV1::Environment
+                        (
+                            TriageKindV1::Environment,
+                            "The missing function is registered now, but its occurrences \
+                                 outlasted the start-up window.",
+                        )
                     };
                     let triage = GroupTriageV1 {
                         kind,
@@ -177,6 +191,14 @@ impl<D: Db, E: EngineRegistry> Triage<D, E> {
                         source: TriageSourceV1::Rule,
                         model: None,
                         at_ms: now_ms,
+                        question: Some(RULE_QUESTION.into()),
+                        criterion: Some(criterion.into()),
+                        evidence: Some(json!({
+                            "missing_function": function,
+                            "namespace": namespace,
+                            "registered_now": true,
+                        })),
+                        usage: None,
                     };
                     self.store.set_triage(&group.id, &triage).await?;
                     labelled += 1;
@@ -194,6 +216,17 @@ impl<D: Db, E: EngineRegistry> Triage<D, E> {
             return Ok(labelled);
         }
         let asked = asking.len();
+        // What each group was judged from, kept with its label.
+        let states: HashMap<String, Value> = asking
+            .iter()
+            .filter_map(|evaluation| {
+                Some((
+                    evaluation["id"].as_str()?.to_string(),
+                    evaluation["state"].clone(),
+                ))
+            })
+            .collect();
+        let criteria = kind_question()["criteria"].clone();
         let mut request = json!({ "timeout_ms": JUDGE_TIMEOUT_MS, "evaluations": asking });
         if !config.model.is_empty() {
             request["model"] = json!(config.model);
@@ -233,6 +266,10 @@ impl<D: Db, E: EngineRegistry> Triage<D, E> {
                 source: TriageSourceV1::Judge,
                 model: model.clone(),
                 at_ms: now_ms,
+                question: Some(JUDGE_QUESTION.into()),
+                criterion: criteria[kind.as_str()].as_str().map(str::to_string),
+                evidence: states.get(group_id).cloned(),
+                usage: serde_json::from_value::<TriageUsageV1>(result["usage"].clone()).ok(),
             };
             self.store.set_triage(group_id, &triage).await?;
             labelled += 1;

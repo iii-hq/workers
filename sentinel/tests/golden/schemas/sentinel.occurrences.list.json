@@ -41,12 +41,6 @@
         "description": "Where an error event came from. Part of the fingerprint: the same text seen as a span and as a log is two groups, because one has a trace to investigate and the other does not.",
         "oneOf": [
           {
-            "enum": [
-              "report"
-            ],
-            "type": "string"
-          },
-          {
             "description": "A span with status `error`.",
             "enum": [
               "trace"
@@ -61,9 +55,16 @@
             "type": "string"
           },
           {
-            "description": "Reserved for the adapters the spec designs but v1 does not implement.",
+            "description": "Reserved for the adapter the spec designs but v1 does not implement.",
             "enum": [
               "harness-turn"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "An observation from an E2E report, sent by `sentinel::reports::ingest`.",
+            "enum": [
+              "report"
             ],
             "type": "string"
           }

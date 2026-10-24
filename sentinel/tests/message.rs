@@ -121,6 +121,7 @@ fn context() -> MessageContext {
                 version: Some("0.24.0".into()),
             },
             truncated: EvidenceTruncatedV1::default(),
+            report: None,
         }),
         previous: vec![
             PreviousOccurrence {

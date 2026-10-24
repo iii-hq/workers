@@ -5,12 +5,11 @@ deploy: binary
 manifest: Cargo.toml
 license: Apache-2.0
 bin: eval
-tags: [evaluation, monitoring, sessions, metrics, harness, diagnostics]
-description: Session monitor for the Harness (deterministic diagnostics, Jev triage through judge, investigation by the user-chosen LLM, E2E validation plans; inactive until configured).
+tags: [evaluation, e2e, harness, diagnostics, budget]
+description: Harness E2E improvement loop - one cycle started from an objective or a finished E2E execution, with E2E coverage selection, a frozen plan, a per-cycle budget, durable report evidence, a deterministic first pass, Sentinel forwarding and a decision computed in code (dispatches nothing until configured).
 
 dependencies:
   state: "latest"
   queue: "latest"
   cron: "latest"
   iii-observability: "latest"
-  judge: "latest"

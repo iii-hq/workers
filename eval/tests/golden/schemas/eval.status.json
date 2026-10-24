@@ -3,408 +3,195 @@
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
-      "evaluation_id": {
+      "cycle_id": {
         "type": "string"
       }
     },
     "required": [
-      "evaluation_id"
+      "cycle_id"
     ],
-    "title": "EvaluationIdRequestV1",
+    "title": "CycleIdRequestV1",
     "type": "object"
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "anyOf": [
       {
-        "$ref": "#/definitions/AnalysisRecordV1"
+        "$ref": "#/definitions/CycleRecordV1"
       },
       {
         "type": "null"
       }
     ],
     "definitions": {
-      "AnalysisCountersV1": {
+      "ActivationTarget": {
         "additionalProperties": false,
+        "description": "The explicit local Engine whose Compose daemon runs the Harness to activate. Never defaulted: it must not be the operator's own Harness by accident. The caller connects the [`IIIClient`] it hands to [`Promotion::new`] to `engine_url`.",
         "properties": {
-          "diagnostics": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
+          "compose_file": {
+            "description": "The compose file on the daemon host.",
+            "type": "string"
           },
-          "entries": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
+          "engine_url": {
+            "description": "`ws://127.0.0.1:<port>`.",
+            "type": "string"
           },
-          "rejected_suggestions": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "sessions": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "suggestions": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "validations": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
+          "namespace": {
+            "type": "string"
           }
         },
         "required": [
-          "diagnostics",
-          "entries",
-          "rejected_suggestions",
-          "sessions",
-          "suggestions",
-          "validations"
+          "compose_file",
+          "engine_url",
+          "namespace"
         ],
         "type": "object"
       },
-      "AnalysisOriginV1": {
+      "ApprovalOutcome": {
         "enum": [
-          "automatic",
-          "manual"
+          "accepted",
+          "rejected",
+          "inconclusive"
         ],
         "type": "string"
       },
-      "AnalysisRecordV1": {
+      "BaselineV1": {
         "additionalProperties": false,
-        "description": "The compact analysis record listed by `eval::list`; evidence and model outputs live separately in the analysis assets.",
+        "description": "The baseline measured against the frozen plan.",
         "properties": {
-          "analyst": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/AnalystRefV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "code_root": {
-            "description": "Frozen at admission with the model: the directory the investigation reads and runs in, absent when code access was off.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "completed_at": {
-            "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "config_revision": {
+          "execution_id": {
             "type": "string"
           },
-          "counters": {
-            "$ref": "#/definitions/AnalysisCountersV1"
-          },
-          "coverage": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/CoverageLevelV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "created_at": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "criteria_version": {
-            "type": "string"
-          },
-          "deadline": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "evaluation_id": {
-            "type": "string"
-          },
-          "failure": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/FailureV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "harness_version": {
-            "description": "The Harness version the engine reported when a live event admitted the analysis (the turn just ended on it); absent on a manual analysis, which may be of an older session, and when the engine did not say.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "judge_call": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/JudgeCallV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "model": {
-            "allOf": [
-              {
-                "$ref": "#/definitions/MonitorModelV1"
-              }
-            ],
-            "description": "Frozen at admission: later configuration changes never alter it."
-          },
-          "observation_key": {
-            "type": "string"
-          },
-          "observe_since": {
-            "description": "Earlier root turns join the window only if they started after this instant: the monitor was observing then. Turns from before the monitor was enabled are never reported as new.",
-            "format": "int64",
-            "type": "integer"
-          },
-          "origin": {
-            "$ref": "#/definitions/AnalysisOriginV1"
-          },
-          "pending_reason": {
-            "description": "Why collection is still waiting (descendants running, metrics incomplete).",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "routing": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/RoutingV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "rules_version": {
-            "type": "string"
-          },
-          "schema_version": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "session_id": {
-            "type": "string"
-          },
-          "signals": {
-            "additionalProperties": {
-              "format": "uint32",
-              "minimum": 0.0,
-              "type": "integer"
-            },
-            "description": "Occurrences of each deterministic pattern the collection found, keyed `<rule_id>:<target>` (a target may itself contain colons). Empty both when nothing was found and before collection (`coverage` is set once collection read the evidence).",
-            "type": "object"
-          },
-          "source_title": {
-            "description": "The session's title, once collection has read it.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "stages": {
-            "description": "When each status began, oldest first.",
+          "preserved": {
+            "description": "In the plan's `preserved` order.",
             "items": {
-              "$ref": "#/definitions/StageTimeV1"
+              "$ref": "#/definitions/EvidenceSideV1"
             },
             "type": "array"
           },
-          "status": {
-            "$ref": "#/definitions/EvalStatusV1"
+          "primary": {
+            "$ref": "#/definitions/EvidenceSideV1"
           },
-          "step": {
+          "reason": {
+            "type": "string"
+          },
+          "usable": {
+            "description": "Every criterion has its runs and a value: a candidate can be compared.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "execution_id",
+          "preserved",
+          "primary",
+          "reason",
+          "usable"
+        ],
+        "type": "object"
+      },
+      "CanaryOutcomeV1": {
+        "enum": [
+          "held",
+          "violated",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "CanaryV1": {
+        "additionalProperties": false,
+        "description": "The canary of the activated artifact against the frozen plan.",
+        "properties": {
+          "execution_id": {
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/definitions/CanaryOutcomeV1"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "execution_id",
+          "outcome",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "CandidateCommitV1": {
+        "properties": {
+          "base_sha": {
+            "type": "string"
+          },
+          "candidate_sha": {
+            "type": "string"
+          },
+          "patch": {
+            "description": "`git diff --binary base candidate`.",
+            "type": "string"
+          },
+          "patch_digest": {
+            "type": "string"
+          },
+          "paths": {
+            "items": {
+              "$ref": "#/definitions/CandidatePathV1"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "base_sha",
+          "candidate_sha",
+          "patch",
+          "patch_digest",
+          "paths"
+        ],
+        "type": "object"
+      },
+      "CandidateConfigV1": {
+        "additionalProperties": false,
+        "description": "Operator configuration. Model and provider come from here, never from code.",
+        "properties": {
+          "base_sha": {
+            "description": "Exact 40-hex commit the candidate is based on.",
+            "type": "string"
+          },
+          "max_cost_usd": {
+            "format": "double",
+            "type": "number"
+          },
+          "max_output_tokens": {
             "format": "uint64",
             "minimum": 0.0,
             "type": "integer"
           },
-          "supersedes": {
-            "description": "The earlier analysis of the same turn this reanalysis was requested over (same `observation_key`); absent on a first analysis.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "turn_id": {
-            "type": "string"
-          },
-          "updated_at": {
-            "format": "int64",
+          "max_total_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
             "type": "integer"
           },
-          "usage": {
-            "allOf": [
-              {
-                "$ref": "#/definitions/MonitorUsageV1"
-              }
-            ],
-            "description": "The monitor's own consumption, apart from the observed task."
-          }
-        },
-        "required": [
-          "config_revision",
-          "counters",
-          "created_at",
-          "criteria_version",
-          "deadline",
-          "evaluation_id",
-          "model",
-          "observation_key",
-          "observe_since",
-          "origin",
-          "rules_version",
-          "schema_version",
-          "session_id",
-          "stages",
-          "status",
-          "step",
-          "turn_id",
-          "updated_at",
-          "usage"
-        ],
-        "type": "object"
-      },
-      "AnalystRefV1": {
-        "additionalProperties": false,
-        "properties": {
-          "sent_at": {
-            "format": "int64",
+          "max_turns": {
+            "format": "uint32",
+            "minimum": 0.0,
             "type": "integer"
           },
-          "session_id": {
-            "type": "string"
-          },
-          "turn_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "sent_at",
-          "session_id"
-        ],
-        "type": "object"
-      },
-      "CoverageLevelV1": {
-        "oneOf": [
-          {
-            "description": "Every in-scope transcript was read and the model context holds every diagnostic's evidence.",
-            "enum": [
-              "complete"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "Previews omit or shorten entries; the full transcripts were read.",
-            "enum": [
-              "partial"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "Required evidence did not fit; no conclusion of healthy behavior.",
-            "enum": [
-              "insufficient"
-            ],
-            "type": "string"
-          }
-        ]
-      },
-      "EvalStatusV1": {
-        "enum": [
-          "queued",
-          "collecting",
-          "judging",
-          "investigating",
-          "completed",
-          "failed",
-          "cancelled"
-        ],
-        "type": "string"
-      },
-      "FailureV1": {
-        "additionalProperties": false,
-        "description": "The stage that failed and why. `stage` is the status the analysis was in.",
-        "properties": {
-          "code": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "stage": {
-            "$ref": "#/definitions/EvalStatusV1"
-          }
-        },
-        "required": [
-          "code",
-          "message",
-          "stage"
-        ],
-        "type": "object"
-      },
-      "JudgeCallV1": {
-        "additionalProperties": false,
-        "description": "A Jev call started by this analysis. Persisted before the call so a restart can tell a lost answer from one never requested.",
-        "properties": {
-          "deadline": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "request_id": {
-            "type": "string"
-          },
-          "started_at": {
-            "format": "int64",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "deadline",
-          "request_id",
-          "started_at"
-        ],
-        "type": "object"
-      },
-      "MonitorModelV1": {
-        "additionalProperties": false,
-        "description": "The Harness model the user chose for investigations. Credentials stay in the provider worker; this request never carries a key.",
-        "properties": {
           "model": {
             "type": "string"
           },
           "provider": {
             "type": "string"
           },
-          "provider_options": {
-            "additionalProperties": true,
-            "description": "Provider-native options, namespaced by the selected provider id.",
+          "publish_remote": {
+            "description": "Already configured remote the candidate branch may be pushed to; `None` disables [`publish`].",
             "type": [
-              "object",
+              "string",
               "null"
             ]
+          },
+          "repository": {
+            "description": "Absolute path of the Workers repository.",
+            "type": "string"
           },
           "thinking_level": {
             "anyOf": [
@@ -415,6 +202,3112 @@
                 "type": "null"
               }
             ]
+          },
+          "worktrees_dir": {
+            "description": "Absolute directory for candidate worktrees; inside the repository only when git ignores it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "base_sha",
+          "max_cost_usd",
+          "max_output_tokens",
+          "max_total_tokens",
+          "max_turns",
+          "model",
+          "provider",
+          "repository",
+          "worktrees_dir"
+        ],
+        "type": "object"
+      },
+      "CandidateCostV1": {
+        "properties": {
+          "cost_usd": {
+            "description": "Measured by `harness::metrics`; `None` is unknown, never zero.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "input_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "CandidateEvidenceV1": {
+        "properties": {
+          "excerpt": {
+            "description": "The observed excerpt; untrusted data.",
+            "type": "string"
+          },
+          "source": {
+            "description": "Where it was observed (execution, session, run, entry).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "excerpt",
+          "source"
+        ],
+        "type": "object"
+      },
+      "CandidateIdentityV1": {
+        "properties": {
+          "base_sha": {
+            "type": "string"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "brief_digest": {
+            "type": "string"
+          },
+          "candidate_id": {
+            "type": "string"
+          },
+          "cycle_id": {
+            "type": "string"
+          },
+          "harness_root": {
+            "description": "`fs_scope.root` of the actor: `<worktree>/harness`.",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "worktree": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "base_sha",
+          "branch",
+          "brief_digest",
+          "candidate_id",
+          "cycle_id",
+          "harness_root",
+          "idempotency_key",
+          "session_id",
+          "worktree"
+        ],
+        "type": "object"
+      },
+      "CandidatePathV1": {
+        "properties": {
+          "change": {
+            "description": "`A`, `M` or `D`.",
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "change",
+          "path"
+        ],
+        "type": "object"
+      },
+      "CandidatePublishV1": {
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "builder_ref": {
+            "description": "What the official builder pins: `commit:<sha>`.",
+            "type": "string"
+          },
+          "candidate_sha": {
+            "type": "string"
+          },
+          "remote": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "branch",
+          "builder_ref",
+          "candidate_sha",
+          "remote"
+        ],
+        "type": "object"
+      },
+      "CandidateStateV1": {
+        "additionalProperties": false,
+        "description": "The candidate's identity (persisted before it starts), latest state, tree and the branch it was published to.",
+        "properties": {
+          "candidate": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CandidateV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "candidate_tree": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "identity": {
+            "$ref": "#/definitions/CandidateIdentityV1"
+          },
+          "publish": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CandidatePublishV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "identity"
+        ],
+        "type": "object"
+      },
+      "CandidateStatusV1": {
+        "oneOf": [
+          {
+            "description": "No Harness turn exists for the session: call [`start`] again.",
+            "properties": {
+              "reason": {
+                "type": "string"
+              },
+              "state": {
+                "enum": [
+                  "not_started"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "reason": {
+                "type": "string"
+              },
+              "state": {
+                "enum": [
+                  "pending"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "state": {
+                "enum": [
+                  "completed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "state": {
+                "enum": [
+                  "failed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "reason",
+              "state"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "CandidateV1": {
+        "properties": {
+          "commit": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CandidateCommitV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cost": {
+            "$ref": "#/definitions/CandidateCostV1"
+          },
+          "identity": {
+            "$ref": "#/definitions/CandidateIdentityV1"
+          },
+          "status": {
+            "$ref": "#/definitions/CandidateStatusV1"
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "cost",
+          "identity",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ComparabilityCheckV1": {
+        "additionalProperties": false,
+        "properties": {
+          "baseline": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "candidate": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "field": {
+            "type": "string"
+          },
+          "matches": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "matches"
+        ],
+        "type": "object"
+      },
+      "ComparabilityV1": {
+        "additionalProperties": false,
+        "properties": {
+          "checks": {
+            "items": {
+              "$ref": "#/definitions/ComparabilityCheckV1"
+            },
+            "type": "array"
+          },
+          "comparable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "checks",
+          "comparable"
+        ],
+        "type": "object"
+      },
+      "CoverageV1": {
+        "additionalProperties": false,
+        "description": "The objective mapped onto the E2E catalog, before any spend.",
+        "properties": {
+          "catalog_sha256": {
+            "type": "string"
+          },
+          "controls": {
+            "default": [],
+            "description": "The configured controls, each in its current definition.",
+            "items": {
+              "$ref": "#/definitions/SelectedTestV1"
+            },
+            "type": "array"
+          },
+          "covered": {
+            "type": "boolean"
+          },
+          "gaps": {
+            "description": "The exact missing coverage when `covered` is false; limitations else.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "need": {
+            "description": "The need the objective maps to (`context_consumption`, `provider_fallback`, `skills`), or `unmapped`.",
+            "type": "string"
+          },
+          "selected": {
+            "items": {
+              "$ref": "#/definitions/SelectedTestV1"
+            },
+            "type": "array"
+          },
+          "selected_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "tests_revision": {
+            "type": "string"
+          },
+          "tests_total": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "catalog_sha256",
+          "covered",
+          "gaps",
+          "need",
+          "selected",
+          "selected_at",
+          "tests_revision",
+          "tests_total"
+        ],
+        "type": "object"
+      },
+      "CriterionMetricV1": {
+        "description": "What a criterion measures, per measurable run, averaged.",
+        "oneOf": [
+          {
+            "enum": [
+              "cost_usd",
+              "duration",
+              "tokens",
+              "function_calls"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Occurrences of `pattern` per run, by the detectors.",
+            "enum": [
+              "signal_per_run"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Share of runs that completed and passed (`task_incomplete` fails).",
+            "enum": [
+              "pass_rate"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "`awarded / possible` of the E2E criterion `criterion_id`; a run that did not evaluate it measures nothing.",
+            "enum": [
+              "criterion_score"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "CriterionV1": {
+        "additionalProperties": false,
+        "properties": {
+          "criterion_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "direction": {
+            "$ref": "#/definitions/DirectionV1"
+          },
+          "metric": {
+            "$ref": "#/definitions/CriterionMetricV1"
+          },
+          "min_effect": {
+            "description": "In the metric's unit (pp for pass rate and criterion score, s for duration); 0 makes any loss a regression.",
+            "format": "double",
+            "type": "number"
+          },
+          "min_runs": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "pattern": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scenario_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "direction",
+          "metric",
+          "min_effect",
+          "min_runs",
+          "scenario_id"
+        ],
+        "type": "object"
+      },
+      "CycleAnalysisV1": {
+        "additionalProperties": false,
+        "description": "The deterministic first pass over one imported execution.",
+        "properties": {
+          "admission_key": {
+            "type": "string"
+          },
+          "analyzed_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "child_transcripts_complete": {
+            "description": "True only when the report says every child transcript was kept.",
+            "type": "boolean"
+          },
+          "execution_id": {
+            "type": "string"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/definitions/FindingV1"
+            },
+            "type": "array"
+          },
+          "identity": {
+            "$ref": "#/definitions/EvidenceIdentityV1"
+          },
+          "role": {
+            "$ref": "#/definitions/ExecutionRoleV1"
+          },
+          "sentinel": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/SentinelForwardV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What `sentinel::reports::ingest` answered for the runs' recorded failures; absent when the reports recorded none."
+          },
+          "unknowns": {
+            "description": "What the stored copy could not tell; never assumed.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "admission_key",
+          "analyzed_at",
+          "child_transcripts_complete",
+          "execution_id",
+          "findings",
+          "identity",
+          "role",
+          "unknowns"
+        ],
+        "type": "object"
+      },
+      "CycleBudgetV1": {
+        "additionalProperties": false,
+        "description": "The limits of one cycle, covering every kind of its work.",
+        "properties": {
+          "max_calls": {
+            "description": "Dispatched work items, retries included.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_candidates": {
+            "description": "Candidates the cycle may try.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_duration_ms": {
+            "description": "Wall time since the cycle was created.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "max_spend_usd": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "max_calls",
+          "max_candidates",
+          "max_duration_ms",
+          "max_spend_usd"
+        ],
+        "type": "object"
+      },
+      "CycleDecisionV1": {
+        "additionalProperties": false,
+        "properties": {
+          "baseline_execution_id": {
+            "type": "string"
+          },
+          "candidate_execution_id": {
+            "type": "string"
+          },
+          "comparability": {
+            "$ref": "#/definitions/ComparabilityV1"
+          },
+          "decided_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "outcome": {
+            "$ref": "#/definitions/DecisionOutcomeV1"
+          },
+          "policy_revision": {
+            "type": "string"
+          },
+          "preserved": {
+            "items": {
+              "$ref": "#/definitions/EvidenceV1"
+            },
+            "type": "array"
+          },
+          "primary": {
+            "$ref": "#/definitions/EvidenceV1"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "baseline_execution_id",
+          "candidate_execution_id",
+          "comparability",
+          "decided_at",
+          "outcome",
+          "policy_revision",
+          "preserved",
+          "primary",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "CycleEventV1": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "stage": {
+            "$ref": "#/definitions/CycleStageV1"
+          },
+          "status": {
+            "$ref": "#/definitions/CycleStatusV1"
+          }
+        },
+        "required": [
+          "at",
+          "detail",
+          "stage",
+          "status"
+        ],
+        "type": "object"
+      },
+      "CycleExecutionV1": {
+        "additionalProperties": false,
+        "description": "One E2E execution the cycle owns. Recorded before dispatch; `work_id` is sent to the E2E as its immutable idempotency key. `label` is display only.",
+        "properties": {
+          "admission_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dispatched_at": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "execution_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "role": {
+            "$ref": "#/definitions/ExecutionRoleV1"
+          },
+          "route": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ExecutionRouteV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the execution runs on another Engine than this worker's: the canary on the explicit activation target. Recorded before the dispatch; every read goes through that Engine."
+          },
+          "state": {
+            "$ref": "#/definitions/ExecutionStateV1"
+          },
+          "work_id": {
+            "description": "The budget reservation it was dispatched under.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "role",
+          "state"
+        ],
+        "type": "object"
+      },
+      "CycleInputV1": {
+        "description": "What started a cycle: `{\"objective\": \"...\"}` or `{\"execution_id\": \"...\"}`.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "objective": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "objective"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "execution_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "execution_id"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "CycleNextV1": {
+        "additionalProperties": false,
+        "description": "The durable next step of a waiting cycle.",
+        "properties": {
+          "action": {
+            "$ref": "#/definitions/NextActionV1"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "findings": {
+            "default": [],
+            "description": "Fingerprints of the findings it rests on.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "action",
+          "detail"
+        ],
+        "type": "object"
+      },
+      "CycleOutcomeV1": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "$ref": "#/definitions/OutcomeCodeV1"
+          },
+          "detail": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "detail"
+        ],
+        "type": "object"
+      },
+      "CyclePlanV1": {
+        "additionalProperties": false,
+        "description": "What a cycle commits to before any result.",
+        "properties": {
+          "controls": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "criterion": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/CriterionV1"
+              }
+            ],
+            "description": "The metric, its direction, the minimum effect and the scenario."
+          },
+          "estimated_usd": {
+            "description": "What the baseline is reserved at: runs × scenarios × the configured per-run estimate.",
+            "format": "double",
+            "type": "number"
+          },
+          "frozen_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "objective": {
+            "type": "string"
+          },
+          "parameters": {
+            "$ref": "#/definitions/ExecutionParametersV1"
+          },
+          "policy_revision": {
+            "description": "The configuration revision the cycle runs under.",
+            "type": "string"
+          },
+          "preserved": {
+            "default": [],
+            "description": "Correctness the candidate must keep: a loss rejects, an unmeasured one is inconclusive.",
+            "items": {
+              "$ref": "#/definitions/CriterionV1"
+            },
+            "type": "array"
+          },
+          "sampling": {
+            "$ref": "#/definitions/SamplingPlanV1"
+          },
+          "tests": {
+            "description": "The selected tests and controls, each with the executable identity of its current definition, frozen with the plan.",
+            "items": {
+              "$ref": "#/definitions/SelectedTestV1"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "criterion",
+          "estimated_usd",
+          "frozen_at",
+          "objective",
+          "parameters",
+          "policy_revision",
+          "sampling",
+          "tests"
+        ],
+        "type": "object"
+      },
+      "CycleRecordV1": {
+        "additionalProperties": false,
+        "description": "The one record of a cycle, whichever input started it.",
+        "properties": {
+          "activation_intent": {
+            "description": "The Compose operation id of the activation, persisted before the pin is sent: a crash or a lost write between the two still counts as an activation in flight, never as nothing activated.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "analyses": {
+            "default": [],
+            "items": {
+              "$ref": "#/definitions/CycleAnalysisV1"
+            },
+            "type": "array"
+          },
+          "artifact_decision": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CycleDecisionV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The decision on the immutable rc artifact under the same frozen plan as `decision` (the source decision). Recorded once."
+          },
+          "baseline": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/BaselineV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "canary": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CanaryV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "candidate": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CandidateStateV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "completed_at": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "config": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/StoredConfigV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The configuration frozen when the cycle was created: later edits of the global configuration never change its actor, budget, target or criteria. `null`: created unconfigured."
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CoverageV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "cycle_id": {
+            "type": "string"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CycleDecisionV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Recorded once."
+          },
+          "executions": {
+            "default": [],
+            "items": {
+              "$ref": "#/definitions/CycleExecutionV1"
+            },
+            "type": "array"
+          },
+          "failure": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "history": {
+            "description": "Oldest first.",
+            "items": {
+              "$ref": "#/definitions/CycleEventV1"
+            },
+            "type": "array"
+          },
+          "input": {
+            "$ref": "#/definitions/CycleInputV1"
+          },
+          "next": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CycleNextV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CycleOutcomeV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CyclePlanV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Frozen before any dispatch; never changes."
+          },
+          "promotion": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/PromotionJournal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Every promotion phase, requested and confirmed apart."
+          },
+          "proposal": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ProposalStateV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recovery": {
+            "description": "Why an already requested activation is being restored instead of abandoned (a cancel or a budget limit). While set the cycle only reconciles the activation and proves the prior executable running; it is not terminal until that is proved.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "schema_version": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "stage": {
+            "$ref": "#/definitions/CycleStageV1"
+          },
+          "status": {
+            "$ref": "#/definitions/CycleStatusV1"
+          },
+          "step": {
+            "description": "Durable step counter; a queued step that does not match is stale.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "triage": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/TriageV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "updated_at": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "created_at",
+          "cycle_id",
+          "history",
+          "input",
+          "schema_version",
+          "stage",
+          "status",
+          "step",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "CycleStageV1": {
+        "description": "Where the cycle is. An objective goes coverage, baseline, analysis, proposal, candidate, validation, analysis, promotion; an execution starts at analysis and, with a pertinent finding, goes coverage, triage (paid only when covered and ambiguous), then baseline.",
+        "oneOf": [
+          {
+            "enum": [
+              "coverage",
+              "baseline",
+              "awaiting_execution",
+              "analysis",
+              "done"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Ambiguous findings judged once (`judge::evaluate`), or the recorded reason no judgment is needed.",
+            "enum": [
+              "triage"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The bounded read-only proposal turning evidence into a brief.",
+            "enum": [
+              "proposal"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The isolated candidate actor.",
+            "enum": [
+              "candidate"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The candidate's source validation execution.",
+            "enum": [
+              "validation"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Merge, official release, final artifact comparison, activation and canary, journaled phase by phase.",
+            "enum": [
+              "promotion"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "CycleStatusV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "failed",
+              "cancelled"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Durably paused on an external event: an E2E execution to finish, or the candidate stage (`next`).",
+            "enum": [
+              "waiting"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "DecisionOutcomeV1": {
+        "enum": [
+          "accepted",
+          "rejected",
+          "inconclusive"
+        ],
+        "type": "string"
+      },
+      "DirectionV1": {
+        "enum": [
+          "decrease",
+          "increase"
+        ],
+        "type": "string"
+      },
+      "EvidenceIdentityV1": {
+        "additionalProperties": false,
+        "description": "Identity of an imported execution as its reports state it. `None` is unknown (absent, or reports that disagree), never assumed.",
+        "properties": {
+          "artifacts_digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contract_digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "e2e_revision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "engine_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fixed_stack_digest": {
+            "default": null,
+            "description": "Digest of every stack component but the Harness, as the reports prove it; unknown when they cannot.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "harness_binary_sha256": {
+            "default": null,
+            "description": "SHA-256 of `/proc/<pid>/exe` of the ready Harness, captured by the E2E runner (`system_under_test.harness_binary_sha256`), never from the subject. Known only when every report agrees. Like the Harness version it is the product side, kept per side and never part of the fixed comparability; a final artifact decision and activation bind it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "harness_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scenarios": {
+            "default": [],
+            "items": {
+              "$ref": "#/definitions/ScenarioIdentityV1"
+            },
+            "type": "array"
+          },
+          "stack_digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subject_sha256": {
+            "default": null,
+            "description": "Digest of the full native subject configuration (model, provider, agent profile) as the reports state it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workers_revision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "EvidenceRunV1": {
+        "additionalProperties": false,
+        "description": "One run as the E2E reported it; unreported values stay absent.",
+        "properties": {
+          "case_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "completed": {
+            "description": "`completion == completed` with a `valid` technical outcome.",
+            "type": "boolean"
+          },
+          "completion": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "criteria": {
+            "additionalProperties": {
+              "format": "double",
+              "type": "number"
+            },
+            "description": "`awarded / possible` per evaluated criterion id.",
+            "type": "object"
+          },
+          "function_calls": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "signals": {
+            "additionalProperties": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "technical": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "total_tokens": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "wall_time_ms": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "completed",
+          "run_id"
+        ],
+        "type": "object"
+      },
+      "EvidenceSideV1": {
+        "additionalProperties": false,
+        "properties": {
+          "execution_id": {
+            "type": "string"
+          },
+          "mean": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "n": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/definitions/EvidenceRunV1"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "execution_id",
+          "n",
+          "runs"
+        ],
+        "type": "object"
+      },
+      "EvidenceV1": {
+        "additionalProperties": false,
+        "description": "A criterion judged on a pair, in code.",
+        "properties": {
+          "baseline": {
+            "$ref": "#/definitions/EvidenceSideV1"
+          },
+          "candidate": {
+            "$ref": "#/definitions/EvidenceSideV1"
+          },
+          "computed_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "computed_outcome": {
+            "$ref": "#/definitions/ValidationOutcomeV1"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "scenario_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "baseline",
+          "candidate",
+          "computed_at",
+          "computed_outcome",
+          "reason",
+          "scenario_id"
+        ],
+        "type": "object"
+      },
+      "ExecutionParametersV1": {
+        "additionalProperties": false,
+        "description": "The E2E `ExecutionParameters` the plan dispatches, frozen with it.",
+        "properties": {
+          "agent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "runs": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "scenarios": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "stack": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/StackV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "technical_retries": {
+            "format": "uint8",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "where": {
+            "$ref": "#/definitions/WhereV1"
+          }
+        },
+        "required": [
+          "model",
+          "provider",
+          "runs",
+          "scenarios",
+          "technical_retries",
+          "where"
+        ],
+        "type": "object"
+      },
+      "ExecutionRoleV1": {
+        "description": "Why an execution belongs to the cycle.",
+        "oneOf": [
+          {
+            "enum": [
+              "baseline"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The execution that started the cycle.",
+            "enum": [
+              "source"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The candidate's source validation.",
+            "enum": [
+              "candidate"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The immutable rc artifact's final comparison.",
+            "enum": [
+              "artifact"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The canary of the activated stable artifact.",
+            "enum": [
+              "canary"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "ExecutionRouteV1": {
+        "additionalProperties": false,
+        "properties": {
+          "engine_url": {
+            "type": "string"
+          },
+          "namespace": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "engine_url",
+          "namespace"
+        ],
+        "type": "object"
+      },
+      "ExecutionStateV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "running"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Ownership recorded, `execution-start` called or about to be: its id may be unknown; it is reconciled by `work_id`, never dispatched again.",
+            "enum": [
+              "dispatching"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Terminal and its reports copied into the loop's evidence.",
+            "enum": [
+              "imported"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The dispatch was refused, or never appeared in the E2E.",
+            "enum": [
+              "lost"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "FindingClassV1": {
+        "description": "The six classes the first pass sorts a finding into.",
+        "enum": [
+          "defect",
+          "improvement_opportunity",
+          "evaluation_gap",
+          "infrastructure_or_evaluator_failure",
+          "expected_behavior",
+          "insufficient_evidence"
+        ],
+        "type": "string"
+      },
+      "FindingV1": {
+        "additionalProperties": false,
+        "properties": {
+          "class": {
+            "$ref": "#/definitions/FindingClassV1"
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "observation": {
+            "type": "string"
+          },
+          "signal": {
+            "description": "The detector rule or execution signal it comes from.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "class",
+          "fingerprint",
+          "observation",
+          "signal"
+        ],
+        "type": "object"
+      },
+      "JudgeConfigV1": {
+        "additionalProperties": false,
+        "properties": {
+          "estimated_usd": {
+            "description": "What one grouped question is reserved at.",
+            "format": "double",
+            "type": "number"
+          },
+          "provider": {
+            "description": "The judge provider (`judge::evaluate` hub routing), e.g. `typesafe`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "estimated_usd",
+          "provider"
+        ],
+        "type": "object"
+      },
+      "LoopConfigV1": {
+        "additionalProperties": false,
+        "description": "Everything a cycle needs to spend on the E2E. Nothing has a default: an unconfigured loop selects coverage but dispatches nothing.",
+        "properties": {
+          "budget": {
+            "$ref": "#/definitions/CycleBudgetV1"
+          },
+          "candidate": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CandidateConfigV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The bounded read-only proposal and the isolated candidate actor; absent: a cycle stops before any proposal, inconclusive."
+          },
+          "controls": {
+            "default": [],
+            "description": "Control scenarios every plan also runs and preserves (pass rate and every spec criterion), e.g. `minimal_path`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "estimated_usd_per_run": {
+            "description": "What one run is reserved at before dispatch; an unreported actual cost stays charged at it, never at zero.",
+            "format": "double",
+            "type": "number"
+          },
+          "judge": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/JudgeConfigV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Semantic triage of ambiguous findings through `judge::evaluate`; absent: an ambiguous finding stays inconclusive."
+          },
+          "max_scenarios": {
+            "description": "Scenarios one plan may run at most.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "min_effect": {
+            "$ref": "#/definitions/MinEffectV1"
+          },
+          "promotion": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/PromotionConfig"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Official release and explicit local activation; absent: an accepted source candidate is never merged, published or activated."
+          },
+          "release_build_estimate_usd": {
+            "description": "What one official build (rc or finalization) is reserved at; its cost is not reported, so it stays charged at this. Required with `promotion`.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "runs_per_side": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "stack": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/StackV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Required for `docker` and `github`; refused for `harness`, which runs on its own stack."
+          },
+          "subject": {
+            "$ref": "#/definitions/SubjectV1"
+          },
+          "technical_retries": {
+            "format": "uint8",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "validation": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ValidationConfigV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The stacks that pin the Harness under test; required to validate a candidate. With it, the baseline runs the candidate's base commit."
+          },
+          "where": {
+            "$ref": "#/definitions/WhereV1"
+          }
+        },
+        "required": [
+          "budget",
+          "estimated_usd_per_run",
+          "max_scenarios",
+          "min_effect",
+          "runs_per_side",
+          "subject",
+          "technical_retries",
+          "where"
+        ],
+        "type": "object"
+      },
+      "MinEffectV1": {
+        "additionalProperties": false,
+        "description": "The minimum effect a plan freezes for each metric it can target.",
+        "properties": {
+          "pass_rate_pp": {
+            "description": "Percentage points of pass rate.",
+            "format": "double",
+            "type": "number"
+          },
+          "tokens": {
+            "description": "Total tokens per run.",
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "pass_rate_pp",
+          "tokens"
+        ],
+        "type": "object"
+      },
+      "NextActionV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "await_execution"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Evidence-backed candidate work, coordinated by a later stage.",
+            "enum": [
+              "candidate_work"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "OutcomeCodeV1": {
+        "oneOf": [
+          {
+            "description": "The objective has no E2E coverage; `coverage.gaps` names it.",
+            "enum": [
+              "no_coverage"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The analysis found nothing worth candidate work.",
+            "enum": [
+              "no_action"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A limit of the cycle was reached.",
+            "enum": [
+              "budget"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The evidence cannot support a conclusion (e.g. an unusable baseline).",
+            "enum": [
+              "inconclusive"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "`decision` holds accepted, rejected or inconclusive; nothing was released.",
+            "enum": [
+              "decided"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Activated on the explicit target, the executable proved and the canary held.",
+            "enum": [
+              "promoted"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The canary was violated and the prior executable is proved running again.",
+            "enum": [
+              "rolled_back"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "PromotionConfig": {
+        "additionalProperties": false,
+        "description": "What a cycle may choose about a promotion: which archive target to digest and which local Engine to activate. Nothing here names a service or a credential.",
+        "properties": {
+          "artifact_target": {
+            "description": "The Registry `binaries` key whose archive is digested, e.g. `x86_64-unknown-linux-gnu`.",
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/definitions/ActivationTarget"
+          }
+        },
+        "required": [
+          "artifact_target",
+          "target"
+        ],
+        "type": "object"
+      },
+      "PromotionJournal": {
+        "description": "Everything one promotion did, in order. Persisted by the caller after each phase, before the next effect.",
+        "properties": {
+          "phases": {
+            "items": {
+              "$ref": "#/definitions/PromotionPhase"
+            },
+            "type": "array"
+          },
+          "promotion_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "phases",
+          "promotion_id"
+        ],
+        "type": "object"
+      },
+      "PromotionPhase": {
+        "oneOf": [
+          {
+            "description": "The frozen source comparison decision: it authorizes merging exactly this candidate onto exactly this base, and nothing past the merge.",
+            "properties": {
+              "base_sha": {
+                "type": "string"
+              },
+              "candidate_id": {
+                "type": "string"
+              },
+              "candidate_sha": {
+                "type": "string"
+              },
+              "candidate_tree": {
+                "type": "string"
+              },
+              "evidence_urls": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "outcome": {
+                "$ref": "#/definitions/ApprovalOutcome"
+              },
+              "phase": {
+                "enum": [
+                  "source_approved"
+                ],
+                "type": "string"
+              },
+              "policy_revision": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "base_sha",
+              "candidate_id",
+              "candidate_sha",
+              "candidate_tree",
+              "outcome",
+              "phase",
+              "policy_revision"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "created": {
+                "description": "Opened by this call rather than found.",
+                "type": "boolean"
+              },
+              "head_ref": {
+                "type": "string"
+              },
+              "head_sha": {
+                "type": "string"
+              },
+              "number": {
+                "format": "uint64",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "phase": {
+                "enum": [
+                  "pull_request"
+                ],
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "created",
+              "head_ref",
+              "head_sha",
+              "number",
+              "phase",
+              "url"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "candidate_sha": {
+                "type": "string"
+              },
+              "phase": {
+                "enum": [
+                  "merge_requested"
+                ],
+                "type": "string"
+              },
+              "pull_request": {
+                "format": "uint64",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "updated": {
+                "description": "False when `main` already was the candidate and nothing was sent. Either way the outcome is proved only by [`Promotion::read_merge`].",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "candidate_sha",
+              "phase",
+              "pull_request",
+              "updated"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "`main` fast-forwarded to the candidate: the merged commit is the candidate commit, one parent on the approved base, with the approved tree. `main_sha` is `main` when it was read back (the candidate, or a later commit that contains it).",
+            "properties": {
+              "base_sha": {
+                "type": "string"
+              },
+              "candidate_sha": {
+                "type": "string"
+              },
+              "candidate_tree": {
+                "type": "string"
+              },
+              "main_sha": {
+                "type": "string"
+              },
+              "merged_sha": {
+                "type": "string"
+              },
+              "merged_tree": {
+                "type": "string"
+              },
+              "phase": {
+                "enum": [
+                  "merged"
+                ],
+                "type": "string"
+              },
+              "pull_request": {
+                "format": "uint64",
+                "minimum": 0.0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "base_sha",
+              "candidate_sha",
+              "candidate_tree",
+              "main_sha",
+              "merged_sha",
+              "merged_tree",
+              "phase",
+              "pull_request"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A Release Control preview frozen as it was answered.",
+            "properties": {
+              "candidate_version": {
+                "description": "The rc a finalization promotes.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "channel": {
+                "type": "string"
+              },
+              "expires_at": {
+                "type": "string"
+              },
+              "kind": {
+                "$ref": "#/definitions/ReleaseKind"
+              },
+              "phase": {
+                "enum": [
+                  "rc_planned"
+                ],
+                "type": "string"
+              },
+              "plan_hash": {
+                "type": "string"
+              },
+              "plan_id": {
+                "type": "string"
+              },
+              "preview_sha256": {
+                "description": "sha256 of the preview document as received.",
+                "type": "string"
+              },
+              "prior_latest": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "prior_next": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_sha": {
+                "type": "string"
+              },
+              "target_version": {
+                "description": "The version the operation will publish: the rc for a deploy, the stable version for a finalization.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "channel",
+              "expires_at",
+              "kind",
+              "phase",
+              "plan_hash",
+              "plan_id",
+              "preview_sha256",
+              "source_sha",
+              "target_version"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "operation_id": {
+                "type": "string"
+              },
+              "phase": {
+                "enum": [
+                  "rc_confirmed"
+                ],
+                "type": "string"
+              },
+              "plan": {
+                "$ref": "#/definitions/ReleasePlan"
+              }
+            },
+            "required": [
+              "operation_id",
+              "phase",
+              "plan"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "An exact Registry version whose archive bytes were downloaded and hashed, matching the digest the Registry claims.",
+            "properties": {
+              "archive_sha256": {
+                "type": "string"
+              },
+              "archive_url": {
+                "type": "string"
+              },
+              "binary_sha256": {
+                "description": "sha256 of the archive's one regular `harness` entry: the executable this release installs. A separate fact from `archive_sha256`.",
+                "type": "string"
+              },
+              "build_run_id": {
+                "format": "uint64",
+                "minimum": 0.0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "deployment_id": {
+                "type": "string"
+              },
+              "operation_id": {
+                "type": "string"
+              },
+              "phase": {
+                "enum": [
+                  "rc_published"
+                ],
+                "type": "string"
+              },
+              "source_sha": {
+                "type": "string"
+              },
+              "tags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "target": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "archive_sha256",
+              "archive_url",
+              "binary_sha256",
+              "deployment_id",
+              "operation_id",
+              "phase",
+              "source_sha",
+              "tags",
+              "target",
+              "version"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The frozen decision on the immutable rc build, from an E2E run against it. `binary_sha256` is the running executable the run measured (`system_under_test.harness_binary_sha256`); absent is unknown.",
+            "properties": {
+              "archive_sha256": {
+                "type": "string"
+              },
+              "binary_sha256": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "outcome": {
+                "$ref": "#/definitions/ApprovalOutcome"
+              },
+              "phase": {
+                "enum": [
+                  "artifact_approved"
+                ],
+                "type": "string"
+              },
+              "policy_revision": {
+                "type": "string"
+              },
+              "source_sha": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "archive_sha256",
+              "outcome",
+              "phase",
+              "policy_revision",
+              "source_sha",
+              "version"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A Release Control preview frozen as it was answered.",
+            "properties": {
+              "candidate_version": {
+                "description": "The rc a finalization promotes.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "channel": {
+                "type": "string"
+              },
+              "expires_at": {
+                "type": "string"
+              },
+              "kind": {
+                "$ref": "#/definitions/ReleaseKind"
+              },
+              "phase": {
+                "enum": [
+                  "finalize_planned"
+                ],
+                "type": "string"
+              },
+              "plan_hash": {
+                "type": "string"
+              },
+              "plan_id": {
+                "type": "string"
+              },
+              "preview_sha256": {
+                "description": "sha256 of the preview document as received.",
+                "type": "string"
+              },
+              "prior_latest": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "prior_next": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_sha": {
+                "type": "string"
+              },
+              "target_version": {
+                "description": "The version the operation will publish: the rc for a deploy, the stable version for a finalization.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "channel",
+              "expires_at",
+              "kind",
+              "phase",
+              "plan_hash",
+              "plan_id",
+              "preview_sha256",
+              "source_sha",
+              "target_version"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "operation_id": {
+                "type": "string"
+              },
+              "phase": {
+                "enum": [
+                  "finalize_confirmed"
+                ],
+                "type": "string"
+              },
+              "plan": {
+                "$ref": "#/definitions/ReleasePlan"
+              }
+            },
+            "required": [
+              "operation_id",
+              "phase",
+              "plan"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "An exact Registry version whose archive bytes were downloaded and hashed, matching the digest the Registry claims.",
+            "properties": {
+              "archive_sha256": {
+                "type": "string"
+              },
+              "archive_url": {
+                "type": "string"
+              },
+              "binary_sha256": {
+                "description": "sha256 of the archive's one regular `harness` entry: the executable this release installs. A separate fact from `archive_sha256`.",
+                "type": "string"
+              },
+              "build_run_id": {
+                "format": "uint64",
+                "minimum": 0.0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "deployment_id": {
+                "type": "string"
+              },
+              "operation_id": {
+                "type": "string"
+              },
+              "phase": {
+                "enum": [
+                  "stable_published"
+                ],
+                "type": "string"
+              },
+              "source_sha": {
+                "type": "string"
+              },
+              "tags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "target": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "archive_sha256",
+              "archive_url",
+              "binary_sha256",
+              "deployment_id",
+              "operation_id",
+              "phase",
+              "source_sha",
+              "tags",
+              "target",
+              "version"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "An immutable version whose archive and running executable were both validated. The two digests are separate facts and never compared.",
+            "properties": {
+              "archive_sha256": {
+                "type": "string"
+              },
+              "binary_sha256": {
+                "type": "string"
+              },
+              "phase": {
+                "enum": [
+                  "rollback_destination"
+                ],
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "archive_sha256",
+              "binary_sha256",
+              "phase",
+              "version"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A Compose pin this module asked for. `accepted: false` means the target already ran the destination and nothing was sent.",
+            "properties": {
+              "accepted": {
+                "type": "boolean"
+              },
+              "operation_id": {
+                "type": "string"
+              },
+              "phase": {
+                "enum": [
+                  "activation_requested"
+                ],
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "accepted",
+              "operation_id",
+              "phase",
+              "version"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The target proved to run the expected executable.",
+            "properties": {
+              "binary_sha256": {
+                "type": "string"
+              },
+              "file": {
+                "type": "string"
+              },
+              "namespace": {
+                "type": "string"
+              },
+              "operation_id": {
+                "type": "string"
+              },
+              "phase": {
+                "enum": [
+                  "activation_confirmed"
+                ],
+                "type": "string"
+              },
+              "pid": {
+                "description": "The Harness process whose executable was hashed.",
+                "format": "uint32",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "supervisor_pid": {
+                "description": "The Compose-supervised process the Harness was found under.",
+                "format": "uint32",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "binary_sha256",
+              "file",
+              "namespace",
+              "operation_id",
+              "phase",
+              "pid",
+              "supervisor_pid",
+              "version"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A Compose pin this module asked for. `accepted: false` means the target already ran the destination and nothing was sent.",
+            "properties": {
+              "accepted": {
+                "type": "boolean"
+              },
+              "operation_id": {
+                "type": "string"
+              },
+              "phase": {
+                "enum": [
+                  "rollback_requested"
+                ],
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "accepted",
+              "operation_id",
+              "phase",
+              "version"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The target proved to run the expected executable.",
+            "properties": {
+              "binary_sha256": {
+                "type": "string"
+              },
+              "file": {
+                "type": "string"
+              },
+              "namespace": {
+                "type": "string"
+              },
+              "operation_id": {
+                "type": "string"
+              },
+              "phase": {
+                "enum": [
+                  "rollback_confirmed"
+                ],
+                "type": "string"
+              },
+              "pid": {
+                "description": "The Harness process whose executable was hashed.",
+                "format": "uint32",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "supervisor_pid": {
+                "description": "The Compose-supervised process the Harness was found under.",
+                "format": "uint32",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "binary_sha256",
+              "file",
+              "namespace",
+              "operation_id",
+              "phase",
+              "pid",
+              "supervisor_pid",
+              "version"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "$ref": "#/definitions/StopKind"
+              },
+              "phase": {
+                "enum": [
+                  "stopped"
+                ],
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "step": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "phase",
+              "reason",
+              "step"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ProposalCitationV1": {
+        "description": "A source range in the base commit, repository-relative.",
+        "properties": {
+          "line_end": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "line_start": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "line_end",
+          "line_start",
+          "path"
+        ],
+        "type": "object"
+      },
+      "ProposalIdentityV1": {
+        "properties": {
+          "base_sha": {
+            "type": "string"
+          },
+          "cycle_id": {
+            "type": "string"
+          },
+          "harness_root": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "input_digest": {
+            "type": "string"
+          },
+          "proposal_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "worktree": {
+            "description": "Detached checkout at `base_sha`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "base_sha",
+          "cycle_id",
+          "harness_root",
+          "idempotency_key",
+          "input_digest",
+          "proposal_id",
+          "session_id",
+          "worktree"
+        ],
+        "type": "object"
+      },
+      "ProposalInputV1": {
+        "description": "What core knows about the case; copied verbatim into the brief.",
+        "properties": {
+          "case_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "criteria": {
+            "description": "Frozen criteria.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "evidence": {
+            "description": "Native evidence; untrusted data for the actor.",
+            "items": {
+              "$ref": "#/definitions/CandidateEvidenceV1"
+            },
+            "type": "array"
+          },
+          "objective": {
+            "description": "The trusted objective (the question asked).",
+            "type": "string"
+          },
+          "occurrence": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "case_ids",
+          "criteria",
+          "evidence",
+          "objective",
+          "occurrence"
+        ],
+        "type": "object"
+      },
+      "ProposalStateV1": {
+        "additionalProperties": false,
+        "description": "The proposal's identity (persisted before it starts) and latest state.",
+        "properties": {
+          "identity": {
+            "$ref": "#/definitions/ProposalIdentityV1"
+          },
+          "proposal": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ProposalV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "identity"
+        ],
+        "type": "object"
+      },
+      "ProposalV1": {
+        "description": "`status` is `completed` for a validated proposal and `failed` with code `insufficient_evidence` when the actor found no supported mechanism.",
+        "properties": {
+          "change": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/definitions/ProposalCitationV1"
+            },
+            "type": "array"
+          },
+          "cost": {
+            "$ref": "#/definitions/CandidateCostV1"
+          },
+          "hypothesis": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "identity": {
+            "$ref": "#/definitions/ProposalIdentityV1"
+          },
+          "input": {
+            "$ref": "#/definitions/ProposalInputV1"
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/definitions/CandidateStatusV1"
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "citations",
+          "cost",
+          "identity",
+          "input",
+          "model",
+          "provider",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ReleaseKind": {
+        "enum": [
+          "deploy",
+          "finalize_release"
+        ],
+        "type": "string"
+      },
+      "ReleasePlan": {
+        "description": "A Release Control preview frozen as it was answered.",
+        "properties": {
+          "candidate_version": {
+            "description": "The rc a finalization promotes.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "channel": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/definitions/ReleaseKind"
+          },
+          "plan_hash": {
+            "type": "string"
+          },
+          "plan_id": {
+            "type": "string"
+          },
+          "preview_sha256": {
+            "description": "sha256 of the preview document as received.",
+            "type": "string"
+          },
+          "prior_latest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prior_next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_sha": {
+            "type": "string"
+          },
+          "target_version": {
+            "description": "The version the operation will publish: the rc for a deploy, the stable version for a finalization.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel",
+          "expires_at",
+          "kind",
+          "plan_hash",
+          "plan_id",
+          "preview_sha256",
+          "source_sha",
+          "target_version"
+        ],
+        "type": "object"
+      },
+      "SamplingPlanV1": {
+        "additionalProperties": false,
+        "description": "How many measured runs each side needs and the cases they run on.",
+        "properties": {
+          "runs_per_side": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "seeds": {
+            "default": [],
+            "description": "The canonical `case_id`s both sides must report.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "runs_per_side"
+        ],
+        "type": "object"
+      },
+      "ScenarioIdentityV1": {
+        "additionalProperties": false,
+        "description": "The executable identity of one reported scenario.",
+        "properties": {
+          "behavior_sha256": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "case_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contract_sha256": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "inputs_sha256": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scenario_id": {
+            "type": "string"
+          },
+          "seed": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "scenario_id"
+        ],
+        "type": "object"
+      },
+      "SelectedTestV1": {
+        "additionalProperties": false,
+        "description": "A test selected as coverage hypothesis, with the executable identity of its CURRENT definition from `e2e::scenarios-list`.",
+        "properties": {
+          "behavior_sha256": {
+            "type": "string"
+          },
+          "case_id": {
+            "type": "string"
+          },
+          "contract_sha256": {
+            "type": "string"
+          },
+          "criteria": {
+            "items": {
+              "$ref": "#/definitions/TestCriterionV1"
+            },
+            "type": "array"
+          },
+          "history_note": {
+            "description": "Set when the catalog row's history is of another version.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "inputs_sha256": {
+            "type": "string"
+          },
+          "invariants": {
+            "description": "The deliverable invariants the catalog declares.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "matched_terms": {
+            "description": "Spec words that matched each required term group.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "scenario_id": {
+            "type": "string"
+          },
+          "seed": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "behavior_sha256",
+          "case_id",
+          "contract_sha256",
+          "criteria",
+          "inputs_sha256",
+          "invariants",
+          "matched_terms",
+          "rationale",
+          "scenario_id",
+          "seed"
+        ],
+        "type": "object"
+      },
+      "SentinelForwardV1": {
+        "additionalProperties": false,
+        "description": "The runs' recorded failures forwarded to the central Sentinel. Its classification and triage are kept as it answered and reused, never judged again.",
+        "properties": {
+          "deduped": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "observations": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "recorded": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "results": {
+            "default": [],
+            "description": "`results[]` as Sentinel answered: dedupe_key, classification, outcome, group_id, occurrence_id, group_status, triage.",
+            "items": true,
+            "type": "array"
+          },
+          "skipped": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "observations"
+        ],
+        "type": "object"
+      },
+      "StackV1": {
+        "additionalProperties": false,
+        "description": "A stack in the E2E's own shape (`ExecutionStack`), e.g. `package://harness` pinned to `commit:<40 hex>` of `iii-hq/workers` path `harness`.",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "yaml": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "yaml"
+        ],
+        "type": "object"
+      },
+      "StopKind": {
+        "description": "Why a step did not produce its evidence.",
+        "oneOf": [
+          {
+            "description": "Missing or expired credentials, an unreachable service, or a target this module cannot observe.",
+            "enum": [
+              "unavailable"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The outcome cannot be proved: a lost response, mergeability not yet computed, an unknown executable digest.",
+            "enum": [
+              "inconclusive"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A concrete divergence or failed precondition. The promotion stops.",
+            "enum": [
+              "rejected"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "StoredConfigV1": {
+        "additionalProperties": false,
+        "description": "The stored configuration. `revision` (SHA-256 of the config and the rules) is the `policy_revision` every plan freezes.",
+        "properties": {
+          "config": {
+            "$ref": "#/definitions/LoopConfigV1"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "config",
+          "revision",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "SubjectV1": {
+        "additionalProperties": false,
+        "description": "The model the E2E subject runs on. Credentials stay in the providers.",
+        "properties": {
+          "agent": {
+            "description": "Agent profile the subject runs under; absent uses the E2E default.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
           }
         },
         "required": [
@@ -423,146 +3316,24 @@
         ],
         "type": "object"
       },
-      "MonitorUsageV1": {
+      "TestCriterionV1": {
         "additionalProperties": false,
-        "description": "Known usage only: absent counters are unknown, never zero.",
+        "description": "One criterion of a test spec (`spec.criteria[]`), the id run reports award points under.",
         "properties": {
-          "judge_calls": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
+          "description": {
+            "type": "string"
           },
-          "judge_input_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "judge_output_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "judge_usage_complete": {
-            "description": "False when Jev reported incomplete usage or failed.",
+          "gate": {
             "type": "boolean"
           },
-          "llm_cost_usd": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "llm_input_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "llm_output_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
+          "id": {
+            "type": "string"
           }
         },
         "required": [
-          "judge_calls",
-          "judge_input_tokens",
-          "judge_output_tokens",
-          "judge_usage_complete"
-        ],
-        "type": "object"
-      },
-      "RoutingReasonV1": {
-        "oneOf": [
-          {
-            "enum": [
-              "needs_investigation"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "Legacy: no longer produced; kept so stored records still deserialize.",
-            "enum": [
-              "diagnostics"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "Legacy: no longer produced.",
-            "enum": [
-              "insufficient_evidence"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "Legacy: no longer produced.",
-            "enum": [
-              "low_confidence"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "Legacy: no longer produced.",
-            "enum": [
-              "coverage_insufficient"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "Legacy: no longer produced.",
-            "enum": [
-              "audit_sample"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "Legacy: no longer produced.",
-            "enum": [
-              "manual_request"
-            ],
-            "type": "string"
-          }
-        ]
-      },
-      "RoutingV1": {
-        "additionalProperties": false,
-        "properties": {
-          "investigate": {
-            "type": "boolean"
-          },
-          "reasons": {
-            "items": {
-              "$ref": "#/definitions/RoutingReasonV1"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "investigate",
-          "reasons"
-        ],
-        "type": "object"
-      },
-      "StageTimeV1": {
-        "additionalProperties": false,
-        "properties": {
-          "at": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "status": {
-            "$ref": "#/definitions/EvalStatusV1"
-          }
-        },
-        "required": [
-          "at",
-          "status"
+          "description",
+          "gate",
+          "id"
         ],
         "type": "object"
       },
@@ -586,8 +3357,168 @@
             "type": "string"
           }
         ]
+      },
+      "TriageOutcomeV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "proceed",
+              "no_action"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The semantic step is unknown (unavailable, invalid or lost answer).",
+            "enum": [
+              "unknown"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "TriageSourceV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "jev"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "An explicit objective: no authorization needed.",
+            "enum": [
+              "objective"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A clear deterministic defect.",
+            "enum": [
+              "deterministic"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Sentinel's triage of the same occurrences, reused.",
+            "enum": [
+              "sentinel"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "TriageV1": {
+        "additionalProperties": false,
+        "description": "Why the cycle proceeds past its findings, or stops.",
+        "properties": {
+          "answer": true,
+          "evidence_digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "findings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "$ref": "#/definitions/TriageOutcomeV1"
+          },
+          "question": true,
+          "reason": {
+            "type": "string"
+          },
+          "request_id": {
+            "description": "Set before `judge::evaluate` is called: a restart finds it and never asks twice.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reused": {
+            "default": [],
+            "description": "Sentinel triage of the same occurrences, as Sentinel answered.",
+            "items": true,
+            "type": "array"
+          },
+          "source": {
+            "$ref": "#/definitions/TriageSourceV1"
+          },
+          "usage": true
+        },
+        "required": [
+          "findings",
+          "outcome",
+          "reason",
+          "source"
+        ],
+        "type": "object"
+      },
+      "ValidationConfigV1": {
+        "additionalProperties": false,
+        "description": "E2E stacks in the E2E's own shape that pin only the Harness: everything else (Engine, evaluator, other workers) stays fixed between the sides.",
+        "properties": {
+          "artifact_stack_template": {
+            "description": "Stack YAML pinning an immutable Registry version; `{version}` is replaced by it.",
+            "type": "string"
+          },
+          "source_stack_template": {
+            "description": "Stack YAML pinning a source revision; `{commit}` is replaced by the 40-hex sha.",
+            "type": "string"
+          },
+          "stack_name": {
+            "type": "string"
+          },
+          "where": {
+            "$ref": "#/definitions/WhereV1"
+          }
+        },
+        "required": [
+          "artifact_stack_template",
+          "source_stack_template",
+          "stack_name",
+          "where"
+        ],
+        "type": "object"
+      },
+      "ValidationOutcomeV1": {
+        "enum": [
+          "validated_improvement",
+          "no_improvement",
+          "regression",
+          "inconclusive"
+        ],
+        "type": "string"
+      },
+      "WhereV1": {
+        "description": "Where the E2E runs a dispatched execution (`ExecutionParameters.where`).",
+        "oneOf": [
+          {
+            "enum": [
+              "docker",
+              "github"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The E2E's own Harness: observes the current stack, cannot pin a candidate commit.",
+            "enum": [
+              "harness"
+            ],
+            "type": "string"
+          }
+        ]
       }
     },
-    "title": "Nullable_AnalysisRecordV1"
+    "title": "Nullable_CycleRecordV1"
   }
 }

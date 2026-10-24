@@ -88,6 +88,12 @@ pub fn on_occurrence(state: &GroupState, worker_version: Option<&str>) -> Transi
     }
 }
 
+/// An occurrence that must not move the group: counted, with the state a
+/// person or an earlier rule left it in kept as it is.
+pub fn hold(state: &GroupState) -> Transition {
+    Transition::stay(state.status)
+}
+
 fn regresses(state: &GroupState, worker_version: Option<&str>) -> bool {
     if !state.resolve_until_version_change {
         return true;

@@ -32,6 +32,7 @@ fn catalog_matches_the_registered_surface() {
             "sentinel::logs::list",
             "sentinel::on-trace-activity",
             "sentinel::on-log",
+            "sentinel::reports::ingest",
             "sentinel::ingest",
             "sentinel::on-turn-completed",
             "sentinel::on-schedule",

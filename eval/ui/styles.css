@@ -1,9 +1,892 @@
-@import './src/styles/shell.css';
-@import './src/styles/settings.css';
-@import './src/styles/detail.css';
-@import './src/styles/validation.css';
-@import './src/styles/replay.css';
+/* eval worker UI: the loop's cycles, one cycle, the settings and the new
+   cycle dialog. Everything is scoped to [data-iii-ui="eval"]; page chrome,
+   rows, chips, panels, tables and settings rows come from
+   @iii-dev/console-ui. Narrow is the pane's width (`data-narrow`), never the
+   viewport; only machine values are mono. */
 
-/* eval worker UI. Every rule lives in src/styles/*.css, scoped to
-   [data-iii-ui="eval"]; controls, fields, badges and status panels come from
-   @iii-dev/console-ui, and only machine values are mono. */
+[data-iii-ui="eval"] .eval-ui-shell {
+  min-height: 0;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+[data-iii-ui="eval"] .eval-ui-root,
+[data-iii-ui="eval"] .eval-ui-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-sidebar {
+  min-width: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* ── text ─────────────────────────────────────────────────────────── */
+
+[data-iii-ui="eval"] .eval-ui-strong {
+  font-weight: 500;
+}
+
+[data-iii-ui="eval"] .eval-ui-faint {
+  color: var(--color-ink-faint);
+  font-size: 12px;
+}
+
+[data-iii-ui="eval"] .eval-ui-ghost {
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="eval"] .eval-ui-ink {
+  color: var(--color-ink);
+}
+
+[data-iii-ui="eval"] .eval-ui-light {
+  font-weight: 400;
+}
+
+[data-iii-ui="eval"] .eval-ui-mono,
+[data-iii-ui="eval"] .eval-ui-mono-input,
+[data-iii-ui="eval"] .eval-ui-num {
+  font-family: var(--font-mono);
+}
+
+[data-iii-ui="eval"] .eval-ui-num {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* An id inside an eyebrow keeps its own case. */
+[data-iii-ui="eval"] .eval-ui-keep {
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+[data-iii-ui="eval"] .eval-ui-count {
+  margin-left: 4px;
+  color: var(--color-ink-ghost);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="eval"] .eval-ui-clip {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="eval"] .eval-ui-right {
+  text-align: right;
+}
+
+[data-iii-ui="eval"] .eval-ui-form-error {
+  margin: 0;
+  color: var(--color-alert-strong);
+  font-size: 12px;
+}
+
+[data-iii-ui="eval"] .eval-ui-start {
+  align-self: flex-start;
+}
+
+[data-iii-ui="eval"] .eval-ui-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ── marks: a step, a lane and the four-phase strip ───────────────── */
+
+[data-iii-ui="eval"] .eval-ui-mark {
+  flex-shrink: 0;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="eval"] .eval-ui-mark[data-mark="done"] {
+  color: var(--color-ok);
+}
+
+[data-iii-ui="eval"] .eval-ui-mark[data-mark="now"] {
+  color: var(--color-accent);
+}
+
+[data-iii-ui="eval"] .eval-ui-mark[data-mark="stop"] {
+  color: var(--color-warn);
+}
+
+[data-iii-ui="eval"] .eval-ui-mark[data-mark="fail"] {
+  color: var(--color-alert);
+}
+
+[data-iii-ui="eval"] .eval-ui-strip {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 3px;
+}
+
+[data-iii-ui="eval"] .eval-ui-strip > span {
+  width: 28px;
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--color-surface-selected);
+}
+
+[data-iii-ui="eval"] .eval-ui-strip > span[data-mark="done"] {
+  background: color-mix(in srgb, var(--color-ink) 45%, transparent);
+}
+
+[data-iii-ui="eval"] .eval-ui-strip > span[data-mark="now"] {
+  background: var(--color-accent);
+}
+
+[data-iii-ui="eval"] .eval-ui-strip > span[data-mark="stop"] {
+  background: var(--color-warn);
+}
+
+[data-iii-ui="eval"] .eval-ui-strip > span[data-mark="fail"] {
+  background: var(--color-alert);
+}
+
+[data-iii-ui="eval"] [data-narrow="true"] .eval-ui-strip > span {
+  width: 16px;
+}
+
+[data-iii-ui="eval"] .eval-ui-lane {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px;
+  border-radius: 6px;
+  background: var(--color-surface);
+}
+
+[data-iii-ui="eval"] .eval-ui-lane[aria-current="step"] {
+  box-shadow: inset 0 0 0 1px var(--color-edge);
+}
+
+[data-iii-ui="eval"] .eval-ui-lane-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* ── home ─────────────────────────────────────────────────────────── */
+
+[data-iii-ui="eval"] .eval-ui-ready {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 20px 14px;
+}
+
+[data-iii-ui="eval"] [data-narrow="true"] .eval-ui-ready {
+  padding: 12px 16px 8px;
+}
+
+[data-iii-ui="eval"] .eval-ui-ready-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 12px;
+}
+
+[data-iii-ui="eval"] .eval-ui-ready-head p {
+  margin: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-ladder {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+[data-iii-ui="eval"] [data-narrow="true"] .eval-ui-ladder {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+
+[data-iii-ui="eval"] .eval-ui-ladder .eval-ui-lane {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+[data-iii-ui="eval"] [data-narrow="true"] .eval-ui-ladder .eval-ui-lane {
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+}
+
+[data-iii-ui="eval"] .eval-ui-ladder-action {
+  display: flex;
+  align-items: center;
+}
+
+[data-iii-ui="eval"] .eval-ui-search {
+  width: 280px;
+  max-width: 100%;
+}
+
+[data-iii-ui="eval"] .eval-ui-groups {
+  padding: 12px 14px 20px;
+}
+
+[data-iii-ui="eval"] [data-narrow="true"] .eval-ui-groups {
+  padding: 4px 8px 16px;
+}
+
+[data-iii-ui="eval"] .eval-ui-row-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-row-end {
+  display: grid;
+  grid-template-columns: 124px 150px 72px 56px;
+  align-items: center;
+  gap: 14px;
+}
+
+[data-iii-ui="eval"] .eval-ui-row-end > .eval-ui-num {
+  text-align: right;
+}
+
+[data-iii-ui="eval"] .eval-ui-options .eval-ui-row-end {
+  grid-template-columns: auto auto;
+}
+
+[data-iii-ui="eval"] .eval-ui-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+[data-iii-ui="eval"] .eval-ui-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+}
+
+[data-iii-ui="eval"] .eval-ui-sk-row {
+  height: 44px;
+}
+
+[data-iii-ui="eval"] .eval-ui-sk-title {
+  width: 60%;
+  height: 28px;
+}
+
+[data-iii-ui="eval"] .eval-ui-sk-block {
+  height: 96px;
+}
+
+/* ── new cycle ────────────────────────────────────────────────────── */
+
+[data-iii-ui="eval"] .eval-ui-dialog {
+  width: 100%;
+  max-width: 620px;
+}
+
+[data-iii-ui="eval"] .eval-ui-dialog-form,
+[data-iii-ui="eval"] .eval-ui-field {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-field {
+  gap: 6px;
+}
+
+[data-iii-ui="eval"] .eval-ui-field p {
+  margin: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-options {
+  max-height: 240px;
+  margin: 0 -6px;
+  overflow-y: auto;
+}
+
+/* ── one cycle ────────────────────────────────────────────────────── */
+
+[data-iii-ui="eval"] .eval-ui-page {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 28px;
+  box-sizing: border-box;
+  max-width: 1160px;
+  margin: 0 auto;
+  padding: 20px 24px 32px;
+}
+
+[data-iii-ui="eval"] [data-narrow="true"] .eval-ui-page {
+  gap: 20px;
+  padding: 16px;
+}
+
+[data-iii-ui="eval"] .eval-ui-col {
+  display: flex;
+  flex: 999 1 560px;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-aside {
+  display: flex;
+  flex: 1 1 260px;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  max-width: 340px;
+}
+
+[data-iii-ui="eval"] [data-narrow="true"] .eval-ui-aside {
+  max-width: none;
+}
+
+[data-iii-ui="eval"] .eval-ui-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+[data-iii-ui="eval"] .eval-ui-head p {
+  margin: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+[data-iii-ui="eval"] .eval-ui-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+[data-iii-ui="eval"] .eval-ui-section,
+[data-iii-ui="eval"] .eval-ui-stack-sm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-stack-sm {
+  gap: 6px;
+}
+
+[data-iii-ui="eval"] .eval-ui-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+[data-iii-ui="eval"] .eval-ui-stack p,
+[data-iii-ui="eval"] .eval-ui-stack-sm p {
+  margin: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-h {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+[data-iii-ui="eval"] .eval-ui-lanes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+[data-iii-ui="eval"] .eval-ui-lanes[data-narrow="true"] {
+  display: flex;
+  flex-direction: column;
+}
+
+[data-iii-ui="eval"] .eval-ui-lane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 2px 4px;
+}
+
+[data-iii-ui="eval"] .eval-ui-lane-head p {
+  margin: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-lane-sum {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  cursor: pointer;
+  list-style: none;
+}
+
+[data-iii-ui="eval"] .eval-ui-lane-sum::-webkit-details-marker {
+  display: none;
+}
+
+[data-iii-ui="eval"] .eval-ui-step {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  column-gap: 8px;
+  padding: 5px 2px;
+}
+
+[data-iii-ui="eval"] .eval-ui-step > p {
+  grid-column: 2;
+  margin: 0;
+  font-size: 13px;
+}
+
+[data-iii-ui="eval"] .eval-ui-step > .eval-ui-mark {
+  margin-top: 2px;
+}
+
+[data-iii-ui="eval"] .eval-ui-step > .eval-ui-step-fact {
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+[data-iii-ui="eval"] .eval-ui-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+[data-iii-ui="eval"] .eval-ui-rule {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 16px;
+  font-size: 13px;
+}
+
+[data-iii-ui="eval"] .eval-ui-rule > :nth-child(even) {
+  text-align: right;
+}
+
+[data-iii-ui="eval"] .eval-ui-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+[data-iii-ui="eval"] .eval-ui-chips .eval-ui-num {
+  margin-left: 4px;
+}
+
+[data-iii-ui="eval"] .eval-ui-lead {
+  font-size: 13px;
+  line-height: 20px;
+}
+
+[data-iii-ui="eval"] .eval-ui-details summary {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 6px;
+  background: var(--color-surface);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+[data-iii-ui="eval"] .eval-ui-details summary {
+  list-style: none;
+}
+
+[data-iii-ui="eval"] .eval-ui-details summary::-webkit-details-marker {
+  display: none;
+}
+
+[data-iii-ui="eval"] .eval-ui-checks,
+[data-iii-ui="eval"] .eval-ui-events {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+[data-iii-ui="eval"] .eval-ui-checks {
+  gap: 2px;
+  padding-top: 8px;
+}
+
+[data-iii-ui="eval"] .eval-ui-checks li {
+  display: grid;
+  grid-template-columns: 16px auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  font-size: 12px;
+}
+
+[data-iii-ui="eval"] .eval-ui-events li {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 6px 2px;
+}
+
+[data-iii-ui="eval"] .eval-ui-events p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+/* Paired runs: one track per pair on the metric's own scale. */
+[data-iii-ui="eval"] .eval-ui-pairs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-pairs-grid {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) 72px;
+  align-items: center;
+  gap: 6px 12px;
+}
+
+[data-iii-ui="eval"] .eval-ui-pairs-axis {
+  display: flex;
+  justify-content: space-between;
+  color: var(--color-ink-ghost);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+[data-iii-ui="eval"] .eval-ui-track {
+  position: relative;
+  height: 18px;
+}
+
+[data-iii-ui="eval"] .eval-ui-track::before {
+  position: absolute;
+  top: 8px;
+  right: 0;
+  left: 0;
+  height: 2px;
+  border-radius: 9999px;
+  background: var(--color-surface-selected);
+  content: "";
+}
+
+[data-iii-ui="eval"] .eval-ui-span {
+  position: absolute;
+  top: 8px;
+  height: 2px;
+  background: color-mix(in srgb, var(--color-ink) 45%, transparent);
+}
+
+[data-iii-ui="eval"] .eval-ui-pin {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 9999px;
+  background: var(--color-accent);
+}
+
+[data-iii-ui="eval"] .eval-ui-pin[data-side="baseline"] {
+  background: var(--color-panel-raised);
+  box-shadow: inset 0 0 0 2px var(--color-ink-faint);
+}
+
+[data-iii-ui="eval"] .eval-ui-track .eval-ui-pin {
+  position: absolute;
+  top: 4px;
+  transform: translateX(-50%);
+}
+
+[data-iii-ui="eval"] .eval-ui-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding-left: 60px;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+}
+
+[data-iii-ui="eval"] .eval-ui-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+[data-iii-ui="eval"] .eval-ui-meter-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+[data-iii-ui="eval"] .eval-ui-meter {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 9999px;
+  background: var(--color-surface-selected);
+}
+
+[data-iii-ui="eval"] .eval-ui-meter > span {
+  display: block;
+  height: 100%;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--color-ink) 45%, transparent);
+}
+
+[data-iii-ui="eval"] .eval-ui-meter[data-tone="warn"] > span {
+  background: var(--color-warn);
+}
+
+[data-iii-ui="eval"] .eval-ui-kv {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  column-gap: 12px;
+  margin: 0;
+  padding: 4px 12px 8px;
+  font-size: 12px;
+}
+
+[data-iii-ui="eval"] .eval-ui-kv > div {
+  display: contents;
+}
+
+[data-iii-ui="eval"] .eval-ui-kv dt,
+[data-iii-ui="eval"] .eval-ui-kv dd {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 32px;
+  margin: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-kv dt {
+  color: var(--color-ink-faint);
+  font-weight: 500;
+}
+
+/* ── settings ─────────────────────────────────────────────────────── */
+
+[data-iii-ui="eval"] .eval-ui-settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 8px;
+}
+
+[data-iii-ui="eval"] .eval-ui-group-label {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  margin: 10px 0 0;
+  padding: 0 10px;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+[data-iii-ui="eval"] .eval-ui-group-label:first-child {
+  margin-top: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-nav-note {
+  margin: 0;
+  padding: 14px 10px 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-form {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  box-sizing: border-box;
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 20px 24px 32px;
+}
+
+[data-iii-ui="eval"] [data-narrow="true"] .eval-ui-form {
+  padding: 16px;
+}
+
+[data-iii-ui="eval"] .eval-ui-form p {
+  margin: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-step-section {
+  scroll-margin-top: 12px;
+}
+
+[data-iii-ui="eval"] .eval-ui-section-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+[data-iii-ui="eval"] .eval-ui-sub {
+  margin: 8px 0 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-textarea {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  resize: vertical;
+}
+
+[data-iii-ui="eval"] .eval-ui-textarea:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 1px;
+}
+
+[data-iii-ui="eval"] .eval-ui-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* A status word stays ink; its tone tints the chip and colours the dot. */
+[data-iii-ui="eval"] .eval-ui-chip {
+  color: var(--color-ink);
+  white-space: nowrap;
+}
+
+[data-iii-ui="eval"] .eval-ui-chip[data-tone="ok"] {
+  background: var(--color-ok-muted);
+}
+
+[data-iii-ui="eval"] .eval-ui-chip[data-tone="warn"] {
+  background: var(--color-warn-muted);
+}
+
+[data-iii-ui="eval"] .eval-ui-chip[data-tone="alert"] {
+  background: var(--color-alert-muted);
+}
+
+[data-iii-ui="eval"] .eval-ui-chip[data-tone="accent"] {
+  background: var(--color-accent-muted);
+}
+
+[data-iii-ui="eval"] .eval-ui-row-end > .eval-ui-chip {
+  justify-self: start;
+}
+
+[data-iii-ui="eval"] .eval-ui-nowrap {
+  white-space: nowrap;
+}
+
+[data-iii-ui="eval"] .eval-ui-ladder .eval-ui-lane:not([data-on]) .eval-ui-strong {
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="eval"] .eval-ui-filter {
+  padding: 4px 16px 8px;
+}
+
+[data-iii-ui="eval"] .eval-ui-filter .eval-ui-seg {
+  display: flex;
+  width: 100%;
+}
+
+[data-iii-ui="eval"] .eval-ui-filter .eval-ui-seg > * {
+  flex: 1;
+}
+
+[data-iii-ui="eval"] .eval-ui-caret {
+  flex-shrink: 0;
+  margin-left: auto;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="eval"] details[open] > summary .eval-ui-caret {
+  transform: rotate(180deg);
+}
+
+[data-iii-ui="eval"] .eval-ui-budget {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 12px;
+}
+
+[data-iii-ui="eval"] .eval-ui-span-all {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-wide {
+  display: flex;
+  flex-direction: column;
+}
+
+[data-iii-ui="eval"] .eval-ui-meters {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+[data-iii-ui="eval"] [data-narrow="true"] .eval-ui-meters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
+}
+
+[data-iii-ui="eval"] .eval-ui-filter .eval-ui-seg > * {
+  white-space: nowrap;
+}
+
+/* The dialog scrolls; its actions stay in view at its bottom edge, over
+   the dialog's own 24px padding (DialogContent's p-6). */
+[data-iii-ui="eval"] .eval-ui-dialog .eval-ui-actions {
+  position: sticky;
+  bottom: -24px;
+  margin-bottom: -24px;
+  padding: 12px 0 24px;
+  background: var(--color-panel-raised);
+}

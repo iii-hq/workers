@@ -316,6 +316,41 @@ impl<D: Db> Store<D> {
         rows.first().map(group_row).transpose()
     }
 
+    /// The recorded occurrence of one physical event: its id and its group.
+    pub async fn occurrence_by_dedupe_key(
+        &self,
+        dedupe_key: &str,
+    ) -> Result<Option<(String, Option<String>)>, SentinelError> {
+        let rows = self
+            .db
+            .query(
+                "SELECT id, group_id FROM sentinel_occurrences WHERE dedupe_key = ?",
+                vec![json!(dedupe_key)],
+            )
+            .await?;
+        Ok(rows
+            .first()
+            .and_then(|row| Some((text(row, "id")?, text(row, "group_id")))))
+    }
+
+    /// A group's triage, when it has been labelled.
+    pub async fn group_triage(
+        &self,
+        group_id: &str,
+    ) -> Result<Option<GroupTriageV1>, SentinelError> {
+        let rows = self
+            .db
+            .query(
+                "SELECT triage FROM sentinel_groups WHERE id = ?",
+                vec![json!(group_id)],
+            )
+            .await?;
+        Ok(rows
+            .first()
+            .and_then(|row| text(row, "triage"))
+            .and_then(|json| serde_json::from_str(&json).ok()))
+    }
+
     /// Whether this exact physical event was already recorded.
     pub async fn occurrence_group(
         &self,
@@ -345,6 +380,18 @@ impl<D: Db> Store<D> {
         &self,
         write: &OccurrenceWrite,
     ) -> Result<RecordOutcome, SentinelError> {
+        self.record_occurrence_with(write, false).await
+    }
+
+    /// [`Self::record_occurrence`], optionally holding the group where it
+    /// is: counted, never regressed, never brought back from an ignore. For
+    /// evidence that is not a verdict on the code — a failure a test
+    /// provoked on purpose, or one its contract cannot place.
+    pub async fn record_occurrence_with(
+        &self,
+        write: &OccurrenceWrite,
+        hold: bool,
+    ) -> Result<RecordOutcome, SentinelError> {
         // A promotion is not a duplicate of itself: the row it attaches was
         // inserted under this very key when the log arrived.
         if write.pending_occurrence_id.is_none() {
@@ -364,8 +411,11 @@ impl<D: Db> Store<D> {
                 }
             };
 
-            let transition =
-                crate::lifecycle::on_occurrence(&existing.state, write.worker_version.as_deref());
+            let transition = if hold {
+                crate::lifecycle::hold(&existing.state)
+            } else {
+                crate::lifecycle::on_occurrence(&existing.state, write.worker_version.as_deref())
+            };
             let statements = self.count_statements(write, &existing, &transition);
             let results = self.db.transaction(&statements).await?;
             let changed_group = results
@@ -725,7 +775,9 @@ impl<D: Db> Store<D> {
     /// Groups first seen before `seen_before_ms` that nobody has triaged
     /// yet, oldest first, skipping the first `offset`. Status does not
     /// matter: an ignored group still shows when it comes back, and its kind
-    /// is the same either way.
+    /// is the same either way. Report groups are not the sweep's: Eval owns
+    /// their paid analysis, and leaving them out keeps them from crowding
+    /// trace and log groups out of every page.
     pub async fn untriaged_groups(
         &self,
         seen_before_ms: i64,
@@ -740,7 +792,8 @@ impl<D: Db> Store<D> {
                  (SELECT COUNT(*) FROM sentinel_group_sessions s WHERE s.group_id = g.id) \
                  AS sessions_affected \
                  FROM sentinel_groups g \
-                 WHERE g.triage IS NULL AND g.archived = 0 AND g.first_seen_ms <= ? \
+                 WHERE g.triage IS NULL AND g.archived = 0 AND g.source <> 'report' \
+                 AND g.first_seen_ms <= ? \
                  ORDER BY g.first_seen_ms, g.id LIMIT ? OFFSET ?",
                 vec![
                     json!(seen_before_ms),
