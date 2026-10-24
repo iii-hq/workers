@@ -36,8 +36,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicI32, Ordering};
 
-use nix::sys::wait::{WaitStatus, waitpid};
-use nix::unistd::Pid;
+use nix::sys::wait::WaitStatus;
 
 use crate::error::InitError;
 
@@ -224,7 +223,7 @@ fn run_legacy(cmd: String) -> Result<(), InitError> {
     // exec` children must be forwarded to the dispatcher's waiter
     // thread, not silently discarded as "orphans".
     let status = loop {
-        match waitpid(Pid::from_raw(-1), None) {
+        match crate::child_exits::wait_any() {
             Ok(WaitStatus::Exited(pid, code)) => {
                 if crate::child_exits::dispatch_exit(pid.as_raw(), code) {
                     continue;
@@ -323,7 +322,7 @@ fn run_supervised(cmd: String, workdir: String, port_name: String) -> Result<(),
     // look like an orphan and the dispatcher's waiter thread would
     // wait forever.
     let status = loop {
-        match waitpid(Pid::from_raw(-1), None) {
+        match crate::child_exits::wait_any() {
             Ok(WaitStatus::Exited(pid, code)) => {
                 if crate::child_exits::dispatch_exit(pid.as_raw(), code) {
                     continue;
