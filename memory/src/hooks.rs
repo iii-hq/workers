@@ -1836,6 +1836,14 @@ Formal."
             .collect();
         ids.sort();
         assert_eq!(ids, ["fp-city", "fp-name"]);
+        // Asking what memory holds about you is how people check it.
+        let mut ids: Vec<String> = told(&deps, &[], "what do you remember about me?")
+            .await
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, ["fp-city", "fp-name"]);
         assert!(
             told(&deps, &[], "can you help me refactor my parser")
                 .await

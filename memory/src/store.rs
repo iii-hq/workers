@@ -71,7 +71,8 @@ const MIN_Z_POOL: usize = 20;
 pub struct Evidence {
     /// The question's content terms the memory holds: never a stopword,
     /// never the `user` a pronoun added, except `user` alone for a
-    /// question of pronouns only ("who am I").
+    /// question of pronouns only ("who am I"), or of pronouns and
+    /// `MEMORY_VERBS` ("what do you remember about me").
     pub matched: Vec<String>,
     /// How many content terms the question has.
     pub terms: usize,
@@ -215,6 +216,9 @@ pub const STOPWORDS: &[&str] = &[
     "which", "who", "whom", "whose", "why", "will", "with", "would", "you", "your", "yours",
 ];
 
+/// Verbs that ask what memory holds ("what do you remember about me"); English only, by decision.
+const MEMORY_VERBS: &[&str] = &["remember", "know", "tell", "recall"];
+
 /// Bytes of a recall query kept: half from its head, half from its tail.
 const QUERY_MAX_BYTES: usize = 800;
 
@@ -242,7 +246,8 @@ pub(crate) fn cap_query(query: &str) -> String {
 /// first-person pronouns expanded to the `user` entity handle so identity
 /// questions reach memories phrased about the user. The flag is true when
 /// the pronoun added `user`, which a typed "user" does not: that `user`
-/// ranks, but is [`Evidence`] only for a question of pronouns alone.
+/// ranks, but is [`Evidence`] only for a question of pronouns alone (or
+/// with [`MEMORY_VERBS`]).
 fn query_tokens(query: &str) -> (Vec<String>, bool) {
     let mut tokens = crate::index::tokenize(query);
     let mut seen = std::collections::HashSet::new();
@@ -766,7 +771,8 @@ impl Bank {
     /// caller embeds the query, if at all). First-person pronouns expand
     /// to the `user` entity handle so identity questions reach the memories
     /// phrased third-person about the user; the injection hook counts that
-    /// `user` as a match only in a question of pronouns alone ("who am I").
+    /// `user` as a match only in a question of pronouns alone ("who am I"),
+    /// or with `MEMORY_VERBS` ("what do you know about me").
     ///
     /// `embedding_model` is the model the provider REPORTED for `query_vec`;
     /// vectors are tagged the same way, so ones from any other model (an
@@ -866,9 +872,9 @@ impl Bank {
             .map(String::as_str)
             .filter(|t| !STOPWORDS.contains(t) && !(expanded && *t == "user"))
             .collect();
-        if content.is_empty() && expanded {
-            // A question of pronouns alone is about the user.
-            content.push("user");
+        if expanded && content.iter().all(|t| MEMORY_VERBS.contains(t)) {
+            // A question of pronouns alone, or of what memory holds of them, is about the user.
+            content = vec!["user"];
         }
         let inner = self.inner.read().await;
         let mut bm25 = inner.index.score(&query_tokens);
@@ -1667,6 +1673,32 @@ mod tests {
             "{:?}",
             evidence[&stray.id]
         );
+    }
+
+    #[tokio::test]
+    async fn a_question_about_what_memory_knows_of_me_is_about_the_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let mine = user_memory("The user lives in Recife");
+        let also = user_memory("The user drinks green tea");
+        let stray = memory("Ask who reviews the release, I think Marta");
+        for m in [&mine, &also, &stray] {
+            bank.commit(m.clone()).await.unwrap();
+        }
+
+        for query in [
+            "what do you remember about me",
+            "what do you know about me?",
+            "tell me about myself",
+        ] {
+            let (_, evidence) = evidence_for(&bank, query).await;
+            for m in [&mine, &also] {
+                assert_eq!(evidence[&m.id].matched, ["user"], "{query}: {}", m.text);
+            }
+            let e = evidence.get(&stray.id).cloned().unwrap_or_default();
+            assert!(e.matched.is_empty(), "{query}: {e:?}");
+        }
     }
 
     #[tokio::test]
