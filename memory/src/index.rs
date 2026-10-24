@@ -120,6 +120,13 @@ impl Bm25Index {
         self.doc_len.is_empty()
     }
 
+    /// Whether memory `id`'s indexed text (text plus entity handles) holds `term`.
+    pub fn has(&self, term: &str, id: &str) -> bool {
+        self.postings
+            .get(term)
+            .is_some_and(|docs| docs.contains_key(id))
+    }
+
     /// Okapi BM25 over the query tokens.
     pub fn score(&self, query_tokens: &[String]) -> HashMap<String, f32> {
         let n = self.doc_len.len() as f32;
