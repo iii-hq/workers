@@ -207,7 +207,9 @@ echo "[run-tests] engine listening"
 # `default`, where the engine's router forwards them to the sandbox-mock
 # adapter the harness registers in ide-e2e.
 echo "[run-tests] starting shell worker"
-(cd "$RUN_ROOT" && III_NAMESPACE=ide-e2e "$WORKER_BIN_TARGET" \
+# exec: without it bash 3.2 keeps the subshell, WORKER_PID names it, and the
+# cleanup kill leaves the worker running.
+(cd "$RUN_ROOT" && III_NAMESPACE=ide-e2e exec "$WORKER_BIN_TARGET" \
   --url "ws://127.0.0.1:$E2E_PORT" --config "$WORKER_CONFIG") \
   >"$WORKER_LOG" 2>&1 &
 WORKER_PID=$!
