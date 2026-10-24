@@ -172,15 +172,17 @@ impl WorkerVms {
             None => local_vm_command(&req.worker_name, &dir, run_override, over).await,
         }
         .map_err(SandboxError::BootFailed)?;
-        self.launch(&req.state_key, built.command)
+        self.launch(&req.state_key, built.command, built.env_stdin)
     }
 
     /// Spawn `cmd` as the next instance of `state_key`'s VM, its output pumped
-    /// into `console.log`.
+    /// into `console.log`, and write `env_stdin` (the `--env-stdin` frame) to
+    /// its stdin.
     pub(crate) fn launch(
         &self,
         state_key: &str,
         cmd: Command,
+        env_stdin: Vec<u8>,
     ) -> Result<WorkerStartResponse, SandboxError> {
         let id = vm_id(state_key);
         let dir = self.base.join(&id);
@@ -201,6 +203,16 @@ impl WorkerVms {
             stopping: AtomicBool::new(false),
             reaped: AtomicBool::new(false),
             ended: watch::Sender::new(None),
+        });
+        let stdin = child.stdin.take();
+        tokio::spawn(async move {
+            // On failure the VM gets a truncated frame and exits by itself,
+            // with the reason in its console.log.
+            if let Err(e) =
+                crate::cli::worker_manager::libkrun::feed_env_stdin(stdin, &env_stdin).await
+            {
+                tracing::warn!(error = %e, "cannot send the worker environment to the VM");
+            }
         });
         let console = Arc::new(Mutex::new(Console {
             dir,
@@ -568,7 +580,7 @@ fn stored_instance(dir: &Path) -> Result<u64, SandboxError> {
 }
 
 /// Record `instance` in `state.json`, truncate `console.log` and spawn `cmd`
-/// with null stdin, piped output and a lifeline.
+/// with piped stdin (the env frame) and output, and a lifeline.
 fn spawn(dir: &Path, instance: u64, mut cmd: Command) -> io::Result<(File, Lifeline, Child)> {
     std::fs::create_dir_all(dir)?;
     let console = open_private(&dir.join(CONSOLE_LOG), true)?;
@@ -576,7 +588,7 @@ fn spawn(dir: &Path, instance: u64, mut cmd: Command) -> io::Result<(File, Lifel
         open_private(&dir.join(STATE_FILE), true)?,
         &StateFile { instance },
     )?;
-    cmd.stdin(Stdio::null())
+    cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let lifeline = crate::daemon_exit::attach_lifeline(&mut cmd)?;
@@ -831,7 +843,7 @@ mod tests {
             assert_eq!(err.code().as_str(), "S505", "{err}");
 
             // A known VM: without the token, a stale instance is S505, not S503.
-            let known = vms.launch("k", sh("exit 0")).unwrap().vm_id;
+            let known = vms.launch("k", sh("exit 0"), Vec::new()).unwrap().vm_id;
             assert_eq!(
                 code(vms.start(start_req(auth, "k", local(t))).await),
                 "S505"
@@ -853,7 +865,9 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![]);
-        let started = vms.launch("k", sh("echo hi; sleep 30")).unwrap();
+        let started = vms
+            .launch("k", sh("echo hi; sleep 30"), Vec::new())
+            .unwrap();
         let id = started.vm_id;
         assert_eq!((id.as_str(), started.instance), (vm_id("k").as_str(), 1));
 
@@ -876,12 +890,15 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let t = t.path();
         let first = vms(t, Some("t"), vec![]);
-        let id = first.launch("k", sh("sleep 30")).unwrap().vm_id;
+        let id = first.launch("k", sh("sleep 30"), Vec::new()).unwrap().vm_id;
         first.stop(stop_req("t", &id, 1, 0)).await.unwrap();
         drop(first);
 
         let vms = vms(t, Some("t"), vec![]);
-        assert_eq!(vms.launch("k", sh("exit 0")).unwrap().instance, 2);
+        assert_eq!(
+            vms.launch("k", sh("exit 0"), Vec::new()).unwrap().instance,
+            2
+        );
         assert_eq!(code(vms.status(status_req("t", &id, 1))), "S503");
     }
 
@@ -891,7 +908,7 @@ mod tests {
         let t = t.path();
         let vms = vms(t, Some("t"), vec![]);
         let id = vms
-            .launch("k", sh("trap '' TERM; echo ready; sleep 30"))
+            .launch("k", sh("trap '' TERM; echo ready; sleep 30"), Vec::new())
             .unwrap()
             .vm_id;
         // The trap is set once `ready` is out.
@@ -909,9 +926,9 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
-        let id = vms.launch("k", sh("sleep 30")).unwrap().vm_id;
+        let id = vms.launch("k", sh("sleep 30"), Vec::new()).unwrap().vm_id;
 
-        let busy = vms.launch("k", sh("exit 0")).unwrap_err();
+        let busy = vms.launch("k", sh("exit 0"), Vec::new()).unwrap_err();
         assert_eq!(busy.code().as_str(), "S502");
         assert_eq!(
             busy.to_payload()["fix"],
@@ -931,7 +948,7 @@ mod tests {
         let id = vm_id("k");
         vms.slots().insert(id.clone(), Slot::Destroying(1));
 
-        assert_eq!(code(vms.launch("k", sh("exit 0"))), "S502");
+        assert_eq!(code(vms.launch("k", sh("exit 0"), Vec::new())), "S502");
         assert_eq!(code(vms.start(start_req("t", "k", local(t))).await), "S502");
         assert_eq!(code(vms.destroy(destroy_req("t", "k"))), "S502");
         assert_eq!(code(vms.status(status_req("t", &id, 1))), "S504");
@@ -943,7 +960,7 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![]);
-        let id = vms.launch("k", sh("exit 7")).unwrap().vm_id;
+        let id = vms.launch("k", sh("exit 7"), Vec::new()).unwrap().vm_id;
         wait_ended(&vms, &id, 1).await;
         // A file where the base dir was: ENOTDIR, which root cannot bypass.
         let base = t.join("workers");
@@ -972,7 +989,7 @@ mod tests {
     async fn exit_code_is_recorded() {
         let t = tempfile::tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
-        let id = vms.launch("k", sh("exit 7")).unwrap().vm_id;
+        let id = vms.launch("k", sh("exit 7"), Vec::new()).unwrap().vm_id;
         let status = wait_ended(&vms, &id, 1).await;
         assert!(matches!(status.state, State::Exited), "{status:?}");
         assert_eq!((status.exit_code, status.signal), (Some(7), None));
@@ -1003,7 +1020,7 @@ mod tests {
         std::os::unix::fs::symlink(t.join("target"), dir.join("console.log")).unwrap();
 
         let vms = vms(t, Some("t"), vec![]);
-        assert_eq!(code(vms.launch("k", sh("echo pwned"))), "S300");
+        assert_eq!(code(vms.launch("k", sh("echo pwned"), Vec::new())), "S300");
         assert_eq!(std::fs::read_to_string(t.join("target")).unwrap(), "keep");
     }
 
@@ -1013,7 +1030,11 @@ mod tests {
         let t = t.path();
         let vms = vms(t, Some("t"), vec![]);
         let id = vms
-            .launch("k", sh(r#"yes "$(printf %01000d 0)" | head -n 11000"#))
+            .launch(
+                "k",
+                sh(r#"yes "$(printf %01000d 0)" | head -n 11000"#),
+                Vec::new(),
+            )
             .unwrap()
             .vm_id;
         wait_ended(&vms, &id, 1).await;
@@ -1136,7 +1157,7 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let id = vms
-            .launch("k", sh("echo a; sleep 0.3; echo b >&2"))
+            .launch("k", sh("echo a; sleep 0.3; echo b >&2"), Vec::new())
             .unwrap()
             .vm_id;
 
@@ -1152,7 +1173,7 @@ mod tests {
     async fn follow_on_an_exited_instance_drains_and_returns() {
         let t = tempfile::tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
-        let id = vms.launch("k", sh("echo a")).unwrap().vm_id;
+        let id = vms.launch("k", sh("echo a"), Vec::new()).unwrap().vm_id;
         let status = wait_ended(&vms, &id, 1).await;
         assert!(matches!(status.state, State::Exited), "{status:?}");
 
@@ -1163,12 +1184,29 @@ mod tests {
         assert_eq!(lines(&recs), ["a"]);
     }
 
+    /// The env reaches `__vm-boot` on stdin, never argv (MOT-5492).
+    #[tokio::test]
+    async fn launch_writes_the_env_frame_to_the_vm_stdin() {
+        let t = tempfile::tempdir().unwrap();
+        let vms = vms(t.path(), Some("t"), vec![]);
+        let env = vec![("API_KEY".to_string(), "sk-secret".to_string())];
+        let frame = iii_supervisor::env_channel::encode_frame(&env).unwrap();
+        // Drops the 4-byte length prefix; ends only at EOF, so the pipe was closed.
+        let id = vms
+            .launch("k", sh("tail -c +5; echo"), frame)
+            .unwrap()
+            .vm_id;
+        wait_ended(&vms, &id, 1).await;
+        let recs = pumped(&vms, &logs_req("t", &id, false)).await;
+        assert_eq!(lines(&recs), [r#"[["API_KEY","sk-secret"]]"#]);
+    }
+
     #[tokio::test]
     async fn a_pump_resumes_after_the_cursor_and_ends_without_follow() {
         let t = tempfile::tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let id = vms
-            .launch("k", sh("echo a; echo b; sleep 30"))
+            .launch("k", sh("echo a; echo b; sleep 30"), Vec::new())
             .unwrap()
             .vm_id;
         wait_record(&t.path().join("workers").join(&id), "b").await;
@@ -1186,7 +1224,10 @@ mod tests {
     async fn a_sink_error_ends_the_pump() {
         let t = tempfile::tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
-        let id = vms.launch("k", sh("echo a; sleep 30")).unwrap().vm_id;
+        let id = vms
+            .launch("k", sh("echo a; sleep 30"), Vec::new())
+            .unwrap()
+            .vm_id;
         wait_record(&t.path().join("workers").join(&id), "a").await;
 
         let ended = vms

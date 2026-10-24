@@ -98,8 +98,8 @@ async fn a_missing_install_directory_is_refused() {
     );
 }
 
-/// The success path: a valid bundle produces a `__vm-boot` command carrying the
-/// caller's env, and nothing is spawned.
+/// The success path: a valid bundle produces a `__vm-boot` command with the
+/// caller's env on stdin (never in argv), and nothing is spawned.
 ///
 /// Ignored by default because preparing the rootfs pulls an OCI base image.
 #[tokio::test]
@@ -127,8 +127,12 @@ async fn a_valid_bundle_builds_a_boot_command() {
 
     let rendered = format!("{:?}", built.command.as_std());
     assert!(rendered.contains("__vm-boot"), "{rendered}");
-    // The caller's env reaches the guest as boot arguments.
-    assert!(rendered.contains("III_NAMESPACE=shop-dev"), "{rendered}");
+    // The caller's env reaches the guest on stdin, never as boot arguments,
+    // where `ps` would show it (MOT-5492).
+    assert!(rendered.contains("--env-stdin"), "{rendered}");
+    assert!(!rendered.contains("shop-dev"), "{rendered}");
+    let env = iii_supervisor::env_channel::read_frame(&mut built.env_stdin.as_slice()).unwrap();
+    assert!(env.contains(&("III_NAMESPACE".to_string(), "shop-dev".to_string())));
     // The state dir is the caller's, not ~/.iii/managed/probe.
     assert!(
         rendered.contains(&tmp.path().join("vm").display().to_string()),

@@ -95,6 +95,26 @@ pub struct VmCommand {
     /// Where the supervisor records the VM pid. A caller holding its own child
     /// handle does not need it.
     pub pid_file: PathBuf,
+    /// The worker env, as the `__vm-boot --env-stdin` frame. The command
+    /// carries no env values in argv, where `ps` would show them to every
+    /// local user (MOT-5492): whoever spawns it must write this to the
+    /// child's stdin and close it (see [`feed_env_stdin`]).
+    pub env_stdin: Vec<u8>,
+}
+
+/// Writes [`VmCommand::env_stdin`] into a spawned `__vm-boot` and closes the
+/// pipe. `__vm-boot` reads the frame before anything else, so this returns
+/// as soon as the frame is in the pipe.
+pub async fn feed_env_stdin(
+    stdin: Option<tokio::process::ChildStdin>,
+    frame: &[u8],
+) -> std::io::Result<()> {
+    use tokio::io::AsyncWriteExt;
+
+    let mut stdin =
+        stdin.ok_or_else(|| std::io::Error::other("the VM boot process has no stdin pipe"))?;
+    stdin.write_all(frame).await?;
+    stdin.shutdown().await
 }
 
 /// The binary that answers `__vm-boot`: always the running one, so the VMM,
@@ -139,8 +159,9 @@ pub fn build_vm_command(
         }
     }
 
-    let env_pairs: Vec<(String, String)> =
-        env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let env_pairs: Vec<(String, String)> = env.into_iter().collect();
+    let env_stdin = iii_supervisor::env_channel::encode_frame(&env_pairs)
+        .map_err(|e| format!("cannot pass the worker environment to the VM: {e}"))?;
     let control_sock = rootfs.join("control.sock");
     let shell_sock = rootfs.join("shell.sock");
     let pid_file = rootfs.join("vm.pid");
@@ -164,7 +185,6 @@ pub fn build_vm_command(
         &control_sock,
         &shell_sock,
         source_sync,
-        &env_pairs,
         mounts,
         args,
     ) {
@@ -185,7 +205,7 @@ pub fn build_vm_command(
         );
     }
 
-    cmd.stdin(std::process::Stdio::null());
+    cmd.stdin(std::process::Stdio::piped());
 
     // Deliberately no `setsid` here: how the child is detached belongs to
     // whoever spawns it. A caller that supervises its own children puts them in
@@ -194,12 +214,15 @@ pub fn build_vm_command(
     Ok(VmCommand {
         command: cmd,
         pid_file,
+        env_stdin,
     })
 }
 
 use super::adapter::{ContainerSpec, ContainerStatus, ImageInfo, RuntimeAdapter};
 
 const VM_BOOT_NETWORK_FLAG: &str = "--network";
+/// The env goes on stdin, never argv, where `ps` shows it (MOT-5492).
+const VM_BOOT_ENV_STDIN_FLAG: &str = "--env-stdin";
 
 #[allow(clippy::too_many_arguments)]
 fn vm_boot_args_oci(
@@ -215,7 +238,6 @@ fn vm_boot_args_oci(
     console_output: &Path,
     control_sock: &Path,
     shell_sock: &Path,
-    env: &[(String, String)],
     exec_args: &[String],
 ) -> Vec<OsString> {
     let mut out: Vec<OsString> = Vec::new();
@@ -239,10 +261,7 @@ fn vm_boot_args_oci(
     out.push(OsString::from("--shell-sock"));
     out.push(shell_sock.as_os_str().to_owned());
     out.push(OsString::from(VM_BOOT_NETWORK_FLAG));
-    for (k, v) in env {
-        out.push(OsString::from("--env"));
-        out.push(OsString::from(format!("{}={}", k, v)));
-    }
+    out.push(OsString::from(VM_BOOT_ENV_STDIN_FLAG));
     for arg in exec_args {
         out.push(OsString::from("--arg"));
         out.push(OsString::from(arg.as_str()));
@@ -286,7 +305,6 @@ fn vm_boot_args_dev(
     control_sock: &Path,
     shell_sock: &Path,
     source_sync: Option<&Path>,
-    env: &[(String, String)],
     mounts: &[(String, String)],
     exec_args: &[String],
 ) -> Vec<OsString> {
@@ -317,10 +335,7 @@ fn vm_boot_args_dev(
         out.push(source_sync.as_os_str().to_owned());
     }
     out.push(OsString::from(VM_BOOT_NETWORK_FLAG));
-    for (k, v) in env {
-        out.push(OsString::from("--env"));
-        out.push(OsString::from(format!("{}={}", k, v)));
-    }
+    out.push(OsString::from(VM_BOOT_ENV_STDIN_FLAG));
     for (host, guest) in mounts {
         out.push(OsString::from("--mount"));
         out.push(OsString::from(format!("{}:{}", host, guest)));
@@ -719,6 +734,8 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
             (None, String::new(), None)
         };
 
+        let env_stdin = iii_supervisor::env_channel::encode_frame(&env_pairs)
+            .context("cannot pass the worker environment to the VM")?;
         let mut cmd = std::process::Command::new(&self_exe);
         cmd.arg("__vm-boot");
         // Detached by design: a VM that outlives this process must not hold its lifeline.
@@ -737,7 +754,6 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
             &console_output_path,
             &control_sock_path,
             &shell_sock_path,
-            &env_pairs,
             &exec_args,
         ) {
             cmd.arg(boot_arg);
@@ -762,9 +778,24 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
 
         cmd.stdout(stdout_file);
         cmd.stderr(stderr_file);
-        cmd.stdin(std::process::Stdio::null());
+        cmd.stdin(std::process::Stdio::piped());
 
-        let child = cmd.spawn().context("failed to spawn VM boot process")?;
+        let mut child = cmd.spawn().context("failed to spawn VM boot process")?;
+        // `__vm-boot` reads the frame first thing and it is capped at
+        // `env_channel::MAX_PAYLOAD_BYTES`, so this blocking write does not
+        // wait on the boot.
+        if let Some(mut stdin) = child.stdin.take() {
+            use std::io::Write;
+            if let Err(e) = stdin.write_all(&env_stdin) {
+                drop(stdin);
+                // No half-fed VM left running untracked, and no zombie.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(
+                    anyhow::Error::new(e).context("cannot send the worker environment to the VM")
+                );
+            }
+        }
 
         let pid = child.id();
         crate::cli::pidfile::write_pid_file_strict(&Self::pid_file(&spec.name), pid)?;
@@ -910,7 +941,6 @@ mod tests {
 
     #[test]
     fn vm_boot_args_oci_enables_network_and_roundtrips() {
-        let env = vec![("III_URL".to_string(), "ws://localhost:3111".to_string())];
         let exec_args = vec!["--url".to_string(), "ws://localhost:3111".to_string()];
 
         let parsed = parse_vm_boot_args(vm_boot_args_oci(
@@ -926,7 +956,6 @@ mod tests {
             Path::new("/tmp/console.log"),
             Path::new("/tmp/control.sock"),
             Path::new("/tmp/shell.sock"),
-            &env,
             &exec_args,
         ));
 
@@ -941,7 +970,9 @@ mod tests {
         assert_eq!(parsed.control_sock.as_deref(), Some("/tmp/control.sock"));
         assert_eq!(parsed.shell_sock.as_deref(), Some("/tmp/shell.sock"));
         assert_eq!(parsed.source_sync, None);
-        assert_eq!(parsed.env, vec!["III_URL=ws://localhost:3111".to_string()]);
+        // The env travels on stdin, never in argv (MOT-5492).
+        assert!(parsed.env.is_empty());
+        assert!(parsed.env_stdin);
         assert_eq!(parsed.arg, exec_args);
         assert_eq!(parsed.rootfs_lower.as_deref(), Some("/tmp/base.erofs"));
         assert_eq!(parsed.rootfs_mode, "overlay");
@@ -950,7 +981,6 @@ mod tests {
 
     #[test]
     fn vm_boot_args_dev_enables_network_and_roundtrips() {
-        let env = vec![("III_URL".to_string(), "ws://localhost:3111".to_string())];
         let mounts = vec![("/host/src".to_string(), "/guest/src".to_string())];
         let exec_args = vec!["-c".to_string(), "exec bash /run.sh".to_string()];
 
@@ -966,7 +996,6 @@ mod tests {
             Path::new("/tmp/control.sock"),
             Path::new("/tmp/shell.sock"),
             Some(Path::new("/host/src")),
-            &env,
             &mounts,
             &exec_args,
         ));
@@ -981,9 +1010,33 @@ mod tests {
         assert_eq!(parsed.control_sock.as_deref(), Some("/tmp/control.sock"));
         assert_eq!(parsed.shell_sock.as_deref(), Some("/tmp/shell.sock"));
         assert_eq!(parsed.source_sync.as_deref(), Some("/host/src"));
-        assert_eq!(parsed.env, vec!["III_URL=ws://localhost:3111".to_string()]);
+        assert!(parsed.env.is_empty());
+        assert!(parsed.env_stdin);
         assert_eq!(parsed.mount, vec!["/host/src:/guest/src".to_string()]);
         assert_eq!(parsed.arg, exec_args);
+    }
+
+    #[tokio::test]
+    async fn feed_env_stdin_writes_the_frame_and_closes_the_pipe() {
+        let mut child = tokio::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let env = vec![("API_KEY".to_string(), "sk-secret".to_string())];
+        let frame = iii_supervisor::env_channel::encode_frame(&env).unwrap();
+        feed_env_stdin(child.stdin.take(), &frame).await.unwrap();
+        // `cat` only exits once it sees EOF, so this also proves the close.
+        let out = child.wait_with_output().await.unwrap();
+        assert_eq!(
+            iii_supervisor::env_channel::read_frame(&mut out.stdout.as_slice()).unwrap(),
+            env
+        );
+    }
+
+    #[tokio::test]
+    async fn feed_env_stdin_without_a_pipe_is_an_error() {
+        assert!(feed_env_stdin(None, b"").await.is_err());
     }
 
     #[test]
