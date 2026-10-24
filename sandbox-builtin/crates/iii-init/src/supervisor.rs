@@ -88,6 +88,7 @@ pub fn exec_worker() -> Result<(), InitError> {
     // can still find a live CHILD_PID (racily) or exit cleanly via the
     // _exit fallback.
     install_signal_handlers();
+    hold_krun_stdio_ports();
 
     // Spawn the shell-exec dispatcher thread if wired. Exec sessions are
     // separate children, not substitutes for the worker child. If the
@@ -167,6 +168,31 @@ fn maybe_spawn_shell_dispatcher() {
             );
         }
     }
+}
+
+/// The console ports libkrun adds for `__vm-boot`'s non-TTY stdio. Nothing in
+/// the guest uses them.
+const KRUN_STDIO_PORTS: [&str; 3] = ["krun-stdin", "krun-stdout", "krun-stderr"];
+
+/// Holds libkrun's stdio ports open for PID 1's life, as `worker_env` holds
+/// `iii.env`: a guest process that opens one again then gets EBUSY, where a
+/// second open of the port made the host's console device kill the VM.
+/// shortcut: a port the kernel names only after this pass stays unheld; poll
+/// for the names if that is ever seen.
+fn hold_krun_stdio_ports() {
+    for name in KRUN_STDIO_PORTS {
+        if let Some(path) = iii_supervisor::virtio::find_virtio_port_by_name(name)
+            && let Err(e) = hold_port(&path)
+        {
+            eprintln!("iii-init: warning: cannot hold {}: {e}", path.display());
+        }
+    }
+}
+
+/// Opens `path` and never closes it. Close-on-exec, so no worker inherits it.
+fn hold_port(path: &Path) -> std::io::Result<()> {
+    std::mem::forget(std::fs::File::open(path)?);
+    Ok(())
 }
 
 /// Spawn the worker, reap zombies, exit with the worker's code.
@@ -273,6 +299,37 @@ mod tests {
             matches!(err, InitError::MissingWorkerCmd),
             "expected MissingWorkerCmd, got: {err}"
         );
+    }
+
+    /// A held port stays open: a FIFO keeps accepting a non-blocking writer
+    /// only while some reader has it open.
+    #[test]
+    fn a_held_port_stays_open() {
+        use std::os::unix::fs::OpenOptionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("krun-stdout");
+        nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU).unwrap();
+        let writer = || {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&fifo)
+        };
+        assert!(writer().is_err(), "no reader yet, so ENXIO");
+        // A plain open of a FIFO waits for a writer; the port does not.
+        let opener = std::thread::spawn({
+            let fifo = fifo.clone();
+            move || hold_port(&fifo)
+        });
+        let keep_open = loop {
+            if let Ok(w) = writer() {
+                break w;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        opener.join().unwrap().unwrap();
+        drop(keep_open);
+        assert!(writer().is_ok(), "the held port was closed");
     }
 
     #[test]
