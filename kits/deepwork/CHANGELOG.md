@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.2
+
+- With `isolation=ticket`, cards whose `Files:` share an implementation file no longer run in the same wave: the later one waits for a later wave of the same round, branches from the run branch after the earlier one is integrated, and may code while that card's batch validates. Before, both coded side by side, the second cherry-pick conflicted, and that card lost its work and waited a whole round (a conflict in the last round left it undone). `isolation=shared` already had the rule. In run KAN-456, KAN-442 and KAN-443 both changed `eval/src/state.rs` in round 6; KAN-443 was coded again on a fresh worktree in round 7, and KAN-460, which depended on it, moved with it.
+
 ## 0.5.1
 
 - A card's scope includes its fallout: edits outside `Files:` and `Tests:` that only keep the project consistent with the card's change and add no behaviour (another use of a name it renamed, removed or re-typed, a regenerated golden or snapshot, a test or schema registry entry for a surface it added, removed or re-typed). The code phase finds and updates other uses of a name it changes, the batch worker may repair fallout on a retry, and review accepts a path outside the union whose whole diff is fallout, recording it in `checks`; anything else outside the union still fails, as does a weakened assertion. In run KAN-456, three batches whose checks were all green failed on scope alone (a schema registry, its goldens, a test fixture) until the orchestrator widened every card by comment; each cost a repair round. The harness-e2e scenario `deepwork_scope_fallout` pins it: a card that renames a field while a fixture outside its `Files:` builds the old one. On 0.5.0 the batch failed, the repair was refused as out of scope and the run ended with that card unverified and the suite red (15/100); on 0.5.1 the first batch was verified with the fixture recorded as fallout, twice (100/100), and `deepwork_batch_repair` still scored 100/100.
