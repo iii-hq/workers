@@ -449,6 +449,14 @@ impl ExecOut {
             };
             return Err(format!("guest command exited {code}: {detail}"));
         }
+        // Only a screenshot prints this much; a cut one decodes to a broken JPEG.
+        if v.get("stdout_truncated").and_then(Value::as_bool) == Some(true) {
+            return Err(format!(
+                "guest output was cut at sandbox::exec's output cap after {} bytes; \
+                 lower screenshot_quality for a smaller capture",
+                stdout.len()
+            ));
+        }
         Ok(Self { stdout, stderr })
     }
 }
@@ -545,6 +553,20 @@ mod tests {
         let err = bad.unwrap_err();
         assert!(err.contains("exited 2"), "{err}");
         assert!(err.contains("boom"), "{err}");
+    }
+
+    #[test]
+    fn exec_out_rejects_output_cut_at_the_cap() {
+        let cut = ExecOut::from_reply(&json!({
+            "stdout": "/9j/4AAQ", "exit_code": 0, "success": true, "stdout_truncated": true,
+        }));
+        let err = cut.unwrap_err();
+        assert!(err.contains("output cap"), "{err}");
+        assert!(err.contains("screenshot_quality"), "{err}");
+        let whole = ExecOut::from_reply(&json!({
+            "stdout": "/9j/4AAQ", "exit_code": 0, "success": true, "stdout_truncated": false,
+        }));
+        assert!(whole.is_ok());
     }
 
     #[test]
