@@ -9,7 +9,7 @@ and match its normalized `triggerType`, not `engine::register_trigger`.
 
 This is the end-to-end authoring guide: architecture, the message contract, the parser/view layer, how to wire a new family into the host component, and the two Storybook surfaces (fixture galleries + Playground scenarios) every renderer must ship with.
 
-**Reference implementations** (five families are wired today):
+**Reference implementations** (four families are wired today):
 
 | Family | Module | Predicate | Notable |
 |--------|--------|-----------|---------|
@@ -17,7 +17,6 @@ This is the end-to-end authoring guide: architecture, the message contract, the 
 | `engine::*::list` | [`../web/src/components/chat/engine/`](../web/src/components/chat/engine) | `isEngineListFunction` | read-only list/info views, no preview |
 | `directory::*` | [`../web/src/components/chat/directory/`](../web/src/components/chat/directory) | `isDirectoryFunction` | skills / system prompts / agents / registry views |
 | `web::fetch` | [`../web/src/components/chat/web/`](../web/src/components/chat/web) | `isWebFunction` | single tool — smallest end-to-end example |
-| `worker::*` | [`../web/src/components/chat/worker/`](../web/src/components/chat/worker) | `isWorkerFunction` | lifecycle ops, request JSON used as preview |
 
 > Starting a brand-new family? Copy [`web/`](../web/src/components/chat/web) for the smallest complete example, or [`sandbox/`](../web/src/components/chat/sandbox) for the full feature set (terminal chrome, error views, previews).
 
@@ -39,7 +38,7 @@ The default body is two `ValuePane`s (request + response) with `JsonHighlight`. 
 
 ## 2. How it works today
 
-FCM is the host; each function family is a small plugin module that exports a `ToolView` object plus a `FunctionIdLabel`. FCM imports the five families directly and tries each in turn with the `??` (nullish-coalescing) operator — first non-null wins.
+FCM is the host; each function family is a small plugin module that exports a `ToolView` object plus a `FunctionIdLabel`. FCM imports the four families directly and tries each in turn with the `??` (nullish-coalescing) operator — first non-null wins.
 
 ```mermaid
 flowchart TB
@@ -48,7 +47,7 @@ flowchart TB
   label["FunctionIdLabel branch"]
   preview["customPreview = chained tryRenderPreview()"]
   terminal["customTerminal = chained tryRender()"]
-  families["Sandbox / Engine / Directory / Worker / Web ToolView"]
+  families["Sandbox / Engine / Directory / Web ToolView"]
   json["ValuePane JSON fallback"]
   tabs["Tabs: terminal + raw json"]
 
@@ -69,19 +68,17 @@ const customPreview =
   SandboxToolView.tryRenderPreview(message) ??
   EngineToolView.tryRenderPreview(message) ??
   DirectoryToolView.tryRenderPreview(message) ??
-  WorkerToolView.tryRenderPreview(message) ??
   WebToolView.tryRenderPreview(message)
 
 const customTerminal = !pending
   ? (SandboxToolView.tryRender(message) ??
     EngineToolView.tryRender(message) ??
     DirectoryToolView.tryRender(message) ??
-    WorkerToolView.tryRender(message) ??
     WebToolView.tryRender(message))
   : null
 ```
 
-> **Note on scale.** Five families chained by hand is fine; it is explicit and tree-shakes cleanly. There is no plugin *registry* yet — see [Scale beyond hand-wiring](#11-scale-beyond-hand-wiring) for the refactor sketch if the chain grows unwieldy. Until then, follow the [minimal wiring](#7-wire-the-family-into-functioncallmessagetsx) below.
+> **Note on scale.** Four families chained by hand is fine; it is explicit and tree-shakes cleanly. There is no plugin *registry* yet — see [Scale beyond hand-wiring](#11-scale-beyond-hand-wiring) for the refactor sketch if the chain grows unwieldy. Until then, follow the [minimal wiring](#7-wire-the-family-into-functioncallmessagetsx) below.
 
 ---
 
@@ -226,7 +223,7 @@ Export a single `ToolView` object. Every family today exposes the same surface:
 | `is<Family>Function(id)` | FCM routing (label + chains) | Match against an explicit `Set` of ids — never a broad regex. The name can reflect the subset you handle (e.g. `isEngineListFunction`). |
 | `tryRender(message)` | Not pending; running or done | `ReactNode \| null`. Check errors first, then `switch (functionId)`. |
 | `tryRenderRunning` | (alias) | Set to `tryRender`; running state lives inside each view via the `running` prop. |
-| `tryRenderPreview(message)` | `pendingApproval` | Compact approval UI; `null` -> FCM shows request JSON. Return `null` if the request JSON is already a fine preview (see `worker`, `directory`). |
+| `tryRenderPreview(message)` | `pendingApproval` | Compact approval UI; `null` -> FCM shows request JSON. Return `null` if the request JSON is already a fine preview (see `directory`). |
 | `<Family>FunctionIdLabel` | Header | Optional. Dim the `family::` prefix, emphasize the tail. |
 
 Canonical `tryRender` skeleton (from [`web/index.tsx`](../web/src/components/chat/web/index.tsx)):
@@ -349,7 +346,6 @@ import { MyFeatureFunctionIdLabel, MyFeatureToolView } from '@/components/chat/m
 function FunctionIdLabel({ functionId }: { functionId: string }) {
   if (DirectoryToolView.isDirectoryFunction(functionId)) return <DirectoryFunctionIdLabel functionId={functionId} />
   if (EngineToolView.isEngineListFunction(functionId)) return <EngineFunctionIdLabel functionId={functionId} />
-  if (WorkerToolView.isWorkerFunction(functionId)) return <WorkerFunctionIdLabel functionId={functionId} />
   if (WebToolView.isWebFunction(functionId)) return <WebFunctionIdLabel functionId={functionId} />
   if (SandboxToolView.isSandboxFunction(functionId)) return <SandboxFunctionIdLabel functionId={functionId} />
   if (MyFeatureToolView.isMyFeatureFunction(functionId)) return <MyFeatureFunctionIdLabel functionId={functionId} />
@@ -364,7 +360,6 @@ const customPreview =
   SandboxToolView.tryRenderPreview(message) ??
   EngineToolView.tryRenderPreview(message) ??
   DirectoryToolView.tryRenderPreview(message) ??
-  WorkerToolView.tryRenderPreview(message) ??
   WebToolView.tryRenderPreview(message) ??
   MyFeatureToolView.tryRenderPreview(message)
 
@@ -372,7 +367,6 @@ const customTerminal = !pending
   ? (SandboxToolView.tryRender(message) ??
     EngineToolView.tryRender(message) ??
     DirectoryToolView.tryRender(message) ??
-    WorkerToolView.tryRender(message) ??
     WebToolView.tryRender(message) ??
     MyFeatureToolView.tryRender(message))
   : null
@@ -433,7 +427,7 @@ export const MyFeatureFamily: Story = {
 }
 ```
 
-That mirrors the five shipping galleries (`SandboxFamily`, `DirectoryFamily`, `EngineFamily`, `WebFamily`, `WorkerFamily`). Open **Chat / FunctionCallMessage / myfeature family** and confirm the **terminal** (default) and **raw json** tabs on each card.
+That mirrors the four shipping galleries (`SandboxFamily`, `DirectoryFamily`, `EngineFamily`, `WebFamily`). Open **Chat / FunctionCallMessage / myfeature family** and confirm the **terminal** (default) and **raw json** tabs on each card.
 
 Cover, at minimum: one **done** fixture per `function_id` (mix envelope-wrapped and raw payloads), plus **pending**, **running**, and **error / gate denial** fixtures for the states your renderer handles.
 
@@ -489,7 +483,7 @@ Verify: `pnpm storybook` -> open the scenario under **Playground** -> send any m
 | Running shimmer | `running: true` | shorten `waitMs` and watch mid-flight |
 | Error / gate | error fixture | `output: { error: … }` — see [`error-on-fcall.ts`](../web/src/stories/playground/scenarios/error-on-fcall.ts) |
 
-> **Existing gap:** the fixtures cover all five families, but there is **no** dedicated per-family `*::*` Playground scenario yet (only generic ones like `multi-function-agent`, `pending-approval`, `error-on-fcall`). Adding a focused scenario when you touch a family doubles as the template for the next one.
+> **Existing gap:** the fixtures cover all four families, but there is **no** dedicated per-family `*::*` Playground scenario yet (only generic ones like `multi-function-agent`, `pending-approval`, `error-on-fcall`). Adding a focused scenario when you touch a family doubles as the template for the next one.
 
 ---
 

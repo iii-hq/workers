@@ -829,12 +829,7 @@ function WorkersPage({
                   )}
                 />
               ) : outside ? (
-                <WorkerView
-                  key={outside.name}
-                  worker={outside}
-                  actions={actions}
-                  onStopped={live.refresh}
-                />
+                <WorkerView key={outside.name} worker={outside} />
               ) : data.composed ? (
                 <ProjectView
                   api={api}

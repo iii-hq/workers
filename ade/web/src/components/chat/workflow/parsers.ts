@@ -229,7 +229,7 @@ export function tallyNodes(nodes: Record<string, NodeState>): DagCounts {
   return counts
 }
 
-/* ---------------- generic parse helpers (mirror worker/parsers) ---------------- */
+/* ---------------- generic parse helpers ---------------- */
 
 export function safeParseRequest<T>(
   schema: z.ZodType<T>,

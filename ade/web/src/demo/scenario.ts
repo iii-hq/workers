@@ -1074,7 +1074,7 @@ function spawnInput(child: ChildSpec) {
     options: {
       max_turns: 12,
       output: { type: 'text' },
-      functions: { allow: child.allow, deny: ['compose::*', 'worker::remove'] },
+      functions: { allow: child.allow, deny: ['compose::*'] },
     },
   }
 }
@@ -1234,18 +1234,16 @@ export async function* runScenario(
     signal,
     (stepSpan) =>
       call({
-        fn: 'worker::add',
-        worker: 'worker-manager',
+        fn: 'compose::add',
+        worker: 'compose',
         input: {
-          source: { kind: 'local', path: './payments-ledger' },
-          wait: true,
+          file: './worker-compose.yaml',
+          workers: ['./payments-ledger'],
         },
         output: {
-          name: 'payments-ledger',
-          version: '0.1.0',
-          status: 'installed',
-          awaited_ready: true,
-          config_path: './config.yaml',
+          operation_id: 'payments-ledger-add',
+          requested: 1,
+          status: 'accepted',
         },
         runMs: 1600,
         parentSpan: stepSpan,

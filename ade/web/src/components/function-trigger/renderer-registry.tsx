@@ -25,7 +25,6 @@ import {
 import { RouterFunctionIdLabel, RouterToolView } from '@/components/chat/router'
 import { StateFunctionIdLabel, StateToolView } from '@/components/chat/state'
 import { WebFunctionIdLabel, WebToolView } from '@/components/chat/web'
-import { WorkerFunctionIdLabel, WorkerToolView } from '@/components/chat/worker'
 import {
   WorkflowFunctionIdLabel,
   WorkflowToolView,
@@ -36,8 +35,8 @@ import type { FunctionTriggerMessage } from '@/types/chat'
 import type { FunctionTriggerRenderer } from '@/types/injectable-ui'
 
 /**
- * The first-party families (10 since directory, browser, shell, and sandbox
- * moved into their workers' injected UI), in the exact order of the old `??`
+ * The first-party families (directory, browser, shell, and sandbox moved
+ * into their workers' injected UI), in the exact order of the old `??`
  * chains. Each family's `tryRender*` already gates on its own function ids,
  * so an entry returning `null` falls through to the next.
  */
@@ -62,14 +61,6 @@ export const FIRST_PARTY_RENDERERS: readonly FunctionTriggerRenderer[] = [
   },
   // directory::* rendering is no longer first-party: the iii-directory
   // worker ships it as injected UI (iii-directory/ui/src/function-trigger).
-  {
-    id: 'first-party/worker',
-    isMatch: WorkerToolView.isWorkerFunction,
-    tryRender: WorkerToolView.tryRender,
-    tryRenderRunning: WorkerToolView.tryRenderRunning,
-    tryRenderPreview: WorkerToolView.tryRenderPreview,
-    FunctionIdLabel: WorkerFunctionIdLabel,
-  },
   {
     id: 'first-party/web',
     isMatch: WebToolView.isWebFunction,

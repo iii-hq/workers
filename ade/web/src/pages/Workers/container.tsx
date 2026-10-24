@@ -30,7 +30,6 @@ import { StatusPanel } from '@/components/ui/StatusPanel'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { StatusBar, Toolbar } from '@/components/ui/Toolbar'
 import type { PageCommandsApi } from '@/types/injectable-ui'
-import { stopSupervisorWorker } from './api/workers'
 import { WorkerSurface } from './components/WorkerSurface'
 import type {
   ComposeApi,
@@ -745,31 +744,8 @@ function LogTab({
 }
 
 /** A worker connected to the engine that compose does not run: what it is and what it registered. */
-export function WorkerView({
-  worker,
-  actions,
-  onStopped,
-}: {
-  worker: WorkerRow
-  actions: Actions
-  onStopped: () => void
-}) {
+export function WorkerView({ worker }: { worker: WorkerRow }) {
   const tone = toneFor(worker.status === 'connected' ? 'ready' : worker.status)
-  const stop = async () => {
-    const ok = await actions.confirm({
-      title: `Stop ${worker.name}?`,
-      description:
-        'The worker supervisor stops the process. Start it again from where it was launched.',
-      confirmLabel: 'Stop',
-      tone: 'danger',
-    })
-    if (!ok) return
-    const stopped = await actions.run(`Stopping ${worker.name}`, async () => {
-      await stopSupervisorWorker(worker.name)
-      return { status: 'ok' }
-    })
-    if (stopped) onStopped()
-  }
   return (
     <div className="wk-view">
       <div className="wk-masthead">
@@ -785,18 +761,6 @@ export function WorkerView({
             {worker.pid ? <span>pid {worker.pid}</span> : null}
             {worker.ipAddress ? <span>{worker.ipAddress}</span> : null}
           </div>
-        </div>
-        <div className="wk-actions">
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={!worker.stopEnabled || actions.busy}
-            title={worker.stopDisabledReason ?? undefined}
-            onClick={() => void stop()}
-          >
-            <Square />
-            Stop
-          </Button>
         </div>
       </div>
       {worker.status === 'connected' ? (

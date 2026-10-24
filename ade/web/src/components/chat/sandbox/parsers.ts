@@ -1,7 +1,7 @@
 import { z } from 'zod'
 
 /* Zod schemas mirroring the sandbox::* request/response shapes from
-   `motia/crates/iii-worker/src/sandbox_daemon/*` and the shared
+   `sandbox-builtin/src/sandbox_daemon/*` and the shared
    `iii-shell-proto` (FsEntry, FsMatch, FsSedFileResult).
 
    The Rust handlers route via `RegisterFunction::new_async` with
