@@ -3,8 +3,9 @@
 How to write the `README.md` for a worker in this repo.
 
 A worker's README is consumer-facing: it lands as the `readme` field on
-`POST /publish`, it is what someone reads after `iii trigger engine::workers::info name=<name>`,
-and it is the page on the registry. Treat it as a **how-to**, not a
+`POST /publish`, it is what someone reads after
+`iii trigger directory::registry::workers::info name=<name> readme=true`, and it
+is the page on the registry. Treat it as a **how-to**, not a
 reference. The reference lives in the code — rustdoc, source links,
 `engine::workers::info`, IDE autocomplete on function ids.
 
