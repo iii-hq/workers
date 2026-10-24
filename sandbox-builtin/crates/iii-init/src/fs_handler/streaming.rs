@@ -30,7 +30,7 @@ use iii_shell_proto::{FsReadMeta, FsResult, ShellMessage};
 
 use super::ops::temp_sibling;
 use super::{FsCallResult, FsError, parse_mode};
-use crate::shell_dispatcher::Writer;
+use crate::shell_dispatcher::{Window, Writer};
 
 /// Size of each chunk sent during `ReadStart` streaming.
 const READ_CHUNK_SIZE: usize = 64 * 1024;
@@ -214,11 +214,19 @@ pub(crate) fn handle_write_start_with_timeout(
 /// (e.g. path not found, is a directory), so the caller can emit the
 /// `FsError` frame itself without risk of sending two terminal frames.
 ///
+/// Each chunk waits for credit on `window`; when the host cancels the
+/// session the read stops with a terminal `FsError` (`S218`).
+///
 /// Errors:
 /// - `S211` — path does not exist.
 /// - `S212` — path is a directory.
 /// - `S216` — I/O error opening the file.
-pub fn handle_read_start(path: String, writer: &Writer, corr_id: u32) -> Result<(), FsError> {
+pub(crate) fn handle_read_start(
+    path: String,
+    writer: &Writer,
+    corr_id: u32,
+    window: &Window,
+) -> Result<(), FsError> {
     use iii_shell_proto::flags::FLAG_TERMINAL;
 
     let p = Path::new(&path);
@@ -285,6 +293,18 @@ pub fn handle_read_start(path: String, writer: &Writer, corr_id: u32) -> Result<
                 return Ok(());
             }
         };
+        if !window.acquire() {
+            crate::shell_dispatcher::send_frame(
+                writer,
+                corr_id,
+                FLAG_TERMINAL,
+                &ShellMessage::FsError {
+                    code: "S218".to_string(),
+                    message: "read cancelled by the host".to_string(),
+                },
+            );
+            return Ok(());
+        }
         let encoded = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
         let chunk = ShellMessage::FsChunk { data_b64: encoded };
         if !crate::shell_dispatcher::send_frame(writer, corr_id, 0, &chunk) {

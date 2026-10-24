@@ -222,10 +222,13 @@ async fn stream_via_channel(
                     }
                 }
                 Err(e) => {
+                    // The channel closes as if whole whatever the writer
+                    // does, so this message is the only sign of the cut.
                     let _ = writer
                         .send_message(
                             &serde_json::json!({
-                                "error": format!("read from supervisor failed: {e}")
+                                "error": format!("read from supervisor failed: {e}"),
+                                "code": "S218",
                             })
                             .to_string(),
                         )

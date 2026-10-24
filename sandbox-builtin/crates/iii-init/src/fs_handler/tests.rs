@@ -14,6 +14,7 @@
 
 use super::ops;
 use super::streaming;
+use crate::shell_dispatcher::Window;
 use iii_shell_proto::{FsResult, ShellMessage};
 use std::io::Write;
 
@@ -502,8 +503,8 @@ fn collect_messages(rx: std::sync::mpsc::Receiver<Vec<u8>>) -> Vec<ShellMessage>
 }
 
 /// A read stream waits for room in a full writer channel instead of dropping
-/// frames: under the host relay's backpressure a dropped chunk was a short
-/// file, and a dropped FsEnd a read that never ended.
+/// frames: a dropped chunk was a short file, and a dropped FsEnd a read that
+/// never ended.
 #[test]
 fn read_stream_waits_for_a_full_writer_instead_of_dropping_frames() {
     let dir = tmpdir();
@@ -512,7 +513,9 @@ fn read_stream_waits_for_a_full_writer_instead_of_dropping_frames() {
     std::fs::write(&f, &payload).unwrap();
     let (writer, frame_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
     let path = f.to_string_lossy().into_owned();
-    let stream = std::thread::spawn(move || streaming::handle_read_start(path, &writer, 7));
+    let stream = std::thread::spawn(move || {
+        streaming::handle_read_start(path, &writer, 7, &Window::new(u32::MAX))
+    });
 
     // A slow host: it starts draining only once the channel is long full.
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -547,7 +550,13 @@ fn read_stream_delivers_meta_then_chunks_then_end() {
     let (writer, frame_rx) = mock_writer();
 
     // Run read handler in this thread (it's sync).
-    streaming::handle_read_start(f.to_string_lossy().into(), &writer, 42).unwrap();
+    streaming::handle_read_start(
+        f.to_string_lossy().into(),
+        &writer,
+        42,
+        &Window::new(u32::MAX),
+    )
+    .unwrap();
     // Drop writer so frame_rx drains.
     drop(writer);
 
@@ -583,10 +592,50 @@ fn read_stream_delivers_meta_then_chunks_then_end() {
     assert_eq!(collected, payload);
 }
 
+/// A read runs at most a window of chunks ahead of the host's credit, so it
+/// never fills the shared writer ahead of other sessions' frames. Credit lets
+/// it go on, and a cancel stops it with a terminal S218.
+#[test]
+fn read_stream_waits_for_credit_and_stops_when_cancelled() {
+    let dir = tmpdir();
+    let f = dir.path().join("big.bin");
+    let window_len = iii_shell_proto::SEND_WINDOW as usize;
+    std::fs::write(&f, vec![7u8; 4 * window_len * 64 * 1024]).unwrap();
+    let (writer, frame_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1024);
+    let window = Window::new(iii_shell_proto::SEND_WINDOW);
+    let path = f.to_string_lossy().into_owned();
+    let stream = {
+        let window = window.clone();
+        std::thread::spawn(move || streaming::handle_read_start(path, &writer, 7, &window))
+    };
+    let next_frames = || {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let frames: Vec<_> = frame_rx.try_iter().collect();
+        frames
+            .iter()
+            .map(|f| iii_shell_proto::decode_frame_body(&f[4..]).unwrap())
+            .collect::<Vec<_>>()
+    };
+    let is_chunk = |m: &(u32, u8, ShellMessage)| matches!(m.2, ShellMessage::FsChunk { .. });
+
+    let first = next_frames();
+    assert!(matches!(first[0].2, ShellMessage::FsMeta(_)));
+    assert_eq!(first.iter().filter(|m| is_chunk(m)).count(), window_len);
+    window.grant(2);
+    assert_eq!(next_frames().iter().filter(|m| is_chunk(m)).count(), 2);
+    window.cancel();
+    stream.join().unwrap().unwrap();
+    let last = next_frames();
+    assert_eq!(last.len(), 1, "a cancelled read sent more chunks: {last:?}");
+    assert!(last[0].1 & iii_shell_proto::flags::FLAG_TERMINAL != 0);
+    assert!(matches!(&last[0].2, ShellMessage::FsError { code, .. } if code == "S218"));
+}
+
 #[test]
 fn read_stream_missing_file_returns_s211() {
     let (writer, _rx) = mock_writer();
-    let err = streaming::handle_read_start("/no/such/file".into(), &writer, 1).unwrap_err();
+    let err = streaming::handle_read_start("/no/such/file".into(), &writer, 1, &Window::new(1))
+        .unwrap_err();
     assert_eq!(err.code, "S211");
 }
 
@@ -594,8 +643,13 @@ fn read_stream_missing_file_returns_s211() {
 fn read_stream_on_directory_returns_s212() {
     let dir = tmpdir();
     let (writer, _rx) = mock_writer();
-    let err =
-        streaming::handle_read_start(dir.path().to_string_lossy().into(), &writer, 2).unwrap_err();
+    let err = streaming::handle_read_start(
+        dir.path().to_string_lossy().into(),
+        &writer,
+        2,
+        &Window::new(1),
+    )
+    .unwrap_err();
     assert_eq!(err.code, "S212");
 }
 

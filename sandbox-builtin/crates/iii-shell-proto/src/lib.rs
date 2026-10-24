@@ -59,6 +59,13 @@ pub const MAX_FRAME_SIZE: usize = 4 * 1024 * 1024;
 /// this much, not `MAX_FRAME_SIZE`, per attempt.
 pub const FRAME_READ_INITIAL_CAP: usize = 64 * 1024;
 
+/// How many output frames (`Stdout`, `Stderr`, `FsChunk`) a session's guest
+/// side may send beyond what the host has acknowledged with
+/// [`ShellMessage::Credit`]. A client that reads slowly then holds back only
+/// its own session, and no session fills the shared channel ahead of the
+/// others' frames.
+pub const SEND_WINDOW: u32 = 16;
+
 /// Bitmask flags carried in the 1-byte header field.
 pub mod flags {
     /// This frame ends the session with `corr_id`. Relays/dispatchers
@@ -333,6 +340,13 @@ pub enum ShellMessage {
     Signal {
         /// POSIX signal number (e.g. 15 for SIGTERM, 9 for SIGKILL).
         signal: i32,
+    },
+    /// Host → guest: the session's client took `frames` more of its
+    /// frames, so its output may run that much further ahead; see
+    /// [`SEND_WINDOW`].
+    Credit {
+        /// Frames delivered since the last grant.
+        frames: u32,
     },
     /// Guest → host: dispatcher-side failure (spawn failed, child
     /// setup ioctl failed, PTY allocation failed, …). Usually
@@ -671,6 +685,11 @@ mod tests {
     #[test]
     fn signal_roundtrip() {
         roundtrip(13, 0, &ShellMessage::Signal { signal: 15 });
+    }
+
+    #[test]
+    fn credit_roundtrip() {
+        roundtrip(13, 0, &ShellMessage::Credit { frames: 4 });
     }
 
     #[test]

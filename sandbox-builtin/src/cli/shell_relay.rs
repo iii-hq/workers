@@ -28,9 +28,18 @@
 //! Handshake: when a client connects, the relay sends a 4-byte
 //! big-endian `id_offset` announcing which `corr_id` range it owns.
 //! The client generates ids starting at `id_offset + 1` and stays
-//! below `id_offset + ID_RANGE_STEP`. With [`MAX_CLIENTS`] concurrent
-//! slots that's ~268M ids per client — plenty for any realistic
-//! workload.
+//! below `id_offset + ID_RANGE_STEP`. Every connection gets a range
+//! no live client holds and no session the guest may still be ending
+//! uses (see [`Clients`]), so a session's late frames can never reach
+//! another client, and a client's slot is free again the moment it
+//! leaves.
+//!
+//! Flow control: the guest sends a session at most
+//! [`iii_shell_proto::SEND_WINDOW`] output frames ahead of what its
+//! client has read, and the relay grants more with a `Credit` frame as
+//! it writes them to the client. So `vm_reader_task` never waits for a
+//! client: a slow reader holds back only its own session, and a large
+//! `fs::read` arrives whole however many other sessions are live.
 //!
 //! Authorization: connecting peers must share our euid (checked via
 //! `SO_PEERCRED` on Linux, `getpeereid` on macOS/BSD). Exec is a
@@ -48,7 +57,8 @@ use tokio::net::UnixListener;
 use tokio::sync::mpsc;
 
 use iii_supervisor::shell_protocol::{
-    FRAME_HEADER_SIZE, MAX_FRAME_SIZE, ShellMessage, encode_frame,
+    FRAME_HEADER_SIZE, MAX_FRAME_SIZE, SEND_WINDOW, ShellMessage, encode_frame,
+    flags::FLAG_TERMINAL,
 };
 
 /// Maximum concurrent clients. Each gets a non-overlapping slice of
@@ -57,9 +67,9 @@ use iii_supervisor::shell_protocol::{
 /// (interactive dev sessions), but headroom is cheap.
 pub const MAX_CLIENTS: u32 = 16;
 
-/// Size of each client's `corr_id` range. `u32::MAX / MAX_CLIENTS`.
-/// Exposed so clients in this crate can compute their id ceiling.
-pub const ID_RANGE_STEP: u32 = u32::MAX / MAX_CLIENTS;
+/// Size of each connection's `corr_id` range. Ranges cycle through the
+/// `u32` space, one per connection.
+pub const ID_RANGE_STEP: u32 = 1 << 16;
 
 /// A pre-read frame ready to forward. Owns its bytes — tasks hand
 /// these around via mpsc and write them out whole.
@@ -100,8 +110,11 @@ impl Drop for ClientBytesGuard {
 struct RouteEntry {
     sender: mpsc::Sender<FrameBytes>,
     owner_ids: Arc<Mutex<HashSet<u32>>>,
-    /// Ends the owning client's session; see [`SLOW_CLIENT_GRACE`].
+    /// Ends the owning client's session; see [`CLIENT_WRITE_CAPACITY`].
     kick: Arc<tokio::sync::Notify>,
+    /// A frame of this session was dropped, so none after it may be
+    /// delivered. The entry stays until the terminal frame.
+    overrun: bool,
 }
 
 /// Maps a `corr_id` to the [`RouteEntry`] that delivers its response
@@ -110,33 +123,25 @@ struct RouteEntry {
 /// through or the owning client disconnects.
 type Routes = Arc<Mutex<HashMap<u32, RouteEntry>>>;
 
-/// Per-slot state. `Cooldown` marks a slot recently released by a
-/// disconnecting client — held unavailable briefly so any SIGKILL
-/// signals we sent for its owned sessions have time to tear down
-/// matching guest-side sessions before a new client can reclaim the
-/// same `corr_id` range. See `client_session` for the full race
-/// writeup.
-#[derive(Debug, Clone, Copy)]
-enum SlotState {
-    Free,
-    Occupied,
-    Cooldown(Instant),
+/// Live connections and the `corr_id` ranges handed out to them.
+#[derive(Default)]
+struct Clients {
+    /// The `id_offset` of every live connection; at most [`MAX_CLIENTS`].
+    live: HashSet<u32>,
+    /// Where the search for the next free range starts.
+    next_range: u32,
+    /// Sessions whose client left before the guest ended them. Their
+    /// late frames find no route, and their range is not handed out
+    /// again until the guest's terminal frame for them arrives.
+    lingering: HashSet<u32>,
 }
 
-/// Slot table for active client connections. `SlotState` gives each
-/// slot an additional cooldown phase between Occupied and Free.
-/// Index into the table is also the client's relative "number", used
-/// to compute `id_offset = slot_index * ID_RANGE_STEP`.
-type Slots = Arc<Mutex<[SlotState; MAX_CLIENTS as usize]>>;
+type ClientTable = Arc<Mutex<Clients>>;
 
-/// How long a disconnected client's slot waits for the guest to end
-/// the sessions it SIGKILLed, and then stays in `Cooldown` if the
-/// guest did not confirm them all. Covers the round-trip for the
-/// SIGKILL frame plus the guest dispatcher's
-/// `waitpid → send Exited → remove sessions[corr_id]` sequence.
-/// 250ms is well over the observed worst case on a loopback
-/// virtio-console (low milliseconds), with plenty of headroom.
-const SLOT_COOLDOWN: Duration = Duration::from_millis(250);
+/// How long a client over [`MAX_CLIENTS`] waits for another to leave
+/// before it is refused, so a burst of timed-out execs does not refuse
+/// the next ones.
+const SLOT_WAIT: Duration = Duration::from_millis(500);
 
 /// Bound on the client → VM channel feeding `vm_writer_task`. Every
 /// frame from every client funnels through this queue in arrival
@@ -146,20 +151,16 @@ const SLOT_COOLDOWN: Duration = Duration::from_millis(250);
 /// size — plenty of room for bursty stdin without runaway growth.
 const VM_WRITE_CAPACITY: usize = 1024;
 
-/// Bound on each VM → client channel: how far a session's client may
-/// fall behind before `vm_reader_task`, which serves every session,
-/// has to wait for it or drop it (see [`SLOW_CLIENT_GRACE`]).
+/// Bound on each VM → client channel. Flow control keeps a session
+/// within [`SEND_WINDOW`] frames plus a few control frames, so only a
+/// guest that ignores its credit fills it. `vm_reader_task` then fails
+/// that session alone: it drops its frames from there on and
+/// disconnects its client, whose read or exec reports the cut.
 const CLIENT_WRITE_CAPACITY: usize = 1024;
 
-/// How long `vm_reader_task` waits for room in a full client channel
-/// while that client's session is the VM's only one. Waiting is
-/// backpressure: the guest's writes block and nothing is lost, so a
-/// large `fs::read` with a slow consumer still arrives whole. With
-/// another session live, waiting would hold up its frames too, so the
-/// slow client is disconnected at once instead. Either way the dropped
-/// session ends without a terminal frame, which its client reports as
-/// a failed stream, never as a short one.
-const SLOW_CLIENT_GRACE: Duration = Duration::from_secs(10);
+/// Delivered frames of a session per `Credit` frame back to the guest;
+/// below [`SEND_WINDOW`], so the guest never waits on a batch.
+const CREDIT_BATCH: u32 = SEND_WINDOW / 4;
 
 /// Maximum number of distinct `corr_id`s a single client can register
 /// routes for concurrently. Each registered id pins an entry in the
@@ -262,7 +263,7 @@ pub fn spawn(
                 // virtio-console write speed — see [`VM_WRITE_CAPACITY`].
                 let (vm_write_tx, vm_write_rx) = mpsc::channel::<QueuedFrame>(VM_WRITE_CAPACITY);
                 let routes: Routes = Arc::new(Mutex::new(HashMap::new()));
-                let slots: Slots = Arc::new(Mutex::new([SlotState::Free; MAX_CLIENTS as usize]));
+                let clients = ClientTable::default();
 
                 // Buffered adapters on the VM halves coalesce the
                 // 2 syscalls per frame (4-byte header + body) for
@@ -271,8 +272,12 @@ pub fn spawn(
                 let vm_read_buffered = tokio::io::BufReader::new(vm_read);
                 let vm_write_buffered = tokio::io::BufWriter::new(vm_write);
                 runtime.spawn(vm_writer_task(vm_write_buffered, vm_write_rx));
-                runtime.spawn(vm_reader_task(vm_read_buffered, routes.clone()));
-                runtime.spawn(listener_task(tokio_listener, vm_write_tx, routes, slots));
+                runtime.spawn(vm_reader_task(
+                    vm_read_buffered,
+                    routes.clone(),
+                    clients.clone(),
+                ));
+                runtime.spawn(listener_task(tokio_listener, vm_write_tx, routes, clients));
                 fp
             }
             Err(e) => {
@@ -338,6 +343,7 @@ async fn vm_writer_task(
 async fn vm_reader_task(
     mut vm_read: tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>,
     routes: Routes,
+    clients: ClientTable,
 ) {
     loop {
         let frame = match read_frame(&mut vm_read).await {
@@ -355,44 +361,30 @@ async fn vm_reader_task(
         // read_frame, so safe to index.
         let corr_id = u32::from_be_bytes([frame[4], frame[5], frame[6], frame[7]]);
         let flags = frame[8];
-        let terminal = (flags & iii_supervisor::shell_protocol::flags::FLAG_TERMINAL) != 0;
+        let terminal = (flags & FLAG_TERMINAL) != 0;
 
         let route = {
             let map = routes.lock().expect("routes mutex poisoned");
             map.get(&corr_id)
+                .filter(|e| !e.overrun)
                 .map(|e| (e.sender.clone(), e.kick.clone()))
         };
         if let Some((tx, kick)) = route {
-            // Waiting on a full channel stalls every session, so only a
-            // VM's sole session gets it; see SLOW_CLIENT_GRACE.
-            match tx.try_send(frame) {
-                Ok(()) => {}
-                Err(mpsc::error::TrySendError::Full(frame)) => {
-                    let alone = routes.lock().expect("routes mutex poisoned").len() == 1;
-                    if !alone
-                        || tokio::time::timeout(SLOW_CLIENT_GRACE, tx.send(frame))
-                            .await
-                            .is_err()
-                    {
-                        // Unrouted, its later frames are dropped as an unknown corr_id's.
-                        let dropped = routes
-                            .lock()
-                            .expect("routes mutex poisoned")
-                            .remove(&corr_id);
-                        if dropped.is_some() {
-                            tracing::warn!(
-                                "shell_relay: client for corr_id {corr_id} fell \
-                                 {CLIENT_WRITE_CAPACITY} frames behind; disconnecting it"
-                            );
-                            kick.notify_one();
-                        }
-                    }
+            // Never waits for a client: that would stall every session.
+            // Closed means the client left; its cleanup prunes the route.
+            if let Err(mpsc::error::TrySendError::Full(_)) = tx.try_send(frame) {
+                if let Some(entry) = routes
+                    .lock()
+                    .expect("routes mutex poisoned")
+                    .get_mut(&corr_id)
+                {
+                    entry.overrun = true;
                 }
-                Err(mpsc::error::TrySendError::Closed(_)) => {
-                    // Client disconnected; the route entry is about
-                    // to be pruned by listener cleanup or the
-                    // terminal branch below. Nothing to do.
-                }
+                tracing::warn!(
+                    "shell_relay: the guest overran corr_id {corr_id}'s window; \
+                     ending that session"
+                );
+                kick.notify_one();
             }
         } else {
             tracing::debug!("shell_relay: dropped frame for unknown corr_id {corr_id}");
@@ -404,16 +396,24 @@ async fn vm_reader_task(
             // counter would only ever grow, starving legitimate
             // long-running clients after [`MAX_OWNED_IDS_PER_CLIENT`]
             // completed sessions.
-            let removed = routes
-                .lock()
-                .expect("routes mutex poisoned")
-                .remove(&corr_id);
-            if let Some(entry) = removed {
-                entry
-                    .owner_ids
-                    .lock()
-                    .expect("owner_ids mutex poisoned")
-                    .remove(&corr_id);
+            let mut map = routes.lock().expect("routes mutex poisoned");
+            match map.remove(&corr_id) {
+                Some(entry) => {
+                    drop(map);
+                    entry
+                        .owner_ids
+                        .lock()
+                        .expect("owner_ids mutex poisoned")
+                        .remove(&corr_id);
+                }
+                // The guest ended a session whose client had left.
+                None => {
+                    clients
+                        .lock()
+                        .expect("clients mutex poisoned")
+                        .lingering
+                        .remove(&corr_id);
+                }
             }
         }
     }
@@ -423,7 +423,7 @@ async fn listener_task(
     listener: UnixListener,
     vm_write_tx: mpsc::Sender<QueuedFrame>,
     routes: Routes,
-    slots: Slots,
+    clients: ClientTable,
 ) {
     let our_uid = unsafe { libc::geteuid() };
     loop {
@@ -442,38 +442,23 @@ async fn listener_task(
             continue;
         }
 
-        let (vm_write_tx, routes, slots) = (vm_write_tx.clone(), routes.clone(), slots.clone());
+        let (vm_write_tx, routes, clients) = (vm_write_tx.clone(), routes.clone(), clients.clone());
         tokio::spawn(async move {
-            let Some(slot_idx) = wait_for_slot(&slots).await else {
+            let Some(id_offset) = wait_for_range(&clients).await else {
                 tracing::warn!("shell_relay: MAX_CLIENTS reached, refusing new client");
                 // Dropping the stream closes it.
                 return;
             };
-            let id_offset = (slot_idx as u32).saturating_mul(ID_RANGE_STEP);
-            let id_ceil = id_offset.saturating_add(ID_RANGE_STEP);
-            client_session(
-                stream,
-                id_offset,
-                id_ceil,
-                slot_idx,
-                vm_write_tx,
-                routes,
-                slots,
-            )
-            .await;
+            client_session(stream, id_offset, vm_write_tx, routes, clients).await;
         });
     }
 }
 
-/// A killed session holds its slot until the guest ends it, for at most
-/// two `SLOT_COOLDOWN`s (the wait, then the cooldown). A new client waits
-/// that long for a slot before it is refused, so a burst of timed-out execs
-/// does not refuse the next ones while the guest confirms the kills.
-async fn wait_for_slot(slots: &Slots) -> Option<usize> {
-    let deadline = Instant::now() + 2 * SLOT_COOLDOWN;
+async fn wait_for_range(clients: &ClientTable) -> Option<u32> {
+    let deadline = Instant::now() + SLOT_WAIT;
     loop {
-        if let Some(idx) = claim_slot(slots) {
-            return Some(idx);
+        if let Some(id_offset) = claim_range(clients) {
+            return Some(id_offset);
         }
         if Instant::now() >= deadline {
             return None;
@@ -482,53 +467,35 @@ async fn wait_for_slot(slots: &Slots) -> Option<usize> {
     }
 }
 
-fn claim_slot(slots: &Slots) -> Option<usize> {
-    // O(MAX_CLIENTS=16) linear scan under the mutex. If this ever
-    // shows up in a profile, migrate to `Vec<AtomicU64>` with a
-    // packed [occupied:1 bit | cooldown_ns:63 bits] encoding.
-    let now = Instant::now();
-    let mut guard = slots.lock().expect("slots mutex poisoned");
-    for (i, state) in guard.iter_mut().enumerate() {
-        let take = match state {
-            SlotState::Free => true,
-            SlotState::Cooldown(deadline) if *deadline <= now => true,
-            _ => false,
-        };
-        if take {
-            *state = SlotState::Occupied;
-            return Some(i);
+/// The next range after the last one handed out that no live client
+/// holds and no lingering session uses, or `None` at [`MAX_CLIENTS`].
+fn claim_range(clients: &ClientTable) -> Option<u32> {
+    let mut clients = clients.lock().expect("clients mutex poisoned");
+    if clients.live.len() >= MAX_CLIENTS as usize {
+        return None;
+    }
+    for _ in 0..=u32::MAX / ID_RANGE_STEP {
+        let id_offset = clients.next_range;
+        clients.next_range = id_offset.wrapping_add(ID_RANGE_STEP);
+        let in_use = clients.live.contains(&id_offset)
+            || clients
+                .lingering
+                .iter()
+                .any(|id| id.wrapping_sub(id_offset) < ID_RANGE_STEP);
+        if !in_use {
+            clients.live.insert(id_offset);
+            return Some(id_offset);
         }
     }
     None
 }
 
-/// Transition a slot from `Occupied` to `Cooldown`. A subsequent
-/// `claim_slot` won't hand the slot out until the deadline passes,
-/// giving the guest time to clean up any sessions the departing
-/// client owned.
-///
-/// `undrained`: does the client still own guest sessions the guest
-/// has not ended? Cooldown is only needed then — active exec
-/// corr_ids must drain on the guest before slot reuse, otherwise a
-/// new client claiming the same slot would reuse the same id_offset
-/// range and collide with still-alive sessions. For clean
-/// disconnects with empty `owned_ids` (every FS trigger after its
-/// terminal frame, every cleanly-exited exec, every killed session
-/// the guest confirmed), the slot returns directly to `Free` —
-/// there's nothing left to drain. Without this distinction,
-/// a tight burst of 16+ fast sequential triggers exhausts all
-/// `MAX_CLIENTS=16` slot cooldowns simultaneously and the listener
-/// rejects further connects with `early eof on handshake`, which
-/// surfaces as `S216` on the host side.
-fn release_slot(slots: &Slots, idx: usize, undrained: bool) {
-    let mut guard = slots.lock().expect("slots mutex poisoned");
-    if idx < guard.len() {
-        guard[idx] = if undrained {
-            SlotState::Cooldown(Instant::now() + SLOT_COOLDOWN)
-        } else {
-            SlotState::Free
-        };
-    }
+/// Ends a connection: its range is free unless `lingering` sessions in it
+/// are still running in the guest.
+fn release_range(clients: &ClientTable, id_offset: u32, lingering: Vec<u32>) {
+    let mut clients = clients.lock().expect("clients mutex poisoned");
+    clients.live.remove(&id_offset);
+    clients.lingering.extend(lingering);
 }
 
 /// Per-client task. Sends handshake, then concurrently reads client →
@@ -537,32 +504,53 @@ fn release_slot(slots: &Slots, idx: usize, undrained: bool) {
 async fn client_session(
     stream: tokio::net::UnixStream,
     id_offset: u32,
-    id_ceil: u32,
-    slot_idx: usize,
     vm_write_tx: mpsc::Sender<QueuedFrame>,
     routes: Routes,
-    slots: Slots,
+    clients: ClientTable,
 ) {
+    let id_ceil = id_offset.saturating_add(ID_RANGE_STEP);
     let (mut client_read, mut client_write) = stream.into_split();
 
     // Handshake: 4-byte id_offset (BE) so the client knows its range.
     if let Err(e) = client_write.write_all(&id_offset.to_be_bytes()).await {
         tracing::debug!("shell_relay: handshake write failed: {e}");
-        // Handshake failed before any work — no owned sessions, no
-        // SIGKILL fan-out, no cooldown needed. Free immediately.
-        release_slot(&slots, slot_idx, false);
+        // Handshake failed before any work — no owned sessions.
+        release_range(&clients, id_offset, Vec::new());
         return;
     }
 
-    // Per-client response channel. vm_reader_task pushes here, and
-    // drops this client if it falls a full channel behind (see
-    // [`SLOW_CLIENT_GRACE`]); we forward everything to the socket below.
+    // Per-client response channel. vm_reader_task pushes here (see
+    // [`CLIENT_WRITE_CAPACITY`]); we forward everything to the socket below.
     let (client_tx, mut client_rx) = mpsc::channel::<FrameBytes>(CLIENT_WRITE_CAPACITY);
 
-    // Writer: drain mpsc into client socket.
+    // Writer: drain mpsc into client socket, and give each session's
+    // guest side credit for the frames its client took.
+    let vm_write_tx_for_writer = vm_write_tx.clone();
     let writer_fut = async move {
+        let mut delivered: HashMap<u32, u32> = HashMap::new();
         while let Some(frame) = client_rx.recv().await {
             if client_write.write_all(&frame).await.is_err() {
+                break;
+            }
+            let corr_id = u32::from_be_bytes([frame[4], frame[5], frame[6], frame[7]]);
+            if frame[8] & FLAG_TERMINAL != 0 {
+                delivered.remove(&corr_id);
+                continue;
+            }
+            let count = delivered.entry(corr_id).or_default();
+            *count += 1;
+            if *count < CREDIT_BATCH {
+                continue;
+            }
+            let frames = std::mem::take(count);
+            let Ok(bytes) = encode_frame(corr_id, 0, &ShellMessage::Credit { frames }) else {
+                continue;
+            };
+            let credit = QueuedFrame {
+                bytes,
+                _guard: None,
+            };
+            if vm_write_tx_for_writer.send(credit).await.is_err() {
                 break;
             }
         }
@@ -650,6 +638,7 @@ async fn client_session(
                         sender: client_tx.clone(),
                         owner_ids: owned_ids_for_reader.clone(),
                         kick: kick_for_reader.clone(),
+                        overrun: false,
                     });
                     owned_guard.insert(corr_id);
                 }
@@ -697,19 +686,8 @@ async fn client_session(
 
     // On client disconnect, any sessions this client spawned in the
     // guest are still running — the guest dispatcher has no way to
-    // know the host side went away. Without intervention those
-    // children keep producing output that, once a new client claims
-    // the same slot and reuses the same `corr_id`, gets routed to the
-    // wrong terminal. Worse, when the orphaned child eventually
-    // exits, its terminal `Exited` frame propagates to the new
-    // client as a spurious early exit.
-    //
-    // Fix: deliver SIGKILL to every owned session as the client goes
-    // away, then hold the slot until the guest has ended them (each
-    // terminal frame drops its id from `owned_ids`), at most
-    // [`SLOT_COOLDOWN`]. By the time a new client can reclaim the
-    // slot, the shared session map on the guest no longer contains
-    // these `corr_id`s.
+    // know the host side went away. Deliver SIGKILL to every owned
+    // session so the guest kills its child or stops its read.
     // Snapshot the still-live ids, then send SIGKILL for each. With
     // vm_reader_task decrementing owned_ids on every terminal frame,
     // this set only contains sessions that were still running when
@@ -731,8 +709,7 @@ async fn client_session(
         };
         // Internal-source frame: no guard (client counter is being
         // torn down). try_send first so parallel disconnects don't
-        // serialize; await on Full so SIGKILL can't be dropped
-        // (would outlive the slot cooldown).
+        // serialize; await on Full so SIGKILL can't be dropped.
         let queued = QueuedFrame {
             bytes: frame,
             _guard: None,
@@ -745,33 +722,18 @@ async fn client_session(
             Err(mpsc::error::TrySendError::Closed(_)) => break,
         }
     }
-    // A timed-out exec disconnects with its session still live. Waiting for
-    // the guest's answer instead of a flat cooldown frees the slot in
-    // milliseconds, so a burst of timeouts no longer exhausts all
-    // MAX_CLIENTS slots.
-    let deadline = Instant::now() + SLOT_COOLDOWN;
-    while !owned_ids
-        .lock()
-        .expect("owned_ids mutex poisoned")
-        .is_empty()
-        && Instant::now() < deadline
-    {
-        tokio::time::sleep(Duration::from_millis(2)).await;
-    }
+    // The slot is free at once. A session whose route is still here has
+    // not ended: its late frames find no route, and its id keeps the
+    // range out of use until the guest ends it. The routes lock covers
+    // the hand-over, so vm_reader_task's terminal frame cannot slip
+    // between the two.
     let mut owned = owned_ids.lock().expect("owned_ids mutex poisoned");
     let mut map = routes.lock().expect("routes mutex poisoned");
-    let drained = owned.is_empty();
-    for id in owned.drain() {
-        map.remove(&id);
-    }
-    drop(map);
-    drop(owned);
-    // Cooldown only when the guest did not confirm in time. For the
-    // common case (every FS trigger after its terminal frame, every
-    // cleanly-exited exec, every killed session the guest ended) the
-    // slot returns straight to Free — keeps tight burst patterns from
-    // exhausting the slot pool.
-    release_slot(&slots, slot_idx, !drained);
+    let lingering = owned
+        .drain()
+        .filter(|id| map.remove(id).is_some())
+        .collect();
+    release_range(&clients, id_offset, lingering);
 }
 
 /// Read one full frame (length prefix + body). `Ok(None)` on EOF at
@@ -901,7 +863,7 @@ mod tests {
         let runtime = tokio::runtime::Handle::current();
         spawn(&runtime, sock_path.clone(), vm_host).expect("relay spawn");
         // Poll for the bound inode. Avoids a probe-connect that
-        // would claim slot 0 and Cooldown it for 250ms.
+        // would take the first id range the tests expect.
         let deadline = Duration::from_secs(2);
         let start = std::time::Instant::now();
         loop {
@@ -923,7 +885,7 @@ mod tests {
         let mut buf = [0u8; 4];
         client.read_exact(&mut buf).await.unwrap();
         let id_offset = u32::from_be_bytes(buf);
-        // First client gets slot 0 → id_offset = 0.
+        // First client gets the first range → id_offset = 0.
         assert_eq!(id_offset, 0);
     }
 
@@ -1079,7 +1041,7 @@ mod tests {
         // 2 × MAX_CLIENTS sequential connect → read handshake → drop.
         // Each cycle's UnixStream goes out of scope at end-of-iteration
         // so the relay sees a clean EOF on read_frame, exits the
-        // session, and (with the fix) returns the slot to Free.
+        // session, and frees its slot.
         for i in 0..(MAX_CLIENTS as usize * 2) {
             let mut s = tokio::net::UnixStream::connect(&sock)
                 .await
@@ -1091,21 +1053,20 @@ mod tests {
                 .unwrap_or_else(|e| panic!("iteration {i}: handshake failed: {e}"));
             // Drop here — the UnixStream's Drop closes both halves,
             // the relay's reader_fut sees EOF, client_session exits
-            // with empty owned_ids, slot returns to Free.
+            // with empty owned_ids, and its slot is free.
             drop(s);
             // Tiny yield so the relay's per-session cleanup actually
             // schedules before we open the next connection. Without
             // this the test stays correct but exercises a different
-            // race (claim_slot vs release_slot ordering on the same
+            // race (claim_range vs release_range ordering on the same
             // tokio task) — keeping it deterministic helps.
             tokio::task::yield_now().await;
         }
     }
 
     /// A timed-out exec drops its connection with the session still live.
-    /// Once the guest confirms the SIGKILL, its slot is free again: 2 ×
-    /// MAX_CLIENTS such sessions inside one SLOT_COOLDOWN all get a slot,
-    /// where a fixed cooldown refused the 17th.
+    /// Its slot is free at once: 2 × MAX_CLIENTS such sessions in a row all
+    /// get a slot, where a fixed cooldown refused the 17th.
     #[tokio::test]
     async fn burst_of_killed_sessions_does_not_exhaust_slots() {
         let (sock, vm_guest_sim, _tmp) = boot().await;
@@ -1148,35 +1109,42 @@ mod tests {
         }
     }
 
-    /// A client that falls behind (a large `fs::read` whose consumer is
-    /// slower than the guest) gets every frame once it catches up, rather
-    /// than a stream with frames silently dropped past its channel's capacity.
-    #[tokio::test]
-    async fn slow_client_loses_no_frames() {
-        const FRAMES: usize = 3 * CLIENT_WRITE_CAPACITY;
-        let (sock, vm_guest_sim, _tmp) = boot().await;
-        // Guest simulator: answers the first request with FRAMES chunks, then the end.
-        let mut writer = vm_guest_sim.try_clone().unwrap();
-        std::thread::spawn(move || {
-            let mut reader = std::io::BufReader::new(vm_guest_sim);
-            if let Ok(Some((corr_id, _, _))) = read_frame_blocking(&mut reader) {
-                use std::io::Write;
-                let chunk = ShellMessage::Stdout {
-                    data_b64: "A".repeat(1024),
-                };
-                let frame = encode_frame(corr_id, 0, &chunk).unwrap();
-                for _ in 0..FRAMES {
-                    writer.write_all(&frame).unwrap();
-                }
-                let end = encode_frame(corr_id, FLAG_TERMINAL, &ShellMessage::Exited { code: 0 });
-                writer.write_all(&end.unwrap()).unwrap();
+    /// A guest simulator's half of flow control: send `frames` output
+    /// frames for `corr_id` at most [`SEND_WINDOW`] ahead of the relay's
+    /// `Credit` frames, then the session's end.
+    fn stream_with_credit(
+        reader: &mut std::io::BufReader<StdUS>,
+        writer: &mut StdUS,
+        corr_id: u32,
+        frames: usize,
+        mut credit: u32,
+    ) {
+        use std::io::Write;
+        let chunk = ShellMessage::Stdout {
+            data_b64: "A".repeat(1024),
+        };
+        let chunk = encode_frame(corr_id, 0, &chunk).unwrap();
+        let mut sent = 0;
+        while sent < frames {
+            while credit > 0 && sent < frames {
+                writer.write_all(&chunk).unwrap();
+                credit -= 1;
+                sent += 1;
             }
-        });
+            match read_frame_blocking(reader) {
+                Ok(Some((id, _, ShellMessage::Credit { frames }))) if id == corr_id => {
+                    credit += frames
+                }
+                Ok(Some(_)) => {}
+                _ => return,
+            }
+        }
+        let end = encode_frame(corr_id, FLAG_TERMINAL, &ShellMessage::Exited { code: 0 });
+        writer.write_all(&end.unwrap()).unwrap();
+    }
 
-        let mut client = tokio::net::UnixStream::connect(&sock).await.unwrap();
-        let mut hs = [0u8; 4];
-        client.read_exact(&mut hs).await.unwrap();
-        let request = ShellMessage::Request {
+    fn cat_request() -> ShellMessage {
+        ShellMessage::Request {
             cmd: "/bin/cat".into(),
             args: vec![],
             env: vec![],
@@ -1184,18 +1152,72 @@ mod tests {
             tty: false,
             rows: 24,
             cols: 80,
-        };
+        }
+    }
+
+    /// Connect, read the handshake and send `request` as the session's
+    /// first frame. Returns the stream and the session's corr_id.
+    async fn open_session(sock: &Path, request: &ShellMessage) -> (tokio::net::UnixStream, u32) {
+        let mut client = tokio::net::UnixStream::connect(sock).await.unwrap();
+        let mut hs = [0u8; 4];
+        client.read_exact(&mut hs).await.unwrap();
         let corr_id = u32::from_be_bytes(hs) + 1;
         client
-            .write_all(&encode_frame(corr_id, 0, &request).unwrap())
+            .write_all(&encode_frame(corr_id, 0, request).unwrap())
             .await
             .unwrap();
-        // Fall behind: the guest fills every buffer on the way meanwhile.
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        (client, corr_id)
+    }
 
+    /// A client that stops reading (a large `fs::read` whose consumer is
+    /// slow) holds back only its own session: the guest waits for its
+    /// credit, the VM's other session gets its frames meanwhile, and the
+    /// slow stream still arrives whole, far past the relay's own buffer.
+    #[tokio::test]
+    async fn a_slow_reader_holds_back_only_its_own_session() {
+        const FRAMES: usize = 3 * CLIENT_WRITE_CAPACITY;
+        let (sock, vm_guest_sim, _tmp) = boot().await;
+        // Guest simulator: a window for the slow session, the other
+        // session's end, then the rest of the slow one as credit allows.
+        let mut writer = vm_guest_sim.try_clone().unwrap();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let mut reader = std::io::BufReader::new(vm_guest_sim);
+            let mut ids = Vec::new();
+            while ids.len() < 2 {
+                match read_frame_blocking(&mut reader) {
+                    Ok(Some((corr_id, _, _))) => ids.push(corr_id),
+                    _ => return,
+                }
+            }
+            let chunk = ShellMessage::Stdout {
+                data_b64: "A".repeat(1024),
+            };
+            let chunk = encode_frame(ids[0], 0, &chunk).unwrap();
+            for _ in 0..SEND_WINDOW {
+                writer.write_all(&chunk).unwrap();
+            }
+            let end = encode_frame(ids[1], FLAG_TERMINAL, &ShellMessage::Exited { code: 0 });
+            writer.write_all(&end.unwrap()).unwrap();
+            let rest = FRAMES - SEND_WINDOW as usize;
+            stream_with_credit(&mut reader, &mut writer, ids[0], rest, 0);
+        });
+        let (mut slow, _) = open_session(&sock, &cat_request()).await;
+        // So the guest sees the slow session's request first.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let (mut other, _) = open_session(&sock, &cat_request()).await;
+
+        let end = tokio::time::timeout(Duration::from_secs(2), read_frame(&mut other))
+            .await
+            .expect("the other session was held up behind the slow one")
+            .unwrap()
+            .expect("frame");
+        assert!(end[8] & FLAG_TERMINAL != 0);
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
         let mut chunks = 0;
         loop {
-            let frame = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut client))
+            let frame = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut slow))
                 .await
                 .expect("stream stalled")
                 .unwrap()
@@ -1208,14 +1230,12 @@ mod tests {
         assert_eq!(chunks, FRAMES);
     }
 
-    /// A client that stops reading must not hold up another session's
-    /// frames: once its channel is full while another session is live, it
-    /// is disconnected instead of waited for.
+    /// A guest that ignores a session's window cannot make the relay wait:
+    /// the overrun session alone is cut (its client sees the connection
+    /// close before a terminal frame), and the other session is served.
     #[tokio::test]
-    async fn a_stalled_client_does_not_hold_up_another_session() {
+    async fn a_session_whose_guest_overruns_its_window_fails_alone() {
         let (sock, vm_guest_sim, _tmp) = boot().await;
-        // Guest simulator: once both sessions have asked, floods the first
-        // and then ends the second.
         let mut writer = vm_guest_sim.try_clone().unwrap();
         std::thread::spawn(move || {
             use std::io::Write;
@@ -1239,42 +1259,32 @@ mod tests {
             let end = encode_frame(ids[1], FLAG_TERMINAL, &ShellMessage::Exited { code: 0 });
             let _ = writer.write_all(&end.unwrap());
         });
-        let request = ShellMessage::Request {
-            cmd: "/bin/cat".into(),
-            args: vec![],
-            env: vec![],
-            cwd: None,
-            tty: false,
-            rows: 24,
-            cols: 80,
-        };
-        let mut sessions = Vec::new();
-        for _ in 0..2 {
-            let mut client = tokio::net::UnixStream::connect(&sock).await.unwrap();
-            let mut hs = [0u8; 4];
-            client.read_exact(&mut hs).await.unwrap();
-            let corr_id = u32::from_be_bytes(hs) + 1;
-            client
-                .write_all(&encode_frame(corr_id, 0, &request).unwrap())
-                .await
-                .unwrap();
-            sessions.push(client);
-            // So the guest sees the stalled session's request first.
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        let (mut overrun, _) = open_session(&sock, &cat_request()).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let (mut other, _) = open_session(&sock, &cat_request()).await;
 
-        // The first client never reads; the second gets its end well inside SLOW_CLIENT_GRACE.
-        let end = tokio::time::timeout(Duration::from_secs(3), read_frame(&mut sessions[1]))
+        let end = tokio::time::timeout(Duration::from_secs(3), read_frame(&mut other))
             .await
-            .expect("the other session was held up behind the stalled one")
+            .expect("the other session was held up behind the overrun one")
             .unwrap()
             .expect("frame");
         assert!(end[8] & FLAG_TERMINAL != 0);
+        let cut = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                match read_frame(&mut overrun).await {
+                    Ok(Some(frame)) if frame[8] & FLAG_TERMINAL != 0 => return false,
+                    Ok(Some(_)) => {}
+                    Ok(None) | Err(_) => return true,
+                }
+            }
+        })
+        .await
+        .expect("the overrun session was never cut");
+        assert!(cut, "the overrun session ended as if whole");
     }
 
     /// A client over the cap waits briefly for a slot instead of being
-    /// refused at once: a timed-out exec's slot comes back as soon as the
-    /// guest confirms its kill.
+    /// refused at once: a slot comes back as soon as its client leaves.
     #[tokio::test]
     async fn a_client_over_the_cap_waits_for_a_slot() {
         let (sock, _vm_guest_sim, _tmp) = boot().await;
@@ -1342,20 +1352,6 @@ mod tests {
         assert_eq!(fp.ino, live_meta.ino());
     }
 
-    /// REGRESSION for the "slot reuse cross-talk" race.
-    ///
-    /// Prior behavior: when client A disconnected while its guest
-    /// session was still running, the slot got released immediately
-    /// and a new client B claiming the same slot reused the same
-    /// `corr_id` range. Orphaned VM-side frames for A's session then
-    /// routed to B, and B's terminal `Exited` could arrive prematurely.
-    ///
-    /// Current behavior: A's disconnect sends `Signal { signal: 9 }`
-    /// for every owned `corr_id` into the VM and holds the slot in
-    /// `Cooldown` for [`SLOT_COOLDOWN`]. The test simulates this by
-    /// asserting the VM side sees the SIGKILL frame for A's corr_id,
-    /// and that B's connection cannot claim the same slot until the
-    /// cooldown elapses.
     /// REGRESSION for the "per-client owned-ids unbounded growth" DoS
     /// **and** the coupled "completed sessions never decrement the cap"
     /// bug that the first fix attempt introduced.
@@ -1531,93 +1527,94 @@ mod tests {
         );
     }
 
+    /// REGRESSION for the slot-reuse leak: a client left with its session
+    /// still running in the guest, and the next client was handed the same
+    /// `corr_id`, so the old session's late frames, its end included,
+    /// reached the new one. The old session is SIGKILLed, and a new client
+    /// always gets ids of its own, however long after the old one left.
     #[tokio::test]
-    async fn slot_reuse_sends_sigkill_and_cools_down() {
-        use iii_supervisor::shell_protocol::{
-            ShellMessage as SM, encode_frame, read_frame_blocking,
-        };
-
+    async fn an_abandoned_sessions_late_frames_never_reach_the_next_client() {
         let (sock, vm_guest_sim, _tmp) = boot().await;
-
-        // Guest simulator: passively read frames from the VM socket
-        // end into a shared Vec so the test can inspect them.
-        let frames: Arc<Mutex<Vec<(u32, u8, SM)>>> = Arc::new(Mutex::new(Vec::new()));
-        let frames_for_thread = frames.clone();
+        // Guest simulator: keeps the first session running past its
+        // SIGKILL, and answers the next request only after a late frame
+        // and the end of the first one.
+        let mut writer = vm_guest_sim.try_clone().unwrap();
+        let (seen_tx, seen_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
+            use std::io::Write;
             let mut reader = std::io::BufReader::new(vm_guest_sim);
-            while let Ok(Some((corr_id, flags, msg))) = read_frame_blocking(&mut reader) {
-                frames_for_thread
-                    .lock()
-                    .expect("frames poisoned")
-                    .push((corr_id, flags, msg));
+            let mut first = None;
+            while let Ok(Some((corr_id, _, msg))) = read_frame_blocking(&mut reader) {
+                let request = matches!(msg, ShellMessage::Request { .. });
+                let _ = seen_tx.send((corr_id, msg));
+                match (request, first) {
+                    (false, _) => {}
+                    (true, None) => first = Some(corr_id),
+                    (true, Some(old)) => {
+                        let late = ShellMessage::Stdout {
+                            data_b64: "bGF0ZQ==".into(),
+                        };
+                        let old_end = ShellMessage::Exited { code: 137 };
+                        let end = ShellMessage::Exited { code: 0 };
+                        for frame in [
+                            encode_frame(old, 0, &late),
+                            encode_frame(old, FLAG_TERMINAL, &old_end),
+                            encode_frame(corr_id, FLAG_TERMINAL, &end),
+                        ] {
+                            writer.write_all(&frame.unwrap()).unwrap();
+                        }
+                    }
+                }
             }
         });
-
-        // Client A: register corr_id=1 with a Request (simulates a
-        // long-running guest child), then drop the socket.
-        let id_offset_a = {
-            let mut client = tokio::net::UnixStream::connect(&sock).await.unwrap();
-            let mut hs = [0u8; 4];
-            client.read_exact(&mut hs).await.unwrap();
-            let off = u32::from_be_bytes(hs);
-
-            let req = SM::Request {
-                cmd: "/bin/sleep".into(),
-                args: vec!["30".into()],
-                env: vec![],
-                cwd: None,
-                tty: false,
-                rows: 24,
-                cols: 80,
-            };
-            let frame = encode_frame(off + 1, 0, &req).unwrap();
-            client.write_all(&frame).await.unwrap();
-            // Let the relay enqueue + forward the Request.
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            off
-            // `client` drops here — reader sees EOF, triggers cleanup.
+        let sleep = ShellMessage::Request {
+            cmd: "/bin/sleep".into(),
+            args: vec!["30".into()],
+            env: vec![],
+            cwd: None,
+            tty: false,
+            rows: 24,
+            cols: 80,
         };
-
-        // Disconnect cleanup runs asynchronously; give the SIGKILL a
-        // moment to propagate through the VM-write channel.
+        let (abandoned, old_id) = open_session(&sock, &sleep).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(abandoned);
+        // Past any hold a slot once had after a killed session.
+        tokio::time::sleep(Duration::from_millis(600)).await;
 
-        // Assert a Signal{9} frame was emitted for A's corr_id.
-        {
-            let observed = frames.lock().unwrap().clone();
-            let seen_sigkill = observed.iter().any(|(id, _, msg)| {
-                *id == id_offset_a + 1 && matches!(msg, SM::Signal { signal: 9 })
-            });
-            assert!(
-                seen_sigkill,
-                "expected SIGKILL frame for corr_id={}, got: {:?}",
-                id_offset_a + 1,
-                observed
-            );
-        }
+        let (mut next, new_id) = open_session(&sock, &sleep).await;
+        let frame = tokio::time::timeout(Duration::from_secs(2), read_frame(&mut next))
+            .await
+            .expect("no reply")
+            .unwrap()
+            .expect("frame");
+        let (corr_id, flags, msg) =
+            iii_supervisor::shell_protocol::decode_frame_body(&frame[4..]).unwrap();
+        assert_eq!((corr_id, msg), (new_id, ShellMessage::Exited { code: 0 }));
+        assert!(flags & FLAG_TERMINAL != 0);
+        assert_ne!(
+            new_id, old_id,
+            "the next client got the abandoned session's id"
+        );
+        let killed = seen_rx
+            .try_iter()
+            .any(|(id, msg)| id == old_id && msg == ShellMessage::Signal { signal: 9 });
+        assert!(killed, "no SIGKILL for the abandoned session");
+    }
 
-        // A new client arriving immediately must NOT be assigned slot
-        // 0 (id_offset=0) — that slot is cooling down. Either a
-        // different id_offset, or a refused connection, is acceptable.
-        let mut client_b = tokio::net::UnixStream::connect(&sock).await.unwrap();
-        let mut hs = [0u8; 4];
-        let got =
-            tokio::time::timeout(Duration::from_millis(100), client_b.read_exact(&mut hs)).await;
-        match got {
-            Ok(Ok(_)) => {
-                let offset_b = u32::from_be_bytes(hs);
-                assert_ne!(
-                    offset_b, id_offset_a,
-                    "Client B received the same id_offset as A \
-                     — slot cooldown did not kick in"
-                );
-            }
-            Ok(Err(_)) | Err(_) => {
-                // Connection closed or handshake not sent — also
-                // acceptable (slot 0 exhausted, no other free).
-                // Only a slot at a different offset would be
-                // problematic.
-            }
-        }
+    /// A new range skips the ranges of live clients and of sessions the
+    /// guest may still be ending, and comes back once the guest ends them.
+    #[test]
+    fn ranges_skip_live_clients_and_lingering_sessions() {
+        let clients = ClientTable::default();
+        assert_eq!(claim_range(&clients), Some(0));
+        release_range(&clients, 0, vec![5]);
+        clients.lock().unwrap().live.insert(2 * ID_RANGE_STEP);
+        clients.lock().unwrap().next_range = 0;
+        assert_eq!(claim_range(&clients), Some(ID_RANGE_STEP));
+        assert_eq!(claim_range(&clients), Some(3 * ID_RANGE_STEP));
+        clients.lock().unwrap().lingering.remove(&5);
+        clients.lock().unwrap().next_range = 0;
+        assert_eq!(claim_range(&clients), Some(0));
     }
 }
