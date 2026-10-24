@@ -142,7 +142,7 @@ skills_folder: skills                  # under III_COMPOSE_DIR, or the process c
 local_skills_folder: skills/iii        # project-scoped overrides (whole-namespace local-wins)
 agents_folder: agents                  # direct <id>.md agent profiles
 agents_skills_folder: .agents/skills   # READ-ONLY agent skills, with the same relative-path base
-auto_download: true                   # subscribe to worker-add + run the boot reconcile
+auto_download: true                   # boot reconcile, rerun whenever a worker connects
 # function_search_model_path: ~/.cache/iii/all-MiniLM-L6-v2-<revision> # pinned Hybrid bundle, also router::embed's local fallback (loads on first use in every mode); null disables both
 function_search_model_download: true   # download the pinned bundle at boot in Hybrid mode
 

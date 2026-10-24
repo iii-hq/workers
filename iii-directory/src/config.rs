@@ -340,10 +340,10 @@ pub struct SkillsConfig {
     #[serde(default = "default_filter_unregistered")]
     pub filter_unregistered: bool,
 
-    /// When `true` (default), the worker subscribes to `worker` trigger
-    /// events and runs a boot-time reconcile to auto-download skills
-    /// for installed workers that are missing from the global skills
-    /// folder.
+    /// When `true` (default), the worker runs a boot-time reconcile to
+    /// auto-download skills for `compose::status` workers that are missing
+    /// from the global skills folder, and runs it again whenever a worker
+    /// connects (`engine::workers-available`).
     #[serde(default = "default_auto_download")]
     pub auto_download: bool,
 

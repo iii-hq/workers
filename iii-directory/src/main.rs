@@ -10,8 +10,9 @@
 //!   4. Register every public function against the engine — every
 //!      registration sits under `directory::*` (search, skills, system
 //!      prompts, agents, registry, and one engine-info wrapper).
-//!   5. (Optional) Subscribe to `worker` trigger for auto-download on
-//!      worker add events and run a boot reconcile for missing skills.
+//!   5. (Optional) Run a boot reconcile for missing skills, and run its
+//!      worker pass again whenever a worker connects
+//!      (`engine::workers-available`), so workers added later get theirs.
 //!   6. Start the filesystem watch so external edits under the directory
 //!      roots fire the matching `on-change` (best-effort, never fatal).
 //!   7. Sleep on Ctrl+C, then `shutdown_async` cleanly.
@@ -282,9 +283,9 @@ async fn main() -> Result<()> {
     // directory::* function-trigger renderer, and the configuration form.
     iii_directory::ui::register(&iii);
 
-    // Auto-download: subscribe to worker add events + boot reconcile. Wired
-    // from the boot value of `auto_download` (a topology field — changing it
-    // requires a restart).
+    // Auto-download: boot reconcile, then the worker pass again on every
+    // worker connection. Wired from the boot value of `auto_download` (a
+    // topology field — changing it requires a restart).
     if auto_download {
         let in_flight = Arc::new(InFlightGuard::new());
         setup_auto_download(&iii, &cfg_handle, &registered_cache, &in_flight);
@@ -395,116 +396,126 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// `worker` trigger payload for `directory::__on_worker_added`. Only `worker`
-/// is read; declared as a struct so the function publishes a typed schema.
+/// `engine::workers-available` payload for `directory::__on_workers_changed`.
+/// Only `event` is read; declared as a struct so the function publishes a
+/// typed schema.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
-struct WorkerAddedEvent {
+struct WorkersChanged {
     #[serde(default)]
-    worker: Option<String>,
+    event: String,
+}
+
+impl WorkersChanged {
+    /// A connection is when a worker Compose just added comes up; its
+    /// metadata update and every disconnect bring no new worker.
+    fn is_connect(&self) -> bool {
+        self.event == "worker_connected"
+    }
 }
 
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
-struct WorkerAddedAck {
+struct WorkersChangedAck {
     ok: bool,
 }
 
-/// Register the internal `directory::__on_worker_added` handler and
-/// subscribe to the `worker` trigger type for `add` operations.
+/// Register the internal `directory::__on_workers_changed` handler and bind
+/// it to the engine's `engine::workers-available` trigger type: each worker
+/// connection re-runs the boot reconcile's worker pass over
+/// `compose::status`, which skips every namespace already on disk.
 fn setup_auto_download(
     iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
     cache: &Arc<RegisteredWorkersCache>,
     in_flight: &Arc<InFlightGuard>,
 ) {
+    let iii_inner = iii.clone();
     let cfg_inner = cfg.clone();
     let cache_inner = cache.clone();
     let in_flight_inner = in_flight.clone();
 
-    // Register the internal handler that fires on worker-add events.
     iii.register_function(
-        "directory::__on_worker_added",
-        RegisterFunction::new_async(move |event: WorkerAddedEvent| {
+        "directory::__on_workers_changed",
+        RegisterFunction::new_async(move |change: WorkersChanged| {
+            let iii = iii_inner.clone();
             let cfg = cfg_inner.load_full();
             let cache = cache_inner.clone();
             let in_flight = in_flight_inner.clone();
             async move {
-                handle_worker_added(&cfg, &cache, &in_flight, &event).await;
-                Ok::<_, Error>(WorkerAddedAck { ok: true })
+                if change.is_connect() {
+                    // Off the trigger's path: a download takes seconds.
+                    tokio::spawn(async move {
+                        let workers = match iii.trigger(compose_status_request(10_000)).await {
+                            Ok(status) => parse_worker_names(&status).unwrap_or_default(),
+                            Err(e) => {
+                                tracing::debug!(error = %e, "compose::status unavailable; no worker pass");
+                                return;
+                            }
+                        };
+                        let workers: Vec<String> = workers.into_iter().collect();
+                        if reconcile_workers(&cfg, &in_flight, &workers).await > 0 {
+                            cache.invalidate().await;
+                        }
+                    });
+                }
+                Ok::<_, Error>(WorkersChangedAck { ok: true })
             }
         })
-        .description("Internal: auto-download skills on worker add event.")
+        .description("Internal: auto-download the skills of workers added after boot.")
         .metadata(serde_json::json!({ "internal": true })),
     );
 
-    // Subscribe to the `worker` trigger type with a retry backoff.
+    // Bind the trigger with a retry backoff.
     let iii_sub = iii.clone();
     tokio::spawn(async move {
         for attempt in 1..=5 {
             let result = iii_sub.register_trigger(RegisterTriggerInput::new(
-                "worker".to_string(),
-                "directory::__on_worker_added".to_string(),
-                json!({
-                    "operations": ["add"],
-                    "stages": ["done"]
-                }),
+                "engine::workers-available".to_string(),
+                "directory::__on_workers_changed".to_string(),
+                json!({}),
             ));
             match result {
                 Ok(_) => {
-                    tracing::info!("subscribed to worker trigger for auto-download");
+                    tracing::info!("subscribed to engine::workers-available for auto-download");
                     return;
                 }
                 Err(e) => {
                     tracing::warn!(
                         attempt,
                         error = %e,
-                        "failed to subscribe to worker trigger; retrying"
+                        "failed to subscribe to engine::workers-available; retrying"
                     );
                     tokio::time::sleep(std::time::Duration::from_secs(attempt * 2)).await;
                 }
             }
         }
         tracing::warn!(
-            "exhausted retries subscribing to worker trigger; \
-             auto-download on worker add will not work"
+            "exhausted retries subscribing to engine::workers-available; \
+             workers added after boot get their skills on the next restart"
         );
     });
 }
 
-/// Handle a `worker` trigger add event. Downloads skills for the
-/// newly added worker if not already in-flight.
-async fn handle_worker_added(
+/// Download skills for each of `workers` whose namespace is missing or
+/// incomplete and not overridden locally. Returns how many it downloaded.
+async fn reconcile_workers(
     cfg: &SkillsConfig,
-    cache: &RegisteredWorkersCache,
     in_flight: &Arc<InFlightGuard>,
-    event: &WorkerAddedEvent,
-) {
-    let worker = match event.worker.as_deref() {
-        Some(w) => w.to_string(),
-        None => {
-            tracing::debug!("worker add event missing 'worker' field; skipping");
-            return;
-        }
-    };
-
-    // RAII: _claim drops at scope end (including on panic/early-return).
-    let Some(_claim) = in_flight.claim(&worker) else {
-        tracing::debug!(worker = %worker, "worker download already in-flight; skipping");
-        return;
-    };
-
-    let spec = VersionSpec::Tag("latest".to_string());
-    match download_worker_skills(cfg, &worker, &spec).await {
-        Ok(true) => {
-            tracing::info!(worker = %worker, "auto-download complete on worker add");
-            cache.invalidate().await;
-        }
-        Ok(false) => {
-            tracing::debug!(worker = %worker, "no skills bundle for worker (404)");
-        }
-        Err(e) => {
-            tracing::warn!(worker = %worker, error = %e, "auto-download failed on worker add");
+    workers: &[String],
+) -> u32 {
+    let global_root = cfg.resolved_skills_folder();
+    let local_root = cfg.local_skills_folder();
+    let mut reconciled = 0;
+    for name in workers {
+        // `compose::status` carries no worker version; reconcile the
+        // latest skill tag.
+        let Some(spec) = reconcile_decision(name, None, &local_root, &global_root) else {
+            continue;
+        };
+        if reconcile_one(cfg, in_flight, name, &spec).await {
+            reconciled += 1;
         }
     }
+    reconciled
 }
 
 /// Reconcile a single namespace: claim the in-flight slot and download
@@ -639,18 +650,7 @@ fn spawn_boot_reconcile(
             }
         };
 
-        for name in &workers {
-            // `compose::status` carries no worker version; reconcile the
-            // latest skill tag.
-            let spec = match reconcile_decision(name, None, &local_root, &global_root) {
-                Some(s) => s,
-                None => continue,
-            };
-
-            if reconcile_one(&cfg, &in_flight, name, &spec).await {
-                reconciled += 1;
-            }
-        }
+        reconciled += reconcile_workers(&cfg, &in_flight, &workers).await;
 
         if reconciled > 0 {
             cache.invalidate().await;
@@ -662,4 +662,22 @@ fn spawn_boot_reconcile(
             "boot reconcile complete"
         );
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The payload the engine's `engine::workers-available` sends: only a
+    /// connection runs a worker pass.
+    #[test]
+    fn only_a_worker_connection_runs_a_worker_pass() {
+        let change = |event: &str| {
+            serde_json::from_value::<WorkersChanged>(json!({ "event": event, "worker_id": "w-1" }))
+                .unwrap()
+        };
+        assert!(change("worker_connected").is_connect());
+        assert!(!change("worker_disconnected").is_connect());
+        assert!(!change("worker_metadata_updated").is_connect());
+    }
 }

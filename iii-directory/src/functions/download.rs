@@ -476,10 +476,10 @@ pub fn has_completion_marker(skills_folder: &std::path::Path, worker: &str) -> b
 //
 // auto-download flow (ASCII):
 //
-//   event: worker::add(Done)  ─┐
-//                               ├─► download_worker_skills(name, tag=latest)
-//   boot reconcile: for each   ─┘       │
-//     installed worker w/o marker        ▼
+//   boot, and on every             ─┐
+//   worker_connected event:         ├─► download_worker_skills(name, tag=latest)
+//   each compose worker            ─┘       │
+//     without a marker                      ▼
 //                              validate name
 //                                    │
 //                              registry::download_typed

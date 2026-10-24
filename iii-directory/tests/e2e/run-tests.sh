@@ -514,36 +514,20 @@ out=$(trig directory::engine::functions::info --json '{"function":"directory::sk
 iserr "dumb: wrong param 'function' (function_id missing) -> error" "$out"
 
 # ── 11. auto-download + boot reconcile (config has auto_download: true) ───────
-# main.rs registers the internal directory::__on_worker_added handler and spawns
-# the boot-reconcile task only when auto_download is on. The handler is what an
-# engine `worker` add event invokes; we drive it directly here (no daemon).
+# main.rs registers the internal directory::__on_workers_changed handler, bound
+# to engine::workers-available, and spawns the boot-reconcile task only when
+# auto_download is on. On a worker_connected event the handler reruns the boot
+# reconcile's worker pass over compose::status; with no compose project here
+# that pass is a benign no-op. We drive the handler directly (no daemon).
 echo "==> auto-download + boot reconcile (auto_download:true)"
-out=$(trig directory::engine::functions::info function_id=directory::__on_worker_added)
-jtrue "auto-download handler registered (auto_download:true)"    "$out" '.function_id == "directory::__on_worker_added"'
-# happy path: a worker-add event downloads that worker's skills + invalidates cache
-rm -rf "$GLOBAL/coder"
-[ ! -e "$GLOBAL/coder" ] && ok "precondition: coder/ absent before auto-download" || no "precondition: coder/ absent"
-out=$(trig directory::__on_worker_added --json '{"worker":"coder"}')
-jtrue "__on_worker_added {worker:coder} -> ok"                   "$out" '.ok == true'
-[ -d "$GLOBAL/coder" ] && ok "auto-download wrote coder/ to skills-home" || no "auto-download wrote coder/ to skills-home"
-[ -f "$GLOBAL/coder/.iii-skill-complete" ] && ok "auto-download wrote the completion marker" || no "auto-download wrote the completion marker"
-out=$(trig directory::skills::list --json '{"prefix":"coder/"}')
-jtrue "auto-downloaded coder visible in list (cache invalidated)" "$out" '.skills | length > 0'
-# missing 'worker' field -> handler skips gracefully (still ok)
-out=$(trig directory::__on_worker_added --json '{}')
-jtrue "__on_worker_added {} (no worker field) -> ok (skip)"      "$out" '.ok == true'
-# nonexistent worker -> registry 404 is benign (still ok, no crash)
-out=$(trig directory::__on_worker_added --json '{"worker":"zzz-nonexistent-worker-zzz"}')
-jtrue "__on_worker_added nonexistent -> ok (404 benign)"         "$out" '.ok == true'
-# invalid worker name -> validated inside download_worker_skills, swallowed (still ok)
-out=$(trig directory::__on_worker_added --json '{"worker":"../../etc"}')
-jtrue "__on_worker_added invalid name -> ok (rejected internally)" "$out" '.ok == true'
-# re-add an already-present worker (idempotent overwrite path). The in-flight
-# dedup guard's concurrent-claim branch is covered by the download.rs unit test
-# `in_flight_concurrent_claim_blocked` (firing real concurrent downloads here
-# overloads the single worker and is not a meaningful black-box assertion).
-out=$(trig directory::__on_worker_added --json '{"worker":"database"}')
-jtrue "__on_worker_added repeat (already present) -> ok"         "$out" '.ok == true'
+out=$(trig directory::engine::functions::info function_id=directory::__on_workers_changed)
+jtrue "auto-download handler registered (auto_download:true)"    "$out" '.function_id == "directory::__on_workers_changed"'
+out=$(trig directory::__on_workers_changed --json '{"event":"worker_connected","worker_id":"w-1"}')
+jtrue "__on_workers_changed worker_connected -> ok"              "$out" '.ok == true'
+out=$(trig directory::__on_workers_changed --json '{"event":"worker_disconnected","worker_id":"w-1"}')
+jtrue "__on_workers_changed worker_disconnected -> ok (no pass)" "$out" '.ok == true'
+out=$(trig directory::__on_workers_changed --json '{}')
+jtrue "__on_workers_changed {} -> ok (no pass)"                  "$out" '.ok == true'
 
 # ── 12. git source: a REAL clone — covers sources/git.rs (run_git_clone + copy) ──
 # Network-dependent (clones a public repo). Set SKIP_GIT=1 to skip in offline CI.
