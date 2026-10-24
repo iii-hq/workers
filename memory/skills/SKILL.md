@@ -29,7 +29,9 @@ rule; point-in-time information belongs in memories.
   save it now: `memory::save { "text": "...", "entities": [...], "pinned": true }`.
   Pin anything they explicitly ask to keep. Re-saving reinforces, never duplicates.
 - The user asks what you remember about a topic — `memory::recall { "query": "..." }`
-  returns the exact ranked memories a turn on that topic would be given.
+  ranks the bank's memories for it. A turn is given fewer: only the hits with
+  evidence, one line per fact and the newer of a stated change;
+  `memory::preview` shows exactly what a turn on that topic would be given.
 - The user asks to fix or forget something — find it via recall/list, then
   `memory::update` (corrected text) or `memory::delete` (tombstone), and
   `memory::pin` to protect the corrected version.
