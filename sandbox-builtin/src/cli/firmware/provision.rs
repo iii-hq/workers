@@ -1,8 +1,7 @@
 //! Provisioning of libkrunfw and iii-init binaries.
 //!
-//! Both follow the same two-stage resolution, and fail closed (no download):
-//! 1. Check local filesystem (env var, `~/.iii/lib/`, adjacent to binary)
-//! 2. Extract from embedded bytes (compile-time features)
+//! Both come from a local override or the compile-time embeds, and fail closed
+//! (no download).
 
 use std::path::PathBuf;
 
@@ -13,7 +12,7 @@ use super::symlinks;
 /// Ensure libkrunfw is available.
 ///
 /// Resolution order:
-/// 1. Check local resolution chain (env var, `~/.iii/lib/`, adjacent to binary, system paths)
+/// 1. Check local resolution chain (env var, `~/.iii/lib/`, system paths)
 /// 2. Extract from embedded bytes (compile-time `embed-libkrunfw` feature)
 ///
 /// Fails closed when neither has it; nothing is downloaded.
@@ -65,7 +64,7 @@ pub async fn ensure_libkrunfw() -> anyhow::Result<PathBuf> {
 ///
 /// Resolution order:
 /// 1. Check if init is embedded in iii-filesystem (compile-time `embed-init` feature)
-/// 2. Check local resolution chain (env var, `~/.iii/lib/iii-init`, adjacent to binary)
+/// 2. `III_INIT_PATH`
 ///
 /// Fails closed when neither has it; nothing is downloaded.
 ///
@@ -79,7 +78,7 @@ pub async fn ensure_init_binary() -> anyhow::Result<PathBuf> {
         return Ok(PathBuf::from("__embedded__"));
     }
 
-    // 2. Check local resolution chain
+    // 2. III_INIT_PATH
     if let Some(path) = resolve_init_binary() {
         tracing::debug!(path = %path.display(), "iii-init found via resolution chain");
         eprintln!("  \u{2713} Found iii-init at {}", path.display());
@@ -87,7 +86,7 @@ pub async fn ensure_init_binary() -> anyhow::Result<PathBuf> {
     }
 
     anyhow::bail!(
-        "iii-init is not embedded in this build and was not found locally; \
+        "iii-init is not embedded in this build and III_INIT_PATH names no file; \
          run BUILD_TARGET=<host target triple> scripts/build-init.sh and rebuild \
          with --features embed-init"
     )

@@ -240,37 +240,19 @@ fn apply_whiteout(
     let _ = std::fs::remove_dir_all(&target);
 }
 
-pub fn expected_oci_arch() -> &'static str {
-    match std::env::consts::ARCH {
-        "aarch64" => "arm64",
-        "x86_64" => "amd64",
-        other => other,
-    }
-}
-
-pub fn read_cached_rootfs_arch(rootfs_dir: &std::path::Path) -> Option<String> {
-    let data = read_oci_config_contents(rootfs_dir)?;
-    let json: serde_json::Value = serde_json::from_str(&data).ok()?;
-    json.get("architecture")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-}
-
-/// OCI image to use as rootfs for each `runtime.kind` value.
-///
-/// Returns `(image_ref, cache_dir_name)`. Keep in sync with
-/// `project::SUPPORTED_KINDS` and `project::infer_scripts`.
-pub fn oci_image_for_kind(kind: &str) -> (&'static str, &'static str) {
+/// OCI image to use as rootfs for each `runtime.kind` value. Keep in sync
+/// with `project::SUPPORTED_KINDS` and `project::infer_scripts`.
+pub fn oci_image_for_kind(kind: &str) -> &'static str {
     match kind {
-        "typescript" | "javascript" => ("docker.io/iiidev/node:latest", "node"),
+        "typescript" | "javascript" => "docker.io/iiidev/node:latest",
         // `kind: bun` gets the oven image by default — ships bun
         // preinstalled so no bootstrap is needed and startup is fast.
         // Users can still override with `runtime.base_image` for a
         // pinned version (e.g. `oven/bun:1.3`).
-        "bun" => ("docker.io/oven/bun:latest", "bun"),
-        "python" => ("docker.io/iiidev/python:latest", "python"),
-        "rust" => ("docker.io/library/rust:slim-bookworm", "rust"),
-        _ => ("docker.io/iiidev/node:latest", "node"),
+        "bun" => "docker.io/oven/bun:latest",
+        "python" => "docker.io/iiidev/python:latest",
+        "rust" => "docker.io/library/rust:slim-bookworm",
+        _ => "docker.io/iiidev/node:latest",
     }
 }
 
@@ -298,13 +280,6 @@ pub fn rootfs_slug_for_image(image: &str) -> String {
     slug_from_text(&canonicalize_oci_ref(image.trim()))
 }
 
-/// Pre-canonicalization slug. Only used by `rootfs_cache` to locate
-/// rootfses left on disk by the pre-fix hashing scheme so upgrading
-/// users don't re-pull on their first post-upgrade run.
-pub fn raw_rootfs_slug_for_image(image: &str) -> String {
-    slug_from_text(image.trim())
-}
-
 /// Parse `image` as an OCI reference and return its canonical whole
 /// form (registry/namespace/repo:tag with all defaults materialized).
 /// Falls back to the raw string when the parser rejects it, so edge-
@@ -316,9 +291,8 @@ fn canonicalize_oci_ref(raw: &str) -> String {
         .unwrap_or_else(|_| raw.to_string())
 }
 
-/// Sanitize + hash. Kept private so the two public entry points
-/// (`rootfs_slug_for_image`, `raw_rootfs_slug_for_image`) are the only
-/// callers and the canonicalization boundary stays crisp.
+/// Sanitize + hash. Kept private so `rootfs_slug_for_image` is the only
+/// caller and the canonicalization boundary stays crisp.
 fn slug_from_text(s: &str) -> String {
     let hash = fnv1a64(s.as_bytes());
     // Single-pass emit + coalesce runs of `-`; O(n) vs the previous
@@ -359,50 +333,24 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 
 /// Determine the rootfs path for a given `runtime.kind`, optionally
 /// overriding the default base image. If the rootfs doesn't exist
-/// locally, pulls the OCI image and extracts it.
+/// locally, pulls the OCI image and extracts it into the rootfs cache.
 ///
 /// `base_image_override` comes from `runtime.base_image` in
-/// `iii.worker.yaml`. When `Some`, the override's image ref is pulled
-/// into a slug-derived cache dir so it doesn't clobber the kind-default
-/// rootfs (e.g. a `base_image: oven/bun:1` worker gets its own
-/// `~/.iii/rootfs/oven-bun-1/` instead of replacing the shared
-/// `~/.iii/rootfs/bun/` that every default `kind: bun` worker uses).
+/// `iii.worker.yaml`.
 pub async fn prepare_rootfs(kind: &str, base_image_override: Option<&str>) -> Result<PathBuf> {
-    let (oci_image, legacy_slug): (String, String) = match base_image_override {
-        Some(img) if !img.trim().is_empty() => {
-            let slug = rootfs_slug_for_image(img.trim());
-            if slug.is_empty() {
-                anyhow::bail!(
-                    "base_image {:?} produced an empty rootfs slug — use a normal image reference like `oven/bun:1`",
-                    img
-                );
-            }
-            (img.trim().to_string(), slug)
-        }
-        _ => {
-            let (img, name) = oci_image_for_kind(kind);
-            (img.to_string(), name.to_string())
-        }
+    let oci_image = match base_image_override.map(str::trim) {
+        Some(img) if !img.is_empty() => img.to_string(),
+        _ => oci_image_for_kind(kind).to_string(),
     };
 
-    // Delegate cache lookup + pull to the unified rootfs cache. Legacy
-    // `~/.iii/rootfs/<kind>/` and `~/.iii/images/<sha>/` layouts are
-    // consulted as fallbacks so pre-unification users don't re-pull.
     let image_for_log = oci_image.clone();
-    let slug_for_log = legacy_slug.clone();
-    let hints = crate::cli::rootfs_cache::CacheHints {
-        legacy_kind: Some(&legacy_slug),
-        consult_images_cache: true,
-        ..Default::default()
-    };
-    let rootfs_dir = crate::cli::rootfs_cache::ensure_rootfs(&oci_image, &hints, move || {
-        eprintln!("  Pulling rootfs {} ({})...", slug_for_log, image_for_log);
+    let rootfs_dir = crate::cli::rootfs_cache::ensure_rootfs(&oci_image, move || {
+        eprintln!("  Pulling rootfs {image_for_log}...");
     })
     .await?;
 
     // Post-populate runtime-expected dirs even on a cache hit; these are
-    // idempotent and cheap, and covers the case where a legacy rootfs
-    // predates the workspace/ convention.
+    // idempotent and cheap.
     let workspace = rootfs_dir.join("workspace");
     std::fs::create_dir_all(&workspace).ok();
 
@@ -673,9 +621,9 @@ fn insecure_registries(reference: &oci_client::Reference) -> Vec<String> {
 /// temp directory, so observers either see the fully-extracted rootfs or
 /// nothing at all. A SIGTERM / network failure / disk-full partway through
 /// extraction leaves an orphaned `.tmp-*` sibling that the next pull
-/// cleans up. The cache-hit check at
-/// `crates/iii-worker/src/cli/worker_manager/libkrun.rs:393` can therefore
-/// trust that `dest` existing with `bin/` means the rootfs is complete.
+/// cleans up. The cache-hit check (`rootfs_cache::is_populated`) can
+/// therefore trust that `dest` existing with `bin/` means the rootfs is
+/// complete.
 ///
 /// Atomicity scope is `dest` ONLY — callers can rely on
 /// `dest` either existing with the full rootfs or not existing. Sibling
@@ -742,9 +690,8 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
     // Pre-fetch the manifest so we can tell the user UP FRONT what they're
     // about to wait for (layer count + total compressed bytes). The
     // `client.pull(...)` call below is one blocking network operation
-    // with no per-byte progress hook, so without this summary the only
-    // signal the wait UI has is the 3s heartbeat (elapsed time only).
-    // Knowing "1247 MiB across 5 layers" lets the user gauge how long
+    // with no per-byte progress hook, so this summary is the first
+    // signal in the log. Knowing "1247 MiB across 5 layers" lets the user gauge how long
     // the pull will realistically take. Best-effort: if the registry
     // returns an Image Index (multi-platform manifest) we skip the
     // summary rather than do the full platform resolution dance — the
@@ -789,8 +736,7 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
         // A background task reads the counter every 2s and emits a
         // real progress line:
         //   "Pulling <image>: 412.6/1247.3 MiB (33%, 41.2 MiB/s, 10s)"
-        // The wait UI's `tail:` row picks up the latest one and shows
-        // genuine download progress instead of just elapsed time.
+        // so the adapter's log shows genuine download progress.
         let pull_result = pull_with_progress(&client, &reference, image, host_arch).await;
 
         match pull_result {
@@ -837,14 +783,6 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
     );
 
     let layer_count = image_data.layers.len();
-    let pb = indicatif::ProgressBar::new(layer_count as u64);
-    pb.set_style(
-        indicatif::ProgressStyle::with_template(
-            "  [{bar:40.cyan/blue}] {pos}/{len} layers extracted",
-        )
-        .unwrap()
-        .progress_chars("=> "),
-    );
 
     // Set up the atomic-extract staging dir AFTER pull succeeds. Doing this
     // before pull would leak the temp dir on network/auth failure.
@@ -852,10 +790,8 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
     // The atomic unit is `dest` itself, NOT its parent. The staging dir
     // lives as a SIBLING of `dest` so the final rename(temp, dest) touches
     // only the one dir the caller asked for — it must never clobber the
-    // parent, which may house other unrelated cache entries (e.g.
-    // `~/.iii/rootfs/` is shared across base images like `node`, `bun`,
-    // `python`; similarly `~/.iii/images/<hash>/` may have a sibling
-    // `digest.txt` added in a later task).
+    // parent, which houses every other image's entry
+    // (`~/.iii/cache/<slug>/`, plus their `.erofs` and `.lock` siblings).
     let dest_parent = dest.parent();
     let dest_basename = dest
         .file_name()
@@ -889,29 +825,16 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
     };
 
     let mut total_size: u64 = 0;
-    use std::io::IsTerminal;
-    let mirror_layer_lines = !std::io::stderr().is_terminal();
     let extract_result: Result<()> = (|| {
         for (i, layer) in image_data.layers.iter().enumerate() {
             extract_layer_with_limits(&layer.data, &extract_root, i, layer_count, &mut total_size)?;
-            pb.inc(1);
-            // On TTY, indicatif's progress bar handles the live row.
-            // On non-TTY (engine-captured log file), the bar produces
-            // nothing — so we mirror each completed layer as a plain
-            // eprintln to keep the `tail:` row in `iii worker add
-            // --wait` refreshing with concrete progress. The TTY
-            // branch SKIPS this print so it doesn't scroll the bar's
-            // row off as the bar is also being redrawn.
-            if mirror_layer_lines {
-                eprintln!(
-                    "  Extracted layer {}/{} ({:.1} MiB total)",
-                    i + 1,
-                    layer_count,
-                    total_size as f64 / (1024.0 * 1024.0),
-                );
-            }
+            eprintln!(
+                "  Extracted layer {}/{} ({:.1} MiB total)",
+                i + 1,
+                layer_count,
+                total_size as f64 / (1024.0 * 1024.0),
+            );
         }
-        pb.finish();
 
         let config_json = &image_data.config.data;
         let config_path = extract_root.join(".oci-config.json");
@@ -930,8 +853,7 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
         match extract_result {
             Ok(()) => {
                 // If `final_dir` already exists (leftover from a prior
-                // interrupted run, or a race with another `iii worker add`),
-                // remove it so the rename can succeed. We're claiming this
+                // interrupted run), remove it so the rename can succeed. We're claiming this
                 // dir atomically — stale contents are replaced wholesale.
                 if final_dir.exists() {
                     std::fs::remove_dir_all(&final_dir).with_context(|| {
@@ -969,62 +891,6 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
     }
 }
 
-pub fn rootfs_search_paths(name: &str) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        paths.push(dir.join("rootfs").join(name));
-    }
-    if let Some(home) = dirs::home_dir() {
-        paths.push(home.join(".iii").join("rootfs").join(name));
-    }
-    paths.push(PathBuf::from("/usr/local/share/iii/rootfs").join(name));
-    paths
-}
-
-/// Read entrypoint and cmd from the saved OCI image config.
-pub fn read_oci_entrypoint(rootfs: &std::path::Path) -> Option<(String, Vec<String>)> {
-    let data = read_oci_config_contents(rootfs)?;
-    let json: serde_json::Value = serde_json::from_str(&data).ok()?;
-
-    let config = json.get("config")?;
-
-    let entrypoint: Vec<String> = config
-        .get("Entrypoint")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
-
-    let cmd: Vec<String> = config
-        .get("Cmd")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
-
-    if !entrypoint.is_empty() {
-        let exec = entrypoint[0].clone();
-        let mut args: Vec<String> = entrypoint[1..].to_vec();
-        args.extend(cmd);
-        Some((exec, args))
-    } else if !cmd.is_empty() {
-        let exec = cmd[0].clone();
-        let args = cmd[1..].to_vec();
-        Some((exec, args))
-    } else {
-        None
-    }
-}
-
-/// Read WorkingDir from the saved OCI image config.
-pub fn read_oci_workdir(rootfs: &std::path::Path) -> Option<String> {
-    let data = read_oci_config_contents(rootfs)?;
-    let json: serde_json::Value = serde_json::from_str(&data).ok()?;
-    json.get("config")?
-        .get("WorkingDir")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-}
-
 /// Read environment variables from the saved OCI image config.
 pub fn read_oci_env(rootfs: &std::path::Path) -> Vec<(String, String)> {
     let data = match read_oci_config_contents(rootfs) {
@@ -1059,13 +925,12 @@ pub fn read_oci_env(rootfs: &std::path::Path) -> Vec<(String, String)> {
 // ─────────────────────────────────────────────────────────────────────────────
 // Streaming pull with byte-level progress
 //
-// `oci_client::Client::pull` is one blocking call with no per-byte hook,
-// which forced our wait UI to fall back on an elapsed-time-only heart-
-// beat. Re-implement the pull at the layer level: fetch the manifest
+// `oci_client::Client::pull` is one blocking call with no per-byte hook.
+// Re-implement the pull at the layer level: fetch the manifest
 // (resolving multi-platform), pull the config blob, then stream each
 // layer via `pull_blob_stream`, counting bytes into a shared
 // `AtomicU64`. A background task reads the counter every 2s and emits
-// a real progress line that the wait UI's `tail:` row surfaces.
+// a real progress line to stderr.
 // ─────────────────────────────────────────────────────────────────────────────
 
 async fn pull_with_progress(
@@ -1100,16 +965,6 @@ async fn pull_with_progress(
     let total_for_heartbeat = total_bytes;
     let image_for_heartbeat = image.to_string();
     let attempt_started = std::time::Instant::now();
-    // Skip the per-second heartbeat eprintlns when stderr is a TTY: the
-    // caller (`handle_oci_pull_and_add`) wraps this whole call in a
-    // `Spinner` whose 100ms tick redraws the same row. Heartbeat
-    // eprintlns from here would scroll the spinner row off and produce
-    // visual chaos. The non-TTY path (engine-spawned subprocess →
-    // `~/.iii/logs/<name>/stderr.log`) NEEDS these lines because the
-    // wait UI tails that file for the `tail:` row, and there's no
-    // spinner there.
-    use std::io::IsTerminal;
-    let emit_heartbeat = !std::io::stderr().is_terminal();
     // Scope guard: aborts the heartbeat task on Drop. Without this, every
     // `?` operator between here and the explicit `drop(heartbeat)` at the
     // end of this function (config-blob fetch, every layer's
@@ -1128,9 +983,9 @@ async fn pull_with_progress(
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
         // Default `Burst` would replay missed ticks back-to-back if
         // the runtime worker thread was held off (e.g., a blocking
-        // syscall elsewhere). The wait UI would suddenly see N
-        // identical "Pulling X.X/Y.Y MiB" lines in milliseconds, which
-        // looks like a glitch rather than honest progress.
+        // syscall elsewhere). The log would suddenly get N identical
+        // "Pulling X.X/Y.Y MiB" lines in milliseconds, which looks like
+        // a glitch rather than honest progress.
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await; // first tick is instant; consume it
         loop {
@@ -1142,13 +997,11 @@ async fn pull_with_progress(
                 let total_mb = total_for_heartbeat as f64 / (1024.0 * 1024.0);
                 let pct = (dl as u128 * 100 / total_for_heartbeat.max(1) as u128).min(100) as u64;
                 let rate = mb / elapsed as f64;
-                if emit_heartbeat {
-                    eprintln!(
-                        "  Pulling {}: {:.1}/{:.1} MiB ({}%, {:.1} MiB/s, {}s)",
-                        image_for_heartbeat, mb, total_mb, pct, rate, elapsed
-                    );
-                }
-            } else if emit_heartbeat {
+                eprintln!(
+                    "  Pulling {}: {:.1}/{:.1} MiB ({}%, {:.1} MiB/s, {}s)",
+                    image_for_heartbeat, mb, total_mb, pct, rate, elapsed
+                );
+            } else {
                 // Registry didn't report layer sizes — show what we've
                 // got so the user at least sees activity.
                 eprintln!(
@@ -1220,18 +1073,14 @@ async fn pull_with_progress(
     drop(heartbeat); // explicit: AbortOnDrop fires here
 
     // Final 100% line so the user sees the pull cleanly conclude
-    // before the extract eprintlns start. Gated on non-TTY for the same
-    // reason as the heartbeat: on TTY the outer Spinner provides the
-    // signal; here this line would just collide with it.
+    // before the extract eprintlns start.
     let final_mb = downloaded.load(Ordering::Relaxed) as f64 / (1024.0 * 1024.0);
     let total_mb = total_bytes as f64 / (1024.0 * 1024.0);
     let final_elapsed = attempt_started.elapsed().as_secs().max(1);
-    if emit_heartbeat {
-        eprintln!(
-            "  Pulling {}: {:.1}/{:.1} MiB (100%, {:.1}s total)",
-            image, final_mb, total_mb, final_elapsed as f64
-        );
-    }
+    eprintln!(
+        "  Pulling {}: {:.1}/{:.1} MiB (100%, {:.1}s total)",
+        image, final_mb, total_mb, final_elapsed as f64
+    );
 
     Ok(ImageData {
         layers,
@@ -1425,16 +1274,6 @@ mod tests {
     }
 
     #[test]
-    fn test_rootfs_search_paths_includes_home() {
-        let paths = rootfs_search_paths("node");
-        assert!(
-            paths
-                .iter()
-                .any(|p| p.to_string_lossy().contains(".iii/rootfs"))
-        );
-    }
-
-    #[test]
     fn slug_preserves_dots_and_dashes() {
         let slug = rootfs_slug_for_image("ghcr.io/my-org/my-worker:latest");
         assert!(
@@ -1529,7 +1368,7 @@ mod tests {
 
     /// Regression for the ~/.iii/cache/ duplication bug: sandbox
     /// presets pass `iiidev/node:latest` (no registry prefix) while
-    /// managed workers pass `docker.io/iiidev/node:latest`. Without
+    /// worker VMs pass `docker.io/iiidev/node:latest`. Without
     /// canonicalization, both wrote to distinct slug dirs and pulled
     /// the same image twice.
     #[test]
@@ -1562,98 +1401,46 @@ mod tests {
         );
     }
 
-    /// Guard the pre-canonicalization escape hatch used by
-    /// `rootfs_cache::legacy_candidates`. When the raw form differs
-    /// from the canonical form, the two slugs must differ so upgrading
-    /// users' existing rootfses remain findable through the legacy
-    /// path.
-    #[test]
-    fn raw_slug_differs_from_canonical_when_shorthand() {
-        let raw = raw_rootfs_slug_for_image("iiidev/node:latest");
-        let canonical = rootfs_slug_for_image("iiidev/node:latest");
-        assert_ne!(raw, canonical);
-        assert!(raw.starts_with("iiidev-node-latest-"));
-        assert!(canonical.starts_with("docker.io-iiidev-node-latest-"));
-    }
-
     #[test]
     fn test_oci_image_for_kind_defaults_to_node() {
-        let (image, name) = oci_image_for_kind("unknown_kind");
-        assert_eq!(image, "docker.io/iiidev/node:latest");
-        assert_eq!(name, "node");
+        assert_eq!(
+            oci_image_for_kind("unknown_kind"),
+            "docker.io/iiidev/node:latest"
+        );
     }
 
     #[test]
     fn test_oci_image_for_typescript() {
-        let (image, name) = oci_image_for_kind("typescript");
-        assert_eq!(image, "docker.io/iiidev/node:latest");
-        assert_eq!(name, "node");
+        assert_eq!(
+            oci_image_for_kind("typescript"),
+            "docker.io/iiidev/node:latest"
+        );
     }
 
     #[test]
     fn test_oci_image_for_bun() {
-        let (image, name) = oci_image_for_kind("bun");
-        assert_eq!(image, "docker.io/oven/bun:latest");
-        assert_eq!(name, "bun");
+        assert_eq!(oci_image_for_kind("bun"), "docker.io/oven/bun:latest");
     }
 
     #[test]
     fn test_oci_image_for_python() {
-        let (image, name) = oci_image_for_kind("python");
-        assert_eq!(image, "docker.io/iiidev/python:latest");
-        assert_eq!(name, "python");
+        assert_eq!(
+            oci_image_for_kind("python"),
+            "docker.io/iiidev/python:latest"
+        );
     }
 
     #[test]
     fn test_oci_image_for_rust() {
-        let (image, name) = oci_image_for_kind("rust");
-        assert_eq!(image, "docker.io/library/rust:slim-bookworm");
-        assert_eq!(name, "rust");
+        assert_eq!(
+            oci_image_for_kind("rust"),
+            "docker.io/library/rust:slim-bookworm"
+        );
     }
 
     #[test]
     fn test_oci_image_for_go() {
-        let (image, name) = oci_image_for_kind("go");
-        assert_eq!(image, "docker.io/iiidev/node:latest");
-        assert_eq!(name, "node");
-    }
-
-    #[test]
-    fn test_expected_oci_arch() {
-        let arch = expected_oci_arch();
-        if cfg!(target_arch = "aarch64") {
-            assert_eq!(arch, "arm64");
-        } else if cfg!(target_arch = "x86_64") {
-            assert_eq!(arch, "amd64");
-        }
-    }
-
-    #[test]
-    fn test_read_oci_entrypoint_with_entrypoint_and_cmd() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = r#"{"config": {"Entrypoint": ["/usr/bin/node"], "Cmd": ["server.js"]}}"#;
-        std::fs::write(dir.path().join(".oci-config.json"), config).unwrap();
-        let result = read_oci_entrypoint(dir.path()).unwrap();
-        assert_eq!(result.0, "/usr/bin/node");
-        assert_eq!(result.1, vec!["server.js"]);
-    }
-
-    #[test]
-    fn test_read_oci_entrypoint_cmd_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = r#"{"config": {"Cmd": ["/bin/sh", "-c", "echo hello"]}}"#;
-        std::fs::write(dir.path().join(".oci-config.json"), config).unwrap();
-        let result = read_oci_entrypoint(dir.path()).unwrap();
-        assert_eq!(result.0, "/bin/sh");
-        assert_eq!(result.1, vec!["-c", "echo hello"]);
-    }
-
-    #[test]
-    fn test_read_oci_entrypoint_none() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = r#"{"config": {}}"#;
-        std::fs::write(dir.path().join(".oci-config.json"), config).unwrap();
-        assert!(read_oci_entrypoint(dir.path()).is_none());
+        assert_eq!(oci_image_for_kind("go"), "docker.io/iiidev/node:latest");
     }
 
     #[test]
@@ -1837,10 +1624,7 @@ mod tests {
         .unwrap();
         std::os::unix::fs::symlink(&host_file, rootfs.join(".oci-config.json")).unwrap();
 
-        assert_eq!(read_cached_rootfs_arch(&rootfs), None);
         assert!(read_oci_env(&rootfs).is_empty());
-        assert!(read_oci_entrypoint(&rootfs).is_none());
-        assert!(read_oci_workdir(&rootfs).is_none());
     }
 
     #[test]
@@ -2121,7 +1905,6 @@ mod tests {
         .unwrap();
 
         // Without O_NONBLOCK the open would block waiting for a writer.
-        assert_eq!(read_cached_rootfs_arch(&rootfs), None);
         assert!(read_oci_env(&rootfs).is_empty());
     }
 

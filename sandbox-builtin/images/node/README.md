@@ -1,6 +1,6 @@
 # Node.js Sandbox Image
 
-This directory contains the Dockerfile for the Node.js sandbox image used as rootfs for iii managed workers.
+This directory contains the Dockerfile for the Node.js sandbox image used as rootfs for sandbox-builtin sandboxes and worker VMs.
 
 ## Targets
 

@@ -56,16 +56,16 @@ fn integration_rootfs(env_var: &str) -> Option<PathBuf> {
 fn exit_handle_sigterm_triggers_clean_shutdown() {
     // Goal: prove that SIGTERM delivered to a live __vm-boot process
     // drives the VMM's clean shutdown path (on_exit observers fire,
-    // pidfile is removed, control socket is removed) instead of
+    // the shell socket is removed) instead of
     // tearing the process down mid-guest-write.
     //
     // Shape:
-    //   1. Spawn `iii-worker __vm-boot --rootfs <fixture> --exec /bin/sleep
-    //      --arg 60 --pid-file <tmp> --control-sock <tmp>`.
-    //   2. Wait until the control socket exists (boot complete).
+    //   1. Spawn `sandbox-builtin __vm-boot --rootfs <fixture> --exec /bin/sleep
+    //      --arg 60 --shell-sock <tmp>`.
+    //   2. Wait until the shell socket exists (boot complete).
     //   3. kill(child_pid, SIGTERM).
     //   4. Assert child exits within N seconds (deadline <= 5s).
-    //   5. Assert pidfile and control socket are both gone.
+    //   5. Assert the shell socket is gone.
     //
     // Gap: Gap #1 (ExitHandle) from the integration plan.
     let Some(rootfs) = integration_rootfs("III_VM_INTEGRATION_ROOTFS") else {

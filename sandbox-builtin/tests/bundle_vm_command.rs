@@ -133,7 +133,7 @@ async fn a_valid_bundle_builds_a_boot_command() {
     assert!(!rendered.contains("shop-dev"), "{rendered}");
     let env = iii_supervisor::env_channel::read_frame(&mut built.env_stdin.as_slice()).unwrap();
     assert!(env.contains(&("III_NAMESPACE".to_string(), "shop-dev".to_string())));
-    // The state dir is the caller's, not ~/.iii/managed/probe.
+    // The state dir is the caller's.
     assert!(
         rendered.contains(&tmp.path().join("vm").display().to_string()),
         "{rendered}"

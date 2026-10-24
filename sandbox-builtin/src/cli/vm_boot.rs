@@ -37,8 +37,8 @@ pub struct VmBootArgs {
     pub rootfs_upper: Option<String>,
 
     /// Serve `--rootfs` read-only over virtio-fs: every guest write through
-    /// `/dev/root` fails with EROFS. The sandbox daemon sets this for its
-    /// per-sandbox trampoline; managed workers leave it off.
+    /// `/dev/root` fails with EROFS. The sandbox adapter sets this for its
+    /// per-sandbox trampoline; worker VMs leave it off.
     #[arg(long)]
     pub rootfs_readonly: bool,
 
@@ -78,32 +78,9 @@ pub struct VmBootArgs {
     #[arg(long)]
     pub env_stdin: bool,
 
-    /// PID file to clean up on VM exit (managed workers only)
-    #[arg(long)]
-    pub pid_file: Option<String>,
-
-    /// Redirect VM console output to this file (managed workers only).
-    #[arg(long)]
-    pub console_output: Option<String>,
-
     /// Network slot for IP/MAC address derivation (0-65535)
     #[arg(long, default_value = "0")]
     pub slot: u64,
-
-    /// Unix socket path where this `__vm-boot` process will listen for
-    /// control requests from the host (source watcher, stop handler).
-    ///
-    /// When set, `__vm-boot` creates an internal `socketpair(AF_UNIX)`,
-    /// wires one end into the VM as a virtio-console port named
-    /// `iii.control` (guest device: `/dev/vport0p1`), and spawns a
-    /// proxy thread that serves the listed socket: incoming bytes are
-    /// forwarded to the VM's port, replies are forwarded back. The
-    /// in-VM `iii-supervisor` reads/writes the other end.
-    ///
-    /// When absent, the VM boots without a control port and every
-    /// restart is a full VM restart.
-    #[arg(long)]
-    pub control_sock: Option<String>,
 
     /// Enable SMT / hyperthreading in the guest. Default off — matches
     /// Firecracker's conservative default and avoids noisy-neighbour
@@ -138,12 +115,11 @@ pub struct VmBootArgs {
     pub nofile_limit: u64,
 
     /// Unix socket path where this `__vm-boot` process will listen for
-    /// exec and fs clients (`sandbox::exec`, `sandbox::fs::*`).
-    /// Separate from `--control-sock` because exec-style sessions are
-    /// multiplexed (many concurrent requests on one virtio-console
-    /// port), which the single-request control proxy doesn't support.
+    /// exec and fs clients (`sandbox::exec`, `sandbox::fs::*`). Sessions
+    /// are multiplexed: many concurrent requests on one virtio-console
+    /// port.
     ///
-    /// When set, `__vm-boot` creates a second `socketpair(AF_UNIX)`,
+    /// When set, `__vm-boot` creates a `socketpair(AF_UNIX)`,
     /// wires one end into the VM as a named virtio-console port
     /// (`iii.exec`), and spawns the async [`crate::cli::shell_relay`]
     /// task on the existing tokio runtime to route frames between
@@ -286,16 +262,6 @@ pub(crate) fn root_share(args: &VmBootArgs) -> Result<iii_filesystem::Passthroug
         .map_err(|e| format!("PassthroughFs failed for '{}': {}", args.rootfs, e))
 }
 
-/// Overlay mode, host side: migrate a managed worker's on-disk layout (GC of
-/// orphaned legacy clone artifacts, then the layout marker). A read-only
-/// rootfs is a sandbox trampoline, not a managed worker dir: there is nothing
-/// to migrate and nothing may be written there.
-pub(crate) fn migrate_rootfs_layout(args: &VmBootArgs) {
-    if !args.rootfs_readonly {
-        crate::cli::overlay::migrate_to_overlay(std::path::Path::new(&args.rootfs));
-    }
-}
-
 /// Raise the process fd limit (RLIMIT_NOFILE) to accommodate PassthroughFs.
 fn raise_fd_limit() {
     use nix::libc;
@@ -346,8 +312,8 @@ pub fn rewrite_localhost(s: &str, gateway_ip: &str) -> String {
 /// Why this matters: libkrun starts iii-init (PID 1) with whatever
 /// env we pass to `set_env`, and only that. When `args.env` doesn't
 /// carry `PATH`, PID 1 has none — and neither does any process it
-/// spawns (the worker boot script, the shell dispatcher, `iii worker
-/// exec` children). dash's compile-time default fills `$PATH`
+/// spawns (the worker boot script, the shell dispatcher, `sandbox::exec`
+/// children). dash's compile-time default fills `$PATH`
 /// internally so `node` typed at a shell prompt still works, but
 /// **dash does not mark that internal default as exported**. So a
 /// `#!/usr/bin/env <prog>` shebang re-execs through `/usr/bin/env`,
@@ -375,39 +341,7 @@ pub fn maybe_rewrite_localhost(s: &str, gateway_ip: Option<&str>) -> String {
     }
 }
 
-/// Identity of a bound control socket: path plus (dev, ino) of the
-/// filesystem entry that `UnixListener::bind` produced. Captured at
-/// bind time and consulted by the VM-exit cleanup hook so we only
-/// unlink the socket we created — never a replacement someone else
-/// bound at the same path in the meantime.
-#[cfg(unix)]
-#[derive(Debug, Clone)]
-struct SocketFingerprint {
-    path: String,
-    dev: u64,
-    ino: u64,
-}
-
-#[cfg(unix)]
-impl SocketFingerprint {
-    /// Remove the socket file iff its (dev, ino) still match what we
-    /// captured at bind time. Silently does nothing if the path has
-    /// been replaced (another VM rebinding), is gone, or can't be
-    /// stat'd — all three are benign at VM-exit time.
-    fn remove_if_unchanged(&self) {
-        use std::os::unix::fs::MetadataExt;
-        match std::fs::metadata(&self.path) {
-            Ok(m) if m.dev() == self.dev && m.ino() == self.ino => {
-                let _ = std::fs::remove_file(&self.path);
-            }
-            _ => {
-                // Replaced, gone, or unstatable — leave it alone.
-            }
-        }
-    }
-}
-
-/// Create a unix stream `socketpair` for the control channel. The guest
+/// Create a unix stream `socketpair` for one virtio-console port. The guest
 /// fd will be handed to `ConsoleBuilder::port` and must remain open for
 /// the lifetime of the VM; we deliberately `forget` the owned wrapper
 /// and return the raw fd number so it isn't closed when this function
@@ -419,12 +353,12 @@ impl SocketFingerprint {
 /// keeps it alive. Closing happens on process exit, which is exactly
 /// when the VM goes down — correct.
 #[cfg(unix)]
-fn setup_control_socketpair() -> Result<(std::os::unix::net::UnixStream, i32), String> {
+fn setup_port_socketpair() -> Result<(std::os::unix::net::UnixStream, i32), String> {
     use std::os::fd::{AsRawFd, IntoRawFd};
     use std::os::unix::net::UnixStream;
 
     let (host_end, guest_end) =
-        UnixStream::pair().map_err(|e| format!("control socketpair: {e}"))?;
+        UnixStream::pair().map_err(|e| format!("console port socketpair: {e}"))?;
 
     // Clear CLOEXEC on the guest fd so it remains open through any
     // libkrun internal fork/exec pathway. (On most platforms
@@ -441,241 +375,6 @@ fn setup_control_socketpair() -> Result<(std::os::unix::net::UnixStream, i32), S
 
     let guest_fd = guest_end.into_raw_fd();
     Ok((host_end, guest_fd))
-}
-
-/// Spawn a detached background thread that listens on `sock_path` and
-/// bridges accepted connections to `host_end`. Each client gets
-/// exclusive access to the channel for the duration of their
-/// connection (the supervisor protocol is strictly request/response,
-/// one in flight at a time).
-///
-/// The listener is bound to a fresh unix socket — any stale file at
-/// `sock_path` is unlinked first. The `on_exit` hook in the caller
-/// unlinks it again on VM shutdown so stop leaves a tidy managed dir.
-/// Even without that cleanup the file becomes inert when the
-/// __vm-boot process dies, and any subsequent `iii worker start`
-/// overwrites it via the same unlink step below.
-#[cfg(unix)]
-fn spawn_control_proxy(
-    sock_path: String,
-    host_end: std::os::unix::net::UnixStream,
-) -> Option<SocketFingerprint> {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
-    use std::os::unix::net::{UnixListener, UnixStream};
-    use std::path::PathBuf;
-    use std::sync::{Arc, Mutex};
-    use std::thread;
-    use std::time::Duration;
-
-    /// Host↔VM round-trip budget. Matches the host-side
-    /// `supervisor_ctl::DEFAULT_TIMEOUT` so callers' timeouts and the
-    /// proxy's timeouts converge on the same deadline.
-    const VM_IO_TIMEOUT: Duration = Duration::from_millis(500);
-
-    /// Cap on a single request or response line, matching
-    /// `iii_supervisor::control::serve_with`. A client streaming bytes
-    /// without a newline can't grow memory beyond this.
-    const MAX_LINE: usize = 4096;
-
-    // Ensure the parent dir exists and any stale socket is gone. The
-    // parent dir should already exist (managed_dir is created earlier
-    // in the worker start path), but we don't rely on that.
-    if let Some(parent) = PathBuf::from(&sock_path).parent() {
-        let _ = std::fs::create_dir_all(parent);
-        // Lock the parent to 0o700 so no other local user can traverse
-        // into it to reach the control socket. Best-effort.
-        let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
-    }
-    let _ = std::fs::remove_file(&sock_path);
-
-    // Narrow umask around the bind so the socket inode is created with
-    // 0o600 mode from the start, rather than born with the process
-    // umask (typically 0o002 / 0o022) and chmod'd afterwards. The prior
-    // `set_permissions` approach left a narrow TOCTOU window where a
-    // same-uid attacker could `connect()` before we locked the perms;
-    // SO_PEERCRED would reject cross-uid clients but not same-uid ones.
-    // umask(0o077) yields 0o600 files (default mode 0o666 & !0o077 = 0o600),
-    // closing the window. Restore the prior umask immediately after bind.
-    //
-    // Kept for defense-in-depth: SO_PEERCRED (below) remains the primary
-    // authz check and the parent dir is already 0o700 from line ~316.
-    //
-    // Caveat: `umask` is process-global, not per-thread. If a concurrent
-    // Tokio task (or any other thread) happens to create a file between
-    // the `umask(0o077)` and restore call, that file also inherits 0o077.
-    // The window is a few syscalls wide and `iii worker start` is
-    // effectively serial at this point in boot, so the practical risk is
-    // low; the `set_permissions` follow-up below catches the rare miss.
-    let prev_umask = unsafe { nix::libc::umask(0o077) };
-    let bind_result = UnixListener::bind(&sock_path);
-    unsafe {
-        nix::libc::umask(prev_umask);
-    }
-    let listener = match bind_result {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!(
-                "warning: control proxy bind({sock_path}) failed: {e}. \
-                 Fast-path restart is disabled; full VM restarts still work."
-            );
-            return None;
-        }
-    };
-    // Belt-and-suspenders: some platforms or `nix` versions of `umask`
-    // might not influence Unix-socket inode creation mode. The
-    // `set_permissions` call here is a no-op when bind already produced
-    // 0o600 (the common case), and a corrective chmod otherwise.
-    let _ = std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600));
-
-    // Capture (dev, ino) of the just-bound socket so the on_exit hook
-    // can refuse to unlink if the file at `sock_path` has since been
-    // replaced — a fast `stop → start` race can let the new VM bind
-    // the same path before the old VM's on_exit fires; without this
-    // fingerprint check the stale hook would nuke the live socket
-    // and silently downgrade fast-path restart to a full-VM cycle.
-    let fingerprint = std::fs::metadata(&sock_path)
-        .ok()
-        .map(|m| SocketFingerprint {
-            path: sock_path.clone(),
-            dev: m.dev(),
-            ino: m.ino(),
-        });
-
-    // Cap how long any single read from the VM end can block. A wedged
-    // supervisor otherwise pins the mutex forever and every subsequent
-    // client deadlocks on host.lock(). 500ms matches the host-side
-    // supervisor_ctl round-trip budget.
-    let _ = host_end.set_read_timeout(Some(VM_IO_TIMEOUT));
-    let _ = host_end.set_write_timeout(Some(VM_IO_TIMEOUT));
-
-    let host = Arc::new(Mutex::new(host_end));
-    let our_uid = unsafe { nix::libc::geteuid() };
-
-    thread::Builder::new()
-        .name("iii-control-proxy".to_string())
-        .spawn(move || {
-            for conn in listener.incoming() {
-                let client = match conn {
-                    Ok(c) => c,
-                    Err(_) => continue,
-                };
-                // Reject clients running as a different uid. The control
-                // channel is strictly for the local owner of the worker.
-                if !peer_uid_matches(&client, our_uid) {
-                    continue;
-                }
-
-                let mut guard = match host.lock() {
-                    Ok(g) => g,
-                    Err(_) => return, // poisoned — give up
-                };
-
-                if !proxy_one_round_trip(client, &mut guard, MAX_LINE) {
-                    // VM-end failure (EOF, IO error, timeout). Drop the
-                    // listener so future fast-restarts fall back to the
-                    // full path instead of accepting doomed connections.
-                    return;
-                }
-                // Drop client at end of iteration → connection closes.
-            }
-        })
-        .expect("spawn control proxy thread");
-
-    /// One request/response exchange. Returns `true` to keep the
-    /// listener alive, `false` if the host↔VM channel itself has
-    /// failed (caller should abandon the proxy thread).
-    #[cfg(unix)]
-    fn proxy_one_round_trip(client: UnixStream, vm: &mut UnixStream, max_line: usize) -> bool {
-        use std::io::{BufRead, BufReader, Read, Write};
-        // Client-side reads can hang on a slow peer but the listener
-        // is still useful — bound the client read with the same budget
-        // as the VM side so a lazy attacker can't wedge the proxy.
-        let _ = client.set_read_timeout(Some(VM_IO_TIMEOUT));
-        let _ = client.set_write_timeout(Some(VM_IO_TIMEOUT));
-
-        let mut client_reader = BufReader::new(&client);
-        let mut req = Vec::with_capacity(128);
-        match (&mut client_reader)
-            .take(max_line as u64)
-            .read_until(b'\n', &mut req)
-        {
-            Ok(0) => return true, // client closed without sending — next
-            Ok(_) => {}
-            Err(_) => return true, // slow/bad client, keep listener
-        }
-        // Forward to VM.
-        if vm.write_all(&req).is_err() || vm.flush().is_err() {
-            return false;
-        }
-
-        // Pull one line of response from VM back to client.
-        let mut vm_reader = BufReader::new(&*vm);
-        let mut resp = Vec::with_capacity(64);
-        let read_result = (&mut vm_reader)
-            .take(max_line as u64)
-            .read_until(b'\n', &mut resp);
-        let mut client_writer = &client;
-        match read_result {
-            Ok(0) => false, // VM closed — supervisor gone
-            Ok(_) => {
-                let _ = client_writer.write_all(&resp);
-                let _ = client_writer.flush();
-                true
-            }
-            Err(_) => false, // VM timeout or IO error — bail
-        }
-    }
-
-    /// Check SO_PEERCRED on Linux / LOCAL_PEERCRED via getpeereid on
-    /// macOS+BSD: does the connecting peer share our euid? If not,
-    /// refuse the connection. Protects against lateral attacks on
-    /// multi-tenant dev hosts where $HOME perms can't be relied on.
-    #[cfg(unix)]
-    fn peer_uid_matches(stream: &UnixStream, expected: u32) -> bool {
-        use std::os::unix::io::AsRawFd;
-
-        let fd = stream.as_raw_fd();
-
-        #[cfg(target_os = "linux")]
-        {
-            let mut cred: nix::libc::ucred = unsafe { std::mem::zeroed() };
-            let mut len: nix::libc::socklen_t =
-                std::mem::size_of::<nix::libc::ucred>() as nix::libc::socklen_t;
-            let rc = unsafe {
-                nix::libc::getsockopt(
-                    fd,
-                    nix::libc::SOL_SOCKET,
-                    nix::libc::SO_PEERCRED,
-                    &mut cred as *mut _ as *mut nix::libc::c_void,
-                    &mut len,
-                )
-            };
-            return rc == 0 && cred.uid == expected;
-        }
-
-        #[cfg(any(
-            target_os = "macos",
-            target_os = "freebsd",
-            target_os = "dragonfly",
-            target_os = "netbsd",
-            target_os = "openbsd",
-        ))]
-        {
-            let mut uid: nix::libc::uid_t = 0;
-            let mut gid: nix::libc::gid_t = 0;
-            let rc = unsafe { nix::libc::getpeereid(fd, &mut uid, &mut gid) };
-            return rc == 0 && uid == expected;
-        }
-
-        // Other unices: fail closed. Don't forward to the VM.
-        #[allow(unreachable_code)]
-        {
-            let _ = (fd, expected);
-            false
-        }
-    }
-
-    fingerprint
 }
 
 /// Reads the `--env-stdin` frame, then points stdin at /dev/null so the
@@ -950,7 +649,6 @@ fn boot_vm(
             .rootfs_lower
             .clone()
             .expect("overlay_mode implies --rootfs-lower");
-        migrate_rootfs_layout(args);
         eprintln!("iii: overlay base erofs -> /dev/vda: {lower_img}");
         // Disk attach ORDER is the guest device order: the lower MUST be the
         // first disk (/dev/vda) and the upper the second (/dev/vdb). iii-init
@@ -963,7 +661,7 @@ fn boot_vm(
         if let Some(upper) = args.rootfs_upper.clone() {
             // Advisory flock guards the rw ext4 upper against a SECOND VM
             // attaching it concurrently (ext4 has no multi-mount protection →
-            // silent corruption). kill_stale_worker covers the sequential
+            // silent corruption). The adapter stops the old VM before a
             // restart; this catches a concurrent same-worker start. The lock
             // fd is leaked so the lock is held for the VM's whole lifetime and
             // released automatically when this __vm-boot process exits.
@@ -976,9 +674,9 @@ fn boot_vm(
                 .open(&upper)
             {
                 Ok(lock) => {
-                    // Bounded retry: on a restart, kill_stale_worker SIGKILLs the
-                    // old __vm-boot but returns before the kernel has reaped it
-                    // and dropped its leaked lock fd, so the first LOCK_NB here
+                    // Bounded retry: on a restart, the old __vm-boot can be
+                    // signalled but not yet reaped by the kernel, which has
+                    // not yet dropped its leaked lock fd, so the first LOCK_NB here
                     // can lose the race against the dying VM. Retry for ~2s
                     // before giving up, so a normal restart doesn't surface as a
                     // spurious "already attached" that leaves the worker down. A
@@ -1018,8 +716,8 @@ fn boot_vm(
     }
 
     // 2 workers when the shell relay is active (benefits from
-    // parallel read/write task scheduling); 1 otherwise (network +
-    // control proxy run fine on a single worker).
+    // parallel read/write task scheduling); 1 otherwise (the network
+    // runs fine on a single worker).
     let worker_threads = if args.shell_sock.is_some() { 2 } else { 1 };
     let tokio_rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(worker_threads)
@@ -1063,24 +761,18 @@ fn boot_vm(
     let worker_heap_mib = (args.ram as u64 * 3 / 4).max(128);
     let worker_heap_bytes = worker_heap_mib * 1024 * 1024;
 
-    // When --control-sock is provided the host wires an `iii.control`
-    // virtio-console port into the VM; telling iii-init about it via
-    // III_CONTROL_PORT flips iii-init into supervisor mode so it serves
-    // Restart/Shutdown/Ping/Status RPCs over that port. Without the env
-    // var, iii-init falls back to its legacy single-spawn waitpid path.
-    let control_port_env = args.control_sock.is_some();
     // Set up the shell-exec channel BEFORE constructing the exec
     // closure so `shell_port_env` reflects whether the host relay
     // actually started. Otherwise a failed `shell_relay::spawn` still
     // sets III_SHELL_PORT and the guest dispatcher spins on a port
-    // nobody reads, silently breaking `iii worker exec` for the VM's
+    // nobody reads, silently breaking `sandbox::exec` for the VM's
     // lifetime. Fail-closed: on relay spawn failure, skip the env var
     // and drop the attached fd so the VM boots without the port.
     let mut shell_port_env = false;
     let mut guest_shell_fd: Option<i32> = None;
     let mut shell_sock_fingerprint: Option<crate::cli::shell_relay::ShellSocketFingerprint> = None;
     if let Some(sock_path) = args.shell_sock.clone() {
-        let (host_end, guest_fd) = setup_control_socketpair()?;
+        let (host_end, guest_fd) = setup_port_socketpair()?;
         match crate::cli::shell_relay::spawn(
             tokio_rt.handle(),
             std::path::PathBuf::from(sock_path),
@@ -1108,7 +800,7 @@ fn boot_vm(
     let mut source_sync_port_env = false;
     let mut guest_source_sync_fd: Option<i32> = None;
     if let Some(source_root) = args.source_sync.clone() {
-        let (host_end, guest_fd) = setup_control_socketpair()?;
+        let (host_end, guest_fd) = setup_port_socketpair()?;
         match crate::cli::source_sync_host::spawn(std::path::PathBuf::from(source_root), host_end) {
             Ok(()) => {
                 guest_source_sync_fd = Some(guest_fd);
@@ -1140,7 +832,6 @@ fn boot_vm(
         })
         .collect();
     let use_env_port = iii_filesystem::init::has_init();
-    let control_workdir = args.workdir.clone();
     let kv = |key: &str, value: &str| (key.to_string(), value.to_string());
 
     // iii-init's plumbing, in the order the old exec closure set it
@@ -1176,13 +867,8 @@ fn boot_vm(
             plumbing.push(kv("III_BLOCK_ROOT_UPPER", "tmpfs"));
         }
     }
-    if control_port_env {
-        plumbing.push(kv(
-            "III_CONTROL_PORT",
-            iii_supervisor::protocol::CONTROL_PORT_NAME,
-        ));
-        plumbing.push(kv("III_WORKER_WORKDIR", &control_workdir));
-    }
+    // iii-init starts the worker in this directory, in its own process group.
+    plumbing.push(kv("III_WORKER_WORKDIR", &args.workdir));
     if shell_port_env {
         plumbing.push(kv(
             "III_SHELL_PORT",
@@ -1209,7 +895,7 @@ fn boot_vm(
     if let Some(frame_env) = frame {
         let frame = iii_supervisor::env_channel::encode_frame(&frame_env)
             .map_err(|e| format!("cannot pass the worker environment to the VM: {e}"))?;
-        let (host_end, guest_fd) = setup_control_socketpair()?;
+        let (host_end, guest_fd) = setup_port_socketpair()?;
         spawn_env_writer(host_end, frame)?;
         guest_env_fd = Some(guest_fd);
     }
@@ -1252,43 +938,15 @@ fn boot_vm(
         e
     });
 
-    // Configure the console device.
-    //
-    // `output(path)` sets the main console log file; `port("iii.control",
-    // fd, fd)` adds a named virtio-console port backed by the guest-side
-    // end of a socketpair. msb_krun routes both independently
+    // Configure the console device: each `port(name, fd, fd)` adds a named
+    // virtio-console port backed by the guest-side end of a socketpair
     // (msb_krun builder.rs:367-391).
-    //
-    // When --control-sock is set, we:
-    //   1. Create a socketpair — one end for the VM, one for the host.
-    //   2. Spawn a proxy thread that listens on the unix socket and
-    //      bridges bytes between connected clients and the host end.
-    //   3. Hand the guest end to ConsoleBuilder::port.
-    //
-    // The proxy thread outlives this function — it runs until the
-    // `__vm-boot` process exits (i.e. until the VM powers off), which
-    // is exactly the lifetime of the control channel.
-    let console_output_path = args.console_output.clone();
-    let mut guest_control_fd: Option<i32> = None;
-    let mut control_sock_fingerprint: Option<SocketFingerprint> = None;
-    if let Some(sock_path) = args.control_sock.clone() {
-        let (host_end, guest_fd) = setup_control_socketpair()?;
-        control_sock_fingerprint = spawn_control_proxy(sock_path, host_end);
-        guest_control_fd = Some(guest_fd);
-    }
-
     // Shell-exec channel was already set up above (before the exec
     // closure was built) so `shell_port_env` correctly reflects whether
     // the relay actually spawned. `guest_shell_fd` is `Some` only when
     // spawn succeeded; on Err we dropped the guest fd to fail closed.
 
     builder = builder.console(move |mut c| {
-        if let Some(path) = console_output_path {
-            c = c.output(path);
-        }
-        if let Some(fd) = guest_control_fd {
-            c = c.port(iii_supervisor::protocol::CONTROL_PORT_NAME, fd, fd);
-        }
         if let Some(fd) = guest_shell_fd {
             c = c.port(iii_supervisor::shell_protocol::SHELL_PORT_NAME, fd, fd);
         }
@@ -1301,38 +959,14 @@ fn boot_vm(
         c
     });
 
-    // Register VM-exit cleanup for pidfile and control socket
-    // independently — they're separate resources and may be enabled
-    // independently of each other (a future caller may want a control
-    // socket without a persistent pidfile, or vice versa). Coupling
-    // them inside `if let Some(pid_file)` would silently regress the
-    // socket-cleanup path for such callers.
-    //
-    // libkrun's Builder::on_exit replaces the previous hook, so we
-    // fold everything into a single closure that checks each resource
-    // independently.
-    let pid_path_for_exit = args.pid_file.clone();
-    let sock_fingerprint_for_exit = control_sock_fingerprint.clone();
-    let shell_fingerprint_for_exit = shell_sock_fingerprint.clone();
-    if pid_path_for_exit.is_some()
-        || sock_fingerprint_for_exit.is_some()
-        || shell_fingerprint_for_exit.is_some()
-    {
+    // Register VM-exit cleanup for the shell socket.
+    if let Some(fp) = shell_sock_fingerprint {
         builder = builder.on_exit(move |exit_code| {
-            if let Some(ref p) = pid_path_for_exit {
-                let _ = std::fs::remove_file(p);
-            }
-            // Only unlink the control socket if it's still the one we
+            // Only unlink the shell socket if it's still the one we
             // bound — a fast `stop → start` can let a new VM rebind
             // the same path before this hook fires. The fingerprint
             // check makes stale unlinks a no-op.
-            if let Some(ref fp) = sock_fingerprint_for_exit {
-                fp.remove_if_unchanged();
-            }
-            // Same fingerprint-guarded cleanup for the shell socket.
-            if let Some(ref fp) = shell_fingerprint_for_exit {
-                fp.remove_if_unchanged();
-            }
+            fp.remove_if_unchanged();
             if exit_code != 0 {
                 eprintln!("  VM exited with code {}", exit_code);
             }
@@ -1349,8 +983,8 @@ fn boot_vm(
     // notifies on_exit observers, `_exit`s with the current exit
     // code) instead of the process being killed mid-guest-write.
     // Without this, `stop → SIGTERM` from the host leaves the guest
-    // no chance to fsync, flush stdout logs, or drop pidfiles; the
-    // on_exit closure installed above is what does that cleanup.
+    // no chance to fsync or flush stdout logs; the on_exit closure
+    // installed above unlinks the shell socket.
     //
     // Register the two signal streams SYNCHRONOUSLY before spawning
     // the awaiter task. Doing registration inside the spawned task
@@ -1387,19 +1021,16 @@ fn boot_vm(
         );
     }
 
-    // Lifeline cascade: when the spawner attached a lifeline pipe (the
-    // sandbox daemon does, for every VM it boots), tear the VM down the
-    // instant the spawner dies — ANY death, SIGKILL included. Without this,
-    // VMs are setsid'd session leaders that nothing ever reaps once their
-    // daemon is gone. Routed through the same ExitHandle as SIGTERM/SIGINT
-    // so the on_exit cleanup (pidfile + socket fingerprints) runs instead of
-    // an abrupt process::exit. Plain OS threads, because libkrun owns the
-    // main thread once `enter()` runs; if the spawner died during boot the
-    // first read/poll fires immediately. The spawner-pid poll backstops the
-    // one lifeline failure mode (a write end leaked through the macOS
-    // non-atomic CLOEXEC window delaying EOF). Detached spawners (the
-    // managed-worker start path) attach neither env, preserving their
-    // adopt-orphan semantics.
+    // Lifeline cascade: the adapter attaches a lifeline pipe to every VM it
+    // boots, so tear the VM down the instant the adapter dies — ANY death,
+    // SIGKILL included. Without this, VMs are session leaders that nothing
+    // ever reaps once their adapter is gone. Routed through the same
+    // ExitHandle as SIGTERM/SIGINT so the on_exit cleanup (shell socket
+    // fingerprint) runs instead of an abrupt process::exit. Plain OS
+    // threads, because libkrun owns the main thread once `enter()` runs; if
+    // the spawner died during boot the first read/poll fires immediately.
+    // The spawner-pid poll backstops the one lifeline failure mode (a write
+    // end leaked through the macOS non-atomic CLOEXEC window delaying EOF).
     #[cfg(unix)]
     {
         if let Some(fd) = crate::daemon_exit::take_early_lifeline() {
@@ -1417,18 +1048,6 @@ fn boot_vm(
                 shut_down_vm(|| handle.trigger(), &format!("spawner pid {pid} exited"));
             });
         }
-        // Engine anchor: managed-worker VMs are detached from their
-        // (transient) spawner by design, but nothing the engine started may
-        // outlive the engine — a real `killall -9 iii` left worker VMs
-        // running. III_ENGINE_PID flows down the whole spawn tree env, so
-        // watch it directly; hand-run VMs (no engine env) stay unwatched.
-        if let Some(pid) = crate::daemon_exit::engine_pid_from_env() {
-            let handle = vm.exit_handle();
-            std::thread::spawn(move || {
-                crate::daemon_exit::blocking_wait_pid_gone(pid);
-                shut_down_vm(|| handle.trigger(), &format!("engine pid {pid} exited"));
-            });
-        }
     }
 
     let vcpu_label = if args.vcpus == 1 { "vCPU" } else { "vCPUs" };
@@ -1439,7 +1058,7 @@ fn boot_vm(
     vm.enter().map_err(|e| format!("VM enter failed: {}", e))
 }
 
-/// The spawner or the engine is gone: shut the VM down, then say why. A worker
+/// The spawner is gone: shut the VM down, then say why. A worker
 /// VM's stderr is a pipe the dead spawner read, so `eprintln!` would panic on
 /// EPIPE and end this watcher before the trigger, leaving the VM running.
 #[cfg(unix)]

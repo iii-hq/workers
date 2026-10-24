@@ -1,10 +1,10 @@
-//! `PassthroughFsBuilder::read_only(true)`, the mode the sandbox daemon
+//! `PassthroughFsBuilder::read_only(true)`, the mode the sandbox adapter
 //! boots its per-sandbox trampoline root with
 //! (`__vm-boot --rootfs-readonly`).
 //!
 //! Every mutating FUSE op a guest can send must fail with Linux `EROFS` and
 //! leave the host tree unchanged; reads keep working. The default share stays
-//! writable, so managed workers (which do not opt in) are unaffected.
+//! writable, so worker VMs (which do not opt in) are unaffected.
 
 use std::collections::BTreeMap;
 use std::ffi::CString;
@@ -271,6 +271,6 @@ fn default_share_stays_writable() {
     fs.unlink(root_ctx(), etc, &cstr("passwd")).unwrap();
     assert!(
         !dir.path().join("etc/passwd").exists(),
-        "the default (writable) share must keep working for managed workers"
+        "the default (writable) share must keep working for worker VMs"
     );
 }

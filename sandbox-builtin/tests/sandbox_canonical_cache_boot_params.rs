@@ -1,10 +1,9 @@
 //! Daemon-side checks on what a sandbox boots from, complementing
 //! `sandbox_shared_rootfs_boot_params`.
 //!
-//! - That test exercises the legacy fallback `~/.iii/managed/<image>/rootfs/`.
-//!   This one covers the primary cache, `~/.iii/cache/<slug>/`
+//! - Both seed the cache, `~/.iii/cache/<slug>/`
 //!   (`rootfs_cache::canonical_path`).
-//! - It records the full `BootParams`: the cache must arrive only as
+//! - This one records the full `BootParams`: the cache must arrive only as
 //!   `base_rootfs` (the erofs lower source), never as the guest root, and the
 //!   guest root must be a per-sandbox trampoline holding nothing but the
 //!   staging dirs iii-init needs.

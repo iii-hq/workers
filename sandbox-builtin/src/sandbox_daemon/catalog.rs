@@ -1,5 +1,5 @@
 //! OCI refs are stored in canonical form (`docker.io/<ns>/<repo>:<tag>`)
-//! so they hash to the same rootfs-cache slug as the managed-worker side
+//! so they hash to the same rootfs-cache slug as the worker VMs
 //! (see `oci_image_for_kind`). Shorthand would pull the same image to a
 //! second cache slug under `~/.iii/cache/`.
 

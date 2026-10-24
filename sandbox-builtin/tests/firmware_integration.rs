@@ -6,19 +6,15 @@
 
 //! Integration tests for firmware resolution chain and constants.
 //!
-//! Covers requirements FW-01 through FW-04:
+//! Covers requirements FW-01, FW-02 and FW-04:
 //! - FW-01: Local firmware resolution (env var override, ~/.iii/lib/)
 //! - FW-02: Embedded fallback behavior (documented, observational)
-//! - FW-03: Download fallback URL construction (archive names, platform support)
 //! - FW-04: All sources fail returns None
 
 mod common;
 
 use common::assertions::assert_paths_eq;
-use sandbox_builtin::cli::firmware::constants::{
-    III_INIT_FILENAME, check_libkrunfw_platform_support, iii_init_archive_name,
-    libkrunfw_archive_name, libkrunfw_filename,
-};
+use sandbox_builtin::cli::firmware::constants::libkrunfw_filename;
 use sandbox_builtin::cli::firmware::resolve::{
     lib_path_env_var, resolve_init_binary, resolve_libkrunfw_dir,
 };
@@ -69,38 +65,6 @@ fn resolve_libkrunfw_dir_finds_local_firmware() {
     assert_paths_eq(&result.unwrap(), &lib_dir);
 }
 
-/// FW-01: resolve_init_binary finds iii-init in ~/.iii/lib/ when present.
-#[test]
-fn resolve_init_binary_finds_local_init() {
-    let _guard = ENV_LOCK.lock().unwrap();
-    let tmp = tempfile::tempdir().unwrap();
-    let lib_dir = tmp.path().join(".iii").join("lib");
-    std::fs::create_dir_all(&lib_dir).unwrap();
-
-    let init_path = lib_dir.join(III_INIT_FILENAME);
-    std::fs::write(&init_path, b"fake-init").unwrap();
-
-    let original_home = std::env::var("HOME").ok();
-    unsafe {
-        std::env::set_var("HOME", tmp.path());
-        std::env::remove_var("III_INIT_PATH");
-    }
-
-    let result = resolve_init_binary();
-
-    unsafe {
-        if let Some(ref home) = original_home {
-            std::env::set_var("HOME", home);
-        }
-    }
-
-    assert!(
-        result.is_some(),
-        "expected Some when iii-init exists in ~/.iii/lib/"
-    );
-    assert_paths_eq(&result.unwrap(), &init_path);
-}
-
 /// FW-01: resolve_libkrunfw_dir respects III_LIBKRUNFW_PATH env var override.
 #[test]
 fn resolve_libkrunfw_dir_env_var_override() {
@@ -138,11 +102,11 @@ fn resolve_libkrunfw_dir_env_var_override() {
 /// FW-02: Documents the embedded firmware fallback behavior.
 ///
 /// The `resolve_libkrunfw_dir` function does NOT directly check for embedded firmware --
-/// that's handled by `ensure_libkrunfw` in the download module. This test verifies
+/// that's handled by `ensure_libkrunfw` in the provision module. This test verifies
 /// the behavior when no local firmware exists: the result depends on whether firmware
 /// is present in system paths (/usr/lib, /usr/local/lib, Homebrew on macOS).
 ///
-/// Full embedded/download fallback is tested at a higher level via `ensure_libkrunfw`
+/// The full embedded fallback is tested at a higher level via `ensure_libkrunfw`
 /// which is out of scope for this phase.
 #[test]
 fn resolve_libkrunfw_dir_embedded_fallback_conditional() {
@@ -186,89 +150,13 @@ fn resolve_libkrunfw_dir_embedded_fallback_conditional() {
 }
 
 // ---------------------------------------------------------------------------
-// Group 3: Download fallback URL construction (FW-03)
-// ---------------------------------------------------------------------------
-
-/// FW-03: libkrunfw archive name contains correct platform identifier.
-#[test]
-fn libkrunfw_archive_name_contains_platform() {
-    let name = libkrunfw_archive_name();
-    if cfg!(target_os = "macos") {
-        assert!(
-            name.contains("darwin"),
-            "macOS archive should contain 'darwin': {name}"
-        );
-    } else {
-        assert!(
-            name.contains("linux"),
-            "Linux archive should contain 'linux': {name}"
-        );
-    }
-    // Archive name does not contain the version string directly -- it uses os+arch only.
-    // Verify it's a valid .tar.gz archive name.
-    assert!(
-        name.ends_with(".tar.gz"),
-        "archive should end with '.tar.gz': {name}"
-    );
-}
-
-/// FW-03: iii-init archive name contains musl target identifier.
-#[test]
-fn iii_init_archive_name_contains_musl_target() {
-    let name = iii_init_archive_name();
-    assert!(
-        name.contains("iii-init"),
-        "archive name should contain 'iii-init': {name}"
-    );
-    assert!(
-        name.contains("musl"),
-        "archive name should contain 'musl' (init binary is always musl-linked): {name}"
-    );
-}
-
-/// FW-03: Platform support check succeeds on supported architectures.
-#[test]
-fn check_libkrunfw_platform_support_succeeds_on_supported() {
-    let result = check_libkrunfw_platform_support();
-    // Available firmware: darwin-aarch64, linux-x86_64, linux-aarch64
-    // Missing: darwin-x86_64 (Intel Mac)
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    assert!(
-        result.is_ok(),
-        "darwin-aarch64 should be supported: {result:?}"
-    );
-
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    assert!(
-        result.is_ok(),
-        "linux-x86_64 should be supported: {result:?}"
-    );
-
-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    assert!(
-        result.is_ok(),
-        "linux-aarch64 should be supported: {result:?}"
-    );
-
-    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    {
-        assert!(result.is_err(), "darwin-x86_64 should NOT be supported");
-        let msg = result.unwrap_err();
-        assert!(
-            msg.contains("Intel Mac"),
-            "error message should mention Intel Mac: {msg}"
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Group 4: All sources fail (FW-04)
+// Group 3: All sources fail (FW-04)
 // ---------------------------------------------------------------------------
 
 /// FW-04: resolve_libkrunfw_dir returns None (or system path) when env var and HOME fail.
 ///
 /// The function checks: env var (nonexistent file), ~/.iii/lib/ (empty tempdir),
-/// adjacent to binary (in cargo target dir, skipped), system paths.
+/// system paths.
 /// If system paths don't have libkrunfw (typical in CI/dev), result is None.
 /// If system has it installed, result is Some pointing to a system path.
 #[test]
@@ -341,7 +229,7 @@ fn resolve_init_binary_returns_none_when_all_sources_fail() {
 }
 
 // ---------------------------------------------------------------------------
-// Group 5: Constants verification (supporting tests)
+// Group 4: Constants verification (supporting tests)
 // ---------------------------------------------------------------------------
 
 /// lib_path_env_var returns the correct platform-specific variable name.

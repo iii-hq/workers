@@ -119,17 +119,13 @@ use crate::worker_vm::WorkerVms;
 /// This adapter's worker name, function prefix and default configuration entry.
 const ADAPTER_NAME: &str = env!("CARGO_PKG_NAME");
 
-/// Serve `sandbox-builtin::*` until a signal or the engine's death. The config
+/// Serve `sandbox-builtin::*` until SIGINT, SIGTERM or SIGHUP. The config
 /// comes from `configuration::get(III_CONFIG_NAME)`, read once; a fetch or
 /// parse error exits 2 (fail-closed).
 pub async fn serve() -> anyhow::Result<()> {
-    // FIRST statement, before any await: snapshot spawn-time facts for the
-    // engine-death watch (see crate::daemon_exit). An orphaned adapter keeps
-    // live libkrun VMs around.
-    let exit_watch = crate::daemon_exit::ExitWatch::arm_at_startup();
-    // One watch future for the whole life: it races the config fetch, then
+    // One signal future for the whole life: it races the config fetch, then
     // parks the ready adapter, so a signal in between is never missed.
-    let exit = exit_watch.wait("sandbox-daemon");
+    let exit = crate::daemon_exit::wait_for_shutdown_signal();
     tokio::pin!(exit);
 
     // The SDK reads `III_URL`; a non-empty `III_WORKER_NAME` overrides the name below.
@@ -227,7 +223,7 @@ pub fn register_all(
     config: Arc<SandboxConfig>,
     registry: Arc<SandboxRegistry>,
 ) -> Vec<FunctionRef> {
-    let launcher = Arc::new(crate::sandbox_daemon::adapters::IiiWorkerLauncher);
+    let launcher = Arc::new(crate::sandbox_daemon::adapters::VmBootLauncher);
     let runner = Arc::new(crate::sandbox_daemon::adapters::ShellProtoRunner::new(
         config.max_exec_timeout_ms,
     ));
@@ -374,7 +370,7 @@ fn register_sandbox_create(
     iii: &iii_sdk::IIIClient,
     registry: Arc<crate::sandbox_daemon::SandboxRegistry>,
     cfg: Arc<crate::sandbox_daemon::config::SandboxConfig>,
-    launcher: Arc<crate::sandbox_daemon::adapters::IiiWorkerLauncher>,
+    launcher: Arc<crate::sandbox_daemon::adapters::VmBootLauncher>,
 ) -> FunctionRef {
     iii.register_function(
         "sandbox-builtin::create",

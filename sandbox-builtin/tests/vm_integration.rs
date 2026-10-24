@@ -5,19 +5,15 @@
 // See LICENSE and PATENTS files for details.
 
 //! Feature-gated VM integration tests.
-//! Run with: cargo test -p iii-worker --test vm_integration --features integration-vm
+//! Run with: cargo test --test vm_integration --features integration-vm
 //!
-//! These tests verify the argument construction patterns used by LibkrunAdapter::start(),
-//! environment variable merging, path conventions, adapter lifecycle contracts, and
-//! actual __vm-boot subprocess argument passing.
+//! These tests verify `__vm-boot` argument parsing, localhost rewriting of the
+//! worker env, and actual `__vm-boot` subprocess argument passing.
 
 #![cfg(feature = "integration-vm")]
 
 use clap::Parser;
 use sandbox_builtin::cli::vm_boot::{VmBootArgs, rewrite_localhost};
-use sandbox_builtin::cli::worker_manager::adapter::RuntimeAdapter;
-use sandbox_builtin::cli::worker_manager::libkrun::LibkrunAdapter;
-use std::collections::HashMap;
 
 /// Helper wrapper for clap parsing of VmBootArgs.
 #[derive(Parser)]
@@ -41,131 +37,8 @@ fn vm_feature_gate_compiles() {
 }
 
 // ===========================================================================
-// Group 2: Realistic VmBootArgs matching start() pattern (VM-01, per D-07)
+// Group 2: VmBootArgs parsing and env rewriting
 // ===========================================================================
-
-/// Parse args mimicking what LibkrunAdapter::start() actually constructs:
-/// rootfs, exec, workdir, vcpus, ram, env vars, mount, args, pid-file,
-/// console-output, and slot -- matching the real argument list from start().
-#[test]
-fn vm_boot_args_realistic_managed_worker() {
-    let cli = TestCli::parse_from([
-        "test",
-        "--rootfs",
-        "/home/user/.iii/managed/my-worker/rootfs",
-        "--exec",
-        "/usr/bin/node",
-        "--workdir",
-        "/workspace",
-        "--vcpus",
-        "4",
-        "--ram",
-        "4096",
-        "--env",
-        "III_ENGINE_URL=ws://localhost:49134",
-        "--env",
-        "III_WORKER_NAME=my-worker",
-        "--mount",
-        "/home/user/project:/workspace",
-        "--arg",
-        "--url",
-        "--arg",
-        "ws://localhost:49134",
-        "--pid-file",
-        "/home/user/.iii/managed/my-worker/vm.pid",
-        "--console-output",
-        "/home/user/.iii/managed/my-worker/logs/stdout.log",
-        "--slot",
-        "1",
-    ]);
-    assert_eq!(cli.args.rootfs, "/home/user/.iii/managed/my-worker/rootfs");
-    assert_eq!(cli.args.exec, "/usr/bin/node");
-    assert_eq!(cli.args.workdir, "/workspace");
-    assert_eq!(cli.args.vcpus, 4);
-    assert_eq!(cli.args.ram, 4096);
-    assert_eq!(
-        cli.args.env,
-        vec![
-            "III_ENGINE_URL=ws://localhost:49134",
-            "III_WORKER_NAME=my-worker"
-        ]
-    );
-    assert_eq!(cli.args.mount, vec!["/home/user/project:/workspace"]);
-    assert_eq!(cli.args.arg, vec!["--url", "ws://localhost:49134"]);
-    assert_eq!(
-        cli.args.pid_file.as_deref(),
-        Some("/home/user/.iii/managed/my-worker/vm.pid")
-    );
-    assert_eq!(
-        cli.args.console_output.as_deref(),
-        Some("/home/user/.iii/managed/my-worker/logs/stdout.log")
-    );
-    assert_eq!(cli.args.slot, 1);
-}
-
-/// Verify that the PID file path convention from start() matches the
-/// LibkrunAdapter::pid_file() helper.
-#[test]
-fn vm_boot_args_start_uses_correct_pid_file_path() {
-    let expected_pid_path = LibkrunAdapter::pid_file("test-worker");
-    let expected_pid_str = expected_pid_path.to_string_lossy().to_string();
-
-    let cli = TestCli::parse_from([
-        "test",
-        "--rootfs",
-        "/tmp/rootfs",
-        "--exec",
-        "/bin/sh",
-        "--pid-file",
-        &expected_pid_str,
-    ]);
-    assert_eq!(
-        cli.args.pid_file.as_deref(),
-        Some(expected_pid_str.as_str()),
-        "parsed --pid-file should match LibkrunAdapter::pid_file()"
-    );
-    // Verify the path follows the worker_dir/vm.pid convention
-    assert!(
-        expected_pid_str.ends_with("vm.pid"),
-        "pid_file should end with vm.pid"
-    );
-    assert!(
-        expected_pid_str.contains(".iii/managed/test-worker"),
-        "pid_file should be under .iii/managed/test-worker"
-    );
-}
-
-/// Verify that the console output path convention from start() matches
-/// the logs_dir pattern: logs_dir(name).join("stdout.log").
-#[test]
-fn vm_boot_args_start_uses_correct_console_output_path() {
-    let expected_log_path = LibkrunAdapter::logs_dir("test-worker").join("stdout.log");
-    let expected_log_str = expected_log_path.to_string_lossy().to_string();
-
-    let cli = TestCli::parse_from([
-        "test",
-        "--rootfs",
-        "/tmp/rootfs",
-        "--exec",
-        "/bin/sh",
-        "--console-output",
-        &expected_log_str,
-    ]);
-    assert_eq!(
-        cli.args.console_output.as_deref(),
-        Some(expected_log_str.as_str()),
-        "parsed --console-output should match logs_dir/stdout.log"
-    );
-    // Verify the path follows the expected convention
-    assert!(
-        expected_log_str.ends_with("logs/stdout.log"),
-        "console_output should end with logs/stdout.log"
-    );
-    assert!(
-        expected_log_str.contains(".iii/managed/test-worker"),
-        "console_output should be under .iii/managed/test-worker"
-    );
-}
 
 /// Parse with vcpus at u8 boundary and beyond. VmBootArgs accepts u32;
 /// the u8 check happens at boot_vm runtime, not at parse time.
@@ -182,52 +55,6 @@ fn vm_boot_args_max_vcpus_at_u8_boundary() {
     // Large value within u32 range
     let cli = TestCli::parse_from(["test", "--rootfs", "/r", "--exec", "/e", "--vcpus", "65535"]);
     assert_eq!(cli.args.vcpus, 65535);
-}
-
-// ===========================================================================
-// Group 3: Environment variable merging pattern (VM-03, per D-09)
-// ===========================================================================
-
-/// Simulate the env merging pattern from LibkrunAdapter::start() lines 422-429.
-/// Image env is loaded first, then spec env overwrites matching keys.
-#[test]
-fn env_merger_image_env_overridden_by_spec_env() {
-    // Simulate image env (from OCI config)
-    let mut image_env: HashMap<String, String> = HashMap::new();
-    image_env.insert("PATH".to_string(), "/usr/bin".to_string());
-    image_env.insert("LANG".to_string(), "C".to_string());
-
-    // Simulate spec env (from ContainerSpec)
-    let mut spec_env: HashMap<String, String> = HashMap::new();
-    spec_env.insert("PATH".to_string(), "/custom/bin".to_string());
-    spec_env.insert("III_URL".to_string(), "ws://host:1234".to_string());
-
-    // Merge: start with image_env, then spec overwrites (exact pattern from start())
-    let mut merged_env: HashMap<String, String> = image_env.into_iter().collect();
-    for (key, value) in &spec_env {
-        merged_env.insert(key.clone(), value.clone());
-    }
-
-    // spec's PATH should overwrite image's PATH
-    assert_eq!(
-        merged_env.get("PATH").unwrap(),
-        "/custom/bin",
-        "spec env should overwrite image env for PATH"
-    );
-    // III_URL from spec should be present
-    assert_eq!(
-        merged_env.get("III_URL").unwrap(),
-        "ws://host:1234",
-        "spec env should add III_URL"
-    );
-    // LANG from image should be preserved (not in spec)
-    assert_eq!(
-        merged_env.get("LANG").unwrap(),
-        "C",
-        "image env LANG should be preserved when not overridden"
-    );
-    // Total: 3 keys (PATH overwritten, LANG preserved, III_URL added)
-    assert_eq!(merged_env.len(), 3);
 }
 
 /// Verify that rewrite_localhost correctly transforms environment variable
@@ -280,69 +107,10 @@ fn env_values_with_localhost_get_rewritten() {
 }
 
 // ===========================================================================
-// Group 4: LibkrunAdapter lifecycle contracts (VM-04)
+// Group 3: Actual subprocess argument verification
 // ===========================================================================
 
-/// LibkrunAdapter is a zero-sized unit struct -- construction requires no
-/// runtime dependencies. Its presence in a gated file proves the import
-/// path compiles when integration-vm is active.
-#[test]
-fn libkrun_adapter_constructor_is_zero_cost() {
-    let adapter = LibkrunAdapter::new();
-    // Also verify Default impl works
-    let _adapter2: LibkrunAdapter = Default::default();
-    // The adapter is a unit struct -- no fields to inspect.
-    // The assertions are that construction succeeds without panic.
-    let _ = adapter;
-}
-
-/// stop() should be a no-op for non-existent PIDs. status() should report
-/// not-running for a PID that does not exist.
-#[tokio::test]
-async fn stop_and_status_contract_on_bogus_pid() {
-    let adapter = LibkrunAdapter::new();
-
-    // stop on a PID that almost certainly does not exist
-    let result = adapter.stop("99999999", 1).await;
-    assert!(
-        result.is_ok(),
-        "stop() on non-existent PID should return Ok: {:?}",
-        result
-    );
-
-    // status on a PID that almost certainly does not exist
-    let status = adapter
-        .status("99999999")
-        .await
-        .expect("status() should succeed");
-    assert!(
-        !status.running,
-        "status() for non-existent PID should report not running"
-    );
-    assert_eq!(
-        status.container_id, "99999999",
-        "status should echo back the container_id"
-    );
-}
-
-/// remove() should succeed even when no matching PID file exists in the
-/// managed directory.
-#[tokio::test]
-async fn remove_with_nonexistent_worker_succeeds() {
-    let adapter = LibkrunAdapter::new();
-    let result = adapter.remove("99999999").await;
-    assert!(
-        result.is_ok(),
-        "remove() on non-existent worker should return Ok: {:?}",
-        result
-    );
-}
-
-// ===========================================================================
-// Group 5: Actual subprocess argument verification (VM-01, per D-05/D-07)
-// ===========================================================================
-
-/// Spawn the real iii-worker __vm-boot subprocess with a valid temp directory
+/// Spawn the real sandbox-builtin __vm-boot subprocess with a valid temp directory
 /// as rootfs. The subprocess will fail because the rootfs has no init binary
 /// and no firmware, but its stderr output will contain the rootfs path --
 /// proving it received and used the --rootfs argument correctly.
@@ -375,7 +143,7 @@ fn vm_boot_subprocess_receives_correct_rootfs_argument() {
         .arg("--arg")
         .arg("ws://localhost:49134")
         .output()
-        .expect("failed to execute iii-worker __vm-boot subprocess");
+        .expect("failed to execute sandbox-builtin __vm-boot subprocess");
 
     // The subprocess should exit with non-zero status (no init binary)
     assert!(
@@ -407,7 +175,7 @@ fn vm_boot_subprocess_receives_correct_rootfs_argument() {
     );
 }
 
-/// Spawn the real iii-worker __vm-boot subprocess with a nonexistent rootfs
+/// Spawn the real sandbox-builtin __vm-boot subprocess with a nonexistent rootfs
 /// path. The subprocess should fail immediately with the early validation
 /// error in vm_boot::run() and report the path in stderr.
 #[test]
@@ -426,7 +194,7 @@ fn vm_boot_subprocess_rejects_nonexistent_rootfs() {
         .arg("--ram")
         .arg("512")
         .output()
-        .expect("failed to execute iii-worker __vm-boot subprocess");
+        .expect("failed to execute sandbox-builtin __vm-boot subprocess");
 
     // The subprocess should exit with non-zero status
     assert!(

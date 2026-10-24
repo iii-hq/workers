@@ -112,7 +112,7 @@ const ROOTFS_ENTRIES: &[(&str, bool)] = &[
 ];
 
 /// Env var that carries the worker's working directory from the host
-/// into the guest. Set by `iii-worker __vm-boot` for OCI workers so
+/// into the guest. Set by `sandbox-builtin __vm-boot` for every VM so
 /// we can ensure the workdir's top-level component is bind-mounted
 /// even if it's not in [`ROOTFS_ENTRIES`].
 const III_WORKER_WORKDIR_ENV: &str = "III_WORKER_WORKDIR";
@@ -291,7 +291,7 @@ pub fn pivot_to_tmpfs_root() -> Result<(), InitError> {
 // Spike: instead of pivoting onto a tmpfs that bind-mounts a per-worker
 // virtiofs rootfs clone, assemble `/` as overlayfs(lower = a shared
 // read-only base block device, upper = a per-worker writable layer) and
-// pivot into it. The host (`iii-worker __vm-boot` overlay mode) boots the
+// pivot into it. The host (`sandbox-builtin __vm-boot` overlay mode) boots the
 // VM on an empty trampoline virtiofs root that carries only `/init.krun`,
 // attaches the base image as a virtio-blk disk, and signals this path via
 // the III_BLOCK_ROOT_* env vars below.
@@ -384,7 +384,7 @@ pub fn overlay_root() -> Result<(), InitError> {
         )
     } else {
         // Device-backed upper (ext4 on /dev/vdb). The host materialized it
-        // from a pre-formatted golden image (iii-worker cli::upper), so it is
+        // from a pre-formatted golden image (sandbox-builtin cli::upper), so it is
         // ALWAYS already a valid ext4 — there is deliberately no in-guest
         // format step (that would re-introduce a dependency on guest tooling
         // the overlay model exists to avoid). A mount failure here is fatal
@@ -527,7 +527,7 @@ fn rootfs_bind_entries(source_root: &Path) -> Vec<(String, bool)> {
 ///
 /// Naming restrictions match the image-layout names we trust: letters,
 /// digits, dot, dash, underscore. Anything else (whitespace, control
-/// bytes, shell metacharacters, `..`) returns None. iii-worker builds
+/// bytes, shell metacharacters, `..`) returns None. The host builds
 /// the env value from a trusted OCI config, but a malicious image
 /// could still encode weird names — refusing to act on them is safer
 /// than trying to sanitize.

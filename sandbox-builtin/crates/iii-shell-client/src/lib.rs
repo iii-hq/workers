@@ -31,8 +31,7 @@
 //!   Naïve `run() -> {stdout, stderr, exit}` APIs can't enforce
 //!   bounded accumulation without this pattern.
 //! - Pipe mode only. TTY, SIGWINCH, raw-mode, SIGINT forwarding are
-//!   interactive-CLI concerns and stay in consumer binaries
-//!   (iii-worker's `shell_client.rs`).
+//!   interactive-CLI concerns and stay out of this crate.
 //! - `verify_shell_socket_ownership` is pub and runs pre- AND
 //!   post-connect so a same-uid attacker can't swap a planted socket
 //!   mid-handshake.
@@ -40,9 +39,9 @@
 //!   stdin pumping is out of scope for the crate — callers with
 //!   interactive input wire their own pump against the Session.
 //!   Simplifies the crate and side-steps the "stdin task must never
-//!   return on the happy path" invariant that tripped shell_client.rs.
+//!   return on the happy path" invariant of an interactive pump.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -262,45 +261,6 @@ pub enum VmClientError {
     /// detail from the guest.
     #[error("fs error {code}: {message}")]
     FsError { code: String, message: String },
-}
-
-/// Resolve the shell-channel socket path for a worker under
-/// `$HOME/.iii/managed/<name>/shell.sock`. Validates that
-/// `worker_name` is a single path segment with no `..`, no null
-/// bytes, and no interior slashes so a caller-controlled name can't
-/// redirect the connect to an arbitrary path.
-pub fn shell_socket_path(worker_name: &str) -> Result<PathBuf, VmClientError> {
-    if worker_name.is_empty() {
-        return Err(VmClientError::WorkerMissing(
-            "worker_name is empty".to_string(),
-        ));
-    }
-    if worker_name.contains('\0') {
-        return Err(VmClientError::WorkerMissing(format!(
-            "worker_name must not contain NUL bytes: {worker_name:?}"
-        )));
-    }
-    let p = Path::new(worker_name);
-    if p.is_absolute() {
-        return Err(VmClientError::WorkerMissing(format!(
-            "worker_name must not be absolute: {worker_name:?}"
-        )));
-    }
-    let mut comps = p.components();
-    match (comps.next(), comps.next()) {
-        (Some(std::path::Component::Normal(_)), None) => {}
-        _ => {
-            return Err(VmClientError::WorkerMissing(format!(
-                "worker_name must be a single path segment: {worker_name:?}"
-            )));
-        }
-    }
-    let home = dirs::home_dir()
-        .ok_or_else(|| VmClientError::WorkerMissing("HOME is not set".to_string()))?;
-    Ok(home
-        .join(".iii/managed")
-        .join(worker_name)
-        .join("shell.sock"))
 }
 
 /// Verify the shell socket belongs to us. Returns (dev, ino, mode)
@@ -935,9 +895,8 @@ async fn await_exited_with_grace(
 }
 
 /// Read one complete frame from any AsyncRead. Public so consumers
-/// like iii-worker's CLI can share the same frame decoder instead of
-/// carrying a duplicate copy. Returns `Ok(None)` on clean EOF at a
-/// frame boundary.
+/// can share the same frame decoder instead of carrying a duplicate
+/// copy. Returns `Ok(None)` on clean EOF at a frame boundary.
 pub async fn read_frame_async<R>(
     reader: &mut R,
 ) -> Result<Option<(u32, u8, ShellMessage)>, VmClientError>
@@ -1060,8 +1019,7 @@ async fn read_exact_or_eof(
 
 /// An `OutputSink` that buffers stdout/stderr up to a per-stream cap,
 /// then returns `StopAppending` while staying cheap to compare (e.g.
-/// in tests). Most callers (vm-worker, iii-worker CLI pipe mode) use
-/// this directly.
+/// in tests). The sandbox adapter uses this directly.
 pub struct VecSink {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
@@ -1110,48 +1068,6 @@ impl OutputSink for VecSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn shell_socket_path_rejects_empty() {
-        assert!(matches!(
-            shell_socket_path(""),
-            Err(VmClientError::WorkerMissing(_))
-        ));
-    }
-
-    #[test]
-    fn shell_socket_path_rejects_null() {
-        assert!(matches!(
-            shell_socket_path("foo\0bar"),
-            Err(VmClientError::WorkerMissing(_))
-        ));
-    }
-
-    #[test]
-    fn shell_socket_path_rejects_absolute() {
-        assert!(matches!(
-            shell_socket_path("/etc/passwd"),
-            Err(VmClientError::WorkerMissing(_))
-        ));
-    }
-
-    #[test]
-    fn shell_socket_path_rejects_traversal() {
-        assert!(matches!(
-            shell_socket_path("../evil"),
-            Err(VmClientError::WorkerMissing(_))
-        ));
-        assert!(matches!(
-            shell_socket_path("a/b"),
-            Err(VmClientError::WorkerMissing(_))
-        ));
-    }
-
-    #[test]
-    fn shell_socket_path_accepts_single_segment() {
-        let p = shell_socket_path("pdfkit").expect("valid");
-        assert!(p.ends_with(".iii/managed/pdfkit/shell.sock"));
-    }
 
     #[test]
     fn vec_sink_truncates_at_cap() {

@@ -132,7 +132,7 @@ pub fn boot(args: VmArgs) -> Result<Infallible> {
         .krunfw
         .clone()
         .or_else(default_krunfw)
-        .context("no libkrunfw: pass --krunfw (sandbox-builtin/firmware/) or install iii (~/.iii/lib/libkrunfw.so)")?;
+        .context("no libkrunfw: pass --krunfw (sandbox-builtin/firmware/), or run sandbox-builtin once (it extracts libkrunfw to ~/.iii/lib)")?;
 
     // Every connection the guest makes is a host fd held by this process.
     raise_nofile();

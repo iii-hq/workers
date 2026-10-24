@@ -2,17 +2,19 @@
 //!
 //! The VMM (msb_krun) is compiled directly into the sandbox-builtin binary.
 //! libkrunfw (the guest kernel firmware) and iii-init (the guest init process)
-//! are resolved via a two-stage chain, and fail closed (nothing is downloaded):
+//! come from the compile-time embeds (`embed-libkrunfw`, `embed-init`) or a
+//! local override, and fail closed (nothing is downloaded):
 //!
-//! 1. **Local resolution** -- env var, `~/.iii/lib/`, adjacent to binary, system paths
-//! 2. **Embedded bytes** -- compile-time features (`embed-libkrunfw`, `embed-init`)
+//! - libkrunfw: `III_LIBKRUNFW_PATH`, `~/.iii/lib/` (where the embedded copy is
+//!   extracted), system paths, then the embedded bytes.
+//! - iii-init: the embedded bytes, then `III_INIT_PATH`.
 //!
 //! Release builds embed both via `--features embed-init,embed-libkrunfw`
 //! (build iii-init first with `scripts/build-init.sh`). A build without them
-//! needs `III_LIBKRUNFW_PATH` / `III_INIT_PATH` or a local install.
+//! needs `III_INIT_PATH`, and `III_LIBKRUNFW_PATH` or a system libkrunfw.
 
 pub mod constants;
-pub(crate) mod download;
 pub(crate) mod libkrunfw_bytes;
+pub(crate) mod provision;
 pub mod resolve;
 pub(crate) mod symlinks;

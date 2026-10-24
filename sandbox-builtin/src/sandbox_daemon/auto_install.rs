@@ -9,13 +9,8 @@ pub async fn auto_install_image(
     oci_ref: &str,
     mut on_event: impl FnMut(SandboxCreateEvent) + Send + 'static,
 ) -> Result<std::path::PathBuf, SandboxError> {
-    let hints = rootfs_cache::CacheHints {
-        legacy_preset: Some(image_name),
-        ..Default::default()
-    };
-
     let image_ref = oci_ref.to_string();
-    let dest = rootfs_cache::ensure_rootfs(oci_ref, &hints, move || {
+    let dest = rootfs_cache::ensure_rootfs(oci_ref, move || {
         on_event(SandboxCreateEvent::PullingImage {
             image_ref: image_ref.clone(),
             progress_bytes: 0,
@@ -60,15 +55,7 @@ mod tests {
 
     #[tokio::test]
     async fn returns_s102_on_invalid_image_ref() {
-        // Unique image name per test run so `rootfs_cache::resolve_cached`
-        // cannot short-circuit via a legacy `~/.iii/managed/<name>/rootfs/`
-        // left behind by a previous sandbox run on the developer's box.
-        let uniq = format!(
-            "__autoinstall-test-{}-{}",
-            std::process::id(),
-            std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos()
-        );
-        let err = auto_install_image(&uniq, "::not a real ref::", |_| {})
+        let err = auto_install_image("__autoinstall-test", "::not a real ref::", |_| {})
             .await
             .unwrap_err();
         assert_eq!(err.code().as_str(), "S102");

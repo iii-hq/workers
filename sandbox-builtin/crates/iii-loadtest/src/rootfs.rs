@@ -42,18 +42,12 @@ pub struct RootfsArgs {
 /// Where the guest finds the binaries, relative to `/`.
 pub const BIN_DIR: &str = "opt/bench/bin";
 
-pub fn default_init() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    let path = PathBuf::from(home).join(".iii/lib/iii-init");
-    path.exists().then_some(path)
-}
-
 pub fn build(args: &RootfsArgs) -> Result<()> {
     let out = &args.out;
-    let init =
-        args.init.clone().or_else(default_init).context(
-            "no iii-init: pass --init (sandbox-builtin/scripts/build-init.sh builds it)",
-        )?;
+    let init = args
+        .init
+        .clone()
+        .context("no iii-init: pass --init (sandbox-builtin/scripts/build-init.sh builds it)")?;
 
     for dir in [
         "bin", "dev", "etc", "proc", "run", "sys", "tmp", "root", BIN_DIR,

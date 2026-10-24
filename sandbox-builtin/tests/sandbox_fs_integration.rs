@@ -9,7 +9,7 @@
 //!
 //! All tests run against a `FakeFsRunner` that backs an in-memory
 //! filesystem (no libkrun, no shell socket). The unit tests in each
-//! `crates/iii-worker/src/sandbox_daemon/fs/*.rs` cover the per-handler
+//! `sandbox-builtin/src/sandbox_daemon/fs/*.rs` cover the per-handler
 //! happy path with a canned `FsResult`; this file exercises the
 //! cross-handler glue that they cannot.
 

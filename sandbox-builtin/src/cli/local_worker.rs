@@ -10,13 +10,13 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use super::project::{ProjectInfo, WORKER_MANIFEST, load_project_info};
+use super::project::{ProjectInfo, WORKER_MANIFEST, load_from_manifest};
 use super::rootfs::clone_rootfs;
 
 const PREPARED_MARKER_VERSION: &str = "workspace-copy-in-v1";
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Shared helpers (extracted from dev.rs)
+// Shared helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
 fn prepared_marker_matches_current_workspace(marker: &Path) -> bool {
@@ -35,42 +35,12 @@ fn write_run_script(managed_dir: &Path, overlay: bool, script: &str) -> std::io:
     Ok(dir)
 }
 
-/// Ensure the terminal is in cooked (canonical) mode with proper input and
-/// output processing.  Restores both output flags (NL→CRNL) and input flags
-/// (canonical buffering, echo, CR→NL translation) so that interactive prompts
-/// and line-oriented I/O work correctly after a raw-mode session (e.g. VM boot).
-#[cfg(unix)]
-pub fn restore_terminal_cooked_mode() {
-    let stderr = std::io::stderr();
-    if let Ok(mut termios) = nix::sys::termios::tcgetattr(&stderr) {
-        // Output: enable post-processing and NL→CRNL
-        termios
-            .output_flags
-            .insert(nix::sys::termios::OutputFlags::OPOST);
-        termios
-            .output_flags
-            .insert(nix::sys::termios::OutputFlags::ONLCR);
-        // Input: canonical mode, echo, CR→NL translation
-        termios
-            .local_flags
-            .insert(nix::sys::termios::LocalFlags::ICANON);
-        termios
-            .local_flags
-            .insert(nix::sys::termios::LocalFlags::ECHO);
-        termios
-            .input_flags
-            .insert(nix::sys::termios::InputFlags::ICRNL);
-        let _ = nix::sys::termios::tcsetattr(&stderr, nix::sys::termios::SetArg::TCSANOW, &termios);
-    }
-}
-
 /// Best-effort read of `resources.cpus`/`resources.memory` for VM sizing.
 /// Lenient by design: any read/parse/shape failure falls back to the defaults
-/// (2 vCPUs, 2048 MiB) — strictness lives in the add/start validation and
-/// `worker::validate`, not in this sizing probe. Backed by the typed
-/// [`super::worker_manifest::WorkerManifest`] so add, start, and validate all
-/// read resources through one schema (previously this used the `serde_yml`
-/// fork while everything else used `serde_yaml`).
+/// (2 vCPUs, 2048 MiB) — strictness lives in the start validation, not in
+/// this sizing probe. Backed by the typed
+/// [`super::worker_manifest::WorkerManifest`] so validation and sizing read
+/// resources through one schema.
 pub fn parse_manifest_resources(manifest_path: &Path) -> (u32, u32) {
     let default = (2, 2048);
     let Ok(Some(doc)) = super::project::read_manifest_doc(manifest_path) else {
@@ -85,11 +55,8 @@ pub fn parse_manifest_resources(manifest_path: &Path) -> (u32, u32) {
 
 /// Build the boot script that `iii-init` will exec as the worker command.
 ///
-/// No supervisor wrapping: the in-VM `iii-init` binary absorbs the
-/// supervisor role (see `iii_init::supervisor`) and opens the control
-/// channel itself when the host sets `III_CONTROL_PORT`. That removes
-/// the separate `/opt/iii/supervisor` binary and its install plumbing
-/// that this function used to emit as `exec /opt/iii/supervisor ...`.
+/// No supervisor wrapping: the in-VM `iii-init` binary (PID 1) starts
+/// and reaps the worker itself (see `iii_init::supervisor`).
 ///
 /// `is_bundle` controls workspace behavior:
 ///   * local-path workers copy host source into a guest-local `/workspace`;
@@ -217,11 +184,6 @@ printf '%s\n' '{PREPARED_MARKER_VERSION}' > /var/.iii-prepared
 sync
 fi"#
         ));
-        // Host-visible readiness: /opt/iii is a virtiofs mount of the host's
-        // managed_dir/runtime, so the host (status / `--wait`) can see this
-        // even though the /var marker lives on the host-invisible ext4 upper.
-        // Touched every boot after provisioning, just before exec.
-        parts.push("touch /opt/iii/.iii-ready 2>/dev/null || true".to_string());
     } else if !prepared {
         if !project.setup_cmd.is_empty() {
             parts.push(project.setup_cmd.clone());
@@ -234,11 +196,7 @@ fi"#
         ));
     }
 
-    // Exec the user command directly. When the host has configured a
-    // control port (III_CONTROL_PORT env set by vm_boot), `iii-init`
-    // enters supervisor mode and wraps this command internally with
-    // restart/shutdown RPC handling. When no control port is set,
-    // iii-init takes its legacy path and just supervises the one
+    // Exec the user command directly; iii-init supervises the one
     // process until it exits.
     // `exec` binds tighter than `&&`/`;`: a compound run_cmd like
     // "pip install -e . && python -m src.main" would parse as
@@ -286,10 +244,8 @@ pub fn build_local_env(
     let mut env = HashMap::new();
     env.insert("III_ENGINE_URL".to_string(), engine_url.to_string());
     env.insert("III_URL".to_string(), engine_url.to_string());
-    // The config.yaml entry name, so SDKs can self-report the managed
-    // identity. Engine truth (`iii worker status`/`list`, MOT-3931) matches
-    // connections by this name; a worker that reports the SDK's
-    // `hostname:pid` fallback instead reads as "not registered" forever.
+    // The caller's worker name, so the SDK registers under it instead of
+    // its `hostname:pid` fallback.
     env.insert("III_WORKER_NAME".to_string(), worker_name.to_string());
     for (key, value) in project_env {
         if key != "III_ENGINE_URL" && key != "III_URL" && key != "III_WORKER_NAME" {
@@ -319,8 +275,7 @@ pub fn build_local_mounts(project_path: &Path, workspace_guest: &str) -> Vec<(St
 /// The predicate is `!managed_dir.join("bin").exists()` — every OCI base
 /// image we ship populates `/bin`, and none of the failure-mode artifacts
 /// (iii-init runtime mkdirs for /dev /proc /sys /etc /tmp /run, our own
-/// side-effect writes under /opt /workspace, stray vm.pid / watch.pid, a
-/// leftover `/rootfs` subdir from an older codepath) do. Plain
+/// side-effect writes under /opt /workspace) do. Plain
 /// `!managed_dir.exists()` is insufficient: a half-start that created
 /// runtime mountpoints then died would falsely register as "already
 /// prepared" and surface as a confusing `supervisor spawn_initial failed:
@@ -458,14 +413,14 @@ pub(crate) fn validate_source(
     }
 
     // 1a. Bundle workers: re-run the strict manifest validator before
-    // we touch the publisher-controlled YAML via load_project_info. The
-    // install-time validator (handle_bundle_add) already ran, but the
+    // we touch the publisher-controlled YAML via load_from_manifest.
+    // Whatever checked the bundle at install time, the
     // install dir is on the host filesystem — any local-FS-write
     // attacker (or a future bug that lets a bundle write to its own
     // install dir) could modify ~/.iii/workers-bundle/{name}/iii.worker.yaml
     // between install and start to introduce scripts.setup,
     // scripts.install, or runtime.base_image. The permissive
-    // load_project_info path below would honor those fields. The
+    // load_from_manifest path below would honor those fields. The
     // strict validator also enforces the 64 KiB manifest cap, which
     // defuses billion-laughs YAML expansion before serde_yaml sees it.
     if let Some(package) = package
@@ -477,37 +432,26 @@ pub(crate) fn validate_source(
         ));
     }
 
-    // 1b. Local (non-bundle) workers: strict key validation at start too, so a
-    // manifest hand-edited or swapped after `add` can't smuggle unknown keys
-    // (or an oversize/billion-laughs YAML) past the engine via the permissive
-    // load_project_info path below. Deprecation warnings are intentionally NOT
-    // re-emitted here — they fired at add time; repeating them on every engine
-    // boot would be noise.
+    // 1b. Local (non-bundle) workers: the manifest must exist, and gets
+    // strict key validation, so a manifest hand-edited after it was written
+    // can't smuggle unknown keys (or an oversize/billion-laughs YAML) past
+    // the engine via the permissive load_from_manifest path below.
+    let manifest_path = project_path.join(WORKER_MANIFEST);
     if package.is_none() {
-        let manifest_path = project_path.join(WORKER_MANIFEST);
-        match super::project::read_manifest_doc(&manifest_path) {
-            Ok(Some(doc)) => {
-                if let Err(e) = super::project::validate_manifest_keys(&doc, &manifest_path) {
-                    return Err(format!("manifest validation failed at start: {}", e));
-                }
-            }
-            Ok(None) => {} // auto-detected worker, no manifest to validate
-            Err(e) => {
-                return Err(e.to_string());
-            }
+        let doc = super::project::read_manifest_doc(&manifest_path)?
+            .ok_or_else(|| format!("{} does not exist", manifest_path.display()))?;
+        if let Err(e) = super::project::validate_manifest_keys(&doc, &manifest_path) {
+            return Err(format!("manifest validation failed at start: {}", e));
         }
     }
 
-    // 2. Detect language
-    let mut project = match load_project_info(project_path) {
-        Some(p) => p,
-        None => {
-            return Err(format!(
-                "Could not detect project type in '{}'",
-                project_path.display()
-            ));
-        }
-    };
+    // 2. Load the manifest
+    let mut project = load_from_manifest(&manifest_path).ok_or_else(|| {
+        format!(
+            "Could not load the worker manifest in '{}'",
+            project_path.display()
+        )
+    })?;
 
     if let Some(run_override) = run_override {
         project.run_cmd = run_override.to_string();
@@ -552,16 +496,13 @@ pub(crate) async fn start_worker_impl(
     over: VmOverride<'_>,
     run_override: Option<&str>,
 ) -> Result<super::worker_manager::libkrun::VmCommand, String> {
-    #[cfg(unix)]
-    restore_terminal_cooked_mode();
-
     let project_path = Path::new(worker_path);
     let (project, kind) = validate_source(project_path, package, run_override)?;
     let kind = kind.as_str();
     let is_bundle = package.is_some();
 
     // 3. Ensure libkrunfw available
-    if let Err(e) = super::firmware::download::ensure_libkrunfw().await {
+    if let Err(e) = super::firmware::provision::ensure_libkrunfw().await {
         tracing::warn!(error = %e, "failed to ensure libkrunfw");
     }
 
@@ -577,8 +518,8 @@ pub(crate) async fn start_worker_impl(
     // Detect "managed_dir exists but the rootfs was never cloned here"
     // by probing for `/bin` — every OCI base image we ship has it, and
     // neither iii-init's runtime mount dirs (/dev, /proc, /sys, /etc,
-    // /tmp, /run) nor our own side-effect writes (/opt, /workspace,
-    // vm.pid, watch.pid, /rootfs from an older codepath) populate it.
+    // /tmp, /run) nor our own side-effect writes (/opt, /workspace)
+    // populate it.
     //
     // Matches the `path.join("bin").exists()` idiom in
     // `worker_manager/oci.rs::prepare_rootfs`. A plain `managed_dir.exists()`
@@ -594,8 +535,8 @@ pub(crate) async fn start_worker_impl(
     // fresh as a copy of SRC. Without the wipe, cp's "copy INTO existing
     // dir" semantics would nest the rootfs at `managed_dir/python/`
     // instead of at `managed_dir/`. Anything the user cares about under
-    // managed_dir is regenerated on boot (logs, vm.pid, dep caches come
-    // back after pip install / npm install).
+    // managed_dir is regenerated on boot (dep caches come back after
+    // pip install / npm install).
     // Overlay mode serves the shared read-only erofs base as the rootfs
     // lower (built later from the cache) plus a per-worker ext4 upper — so
     // there is NO per-worker rootfs clone. The managed_dir is just a minimal
@@ -612,10 +553,6 @@ pub(crate) async fn start_worker_impl(
                 e
             ));
         }
-        // Reclaim orphaned legacy-clone artifacts (dep cache + prepared
-        // marker) and stamp the overlay layout marker. Idempotent and a no-op
-        // for a worker already on the overlay layout.
-        crate::cli::overlay::migrate_to_overlay(&managed_dir);
     } else if needs_rootfs_clone(&managed_dir) {
         eprintln!("  Preparing sandbox...");
         if managed_dir.exists()
@@ -656,27 +593,8 @@ pub(crate) async fn start_worker_impl(
         ));
     }
 
-    // An empty marker from the former bind-mounted dependency layout is stale:
-    // its packages live under /var/iii/deps, while copy-in workers load them
-    // from /workspace. Remove stale markers before boot so status cannot report
-    // Ready while the replacement install is still running.
-    let prepared_marker = managed_dir.join("var").join(".iii-prepared");
-    let is_prepared = prepared_marker_matches_current_workspace(&prepared_marker);
-    if !is_prepared {
-        match std::fs::remove_file(&prepared_marker) {
-            Ok(()) => {
-                tracing::debug!(marker = %prepared_marker.display(), "removed stale prepared marker");
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(format!(
-                    "Could not remove stale prepared marker {}: {}",
-                    prepared_marker.display(),
-                    error
-                ));
-            }
-        }
-    }
+    let is_prepared =
+        prepared_marker_matches_current_workspace(&managed_dir.join("var").join(".iii-prepared"));
 
     // 6. Build env with engine URL + OCI env + the caller's env
     let mut combined_project_env = project.env.clone();
@@ -699,8 +617,6 @@ pub(crate) async fn start_worker_impl(
 
     // 7. Build boot script. No supervisor wrap is emitted — the in-VM
     //    `iii-init` binary absorbs that role (see iii_init::supervisor).
-    //    Fast-restart is enabled whenever vm_boot wires the control port,
-    //    which sets `III_CONTROL_PORT` in the guest env for iii-init.
     let script = build_libkrun_local_script(&project, is_prepared, is_bundle, overlay);
 
     // Both modes exec `bash /opt/iii/dev-run.sh`; only the SOURCE of that file
@@ -720,15 +636,6 @@ pub(crate) async fn start_worker_impl(
     // for both modes.
     let script_dir = write_run_script(&managed_dir, overlay, &script)
         .map_err(|e| format!("Failed to write run script: {}", e))?;
-    // Overlay: clear the prior boot's host-visible readiness marker so status
-    // reports Preparing until THIS boot's guest re-touches /opt/iii/.iii-ready
-    // after provisioning. It persists in managed_dir/runtime across boots, so
-    // without this a restart flashes a stale Ready and `--wait` returns before
-    // the new VM actually serves. (Legacy reads the in-clone /var marker, which
-    // the VM teardown leaves consistent, so this only applies to overlay.)
-    if overlay {
-        let _ = std::fs::remove_file(script_dir.join(".iii-ready"));
-    }
     // The script sets up the workspace; no pre-cd needed (and /workspace is
     // empty until virtiofs mounts, so cd-before-exec would be racy).
     let exec_path = "/bin/sh";
@@ -738,7 +645,7 @@ pub(crate) async fn start_worker_impl(
     ];
 
     // 8. Copy iii-init if needed
-    let init_path = match super::firmware::download::ensure_init_binary().await {
+    let init_path = match super::firmware::provision::ensure_init_binary().await {
         Ok(p) => p,
         Err(e) => {
             return Err(format!("Failed to provision iii-init: {}", e));
@@ -759,11 +666,9 @@ pub(crate) async fn start_worker_impl(
     let manifest_path = project_path.join(WORKER_MANIFEST);
     let (vcpus, ram) = if is_bundle {
         // Strict clamp at start-time so a publisher-controlled manifest
-        // can't boot a libkrun guest with attacker-chosen resources.
-        // Install-time clamp (handle_bundle_add) only emits a WARN
-        // event; the actual VM boot still re-reads the manifest from
-        // the install dir, which is exactly what a malicious bundle
-        // counts on.
+        // can't boot a libkrun guest with attacker-chosen resources:
+        // the VM boot re-reads the manifest from the install dir, which
+        // may have changed since install.
         match super::bundle_download::parse_bundle_resources(
             project_path,
             super::bundle_download::ResourceCaps::default(),
@@ -990,31 +895,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_empty_prepared_marker_reruns_install_after_copy_in_migration() {
-        let temp = tempfile::tempdir().unwrap();
-        let marker = temp.path().join(".iii-prepared");
-        std::fs::write(&marker, "").unwrap();
-        let project = ProjectInfo {
-            name: "test".to_string(),
-            kind: Some("typescript".to_string()),
-            setup_cmd: String::new(),
-            install_cmd: "npm install".to_string(),
-            run_cmd: "npm run start".to_string(),
-            env: HashMap::new(),
-            base_image: None,
-        };
-
-        let script = build_libkrun_local_script(
-            &project,
-            prepared_marker_matches_current_workspace(&marker),
-            /*is_bundle=*/ false,
-            /*overlay=*/ false,
-        );
-
-        assert!(script.contains("npm install"));
-    }
-
-    #[test]
     fn current_prepared_marker_matches_copy_in_workspace() {
         let temp = tempfile::tempdir().unwrap();
         let marker = temp.path().join(".iii-prepared");
@@ -1238,9 +1118,7 @@ resources:
     }
 
     #[tokio::test]
-    async fn start_skips_manifest_validation_when_manifest_absent() {
-        // Empty dir: read_manifest_doc returns Ok(None) (nothing to validate),
-        // then start fails at project detection — never at the validator.
+    async fn start_rejects_a_missing_manifest_before_boot() {
         let dir = tempfile::tempdir().unwrap();
 
         let state = tempfile::tempdir().unwrap();
@@ -1255,7 +1133,7 @@ resources:
         .err()
         .expect("must fail before boot");
 
-        assert!(err.contains("Could not detect project type"), "{err}");
+        assert!(err.contains("iii.worker.yaml does not exist"), "{err}");
     }
 
     #[tokio::test]
@@ -1309,9 +1187,6 @@ resources:
         assert!(err.contains("unrecognized runtime kind 'cobol'"), "{err}");
     }
 
-    // Symlink-defense + 0o600 mode tests moved to super::pidfile where
-    // the shared implementation lives.
-
     /// Regression test for the "managed_dir exists but is missing /bin"
     /// failure mode. A half-populated managed_dir — created by a prior
     /// iii-init boot that mkdir'd /dev/proc/sys but died before the
@@ -1348,8 +1223,6 @@ resources:
         ] {
             std::fs::create_dir_all(managed.join(d)).unwrap();
         }
-        std::fs::write(managed.join("vm.pid"), "12345").unwrap();
-        std::fs::write(managed.join("watch.pid"), "12346").unwrap();
 
         // Dir exists — the old too-weak guard would skip the clone.
         assert!(managed.exists());
@@ -1379,8 +1252,8 @@ resources:
     }
 
     /// Absence case: `needs_rootfs_clone(nonexistent_path)` must be true.
-    /// Covers the first-start path where the parent `~/.iii/managed/`
-    /// exists but the per-worker subdir has never been created.
+    /// Covers the first-start path where the worker's state dir has never
+    /// been created.
     #[test]
     fn needs_rootfs_clone_true_when_managed_dir_absent() {
         let tmp = tempfile::tempdir().unwrap();

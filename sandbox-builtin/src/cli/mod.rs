@@ -6,14 +6,11 @@
 
 pub(crate) mod app;
 pub mod bundle_download;
-pub(crate) mod config_file;
 pub(crate) mod erofs;
 pub mod firmware;
-pub mod lifecycle;
 pub mod local_worker;
 pub(crate) mod oci_ref;
 pub(crate) mod overlay;
-pub(crate) mod pidfile;
 pub mod project;
 pub(crate) mod rootfs;
 pub mod rootfs_cache;

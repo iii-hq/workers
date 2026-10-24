@@ -4,23 +4,14 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! OCI image-ref helpers shared between the pull path (cache canonicalization,
-//! digest sidecar) and the lockfile-writing path (digest normalization,
-//! `@sha256:` pinning).
-//!
-//! Three public functions:
-//! - [`canonical_cache_key`] — strip any `@sha256:...` suffix before hashing
-//!   so pinned and unpinned variants of the same image share one cache dir.
-//! - [`normalize_digest`] — accept `sha256:<hex>` or bare `<hex>`, emit the
-//!   64-char lowercase hex payload or error. (Wired in Task 4.)
-//! - [`pin_image_ref`] — append `@sha256:{digest}` to a ref unless already
-//!   pinned. (Wired in Task 4.)
+//! OCI image-ref helper for the rootfs cache: [`canonical_cache_key`] strips
+//! any `@sha256:...` suffix before hashing so pinned and unpinned variants of
+//! the same image share one cache dir.
 
 /// Return the portion of `image_ref` that should be used as the cache-dir
 /// hash input. Strips any trailing `@sha256:...` so `foo:latest` and
-/// `foo:latest@sha256:abc` resolve to the same cache dir, and so the
-/// in-process engine doesn't re-pull an image we just pinned into
-/// `config.yaml` / `iii.lock`.
+/// `foo:latest@sha256:abc` resolve to the same cache dir, and a pinned ref
+/// doesn't re-pull an image the cache already holds.
 ///
 /// Examples:
 /// - `foo:latest` -> `foo:latest`
