@@ -37,7 +37,7 @@ pub use registry::SandboxRegistry;
 /// assert!(guide.contains("error.message"));
 /// ```
 pub const SANDBOX_AGENT_GUIDE: &str = r#"
-You have access to the iii worker sandbox::* tools. Use them to run code in an
+You have access to the iii sandbox::* tools. Use them to run code in an
 isolated microVM and capture stdout/stderr.
 
 # Workflow
@@ -161,17 +161,26 @@ pub async fn serve() -> anyhow::Result<()> {
                     std::process::exit(2);
                 }
             };
-            start(&iii, config, &config_name);
-            exit.await
+            let registry = start(&iii, config, &config_name);
+            let reason = exit.await;
+            stop::stop_all(&registry, &adapters::SignalStopper).await;
+            reason
         }
     };
     tracing::info!(reason, "sandbox-builtin shutting down");
+    // shutdown_async does not wait for the SDK's own flush, so the spans of the
+    // last calls were lost. Bounded: a dead engine cannot take them anyway.
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        iii_helpers::observability::flush_otel(),
+    )
+    .await;
     iii.shutdown_async().await;
     Ok(())
 }
 
-/// Register every function and spawn the idle reaper.
-fn start(iii: &IIIClient, config: SandboxConfig, config_name: &str) {
+/// Register every function and spawn the idle reaper; returns the sandboxes.
+fn start(iii: &IIIClient, config: SandboxConfig, config_name: &str) -> Arc<SandboxRegistry> {
     tracing::info!(
         auto_install = config.auto_install,
         allowlist_size = config.image_allowlist.len(),
@@ -188,6 +197,7 @@ fn start(iii: &IIIClient, config: SandboxConfig, config_name: &str) {
              number of simultaneous execs a guest of default_memory_mb can hold."
         );
     }
+    overlay::sweep_stale(std::path::Path::new(overlay::SANDBOX_ROOT));
     let registry = Arc::new(SandboxRegistry::with_max_exec_in_flight(
         config.max_concurrent_exec_per_sandbox,
     ));
@@ -204,6 +214,7 @@ fn start(iii: &IIIClient, config: SandboxConfig, config_name: &str) {
         busy_grace,
     ));
     tracing::info!("sandbox-builtin ready");
+    registry
 }
 
 /// Register every `sandbox-builtin::*` function, `adapter::info` included.

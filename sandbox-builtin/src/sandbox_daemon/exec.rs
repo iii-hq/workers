@@ -152,6 +152,10 @@ pub struct ExecResponse {
     pub timed_out: bool,
     pub duration_ms: u64,
     pub success: bool,
+    /// `stdout` was cut at the 1 MiB output cap. Since contract 1.1.
+    pub stdout_truncated: bool,
+    /// `stderr` was cut at the 1 MiB output cap. Since contract 1.1.
+    pub stderr_truncated: bool,
 }
 
 #[async_trait::async_trait]
@@ -291,6 +295,8 @@ mod tests {
                 timed_out: false,
                 duration_ms: 1,
                 success: self.exit == 0,
+                stdout_truncated: false,
+                stderr_truncated: false,
             })
         }
     }

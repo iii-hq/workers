@@ -32,12 +32,12 @@
 //! into every rootfs.
 
 use std::io::BufReader;
+use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicI32, Ordering};
 
-use nix::sys::wait::{WaitStatus, waitpid};
-use nix::unistd::Pid;
+use nix::sys::wait::WaitStatus;
 
 use crate::error::InitError;
 
@@ -198,7 +198,7 @@ fn maybe_spawn_shell_dispatcher() {
         None => {
             eprintln!(
                 "iii-init: warning: III_SHELL_PORT={port_name} but no matching port \
-                 in /sys/class/virtio-ports. `iii worker exec` disabled for this VM."
+                 in /sys/class/virtio-ports. sandbox exec disabled for this VM."
             );
         }
     }
@@ -224,7 +224,7 @@ fn run_legacy(cmd: String) -> Result<(), InitError> {
     // exec` children must be forwarded to the dispatcher's waiter
     // thread, not silently discarded as "orphans".
     let status = loop {
-        match waitpid(Pid::from_raw(-1), None) {
+        match crate::child_exits::wait_any() {
             Ok(WaitStatus::Exited(pid, code)) => {
                 if crate::child_exits::dispatch_exit(pid.as_raw(), code) {
                     continue;
@@ -264,7 +264,27 @@ fn run_legacy(cmd: String) -> Result<(), InitError> {
 /// with `commit=1` if that residual window ever matters.
 fn sync_and_exit(status: i32) -> ! {
     nix::unistd::sync();
+    // libkrun takes the VM's exit code from this ioctl on a virtiofs mount
+    // (VIRTIO_IOC_EXIT_CODE_REQ, `_IO('v', 2)`); without it `__vm-boot` exits 0
+    // whatever the worker returned, and a crashed worker read as a clean exit.
+    if let Some(root) = VIRTIOFS_ROOT.get() {
+        unsafe { libc::ioctl(root.as_raw_fd(), 0x7602 as _, status) };
+    }
     std::process::exit(status);
+}
+
+/// The virtiofs root, opened before the root pivot detaches it, for the
+/// exit-code ioctl in [`sync_and_exit`]. Close-on-exec, so no worker inherits it.
+static VIRTIOFS_ROOT: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+
+/// Keep the virtiofs root open; call it before the root pivot.
+pub fn hold_virtiofs_root() {
+    match std::fs::File::open("/") {
+        Ok(root) => {
+            let _ = VIRTIOFS_ROOT.set(root);
+        }
+        Err(e) => eprintln!("iii-init: warning: cannot open / for the exit code: {e}"),
+    }
 }
 
 /// Supervisor path: spawn worker via `iii_supervisor::child::State`,
@@ -323,7 +343,7 @@ fn run_supervised(cmd: String, workdir: String, port_name: String) -> Result<(),
     // look like an orphan and the dispatcher's waiter thread would
     // wait forever.
     let status = loop {
-        match waitpid(Pid::from_raw(-1), None) {
+        match crate::child_exits::wait_any() {
             Ok(WaitStatus::Exited(pid, code)) => {
                 if crate::child_exits::dispatch_exit(pid.as_raw(), code) {
                     continue;

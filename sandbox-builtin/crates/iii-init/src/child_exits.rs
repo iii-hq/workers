@@ -82,6 +82,27 @@ where
     Some((pid, rx))
 }
 
+/// PID 1's reap: wait for any child to exit, then reap it under the registry
+/// lock. The child is only peeked (`WNOWAIT`) until the lock is held, because
+/// [`register_spawn`] holds it across `Command::spawn`, and when the exec fails
+/// std waits for that child itself and panics if it was already reaped.
+#[cfg(target_os = "linux")]
+pub fn wait_any() -> nix::Result<nix::sys::wait::WaitStatus> {
+    use nix::sys::wait::{Id, WaitPidFlag, WaitStatus, waitid, waitpid};
+    loop {
+        let peeked = waitid(Id::All, WaitPidFlag::WEXITED | WaitPidFlag::WNOWAIT)?;
+        let Some(pid) = peeked.pid() else { continue };
+        let _held = registry()
+            .lock()
+            .expect("child_exits registry mutex poisoned");
+        match waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
+            // A failed spawn reaped it while we waited for the lock.
+            Err(nix::Error::ECHILD) | Ok(WaitStatus::StillAlive) => continue,
+            reaped => return reaped,
+        }
+    }
+}
+
 /// Called from PID 1's reap loop after every `waitpid` observation.
 /// Returns `true` if the pid was registered and its exit code was
 /// dispatched — the caller should treat the exit as handled and not
@@ -133,6 +154,43 @@ mod tests {
     #[test]
     fn dispatch_unknown_pid_returns_false() {
         assert!(!dispatch_exit(99999, 0));
+    }
+
+    /// A spawn whose exec fails must survive PID 1's reap loop. std waits for
+    /// that child itself and panicked when the loop had reaped it first, which
+    /// poisoned the registry and took PID 1, and the VM, down with it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn failed_spawns_survive_a_concurrent_reap_loop() {
+        use nix::sys::wait::WaitStatus;
+        // Like the worker under PID 1: a live child keeps the loop blocked in its wait.
+        let mut worker = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .unwrap();
+        std::thread::spawn(|| {
+            while let Ok(status) = wait_any() {
+                if let WaitStatus::Exited(pid, code) = status {
+                    dispatch_exit(pid.as_raw(), code);
+                }
+            }
+        });
+        for _ in 0..500 {
+            let mut command = std::process::Command::new("/nonexistent/iii-init-test");
+            // As the dispatcher does (setpgid/setsid): a `pre_exec` makes std fork
+            // and wait for the failed child itself, instead of `posix_spawn`.
+            unsafe {
+                std::os::unix::process::CommandExt::pre_exec(&mut command, || Ok(()));
+            }
+            let spawned = register_spawn(|| match command.spawn() {
+                Ok(mut child) => child.wait().ok().map(|_| child.id()),
+                Err(_) => None,
+            });
+            assert!(spawned.is_none());
+        }
+        let _ = worker.kill();
+        // The loop above usually reaps it first; then this fails with ECHILD.
+        let _ = worker.wait();
     }
 
     #[test]

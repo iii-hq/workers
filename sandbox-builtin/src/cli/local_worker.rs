@@ -714,10 +714,10 @@ pub(crate) async fn start_worker_impl(
     //     overlay root).
     //
     // The script is delivered as a FILE, never inlined into III_WORKER_CMD:
-    // msb_krun passes the whole guest env via the kernel cmdline (krun_env),
-    // and a multi-KB inlined script overflows CMDLINE_MAX_SIZE and panics the
-    // VM builder. Keeping III_WORKER_CMD tiny (`exec bash /opt/iii/dev-run.sh`)
-    // keeps the env within the cmdline budget for both modes.
+    // with an on-disk (not embedded) init the guest env rides the kernel
+    // cmdline (krun_env), whose size `vm_boot` caps. Keeping III_WORKER_CMD
+    // tiny (`exec bash /opt/iii/dev-run.sh`) keeps the env within that budget
+    // for both modes.
     let script_dir = write_run_script(&managed_dir, overlay, &script)
         .map_err(|e| format!("Failed to write run script: {}", e))?;
     // Overlay: clear the prior boot's host-visible readiness marker so status

@@ -70,6 +70,8 @@ impl FakeShellRunner {
                 timed_out: false,
                 duration_ms: 1,
                 success: exit_code == 0,
+                stdout_truncated: false,
+                stderr_truncated: false,
             }))),
             calls: Mutex::new(ShellCallLog::default()),
             call_count: AtomicUsize::new(0),

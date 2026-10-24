@@ -52,6 +52,8 @@ impl ShellRunner for FakeRunner {
             timed_out: false,
             duration_ms: 1,
             success: self.exit == 0,
+            stdout_truncated: false,
+            stderr_truncated: false,
         })
     }
 }

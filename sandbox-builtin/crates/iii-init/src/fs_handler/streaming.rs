@@ -244,7 +244,9 @@ pub fn handle_read_start(path: String, writer: &Writer, corr_id: u32) -> Result<
         mtime: md.mtime(),
     };
     // Send FsMeta — after this any error must go as a wire FsError frame.
-    crate::shell_dispatcher::send_frame(writer, corr_id, 0, &ShellMessage::FsMeta(meta));
+    if !crate::shell_dispatcher::send_frame(writer, corr_id, 0, &ShellMessage::FsMeta(meta)) {
+        return Ok(());
+    }
 
     let mut file = match std::fs::File::open(p) {
         Ok(f) => f,
@@ -284,12 +286,10 @@ pub fn handle_read_start(path: String, writer: &Writer, corr_id: u32) -> Result<
             }
         };
         let encoded = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
-        crate::shell_dispatcher::send_frame(
-            writer,
-            corr_id,
-            0,
-            &ShellMessage::FsChunk { data_b64: encoded },
-        );
+        let chunk = ShellMessage::FsChunk { data_b64: encoded };
+        if !crate::shell_dispatcher::send_frame(writer, corr_id, 0, &chunk) {
+            return Ok(());
+        }
     }
 
     // Terminal FsEnd.

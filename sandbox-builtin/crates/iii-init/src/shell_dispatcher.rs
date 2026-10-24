@@ -78,16 +78,15 @@ type FsWriteRegistry = Arc<Mutex<HashMap<u32, std::sync::mpsc::SyncSender<ShellM
 
 /// Writer handle shared by every thread that emits frames. A single
 /// dedicated writer thread drains this channel onto the virtio-console
-/// port, so no caller ever blocks across a virtio write. If the guest
-/// side of the port wedges (host relay gone, kernel ring full), the
-/// channel saturates at [`WRITER_CHANNEL_CAPACITY`] and further
-/// `try_send`s drop frames with a log line — session threads keep
-/// running instead of freezing under a shared mutex.
+/// port, so no caller ever holds a lock across a virtio write. When the
+/// host relay applies backpressure the channel saturates at
+/// [`WRITER_CHANNEL_CAPACITY`] and senders wait for room (see
+/// [`send_frame`]); once the writer thread is gone, sends fail.
 pub(crate) type Writer = SyncSender<Vec<u8>>;
 
 /// Bound on queued frames between session threads and the writer
 /// thread. Roughly 1024 × 8 KiB worst case ≈ 8 MiB in flight. Large
-/// enough that a short virtio stall never drops frames; small enough
+/// enough that a short virtio stall never makes a sender wait; small enough
 /// that a permanent stall (e.g. host relay dead) can't balloon guest
 /// memory. Chosen empirically, not tuned.
 const WRITER_CHANNEL_CAPACITY: usize = 1024;
@@ -976,30 +975,22 @@ fn stream_fd<R: Read>(writer: Writer, corr_id: u32, mut src: R, kind: OutputKind
     }
 }
 
-pub(crate) fn send_frame(writer: &Writer, corr_id: u32, flags: u8, msg: &ShellMessage) {
+/// Queue one frame for the writer thread; `false` once that thread is gone.
+pub(crate) fn send_frame(writer: &Writer, corr_id: u32, flags: u8, msg: &ShellMessage) -> bool {
     let frame = match sp::encode_frame(corr_id, flags, msg) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("iii-init: shell dispatcher encode failed: {e}");
-            return;
+            return false;
         }
     };
-    // `try_send` so a wedged writer (virtio ring full, host relay gone)
-    // never blocks the caller. Dropping a frame is preferable to
-    // deadlocking every session thread on a shared writer mutex —
-    // which is the bug this writer-thread design replaces.
-    if let Err(e) = writer.try_send(frame) {
-        use std::sync::mpsc::TrySendError;
-        match e {
-            TrySendError::Full(_) => {
-                eprintln!("iii-init: shell writer channel full, dropping frame corr_id={corr_id}");
-            }
-            TrySendError::Disconnected(_) => {
-                // Writer thread exited — further writes are pointless.
-                // Stay quiet; the first failure already logged.
-            }
-        }
-    }
+    // Waits for room rather than dropping the frame: the host relay
+    // applies backpressure, and it disconnects a host client that stops
+    // reading, so the wait is bounded. A dropped frame was lost output, a
+    // short fs::read, or a lost `Exited` that left an exec hanging. No
+    // lock is held across this send, and the writer thread waits on
+    // nothing but the port, so it cannot deadlock.
+    writer.send(frame).is_ok()
 }
 
 fn encode_b64(bytes: &[u8]) -> String {
@@ -1084,6 +1075,21 @@ mod tests {
                 })
                 .expect("spawn test reaper");
         });
+    }
+
+    /// Frames wait for room in a full writer channel instead of being
+    /// dropped, so an exec's output and its `Exited` survive a large
+    /// fs::read keeping the channel full under the relay's backpressure.
+    #[test]
+    fn send_frame_waits_for_a_full_writer_instead_of_dropping() {
+        let (writer, frames) = sync_channel::<Vec<u8>>(1);
+        let sender = thread::spawn(move || {
+            (0..50).all(|code| send_frame(&writer, 1, 0, &ShellMessage::Exited { code }))
+        });
+        // A slow host: the channel is long full before it drains.
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(frames.iter().count(), 50);
+        assert!(sender.join().unwrap());
     }
 
     /// Drive the dispatcher over an in-process socketpair and assert

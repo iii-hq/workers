@@ -25,12 +25,19 @@ fn run() -> Result<(), iii_init::InitError> {
     // Block-image overlay mode (shared read-only base image + writable
     // upper) when the host signals it via III_BLOCK_ROOT_*; otherwise the
     // legacy per-worker virtiofs rootfs + tmpfs-pivot path.
+    iii_init::supervisor::hold_virtiofs_root();
     if iii_init::root_pivot::overlay_root_requested() {
         iii_init::root_pivot::overlay_root()?;
     } else {
         iii_init::root_pivot::pivot_to_tmpfs_root()?;
     }
     iii_init::mount::mount_filesystems()?;
+    // Worker env and command arrive over the `iii.env` port, not the kernel
+    // cmdline (MOT-5493). Here, not later: it needs /sys and /dev, every
+    // following step must see the worker env as it did when the env rode
+    // the cmdline, and it mutates the process environment, so it has to
+    // run before exec_worker starts helper threads.
+    iii_init::worker_env::load_worker_env()?;
     iii_init::mount::mount_virtiofs_shares();
     // Fakes `/proc/meminfo::MemTotal` to the per-worker cap so Bun's
     // Zig allocator — which reads MemTotal directly and ignores

@@ -54,6 +54,20 @@ pub async fn handle_stop<S: VmStopper>(
     })
 }
 
+/// Stop every live sandbox and remove its directory, for a graceful exit: the
+/// lifeline ends the VMs anyway, but only this cleans `/tmp/iii-sandbox`.
+pub async fn stop_all<S: VmStopper>(registry: &SandboxRegistry, stopper: &S) {
+    let states = registry.list().await;
+    futures::future::join_all(states.into_iter().map(|state| async move {
+        if let Some(pid) = state.vm_pid {
+            let _ = stopper.stop(pid).await;
+        }
+        let _ = OverlayLayout::for_sandbox(state.id).cleanup();
+        registry.remove(state.id).await;
+    }))
+    .await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,6 +91,30 @@ mod tests {
         let mut s = crate::sandbox_daemon::registry::sandbox_state_for_test(id);
         s.vm_pid = Some(1234);
         s
+    }
+
+    /// A graceful exit stops every sandbox and leaves no dir behind.
+    #[tokio::test]
+    async fn stop_all_stops_every_sandbox_and_removes_its_dir() {
+        let reg = SandboxRegistry::new();
+        let ids = [Uuid::new_v4(), Uuid::new_v4()];
+        for id in ids {
+            OverlayLayout::for_sandbox(id).ensure_dirs().unwrap();
+            reg.insert(state(id)).await;
+        }
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let stopper = FlakyStopper {
+            fail_once: AtomicBool::new(false),
+            call_count: calls.clone(),
+        };
+
+        stop_all(&reg, &stopper).await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(reg.count().await, 0);
+        for id in ids {
+            assert!(!OverlayLayout::for_sandbox(id).base().exists());
+        }
     }
 
     #[tokio::test]

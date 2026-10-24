@@ -196,3 +196,47 @@ async fn failed_preflight_stops_create_before_the_image_is_resolved() {
     assert_eq!(err.code().as_str(), "S300");
     assert_eq!(reg.count().await, 0);
 }
+
+/// Boots slowly, so parallel creates overlap inside `boot`.
+struct SlowLauncher;
+#[async_trait::async_trait]
+impl VmLauncher for SlowLauncher {
+    async fn boot(&self, _p: &BootParams) -> Result<BootHandle, SandboxError> {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        Ok(BootHandle {
+            vm_pid: 999_999,
+            lifeline: None,
+        })
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn parallel_creates_stop_at_max_concurrent_sandboxes() {
+    let _home = isolated_home();
+    let mut cfg = cfg();
+    cfg.max_concurrent_sandboxes = 2;
+    let oci_ref = catalog::resolve_image("python", &cfg.custom_images).unwrap();
+    std::fs::create_dir_all(rootfs_cache::canonical_path(&oci_ref).join("bin")).unwrap();
+
+    let reg = SandboxRegistry::new();
+    let results = futures::future::join_all(
+        (0..4).map(|_| handle_create(req(), &cfg, &reg, &SlowLauncher, |_| {})),
+    )
+    .await;
+    let codes: Vec<&str> = results
+        .iter()
+        .map(|r| r.as_ref().map_or_else(|e| e.code().as_str(), |_| "ok"))
+        .collect();
+    for created in results.iter().flatten() {
+        let _ =
+            std::fs::remove_dir_all(PathBuf::from("/tmp/iii-sandbox").join(&created.sandbox_id));
+    }
+    assert_eq!(codes.iter().filter(|c| **c == "ok").count(), 2, "{codes:?}");
+    assert_eq!(
+        codes.iter().filter(|c| **c == "S400").count(),
+        2,
+        "{codes:?}"
+    );
+    assert_eq!(reg.count().await, 2);
+}

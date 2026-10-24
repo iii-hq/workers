@@ -781,7 +781,14 @@ impl FsStreamReader {
                 let frame = match read_frame_async(&mut stream).await {
                     Ok(Some(f)) => f,
                     Ok(None) => {
-                        // Clean EOF without FsEnd — terminate the stream.
+                        // The guest always ends a read with FsEnd or FsError, so
+                        // an EOF before it means the file came through short.
+                        let _ = tx
+                            .send(Err(std::io::Error::new(
+                                std::io::ErrorKind::UnexpectedEof,
+                                "session closed before FsEnd",
+                            )))
+                            .await;
                         break;
                     }
                     Err(e) => {
@@ -1303,5 +1310,28 @@ mod tests {
         let err = read_one_frame(&mut read_half).await.unwrap_err();
 
         assert!(matches!(err, VmClientError::Io(_)));
+    }
+
+    /// A read the session drops before `FsEnd` fails instead of reading as a
+    /// complete, shorter file.
+    #[tokio::test]
+    async fn fs_stream_closed_before_fs_end_is_an_error() {
+        let (a, mut b) = UnixStream::pair().expect("socketpair");
+        let chunk = ShellMessage::FsChunk {
+            data_b64: B64.encode(b"partial"),
+        };
+        b.write_all(&encode_frame(1, 0, &chunk).expect("encode"))
+            .await
+            .expect("write chunk");
+        drop(b);
+
+        let mut got = Vec::new();
+        let err = FsStreamReader::new(a)
+            .read_to_end(&mut got)
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert_eq!(got, b"partial");
     }
 }

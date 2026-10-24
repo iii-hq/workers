@@ -139,11 +139,23 @@ pub(crate) fn vm_boot_args(
         args.push("--net-activity-file".into());
         args.push(crate::sandbox_daemon::registry::net_activity_path(&params.shell_sock).into());
     }
-    for e in &params.env {
-        args.push("--env".into());
-        args.push(e.into());
-    }
+    // Env values go on stdin (`env_stdin_frame`), never argv, where `ps`
+    // shows them to every local user (MOT-5492).
+    args.push("--env-stdin".into());
     args
+}
+
+/// `params.env` (`KEY=VALUE` entries) as the `__vm-boot --env-stdin` frame.
+/// Entries without `=` are dropped, as `__vm-boot` always did.
+pub(crate) fn env_stdin_frame(params: &BootParams) -> Result<Vec<u8>, SandboxError> {
+    let pairs: Vec<(String, String)> = params
+        .env
+        .iter()
+        .filter_map(|kv| kv.split_once('='))
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect();
+    iii_supervisor::env_channel::encode_frame(&pairs)
+        .map_err(|e| SandboxError::BootFailed(format!("sandbox env: {e}")))
 }
 
 pub struct IiiWorkerLauncher;
@@ -267,9 +279,11 @@ impl VmLauncher for IiiWorkerLauncher {
         // reaper semantics simple.
         let control_sock = params.shell_sock.with_file_name("control.sock");
 
+        let env_stdin = env_stdin_frame(params)?;
         let mut cmd = tokio::process::Command::new(&bin);
         cmd.arg("__vm-boot")
-            .args(vm_boot_args(params, &rootfs_lower, &control_sock));
+            .args(vm_boot_args(params, &rootfs_lower, &control_sock))
+            .stdin(std::process::Stdio::piped());
 
         // Capture stderr to a per-sandbox log. Dropping to /dev/null
         // masked clap parse errors and libkrun panics as opaque 30s
@@ -290,13 +304,16 @@ impl VmLauncher for IiiWorkerLauncher {
             .map_err(|e| SandboxError::BootFailed(format!("lifeline pipe: {e}")))?;
 
         let t_spawn = Instant::now();
-        let child = cmd
+        let mut child = cmd
             .stdout(std::process::Stdio::null())
             .stderr(stderr)
             .spawn()
             .map_err(|e| {
                 SandboxError::BootFailed(format!("spawn sandbox-builtin __vm-boot: {e}"))
             })?;
+        crate::cli::worker_manager::libkrun::feed_env_stdin(child.stdin.take(), &env_stdin)
+            .await
+            .map_err(|e| SandboxError::BootFailed(format!("send sandbox env to __vm-boot: {e}")))?;
 
         let vm_pid = child
             .id()
@@ -471,6 +488,8 @@ fn classify_dispatcher_spawn_error(msg: &str, cmd: &str, duration_ms: u64) -> Op
             timed_out: false,
             duration_ms,
             success: false,
+            stdout_truncated: false,
+            stderr_truncated: false,
         });
     }
     if is_eacces {
@@ -481,6 +500,8 @@ fn classify_dispatcher_spawn_error(msg: &str, cmd: &str, duration_ms: u64) -> Op
             timed_out: false,
             duration_ms,
             success: false,
+            stdout_truncated: false,
+            stderr_truncated: false,
         });
     }
     None
@@ -667,6 +688,8 @@ impl ShellRunner for ShellProtoRunner {
                     timed_out,
                     duration_ms,
                     success,
+                    stdout_truncated: outcome.stdout_truncated,
+                    stderr_truncated: outcome.stderr_truncated,
                 })
             })
         })
@@ -742,6 +765,56 @@ mod tests {
         // base64("hi\n") = "aGkK"
         let got = decode_stdin(Some("aGkK")).unwrap();
         assert_eq!(got, Some(b"hi\n".to_vec()));
+    }
+
+    /// Output past OUTPUT_CAP is cut, and the reply says which stream was, so
+    /// a caller can tell a cut stream from a complete one (contract 1.1).
+    #[tokio::test]
+    async fn exec_reply_flags_the_stream_cut_at_the_output_cap() {
+        use iii_shell_proto::{ShellMessage, encode_frame, flags::FLAG_TERMINAL};
+        use std::io::{Read, Write};
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("shell.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600)).unwrap();
+        // Relay and guest in one: hand out id range 0, read the request,
+        // answer with 64 KiB more stdout than the cap and a little stderr.
+        std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            s.write_all(&0u32.to_be_bytes()).unwrap();
+            let mut len = [0u8; 4];
+            s.read_exact(&mut len).unwrap();
+            let mut body = vec![0u8; u32::from_be_bytes(len) as usize];
+            s.read_exact(&mut body).unwrap();
+            let b64 = base64::engine::general_purpose::STANDARD;
+            let chunk = b64.encode(vec![b'o'; 64 * 1024]);
+            for _ in 0..=OUTPUT_CAP / (64 * 1024) {
+                let out = ShellMessage::Stdout {
+                    data_b64: chunk.clone(),
+                };
+                s.write_all(&encode_frame(1, 0, &out).unwrap()).unwrap();
+            }
+            let err = ShellMessage::Stderr {
+                data_b64: b64.encode(b"warn\n"),
+            };
+            s.write_all(&encode_frame(1, 0, &err).unwrap()).unwrap();
+            let exited = ShellMessage::Exited { code: 0 };
+            s.write_all(&encode_frame(1, FLAG_TERMINAL, &exited).unwrap())
+                .unwrap();
+        });
+
+        let req: ExecRequest =
+            serde_json::from_value(serde_json::json!({"sandbox_id": "x", "cmd": "cat"})).unwrap();
+        let resp = ShellProtoRunner::default().run(sock, &req).await.unwrap();
+        assert_eq!(resp.stdout.len(), OUTPUT_CAP);
+        assert!(resp.stdout_truncated);
+        assert_eq!(resp.stderr, "warn\n");
+        assert!(!resp.stderr_truncated);
+        let wire = serde_json::to_value(&resp).unwrap();
+        assert_eq!(wire["stdout_truncated"], true);
+        assert_eq!(wire["stderr_truncated"], false);
     }
 
     #[test]
@@ -900,8 +973,19 @@ mod sandbox_boot_shape_tests {
             !a.iter().any(|x| x == CACHE),
             "the shared cache dir must never be passed to the guest"
         );
-        assert_eq!(value_of(&a, "--env").as_deref(), Some("A=1"));
+        assert!(a.iter().any(|x| x == "--env-stdin"));
+        assert!(
+            !a.iter().any(|x| x == "--env" || x.contains("A=1")),
+            "env values must not reach argv: {a:?}"
+        );
         assert!(!a.iter().any(|x| x == "--network"));
+    }
+
+    #[test]
+    fn sandbox_env_travels_in_the_stdin_frame() {
+        let frame = env_stdin_frame(&params(false)).unwrap();
+        let pairs = iii_supervisor::env_channel::read_frame(&mut frame.as_slice()).unwrap();
+        assert_eq!(pairs, vec![("A".to_string(), "1".to_string())]);
     }
 
     #[test]

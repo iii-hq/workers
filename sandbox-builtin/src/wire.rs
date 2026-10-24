@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const CONTRACT_MAJOR: u32 = 1;
-pub const CONTRACT_MINOR: u32 = 0;
+pub const CONTRACT_MINOR: u32 = 1;
 
 /// Worker-VM function suffixes, called as `<adapter>::<suffix>`.
 pub const WORKER_PREPARE: &str = "worker::prepare";
@@ -91,9 +91,10 @@ pub struct WorkerStartRequest {
     /// Container key; becomes `III_WORKER_NAME`.
     pub worker_name: String,
     pub source: WorkerSource,
-    /// Complete guest env. Today the adapter passes it on the `__vm-boot` argv,
-    /// so host users can read it, and it also lands in the guest kernel cmdline
-    /// (readable only inside the guest); MOT-5493 (iii#2377) moves it out of band.
+    /// Complete guest env. Never on the `__vm-boot` argv: the adapter writes it
+    /// to `__vm-boot`'s stdin, which sends it to the guest init over the
+    /// `iii.env` virtio-console port, not the kernel cmdline (only a build
+    /// without an embedded init still uses the cmdline).
     pub env: BTreeMap<String, String>,
     /// The engine's URL as seen from the host.
     pub engine_url: String,
