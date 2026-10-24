@@ -1,6 +1,7 @@
 //! An objective mapped onto the E2E catalog, in code: the objective names a
 //! need, a need names the words a test's spec must contain (criteria,
-//! summary, prompt and the catalog's invariants; never the title or id) and
+//! summaries and the catalog's invariants; never the prompt, whose code and
+//! paths match anything, nor the title or id) and
 //! the metric it is measured by. A test is selected only in its CURRENT
 //! definition: the `tests-list` row's `current_version` must be the
 //! `scenarios-list` scenario's `behavior_sha256`. Selection is a coverage
@@ -30,7 +31,7 @@ pub const NEEDS: [Need; 3] = [
         evidence: &[&["fallback"], &["provider", "providers", "model", "models"]],
         metric: CriterionMetricV1::PassRate,
         direction: DirectionV1::Increase,
-        gap: "no E2E test spec exercises a provider/model fallback (fallback together with a provider or model in its criteria, summary, prompt or invariants); tool_contract_recovery covers a changed tool contract, not provider/model fallback",
+        gap: "no E2E test spec exercises a provider/model fallback (fallback together with a provider or model in its criteria, summary or invariants); tool_contract_recovery covers a changed tool contract, not provider/model fallback",
     },
     Need {
         id: "skills",
@@ -38,7 +39,7 @@ pub const NEEDS: [Need; 3] = [
         evidence: &[&["skill", "skills"]],
         metric: CriterionMetricV1::Tokens,
         direction: DirectionV1::Decrease,
-        gap: "no E2E test spec measures skill effect, selection or cost (no skill in its criteria, summary, prompt or invariants)",
+        gap: "no E2E test spec measures skill effect, selection or cost (no skill in its criteria, summary or invariants)",
     },
     Need {
         id: "context_consumption",
@@ -82,10 +83,11 @@ fn text(value: &Value) -> String {
     value.as_str().unwrap_or_default().to_string()
 }
 
-/// The spec text a test is selected on: criteria descriptions, summary,
-/// prompt and the current definition's invariants.
+/// The spec text a test is selected on: criteria descriptions, summaries
+/// and the current definition's invariants. Never the prompt: its code
+/// snippets and workspace paths would match any need.
 fn spec_text(row: &Value, scenario: &Value) -> String {
-    let mut parts = vec![text(&row["spec"]["summary"]), text(&row["spec"]["prompt"])];
+    let mut parts = vec![text(&row["spec"]["summary"])];
     for criterion in row["spec"]["criteria"].as_array().into_iter().flatten() {
         parts.push(text(&criterion["description"]));
     }

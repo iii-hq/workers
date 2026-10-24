@@ -74,6 +74,7 @@ const COMMITTER_EMAIL: &str = "loop-candidate@iii.dev";
 
 /// Operator configuration. Model and provider come from here, never from code.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CandidateConfigV1 {
     /// Absolute path of the Workers repository.
     pub repository: String,
@@ -308,7 +309,7 @@ fn is_sha(text: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-fn validate_config(cfg: &CandidateConfigV1) -> Result<(), CandidateError> {
+pub(crate) fn validate_config(cfg: &CandidateConfigV1) -> Result<(), CandidateError> {
     let invalid = |reason: &str| Err(CandidateError::InvalidConfig(reason.into()));
     if !is_sha(&cfg.base_sha) {
         return invalid("base_sha must be a full lowercase 40-hex commit");
@@ -994,9 +995,11 @@ pub async fn publish(
     if output.status.success() {
         group.0 = 0;
     }
+    // Retried, not failed: the branch is deterministic and the push is not
+    // forced, so a retry after a refusal (network, auth) is idempotent.
     if !output.status.success() {
-        return Err(CandidateError::Git(
-            "candidate publication was refused; remote outcome must be reconciled".into(),
+        return Err(CandidateError::Dependency(
+            "candidate publication was refused; it is retried".into(),
         ));
     }
     Ok(CandidatePublishV1 {

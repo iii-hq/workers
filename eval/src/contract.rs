@@ -213,6 +213,16 @@ impl LoopConfigV1 {
                 return invalid("judge.provider must be set and judge.estimated_usd be 0 or more");
             }
         }
+        if let Some(candidate) = &self.candidate {
+            // Checked here, not first at the proposal after a paid baseline.
+            crate::candidate::validate_config(candidate)
+                .map_err(|error| EvalError::InvalidRequest(error.to_string()))?;
+            // The sign test needs five same-direction pairs: with fewer,
+            // 0.5^n never reaches alpha 0.05 and no candidate can be accepted.
+            if self.runs_per_side < 5 {
+                return invalid("candidate work needs runs_per_side of at least 5");
+            }
+        }
         if let Some(validation) = &self.validation {
             if self.candidate.is_none() {
                 return invalid("validation needs candidate: only a candidate is validated");

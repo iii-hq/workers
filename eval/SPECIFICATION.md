@@ -19,8 +19,9 @@ There are exactly two inputs, and both converge on one `CycleRecordV1`:
    `policy_revision`. Later edits never change the cycle's actor, budget,
    target or criteria.
 2. **No spend without coverage.**
-   - An objective selects tests only from their spec text (criteria, summary,
-     prompt, invariants), in their current executable definition.
+   - An objective selects tests only from their spec text (criteria,
+     summaries, invariants; never the prompt, whose code and paths match
+     anything), in their current executable definition.
    - An execution maps to what its own runs lost, on its executed scenarios.
      They must still be current.
    - Otherwise the outcome is `no_coverage` with the exact gap. Skill and
@@ -38,6 +39,8 @@ There are exactly two inputs, and both converge on one `CycleRecordV1`:
    redelivery or a restart never dispatches twice.
    - An unreported cost stays charged at its estimate.
    - E2E estimates count technical retries.
+   - The sweep ends a waiting cycle only past a limit (time at it), never
+     with work reserved within it, and stops what the cycle dispatched.
    - Builds use the frozen `release_build_estimate_usd`.
 5. **Cheap first pass.** Every imported execution gets a deterministic
    analysis. It calls no model. An unknown is listed and never assumed. An
@@ -46,7 +49,6 @@ There are exactly two inputs, and both converge on one `CycleRecordV1`:
 6. **Bounded judgment.** `judge::evaluate` is used only for an ambiguous
    improvement opportunity that is already covered, in one grouped question.
    - A deterministic defect needs no judgment.
-   - Sentinel triage of the same occurrence is reused.
    - Report-sourced Sentinel groups are excluded from Sentinel's automatic
      paid model sweep; Eval owns their budgeted semantic triage.
    - A lost or unavailable answer leaves that step unknown.
@@ -86,8 +88,12 @@ There are exactly two inputs, and both converge on one `CycleRecordV1`:
     Engine's own E2E (`where: harness`). Its ownership and route are recorded
     before the dispatch.
     - **Held:** every preserved condition and the planned metric were
-      measured, none regressed, and no recorded failure was unexpected or of
-      unknown expectedness. Only Held promotes.
+      measured, none lost anything (the planned metric's minimum effect
+      never excuses a loss), and no recorded failure, retried attempts
+      included, was unexpected or of unknown expectedness. Only Held
+      promotes. The canary runs on the target's own stack and E2E, so its
+      stack digest, E2E revision and engine are not compared with the
+      baseline's; the activated executable digest proves what ran.
     - **Violated:** a regression or an unexpected failure. It requests a
       rollback, and the rollback must be proved by the prior digest.
     - **Unknown:** anything else, including an executable digest other than
@@ -100,13 +106,14 @@ There are exactly two inputs, and both converge on one `CycleRecordV1`:
     needs no model or E2E budget:
     - the original operation is reconciled read-only
       (`read_compose_operation`) and never sent again;
-    - running or unknown waits; unknown past the reconcile grace ends
-      `inconclusive` with the target not proved, never restored by
-      assumption;
+    - running or unknown waits; unknown past the reconcile grace is restored
+      like a failed operation;
     - failed or cancelled settles the operation but does not prove its
       partial effects were undone; the prior must still be restored;
       succeeded counts only once the candidate's executable is proved;
-    - the prior is then pinned and proved by its executable digest.
+    - the prior is then pinned and proved by its executable digest; a pin
+      that ends or runs another executable is pinned again, up to three
+      attempts, before the cycle ends with the target not proved.
 
     Until that is proved the cycle is not terminal.
 13. **One state, current shape only.** State lives in the `eval_cycle*`

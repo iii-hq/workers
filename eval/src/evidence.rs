@@ -368,6 +368,11 @@ fn criterion_scores(run: &Value) -> BTreeMap<String, f64> {
         .collect()
 }
 
+/// The earlier attempts the E2E retried within a run's slot.
+fn retry_attempts(run: &Value) -> &[Value] {
+    run["retry_attempts"].as_array().map_or(&[], Vec::as_slice)
+}
+
 /// Every run of `scenario_id` as evidence, with `patterns` counted by the
 /// detectors on its own transcript.
 pub fn runs_of(bundle: &Value, scenario_id: &str, patterns: &[String]) -> Vec<EvidenceRunV1> {
@@ -392,10 +397,13 @@ pub fn runs_of(bundle: &Value, scenario_id: &str, patterns: &[String]) -> Vec<Ev
             let valid = technical
                 .as_deref()
                 .is_some_and(|technical| technical.eq_ignore_ascii_case("valid"));
+            // The E2E retries only an attempt that failed: a slot that needed
+            // one did not complete, however the retry ended.
+            let retried = !retry_attempts(run).is_empty();
             EvidenceRunV1 {
                 run_id: text_at(run, "/run_id").unwrap_or_default(),
                 case_id: text_at(scenario, "/case_id"),
-                completed: valid && completion.as_deref() == Some("completed"),
+                completed: valid && completion.as_deref() == Some("completed") && !retried,
                 completion,
                 technical,
                 status: text_at(run, "/status"),
@@ -775,7 +783,8 @@ pub fn first_pass(evidence: &ExecutionEvidenceV1) -> (Vec<FindingV1>, Vec<String
     (findings, unknowns.into_iter().collect())
 }
 
-/// The runs' recorded failures (`runs[].failures[]`) as
+/// The runs' recorded failures (`runs[].failures[]` and each retried
+/// attempt's `runs[].retry_attempts[].failures[]`) as
 /// `sentinel::reports::ingest` observations. Only what the E2E recorded is
 /// forwarded: a score loss without a failure record is never turned into an
 /// error. The E2E scenario contract states no expected errors, so
@@ -796,32 +805,48 @@ pub fn sentinel_observations(
             let scenario_id = text_at(scenario, "/scenario_id").unwrap_or_default();
             for run in scenario["runs"].as_array().into_iter().flatten() {
                 let run_id = text_at(run, "/run_id").unwrap_or_default();
-                for (occurrence, failure) in
-                    run["failures"].as_array().into_iter().flatten().enumerate()
-                {
-                    let message = text_at(failure, "/message").unwrap_or_default();
-                    let code = text_at(failure, "/code");
-                    if message.is_empty() && code.is_none() {
-                        continue;
+                let path =
+                    format!("detail/reports/{index}/report/scenarios/{scenario_id}/runs/{run_id}");
+                // The final attempt and every attempt the E2E retried before it.
+                let attempts = std::iter::once((run, path.clone())).chain(
+                    retry_attempts(run)
+                        .iter()
+                        .enumerate()
+                        .map(|(retry, attempt)| {
+                            (attempt, format!("{path}/retry_attempts/{retry}"))
+                        }),
+                );
+                for (attempt, path) in attempts {
+                    for (occurrence, failure) in attempt["failures"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .enumerate()
+                    {
+                        let message = text_at(failure, "/message").unwrap_or_default();
+                        let code = text_at(failure, "/code");
+                        if message.is_empty() && code.is_none() {
+                            continue;
+                        }
+                        observations.push(serde_json::json!({
+                            "execution_id": evidence.execution_id,
+                            "run_id": run_id,
+                            "attempt": attempt["attempt_number"].as_u64().unwrap_or(1),
+                            "scenario_id": scenario_id,
+                            "phase": text_at(failure, "/phase").unwrap_or_else(|| "unknown".into()),
+                            "side": side,
+                            "revision": revision,
+                            "artifact": format!("{path}/failures"),
+                            "occurrence_index": occurrence,
+                            "at_ms": at_ms,
+                            "service_name": text_at(failure, "/domain").unwrap_or_else(|| "e2e".into()),
+                            "exception_type": code.or_else(|| text_at(failure, "/status")),
+                            "message": message,
+                            "session_id": text_at(attempt, "/session_id"),
+                            "expected_errors": Value::Null,
+                            "excerpts": [],
+                        }));
                     }
-                    observations.push(serde_json::json!({
-                        "execution_id": evidence.execution_id,
-                        "run_id": run_id,
-                        "attempt": run["attempt_number"].as_u64().unwrap_or(1),
-                        "scenario_id": scenario_id,
-                        "phase": text_at(failure, "/phase").unwrap_or_else(|| "unknown".into()),
-                        "side": side,
-                        "revision": revision,
-                        "artifact": format!("detail/reports/{index}/report/scenarios/{scenario_id}/runs/{run_id}/failures"),
-                        "occurrence_index": occurrence,
-                        "at_ms": at_ms,
-                        "service_name": text_at(failure, "/domain").unwrap_or_else(|| "e2e".into()),
-                        "exception_type": code.or_else(|| text_at(failure, "/status")),
-                        "message": message,
-                        "session_id": text_at(run, "/session_id"),
-                        "expected_errors": Value::Null,
-                        "excerpts": [],
-                    }));
                 }
             }
         }

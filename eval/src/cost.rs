@@ -62,6 +62,27 @@ pub fn exhausted(ledger: &CycleLedgerV1, now: i64) -> Option<String> {
     }
 }
 
+/// The limit the cycle has passed, if any: work reserved up to a limit is
+/// within the budget and still runs; only time ends it at the limit.
+pub fn exceeded(ledger: &CycleLedgerV1, now: i64) -> Option<String> {
+    let (usage, budget) = (usage(ledger, now), &ledger.budget);
+    if usage.elapsed_ms >= budget.max_duration_ms {
+        Some(format!(
+            "time: {} ms of {} ms",
+            usage.elapsed_ms, budget.max_duration_ms
+        ))
+    } else if usage.spend_usd > budget.max_spend_usd {
+        Some(format!(
+            "spend: {} USD of {} USD",
+            usage.spend_usd, budget.max_spend_usd
+        ))
+    } else if usage.calls > budget.max_calls {
+        Some(format!("calls: {} of {}", usage.calls, budget.max_calls))
+    } else {
+        None
+    }
+}
+
 /// The outcome of a reservation. Only `Reserved` may be dispatched.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Reservation {

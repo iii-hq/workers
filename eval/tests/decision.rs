@@ -883,7 +883,7 @@ fn missing_measure_or_technical_failure_is_inconclusive() {
     inconclusive(
         "technical failure",
         decide(with_control(runs(5, 5, 0.10), all_broken)),
-        "did not complete",
+        "failed technically",
     );
     let unpriced: Vec<_> = (0..5)
         .map(|at| run("s", at, Some("passed"), None))
@@ -1469,4 +1469,118 @@ fn configured_controls_count_toward_the_scenario_limit() {
     assert!(!coverage.covered);
     assert!(coverage.selected.is_empty());
     assert!(coverage.gaps.iter().any(|gap| gap.contains("no primary")));
+}
+
+/// The canary's side as it runs on the activated target: the proved
+/// executable, on the target's own Source-mode stack, E2E and engine.
+fn on_target(binary: &str) -> DecisionSideV1 {
+    let (_, mut side) = pair();
+    side.identity.fixed_stack_digest = None;
+    side.identity.e2e_revision = Some("e2e-on-target".into());
+    side.identity.engine_version = Some("engine-on-target".into());
+    side.identity.harness_binary_sha256 = Some(format!("sha256:{binary}"));
+    side
+}
+
+fn canary_analysis() -> CycleAnalysisV1 {
+    CycleAnalysisV1 {
+        execution_id: "cand".into(),
+        admission_key: "admission-cand".into(),
+        role: ExecutionRoleV1::Canary,
+        identity: Default::default(),
+        findings: Vec::new(),
+        unknowns: Vec::new(),
+        child_transcripts_complete: false,
+        sentinel: None,
+        analyzed_at: NOW,
+    }
+}
+
+#[test]
+fn a_canary_on_the_targets_own_stack_holds_and_any_loss_violates() {
+    let binary = "a".repeat(64);
+    let (base, _) = pair();
+    let judge = |evidence: &[EvidenceV1]| {
+        eval::release::canary(
+            &plan(),
+            &base,
+            &on_target(&binary),
+            evidence,
+            &canary_analysis(),
+            Some(&binary),
+            NOW,
+        )
+    };
+    let held = judge(&cheaper_and_correct());
+    assert_eq!(held.outcome, CanaryOutcomeV1::Held, "{}", held.reason);
+    // Half a cent dearer: under the 1 cent minimum effect, and still a loss.
+    let dearer = judge(&with_control(runs(5, 5, 0.10), runs(5, 5, 0.105)));
+    assert_eq!(
+        dearer.outcome,
+        CanaryOutcomeV1::Violated,
+        "{}",
+        dearer.reason
+    );
+}
+
+#[test]
+fn an_unfinished_majority_is_a_loss_not_an_unmeasured_side() {
+    let unfinished = |at| EvidenceRunV1 {
+        completed: false,
+        completion: Some("task_incomplete".into()),
+        ..run("s", at, Some("passed"), Some(0.10))
+    };
+    let mut gave_up = runs(2, 2, 0.10);
+    gave_up.extend((2..5).map(unfinished));
+    let mut evidence = evidence_for("s", "base", runs(5, 5, 0.10), "cand", gave_up);
+    let pass_rate = criterion(CriterionMetricV1::PassRate, DirectionV1::Increase, 0.0, "s");
+    decision::judge(&mut evidence, Some(&pass_rate));
+    assert_eq!(
+        evidence.computed_outcome,
+        ValidationOutcomeV1::Regression,
+        "{}",
+        evidence.reason
+    );
+}
+
+#[test]
+fn a_retried_slot_did_not_complete_and_its_attempts_failures_reach_sentinel() {
+    let mut run = native_run("r", "passed", "valid", json!([]), full());
+    run["attempt_number"] = json!(2);
+    run["retry_attempts"] = json!([{"attempt_number": 1, "session_id": "session-1",
+        "status": "subject_error", "failures": [{"domain": "subject", "phase": "turn",
+        "code": "connection_closed", "message": "connection closed"}]}]);
+    let bundle = native("x", subject(None), registry("1.9.0", "1.0.0"), vec![run]);
+    assert!(!evidence::runs_of(&bundle, "s", &[])[0].completed);
+    let observations = evidence::sentinel_observations(&imported(bundle), "baseline", "rev", NOW);
+    assert_eq!(observations.len(), 1, "{observations:?}");
+    assert_eq!(observations[0]["attempt"], 1);
+    assert_eq!(observations[0]["session_id"], "session-1");
+    assert!(observations[0]["artifact"]
+        .as_str()
+        .unwrap()
+        .ends_with("/runs/r/retry_attempts/0/failures"));
+}
+
+#[test]
+fn need_words_only_in_a_prompts_code_or_paths_are_no_coverage() {
+    let fixture: Value =
+        serde_json::from_str(include_str!("fixtures/e2e/catalog-context-pressure.json")).unwrap();
+    // form_flow_build's prompt holds `context: { canvasId }` and "In-memory
+    // state" in code: not a context-load test.
+    let coverage = eval::coverage::select(
+        "reduce context consumption",
+        fixture["rows"].as_array().unwrap(),
+        fixture["revision"].as_str().unwrap(),
+        &fixture["catalog"],
+        2,
+        &[],
+        NOW,
+    );
+    let selected: Vec<&str> = coverage
+        .selected
+        .iter()
+        .map(|test| test.scenario_id.as_str())
+        .collect();
+    assert_eq!(selected, ["context_pressure"]);
 }

@@ -133,14 +133,10 @@ async fn reconcile_activation(
     Ok(match promotion.read_compose_operation(operation).await? {
         Op::Running => wait("running"),
         Op::Unknown if since_ms < RECONCILE_GRACE_MS => wait("unknown to Compose"),
-        Op::Unknown => Next::Finish(
-            OutcomeCodeV1::Inconclusive,
-            format!(
-                "{reason}; activation {operation} stayed unknown to Compose; nothing was pinned \
-                 back and the target's running artifact is not proved"
-            ),
-        ),
-        Op::Failed | Op::Cancelled => {
+        // Past the grace Compose no longer holds the operation (a restarted
+        // daemon): the prior is pinned back and proved like after a failure,
+        // never left unproved.
+        Op::Unknown | Op::Failed | Op::Cancelled => {
             let rollback = compose_operation_id(promotion_id, "rollback", &prior.version, 1);
             Next::Phase(PromotionPhase::RollbackRequested(
                 promotion.request_rollback(prior, stable, &rollback).await?,
@@ -171,6 +167,51 @@ async fn recover(
         prior_of(journal).ok_or_else(|| PromotionError::inconclusive("no rollback destination"))?;
     let stable = validated_stable(journal)?;
     let id = &journal.promotion_id;
+    let restored = restore_step(
+        promotion, journal, intent, since_ms, reason, &prior, &stable,
+    )
+    .await;
+    let Err(mut error) = restored else {
+        return restored;
+    };
+    // A pin that ended, or an executable other than the validated one: pin
+    // the prior again under a fresh attempt before giving up. A journaled
+    // attempt is never asked again, and one that ended before it was
+    // journaled is only read (refused) and skipped.
+    for attempt in 1..=MAX_ROLLBACK_ATTEMPTS {
+        if error.kind != StopKind::Rejected {
+            break;
+        }
+        let operation = compose_operation_id(id, "rollback", &prior.version, attempt);
+        if journal.phases.iter().any(|phase| {
+            matches!(phase, PromotionPhase::RollbackRequested(request) if request.operation_id == operation)
+        }) {
+            continue;
+        }
+        match promotion
+            .request_rollback(&prior, &stable, &operation)
+            .await
+        {
+            Ok(request) => return Ok(Next::Phase(PromotionPhase::RollbackRequested(request))),
+            Err(refused) => error = refused,
+        }
+    }
+    Err(error)
+}
+
+/// Rollback attempts a recovery makes before it stops unproved.
+const MAX_ROLLBACK_ATTEMPTS: u32 = 3;
+
+async fn restore_step(
+    promotion: &Promotion,
+    journal: &PromotionJournal,
+    intent: Option<&str>,
+    since_ms: i64,
+    reason: &str,
+    prior: &ValidatedArtifact,
+    stable: &ValidatedArtifact,
+) -> Result<Next, PromotionError> {
+    let id = &journal.promotion_id;
     Ok(match journal.last() {
         // The pin may have been sent before its record was written: complete
         // the idempotent request under the same operation id (it reconciles
@@ -181,12 +222,12 @@ async fn recover(
         // read and never sent again. While it may still change the target
         // nothing is pinned back and nothing is claimed restored.
         Some(PromotionPhase::RollbackDestination(_)) if intent.is_some() => {
-            reconcile_activation(promotion, id, &prior, &stable, intent.unwrap_or_default(), since_ms, reason).await?
+            reconcile_activation(promotion, id, prior, stable, intent.unwrap_or_default(), since_ms, reason).await?
         }
         // A request recorded as not sent (the target already ran it) needs
         // no operation guard: the observation is the proof.
         Some(PromotionPhase::ActivationRequested(request)) if !request.accepted => {
-            match promotion.confirm_running(&stable, &request.operation_id).await? {
+            match promotion.confirm_running(stable, &request.operation_id).await? {
                 Confirmation::Confirmed(running) => Next::Phase(PromotionPhase::ActivationConfirmed(running)),
                 Confirmation::Pending { reason: pending } => {
                     Next::Wait(format!("restoration waits ({reason}): {pending}"))
@@ -194,10 +235,10 @@ async fn recover(
             }
         }
         Some(PromotionPhase::ActivationRequested(request)) => {
-            reconcile_activation(promotion, id, &prior, &stable, &request.operation_id, since_ms, reason).await?
+            reconcile_activation(promotion, id, prior, stable, &request.operation_id, since_ms, reason).await?
         }
         Some(PromotionPhase::RollbackRequested(request)) => {
-            match promotion.confirm_running(&prior, &request.operation_id).await? {
+            match promotion.confirm_running(prior, &request.operation_id).await? {
                 Confirmation::Confirmed(running) => Next::Phase(PromotionPhase::RollbackConfirmed(running)),
                 Confirmation::Pending { reason: pending } => {
                     Next::Wait(format!("restoration pending ({reason}): {pending}"))
@@ -214,7 +255,7 @@ async fn recover(
         Some(PromotionPhase::ActivationConfirmed(_)) => {
             let operation = compose_operation_id(id, "rollback", &prior.version, 1);
             Next::Phase(PromotionPhase::RollbackRequested(
-                promotion.request_rollback(&prior, &stable, &operation).await?,
+                promotion.request_rollback(prior, stable, &operation).await?,
             ))
         }
         _ => {
@@ -252,6 +293,12 @@ pub fn stable_version(record: &CycleRecordV1) -> Option<String> {
     stable_of(record.promotion.as_ref()?).map(|artifact| artifact.version)
 }
 
+/// What the canary cannot share with the baseline by construction: it runs on
+/// the target's own stack and E2E (a Source-mode identity there), never the
+/// pinned validation stack. The activated executable digest, checked first,
+/// is the proof of what ran.
+const TARGET_ENVIRONMENT: [&str; 3] = ["fixed_stack_digest", "e2e_revision", "engine_version"];
+
 /// The canary judged against the baseline under the frozen plan: every
 /// preserved condition must be measured and hold on the activated artifact,
 /// and no run failure Sentinel classified as unexpected may appear.
@@ -265,7 +312,16 @@ pub fn canary(
     expected_binary: Option<&str>,
     now: i64,
 ) -> CanaryV1 {
-    let judged = decision::decide(plan, baseline, canary, evidence, now);
+    // Any loss of the planned metric is a regression on the canary: the
+    // minimum effect qualified the gain, it never excuses a loss.
+    let mut held = plan.clone();
+    held.criterion.min_effect = 0.0;
+    let judged = decision::decide(&held, baseline, canary, evidence, now);
+    let comparable = judged
+        .comparability
+        .checks
+        .iter()
+        .all(|check| check.matches || TARGET_ENVIRONMENT.contains(&check.field.as_str()));
     let ran_bare = canary.identity.harness_binary_sha256.as_deref().map(bare);
     let ran = ran_bare.as_deref();
     let unexpected = analysis
@@ -318,7 +374,7 @@ pub fn canary(
             CanaryOutcomeV1::Violated,
             format!("the planned metric regressed: {}", primary.reason),
         )
-    } else if !judged.comparability.comparable {
+    } else if !comparable {
         (CanaryOutcomeV1::Unknown, judged.reason.clone())
     } else if failures_unknown {
         (
@@ -522,6 +578,21 @@ async fn canary_on_target(
             Err(crate::error::EvalError::Unanswered(error)) => Ok(Next::Wait(format!(
                 "canary dispatch unanswered ({error}); reconciling"
             ))),
+            // The target's runner holds another execution: nothing started,
+            // the next poll dispatches the same reserved canary again.
+            Err(error) if crate::runtime::runner_busy(&error) => {
+                state::update_cycle(&deps.iii, &record.cycle_id, |stored| {
+                    let mut next = stored.clone();
+                    next.executions
+                        .retain(|entry| entry.work_id.as_deref() != Some(work.work_id.as_str()));
+                    Ok((Some(next), ()))
+                })
+                .await
+                .map_err(as_unknown)?;
+                Ok(Next::Wait(
+                    "the target E2E runner is busy; the canary waits for it".into(),
+                ))
+            }
             Err(error) => {
                 settle(deps, &record.cycle_id, &work.work_id, Some(0.0))
                     .await
@@ -953,6 +1024,7 @@ fn retried(phase: Option<&PromotionPhase>) -> bool {
                 | PromotionPhase::FinalizeConfirmed(_)
                 | PromotionPhase::RollbackDestination(_)
                 | PromotionPhase::ActivationRequested(_)
+                | PromotionPhase::ActivationConfirmed(_)
                 | PromotionPhase::RollbackRequested(_)
         )
     )
@@ -985,7 +1057,8 @@ pub async fn promotion_stage(
     };
     let outcome = match (origins, deps.target(&config.target.engine_url).await) {
         (Err(error), _) => Err(error),
-        (_, Err(error)) => Err(PromotionError::unavailable(error.to_string())),
+        // An Engine restarting is retried where the phase is retried.
+        (_, Err(error)) => Err(PromotionError::inconclusive(error.to_string())),
         (Ok(origins), Ok(target)) => {
             match Promotion::new(config.clone(), origins, target.clone()) {
                 Ok(promotion) => Box::pin(next(deps, record, &promotion, &target, &journal)).await,

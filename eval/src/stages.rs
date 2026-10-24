@@ -695,7 +695,8 @@ pub async fn candidate_stage(
         Some(Err(error)) => return candidate_error(deps, record, "candidate brief", error).await,
         None => return fail(deps, record, "a candidate without a proposal").await,
     };
-    let work_id = format!("{}:candidate", record.cycle_id);
+    // Not `:candidate`: that is the candidate's validation E2E run.
+    let work_id = format!("{}:implementation", record.cycle_id);
     let Some(state_now) = record.candidate.clone() else {
         let identity = match candidate::identity(&config, &record.cycle_id, &brief) {
             Ok(identity) => identity,

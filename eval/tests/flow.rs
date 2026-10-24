@@ -36,6 +36,8 @@ struct World {
     catalog: Value,
     starts: usize,
     unanswered_start: bool,
+    /// Starts refused because the runner holds another execution.
+    busy_starts: usize,
     executions_next_cursor: Option<String>,
 }
 
@@ -61,7 +63,7 @@ impl World {
         let context = tests_row(
             "context_pressure",
             BEHAVIOR,
-            "Recovers early charter facts and ordered markers after ingesting a large distractor corpus.",
+            "Recovers early charter facts and ordered markers after a large distractor corpus fills the context.",
             "Complete a context-endurance run over 48 large documents.",
             &[
                 ("charter_preserved", "Does the final report reproduce every planted charter fact verbatim after the full distractor load?"),
@@ -106,6 +108,7 @@ impl World {
                 scenario("subagent_validation_failure", "sha256:sub", "subagent:seed-1", 2)]}),
             starts: 0,
             unanswered_start: false,
+            busy_starts: 0,
             executions_next_cursor: None,
         }
     }
@@ -142,6 +145,10 @@ impl World {
                 }
                 json!({"swapped": matches, "current": self.state.get(&key()).cloned().unwrap_or(Value::Null)})
             }
+            "state::delete" => {
+                self.state.remove(&key());
+                json!({})
+            }
             "state::list" => Value::Array(
                 self.state
                     .iter()
@@ -160,6 +167,13 @@ impl World {
                 self.tests_pages[page].clone()
             }
             "e2e::scenarios-list" => self.catalog.clone(),
+            "e2e::dashboard::execution-start" if self.busy_starts > 0 => {
+                self.busy_starts -= 1;
+                return Some(Err(
+                    "\"nightly\" (plan-0) is still running; wait for it to finish or cancel it."
+                        .into(),
+                ));
+            }
             "e2e::dashboard::execution-start" => {
                 self.starts += 1;
                 let id = format!("plan-{}", self.starts);
@@ -916,5 +930,98 @@ async fn events_and_the_checkpoint_admit_once_and_analysis_survives_retention() 
     assert_eq!(
         cycles[0].analyses[0].identity.harness_version.as_deref(),
         Some("h-1")
+    );
+}
+
+#[tokio::test]
+async fn an_execution_its_event_admitted_never_opens_a_second_cycle_on_start() {
+    let h = Harness::start(World::new()).await;
+    h.world()
+        .executions
+        .insert("done".into(), bundle("done", "", "passed", full()));
+    assert!(h.changed("done").await.admitted);
+    h.drain().await;
+    let started = h.start_cycle(json!({"execution_id": "done"})).await;
+    h.drain().await;
+    let record = h.cycle(&started).await;
+    let outcome = record.outcome.unwrap();
+    assert_eq!(outcome.code, OutcomeCodeV1::Inconclusive);
+    assert!(
+        outcome.detail.contains("already admitted by cycle"),
+        "{}",
+        outcome.detail
+    );
+    assert!(record.analyses.is_empty(), "nothing is analyzed twice");
+}
+
+#[tokio::test]
+async fn a_busy_runner_dispatches_the_same_work_again_on_the_next_poll() {
+    let mut world = World::new();
+    world.busy_starts = 1;
+    let h = Harness::start(world).await;
+    h.configure(10.0).await;
+    let cycle_id = h.start_cycle(json!({"objective": OBJECTIVE})).await;
+    h.drain().await;
+    let record = h.cycle(&cycle_id).await;
+    assert_eq!(
+        (record.status, record.stage),
+        (CycleStatusV1::Waiting, CycleStageV1::Baseline),
+        "{:?}",
+        record.history
+    );
+    assert!(record.executions.is_empty());
+    runtime::sweep(&h.deps).await.unwrap();
+    h.drain().await;
+    let record = h.cycle(&cycle_id).await;
+    assert_eq!(
+        record.stage,
+        CycleStageV1::AwaitingExecution,
+        "{:?}",
+        record.history
+    );
+    let keys: Vec<Value> = h
+        .world()
+        .calls_to("e2e::dashboard::execution-start")
+        .iter()
+        .map(|start| start["idempotency_key"].clone())
+        .collect();
+    let key = json!(format!("{cycle_id}:baseline"));
+    assert_eq!(keys, [key.clone(), key]);
+    let ledger = state::get_ledger(&h.iii, &cycle_id).await.unwrap().unwrap();
+    assert_eq!(
+        ledger.reservations.len(),
+        1,
+        "one reservation for both starts"
+    );
+}
+
+#[tokio::test]
+async fn a_budget_limit_ends_a_waiting_cycle_and_stops_its_execution() {
+    let h = Harness::start(World::new()).await;
+    h.configure(10.0).await;
+    let cycle_id = h.start_cycle(json!({"objective": OBJECTIVE})).await;
+    h.drain().await;
+    assert_eq!(
+        h.cycle(&cycle_id).await.stage,
+        CycleStageV1::AwaitingExecution
+    );
+    // The cycle's time limit has passed while the baseline runs.
+    let mut ledger = state::get_ledger(&h.iii, &cycle_id).await.unwrap().unwrap();
+    ledger.started_at = 0;
+    h.world().state.insert(
+        (state::BUDGET_SCOPE.into(), cycle_id.clone()),
+        serde_json::to_value(&ledger).unwrap(),
+    );
+    assert_eq!(runtime::sweep(&h.deps).await.unwrap().expired, 1);
+    let record = h.cycle(&cycle_id).await;
+    assert_eq!(record.outcome.unwrap().code, OutcomeCodeV1::Budget);
+    assert_eq!(
+        h.world().calls_to("e2e::dashboard::execution-cancel"),
+        [json!({"execution_id": "plan-1"})]
+    );
+    assert_eq!(
+        h.count(state::OPEN_SCOPE),
+        0,
+        "an ended cycle leaves the open index"
     );
 }

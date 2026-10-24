@@ -26,6 +26,12 @@ pub const ADMISSION_CHECKPOINT_KEY: &str = "checkpoint";
 pub const EVIDENCE_SCOPE: &str = "eval_cycle_evidence";
 /// Budget ledgers, keyed by `cycle_id`.
 pub const BUDGET_SCOPE: &str = "eval_cycle_budget";
+/// Open (non-terminal) cycles, keyed by `cycle_id`: what the sweep and the
+/// admission read, never every cycle ever kept.
+pub const OPEN_SCOPE: &str = "eval_cycle_open";
+/// An open entry is written just before its cycle is created: without a
+/// cycle it is kept this long, then dropped.
+const OPEN_ORPHAN_MS: i64 = 10 * 60 * 1000;
 const CAS_ATTEMPTS: usize = 8;
 const DISPATCH_TIMEOUT_MS: u64 = 10_000;
 
@@ -48,8 +54,35 @@ pub async fn list_cycles(iii: &IIIClient) -> Result<Vec<CycleRecordV1>, EvalErro
     list(iii, CYCLE_SCOPE).await
 }
 
-/// Creates a cycle that must not exist yet.
+#[derive(serde::Deserialize, Serialize)]
+struct OpenCycle {
+    cycle_id: String,
+    at: i64,
+}
+
+/// Every open cycle, from the open index. An entry whose cycle ended (or
+/// was never created) is cleared here, so a lost clear heals itself.
+pub async fn list_open_cycles(iii: &IIIClient) -> Result<Vec<CycleRecordV1>, EvalError> {
+    let now = crate::ids::now_ms();
+    let mut open = Vec::new();
+    for entry in list::<OpenCycle>(iii, OPEN_SCOPE).await? {
+        match get_cycle(iii, &entry.cycle_id).await? {
+            Some(cycle) if !cycle.status.is_terminal() => open.push(cycle),
+            None if now - entry.at < OPEN_ORPHAN_MS => {}
+            _ => delete(iii, OPEN_SCOPE, &entry.cycle_id).await?,
+        }
+    }
+    Ok(open)
+}
+
+/// Creates a cycle that must not exist yet, indexed as open first so it is
+/// never missing from the sweep.
 pub async fn create_cycle(iii: &IIIClient, record: &CycleRecordV1) -> Result<bool, EvalError> {
+    let entry = OpenCycle {
+        cycle_id: record.cycle_id.clone(),
+        at: crate::ids::now_ms(),
+    };
+    set(iii, OPEN_SCOPE, &record.cycle_id, &entry).await?;
     cas(iii, CYCLE_SCOPE, &record.cycle_id, None, record).await
 }
 
@@ -74,6 +107,12 @@ pub async fn update_cycle<T>(
         };
         decision::check_write(Some(&stored), &next)?;
         if cas(iii, CYCLE_SCOPE, cycle_id, Some(raw), &next).await? {
+            if next.status.is_terminal() && !stored.status.is_terminal() {
+                // Best effort: `list_open_cycles` clears what this misses.
+                if let Err(error) = delete(iii, OPEN_SCOPE, cycle_id).await {
+                    tracing::warn!(%cycle_id, %error, "could not clear an ended cycle's open entry");
+                }
+            }
             return Ok(Some(out));
         }
     }
@@ -196,6 +235,12 @@ async fn set(
     )
     .await
     .map(|_| ())
+}
+
+async fn delete(iii: &IIIClient, scope: &str, key: &str) -> Result<(), EvalError> {
+    call(iii, "state::delete", json!({ "scope": scope, "key": key }))
+        .await
+        .map(|_| ())
 }
 
 /// `state::compare-and-set` against `expected` (`None`: only when absent).

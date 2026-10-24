@@ -40,8 +40,9 @@
 
 ## Budget
 
-- Reservation kinds: Investigation (proposal), Implementation (candidate,
-  `candidate: true`), Jev, E2e, Build.
+- Reservation kinds: Investigation (proposal), Implementation (the actor,
+  `{cycle}:implementation`, `candidate: true`), Jev, E2e (`{cycle}:<role>`,
+  the candidate's validation run `{cycle}:candidate`), Build.
 - The canary is reserved before activation.
 - Recovery after an activation reserves nothing.
 - Stage futures are boxed: their state machines exceed a worker thread's

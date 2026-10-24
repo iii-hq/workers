@@ -92,4 +92,27 @@ fn configure_accepts_engine_metadata_but_no_credentials_or_unknown_fields() {
     let mut docker = request.config.clone();
     docker.where_ = eval::contract::WhereV1::Docker;
     assert!(docker.validate().is_err());
+    // Candidate work is checked when configured, before any paid baseline,
+    // and it needs the five runs a side the sign test can accept on.
+    let parse = |value: &serde_json::Value| {
+        serde_json::from_value::<eval::contract::ConfigureRequestV1>(
+            serde_json::json!({"config": value}),
+        )
+    };
+    let mut with_candidate = config.clone();
+    with_candidate["candidate"] = serde_json::json!({
+        "repository": "/repo", "base_sha": "a".repeat(40), "worktrees_dir": "/repo/.worktrees",
+        "model": "m", "provider": "p", "max_turns": 4, "max_output_tokens": 100,
+        "max_total_tokens": 1000, "max_cost_usd": 1.0});
+    assert!(parse(&with_candidate).unwrap().config.validate().is_err());
+    with_candidate["runs_per_side"] = 5.into();
+    parse(&with_candidate).unwrap().config.validate().unwrap();
+    with_candidate["candidate"]["base_sha"] = "main".into();
+    assert!(parse(&with_candidate).unwrap().config.validate().is_err());
+    with_candidate["candidate"]["base_sha"] = "a".repeat(40).into();
+    with_candidate["candidate"]["publish_remot"] = "origin".into();
+    assert!(
+        parse(&with_candidate).is_err(),
+        "a misspelt field is refused"
+    );
 }

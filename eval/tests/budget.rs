@@ -77,6 +77,10 @@ fn limits_on_spend_time_calls_and_candidates_stop_new_work() {
         "calls",
     );
     assert!(cost::exhausted(&ledger, 1).is_some());
+    // The third call was reserved within the limit: it still runs, only a
+    // passed limit (or the time) ends the cycle.
+    assert_eq!(cost::exceeded(&ledger, 1), None);
+    assert!(cost::exceeded(&ledger, 1_000).is_some());
 }
 
 #[test]

@@ -27,6 +27,9 @@ const MAX_PAGES: usize = 50;
 /// before it is declared lost (never dispatched again).
 pub(crate) const RECONCILE_GRACE_MS: i64 = 10 * 60 * 1_000;
 const SENTINEL_INGEST: &str = "sentinel::reports::ingest";
+/// Observations per ingest call: Sentinel refuses a call above 500, and a
+/// smaller batch also answers well inside the bus timeout.
+const SENTINEL_BATCH: usize = 100;
 
 #[derive(Clone)]
 pub struct Deps {
@@ -443,6 +446,61 @@ pub async fn cycle_cancel(
         cancelled,
         status: record.status,
     })
+}
+
+/// Ends a waiting cycle past a budget limit, under its lock and from the
+/// stored record, never a snapshot: an activation in flight becomes a
+/// recovery (restoring the prior needs no model or E2E budget), anything
+/// else completes as `budget`. Either way its actors and executions are
+/// asked to stop, as a cancel does.
+async fn expire(
+    deps: &Deps,
+    cycle_id: &str,
+    reason: &str,
+) -> Result<Option<CycleRecordV1>, EvalError> {
+    let _guard = deps.locks.guard(cycle_id).await;
+    let now = ids::now_ms();
+    let written = state::update_cycle(&deps.iii, cycle_id, |stored| {
+        if stored.status != CycleStatusV1::Waiting || stored.recovery.is_some() {
+            return Ok((None, None));
+        }
+        let mut next = stored.clone();
+        if crate::release::activation_in_flight(stored) {
+            next.recovery = Some(format!("budget: {reason}"));
+            apply(
+                &mut next,
+                now,
+                CycleStatusV1::Running,
+                CycleStageV1::Promotion,
+                &format!(
+                    "budget reached after activation ({reason}): restoring the prior executable"
+                ),
+            );
+        } else {
+            next.outcome = Some(CycleOutcomeV1 {
+                code: OutcomeCodeV1::Budget,
+                detail: reason.into(),
+            });
+            apply(
+                &mut next,
+                now,
+                CycleStatusV1::Completed,
+                CycleStageV1::Done,
+                &format!("{:?}: {reason}", OutcomeCodeV1::Budget),
+            );
+        }
+        Ok((Some(next.clone()), Some(next)))
+    })
+    .await?
+    .flatten();
+    if let Some(record) = &written {
+        crate::stages::stop_actors(deps, record).await;
+        stop_executions(deps, record).await;
+        if record.status == CycleStatusV1::Running {
+            queue::enqueue_step(&deps.iii, cycle_id, record.step).await?;
+        }
+    }
+    Ok(written)
 }
 
 /// Asks every execution the cycle dispatched and that still runs to stop,
@@ -900,6 +958,16 @@ pub(crate) fn awaiting(detail: &str) -> CycleNextV1 {
     }
 }
 
+/// The E2E's refusal while its one `where: harness` runner holds another
+/// execution: nothing was started, so the same work can be dispatched again.
+// ponytail: matched on the E2E's message; switch to a structured code once
+// execution-start returns one.
+const RUNNER_BUSY: &str = "is still running; wait for it to finish or cancel it";
+
+pub(crate) fn runner_busy(error: &EvalError) -> bool {
+    error.to_string().contains(RUNNER_BUSY)
+}
+
 /// Reserves `work` on the cycle's ledger (opened from the frozen
 /// configuration if needed). Only `Reserved` is new; `Existing` was
 /// reserved before a redelivery or restart.
@@ -1095,6 +1163,26 @@ pub(crate) async fn dispatch(
             )
             .await
         }
+        Err(error) if runner_busy(&error) => {
+            // Nothing started: the ownership entry goes, the reservation
+            // stays, and the next poll dispatches the same work id again.
+            let detail = format!("the E2E runner is busy; {label} waits for it");
+            transition(
+                deps,
+                cycle_id,
+                step,
+                CycleStatusV1::Waiting,
+                stage,
+                &detail,
+                |next| {
+                    next.executions
+                        .retain(|entry| entry.work_id.as_deref() != Some(work_id.as_str()));
+                    next.next = Some(awaiting(&detail));
+                    Ok(())
+                },
+            )
+            .await
+        }
         Err(error) => {
             // An explicit refusal started nothing and cost nothing.
             settle(deps, cycle_id, &work_id, Some(0.0)).await?;
@@ -1235,21 +1323,30 @@ async fn forward_to_sentinel(
         results: Vec::new(),
         error: None,
     };
-    match call::<_, Value>(
-        deps,
-        SENTINEL_INGEST,
-        json!({ "report_id": evidence.admission_key, "namespace": "e2e", "observations": observations }),
-        BUS_TIMEOUT_MS,
-    )
-    .await
-    {
-        Ok(response) => {
-            forward.recorded = response["recorded"].as_u64();
-            forward.deduped = response["deduped"].as_u64();
-            forward.skipped = response["skipped"].as_u64();
-            forward.results = response["results"].as_array().cloned().unwrap_or_default();
+    for batch in observations.chunks(SENTINEL_BATCH) {
+        match call::<_, Value>(
+            deps,
+            SENTINEL_INGEST,
+            json!({ "report_id": evidence.admission_key, "namespace": "e2e", "observations": batch }),
+            BUS_TIMEOUT_MS,
+        )
+        .await
+        {
+            Ok(response) => {
+                let add = |total: Option<u64>, key: &str| {
+                    response[key].as_u64().map(|count| total.unwrap_or(0) + count)
+                };
+                forward.recorded = add(forward.recorded, "recorded");
+                forward.deduped = add(forward.deduped, "deduped");
+                forward.skipped = add(forward.skipped, "skipped");
+                forward
+                    .results
+                    .extend(response["results"].as_array().cloned().unwrap_or_default());
+            }
+            Err(error) => {
+                forward.error.get_or_insert(error.to_string());
+            }
         }
-        Err(error) => forward.error = Some(error.to_string()),
     }
     Some(forward)
 }
@@ -1359,13 +1456,36 @@ async fn analysis_stage(
                 }
                 Readiness::Complete => {}
             }
+            // The same ownership as an admitted event: a plan's native child
+            // or a cycle's own dispatch never opens another cycle.
+            let summary = evidence::summary(&bundle, &execution_id);
+            let at =
+                |pointer: &str| summary.and_then(|summary| evidence::text_at(summary, pointer));
+            let owner = at("/parent_plan_execution_id")
+                .map(|parent| format!("native child execution belongs to plan {parent}"))
+                .or_else(|| {
+                    at("/idempotency_key")
+                        .and_then(|key| key.split_once(':').map(|(owner, _)| owner.to_string()))
+                        .filter(|owner| ids::is_cycle(owner))
+                        .map(|owner| format!("execution {execution_id} is work of cycle {owner}"))
+                });
+            if let Some(owner) = owner {
+                return end(deps, record, OutcomeCodeV1::Inconclusive, &owner).await;
+            }
             let claim = claim_of(
                 &bundle,
                 &execution_id,
                 &record.cycle_id,
                 ExecutionRoleV1::Source,
             );
-            let (_, _, evidence) = import(deps, &bundle, &claim).await?;
+            let (stored, _, evidence) = import(deps, &bundle, &claim).await?;
+            if stored.cycle_id != record.cycle_id {
+                let detail = format!(
+                    "execution {execution_id} is already admitted by cycle {}",
+                    stored.cycle_id
+                );
+                return end(deps, record, OutcomeCodeV1::Inconclusive, &detail).await;
+            }
             let mut entry = entry.clone();
             entry.state = ExecutionStateV1::Imported;
             entry.admission_key = Some(evidence.admission_key.clone());
@@ -1833,7 +1953,9 @@ pub async fn admit_execution(
         Readiness::Abnormal(why) => return Ok((not_admitted(why, None), false)),
         Readiness::Complete => {}
     }
-    let started_from = state::list_cycles(&deps.iii)
+    // Only an open cycle is still waiting for it; a closed one that imported
+    // it holds the claim, which refuses another cycle below.
+    let started_from = state::list_open_cycles(&deps.iii)
         .await?
         .into_iter()
         .find(|cycle| {
@@ -2123,7 +2245,7 @@ async fn admission_sweep(deps: &Deps) -> Result<u64, EvalError> {
 pub async fn sweep(deps: &Deps) -> Result<SweepResponseV1, EvalError> {
     let mut response = SweepResponseV1::default();
     let now = ids::now_ms();
-    for cycle in state::list_cycles(&deps.iii).await? {
+    for cycle in state::list_open_cycles(&deps.iii).await? {
         let result: Result<(), EvalError> = async {
             match cycle.status {
                 CycleStatusV1::Queued | CycleStatusV1::Running => {
@@ -2133,32 +2255,12 @@ pub async fn sweep(deps: &Deps) -> Result<SweepResponseV1, EvalError> {
                 CycleStatusV1::Waiting => {
                     if let Some(reason) = state::get_ledger(&deps.iii, &cycle.cycle_id)
                         .await?
-                        .and_then(|ledger| cost::exhausted(&ledger, now))
+                        .and_then(|ledger| cost::exceeded(&ledger, now))
                         .filter(|_| cycle.recovery.is_none())
                     {
-                        if crate::release::activation_in_flight(&cycle) {
-                            // The safety action is completed, not abandoned:
-                            // restoring the prior needs no model or E2E budget.
-                            let detail = format!(
-                                "budget reached after activation ({reason}): restoring the prior executable"
-                            );
-                            transition(
-                                deps,
-                                &cycle.cycle_id,
-                                cycle.step,
-                                CycleStatusV1::Running,
-                                CycleStageV1::Promotion,
-                                &detail,
-                                |next| {
-                                    next.recovery = Some(format!("budget: {reason}"));
-                                    Ok(())
-                                },
-                            )
-                            .await?;
-                            stop_executions(deps, &cycle).await;
-                        } else if end(deps, &cycle, OutcomeCodeV1::Budget, &reason)
+                        if expire(deps, &cycle.cycle_id, &reason)
                             .await?
-                            .is_some()
+                            .is_some_and(|ended| ended.status.is_terminal())
                         {
                             response.expired += 1;
                         }

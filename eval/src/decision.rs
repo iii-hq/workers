@@ -91,8 +91,7 @@ fn number(value: f64) -> String {
 /// technical failure are left out and identified; an unfinished run the
 /// infrastructure did not break counts, as a fail of the pass rate. The result
 /// is inconclusive, with the reason, when a side has no run, more than half
-/// of its runs did not complete (technical failures and incomplete runs), too
-/// few runs carry the metric. Otherwise the difference of the means, in the
+/// of its runs failed technically, or too few runs carry the metric. Otherwise the difference of the means, in the
 /// unit `min_effect` is written in (see [`effect_unit`]), decides.
 pub fn judge(evidence: &mut EvidenceV1, criterion: Option<&CriterionV1>) {
     for side in [&mut evidence.baseline, &mut evidence.candidate] {
@@ -134,17 +133,18 @@ pub fn compare(
         ("candidate", &evidence.candidate),
     ] {
         let total = side.runs.len();
-        let incomplete = side.runs.iter().filter(|run| !run.completed).count();
+        // Only what the infrastructure broke measured nothing; a run the agent
+        // left unfinished is a result (a fail), never a reason to stop judging.
+        let unmeasured = side.runs.iter().filter(|run| !run.measurable()).count();
         if total == 0 {
             return inconclusive(format!(
                 "the {name} execution has no run of {}",
                 evidence.scenario_id
             ));
         }
-        if incomplete * 2 > total {
+        if unmeasured * 2 > total {
             return inconclusive(format!(
-                "{incomplete} of {total} {name} runs did not complete (technical failure or \
-                 incomplete), more than half"
+                "{unmeasured} of {total} {name} runs failed technically, more than half"
             ));
         }
         if side.n < criterion.min_runs {
@@ -1440,7 +1440,7 @@ mod tests {
         let (found, reason, _) = outcome(signals(&[3, 3, 3]), flaky, &decrease);
         assert_eq!(found, Inconclusive);
         assert!(
-            reason.contains("3 of 5 candidate runs did not complete"),
+            reason.contains("3 of 5 candidate runs failed technically"),
             "{reason}"
         );
         // Exactly half broken passes the completion gate, but a broken pair

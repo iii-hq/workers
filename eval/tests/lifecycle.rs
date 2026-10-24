@@ -326,7 +326,7 @@ impl World {
                     ("needles_recovered", "Every needle in order."),
                     ("ingestion_discipline", "Each segment read once."),
                     ("concise_report", "No echoed document text.")],
-                    "Recovers early charter facts after ingesting a large distractor corpus.",
+                    "Recovers early charter facts after a large distractor corpus fills the context.",
                     "Complete a context-endurance run over 48 large documents."),
                 row(CONTROL, "sha256:min", &[("path_completed", "The minimal path completed.")],
                     "The smallest end-to-end task.", "Do the minimal task."),
@@ -372,6 +372,10 @@ impl World {
                     self.state.insert(key(), data["value"].clone());
                 }
                 json!({"swapped": matches})
+            }
+            "state::delete" => {
+                self.state.remove(&key());
+                json!({})
             }
             "state::list" => Value::Array(
                 self.state
@@ -1233,6 +1237,23 @@ impl Rig {
         );
         let validation = self.world().e2e.dispatched[1].clone();
         assert_eq!(validation.1, format!("eval:{cycle_id}:candidate"));
+        // The actor and the run validating its commit are two reservations.
+        let ledger = state::get_ledger(&self.iii, &cycle_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            ledger.reservations[&format!("{cycle_id}:implementation")]
+                .work
+                .kind,
+            CycleWorkKindV1::Implementation
+        );
+        assert_eq!(
+            ledger.reservations[&format!("{cycle_id}:candidate")]
+                .work
+                .kind,
+            CycleWorkKindV1::E2e
+        );
         assert!(validation.2["stack"]["yaml"]
             .as_str()
             .unwrap()
@@ -1503,6 +1524,42 @@ async fn a_violated_canary_rolls_back_to_the_proved_prior_executable() {
             "rollback_confirmed".to_string()
         ]),
         "{journal:?}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rollback_pin_that_fails_is_pinned_again_until_the_prior_is_proved() {
+    let Some(mut rig) = Rig::start("rollbackretry").await else {
+        return;
+    };
+    rig.configure(true).await;
+    let cycle_id = Box::pin(rig.reach_canary()).await;
+    let stable = rig.stable(&rig.candidate_digest.clone());
+    rig.target().e2e.finish(
+        "canary-1",
+        "passed",
+        side(TOKENS, [Some(3), Some(10), Some(10), Some(10)]),
+        &stable,
+    );
+    // The first rollback pin changes the target, then its operation fails.
+    rig.target().fail_after_pin = true;
+    for _ in 0..4 {
+        rig.tick().await;
+    }
+    let record = rig.cycle(&cycle_id).await;
+    let outcome = record.outcome.clone().unwrap();
+    assert_eq!(
+        outcome.code,
+        OutcomeCodeV1::RolledBack,
+        "{} {:?}",
+        outcome.detail,
+        record.history
+    );
+    assert!(
+        outcome.detail.contains(&rig.prior_digest),
+        "{}",
+        outcome.detail
     );
 }
 

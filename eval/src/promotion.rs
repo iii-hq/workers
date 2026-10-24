@@ -1689,8 +1689,10 @@ impl Promotion {
             .bytes()
             .await
             .map_err(|error| lost(service, error))?;
+        // A 5xx may come after the service committed (a proxy, a crash on
+        // the answer): inconclusive, retried where the phase is.
         if status >= 500 {
-            return Err(PromotionError::unavailable(format!(
+            return Err(PromotionError::inconclusive(format!(
                 "{service} answered {status}"
             )));
         }

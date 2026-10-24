@@ -55,8 +55,8 @@ and cannot pin a candidate. `docker` and `github` need a
 2. Every page of `e2e::dashboard::tests-list` is read, together with
    `e2e::scenarios-list`.
 3. A test covers the need only when its spec matches the need's word groups.
-   The spec is its criteria, summary and prompt, plus the catalog
-   invariants. A matching title or id is not enough.
+   The spec is its criteria and summaries, plus the catalog invariants.
+   The prompt, a matching title or an id is not enough.
 4. A test is selected only in its current definition: the row's
    `current_version` must equal the scenario's `behavior_sha256`. History of
    another `selected_version` is flagged and never used as evidence.
@@ -77,6 +77,8 @@ and cannot pin a candidate. `docker` and `github` need a
    `e2e::dashboard::execution-start {label, idempotency_key: work_id,
    parameters}` called. An ambiguous answer is reconciled only by that
    immutable key through `executions-list` and is never dispatched again.
+   A busy `where: harness` runner started nothing: the same work id is
+   dispatched again on the next poll.
 
 ## Execution input and analysis
 
@@ -101,10 +103,11 @@ and cannot pin a candidate. `docker` and `github` need a
 - Anything not reported is listed as unknown. A run that is `passed` but
   `task_incomplete`, or that lost points, is never expected behavior.
   Child-transcript coverage is never claimed.
-- Recorded `runs[].failures[]` are forwarded to
-  `sentinel::reports::ingest`. A score loss is never turned into an error.
-  Sentinel's answer (group, occurrence, classification, triage) is stored in
-  the analysis and reused.
+- Recorded `runs[].failures[]`, and those of every attempt the E2E retried
+  (`runs[].retry_attempts[]`), are forwarded to `sentinel::reports::ingest`
+  in batches of 100. A score loss is never turned into an error. Sentinel's
+  answer (group, occurrence, classification, triage) is stored in the
+  analysis. A run the E2E had to retry did not complete.
 - What comes next:
   - pertinent findings or a usable baseline: the cycle waits at stage
     `candidate` with `next.action = candidate_work`;
@@ -118,7 +121,8 @@ missing, the cycle stops `inconclusive` with the exact reason, never with a
 false result.
 
 - `candidate`: repository, `base_sha`, `worktrees_dir`, the actor's model and
-  provider, and its bounds.
+  provider, and its bounds. It is checked by `eval::configure`, and it needs
+  `runs_per_side` of at least 5: the sign test accepts nothing on fewer pairs.
 - `validation`: `where: docker|github`, `stack_name` and two stack templates
   (`{commit}` and `{version}`) that pin only the Harness.
 - `promotion`: `artifact_target` and an explicit activation `target`
@@ -151,14 +155,17 @@ cycle runs these steps:
 
 The canary ends one of three ways:
 
-- **Held:** the cycle is `promoted`.
+- **Held:** the cycle is `promoted`. Any loss of a measured condition is a
+  violation; the target's own stack, E2E revision and engine are not
+  compared with the baseline's, the activated digest is.
 - **Violated:** a proved rollback, then `rolled_back`.
 - **Unknown:** the observation stays pending on the activated target until
   a cycle limit, which restores the prior. It is never claimed stable and no
   new canary is started.
 
 A cancel or a budget limit after an activation request restores and proves
-the prior executable before the cycle ends. See `SPECIFICATION.md` and
+the prior executable before the cycle ends. A rollback pin that ends or
+runs another executable is pinned again, up to three attempts. See `SPECIFICATION.md` and
 `IMPLEMENTATION.md`.
 
 ## Decision and budget
@@ -168,13 +175,17 @@ Decisions are made once, in code, by the frozen plan (`e2e-loop-rules/5`):
 - An incompatible pair, a side that did not run what it had to, a technical
   failure or a missing measure is inconclusive.
 - A lost preserved criterion is rejected.
+- Only technical failures leave a run unmeasured; an unfinished run is a
+  fail.
 - Effort counts only on completed, passed runs.
 - A cost reduction is never accepted while any cost is unknown.
 
 Every dispatch is reserved first: proposal, actor, judge, E2E runs (counting
 retries) and official builds. A reservation that is found again is never
 dispatched twice. An unreported cost stays charged at its estimate.
-An E2E report cannot release that reservation: its budget charge is at
+The sweep ends a waiting cycle only once a limit is passed (time at it):
+work reserved within the budget runs. The cycle's actors and executions
+are then asked to stop. An E2E report cannot release that reservation: its budget charge is at
 least the estimate, even when the candidate reports a lower cost. The
 reported value remains available separately; an invalid run cost makes
 the total unknown.
@@ -190,6 +201,7 @@ be replaced; duplicate or partial key listings are refused.
 |---|---|
 | `eval_cycle_config` | The configuration. |
 | `eval_cycle` | The cycle records. |
+| `eval_cycle_open` | The ids of non-terminal cycles: what the sweep reads. |
 | `eval_cycle_admission` | The admission claims and the checkpoint. |
 | `eval_cycle_evidence` | The imported bundles. |
 | `eval_cycle_budget` | The ledgers. |

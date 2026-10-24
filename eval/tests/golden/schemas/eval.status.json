@@ -150,6 +150,7 @@
         "type": "object"
       },
       "CandidateConfigV1": {
+        "additionalProperties": false,
         "description": "Operator configuration. Model and provider come from here, never from code.",
         "properties": {
           "base_sha": {
