@@ -1,5 +1,5 @@
 {
-  "description": "Search a bank's memories relevant to a query (BM25 + entities + corroboration + recency; no LLM). The same scorer the pre-generate hook uses — call it to preview an injection. mode lexical/semantic returns one raw arm (plain BM25, or cosine).",
+  "description": "Search a bank's memories relevant to a query (BM25 + entities + corroboration + recency; no LLM). The same scorer the pre-generate hook uses; the hook injects only the hits with evidence, and memory::preview shows exactly what it injects. mode lexical/semantic returns one raw arm (plain BM25, or cosine).",
   "function_id": "memory::recall",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

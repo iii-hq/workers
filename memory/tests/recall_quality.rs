@@ -1024,6 +1024,21 @@ async fn injection_gate(vectors_file: &str, baseline_file: &str) {
             stale_alone, 0,
             "{mode}: a stale line injected without the current one\n{report}"
         );
+        // Nothing relevant, nothing injected: a greeting, or a task in the
+        // first person the bank shares no word with.
+        if mode == "lexical" {
+            for kind in ["kind:greeting", "kind:first-person"] {
+                let clean = summaries[kind]
+                    .negatives
+                    .as_ref()
+                    .and_then(|n| n.negative_clean_rate);
+                assert_eq!(
+                    clean,
+                    Some(1.0),
+                    "{mode}: a {kind} negative injected\n{report}"
+                );
+            }
+        }
         snapshot.insert(mode, serde_json::to_value(&summaries).unwrap());
     }
     println!("{report}");

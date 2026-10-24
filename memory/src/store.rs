@@ -241,7 +241,8 @@ pub(crate) fn cap_query(query: &str) -> String {
 /// repeats (BM25 would count a pasted term once per occurrence), with
 /// first-person pronouns expanded to the `user` entity handle so identity
 /// questions reach memories phrased about the user. The flag is true when
-/// the pronoun added `user`, which a typed "user" does not.
+/// the pronoun added `user`, which a typed "user" does not: that `user`
+/// ranks, but is [`Evidence`] only for a question of pronouns alone.
 fn query_tokens(query: &str) -> (Vec<String>, bool) {
     let mut tokens = crate::index::tokenize(query);
     let mut seen = std::collections::HashSet::new();
@@ -309,12 +310,6 @@ pub fn validate_name(name: &str) -> Result<(), MemoryError> {
             "name `{name}` must match [a-z0-9][a-z0-9_-]{{0,63}}"
         )))
     }
-}
-
-/// How strongly a memory stands with no query: pinned first, then
-/// corroboration, then recency.
-pub(crate) fn strength(m: &Memory) -> (bool, u32, u64) {
-    (m.pinned, m.corroboration, m.updated_at)
 }
 
 impl Store {
@@ -770,7 +765,8 @@ impl Bank {
     /// vocabulary with the query. Read-only; zero LLM at query time (the
     /// caller embeds the query, if at all). First-person pronouns expand
     /// to the `user` entity handle so identity questions reach the memories
-    /// phrased third-person about the user.
+    /// phrased third-person about the user; the injection hook counts that
+    /// `user` as a match only in a question of pronouns alone ("who am I").
     ///
     /// `embedding_model` is the model the provider REPORTED for `query_vec`;
     /// vectors are tagged the same way, so ones from any other model (an
@@ -1017,20 +1013,6 @@ impl Bank {
             .collect();
         rank_desc(&mut scored, limit);
         scored
-    }
-
-    /// The bank's strongest live memories that `keep` accepts, with no
-    /// query ([`strength`]). The injection floor for turns whose query
-    /// recalls little (identity questions, session openers).
-    pub async fn top_memories(&self, limit: usize, keep: impl Fn(&Memory) -> bool) -> Vec<Memory> {
-        let inner = self.inner.read().await;
-        let mut all: Vec<&Memory> = inner
-            .memories
-            .values()
-            .filter(|f| f.is_live() && keep(f))
-            .collect();
-        all.sort_by_key(|m| std::cmp::Reverse(strength(m)));
-        all.into_iter().take(limit).cloned().collect()
     }
 
     // ---- rules ------------------------------------------------------------
@@ -1947,32 +1929,6 @@ mod tests {
             "history mode must reach non-live records with no query vector"
         );
         assert_eq!(hits[0].0.id, m.id);
-    }
-
-    #[tokio::test]
-    async fn top_memories_order_pinned_then_corroboration_then_recency() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(dir.path().to_path_buf()).unwrap();
-        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
-        let mut a = memory("plain old");
-        a.updated_at = 10;
-        let mut b = memory("corroborated");
-        b.corroboration = 5;
-        b.updated_at = 10;
-        let mut c = memory("pinned one");
-        c.pinned = true;
-        c.updated_at = 1;
-        let mut d = memory("plain new");
-        d.updated_at = 20;
-        for m in [&a, &b, &c, &d] {
-            bank.commit(m.clone()).await.unwrap();
-        }
-        let top = bank.top_memories(10, |_| true).await;
-        let texts: Vec<&str> = top.iter().map(|m| m.text.as_str()).collect();
-        assert_eq!(
-            texts,
-            vec!["pinned one", "corroborated", "plain new", "plain old"]
-        );
     }
 
     #[tokio::test]

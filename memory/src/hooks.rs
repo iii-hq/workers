@@ -278,8 +278,7 @@ pub(crate) struct Injection {
     pub rules: usize,
     pub rules_truncated: bool,
     /// The memories the appended message carries, in order, with their
-    /// recall score (0.0 for ambient-floor fill-ins) and the bank holding
-    /// them.
+    /// recall score and the bank holding them.
     pub memories: Vec<(Memory, f32, String)>,
     /// The appended `<memory>` message, when a memory fits the budget.
     pub message: Option<String>,
@@ -334,7 +333,7 @@ pub(crate) fn rules_section(
 /// Build what a turn on `bank_name` is given, with `layers` read under it
 /// (`scope::Resolved::layers`): their rules first ([`turn_rules`]), each labelled with its
 /// bank's name so two `learned` rules never read as one, and the memories
-/// of theirs it reads (`scope::layer_keeps`) in the same recall and floor.
+/// of theirs it reads (`scope::layer_keeps`) in the same recall.
 /// `query` is the user message to recall for (`None`: no recall, as on a
 /// turn's later steps), `seen` the memory texts the window already carries
 /// ([`injected_in_window`]).
@@ -407,14 +406,14 @@ pub(crate) async fn injection(
     };
     let (qv, query_model) = crate::embed_client::QueryVector::split(query_vec.as_ref());
     // One BM25 scale for every bank merged below: each bank's own best
-    // would lift a layer matching only the `user` every first-person query
-    // carries level with the bank's strong hits.
+    // would lift a layer's weak match level with the bank's strong hits,
+    // in the ranking and against `select`'s relevance cut.
     let mut bm25_max = 0.0_f32;
     for (name, b, layered) in &sources {
         let keep = |m: &Memory| keeps(name, *layered, m);
         bm25_max = bm25_max.max(b.bm25_max(&query, keep).await);
     }
-    let (mut hits, mut top, mut held) = (Vec::new(), Vec::new(), HashMap::new());
+    let (mut hits, mut held) = (Vec::new(), HashMap::new());
     // Per memory, its best-scored copy: the source and the score.
     let mut best: HashMap<String, (usize, f32)> = HashMap::new();
     let (mut evidence, mut names) = (HashMap::new(), Vec::new());
@@ -433,11 +432,6 @@ pub(crate) async fn injection(
             )
             .await;
         let found: Vec<(Memory, f32)> = found.into_iter().filter(|(m, _)| keep(m)).collect();
-        let strongest = b.top_memories(cfg.recall_limit, keep).await;
-        // The floor's memories are held by the first bank holding them.
-        for m in &strongest {
-            held.entry(m.id.clone()).or_insert(name);
-        }
         for (m, s) in &found {
             // A tie keeps the earlier source, as `merge_ranked` keeps the first copy.
             let at = best.entry(m.id.clone()).or_insert((i, *s));
@@ -447,7 +441,6 @@ pub(crate) async fn injection(
         }
         evidence.extend(found_evidence.into_iter().map(|(id, e)| ((id, i), e)));
         hits.extend(found.into_iter().map(|(m, s)| (m, s, i)));
-        top.extend(strongest);
         names.push(name);
     }
     // A memory several banks hold is ranked once, by its best-scored copy: a
@@ -469,16 +462,9 @@ pub(crate) async fn injection(
         seen,
         cfg.recall_limit,
     );
-    let mut scores: HashMap<String, f32> = hits.iter().map(|(m, s)| (m.id.clone(), *s)).collect();
-    // Ambient floor: lexical recall misses identity questions and session
-    // openers entirely (their words never appear in memory texts), so pad
-    // thin results with the bank's strongest memories — still bounded by
-    // the same count and token budget.
-    let hits: Vec<Memory> = hits.into_iter().map(|(m, _)| m).collect();
-    top.sort_by_key(|m| std::cmp::Reverse(crate::store::strength(m)));
-    // After the floor, so the floor never walks the bank turn by turn; a
-    // slot this frees stays free.
-    let memories = unseen(apply_ambient_floor(hits, top, cfg.recall_limit), seen);
+    let scores: HashMap<String, f32> = hits.iter().map(|(m, s)| (m.id.clone(), *s)).collect();
+    // After `select`, so a slot this frees stays free.
+    let memories = unseen(hits.into_iter().map(|(m, _)| m).collect(), seen);
     if let Some((body, ids)) =
         memories_message(bank_name, &memories, cfg.recall_budget_tokens, now_ms())
     {
@@ -486,8 +472,7 @@ pub(crate) async fn injection(
             .into_iter()
             .filter(|m| ids.contains(&m.id))
             .map(|m| {
-                let score = scores.remove(&m.id).unwrap_or(0.0);
-                let holder = held.get(&m.id).copied().unwrap_or(bank_name);
+                let (score, holder) = (scores[&m.id], held[&m.id]);
                 (m, score, holder.to_string())
             })
             .collect();
@@ -534,18 +519,52 @@ pub(crate) fn merge_ranked(mut hits: Vec<(Memory, f32)>, limit: usize) -> Vec<(M
     hits
 }
 
-/// What a turn is told from its ranked hits (every candidate, best first),
-/// at most `limit`; `seen` holds the memory lines the window shows. For now
-/// the ranking's cut alone: `evidence` (why each hit matched) and `seen`
-/// are not read yet.
+/// A hit under half the turn's best relevance shares a stray word or a
+/// loose meaning with the question, not its subject (recall eval: 0.4 and
+/// 0.5 lose no expected memory in any mode; 0.6 loses three).
+const RELEVANCE_SHARE: f32 = 0.5;
+/// A meaning match this many standard deviations above the question's
+/// mean similarity stands out even behind a strong lexical best.
+const SEMANTIC_Z: f32 = 2.0;
+// shortcut: the pair passes are quadratic, so they see the best 4 x
+// recall_limit admitted hits; widen it if the eval shows a newer fact
+// ranked past it (stale_alone > 0).
+const POOL_PER_SLOT: usize = 4;
+
+/// What a turn is told from its ranked hits (every candidate, best first):
+/// those with evidence ([`Evidence`], why each matched) that stand with the
+/// turn's best, at most `limit`; nothing when none has any. `seen` holds
+/// the memory lines the window shows; it is not read yet.
 pub fn select(
-    mut hits: Vec<(Memory, f32)>,
-    _evidence: &HashMap<String, Evidence>,
+    hits: Vec<(Memory, f32)>,
+    evidence: &HashMap<String, Evidence>,
     _seen: &HashSet<String>,
     limit: usize,
 ) -> Vec<(Memory, f32)> {
-    hits.truncate(limit);
-    hits
+    let none = Evidence::default();
+    let ev = |m: &Memory| evidence.get(&m.id).unwrap_or(&none);
+    // Evidence: a word of the question, or a meaning above the model's floor.
+    let mut pool: Vec<(Memory, f32)> = hits
+        .into_iter()
+        .filter(|(m, _)| !ev(m).matched.is_empty() || ev(m).cosine.is_some())
+        .take(POOL_PER_SLOT.saturating_mul(limit))
+        .collect();
+    // Visible hits count toward `best`: a strong one already shown still sets the bar.
+    let best = pool
+        .iter()
+        .map(|(m, _)| ev(m).relevance)
+        .fold(0.0, f32::max);
+    pool.retain(|(m, _)| {
+        let e = ev(m);
+        let words = e.matched.len();
+        (words > 0 && words >= e.terms.min(2))
+            || e.relevance >= RELEVANCE_SHARE * best
+            || e.z.is_some_and(|z| z >= SEMANTIC_Z)
+            // No vector to weigh it against meaning matches: judge its words, as in lexical mode.
+            || (!e.vector && words > 0 && e.lexical >= RELEVANCE_SHARE)
+    });
+    pool.truncate(limit);
+    pool
 }
 
 /// A plain user-role text message for `append_messages`.
@@ -975,28 +994,6 @@ fn newest_lines(body: &str, budget: usize) -> String {
     lines.join("\n")
 }
 
-/// Pad thin recall results with the bank's strongest memories, deduped by
-/// id and bounded by `min(AMBIENT_FLOOR, recall_limit)`.
-pub(crate) fn apply_ambient_floor(
-    mut memories: Vec<Memory>,
-    top: Vec<Memory>,
-    recall_limit: usize,
-) -> Vec<Memory> {
-    const AMBIENT_FLOOR: usize = 3;
-    let floor = AMBIENT_FLOOR.min(recall_limit);
-    if memories.len() < floor {
-        for memory in top {
-            if memories.len() >= floor {
-                break;
-            }
-            if !memories.iter().any(|f| f.id == memory.id) {
-                memories.push(memory);
-            }
-        }
-    }
-    memories
-}
-
 /// The one appended `<memory>` message: bulleted memory texts, each dated
 /// with its last update, under a 4-chars-per-token budget counted over the
 /// whole rendered line, plus the ids of the memories that made the cut. A
@@ -1353,20 +1350,6 @@ Formal."
     }
 
     #[test]
-    fn ambient_floor_pads_thin_results_and_dedups() {
-        let hits = vec![memory("fp1", "hit")];
-        let top = vec![
-            memory("fp1", "hit"),
-            memory("fp2", "strong"),
-            memory("fp3", "also strong"),
-            memory("fp4", "never reached"),
-        ];
-        let out = apply_ambient_floor(hits, top, 6);
-        let ids: Vec<&str> = out.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(ids, vec!["fp1", "fp2", "fp3"]);
-    }
-
-    #[test]
     fn a_layers_rules_come_first_labelled_under_one_budget() {
         let learned = |line: &str| {
             rule(
@@ -1545,15 +1528,11 @@ Formal."
                 .unwrap();
         }
         // The turn bank ranks this copy fourth, past the limit; the layer,
-        // holding only it, ranks it first. Older than the rest, so the turn
-        // bank's floor (its strongest memories) never holds it.
-        let twin = Memory {
-            updated_at: 0,
-            ..memory(
-                "fp-twin",
-                "kiwi was mentioned once, among a long run of other words that dilute the match",
-            )
-        };
+        // holding only it, ranks it first.
+        let twin = memory(
+            "fp-twin",
+            "kiwi was mentioned once, among a long run of other words that dilute the match",
+        );
         repo.commit(twin.clone()).await.unwrap();
         layer.commit(twin).await.unwrap();
 
@@ -1647,18 +1626,267 @@ Formal."
         assert_eq!(banks.len(), 2, "both banks reach the top: {injected:?}");
     }
 
-    #[test]
-    fn ambient_floor_respects_a_small_recall_limit() {
-        let out = apply_ambient_floor(vec![], vec![memory("fp1", "a"), memory("fp2", "b")], 1);
-        assert_eq!(out.len(), 1);
+    /// What `injection` tells a turn on `w-abc123` reading `layers`: each
+    /// memory's id and the bank holding it.
+    async fn told(deps: &Deps, layers: &[&str], query: &str) -> Vec<(String, String)> {
+        let layers: Vec<String> = layers.iter().map(|l| l.to_string()).collect();
+        let cfg = deps.config().await;
+        injection(
+            deps,
+            &cfg,
+            "w-abc123",
+            &layers,
+            Some(query),
+            &HashSet::new(),
+        )
+        .await
+        .memories
+        .into_iter()
+        .map(|(m, _, bank)| (m.id, bank))
+        .collect()
+    }
+
+    #[tokio::test]
+    async fn the_copy_injected_is_judged_on_its_own_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = offline_deps(dir.path(), offline_cfg(6));
+        let store = deps.store().await;
+        let (repo, _) = store.ensure_bank("w-abc123", None).await.unwrap();
+        let (layer, _) = store.ensure_bank("agent-x", None).await.unwrap();
+        // One memory, two copies: the turn bank's matches the question only
+        // through the `user` the pronoun adds; the layer's is tagged with the
+        // question's word, so it scores higher and is evidence.
+        let text = "The user eats fruit daily.";
+        let tagged = |entity: &str| Memory {
+            entities: vec![entity.into()],
+            ..memory("fp-x", text)
+        };
+        repo.commit(tagged("user")).await.unwrap();
+        layer.commit(tagged("kiwi")).await.unwrap();
+        let query = "what about my kiwi";
+        assert_eq!(
+            told(&deps, &["agent-x"], query).await,
+            [("fp-x".to_string(), "agent-x".to_string())]
+        );
+        assert!(
+            told(&deps, &[], query).await.is_empty(),
+            "the turn bank's copy alone is no evidence"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_memory_two_banks_score_alike_is_held_by_the_earlier_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = offline_deps(dir.path(), offline_cfg(6));
+        let store = deps.store().await;
+        let (repo, _) = store.ensure_bank("w-abc123", None).await.unwrap();
+        let (layer, _) = store.ensure_bank("agent-x", None).await.unwrap();
+        let twin = memory("fp-x", "kiwi grows on the vine");
+        repo.commit(twin.clone()).await.unwrap();
+        layer.commit(twin).await.unwrap();
+        let mut scores = Vec::new();
+        for b in [&repo, &layer] {
+            let hits = b.recall_scaled("kiwi", None, "", 6, 30, false, 0.0).await;
+            scores.push(hits[0].1);
+        }
+        assert_eq!(scores[0], scores[1], "a tie, or the test proves nothing");
+        assert_eq!(
+            told(&deps, &["agent-x"], "kiwi").await,
+            [("fp-x".to_string(), "w-abc123".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn only_the_repo_hit_is_injected_when_a_layer_matches_on_user_alone() {
+        // The fixture of `a_layer_matching_only_on_the_user_never_outranks_a_strong_repo_hit`.
+        let dir = tempfile::tempdir().unwrap();
+        let deps = offline_deps(dir.path(), offline_cfg(6));
+        let store = deps.store().await;
+        let (repo, _) = store.ensure_bank("w-abc123", None).await.unwrap();
+        let (main, _) = store.ensure_bank("main", None).await.unwrap();
+        repo.commit(memory(
+            "fp-deploy",
+            "ledger-sync deploy runs Bazel from ops.",
+        ))
+        .await
+        .unwrap();
+        repo.commit(memory("fp-lint", "The linter runs before every commit."))
+            .await
+            .unwrap();
+        for n in 0..3 {
+            let m = Memory {
+                entities: vec!["user".into()],
+                ..memory(&format!("fp-u{n}"), &format!("The user drinks tea {n}."))
+            };
+            main.commit(m).await.unwrap();
+        }
+        assert_eq!(
+            told(&deps, &["main"], "how do I deploy ledger-sync with Bazel").await,
+            [("fp-deploy".to_string(), "w-abc123".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pronoun_only_question_still_injects_the_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = offline_deps(dir.path(), offline_cfg(6));
+        let store = deps.store().await;
+        let (repo, _) = store.ensure_bank("w-abc123", None).await.unwrap();
+        let about_user = |id: &str, text: &str| Memory {
+            entities: vec!["user".into()],
+            ..memory(id, text)
+        };
+        for m in [
+            about_user("fp-name", "The user's name is Ana."),
+            about_user("fp-city", "The user lives in Lisbon."),
+            memory("fp-ci", "CI runs the linter before the tests."),
+        ] {
+            repo.commit(m).await.unwrap();
+        }
+        let mut ids: Vec<String> = told(&deps, &[], "who am I?")
+            .await
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, ["fp-city", "fp-name"]);
+        assert!(
+            told(&deps, &[], "can you help me refactor my parser")
+                .await
+                .is_empty(),
+            "a task in the first person is not a question about the user"
+        );
+    }
+
+    /// `select` over hits ranked in the order given, nothing visible: the
+    /// ids it keeps.
+    fn selected(hits: Vec<(&str, Evidence)>, limit: usize) -> Vec<String> {
+        let evidence: HashMap<String, Evidence> = hits
+            .iter()
+            .map(|(id, e)| (id.to_string(), e.clone()))
+            .collect();
+        let ranked = hits
+            .iter()
+            .enumerate()
+            .map(|(i, (id, _))| (memory(id, id), 1.0 / (i + 1) as f32))
+            .collect();
+        select(ranked, &evidence, &HashSet::new(), limit)
+            .into_iter()
+            .map(|(m, _)| m.id)
+            .collect()
+    }
+
+    /// `words` of the question's `terms` matched, at `relevance`, all of it
+    /// lexical.
+    fn words(words: usize, terms: usize, relevance: f32) -> Evidence {
+        Evidence {
+            matched: (0..words).map(|n| format!("w{n}")).collect(),
+            terms,
+            lexical: relevance,
+            relevance,
+            ..Evidence::default()
+        }
     }
 
     #[test]
-    fn ambient_floor_leaves_rich_results_alone() {
-        let hits = vec![memory("fp1", "a"), memory("fp2", "b"), memory("fp3", "c")];
-        let out = apply_ambient_floor(hits.clone(), vec![memory("fp9", "top")], 6);
-        assert_eq!(out.len(), 3);
-        assert!(!out.iter().any(|m| m.id == "fp9"));
+    fn nothing_admitted_means_nothing_injected() {
+        // Ranked through the `user` a pronoun added, or a stopword: no word
+        // of the question and no meaning, however well it scores.
+        let bare = Evidence {
+            terms: 3,
+            lexical: 1.0,
+            relevance: 1.0,
+            ..Evidence::default()
+        };
+        assert!(selected(vec![("fp1", bare.clone()), ("fp2", bare)], 6).is_empty());
+        assert!(selected(Vec::new(), 6).is_empty());
+        let unexplained = vec![(memory("fp3", "no evidence recorded"), 1.0)];
+        assert!(select(unexplained, &HashMap::new(), &HashSet::new(), 6).is_empty());
+    }
+
+    #[test]
+    fn a_stray_word_behind_a_strong_match_is_dropped() {
+        let picked = selected(
+            vec![
+                ("fp-best", words(3, 4, 1.0)),
+                ("fp-stray", words(1, 4, 0.18)),
+                ("fp-half", words(1, 4, 0.6)),
+                ("fp-two", words(2, 4, 0.1)),
+            ],
+            6,
+        );
+        assert_eq!(picked, ["fp-best", "fp-half", "fp-two"]);
+    }
+
+    #[test]
+    fn a_one_word_question_keeps_every_match() {
+        let picked = selected(
+            vec![("fp1", words(1, 1, 1.0)), ("fp2", words(1, 1, 0.4))],
+            6,
+        );
+        assert_eq!(picked, ["fp1", "fp2"]);
+    }
+
+    #[test]
+    fn a_meaning_outlier_survives_a_strong_lexical_best() {
+        let best = Evidence {
+            vector: true,
+            ..words(2, 3, 1.0)
+        };
+        let meaning = |z: f32| Evidence {
+            terms: 3,
+            relevance: 0.28,
+            cosine: Some(0.45),
+            z: Some(z),
+            vector: true,
+            ..Evidence::default()
+        };
+        let picked = selected(vec![("fp-best", best.clone()), ("fp-far", meaning(2.3))], 6);
+        assert_eq!(picked, ["fp-best", "fp-far"]);
+        let picked = selected(vec![("fp-best", best), ("fp-near", meaning(1.2))], 6);
+        assert_eq!(picked, ["fp-best"]);
+    }
+
+    #[test]
+    fn a_memory_without_a_vector_is_judged_on_its_words() {
+        // A meaning match far ahead: by share of the best, one word is out.
+        let best = Evidence {
+            relevance: 5.0,
+            cosine: Some(0.6),
+            vector: true,
+            ..words(1, 3, 1.0)
+        };
+        let unembedded = words(1, 3, 0.8);
+        let picked = selected(
+            vec![("fp-best", best.clone()), ("fp-new", unembedded.clone())],
+            6,
+        );
+        assert_eq!(picked, ["fp-best", "fp-new"]);
+        let embedded = Evidence {
+            vector: true,
+            ..unembedded
+        };
+        let picked = selected(vec![("fp-best", best), ("fp-new", embedded)], 6);
+        assert_eq!(picked, ["fp-best"], "its vector says it is far in meaning");
+    }
+
+    #[test]
+    fn the_best_hit_sets_the_bar_even_when_visible() {
+        let shown = memory("fp-best", "ledger-sync deploys with Bazel from ops.");
+        let seen: HashSet<String> = [memory_line_text(&shown)].into();
+        let evidence: HashMap<String, Evidence> = [
+            ("fp-best".to_string(), words(3, 4, 1.0)),
+            ("fp-stray".to_string(), words(1, 4, 0.18)),
+        ]
+        .into();
+        let hits = vec![
+            (shown, 2.0),
+            (memory("fp-stray", "The design team uses Bazel."), 1.0),
+        ];
+        let picked = select(hits, &evidence, &seen, 6);
+        // The window shows the best already, so the turn is told nothing.
+        let sent = unseen(picked.into_iter().map(|(m, _)| m).collect(), &seen);
+        assert!(sent.is_empty(), "{sent:?}");
     }
 
     /// 2025-10-14T12:00:00Z — the same calendar day from UTC-11 to UTC+11.
