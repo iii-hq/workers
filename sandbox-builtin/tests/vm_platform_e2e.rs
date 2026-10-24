@@ -1,7 +1,7 @@
 //! End-to-end integration tests for the VM platform stack.
 //!
 //! These tests require actual KVM (Linux) or Hypervisor.framework (macOS) access.
-//! They are `#[ignore]` by default -- run with: `cargo test -p iii --test vm_platform_e2e -- --ignored`
+//! They are `#[ignore]` by default -- run with: `cargo test --test vm_platform_e2e -- --ignored`
 //!
 //! Requirements validated: PLAT-01 (Linux KVM), PLAT-02 (macOS Hypervisor.framework)
 
@@ -30,9 +30,9 @@ fn test_kvm_available() {
 }
 
 /// Validates that libkrunfw resolution logic can locate the firmware file.
-/// Skips if firmware is not downloaded yet (not a failure).
+/// Skips if no firmware is in place yet (not a failure).
 #[test]
-#[ignore] // Requires firmware to be downloaded to ~/.iii/lib/
+#[ignore] // Requires firmware in ~/.iii/lib/ or a system path
 fn test_libkrunfw_resolves() {
     // Check known locations for the firmware file
     let filename = if cfg!(target_os = "macos") {
@@ -56,7 +56,9 @@ fn test_libkrunfw_resolves() {
             "WARNING: libkrunfw not found in any known location. Checked: {:?}",
             candidates
         );
-        eprintln!("Download with: iii firmware download");
+        eprintln!(
+            "A sandbox-builtin built with --features embed-libkrunfw extracts it to ~/.iii/lib on its first VM boot"
+        );
         return;
     }
     eprintln!("libkrunfw found in a known location");
@@ -64,14 +66,14 @@ fn test_libkrunfw_resolves() {
 
 // ── Main VM boot test ──────────────────────────────────────────────
 
-/// End-to-end test that spawns `iii __vm-boot` and verifies the full boot path:
+/// End-to-end test that spawns `sandbox-builtin __vm-boot` and verifies the full boot path:
 /// 1. libkrunfw resolution (firmware library found)
 /// 2. VM boots without crash (exit code 0 or clean exit)
 /// 3. Init mounts /proc (VM_BOOT_OK marker in output)
 /// 4. Worker process exits cleanly
 ///
 /// Requires KVM (Linux) or Hypervisor.framework (macOS).
-/// Run with: `cargo test -p iii --test vm_platform_e2e -- --ignored`
+/// Run with: `cargo test --test vm_platform_e2e -- --ignored`
 #[test]
 #[ignore] // Requires KVM (Linux) or Hypervisor.framework (macOS)
 fn test_vm_boot_platform() {
@@ -94,8 +96,8 @@ fn test_vm_boot_platform() {
         }
     }
 
-    // 1. Find the iii binary
-    let iii_bin_path = env!("CARGO_BIN_EXE_sandbox-builtin");
+    // 1. Find the sandbox-builtin binary
+    let bin_path = env!("CARGO_BIN_EXE_sandbox-builtin");
 
     // 2. Create a minimal rootfs for the test.
     //    This avoids needing to pull an OCI image (which needs network + registry access).
@@ -123,10 +125,10 @@ fn test_vm_boot_platform() {
         return;
     }
 
-    // 3. Spawn iii __vm-boot with a simple command that proves init works.
+    // 3. Spawn sandbox-builtin __vm-boot with a simple command that proves init works.
     //    The command: /bin/sh -c "test -d /proc/self && echo VM_BOOT_OK"
     //    If init mounted /proc correctly, /proc/self exists and we see VM_BOOT_OK.
-    let mut cmd = Command::new(iii_bin_path);
+    let mut cmd = Command::new(bin_path);
     cmd.arg("__vm-boot")
         .arg("--rootfs")
         .arg(&rootfs)
@@ -157,7 +159,9 @@ fn test_vm_boot_platform() {
     .collect();
     cmd.env(lib_path_var, lib_paths.join(":"));
 
-    let output = cmd.output().expect("failed to spawn iii __vm-boot");
+    let output = cmd
+        .output()
+        .expect("failed to spawn sandbox-builtin __vm-boot");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);

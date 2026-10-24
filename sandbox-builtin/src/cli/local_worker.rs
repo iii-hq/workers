@@ -560,7 +560,7 @@ pub(crate) async fn start_worker_impl(
     let is_bundle = package.is_some();
 
     // 3. Ensure libkrunfw available
-    if let Err(e) = super::firmware::download::ensure_libkrunfw().await {
+    if let Err(e) = super::firmware::provision::ensure_libkrunfw().await {
         tracing::warn!(error = %e, "failed to ensure libkrunfw");
     }
 
@@ -733,7 +733,7 @@ pub(crate) async fn start_worker_impl(
     ];
 
     // 8. Copy iii-init if needed
-    let init_path = match super::firmware::download::ensure_init_binary().await {
+    let init_path = match super::firmware::provision::ensure_init_binary().await {
         Ok(p) => p,
         Err(e) => {
             return Err(format!("Failed to provision iii-init: {}", e));

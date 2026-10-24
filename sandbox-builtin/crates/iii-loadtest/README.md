@@ -95,8 +95,8 @@ target/release/iii-loadtest suite --scenarios rpc,fanout \
   --engine ~/.local/bin/iii --observability off $VM
 ```
 
-Without `--krunfw` and `--init` it uses an installed iii's
-`~/.iii/lib/libkrunfw.so` and `~/.iii/lib/iii-init`, when they exist.
+`--init` is required (`sandbox-builtin/scripts/build-init.sh` builds it). Without `--krunfw` it uses
+`~/.iii/lib/libkrunfw.so`, which sandbox-builtin extracts on its first VM boot, when it exists.
 
 Results go to `target/loadtest/<timestamp>/`:
 - `report.md`: a capacity summary per profile, then every step of every scenario.

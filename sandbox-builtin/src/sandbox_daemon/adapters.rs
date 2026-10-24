@@ -47,7 +47,7 @@ static PROVISION_DONE: AtomicBool = AtomicBool::new(false);
 /// Refuse to boot a sandbox unless this binary carries an embedded iii-init.
 ///
 /// Only an embedded init is guaranteed to understand the overlay boot
-/// (`III_BLOCK_ROOT_*`); a downloaded `~/.iii/lib/iii-init` may predate it
+/// (`III_BLOCK_ROOT_*`); an on-disk init (`III_INIT_PATH`) may predate it
 /// (see `cli::overlay`). Without one the isolated overlay root cannot be
 /// assembled, and the sandbox has no other isolated boot shape, so fail
 /// closed.
@@ -236,7 +236,7 @@ impl VmLauncher for IiiWorkerLauncher {
             // next `sandbox::exec` hits Connection refused — a very
             // expensive way to surface a missing dependency. Bail now
             // with a real error the user can act on.
-            crate::cli::firmware::download::ensure_libkrunfw()
+            crate::cli::firmware::provision::ensure_libkrunfw()
                 .await
                 .map_err(|e| {
                     SandboxError::BootFailed(format!(
