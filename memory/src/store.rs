@@ -200,6 +200,8 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 /// `english` tsvector. Without it a natural-language question matches every
 /// memory through "the/do/my", and that BM25 noise outscores a paraphrase's
 /// semantic match. "us" is kept (US), as Snowball's English list does.
+// `pub` only so the recall_quality eval checks its data against this list.
+#[doc(hidden)]
 #[rustfmt::skip]
 pub const STOPWORDS: &[&str] = &[
     "a", "about", "again", "all", "also", "am", "an", "and", "any", "are", "as", "at", "be",
