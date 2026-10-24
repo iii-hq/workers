@@ -262,7 +262,7 @@ fn run_legacy(cmd: String) -> Result<(), InitError> {
 /// ponytail: covers clean + SIGTERM/SIGINT exits (those funnel back through the
 /// reap loop); a host `kill -9`/OOM mid-window runs no code — mount the upper
 /// with `commit=1` if that residual window ever matters.
-fn sync_and_exit(status: i32) -> ! {
+pub fn sync_and_exit(status: i32) -> ! {
     nix::unistd::sync();
     // libkrun takes the VM's exit code from this ioctl on a virtiofs mount
     // (VIRTIO_IOC_EXIT_CODE_REQ, `_IO('v', 2)`); without it `__vm-boot` exits 0
