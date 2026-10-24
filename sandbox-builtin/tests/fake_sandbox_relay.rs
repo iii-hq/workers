@@ -1,6 +1,8 @@
 //! Integration tests for the sandbox subsystem. Uses fake trait impls for
 //! VmLauncher/ShellRunner/VmStopper so no real libkrun boot is required.
 
+use sandbox_builtin::cli::rootfs_cache;
+use sandbox_builtin::sandbox_daemon::catalog;
 use sandbox_builtin::sandbox_daemon::config::SandboxConfig;
 use sandbox_builtin::sandbox_daemon::{
     SandboxError,
@@ -357,20 +359,17 @@ impl Drop for RootfsGuard {
 }
 fn ensure_fake_rootfs(image: &str) -> RootfsGuard {
     let td = tempfile::tempdir().unwrap();
-    let rootfs = td
-        .path()
-        .join(".iii")
-        .join("managed")
-        .join(image)
-        .join("rootfs");
-    // `bin/` is required by overlay::lower_rootfs_exists to treat the
-    // rootfs as populated -- bare dir was previously accepted and masked
-    // a class of auto_install silent-no-op bugs.
-    std::fs::create_dir_all(rootfs.join("bin")).unwrap();
     let orig = std::env::var_os("HOME");
     // SAFETY: callers wrap in #[serial] so no other threads mutate env.
     unsafe {
         std::env::set_var("HOME", td.path());
     }
+    // Where create looks the image up, under the new HOME.
+    let oci_ref = catalog::resolve_image(image, &Default::default()).unwrap();
+    let rootfs = rootfs_cache::canonical_path(&oci_ref);
+    // `bin/` is required by rootfs_cache::is_populated to treat the
+    // rootfs as populated -- bare dir was previously accepted and masked
+    // a class of auto_install silent-no-op bugs.
+    std::fs::create_dir_all(rootfs.join("bin")).unwrap();
     RootfsGuard(td, orig)
 }

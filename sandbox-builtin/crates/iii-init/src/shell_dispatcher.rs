@@ -25,6 +25,9 @@
 //!   with the terminal flag.
 //! - All writes funnel through `Arc<Mutex<File>>` so frames don't
 //!   interleave on the wire.
+//! - A session's output (`Stdout`, `Stderr`, `FsChunk`) waits for the
+//!   host's `Credit` on its own [`Window`], so a slow client stalls only
+//!   its own session, and SIGKILL from the host stops it.
 //!
 //! Signals, stdin EOF, and cleanup are all routed by `corr_id` via the
 //! shared `SessionRegistry`; session entries are removed after the
@@ -38,7 +41,7 @@ use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{ChildStdin, Command, Stdio};
 use std::sync::mpsc::{SyncSender, sync_channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::thread;
 
 use iii_supervisor::shell_protocol::{self as sp, ShellMessage, flags::FLAG_TERMINAL};
@@ -75,12 +78,73 @@ type SessionRegistry = Arc<Mutex<HashMap<u32, SessionHandle>>>;
 /// the catch-all `_ => {}` arm silently.
 type FsWriteRegistry = Arc<Mutex<HashMap<u32, std::sync::mpsc::SyncSender<ShellMessage>>>>;
 
+/// A session's output credit: how many more output frames it may send before
+/// the host takes some of them (see [`sp::SEND_WINDOW`]). Its producers wait
+/// here, so a client that reads slowly holds back only its own session.
+pub(crate) struct Window {
+    /// Frames it may still send, and whether the host cancelled the session.
+    state: Mutex<(u32, bool)>,
+    granted: Condvar,
+}
+
+impl Window {
+    pub(crate) fn new(credit: u32) -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new((credit, false)),
+            granted: Condvar::new(),
+        })
+    }
+
+    /// Takes one frame of credit, waiting for the host to grant it. `false`
+    /// once the host cancelled the session: the producer stops sending.
+    pub(crate) fn acquire(&self) -> bool {
+        let mut state = self.state.lock().expect("window mutex poisoned");
+        while state.0 == 0 && !state.1 {
+            state = self.granted.wait(state).expect("window mutex poisoned");
+        }
+        if state.1 {
+            return false;
+        }
+        state.0 -= 1;
+        true
+    }
+
+    pub(crate) fn grant(&self, frames: u32) {
+        let mut state = self.state.lock().expect("window mutex poisoned");
+        state.0 = state.0.saturating_add(frames);
+        self.granted.notify_all();
+    }
+
+    pub(crate) fn cancel(&self) {
+        self.state.lock().expect("window mutex poisoned").1 = true;
+        self.granted.notify_all();
+    }
+}
+
+/// Live sessions' windows by `corr_id`, for `Credit` and `Signal` frames.
+/// Weak: an entry dies with the last producer of its session.
+type Windows = Arc<Mutex<HashMap<u32, Weak<Window>>>>;
+
+fn open_window(windows: &Windows, corr_id: u32) -> Arc<Window> {
+    let window = Window::new(sp::SEND_WINDOW);
+    let mut map = windows.lock().expect("windows mutex poisoned");
+    map.retain(|_, w| w.strong_count() > 0);
+    map.insert(corr_id, Arc::downgrade(&window));
+    window
+}
+
+fn window_of(windows: &Windows, corr_id: u32) -> Option<Arc<Window>> {
+    let map = windows.lock().expect("windows mutex poisoned");
+    map.get(&corr_id).and_then(Weak::upgrade)
+}
+
 /// Writer handle shared by every thread that emits frames. A single
 /// dedicated writer thread drains this channel onto the virtio-console
-/// port, so no caller ever holds a lock across a virtio write. When the
-/// host relay applies backpressure the channel saturates at
-/// [`WRITER_CHANNEL_CAPACITY`] and senders wait for room (see
-/// [`send_frame`]); once the writer thread is gone, sends fail.
+/// port, so no caller ever holds a lock across a virtio write. Each
+/// session's output waits for its own [`Window`] first, so the channel
+/// holds at most a window of any one session's frames; when it is full
+/// anyway, senders wait for room (see [`send_frame`]); once the writer
+/// thread is gone, sends fail.
 pub(crate) type Writer = SyncSender<Vec<u8>>;
 
 /// Bound on queued frames between session threads and the writer
@@ -111,12 +175,13 @@ pub fn run(port_path: &Path) -> anyhow::Result<()> {
     // Registry for in-flight WriteStart sessions. Keyed by corr_id;
     // value is a sender that forwards FsChunk/FsEnd to the write thread.
     let fs_writes: FsWriteRegistry = Arc::new(Mutex::new(HashMap::new()));
+    let windows = Windows::default();
 
     let mut reader = BufReader::new(reader_file);
     loop {
         match sp::read_frame_blocking(&mut reader) {
             Ok(Some((corr_id, _flags, msg))) => {
-                handle_frame(corr_id, msg, &sessions, &writer, &fs_writes);
+                handle_frame(corr_id, msg, &sessions, &writer, &fs_writes, &windows);
             }
             Ok(None) => break,
             Err(e) => {
@@ -166,6 +231,7 @@ fn handle_frame(
     sessions: &SessionRegistry,
     writer: &Writer,
     fs_writes: &FsWriteRegistry,
+    windows: &Windows,
 ) {
     match msg {
         ShellMessage::Request {
@@ -177,10 +243,13 @@ fn handle_frame(
             rows,
             cols,
         } => {
+            let window = open_window(windows, corr_id);
             let spawn_result = if tty {
-                spawn_tty_session(corr_id, cmd, args, env, cwd, rows, cols, sessions, writer)
+                spawn_tty_session(
+                    corr_id, cmd, args, env, cwd, rows, cols, sessions, writer, window,
+                )
             } else {
-                spawn_pipe_session(corr_id, cmd, args, env, cwd, sessions, writer)
+                spawn_pipe_session(corr_id, cmd, args, env, cwd, sessions, writer, window)
             };
             if let Err(e) = spawn_result {
                 send_frame(
@@ -282,11 +351,21 @@ fn handle_frame(
             // streaming.rs's safety valve fires — too late for any
             // caller-side test that asserts cleanup at trigger
             // timeout.
+            // A read or an exec's output streams stop too, so the guest
+            // sends no more frames for the abandoned session.
             if signal == libc::SIGKILL {
                 let _ = fs_writes
                     .lock()
                     .expect("fs_writes mutex poisoned")
                     .remove(&corr_id);
+                if let Some(window) = window_of(windows, corr_id) {
+                    window.cancel();
+                }
+            }
+        }
+        ShellMessage::Credit { frames } => {
+            if let Some(window) = window_of(windows, corr_id) {
+                window.grant(frames);
             }
         }
         ShellMessage::Resize { rows, cols } => {
@@ -375,11 +454,12 @@ fn handle_frame(
                 // ── ReadStart: streaming download ─────────────────────────
                 FsOp::ReadStart { path } => {
                     let writer = writer.clone();
+                    let window = open_window(windows, corr_id);
                     thread::Builder::new()
                         .name(format!("iii-fs-read-{corr_id}"))
                         .spawn(move || {
                             let result = crate::fs_handler::streaming::handle_read_start(
-                                path, &writer, corr_id,
+                                path, &writer, corr_id, &window,
                             );
                             // handle_read_start only returns Err for
                             // pre-FsMeta failures; emit the terminal
@@ -562,7 +642,7 @@ fn dispatch_one_shot(op: iii_shell_proto::FsOp) -> crate::fs_handler::FsCallResu
     }
 }
 
-#[allow(clippy::zombie_processes)]
+#[allow(clippy::too_many_arguments, clippy::zombie_processes)]
 fn spawn_pipe_session(
     corr_id: u32,
     cmd: String,
@@ -571,6 +651,7 @@ fn spawn_pipe_session(
     cwd: Option<String>,
     sessions: &SessionRegistry,
     writer: &Writer,
+    window: Arc<Window>,
 ) -> anyhow::Result<()> {
     let mut command = Command::new(&cmd);
     command
@@ -655,17 +736,17 @@ fn spawn_pipe_session(
     // those late Stdout/Stderr frames (FLAG_TERMINAL on Exited
     // removes the route).
     let stdout_handle = {
-        let writer = writer.clone();
+        let (writer, window) = (writer.clone(), window.clone());
         thread::Builder::new()
             .name(format!("iii-exec-{corr_id}-out"))
-            .spawn(move || stream_fd(writer, corr_id, stdout, OutputKind::Stdout))
+            .spawn(move || stream_fd(writer, corr_id, stdout, OutputKind::Stdout, window))
             .ok()
     };
     let stderr_handle = {
         let writer = writer.clone();
         thread::Builder::new()
             .name(format!("iii-exec-{corr_id}-err"))
-            .spawn(move || stream_fd(writer, corr_id, stderr, OutputKind::Stderr))
+            .spawn(move || stream_fd(writer, corr_id, stderr, OutputKind::Stderr, window))
             .ok()
     };
 
@@ -745,6 +826,7 @@ fn spawn_tty_session(
     cols: u16,
     sessions: &SessionRegistry,
     writer: &Writer,
+    window: Arc<Window>,
 ) -> anyhow::Result<()> {
     use nix::pty::openpty;
 
@@ -891,7 +973,7 @@ fn spawn_tty_session(
         let writer = writer.clone();
         thread::Builder::new()
             .name(format!("iii-exec-{corr_id}-tty"))
-            .spawn(move || stream_fd(writer, corr_id, master_reader, OutputKind::Stdout))
+            .spawn(move || stream_fd(writer, corr_id, master_reader, OutputKind::Stdout, window))
             .ok()
     };
 
@@ -955,12 +1037,23 @@ enum OutputKind {
     Stderr,
 }
 
-fn stream_fd<R: Read>(writer: Writer, corr_id: u32, mut src: R, kind: OutputKind) {
+fn stream_fd<R: Read>(
+    writer: Writer,
+    corr_id: u32,
+    mut src: R,
+    kind: OutputKind,
+    window: Arc<Window>,
+) {
     let mut buf = vec![0u8; IO_CHUNK_SIZE];
     loop {
         match src.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
+                // Until the host takes earlier output, the child blocks on a
+                // full pipe; once the host cancelled, stop reading it.
+                if !window.acquire() {
+                    break;
+                }
                 let encoded = encode_b64(&buf[..n]);
                 let msg = match kind {
                     OutputKind::Stdout => ShellMessage::Stdout { data_b64: encoded },
@@ -983,11 +1076,11 @@ pub(crate) fn send_frame(writer: &Writer, corr_id: u32, flags: u8, msg: &ShellMe
             return false;
         }
     };
-    // Waits for room rather than dropping the frame: the host relay
-    // applies backpressure, and it disconnects a host client that stops
-    // reading, so the wait is bounded. A dropped frame was lost output, a
-    // short fs::read, or a lost `Exited` that left an exec hanging. No
-    // lock is held across this send, and the writer thread waits on
+    // Waits for room rather than dropping the frame: a dropped frame was
+    // lost output, a short fs::read, or a lost `Exited` that left an exec
+    // hanging. The host relay never stops reading the port, and output
+    // frames are bounded by their session's Window, so the wait is short.
+    // No lock is held across this send, and the writer thread waits on
     // nothing but the port, so it cannot deadlock.
     writer.send(frame).is_ok()
 }
@@ -1077,8 +1170,8 @@ mod tests {
     }
 
     /// Frames wait for room in a full writer channel instead of being
-    /// dropped, so an exec's output and its `Exited` survive a large
-    /// fs::read keeping the channel full under the relay's backpressure.
+    /// dropped, so an exec's output and its `Exited` survive other
+    /// sessions keeping the channel full.
     #[test]
     fn send_frame_waits_for_a_full_writer_instead_of_dropping() {
         let (writer, frames) = sync_channel::<Vec<u8>>(1);
@@ -1089,6 +1182,44 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         assert_eq!(frames.iter().count(), 50);
         assert!(sender.join().unwrap());
+    }
+
+    /// The host's Credit and SIGKILL frames reach a streaming read: it sends
+    /// a window of chunks, one more per credited frame, and stops when killed.
+    #[test]
+    fn credit_and_sigkill_reach_a_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("big.bin");
+        let window = sp::SEND_WINDOW as usize;
+        std::fs::write(&file, vec![1u8; 4 * window * 64 * 1024]).unwrap();
+        let (writer, frames) = sync_channel::<Vec<u8>>(1024);
+        let (sessions, fs_writes) = (SessionRegistry::default(), FsWriteRegistry::default());
+        let windows = Windows::default();
+        let send = |msg| handle_frame(5, msg, &sessions, &writer, &fs_writes, &windows);
+        let next = || {
+            thread::sleep(Duration::from_millis(200));
+            let got: Vec<Vec<u8>> = frames.try_iter().collect();
+            got.iter()
+                .map(|f| sp::decode_frame_body(&f[4..]).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let chunks = |got: &[(u32, u8, ShellMessage)]| {
+            got.iter()
+                .filter(|m| matches!(m.2, ShellMessage::FsChunk { .. }))
+                .count()
+        };
+
+        send(ShellMessage::FsRequest(iii_shell_proto::FsOp::ReadStart {
+            path: file.to_string_lossy().into_owned(),
+        }));
+        assert_eq!(chunks(&next()), window);
+        send(ShellMessage::Credit { frames: 3 });
+        assert_eq!(chunks(&next()), 3);
+        send(ShellMessage::Signal { signal: 9 });
+        let last = next();
+        assert_eq!(last.len(), 1, "a killed read sent more: {last:?}");
+        assert!(last[0].1 & FLAG_TERMINAL != 0);
+        assert!(matches!(&last[0].2, ShellMessage::FsError { code, .. } if code == "S218"));
     }
 
     /// Drive the dispatcher over an in-process socketpair and assert
@@ -1116,9 +1247,10 @@ mod tests {
             let writer = spawn_writer_thread(guest_file);
             let sessions: SessionRegistry = Arc::new(Mutex::new(HashMap::new()));
             let fs_writes: FsWriteRegistry = Arc::new(Mutex::new(HashMap::new()));
+            let windows = Windows::default();
             let mut reader = BufReader::new(guest_clone);
             while let Ok(Some((corr_id, _f, msg))) = sp::read_frame_blocking(&mut reader) {
-                handle_frame(corr_id, msg, &sessions, &writer, &fs_writes);
+                handle_frame(corr_id, msg, &sessions, &writer, &fs_writes, &windows);
             }
         });
 
@@ -1209,9 +1341,10 @@ mod tests {
             let writer = spawn_writer_thread(guest_file);
             let sessions: SessionRegistry = Arc::new(Mutex::new(HashMap::new()));
             let fs_writes: FsWriteRegistry = Arc::new(Mutex::new(HashMap::new()));
+            let windows = Windows::default();
             let mut reader = BufReader::new(guest_clone);
             while let Ok(Some((corr_id, _f, msg))) = sp::read_frame_blocking(&mut reader) {
-                handle_frame(corr_id, msg, &sessions, &writer, &fs_writes);
+                handle_frame(corr_id, msg, &sessions, &writer, &fs_writes, &windows);
             }
         });
 
@@ -1297,9 +1430,10 @@ mod tests {
             let writer = spawn_writer_thread(guest_file);
             let sessions: SessionRegistry = Arc::new(Mutex::new(HashMap::new()));
             let fs_writes: FsWriteRegistry = Arc::new(Mutex::new(HashMap::new()));
+            let windows = Windows::default();
             let mut reader = BufReader::new(guest_clone);
             while let Ok(Some((corr_id, _f, msg))) = sp::read_frame_blocking(&mut reader) {
-                handle_frame(corr_id, msg, &sessions, &writer, &fs_writes);
+                handle_frame(corr_id, msg, &sessions, &writer, &fs_writes, &windows);
             }
         });
 
@@ -1481,9 +1615,10 @@ mod tests {
                 let w = spawn_writer_thread(f);
                 let sessions: SessionRegistry = Arc::new(Mutex::new(HashMap::new()));
                 let fs_writes: FsWriteRegistry = Arc::new(Mutex::new(HashMap::new()));
+                let windows = Windows::default();
                 let mut r = BufReader::new(g_clone);
                 while let Ok(Some((id, _f, msg))) = sp::read_frame_blocking(&mut r) {
-                    handle_frame(id, msg, &sessions, &w, &fs_writes);
+                    handle_frame(id, msg, &sessions, &w, &fs_writes, &windows);
                 }
             });
             (h, 0u8)
@@ -1501,9 +1636,10 @@ mod tests {
             let w = spawn_writer_thread(f);
             let sessions: SessionRegistry = Arc::new(Mutex::new(HashMap::new()));
             let fs_writes: FsWriteRegistry = Arc::new(Mutex::new(HashMap::new()));
+            let windows = Windows::default();
             let mut r = BufReader::new(g_clone);
             while let Ok(Some((id, _f, msg))) = sp::read_frame_blocking(&mut r) {
-                handle_frame(id, msg, &sessions, &w, &fs_writes);
+                handle_frame(id, msg, &sessions, &w, &fs_writes, &windows);
             }
         });
 

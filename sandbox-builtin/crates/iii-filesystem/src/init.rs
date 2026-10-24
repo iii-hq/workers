@@ -1,10 +1,11 @@
 //! Embedded init binary bytes.
 //!
-//! When built with `--features embed-init` and the iii-init binary is available,
-//! `INIT_BYTES` contains the full binary. Otherwise it is empty, and VMs
+//! With `--features embed-init`, `INIT_BYTES` holds the guest init that
+//! `scripts/build-init.sh` built, and the build fails when that init is
+//! missing or older than its sources. Otherwise it is empty, and VMs
 //! fall back to the default libkrun init.
 
-/// The embedded init binary. Empty when `embed-init` feature is off or binary unavailable.
+/// The embedded init binary. Empty when the `embed-init` feature is off.
 #[cfg(has_init_binary)]
 pub const INIT_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/iii-init"));
 

@@ -37,9 +37,10 @@ const SUPPORTED_KINDS: &[&str] = &["typescript", "javascript", "bun", "python", 
 // Manifest schema source of truth: `cli::worker_manifest::WorkerManifest`.
 // The typed struct defines the supported fields (mirroring the formal sections
 // in docs/creating-workers/worker-manifest.mdx), carries the deprecated legacy
-// fields (runtime.kind/package_manager/entry/language, top-level config/
-// language/entry — still honored), and catches unknown keys via
-// `#[serde(flatten)]` maps. `validate_manifest_keys` below is a thin wrapper
+// fields (runtime.kind/package_manager/entry/language — still honored) and
+// the release CI's publish keys (top-level language, config, ...), and
+// catches unknown keys via `#[serde(flatten)]` maps.
+// `validate_manifest_keys` below is a thin wrapper
 // over it for the start path. `env` and `dependencies` are arbitrary
 // user-defined maps — their inner keys are never allowlist-checked.
 // ─────────────────────────────────────────────────────────────────────────────
