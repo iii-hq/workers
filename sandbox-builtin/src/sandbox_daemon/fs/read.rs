@@ -144,7 +144,8 @@ pub async fn handle_read<R: FsRunner + ?Sized>(
                     let bytes_for_channel = s.as_bytes().to_vec();
                     let cursor = std::io::Cursor::new(bytes_for_channel);
                     let chained: Box<dyn tokio::io::AsyncRead + Unpin + Send> = Box::new(cursor);
-                    return stream_via_channel(iii, chained, meta, Some(s), path).await;
+                    return stream_via_channel(iii, registry, id, chained, meta, Some(s), path)
+                        .await;
                 }
                 Err(err) => {
                     // Invalid UTF-8. Stream the buffered bytes back through a
@@ -153,7 +154,7 @@ pub async fn handle_read<R: FsRunner + ?Sized>(
                     let buf = err.into_bytes();
                     let cursor = std::io::Cursor::new(buf);
                     let chained: Box<dyn tokio::io::AsyncRead + Unpin + Send> = Box::new(cursor);
-                    return stream_via_channel(iii, chained, meta, None, path).await;
+                    return stream_via_channel(iii, registry, id, chained, meta, None, path).await;
                 }
             }
         } else {
@@ -163,12 +164,12 @@ pub async fn handle_read<R: FsRunner + ?Sized>(
             let cursor = std::io::Cursor::new(buf);
             let chained: Box<dyn tokio::io::AsyncRead + Unpin + Send> =
                 Box::new(cursor.chain(reader));
-            return stream_via_channel(iii, chained, meta, None, path).await;
+            return stream_via_channel(iii, registry, id, chained, meta, None, path).await;
         }
     }
 
     // Large file: stream directly without buffering.
-    stream_via_channel(iii, reader, meta, None, path).await
+    stream_via_channel(iii, registry, id, reader, meta, None, path).await
 }
 
 /// Spawn the channel-pump task and return a `ReadResponse` carrying a
@@ -179,6 +180,8 @@ pub async fn handle_read<R: FsRunner + ?Sized>(
 /// legacy subscribers).
 async fn stream_via_channel(
     iii: &iii_sdk::IIIClient,
+    registry: &SandboxRegistry,
+    id: Uuid,
     mut reader: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
     meta: iii_shell_proto::FsReadMeta,
     body: Option<String>,
@@ -190,6 +193,7 @@ async fn stream_via_channel(
 
     let reader_ref = channel.reader_ref.clone();
     let writer = channel.writer;
+    let registry = registry.clone();
 
     // Pump bytes from the source AsyncRead into the channel on a background task.
     tokio::spawn(async move {
@@ -202,6 +206,8 @@ async fn stream_via_channel(
                     break;
                 }
                 Ok(n) => {
+                    // A long transfer is activity: keep the idle reaper off the sandbox.
+                    registry.bump_last_exec(id).await;
                     if let Err(e) = writer.write(&buf[..n]).await {
                         let _ = writer
                             .send_message(

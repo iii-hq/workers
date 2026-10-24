@@ -103,6 +103,8 @@ impl Drop for ClientBytesGuard {
 struct RouteEntry {
     sender: mpsc::Sender<FrameBytes>,
     owner_ids: Arc<Mutex<HashSet<u32>>>,
+    /// Ends the owning client's session; see [`SLOW_CLIENT_GRACE`].
+    kick: Arc<tokio::sync::Notify>,
 }
 
 /// Maps a `corr_id` to the [`RouteEntry`] that delivers its response
@@ -154,6 +156,14 @@ const VM_WRITE_CAPACITY: usize = 1024;
 /// warning when the bound is hit — the cost of an unresponsive client
 /// is lost output on its own session, never a hang on anyone else's.
 const CLIENT_WRITE_CAPACITY: usize = 1024;
+
+/// How long `vm_reader_task` waits for room in a full client channel
+/// before it disconnects that client. Waiting is backpressure: the
+/// guest's writes block and nothing is lost, where dropping frames
+/// cut a large `fs::read` short with a clean end. The bound keeps a
+/// client that stopped reading from stalling every other session for
+/// long; its session then ends without a terminal frame.
+const SLOW_CLIENT_GRACE: Duration = Duration::from_secs(10);
 
 /// Maximum number of distinct `corr_id`s a single client can register
 /// routes for concurrently. Each registered id pins an entry in the
@@ -356,23 +366,30 @@ async fn vm_reader_task(
         let flags = frame[8];
         let terminal = (flags & iii_supervisor::shell_protocol::flags::FLAG_TERMINAL) != 0;
 
-        let sender = {
+        let route = {
             let map = routes.lock().expect("routes mutex poisoned");
-            map.get(&corr_id).map(|e| e.sender.clone())
+            map.get(&corr_id)
+                .map(|e| (e.sender.clone(), e.kick.clone()))
         };
-        if let Some(tx) = sender {
-            // `try_send` is critical here: awaiting a full client
-            // channel would stall vm_reader_task for every corr_id,
-            // starving every other session. A misbehaving client must
-            // only lose its own frames, never anyone else's. See
-            // `CLIENT_WRITE_CAPACITY` for sizing rationale.
+        if let Some((tx, kick)) = route {
+            // A full channel stalls vm_reader_task, and so every other
+            // session, but only up to SLOW_CLIENT_GRACE: a slow client
+            // gets backpressure instead of a silently short stream, and
+            // a stuck one is disconnected. See `CLIENT_WRITE_CAPACITY`
+            // for sizing rationale.
             match tx.try_send(frame) {
                 Ok(()) => {}
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    tracing::warn!(
-                        "shell_relay: client channel full for corr_id {corr_id}, \
-                         dropping frame (slow client)"
-                    );
+                Err(mpsc::error::TrySendError::Full(frame)) => {
+                    if tokio::time::timeout(SLOW_CLIENT_GRACE, tx.send(frame))
+                        .await
+                        .is_err()
+                    {
+                        tracing::warn!(
+                            "shell_relay: client for corr_id {corr_id} read nothing for \
+                             {SLOW_CLIENT_GRACE:?}; disconnecting it"
+                        );
+                        kick.notify_one();
+                    }
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => {
                     // Client disconnected; the route entry is about
@@ -547,6 +564,8 @@ async fn client_session(
     let owned_ids: Arc<Mutex<HashSet<u32>>> = Arc::new(Mutex::new(HashSet::new()));
     let owned_ids_for_reader = owned_ids.clone();
     let routes_for_reader = routes.clone();
+    let kick = Arc::new(tokio::sync::Notify::new());
+    let kick_for_reader = kick.clone();
     // One-shot log flag: cap-exceeded drops must not spam tracing
     // (an attacker could otherwise flood warn lines to DoS the log
     // sink). Logs once the first time the client hits the cap per
@@ -616,6 +635,7 @@ async fn client_session(
                     slot.insert(RouteEntry {
                         sender: client_tx.clone(),
                         owner_ids: owned_ids_for_reader.clone(),
+                        kick: kick_for_reader.clone(),
                     });
                     owned_guard.insert(corr_id);
                 }
@@ -658,6 +678,7 @@ async fn client_session(
     tokio::select! {
         _ = reader_fut => {}
         _ = writer_fut => {}
+        _ = kick.notified() => {}
     }
 
     // On client disconnect, any sessions this client spawned in the
@@ -1115,6 +1136,66 @@ mod tests {
             drop(s);
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
+    }
+
+    /// A client that falls behind (a large `fs::read` whose consumer is
+    /// slower than the guest) gets every frame once it catches up, rather
+    /// than a stream with frames silently dropped past its channel's capacity.
+    #[tokio::test]
+    async fn slow_client_loses_no_frames() {
+        const FRAMES: usize = 3 * CLIENT_WRITE_CAPACITY;
+        let (sock, vm_guest_sim, _tmp) = boot().await;
+        // Guest simulator: answers the first request with FRAMES chunks, then the end.
+        let mut writer = vm_guest_sim.try_clone().unwrap();
+        std::thread::spawn(move || {
+            let mut reader = std::io::BufReader::new(vm_guest_sim);
+            if let Ok(Some((corr_id, _, _))) = read_frame_blocking(&mut reader) {
+                use std::io::Write;
+                let chunk = ShellMessage::Stdout {
+                    data_b64: "A".repeat(1024),
+                };
+                let frame = encode_frame(corr_id, 0, &chunk).unwrap();
+                for _ in 0..FRAMES {
+                    writer.write_all(&frame).unwrap();
+                }
+                let end = encode_frame(corr_id, FLAG_TERMINAL, &ShellMessage::Exited { code: 0 });
+                writer.write_all(&end.unwrap()).unwrap();
+            }
+        });
+
+        let mut client = tokio::net::UnixStream::connect(&sock).await.unwrap();
+        let mut hs = [0u8; 4];
+        client.read_exact(&mut hs).await.unwrap();
+        let request = ShellMessage::Request {
+            cmd: "/bin/cat".into(),
+            args: vec![],
+            env: vec![],
+            cwd: None,
+            tty: false,
+            rows: 24,
+            cols: 80,
+        };
+        let corr_id = u32::from_be_bytes(hs) + 1;
+        client
+            .write_all(&encode_frame(corr_id, 0, &request).unwrap())
+            .await
+            .unwrap();
+        // Fall behind: the guest fills every buffer on the way meanwhile.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let mut chunks = 0;
+        loop {
+            let frame = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut client))
+                .await
+                .expect("stream stalled")
+                .unwrap()
+                .expect("stream ended before its terminal frame");
+            if frame[8] & FLAG_TERMINAL != 0 {
+                break;
+            }
+            chunks += 1;
+        }
+        assert_eq!(chunks, FRAMES);
     }
 
     #[tokio::test]
