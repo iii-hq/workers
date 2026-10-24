@@ -78,14 +78,6 @@ pub struct VmBootArgs {
     #[arg(long)]
     pub env_stdin: bool,
 
-    /// PID file to clean up on VM exit (managed workers only)
-    #[arg(long)]
-    pub pid_file: Option<String>,
-
-    /// Redirect VM console output to this file (managed workers only).
-    #[arg(long)]
-    pub console_output: Option<String>,
-
     /// Network slot for IP/MAC address derivation (0-65535)
     #[arg(long, default_value = "0")]
     pub slot: u64,
@@ -1268,7 +1260,6 @@ fn boot_vm(
     // The proxy thread outlives this function — it runs until the
     // `__vm-boot` process exits (i.e. until the VM powers off), which
     // is exactly the lifetime of the control channel.
-    let console_output_path = args.console_output.clone();
     let mut guest_control_fd: Option<i32> = None;
     let mut control_sock_fingerprint: Option<SocketFingerprint> = None;
     if let Some(sock_path) = args.control_sock.clone() {
@@ -1283,9 +1274,6 @@ fn boot_vm(
     // spawn succeeded; on Err we dropped the guest fd to fail closed.
 
     builder = builder.console(move |mut c| {
-        if let Some(path) = console_output_path {
-            c = c.output(path);
-        }
         if let Some(fd) = guest_control_fd {
             c = c.port(iii_supervisor::protocol::CONTROL_PORT_NAME, fd, fd);
         }
@@ -1301,27 +1289,14 @@ fn boot_vm(
         c
     });
 
-    // Register VM-exit cleanup for pidfile and control socket
-    // independently — they're separate resources and may be enabled
-    // independently of each other (a future caller may want a control
-    // socket without a persistent pidfile, or vice versa). Coupling
-    // them inside `if let Some(pid_file)` would silently regress the
-    // socket-cleanup path for such callers.
-    //
-    // libkrun's Builder::on_exit replaces the previous hook, so we
-    // fold everything into a single closure that checks each resource
-    // independently.
-    let pid_path_for_exit = args.pid_file.clone();
+    // Register VM-exit cleanup for the control and shell sockets
+    // independently: either may be enabled without the other. libkrun's
+    // Builder::on_exit replaces the previous hook, so one closure checks
+    // each resource.
     let sock_fingerprint_for_exit = control_sock_fingerprint.clone();
     let shell_fingerprint_for_exit = shell_sock_fingerprint.clone();
-    if pid_path_for_exit.is_some()
-        || sock_fingerprint_for_exit.is_some()
-        || shell_fingerprint_for_exit.is_some()
-    {
+    if sock_fingerprint_for_exit.is_some() || shell_fingerprint_for_exit.is_some() {
         builder = builder.on_exit(move |exit_code| {
-            if let Some(ref p) = pid_path_for_exit {
-                let _ = std::fs::remove_file(p);
-            }
             // Only unlink the control socket if it's still the one we
             // bound — a fast `stop → start` can let a new VM rebind
             // the same path before this hook fires. The fingerprint
@@ -1349,8 +1324,8 @@ fn boot_vm(
     // notifies on_exit observers, `_exit`s with the current exit
     // code) instead of the process being killed mid-guest-write.
     // Without this, `stop → SIGTERM` from the host leaves the guest
-    // no chance to fsync, flush stdout logs, or drop pidfiles; the
-    // on_exit closure installed above is what does that cleanup.
+    // no chance to fsync or flush stdout logs; the on_exit closure
+    // installed above unlinks the sockets.
     //
     // Register the two signal streams SYNCHRONOUSLY before spawning
     // the awaiter task. Doing registration inside the spawned task
@@ -1392,7 +1367,7 @@ fn boot_vm(
     // instant the spawner dies — ANY death, SIGKILL included. Without this,
     // VMs are setsid'd session leaders that nothing ever reaps once their
     // daemon is gone. Routed through the same ExitHandle as SIGTERM/SIGINT
-    // so the on_exit cleanup (pidfile + socket fingerprints) runs instead of
+    // so the on_exit cleanup (socket fingerprints) runs instead of
     // an abrupt process::exit. Plain OS threads, because libkrun owns the
     // main thread once `enter()` runs; if the spawner died during boot the
     // first read/poll fires immediately. The spawner-pid poll backstops the

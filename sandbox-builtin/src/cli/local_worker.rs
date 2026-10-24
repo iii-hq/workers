@@ -319,8 +319,7 @@ pub fn build_local_mounts(project_path: &Path, workspace_guest: &str) -> Vec<(St
 /// The predicate is `!managed_dir.join("bin").exists()` — every OCI base
 /// image we ship populates `/bin`, and none of the failure-mode artifacts
 /// (iii-init runtime mkdirs for /dev /proc /sys /etc /tmp /run, our own
-/// side-effect writes under /opt /workspace, stray vm.pid / watch.pid, a
-/// leftover `/rootfs` subdir from an older codepath) do. Plain
+/// side-effect writes under /opt /workspace) do. Plain
 /// `!managed_dir.exists()` is insufficient: a half-start that created
 /// runtime mountpoints then died would falsely register as "already
 /// prepared" and surface as a confusing `supervisor spawn_initial failed:
@@ -577,8 +576,8 @@ pub(crate) async fn start_worker_impl(
     // Detect "managed_dir exists but the rootfs was never cloned here"
     // by probing for `/bin` — every OCI base image we ship has it, and
     // neither iii-init's runtime mount dirs (/dev, /proc, /sys, /etc,
-    // /tmp, /run) nor our own side-effect writes (/opt, /workspace,
-    // vm.pid, watch.pid, /rootfs from an older codepath) populate it.
+    // /tmp, /run) nor our own side-effect writes (/opt, /workspace)
+    // populate it.
     //
     // Matches the `path.join("bin").exists()` idiom in
     // `worker_manager/oci.rs::prepare_rootfs`. A plain `managed_dir.exists()`
@@ -594,8 +593,8 @@ pub(crate) async fn start_worker_impl(
     // fresh as a copy of SRC. Without the wipe, cp's "copy INTO existing
     // dir" semantics would nest the rootfs at `managed_dir/python/`
     // instead of at `managed_dir/`. Anything the user cares about under
-    // managed_dir is regenerated on boot (logs, vm.pid, dep caches come
-    // back after pip install / npm install).
+    // managed_dir is regenerated on boot (dep caches come back after
+    // pip install / npm install).
     // Overlay mode serves the shared read-only erofs base as the rootfs
     // lower (built later from the cache) plus a per-worker ext4 upper — so
     // there is NO per-worker rootfs clone. The managed_dir is just a minimal
@@ -1309,9 +1308,6 @@ resources:
         assert!(err.contains("unrecognized runtime kind 'cobol'"), "{err}");
     }
 
-    // Symlink-defense + 0o600 mode tests moved to super::pidfile where
-    // the shared implementation lives.
-
     /// Regression test for the "managed_dir exists but is missing /bin"
     /// failure mode. A half-populated managed_dir — created by a prior
     /// iii-init boot that mkdir'd /dev/proc/sys but died before the
@@ -1348,8 +1344,6 @@ resources:
         ] {
             std::fs::create_dir_all(managed.join(d)).unwrap();
         }
-        std::fs::write(managed.join("vm.pid"), "12345").unwrap();
-        std::fs::write(managed.join("watch.pid"), "12346").unwrap();
 
         // Dir exists — the old too-weak guard would skip the clone.
         assert!(managed.exists());

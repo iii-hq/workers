@@ -614,7 +614,7 @@ impl Vm {
     }
 }
 
-/// Opens a control file with `O_NOFOLLOW`, as `cli::pidfile` does: a planted
+/// Opens a control file with `O_NOFOLLOW`: a planted
 /// symlink fails the open instead of redirecting it. A write truncates, mode 0600.
 fn open_private(path: &Path, write: bool) -> io::Result<File> {
     let mut opts = OpenOptions::new();

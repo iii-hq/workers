@@ -4,23 +4,20 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! libkrun VM runtime for `iii worker dev`.
+//! libkrun VM runtime for worker VMs and sandboxes.
 //!
 //! Provides VM-based isolated execution using libkrun (Apple Hypervisor.framework
 //! on macOS, KVM on Linux). The VM runs in a separate helper process
 //! for crash isolation.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use super::oci::{expected_oci_arch, read_cached_rootfs_arch, read_oci_entrypoint, read_oci_env};
-use crate::cli::rootfs::clone_rootfs;
-
 /// Forward optional VM-boot tuning flags to the `__vm-boot` child
 /// based on opt-in environment variables. Keeps the public API of
-/// `build_vm_command` / `LibkrunAdapter::start` unchanged while giving
+/// `build_vm_command` unchanged while giving
 /// operators a single place to enable hyperthreading, nested
 /// virtualization, virtiofs DAX window tuning, and the worker-side
 /// NOFILE rlimit for perf experiments.
@@ -92,9 +89,6 @@ pub(crate) fn build_vm_env(caller_env: HashMap<String, String>) -> HashMap<Strin
 /// crash.
 pub struct VmCommand {
     pub command: tokio::process::Command,
-    /// Where the supervisor records the VM pid. A caller holding its own child
-    /// handle does not need it.
-    pub pid_file: PathBuf,
     /// The worker env, as the `__vm-boot --env-stdin` frame. The command
     /// carries no env values in argv, where `ps` would show them to every
     /// local user (MOT-5492): whoever spawns it must write this to the
@@ -164,15 +158,9 @@ pub fn build_vm_command(
         .map_err(|e| format!("cannot pass the worker environment to the VM: {e}"))?;
     let control_sock = rootfs.join("control.sock");
     let shell_sock = rootfs.join("shell.sock");
-    let pid_file = rootfs.join("vm.pid");
 
     let mut cmd = tokio::process::Command::new(&self_exe);
     cmd.arg("__vm-boot");
-    // Managed-worker VMs are DETACHED by design (adopt-orphan semantics);
-    // scrub any ambient lifeline inheritance so a VM spawned by a process
-    // that itself carries a lifeline can never wrongly die with it.
-    cmd.env_remove(crate::daemon_exit::LIFELINE_FD_ENV);
-    cmd.env_remove(crate::daemon_exit::LIFELINE_SPAWNER_PID_ENV);
     for boot_arg in vm_boot_args_dev(
         &rootfs,
         rootfs_lower.as_deref(),
@@ -181,7 +169,6 @@ pub fn build_vm_command(
         exec_path,
         vcpus,
         ram_mib,
-        &pid_file,
         &control_sock,
         &shell_sock,
         source_sync,
@@ -213,61 +200,13 @@ pub fn build_vm_command(
     // already a group leader, and the spawn fails with it.
     Ok(VmCommand {
         command: cmd,
-        pid_file,
         env_stdin,
     })
 }
 
-use super::adapter::{ContainerSpec, ContainerStatus, ImageInfo, RuntimeAdapter};
-
 const VM_BOOT_NETWORK_FLAG: &str = "--network";
 /// The env goes on stdin, never argv, where `ps` shows it (MOT-5492).
 const VM_BOOT_ENV_STDIN_FLAG: &str = "--env-stdin";
-
-#[allow(clippy::too_many_arguments)]
-fn vm_boot_args_oci(
-    rootfs: &Path,
-    rootfs_lower: Option<&Path>,
-    rootfs_mode: &str,
-    rootfs_upper: Option<&Path>,
-    exec_path: &str,
-    workdir: &str,
-    vcpus: u32,
-    ram_mib: &str,
-    pid_file: &Path,
-    console_output: &Path,
-    control_sock: &Path,
-    shell_sock: &Path,
-    exec_args: &[String],
-) -> Vec<OsString> {
-    let mut out: Vec<OsString> = Vec::new();
-    out.push(OsString::from("--rootfs"));
-    out.push(rootfs.as_os_str().to_owned());
-    push_overlay_args(&mut out, rootfs_lower, rootfs_mode, rootfs_upper);
-    out.push(OsString::from("--exec"));
-    out.push(OsString::from(exec_path));
-    out.push(OsString::from("--workdir"));
-    out.push(OsString::from(workdir));
-    out.push(OsString::from("--vcpus"));
-    out.push(OsString::from(vcpus.to_string()));
-    out.push(OsString::from("--ram"));
-    out.push(OsString::from(ram_mib));
-    out.push(OsString::from("--pid-file"));
-    out.push(pid_file.as_os_str().to_owned());
-    out.push(OsString::from("--console-output"));
-    out.push(console_output.as_os_str().to_owned());
-    out.push(OsString::from("--control-sock"));
-    out.push(control_sock.as_os_str().to_owned());
-    out.push(OsString::from("--shell-sock"));
-    out.push(shell_sock.as_os_str().to_owned());
-    out.push(OsString::from(VM_BOOT_NETWORK_FLAG));
-    out.push(OsString::from(VM_BOOT_ENV_STDIN_FLAG));
-    for arg in exec_args {
-        out.push(OsString::from("--arg"));
-        out.push(OsString::from(arg.as_str()));
-    }
-    out
-}
 
 /// Push `--rootfs-lower <sqfs> --rootfs-mode <mode>` when overlay mode is
 /// active (i.e. the start path built a base erofs). No-op for legacy.
@@ -301,7 +240,6 @@ fn vm_boot_args_dev(
     exec_path: &str,
     vcpus: u32,
     ram_mib: u32,
-    pid_file: &Path,
     control_sock: &Path,
     shell_sock: &Path,
     source_sync: Option<&Path>,
@@ -320,12 +258,6 @@ fn vm_boot_args_dev(
     out.push(OsString::from(vcpus.to_string()));
     out.push(OsString::from("--ram"));
     out.push(OsString::from(ram_mib.to_string()));
-    // `--pid-file` must be in argv (not just written post-spawn by the
-    // parent): it's how `extract_worker_name_from_cmdline` recognizes this
-    // VM in `ps`, and how `__vm-boot` knows to clean the pidfile on exit.
-    // Matching `vm_boot_args_oci`.
-    out.push(OsString::from("--pid-file"));
-    out.push(pid_file.as_os_str().to_owned());
     out.push(OsString::from("--control-sock"));
     out.push(control_sock.as_os_str().to_owned());
     out.push(OsString::from("--shell-sock"));
@@ -347,566 +279,6 @@ fn vm_boot_args_dev(
     out
 }
 
-pub struct LibkrunAdapter;
-
-impl Default for LibkrunAdapter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl LibkrunAdapter {
-    pub fn new() -> Self {
-        Self
-    }
-
-    pub fn worker_dir(name: &str) -> PathBuf {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join(".iii")
-            .join("managed")
-            .join(name)
-    }
-
-    /// Tighten `~/.iii/managed` to 0o700 so a same-UID attacker
-    /// can't race `connect()` on per-worker sockets before
-    /// per-worker dir permissions land.
-    fn ensure_managed_parent_restricted() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let parent = dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("/tmp"))
-                .join(".iii")
-                .join("managed");
-            if let Err(e) = std::fs::create_dir_all(&parent) {
-                tracing::warn!(
-                    path = %parent.display(),
-                    error = %e,
-                    "failed to create ~/.iii/managed parent dir"
-                );
-                return;
-            }
-            match std::fs::metadata(&parent) {
-                Ok(meta) => {
-                    let mode = meta.permissions().mode() & 0o777;
-                    if mode != 0o700
-                        && let Err(e) = std::fs::set_permissions(
-                            &parent,
-                            std::fs::Permissions::from_mode(0o700),
-                        )
-                    {
-                        tracing::warn!(
-                            path = %parent.display(),
-                            current_mode = format!("{mode:o}"),
-                            error = %e,
-                            "could not tighten ~/.iii/managed to 0o700; \
-                             per-worker dirs still land 0o700 but TOCTOU \
-                             window remains on socket create",
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        path = %parent.display(),
-                        error = %e,
-                        "stat ~/.iii/managed failed; skipping permission tighten"
-                    );
-                }
-            }
-        }
-    }
-
-    /// Canonical on-disk location for the image's rootfs. Delegates to
-    /// the unified `rootfs_cache` so libkrun shares its cache with the
-    /// sandbox daemon and `prepare_rootfs` — pulling the same OCI ref
-    /// twice across those flows now hits one directory, not three.
-    /// Pinned (`foo:tag@sha256:...`) and unpinned variants of the same
-    /// image collapse to one dir inside `rootfs_cache`, preserving the
-    /// #1540 cache-reuse invariant across the unified path.
-    pub fn image_rootfs(image: &str) -> PathBuf {
-        crate::cli::rootfs_cache::canonical_path(image)
-    }
-
-    pub fn pid_file(name: &str) -> PathBuf {
-        Self::worker_dir(name).join("vm.pid")
-    }
-
-    pub fn logs_dir(name: &str) -> PathBuf {
-        Self::worker_dir(name).join("logs")
-    }
-
-    fn stdout_log(name: &str) -> PathBuf {
-        Self::logs_dir(name).join("stdout.log")
-    }
-
-    fn stderr_log(name: &str) -> PathBuf {
-        Self::logs_dir(name).join("stderr.log")
-    }
-
-    fn pid_alive(pid: u32) -> bool {
-        unsafe { nix::libc::kill(pid as i32, 0) == 0 }
-    }
-}
-
-#[async_trait::async_trait]
-impl RuntimeAdapter for LibkrunAdapter {
-    async fn pull(&self, image: &str) -> Result<ImageInfo> {
-        let expected_arch = expected_oci_arch().to_string();
-        let hints = crate::cli::rootfs_cache::CacheHints {
-            consult_images_cache: true,
-            ..Default::default()
-        };
-
-        // Cache hit: verify arch before short-circuiting. Legacy paths
-        // can be arch-mismatched if the user switched host architectures.
-        if let Some(cached) = crate::cli::rootfs_cache::resolve_cached(image, &hints) {
-            let cached_arch = read_cached_rootfs_arch(&cached);
-            let arch_match = cached_arch
-                .as_deref()
-                .map(|a| a == expected_arch)
-                .unwrap_or(false);
-            if arch_match {
-                tracing::info!(image = %image, path = %cached.display(), "image rootfs cached, skipping pull");
-                let size_bytes = fs_dir_size(&cached).ok();
-                return Ok(ImageInfo {
-                    image: image.to_string(),
-                    size_bytes,
-                });
-            }
-            tracing::warn!(
-                image = %image,
-                expected_arch = %expected_arch,
-                cached_arch = ?cached_arch,
-                path = %cached.display(),
-                "cached rootfs architecture mismatch, rebuilding cache"
-            );
-            // Wipe the mismatched copy (could be canonical or legacy —
-            // either way its bytes are wrong for this host) and fall
-            // through to pull.
-            let _ = std::fs::remove_dir_all(&cached);
-        }
-
-        tracing::info!(image = %image, "pulling OCI image via libkrun");
-        let image_for_log = image.to_string();
-        let rootfs_dir = crate::cli::rootfs_cache::ensure_rootfs(
-            image,
-            &crate::cli::rootfs_cache::CacheHints::default(),
-            move || {
-                tracing::info!(image = %image_for_log, "pulling OCI image via libkrun");
-            },
-        )
-        .await?;
-
-        let hosts_path = rootfs_dir.join("etc/hosts");
-        super::oci::write_default_hosts_no_follow(&hosts_path);
-
-        let final_arch = read_cached_rootfs_arch(&rootfs_dir);
-        let final_match = final_arch
-            .as_deref()
-            .map(|a| a == expected_arch)
-            .unwrap_or(false);
-        if !final_match {
-            anyhow::bail!(
-                "image architecture mismatch for {}: expected linux/{} but pulled {:?}. \
-This image likely does not publish arm64. Rebuild/push a multi-arch image (linux/arm64,linux/amd64).",
-                image,
-                expected_arch,
-                final_arch
-            );
-        }
-
-        let size_bytes = fs_dir_size(&rootfs_dir).ok();
-
-        Ok(ImageInfo {
-            image: image.to_string(),
-            size_bytes,
-        })
-    }
-
-    async fn extract_file(&self, image: &str, path: &str) -> Result<Vec<u8>> {
-        // Resolve through the unified cache so we read from wherever
-        // the rootfs actually lives (canonical or legacy).
-        let hints = crate::cli::rootfs_cache::CacheHints {
-            consult_images_cache: true,
-            ..Default::default()
-        };
-        let rootfs_dir = crate::cli::rootfs_cache::resolve_cached(image, &hints)
-            .unwrap_or_else(|| Self::image_rootfs(image));
-        let file_path = rootfs_dir.join(path.trim_start_matches('/'));
-        // The rootfs comes from the image: never follow a symlink in it
-        // (e.g. `iii/worker.yaml` pointing at a host file, a device or a FIFO).
-        super::oci::read_rootfs_file_no_follow(&rootfs_dir, std::path::Path::new(path))
-            .with_context(|| format!("failed to read {} from rootfs", file_path.display()))
-    }
-
-    async fn start(&self, spec: &ContainerSpec) -> Result<String> {
-        Self::ensure_managed_parent_restricted();
-        let worker_dir = Self::worker_dir(&spec.name);
-        std::fs::create_dir_all(&worker_dir)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&worker_dir, std::fs::Permissions::from_mode(0o700));
-        }
-
-        // Prefer a populated cache hit (canonical or legacy); only pull
-        // if neither location has the image.
-        let rootfs_hints = crate::cli::rootfs_cache::CacheHints {
-            consult_images_cache: true,
-            ..Default::default()
-        };
-        let rootfs_dir = match crate::cli::rootfs_cache::resolve_cached(&spec.image, &rootfs_hints)
-        {
-            Some(p) => p,
-            None => {
-                tracing::info!(image = %spec.image, "rootfs not found, pulling automatically");
-                eprintln!("  Pulling rootfs ({})...", spec.image);
-                self.pull(&spec.image).await?;
-                // pull() wrote to canonical_path; resolve_cached will find it.
-                crate::cli::rootfs_cache::resolve_cached(&spec.image, &rootfs_hints)
-                    .unwrap_or_else(|| Self::image_rootfs(&spec.image))
-            }
-        };
-
-        let worker_rootfs = worker_dir.join("rootfs");
-        // Overlay mode serves the shared read-only erofs base (built below
-        // from `rootfs_dir`) plus a per-worker ext4 upper, so there is NO
-        // per-worker rootfs clone: worker_rootfs is just a minimal trampoline
-        // (embed-init injects /init.krun from memory). OCI image config
-        // (entrypoint/workdir/env) is then read from the cache `rootfs_dir`,
-        // not the empty trampoline.
-        let overlay = crate::cli::overlay::overlay_active();
-        if overlay {
-            std::fs::create_dir_all(&worker_rootfs).with_context(|| {
-                format!(
-                    "failed to create worker rootfs dir: {}",
-                    worker_rootfs.display()
-                )
-            })?;
-            crate::cli::overlay::migrate_to_overlay(&worker_rootfs);
-        } else {
-            let expected_arch = expected_oci_arch().to_string();
-            let mut needs_clone = !worker_rootfs.exists();
-            if !needs_clone {
-                let worker_arch = read_cached_rootfs_arch(&worker_rootfs);
-                let arch_match = worker_arch
-                    .as_deref()
-                    .map(|a| a == expected_arch)
-                    .unwrap_or(false);
-                if !arch_match {
-                    let _ = std::fs::remove_dir_all(&worker_rootfs);
-                    needs_clone = true;
-                }
-            }
-            if needs_clone {
-                clone_rootfs(&rootfs_dir, &worker_rootfs)
-                    .map_err(|e| anyhow::anyhow!("failed to clone rootfs: {}", e))?;
-            }
-        }
-
-        // Where OCI image config (entrypoint/workdir/env) is read from: the
-        // shared cache rootfs under overlay (the trampoline is empty), else
-        // the per-worker clone.
-        let oci_config_dir: &std::path::Path = if overlay {
-            rootfs_dir.as_path()
-        } else {
-            worker_rootfs.as_path()
-        };
-
-        if !iii_filesystem::init::has_init() {
-            let init_path = crate::cli::firmware::download::ensure_init_binary().await?;
-            let dest = worker_rootfs.join("init.krun");
-            // The per-worker rootfs comes from the image (and, without
-            // overlay, keeps what the guest wrote), so `init.krun` may be a
-            // symlink to a host file. Never copy through it.
-            let init_bytes = std::fs::read(&init_path).with_context(|| {
-                format!("failed to read iii-init binary: {}", init_path.display())
-            })?;
-            super::oci::write_rootfs_file_no_follow(&dest, &init_bytes, Some(0o755)).with_context(
-                || format!("failed to copy iii-init to rootfs: {}", dest.display()),
-            )?;
-        }
-
-        let self_exe =
-            std::env::current_exe().context("cannot locate the sandbox-builtin binary")?;
-        #[cfg(target_os = "macos")]
-        {
-            let _ = super::platform::ensure_macos_entitlements(&self_exe);
-        }
-
-        let logs_dir = Self::logs_dir(&spec.name);
-        std::fs::create_dir_all(&logs_dir)
-            .with_context(|| format!("failed to create logs dir: {}", logs_dir.display()))?;
-
-        // APPEND, not truncate.
-        // The parent `iii-worker start` (and engine) wrote progress to
-        // these same files; truncating loses everything the wait UI
-        // could surface via `tail:`.
-        let mut open_opts = std::fs::OpenOptions::new();
-        open_opts.create(true).append(true);
-        let stdout_file = open_opts
-            .open(Self::stdout_log(&spec.name))
-            .with_context(|| "failed to open stdout.log")?;
-        let stderr_file = open_opts
-            .open(Self::stderr_log(&spec.name))
-            .with_context(|| "failed to open stderr.log")?;
-
-        let (exec_path, mut exec_args) =
-            read_oci_entrypoint(oci_config_dir).unwrap_or_else(|| ("/bin/sh".to_string(), vec![]));
-
-        if let Some(url) = spec.env.get("III_ENGINE_URL").or(spec.env.get("III_URL")) {
-            let mut i = 0;
-            let mut found = false;
-            while i < exec_args.len() {
-                if exec_args[i] == "--url" && i + 1 < exec_args.len() {
-                    exec_args[i + 1] = url.clone();
-                    found = true;
-                    break;
-                }
-                i += 1;
-            }
-            if !found {
-                exec_args.push("--url".to_string());
-                exec_args.push(url.clone());
-            }
-        }
-
-        let workdir =
-            super::oci::read_oci_workdir(oci_config_dir).unwrap_or_else(|| "/".to_string());
-
-        let vcpus = spec
-            .cpu_limit
-            .as_deref()
-            .and_then(|s| s.parse::<f64>().ok())
-            .map(|v| v.ceil().max(1.0) as u32)
-            .unwrap_or(2);
-        let ram_mib = spec
-            .memory_limit
-            .as_deref()
-            .and_then(k8s_mem_to_mib)
-            .unwrap_or_else(|| "2048".to_string());
-
-        let pid_file_path = Self::pid_file(&spec.name);
-        let console_output_path = Self::stdout_log(&spec.name);
-        // Control channel for host-driven fast restarts. The socket is
-        // colocated with the pid file under ~/.iii/managed/<name>/ so
-        // supervisor_ctl::control_socket_path resolves to the same place
-        // the watcher and stop handler use. Without this, iii-init's
-        // supervisor mode stays dormant and every source edit falls back
-        // to a full VM restart.
-        let control_sock_path = worker_dir.join("control.sock");
-        // Shell-exec channel alongside the control channel. `iii worker
-        // exec` connects to shell.sock; the in-VM dispatcher thread
-        // handles requests. Absent => exec refuses with a clear error.
-        let shell_sock_path = worker_dir.join("shell.sock");
-
-        let image_env = read_oci_env(oci_config_dir);
-        let mut caller_env: HashMap<String, String> = image_env.into_iter().collect();
-        for (key, value) in &spec.env {
-            caller_env.insert(key.clone(), value.clone());
-        }
-        let merged_env = build_vm_env(caller_env);
-        let env_pairs: Vec<(String, String)> = merged_env.into_iter().collect();
-
-        // Overlay: build the shared read-only base erofs from the cached
-        // image rootfs (host-side, image-independent) and materialize this
-        // worker's persistent ext4 upper from the embedded golden image, both
-        // when overlay is active. Built in START so a failure fails the start
-        // loudly (never a silent fall back to a per-worker clone).
-        let (oci_rootfs_lower, oci_rootfs_mode, oci_rootfs_upper) = if overlay {
-            let erofs_img = match crate::cli::erofs::ensure_base_erofs(&rootfs_dir) {
-                Ok(s) => s,
-                Err(e) => return Err(anyhow::anyhow!("failed to build base erofs: {e}")),
-            };
-            let upper = if crate::cli::upper::has_golden() {
-                match crate::cli::upper::ensure_upper_ext4(&worker_dir) {
-                    Ok(p) => Some(p),
-                    Err(e) => {
-                        return Err(anyhow::anyhow!("failed to materialize overlay upper: {e}"));
-                    }
-                }
-            } else {
-                None
-            };
-            (Some(erofs_img), "overlay".to_string(), upper)
-        } else {
-            (None, String::new(), None)
-        };
-
-        let env_stdin = iii_supervisor::env_channel::encode_frame(&env_pairs)
-            .context("cannot pass the worker environment to the VM")?;
-        let mut cmd = std::process::Command::new(&self_exe);
-        cmd.arg("__vm-boot");
-        // Detached by design: a VM that outlives this process must not hold its lifeline.
-        cmd.env_remove(crate::daemon_exit::LIFELINE_FD_ENV);
-        cmd.env_remove(crate::daemon_exit::LIFELINE_SPAWNER_PID_ENV);
-        for boot_arg in vm_boot_args_oci(
-            &worker_rootfs,
-            oci_rootfs_lower.as_deref(),
-            &oci_rootfs_mode,
-            oci_rootfs_upper.as_deref(),
-            &exec_path,
-            &workdir,
-            vcpus,
-            &ram_mib,
-            &pid_file_path,
-            &console_output_path,
-            &control_sock_path,
-            &shell_sock_path,
-            &exec_args,
-        ) {
-            cmd.arg(boot_arg);
-        }
-
-        // Forward optional VM-tuning env vars (III_VM_*) to __vm-boot.
-        // Same opt-in model as `build_vm_command` — unset vars keep defaults
-        // so this is strictly additive.
-        apply_vm_tuning_env(|flag, val| {
-            cmd.arg(flag);
-            if let Some(v) = val {
-                cmd.arg(v);
-            }
-        });
-
-        if let Some(fw_dir) = crate::cli::firmware::resolve::resolve_libkrunfw_dir() {
-            cmd.env(
-                crate::cli::firmware::resolve::lib_path_env_var(),
-                fw_dir.to_string_lossy().as_ref(),
-            );
-        }
-
-        cmd.stdout(stdout_file);
-        cmd.stderr(stderr_file);
-        cmd.stdin(std::process::Stdio::piped());
-
-        let mut child = cmd.spawn().context("failed to spawn VM boot process")?;
-        // `__vm-boot` reads the frame first thing and it is capped at
-        // `env_channel::MAX_PAYLOAD_BYTES`, so this blocking write does not
-        // wait on the boot.
-        if let Some(mut stdin) = child.stdin.take() {
-            use std::io::Write;
-            if let Err(e) = stdin.write_all(&env_stdin) {
-                drop(stdin);
-                // No half-fed VM left running untracked, and no zombie.
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(
-                    anyhow::Error::new(e).context("cannot send the worker environment to the VM")
-                );
-            }
-        }
-
-        let pid = child.id();
-        crate::cli::pidfile::write_pid_file_strict(&Self::pid_file(&spec.name), pid)?;
-
-        tracing::info!(name = %spec.name, pid = pid, "started libkrun VM");
-
-        Ok(pid.to_string())
-    }
-
-    async fn stop(&self, container_id: &str, timeout_secs: u32) -> Result<()> {
-        if let Ok(pid) = container_id.parse::<u32>()
-            && Self::pid_alive(pid)
-        {
-            tracing::info!(pid = pid, "sending SIGTERM to libkrun VM");
-            unsafe {
-                nix::libc::kill(pid as i32, nix::libc::SIGTERM);
-            }
-
-            let deadline =
-                std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs as u64);
-            while std::time::Instant::now() < deadline {
-                unsafe {
-                    nix::libc::waitpid(pid as i32, std::ptr::null_mut(), nix::libc::WNOHANG);
-                }
-                if !Self::pid_alive(pid) {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-
-            if Self::pid_alive(pid) {
-                tracing::warn!(pid = pid, "VM did not exit after SIGTERM, sending SIGKILL");
-                unsafe {
-                    nix::libc::kill(pid as i32, nix::libc::SIGKILL);
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                unsafe {
-                    nix::libc::waitpid(pid as i32, std::ptr::null_mut(), nix::libc::WNOHANG);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    async fn status(&self, container_id: &str) -> Result<ContainerStatus> {
-        let pid: u32 = container_id.parse().unwrap_or(0);
-        let running = pid > 0 && Self::pid_alive(pid);
-
-        Ok(ContainerStatus {
-            name: String::new(),
-            container_id: container_id.to_string(),
-            running,
-            exit_code: if running { None } else { Some(0) },
-        })
-    }
-
-    async fn remove(&self, container_id: &str) -> Result<()> {
-        self.stop(container_id, 0).await?;
-
-        let managed_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join(".iii")
-            .join("managed");
-
-        if let Ok(entries) = std::fs::read_dir(&managed_dir) {
-            for entry in entries.flatten() {
-                let pid_file = entry.path().join("vm.pid");
-                if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
-                    && pid_str.trim() == container_id
-                {
-                    let _ = std::fs::remove_dir_all(entry.path());
-                    tracing::info!(container_id = %container_id, "removed libkrun worker directory");
-                    return Ok(());
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-pub fn k8s_mem_to_mib(value: &str) -> Option<String> {
-    if let Some(n) = value.strip_suffix("Mi") {
-        Some(n.to_string())
-    } else if let Some(n) = value.strip_suffix("Gi") {
-        n.parse::<u64>().ok().map(|v| (v * 1024).to_string())
-    } else if let Some(n) = value.strip_suffix("Ki") {
-        n.parse::<u64>().ok().map(|v| (v / 1024).to_string())
-    } else {
-        value
-            .parse::<u64>()
-            .ok()
-            .map(|v| (v / (1024 * 1024)).to_string())
-    }
-}
-
-fn fs_dir_size(path: &std::path::Path) -> Result<u64> {
-    let mut total = 0u64;
-    if path.is_dir() {
-        for entry in std::fs::read_dir(path)? {
-            let entry = entry?;
-            let meta = entry.metadata()?;
-            if meta.is_dir() {
-                total += fs_dir_size(&entry.path()).unwrap_or(0);
-            } else {
-                total += meta.len();
-            }
-        }
-    }
-    Ok(total)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -914,15 +286,6 @@ mod tests {
     #[test]
     fn vm_boot_program_is_the_running_binary() {
         assert_eq!(vm_boot_program().unwrap(), std::env::current_exe().unwrap());
-    }
-
-    #[test]
-    fn test_logs_dir_path() {
-        let dir = LibkrunAdapter::logs_dir("test-worker");
-        assert!(
-            dir.to_string_lossy()
-                .contains(".iii/managed/test-worker/logs")
-        );
     }
 
     fn parse_vm_boot_args(boot_args: Vec<OsString>) -> crate::cli::vm_boot::VmBootArgs {
@@ -940,46 +303,6 @@ mod tests {
     }
 
     #[test]
-    fn vm_boot_args_oci_enables_network_and_roundtrips() {
-        let exec_args = vec!["--url".to_string(), "ws://localhost:3111".to_string()];
-
-        let parsed = parse_vm_boot_args(vm_boot_args_oci(
-            Path::new("/tmp/rootfs"),
-            Some(Path::new("/tmp/base.erofs")),
-            "overlay",
-            Some(Path::new("/tmp/upper.ext4")),
-            "/bin/sh",
-            "/",
-            4,
-            "2048",
-            Path::new("/tmp/vm.pid"),
-            Path::new("/tmp/console.log"),
-            Path::new("/tmp/control.sock"),
-            Path::new("/tmp/shell.sock"),
-            &exec_args,
-        ));
-
-        assert!(parsed.network);
-        assert_eq!(parsed.rootfs, "/tmp/rootfs");
-        assert_eq!(parsed.exec, "/bin/sh");
-        assert_eq!(parsed.workdir, "/");
-        assert_eq!(parsed.vcpus, 4);
-        assert_eq!(parsed.ram, 2048);
-        assert_eq!(parsed.pid_file.as_deref(), Some("/tmp/vm.pid"));
-        assert_eq!(parsed.console_output.as_deref(), Some("/tmp/console.log"));
-        assert_eq!(parsed.control_sock.as_deref(), Some("/tmp/control.sock"));
-        assert_eq!(parsed.shell_sock.as_deref(), Some("/tmp/shell.sock"));
-        assert_eq!(parsed.source_sync, None);
-        // The env travels on stdin, never in argv (MOT-5492).
-        assert!(parsed.env.is_empty());
-        assert!(parsed.env_stdin);
-        assert_eq!(parsed.arg, exec_args);
-        assert_eq!(parsed.rootfs_lower.as_deref(), Some("/tmp/base.erofs"));
-        assert_eq!(parsed.rootfs_mode, "overlay");
-        assert_eq!(parsed.rootfs_upper.as_deref(), Some("/tmp/upper.ext4"));
-    }
-
-    #[test]
     fn vm_boot_args_dev_enables_network_and_roundtrips() {
         let mounts = vec![("/host/src".to_string(), "/guest/src".to_string())];
         let exec_args = vec!["-c".to_string(), "exec bash /run.sh".to_string()];
@@ -992,7 +315,6 @@ mod tests {
             "/bin/sh",
             2,
             2048,
-            Path::new("/tmp/vm.pid"),
             Path::new("/tmp/control.sock"),
             Path::new("/tmp/shell.sock"),
             Some(Path::new("/host/src")),
@@ -1006,7 +328,6 @@ mod tests {
         assert_eq!(parsed.workdir, "/workspace");
         assert_eq!(parsed.vcpus, 2);
         assert_eq!(parsed.ram, 2048);
-        assert_eq!(parsed.pid_file.as_deref(), Some("/tmp/vm.pid"));
         assert_eq!(parsed.control_sock.as_deref(), Some("/tmp/control.sock"));
         assert_eq!(parsed.shell_sock.as_deref(), Some("/tmp/shell.sock"));
         assert_eq!(parsed.source_sync.as_deref(), Some("/host/src"));
@@ -1073,30 +394,5 @@ mod tests {
         caller.insert("III_ISOLATION".to_string(), "docker".to_string());
         let merged = build_vm_env(caller);
         assert_eq!(merged.get("III_ISOLATION"), Some(&"libkrun".to_string()));
-    }
-
-    #[test]
-    fn test_k8s_mem_to_mib_mi() {
-        assert_eq!(k8s_mem_to_mib("512Mi"), Some("512".to_string()));
-    }
-
-    #[test]
-    fn test_k8s_mem_to_mib_gi() {
-        assert_eq!(k8s_mem_to_mib("2Gi"), Some("2048".to_string()));
-    }
-
-    #[test]
-    fn test_k8s_mem_to_mib_ki() {
-        assert_eq!(k8s_mem_to_mib("1048576Ki"), Some("1024".to_string()));
-    }
-
-    #[test]
-    fn test_k8s_mem_to_mib_bytes() {
-        assert_eq!(k8s_mem_to_mib("2147483648"), Some("2048".to_string()));
-    }
-
-    #[test]
-    fn test_k8s_mem_to_mib_invalid() {
-        assert_eq!(k8s_mem_to_mib("not-a-number"), None);
     }
 }

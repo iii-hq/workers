@@ -240,22 +240,6 @@ fn apply_whiteout(
     let _ = std::fs::remove_dir_all(&target);
 }
 
-pub fn expected_oci_arch() -> &'static str {
-    match std::env::consts::ARCH {
-        "aarch64" => "arm64",
-        "x86_64" => "amd64",
-        other => other,
-    }
-}
-
-pub fn read_cached_rootfs_arch(rootfs_dir: &std::path::Path) -> Option<String> {
-    let data = read_oci_config_contents(rootfs_dir)?;
-    let json: serde_json::Value = serde_json::from_str(&data).ok()?;
-    json.get("architecture")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-}
-
 /// OCI image to use as rootfs for each `runtime.kind` value.
 ///
 /// Returns `(image_ref, cache_dir_name)`. Keep in sync with
@@ -969,62 +953,6 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
     }
 }
 
-pub fn rootfs_search_paths(name: &str) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        paths.push(dir.join("rootfs").join(name));
-    }
-    if let Some(home) = dirs::home_dir() {
-        paths.push(home.join(".iii").join("rootfs").join(name));
-    }
-    paths.push(PathBuf::from("/usr/local/share/iii/rootfs").join(name));
-    paths
-}
-
-/// Read entrypoint and cmd from the saved OCI image config.
-pub fn read_oci_entrypoint(rootfs: &std::path::Path) -> Option<(String, Vec<String>)> {
-    let data = read_oci_config_contents(rootfs)?;
-    let json: serde_json::Value = serde_json::from_str(&data).ok()?;
-
-    let config = json.get("config")?;
-
-    let entrypoint: Vec<String> = config
-        .get("Entrypoint")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
-
-    let cmd: Vec<String> = config
-        .get("Cmd")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
-
-    if !entrypoint.is_empty() {
-        let exec = entrypoint[0].clone();
-        let mut args: Vec<String> = entrypoint[1..].to_vec();
-        args.extend(cmd);
-        Some((exec, args))
-    } else if !cmd.is_empty() {
-        let exec = cmd[0].clone();
-        let args = cmd[1..].to_vec();
-        Some((exec, args))
-    } else {
-        None
-    }
-}
-
-/// Read WorkingDir from the saved OCI image config.
-pub fn read_oci_workdir(rootfs: &std::path::Path) -> Option<String> {
-    let data = read_oci_config_contents(rootfs)?;
-    let json: serde_json::Value = serde_json::from_str(&data).ok()?;
-    json.get("config")?
-        .get("WorkingDir")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-}
-
 /// Read environment variables from the saved OCI image config.
 pub fn read_oci_env(rootfs: &std::path::Path) -> Vec<(String, String)> {
     let data = match read_oci_config_contents(rootfs) {
@@ -1425,16 +1353,6 @@ mod tests {
     }
 
     #[test]
-    fn test_rootfs_search_paths_includes_home() {
-        let paths = rootfs_search_paths("node");
-        assert!(
-            paths
-                .iter()
-                .any(|p| p.to_string_lossy().contains(".iii/rootfs"))
-        );
-    }
-
-    #[test]
     fn slug_preserves_dots_and_dashes() {
         let slug = rootfs_slug_for_image("ghcr.io/my-org/my-worker:latest");
         assert!(
@@ -1619,44 +1537,6 @@ mod tests {
     }
 
     #[test]
-    fn test_expected_oci_arch() {
-        let arch = expected_oci_arch();
-        if cfg!(target_arch = "aarch64") {
-            assert_eq!(arch, "arm64");
-        } else if cfg!(target_arch = "x86_64") {
-            assert_eq!(arch, "amd64");
-        }
-    }
-
-    #[test]
-    fn test_read_oci_entrypoint_with_entrypoint_and_cmd() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = r#"{"config": {"Entrypoint": ["/usr/bin/node"], "Cmd": ["server.js"]}}"#;
-        std::fs::write(dir.path().join(".oci-config.json"), config).unwrap();
-        let result = read_oci_entrypoint(dir.path()).unwrap();
-        assert_eq!(result.0, "/usr/bin/node");
-        assert_eq!(result.1, vec!["server.js"]);
-    }
-
-    #[test]
-    fn test_read_oci_entrypoint_cmd_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = r#"{"config": {"Cmd": ["/bin/sh", "-c", "echo hello"]}}"#;
-        std::fs::write(dir.path().join(".oci-config.json"), config).unwrap();
-        let result = read_oci_entrypoint(dir.path()).unwrap();
-        assert_eq!(result.0, "/bin/sh");
-        assert_eq!(result.1, vec!["-c", "echo hello"]);
-    }
-
-    #[test]
-    fn test_read_oci_entrypoint_none() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = r#"{"config": {}}"#;
-        std::fs::write(dir.path().join(".oci-config.json"), config).unwrap();
-        assert!(read_oci_entrypoint(dir.path()).is_none());
-    }
-
-    #[test]
     fn test_read_oci_env() {
         let dir = tempfile::tempdir().unwrap();
         let config = r#"{"config": {"Env": ["PATH=/usr/bin", "HOME=/root"]}}"#;
@@ -1837,10 +1717,7 @@ mod tests {
         .unwrap();
         std::os::unix::fs::symlink(&host_file, rootfs.join(".oci-config.json")).unwrap();
 
-        assert_eq!(read_cached_rootfs_arch(&rootfs), None);
         assert!(read_oci_env(&rootfs).is_empty());
-        assert!(read_oci_entrypoint(&rootfs).is_none());
-        assert!(read_oci_workdir(&rootfs).is_none());
     }
 
     #[test]
@@ -2121,7 +1998,6 @@ mod tests {
         .unwrap();
 
         // Without O_NONBLOCK the open would block waiting for a writer.
-        assert_eq!(read_cached_rootfs_arch(&rootfs), None);
         assert!(read_oci_env(&rootfs).is_empty());
     }
 

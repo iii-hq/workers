@@ -8,13 +8,11 @@
 //! Covers requirements OCI-01 through OCI-05.
 //!
 //! Tests are split into ungated (pure/filesystem) and gated (network-dependent):
-//! - Ungated: extract_layer_with_limits safety, expected_oci_arch, oci_image_for_kind,
-//!   OCI config reading (entrypoint, workdir, env), rootfs_search_paths, read_cached_rootfs_arch
+//! - Ungated: extract_layer_with_limits safety, oci_image_for_kind, OCI config env reading
 //! - Gated (#[cfg(feature = "integration-oci")]): pull_and_extract_rootfs end-to-end
 
 use sandbox_builtin::cli::worker_manager::oci::{
-    expected_oci_arch, extract_layer_with_limits, oci_image_for_kind, read_cached_rootfs_arch,
-    read_oci_entrypoint, read_oci_env, read_oci_workdir, rootfs_search_paths,
+    extract_layer_with_limits, oci_image_for_kind, read_oci_env,
 };
 
 /// Build a tar.gz archive from a list of (path, content, mode) entries.
@@ -414,28 +412,7 @@ fn extract_layer_handles_directories_without_owner_write() {
 }
 
 // =============================================================================
-// Group 3: Architecture detection (OCI-05)
-// =============================================================================
-
-#[test]
-fn expected_oci_arch_returns_known_value() {
-    let arch = expected_oci_arch();
-    assert!(
-        arch == "arm64" || arch == "amd64",
-        "expected arm64 or amd64, got: {}",
-        arch
-    );
-
-    if cfg!(target_arch = "aarch64") {
-        assert_eq!(arch, "arm64");
-    }
-    if cfg!(target_arch = "x86_64") {
-        assert_eq!(arch, "amd64");
-    }
-}
-
-// =============================================================================
-// Group 4: Image-to-language mapping (OCI-05)
+// Group 3: Image-to-language mapping (OCI-05)
 // =============================================================================
 
 #[test]
@@ -478,58 +455,8 @@ fn oci_image_for_unknown_defaults_to_node() {
 }
 
 // =============================================================================
-// Group 5: OCI config reading (OCI-03)
+// Group 4: OCI config reading (OCI-03)
 // =============================================================================
-
-#[test]
-fn read_oci_entrypoint_with_entrypoint_and_cmd() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = r#"{"config": {"Entrypoint": ["/usr/bin/node"], "Cmd": ["server.js"]}}"#;
-    std::fs::write(dir.path().join(".oci-config.json"), config).unwrap();
-
-    let result = read_oci_entrypoint(dir.path()).unwrap();
-    assert_eq!(result.0, "/usr/bin/node");
-    assert_eq!(result.1, vec!["server.js"]);
-}
-
-#[test]
-fn read_oci_entrypoint_cmd_only() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = r#"{"config": {"Cmd": ["/bin/sh", "-c", "echo"]}}"#;
-    std::fs::write(dir.path().join(".oci-config.json"), config).unwrap();
-
-    let result = read_oci_entrypoint(dir.path()).unwrap();
-    assert_eq!(result.0, "/bin/sh");
-    assert_eq!(result.1, vec!["-c", "echo"]);
-}
-
-#[test]
-fn read_oci_entrypoint_empty_config() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = r#"{"config": {}}"#;
-    std::fs::write(dir.path().join(".oci-config.json"), config).unwrap();
-
-    assert!(read_oci_entrypoint(dir.path()).is_none());
-}
-
-#[test]
-fn read_oci_workdir_present() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = r#"{"config": {"WorkingDir": "/app"}}"#;
-    std::fs::write(dir.path().join(".oci-config.json"), config).unwrap();
-
-    let result = read_oci_workdir(dir.path());
-    assert_eq!(result, Some("/app".to_string()));
-}
-
-#[test]
-fn read_oci_workdir_absent() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = r#"{"config": {}}"#;
-    std::fs::write(dir.path().join(".oci-config.json"), config).unwrap();
-
-    assert!(read_oci_workdir(dir.path()).is_none());
-}
 
 #[test]
 fn read_oci_env_parses_key_value() {
@@ -557,49 +484,8 @@ fn read_oci_env_empty() {
     assert!(env.is_empty());
 }
 
-#[test]
-fn read_cached_rootfs_arch_reads_architecture() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = r#"{"architecture": "arm64"}"#;
-    std::fs::write(dir.path().join(".oci-config.json"), config).unwrap();
-
-    let result = read_cached_rootfs_arch(dir.path());
-    assert_eq!(result, Some("arm64".to_string()));
-}
-
-#[test]
-fn read_cached_rootfs_arch_missing_file() {
-    let dir = tempfile::tempdir().unwrap();
-    // No .oci-config.json written
-    let result = read_cached_rootfs_arch(dir.path());
-    assert!(result.is_none());
-}
-
 // =============================================================================
-// Group 6: Rootfs search paths
-// =============================================================================
-
-#[test]
-fn rootfs_search_paths_includes_standard_locations() {
-    let paths = rootfs_search_paths("node");
-
-    let has_home_path = paths
-        .iter()
-        .any(|p| p.to_string_lossy().contains(".iii/rootfs/node"));
-    assert!(has_home_path, "should include ~/.iii/rootfs/node path");
-
-    let has_system_path = paths.iter().any(|p| {
-        p.to_string_lossy()
-            .contains("/usr/local/share/iii/rootfs/node")
-    });
-    assert!(
-        has_system_path,
-        "should include /usr/local/share/iii/rootfs/node path"
-    );
-}
-
-// =============================================================================
-// Group 7: Feature-gated network tests (OCI-01)
+// Group 5: Feature-gated network tests (OCI-01)
 // =============================================================================
 // Previous pull_and_extract_rootfs_placeholder was a type-check-only
 // stub — removed. Type checking is handled by

