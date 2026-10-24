@@ -130,9 +130,10 @@ enum SlotState {
 /// to compute `id_offset = slot_index * ID_RANGE_STEP`.
 type Slots = Arc<Mutex<[SlotState; MAX_CLIENTS as usize]>>;
 
-/// How long a slot stays in the `Cooldown` state after its client
-/// disconnects. Covers the round-trip for the SIGKILL frame we send
-/// on behalf of orphaned sessions plus the guest dispatcher's
+/// How long a disconnected client's slot waits for the guest to end
+/// the sessions it SIGKILLed, and then stays in `Cooldown` if the
+/// guest did not confirm them all. Covers the round-trip for the
+/// SIGKILL frame plus the guest dispatcher's
 /// `waitpid → send Exited → remove sessions[corr_id]` sequence.
 /// 250ms is well over the observed worst case on a loopback
 /// virtio-console (low milliseconds), with plenty of headroom.
@@ -475,23 +476,23 @@ fn claim_slot(slots: &Slots) -> Option<usize> {
 /// giving the guest time to clean up any sessions the departing
 /// client owned.
 ///
-/// `had_owned`: did the client own any guest sessions when it
-/// disconnected? Cooldown is only needed when SIGKILL fan-out
-/// happened — active exec corr_ids must drain on the guest before
-/// slot reuse, otherwise a new client claiming the same slot would
-/// reuse the same id_offset range and collide with still-alive
-/// sessions. For clean disconnects with empty `owned_ids` (every
-/// FS trigger after its terminal frame, every cleanly-exited
-/// exec), the slot returns directly to `Free` — no SIGKILL was
-/// sent so there's nothing to drain. Without this distinction,
+/// `undrained`: does the client still own guest sessions the guest
+/// has not ended? Cooldown is only needed then — active exec
+/// corr_ids must drain on the guest before slot reuse, otherwise a
+/// new client claiming the same slot would reuse the same id_offset
+/// range and collide with still-alive sessions. For clean
+/// disconnects with empty `owned_ids` (every FS trigger after its
+/// terminal frame, every cleanly-exited exec, every killed session
+/// the guest confirmed), the slot returns directly to `Free` —
+/// there's nothing left to drain. Without this distinction,
 /// a tight burst of 16+ fast sequential triggers exhausts all
 /// `MAX_CLIENTS=16` slot cooldowns simultaneously and the listener
 /// rejects further connects with `early eof on handshake`, which
 /// surfaces as `S216` on the host side.
-fn release_slot(slots: &Slots, idx: usize, had_owned: bool) {
+fn release_slot(slots: &Slots, idx: usize, undrained: bool) {
     let mut guard = slots.lock().expect("slots mutex poisoned");
     if idx < guard.len() {
-        guard[idx] = if had_owned {
+        guard[idx] = if undrained {
             SlotState::Cooldown(Instant::now() + SLOT_COOLDOWN)
         } else {
             SlotState::Free
@@ -669,21 +670,22 @@ async fn client_session(
     // client as a spurious early exit.
     //
     // Fix: deliver SIGKILL to every owned session as the client goes
-    // away, then hold the slot in `Cooldown` (see [`SLOT_COOLDOWN`])
-    // long enough for the guest to `waitpid` + emit + clean up. By
-    // the time a new client can reclaim the slot, the shared session
-    // map on the guest no longer contains these `corr_id`s.
+    // away, then hold the slot until the guest has ended them (each
+    // terminal frame drops its id from `owned_ids`), at most
+    // [`SLOT_COOLDOWN`]. By the time a new client can reclaim the
+    // slot, the shared session map on the guest no longer contains
+    // these `corr_id`s.
     // Snapshot the still-live ids, then send SIGKILL for each. With
     // vm_reader_task decrementing owned_ids on every terminal frame,
     // this set only contains sessions that were still running when
     // the client went away — no wasted SIGKILLs for already-completed
     // sessions.
-    let ids: Vec<u32> = {
-        let mut guard = owned_ids.lock().expect("owned_ids mutex poisoned");
-        let snapshot = guard.iter().copied().collect();
-        guard.clear();
-        snapshot
-    };
+    let ids: Vec<u32> = owned_ids
+        .lock()
+        .expect("owned_ids mutex poisoned")
+        .iter()
+        .copied()
+        .collect();
     for &id in &ids {
         let frame = match encode_frame(id, 0, &ShellMessage::Signal { signal: 9 }) {
             Ok(f) => f,
@@ -708,17 +710,33 @@ async fn client_session(
             Err(mpsc::error::TrySendError::Closed(_)) => break,
         }
     }
+    // A timed-out exec disconnects with its session still live. Waiting for
+    // the guest's answer instead of a flat cooldown frees the slot in
+    // milliseconds, so a burst of timeouts no longer exhausts all
+    // MAX_CLIENTS slots.
+    let deadline = Instant::now() + SLOT_COOLDOWN;
+    while !owned_ids
+        .lock()
+        .expect("owned_ids mutex poisoned")
+        .is_empty()
+        && Instant::now() < deadline
+    {
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    let mut owned = owned_ids.lock().expect("owned_ids mutex poisoned");
     let mut map = routes.lock().expect("routes mutex poisoned");
-    for id in &ids {
-        map.remove(id);
+    let drained = owned.is_empty();
+    for id in owned.drain() {
+        map.remove(&id);
     }
     drop(map);
-    // Cooldown only when SIGKILL fan-out actually happened. For the
+    drop(owned);
+    // Cooldown only when the guest did not confirm in time. For the
     // common case (every FS trigger after its terminal frame, every
-    // cleanly-exited exec) `ids` is empty and the slot returns
-    // straight to Free — keeps tight burst patterns from exhausting
-    // the slot pool.
-    release_slot(&slots, slot_idx, !ids.is_empty());
+    // cleanly-exited exec, every killed session the guest ended) the
+    // slot returns straight to Free — keeps tight burst patterns from
+    // exhausting the slot pool.
+    release_slot(&slots, slot_idx, !drained);
 }
 
 /// Read one full frame (length prefix + body). `Ok(None)` on EOF at
@@ -1050,6 +1068,52 @@ mod tests {
             // race (claim_slot vs release_slot ordering on the same
             // tokio task) — keeping it deterministic helps.
             tokio::task::yield_now().await;
+        }
+    }
+
+    /// A timed-out exec drops its connection with the session still live.
+    /// Once the guest confirms the SIGKILL, its slot is free again: 2 ×
+    /// MAX_CLIENTS such sessions inside one SLOT_COOLDOWN all get a slot,
+    /// where a fixed cooldown refused the 17th.
+    #[tokio::test]
+    async fn burst_of_killed_sessions_does_not_exhaust_slots() {
+        let (sock, vm_guest_sim, _tmp) = boot().await;
+        // Guest simulator: ends a session when it is SIGKILLed.
+        let mut writer = vm_guest_sim.try_clone().unwrap();
+        std::thread::spawn(move || {
+            let mut reader = std::io::BufReader::new(vm_guest_sim);
+            while let Ok(Some((corr_id, _, msg))) = read_frame_blocking(&mut reader) {
+                if matches!(msg, ShellMessage::Signal { signal: 9 }) {
+                    let exited = ShellMessage::Exited { code: 137 };
+                    let reply = encode_frame(corr_id, FLAG_TERMINAL, &exited).unwrap();
+                    use std::io::Write;
+                    writer.write_all(&reply).unwrap();
+                }
+            }
+        });
+        let request = ShellMessage::Request {
+            cmd: "/bin/sleep".into(),
+            args: vec!["30".into()],
+            env: vec![],
+            cwd: None,
+            tty: false,
+            rows: 24,
+            cols: 80,
+        };
+        for i in 0..(MAX_CLIENTS as usize * 2) {
+            let mut s = tokio::net::UnixStream::connect(&sock).await.unwrap();
+            let mut hs = [0u8; 4];
+            tokio::time::timeout(Duration::from_millis(500), s.read_exact(&mut hs))
+                .await
+                .unwrap_or_else(|_| panic!("session {i}: handshake read timed out"))
+                .unwrap_or_else(|e| panic!("session {i}: refused: {e}"));
+            let corr_id = u32::from_be_bytes(hs) + 1;
+            s.write_all(&encode_frame(corr_id, 0, &request).unwrap())
+                .await
+                .unwrap();
+            // Dropped mid-session, as on an exec timeout.
+            drop(s);
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
     }
 
