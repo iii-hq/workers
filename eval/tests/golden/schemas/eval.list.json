@@ -1360,6 +1360,49 @@
           }
         ]
       },
+      "CycleUsageV1": {
+        "additionalProperties": false,
+        "description": "What a cycle has drawn on its budget.",
+        "properties": {
+          "budget": {
+            "$ref": "#/definitions/CycleBudgetV1"
+          },
+          "calls": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "candidates": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "elapsed_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "spend_usd": {
+            "description": "Reported costs plus the estimate of work without one.",
+            "format": "double",
+            "type": "number"
+          },
+          "unknown_cost": {
+            "description": "Work settled without a reported cost.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "budget",
+          "calls",
+          "candidates",
+          "elapsed_ms",
+          "spend_usd",
+          "unknown_cost"
+        ],
+        "type": "object"
+      },
       "DecisionOutcomeV1": {
         "enum": [
           "accepted",
@@ -3521,6 +3564,14 @@
           "$ref": "#/definitions/CycleRecordV1"
         },
         "type": "array"
+      },
+      "usage": {
+        "additionalProperties": {
+          "$ref": "#/definitions/CycleUsageV1"
+        },
+        "default": {},
+        "description": "What each listed cycle drew on its budget, by `cycle_id`; a cycle that reserved no work is absent.",
+        "type": "object"
       }
     },
     "required": [

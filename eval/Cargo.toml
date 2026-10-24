@@ -37,7 +37,7 @@ libc = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 flate2 = "1"
 tar = { version = "0.4", default-features = false }
+futures-util = "0.3"
 
 [dev-dependencies]
-futures-util = "0.3"
 tokio-tungstenite = "0.28"

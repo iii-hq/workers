@@ -3,9 +3,10 @@ import type {
   ConfigResponse,
   CycleCancelResponse,
   CycleInput,
-  CycleRecord,
+  CycleListResponse,
   CycleResultResponse,
   CycleStartResponse,
+  ExecutionOption,
   LoopConfig,
   StoredConfig,
 } from './types'
@@ -19,9 +20,10 @@ export interface EvalApi {
   config(): Promise<ConfigResponse>
   configure(config: LoopConfig): Promise<StoredConfig>
   start(input: CycleInput): Promise<CycleStartResponse>
-  list(): Promise<CycleRecord[]>
+  list(): Promise<CycleListResponse>
   result(cycleId: string): Promise<CycleResultResponse | null>
   cancel(cycleId: string): Promise<CycleCancelResponse>
+  executions(query: string): Promise<ExecutionOption[]>
 }
 
 export function createEvalApi(host: Host): EvalApi {
@@ -31,11 +33,12 @@ export function createEvalApi(host: Host): EvalApi {
     config: () => trigger('eval::config', {}),
     configure: (config) => trigger('eval::configure', { config }),
     start: (input) => trigger('eval::start', { ...input }),
-    async list() {
-      const response = await trigger<{ cycles: CycleRecord[] }>('eval::list', { limit: LIST_LIMIT })
-      return response.cycles
-    },
+    list: () => trigger('eval::list', { limit: LIST_LIMIT }),
     result: (cycleId) => trigger('eval::result', { cycle_id: cycleId }),
     cancel: (cycleId) => trigger('eval::cancel', { cycle_id: cycleId }),
+    async executions(query) {
+      const response = await trigger<{ executions: ExecutionOption[] }>('eval::executions', query ? { query } : {})
+      return response.executions
+    },
   }
 }

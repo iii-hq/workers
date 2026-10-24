@@ -1,7 +1,32 @@
-import { Button, Checkbox, Input, SegmentedControl, Select, StatusPanel } from '@iii-dev/console-ui'
+import {
+  Breadcrumb,
+  Button,
+  Chip,
+  Eyebrow,
+  IconButton,
+  Input,
+  ListItem,
+  PageBody,
+  PageHeader,
+  PageMain,
+  PageSidebar,
+  Panel,
+  PanelBody,
+  PanelHeader,
+  SegmentedControl,
+  Select,
+  SettingsField,
+  SettingsList,
+  SettingsSection,
+  StatusBar,
+  StatusDot,
+  StatusPanel,
+  Switch,
+  Toolbar,
+} from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
-import { ArrowLeft } from 'lucide-react'
-import { type FormEvent, type ReactNode, useEffect, useId, useState } from 'react'
+import { ArrowLeft, Minus, RefreshCcw } from 'lucide-react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 import type { EvalApi } from '../api'
 import {
   type ConfigDraft,
@@ -12,10 +37,12 @@ import {
   emptySection,
   type FieldSpec,
   SECTIONS,
-  type SectionSpec,
+  type SectionId,
 } from '../config-draft'
-import { validateConfig } from '../model'
-import type { ConfigResponse, StoredConfig, ThinkingLevel, Where } from '../types'
+import { isActive, type Setup, validateConfig } from '../model'
+import type { ConfigResponse, CycleRecord, ThinkingLevel, Where } from '../types'
+import { ago } from './bits'
+import type { Nav } from './index'
 
 const WHERE = [
   { value: 'harness' as const, label: 'Harness', icon: false as const },
@@ -23,20 +50,82 @@ const WHERE = [
   { value: 'github' as const, label: 'GitHub', icon: false as const },
 ]
 
+const THINKING: { value: ThinkingLevel; label: string }[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'].map(
+  (value) => ({ value: value as ThinkingLevel, label: value }),
+)
+
+/** The ladder: each step needs the one before it. Judge and controls sit apart. */
+const STEPS: { id: Setup; section?: SectionId; eyebrow: string; needs?: SectionId; intro: string }[] = [
+  {
+    id: 'measure',
+    eyebrow: '1 · Required',
+    intro:
+      "Every cycle first measures today's Harness on the E2E. Without a test that covers the goal, nothing runs and nothing is spent.",
+  },
+  {
+    id: 'improve',
+    section: 'candidate',
+    eyebrow: '2 · Optional',
+    intro:
+      'Lets the loop propose one change and write it inside harness/src or harness/tests, in its own worktree. The actor gets no shell, grants or credentials.',
+  },
+  {
+    id: 'prove',
+    section: 'validation',
+    needs: 'candidate',
+    eyebrow: '3 · Needs Improve',
+    intro:
+      'Runs the candidate commit, and later the release candidate, on a stack where only the Harness differs. Each is accepted or rejected in code.',
+  },
+  {
+    id: 'ship',
+    section: 'promotion',
+    needs: 'validation',
+    eyebrow: '4 · Needs Prove',
+    intro:
+      'Merges an accepted change, builds a release from that exact commit, activates it on your local Compose target and watches a canary. A failed canary rolls back on its own.',
+  },
+]
+const TITLE: Record<Setup, string> = {
+  measure: 'Measure',
+  improve: 'Improve',
+  prove: 'Prove',
+  ship: 'Ship',
+  judge: 'Also',
+}
+
+/** What a step that is off leaves out, said once more beside its switch. */
+const OFF_DETAIL: Record<Setup, string | undefined> = {
+  measure: undefined,
+  judge: undefined,
+  improve:
+    'Turn it on to name the repository, the base commit and the actor model. A cycle then proposes and writes one change.',
+  prove: 'Turn it on to name the stacks that pin the candidate commit and the release candidate.',
+  ship: "Turn it on to name the Release Control target, the local Compose engine and namespace, and the build estimate. Release Control and GitHub credentials stay in the worker's environment.",
+}
+
 /** `eval::config` / `eval::configure`: the loop's `LoopConfigV1`, nothing else. */
 export function LoopSettings({
   api,
   state,
   error: readError,
-  onSaved,
+  cycles,
+  section,
+  narrow,
+  nav,
   onClose,
+  onSaved,
   onDirtyChange,
 }: {
   api: EvalApi
   state: ConfigResponse | null
   error: string | null
-  onSaved: (stored: StoredConfig) => void
+  cycles: CycleRecord[]
+  section?: Setup
+  narrow: boolean
+  nav: Nav
   onClose?: () => void
+  onSaved: () => void
   onDirtyChange: (dirty: boolean) => void
 }) {
   const stored = state?.config ?? null
@@ -45,22 +134,32 @@ export function LoopSettings({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [json, setJson] = useState<string | null>(null)
+  const anchors = useRef<Partial<Record<Setup, HTMLElement | null>>>({})
 
   // A clean form always shows what is stored, including a change made elsewhere.
   useEffect(() => {
     if (!dirty) setDraft(stored ? draftFromConfig(stored.config) : EMPTY_DRAFT)
   }, [dirty, stored])
-
   useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange])
+  useEffect(() => {
+    if (section) anchors.current[section]?.scrollIntoView({ block: 'start' })
+  }, [section])
 
   const set = (patch: Partial<ConfigDraft>) => {
     setDraft((previous) => ({ ...previous, ...patch }))
     setDirty(true)
     setError(null)
   }
+  const on = (id: SectionId) => draft.sections[id] !== null
+  // Turning a step off turns off every step that needs it.
+  const toggle = (id: SectionId, next: boolean) => {
+    const sections = { ...draft.sections, [id]: next ? emptySection(id) : null }
+    if (!next && id === 'candidate') sections.validation = sections.promotion = null
+    if (!next && id === 'validation') sections.promotion = null
+    set({ sections })
+  }
 
-  async function save(event: FormEvent) {
-    event.preventDefault()
+  async function save() {
     const config = configFromDraft(draft)
     const problem = config ? validateConfig(config) : 'choose where the E2E runs'
     if (!config || problem) {
@@ -70,14 +169,21 @@ export function LoopSettings({
     setSaving(true)
     setError(null)
     try {
-      const saved = await api.configure(config)
+      await api.configure(config)
       setDirty(false)
-      onSaved(saved)
+      nav.announce('Loop settings saved')
+      onSaved()
     } catch (failure) {
       setError(errorMessage(failure))
     } finally {
       setSaving(false)
     }
+  }
+
+  function discard() {
+    setDraft(stored ? draftFromConfig(stored.config) : EMPTY_DRAFT)
+    setDirty(false)
+    setError(null)
   }
 
   function applyJson() {
@@ -92,340 +198,385 @@ export function LoopSettings({
     }
   }
 
+  const [shown, setShown] = useState<Setup>(section ?? 'measure')
+  const go = (id: Setup) => {
+    setShown(id)
+    anchors.current[id]?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+  }
+  const frozen = stored
+    ? cycles.filter((cycle) => isActive(cycle.status) && cycle.config?.revision === stored.revision).length
+    : 0
+  // Numbers take a compact box; names, models and lists the full control width.
+  const field = (key: keyof ConfigDraft, label: string, description?: string, wide = false) => (
+    <SettingsField
+      label={label}
+      description={description}
+      controlSize={wide ? 'default' : 'compact'}
+      renderControl={(props) => (
+        <Input
+          {...props}
+          value={draft[key] as string}
+          onChange={(value) => set({ [key]: value })}
+          className="eval-ui-mono-input"
+          autoComplete="off"
+          spellCheck={false}
+        />
+      )}
+    />
+  )
   const needsStack = draft.where === 'docker' || draft.where === 'github'
 
+  const nav_ = (
+    <nav aria-label="Settings sections" className="eval-ui-settings-nav">
+      <p className="eval-ui-group-label">What the loop may do</p>
+      {STEPS.map((step, index) => {
+        const ready = step.section ? on(step.section) : !!stored
+        return (
+          <ListItem
+            key={step.id}
+            onClick={() => go(step.id)}
+            selected={shown === step.id}
+            leading={<span className="eval-ui-num eval-ui-faint">{index + 1}</span>}
+            label={TITLE[step.id]}
+            trailing={
+              <Chip>
+                <StatusDot tone={ready ? 'ok' : 'ink'} />{' '}
+                {ready ? (step.section ? 'On' : 'Ready') : step.section ? 'Off' : 'Not set'}
+              </Chip>
+            }
+          />
+        )
+      })}
+      <p className="eval-ui-group-label">Also</p>
+      <ListItem
+        onClick={() => go('judge')}
+        selected={shown === 'judge'}
+        label="Judge"
+        trailing={<span className="eval-ui-faint">{on('judge') ? 'On' : 'Off'}</span>}
+      />
+      <ListItem
+        onClick={() => go('judge')}
+        label="Controls"
+        trailing={
+          <span className="eval-ui-num eval-ui-faint">
+            {draft.controls.split(/[,\n]/).filter((control) => control.trim()).length}
+          </span>
+        }
+      />
+      <p className="eval-ui-faint eval-ui-nav-note">
+        Each step needs the one before it. Running cycles keep the values they froze.
+      </p>
+    </nav>
+  )
+
   return (
-    <form
-      className="eval-ui-detail eval-ui-settings"
-      aria-labelledby="eval-ui-settings-title"
-      onSubmit={(e) => void save(e)}
-    >
-      {onClose ? (
-        <Button type="button" variant="ghost" size="lg" className="eval-ui-back" onClick={onClose}>
-          <ArrowLeft size={16} aria-hidden /> Cycles
-        </Button>
-      ) : null}
-      <header className="eval-ui-head">
-        <h2 id="eval-ui-settings-title" className="eval-ui-title">
-          Loop settings
-        </h2>
-        <p className="eval-ui-faint">
-          {stored ? (
-            <>
-              Revision <span className="eval-ui-mono">{stored.revision.slice(0, 12)}</span> · saved{' '}
-              {new Date(stored.updated_at).toLocaleString()} · rules{' '}
-              <span className="eval-ui-mono">{state?.rules_version}</span>
-            </>
-          ) : (
-            'Not configured: cycles map coverage but dispatch nothing until this is saved.'
-          )}
-        </p>
-      </header>
-      {readError ? <StatusPanel variant="alert" headline="Couldn't read the settings" detail={readError} /> : null}
-      <p className="eval-ui-hint">A save is a new policy revision; running cycles keep the plan they froze.</p>
-
-      <Group title="Subject">
-        <Field label="Provider" value={draft.provider} onChange={(provider) => set({ provider })} mono />
-        <Field label="Model" value={draft.model} onChange={(model) => set({ model })} mono />
-        <Field
-          label="Agent profile"
-          hint="Optional; empty uses the E2E default."
-          value={draft.agent}
-          onChange={(agent) => set({ agent })}
-          mono
-        />
-      </Group>
-
-      <Group title="Where the E2E runs">
-        <SegmentedControl<Where | ''>
-          aria-label="Where the E2E runs"
-          variant="radio"
-          value={draft.where}
-          onChange={(where) => set(where === 'harness' ? { where, stackName: '', stackYaml: '' } : { where })}
-          options={WHERE}
-        />
-        {needsStack ? (
-          <>
-            <Field label="Stack name" value={draft.stackName} onChange={(stackName) => set({ stackName })} mono />
-            <TextArea label="Stack YAML" value={draft.stackYaml} onChange={(stackYaml) => set({ stackYaml })} />
-          </>
-        ) : null}
-      </Group>
-
-      <Group title="Sampling">
-        <Field
-          label="Runs per side"
-          numeric
-          value={draft.runs_per_side}
-          onChange={(runs_per_side) => set({ runs_per_side })}
-        />
-        <Field
-          label="Technical retries"
-          numeric
-          value={draft.technical_retries}
-          onChange={(technical_retries) => set({ technical_retries })}
-        />
-        <Field
-          label="Max scenarios per plan"
-          numeric
-          value={draft.max_scenarios}
-          onChange={(max_scenarios) => set({ max_scenarios })}
-        />
-        <Field
-          label="Estimated USD per run"
-          hint="Reserved before dispatch; a run with no reported cost stays charged at this."
-          numeric
-          value={draft.estimated_usd_per_run}
-          onChange={(estimated_usd_per_run) => set({ estimated_usd_per_run })}
-        />
-      </Group>
-
-      <Group title="Minimum effect">
-        <Field
-          label="Tokens per run"
-          numeric
-          value={draft.min_effect_tokens}
-          onChange={(min_effect_tokens) => set({ min_effect_tokens })}
-        />
-        <Field
-          label="Pass rate (pp)"
-          numeric
-          value={draft.min_effect_pass_rate_pp}
-          onChange={(min_effect_pass_rate_pp) => set({ min_effect_pass_rate_pp })}
-        />
-      </Group>
-
-      <Group title="Budget per cycle">
-        <Field
-          label="Max spend (USD)"
-          numeric
-          value={draft.max_spend_usd}
-          onChange={(max_spend_usd) => set({ max_spend_usd })}
-        />
-        <Field
-          label="Max duration (ms)"
-          numeric
-          value={draft.max_duration_ms}
-          onChange={(max_duration_ms) => set({ max_duration_ms })}
-        />
-        <Field label="Max calls" numeric value={draft.max_calls} onChange={(max_calls) => set({ max_calls })} />
-        <Field
-          label="Max candidates"
-          numeric
-          value={draft.max_candidates}
-          onChange={(max_candidates) => set({ max_candidates })}
-        />
-      </Group>
-
-      <Group title="Controls">
-        <Field
-          label="Control scenarios"
-          hint="Scenario ids every plan also runs and preserves, comma separated; empty for none."
-          value={draft.controls}
-          onChange={(controls) => set({ controls })}
-          mono
-        />
-      </Group>
-
-      {SECTIONS.map((section) => (
-        <OptionalSection
-          key={section.id}
-          spec={section}
-          value={draft.sections[section.id]}
-          onChange={(value) => set({ sections: { ...draft.sections, [section.id]: value } })}
-        >
-          {section.id === 'promotion' ? (
-            <>
-              <Field
-                label="Release build estimate (USD)"
-                hint="What one official rc or finalization build is reserved at; its cost is not reported."
-                numeric
-                value={draft.release_build_estimate_usd}
-                onChange={(release_build_estimate_usd) => set({ release_build_estimate_usd })}
-              />
-              <p className="eval-ui-hint">
-                GitHub and the Registry are the official services; the Release Control URL and both credentials come
-                from the deployment (EVAL_RELEASE_CONTROL_URL, EVAL_GITHUB_TOKEN, EVAL_RELEASE_CONTROL_SESSION), never
-                from this form.
-              </p>
-            </>
-          ) : null}
-        </OptionalSection>
-      ))}
-
-      <Group title="Advanced">
-        {json === null ? (
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => setJson(JSON.stringify(configFromDraft(draft) ?? stored?.config ?? {}, null, 2))}
-          >
-            Edit as JSON
-          </Button>
-        ) : (
-          <>
-            <TextArea label="LoopConfig JSON" value={json} onChange={setJson} rows={16} />
-            <div className="eval-ui-actions">
-              <Button type="button" variant="ghost" onClick={applyJson}>
-                Apply to form
-              </Button>
-              <Button type="button" variant="ghost" onClick={() => setJson(null)}>
-                Discard JSON
-              </Button>
-            </div>
-          </>
+    <>
+      <PageHeader
+        icon={<RefreshCcw size={16} aria-hidden />}
+        title="Eval loop"
+        description={narrow ? 'Loop settings' : 'Every new cycle freezes these values when it starts'}
+        onClose={onClose}
+      />
+      <PageBody>
+        {narrow ? null : (
+          <PageSidebar label="Settings sections" defaultWidth={260} className="eval-ui-sidebar">
+            {nav_}
+          </PageSidebar>
         )}
-      </Group>
-
-      {error ? (
-        <p className="eval-ui-form-error" role="alert">
-          {error}
-        </p>
-      ) : null}
-      <div className="eval-ui-actions">
-        <Button type="submit" variant="primary" disabled={saving || !dirty}>
-          {saving ? 'Saving…' : 'Save settings'}
-        </Button>
-        {dirty && stored ? (
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => {
-              setDraft(draftFromConfig(stored.config))
-              setDirty(false)
-              setError(null)
-            }}
+        <PageMain className="eval-ui-main">
+          <Toolbar
+            aria-label="Loop settings"
+            end={
+              <>
+                {dirty ? (
+                  <Button variant="ghost" onClick={discard}>
+                    Discard
+                  </Button>
+                ) : null}
+                <Button variant="primary" disabled={saving || !dirty} onClick={() => void save()}>
+                  {saving ? 'Saving…' : 'Save'}
+                </Button>
+              </>
+            }
           >
-            Revert
-          </Button>
-        ) : null}
-      </div>
-    </form>
+            <IconButton label="Back to cycles" onClick={nav.home}>
+              <ArrowLeft size={16} aria-hidden />
+            </IconButton>
+            {narrow ? null : (
+              <Breadcrumb items={[{ label: 'Cycles', onClick: nav.home }, { label: 'Loop settings' }]} />
+            )}
+          </Toolbar>
+          <div className="eval-ui-scroll">
+            <div className="eval-ui-form">
+              {readError ? (
+                <StatusPanel variant="alert" headline="Couldn't read the settings" detail={readError} />
+              ) : null}
+              {error ? <StatusPanel variant="alert" role="alert" headline="Not saved" detail={error} /> : null}
+              {STEPS.map((step) => {
+                const id = step.section
+                const blocked = step.needs ? !on(step.needs) : false
+                return (
+                  <section
+                    key={step.id}
+                    ref={(element) => {
+                      anchors.current[step.id] = element
+                    }}
+                    className="eval-ui-step-section"
+                  >
+                    <SettingsSection
+                      title={
+                        <span className="eval-ui-section-title">
+                          <Eyebrow as="span">{step.eyebrow}</Eyebrow>
+                          {TITLE[step.id]}
+                        </span>
+                      }
+                      description={step.intro}
+                      action={
+                        id ? (
+                          <Switch
+                            aria-label={TITLE[step.id]}
+                            checked={on(id)}
+                            disabled={blocked && !on(id)}
+                            onChange={(event) => toggle(id, event.target.checked)}
+                          />
+                        ) : undefined
+                      }
+                    >
+                      {step.id === 'measure' ? (
+                        <>
+                          <SettingsList>
+                            {field('model', 'Model under test', 'The subject of every E2E run in a cycle.', true)}
+                            {field('provider', 'Provider', undefined, true)}
+                            {field('agent', 'Agent profile', 'Optional; empty uses the E2E default.', true)}
+                            <SettingsField
+                              label="Where the E2E runs"
+                              description="Harness uses the E2E's own stack. Docker and GitHub run a pinned stack."
+                              renderControl={() => (
+                                <SegmentedControl<Where | ''>
+                                  aria-label="Where the E2E runs"
+                                  variant="radio"
+                                  value={draft.where}
+                                  onChange={(where) =>
+                                    set(where === 'harness' ? { where, stackName: '', stackYaml: '' } : { where })
+                                  }
+                                  options={WHERE}
+                                />
+                              )}
+                            />
+                            {needsStack ? field('stackName', 'Stack name', undefined, true) : null}
+                            {needsStack ? (
+                              <TextRow
+                                label="Stack YAML"
+                                value={draft.stackYaml}
+                                onChange={(stackYaml) => set({ stackYaml })}
+                              />
+                            ) : null}
+                            {field(
+                              'runs_per_side',
+                              'Runs per side',
+                              'Paired runs on each side. A change needs at least 5 to be proved.',
+                            )}
+                            {field(
+                              'technical_retries',
+                              'Technical retries',
+                              'Re-runs of a slot the infrastructure broke. A slot that needed one counts as a fail.',
+                            )}
+                            {field(
+                              'max_scenarios',
+                              'Scenarios per cycle',
+                              'The covering test plus the control scenarios.',
+                            )}
+                            {field(
+                              'estimated_usd_per_run',
+                              'Estimated cost per run (USD)',
+                              'Reserved before each run. A run that reports less is still charged this.',
+                            )}
+                            {field(
+                              'min_effect_pass_rate_pp',
+                              'Smallest change worth keeping (pp)',
+                              'On criterion scores and pass rate, in percentage points.',
+                            )}
+                            {field(
+                              'min_effect_tokens',
+                              'Smallest token change',
+                              'On token objectives, in tokens per run.',
+                            )}
+                          </SettingsList>
+                          <Panel>
+                            <PanelHeader>Budget per cycle</PanelHeader>
+                            <PanelBody className="eval-ui-budget">
+                              {(
+                                [
+                                  ['max_spend_usd', 'Spend (USD)'],
+                                  ['max_duration_min', 'Time (minutes)'],
+                                  ['max_calls', 'Calls'],
+                                  ['max_candidates', 'Candidates'],
+                                ] as const
+                              ).map(([key, label]) => (
+                                <div key={key} className="eval-ui-stack-sm">
+                                  <Eyebrow as="span" aria-hidden>
+                                    {label}
+                                  </Eyebrow>
+                                  <Input
+                                    aria-label={label}
+                                    value={draft[key]}
+                                    onChange={(value) => set({ [key]: value })}
+                                    className="eval-ui-mono-input"
+                                    inputMode="decimal"
+                                    autoComplete="off"
+                                  />
+                                </div>
+                              ))}
+                              <p className="eval-ui-faint eval-ui-span-all">
+                                A cycle that passes a limit stops what it started. If something was activated, the prior
+                                executable is restored and proved first.
+                              </p>
+                            </PanelBody>
+                          </Panel>
+                        </>
+                      ) : id && on(id) ? (
+                        <>
+                          <SettingsList>
+                            <SectionFields id={id} draft={draft} set={set} />
+                            {id === 'promotion'
+                              ? field(
+                                  'release_build_estimate_usd',
+                                  'Release build estimate (USD)',
+                                  'What one official rc or finalization build is reserved at; its cost is not reported.',
+                                )
+                              : null}
+                          </SettingsList>
+                          {id === 'promotion' ? (
+                            <p className="eval-ui-faint">
+                              Release Control and GitHub credentials stay in the worker's environment
+                              (EVAL_RELEASE_CONTROL_URL, EVAL_GITHUB_TOKEN, EVAL_RELEASE_CONTROL_SESSION), never in this
+                              form.
+                            </p>
+                          ) : null}
+                        </>
+                      ) : id ? (
+                        <StatusPanel
+                          variant="info"
+                          icon={<Minus size={16} aria-hidden />}
+                          headline={
+                            blocked
+                              ? `Needs ${step.needs === 'candidate' ? 'Improve' : 'Prove'} first`
+                              : SECTIONS.find((spec) => spec.id === id)?.off
+                          }
+                          detail={OFF_DETAIL[step.id]}
+                          action={
+                            blocked ? undefined : (
+                              <Button variant="pill" onClick={() => toggle(id, true)}>
+                                Set up
+                              </Button>
+                            )
+                          }
+                        />
+                      ) : null}
+                    </SettingsSection>
+                  </section>
+                )
+              })}
+
+              <section
+                ref={(element) => {
+                  anchors.current.judge = element
+                }}
+                className="eval-ui-step-section"
+              >
+                <SettingsSection title="Also">
+                  <SettingsList>
+                    <SettingsField
+                      label="Judge"
+                      description="Asked once per cycle, only when an opportunity is ambiguous. A deterministic defect needs no judgment."
+                      controlSize="fit"
+                      renderControl={(props) => (
+                        <Switch
+                          {...props}
+                          checked={on('judge')}
+                          onChange={(event) => toggle('judge', event.target.checked)}
+                        />
+                      )}
+                    />
+                    {on('judge') ? <SectionFields id="judge" draft={draft} set={set} /> : null}
+                    {field(
+                      'controls',
+                      'Control scenarios',
+                      'Must keep passing whatever the change; comma separated. They count toward the scenarios per cycle.',
+                      true,
+                    )}
+                  </SettingsList>
+                  {json === null ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="eval-ui-start"
+                      onClick={() => setJson(JSON.stringify(configFromDraft(draft) ?? stored?.config ?? {}, null, 2))}
+                    >
+                      Edit as JSON
+                    </Button>
+                  ) : (
+                    <>
+                      <TextRow label="LoopConfig JSON" value={json} onChange={setJson} rows={16} />
+                      <div className="eval-ui-actions">
+                        <Button variant="ghost" onClick={applyJson}>
+                          Apply to form
+                        </Button>
+                        <Button variant="ghost" onClick={() => setJson(null)}>
+                          Discard JSON
+                        </Button>
+                      </div>
+                    </>
+                  )}
+                </SettingsSection>
+              </section>
+            </div>
+          </div>
+          <StatusBar
+            aria-label="Settings status"
+            end={frozen ? <span>{frozen} running cycle(s) froze this revision</span> : null}
+          >
+            {stored ? (
+              <>
+                <span className="eval-ui-mono">revision {stored.revision.slice(0, 8)}</span>
+                <span>saved {ago(stored.updated_at)}</span>
+                <span className="eval-ui-mono">rules {state?.rules_version}</span>
+              </>
+            ) : (
+              <span>Not configured: cycles map coverage but dispatch nothing until this is saved.</span>
+            )}
+          </StatusBar>
+        </PageMain>
+      </PageBody>
+    </>
   )
 }
 
-function Group({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <fieldset className="eval-ui-section eval-ui-fieldset">
-      <legend className="eval-ui-legend">{title}</legend>
-      {children}
-    </fieldset>
-  )
-}
-
-function Field({
-  label,
-  hint,
-  value,
-  onChange,
-  numeric,
-  mono,
+/** One optional `LoopConfigV1` section's fields, as its spec lists them. */
+function SectionFields({
+  id,
+  draft,
+  set,
 }: {
-  label: string
-  hint?: string
-  value: string
-  onChange: (next: string) => void
-  numeric?: boolean
-  mono?: boolean
+  id: SectionId
+  draft: ConfigDraft
+  set: (patch: Partial<ConfigDraft>) => void
 }) {
-  const id = useId()
-  const hintId = useId()
+  const value = draft.sections[id] ?? {}
+  const spec = SECTIONS.find((section) => section.id === id)
+  const change = (key: string, next: string) =>
+    set({ sections: { ...draft.sections, [id]: { ...value, [key]: next } } })
   return (
-    <div className="eval-ui-field">
-      <label className="eval-ui-label" htmlFor={id}>
-        {label}
-      </label>
-      <Input
-        id={id}
-        value={value}
-        onChange={onChange}
-        inputMode={numeric ? 'decimal' : undefined}
-        className={mono || numeric ? 'eval-ui-mono-input' : undefined}
-        aria-describedby={hint ? hintId : undefined}
-        autoComplete="off"
-        spellCheck={false}
-      />
-      {hint ? (
-        <span id={hintId} className="eval-ui-hint">
-          {hint}
-        </span>
-      ) : null}
-    </div>
-  )
-}
-
-function TextArea({
-  label,
-  value,
-  onChange,
-  rows = 8,
-}: {
-  label: string
-  value: string
-  onChange: (next: string) => void
-  rows?: number
-}) {
-  const id = useId()
-  return (
-    <div className="eval-ui-field">
-      <label className="eval-ui-label" htmlFor={id}>
-        {label}
-      </label>
-      <textarea
-        id={id}
-        className="eval-ui-textarea"
-        value={value}
-        rows={rows}
-        spellCheck={false}
-        onChange={(event) => onChange(event.target.value)}
-      />
-    </div>
-  )
-}
-
-const THINKING: { value: ThinkingLevel; label: string }[] = [
-  { value: 'off', label: 'off' },
-  { value: 'minimal', label: 'minimal' },
-  { value: 'low', label: 'low' },
-  { value: 'medium', label: 'medium' },
-  { value: 'high', label: 'high' },
-  { value: 'xhigh', label: 'xhigh' },
-]
-
-/** One optional `LoopConfigV1` section: off is absent from the saved config. */
-function OptionalSection({
-  spec,
-  value,
-  onChange,
-  children,
-}: {
-  spec: SectionSpec
-  value: Record<string, string> | null
-  onChange: (next: Record<string, string> | null) => void
-  /** Fields of the section kept elsewhere in `LoopConfigV1`, shown while it is on. */
-  children?: ReactNode
-}) {
-  return (
-    <Group title={spec.title}>
-      <Checkbox
-        label={value ? 'On' : 'Off'}
-        checked={value !== null}
-        onChange={(event) => onChange(event.target.checked ? emptySection(spec.id) : null)}
-        aria-label={`${spec.title} on`}
-      />
-      {value === null ? <p className="eval-ui-hint">{spec.off}</p> : null}
-      {value
-        ? spec.fields.map((field) => (
-            <SectionField
-              key={field.key}
-              field={field}
-              value={value[field.key] ?? ''}
-              onChange={(next) => onChange({ ...value, [field.key]: next })}
-            />
-          ))
-        : null}
-      {value ? children : null}
-    </Group>
+    <>
+      {spec?.fields.map((entry) => (
+        <SectionField
+          key={entry.key}
+          field={entry}
+          value={value[entry.key] ?? ''}
+          onChange={(next) => change(entry.key, next)}
+        />
+      ))}
+    </>
   )
 }
 
@@ -438,32 +589,28 @@ function SectionField({
   value: string
   onChange: (next: string) => void
 }) {
-  const id = useId()
   const label = field.optional ? `${field.label} (optional)` : field.label
-  switch (field.kind) {
-    case 'multiline':
-      return <TextArea label={label} value={value} onChange={onChange} />
-    case 'where':
-      return (
-        <div className="eval-ui-field">
-          <span className="eval-ui-label">{label}</span>
+  if (field.kind === 'multiline')
+    return <TextRow label={label} description={field.hint} value={value} onChange={onChange} />
+  return (
+    <SettingsField
+      label={label}
+      description={field.hint}
+      controlSize={
+        field.kind === 'where' ? 'fit' : field.kind === 'int' || field.kind === 'number' ? 'compact' : 'default'
+      }
+      renderControl={(props) =>
+        field.kind === 'where' ? (
           <SegmentedControl<Where | ''>
             aria-label={field.label}
             variant="radio"
             value={value as Where | ''}
             onChange={onChange}
-            options={WHERE}
+            options={WHERE.filter((where) => where.value !== 'harness')}
           />
-        </div>
-      )
-    case 'thinking':
-      return (
-        <div className="eval-ui-field">
-          <label className="eval-ui-label" htmlFor={id}>
-            {label}
-          </label>
+        ) : field.kind === 'thinking' ? (
           <Select<ThinkingLevel>
-            id={id}
+            id={props.id}
             value={(value || undefined) as ThinkingLevel | undefined}
             options={THINKING}
             onChange={onChange}
@@ -472,18 +619,50 @@ function SectionField({
             emptyLabel="Provider default"
             onClear={() => onChange('')}
           />
-        </div>
-      )
-    default:
-      return (
-        <Field
-          label={label}
-          hint={field.hint}
+        ) : (
+          <Input
+            {...props}
+            value={value}
+            onChange={onChange}
+            className="eval-ui-mono-input"
+            autoComplete="off"
+            spellCheck={false}
+          />
+        )
+      }
+    />
+  )
+}
+
+function TextRow({
+  label,
+  description,
+  value,
+  onChange,
+  rows = 6,
+}: {
+  label: ReactNode
+  description?: ReactNode
+  value: string
+  onChange: (next: string) => void
+  rows?: number
+}) {
+  return (
+    <SettingsField
+      label={label}
+      description={description}
+      layout="stacked"
+      controlSize="full"
+      renderControl={(props) => (
+        <textarea
+          {...props}
+          className="eval-ui-textarea"
           value={value}
-          onChange={onChange}
-          numeric={field.kind === 'int' || field.kind === 'number'}
-          mono
+          rows={rows}
+          spellCheck={false}
+          onChange={(event) => onChange(event.target.value)}
         />
-      )
-  }
+      )}
+    />
+  )
 }

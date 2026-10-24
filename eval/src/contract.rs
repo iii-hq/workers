@@ -901,6 +901,51 @@ impl CycleListRequestV1 {
 #[serde(deny_unknown_fields)]
 pub struct CycleListResponseV1 {
     pub cycles: Vec<CycleRecordV1>,
+    /// What each listed cycle drew on its budget, by `cycle_id`; a cycle
+    /// that reserved no work is absent.
+    #[serde(default)]
+    pub usage: BTreeMap<String, CycleUsageV1>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct ExecutionsRequestV1 {
+    /// Passed to the E2E's own execution search.
+    #[serde(default)]
+    pub query: Option<String>,
+}
+
+/// Recent finished E2E executions a cycle can start from, newest first.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionsResponseV1 {
+    pub executions: Vec<ExecutionOptionV1>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionOptionV1 {
+    pub execution_id: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    /// The cycle that already imported it; a second cycle would stop at once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cycle_id: Option<String>,
+    /// Empty when it is in a cycle or its reports could not be read.
+    pub scenarios: Vec<ExecutionScenarioV1>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionScenarioV1 {
+    pub scenario_id: String,
+    /// The E2E's mean score, 0 to 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mean_score: Option<f64>,
+    /// What a cycle from this execution would restore; absent: nothing
+    /// measurable was lost.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lost: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

@@ -4,12 +4,12 @@ use crate::contract::{
     ConfigRequestV1, ConfigResponseV1, ConfigureRequestV1, CycleCancelResponseV1, CycleIdRequestV1,
     CycleListRequestV1, CycleListResponseV1, CycleRecordV1, CycleResultResponseV1,
     CycleStartRequestV1, CycleStartResponseV1, ExecutionAdmissionResponseV1,
-    ExecutionChangedEventV1, StepRequestV1, StepResponseV1, StoredConfigV1, SweepEventV1,
-    SweepResponseV1,
+    ExecutionChangedEventV1, ExecutionsRequestV1, ExecutionsResponseV1, StepRequestV1,
+    StepResponseV1, StoredConfigV1, SweepEventV1, SweepResponseV1,
 };
 use crate::functions::{
-    CANCEL_ID, CONFIGURE_ID, CONFIG_ID, EXECUTION_CHANGED_ID, LIST_ID, RESULT_ID, START_ID,
-    STATUS_ID, STEP_ID, SWEEP_ID,
+    CANCEL_ID, CONFIGURE_ID, CONFIG_ID, EXECUTIONS_ID, EXECUTION_CHANGED_ID, LIST_ID, RESULT_ID,
+    START_ID, STATUS_ID, STEP_ID, SWEEP_ID,
 };
 
 pub struct FunctionSpec {
@@ -41,6 +41,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<CycleIdRequestV1, Option<CycleRecordV1>>(STATUS_ID),
         spec::<CycleIdRequestV1, Option<CycleResultResponseV1>>(RESULT_ID),
         spec::<CycleIdRequestV1, CycleCancelResponseV1>(CANCEL_ID),
+        spec::<ExecutionsRequestV1, ExecutionsResponseV1>(EXECUTIONS_ID),
         spec::<StepRequestV1, StepResponseV1>(STEP_ID),
         spec::<SweepEventV1, SweepResponseV1>(SWEEP_ID),
         spec::<ExecutionChangedEventV1, ExecutionAdmissionResponseV1>(EXECUTION_CHANGED_ID),

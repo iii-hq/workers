@@ -18,8 +18,16 @@ execution_id ──────────────────────�
 | `eval::config` | Read the configuration (`null` until configured). |
 | `eval::start` `{objective}` or `{execution_id}` | Start one cycle from exactly one input. |
 | `eval::status` / `eval::result` `{cycle_id}` | Read the cycle record. `result` also returns what the cycle drew on its budget. |
-| `eval::list` `{limit?}` | List cycles, newest first. |
+| `eval::list` `{limit?}` | List cycles, newest first, with what each drew on its budget (`usage` by `cycle_id`). |
 | `eval::cancel` `{cycle_id}` | Stop a cycle and the E2E executions it dispatched. |
+| `eval::executions` `{query?}` | Recent finished E2E executions a cycle can start from: each scenario's mean score and what a cycle would restore, or the cycle that already imported it. Executions a cycle dispatched are left out. |
+
+The console page (`ui/`) shows the cycles as four phases, Measure,
+Improve, Prove and Ship, with one sentence for what runs now or why a cycle
+stopped and the setting that would let it go on. The New cycle dialog
+starts from an execution picked with `eval::executions`, or from an
+objective. Loop settings are laid out as the same ladder: each phase needs
+the one before it.
 
 These functions are internal: `eval::step` runs the queued step,
 `eval::sweep` runs on cron every 15 s, and `eval::execution-changed` is bound

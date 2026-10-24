@@ -10,7 +10,9 @@ import type {
   CycleStatus,
   DecisionOutcome,
   Evidence,
+  EvidenceRun,
   EvidenceSide,
+  ExecutionRole,
   FindingClass,
   LoopConfig,
   OutcomeCode,
@@ -18,7 +20,6 @@ import type {
   PromotionPhase,
   SentinelResult,
   SentinelTriage,
-  ValidationOutcome,
 } from './types'
 
 export type Tone = 'neutral' | 'accent' | 'ok' | 'warn' | 'alert'
@@ -32,9 +33,19 @@ export function cycleInput(record: CycleRecord): { kind: 'objective' | 'executio
     : { kind: 'execution', value: record.input.execution_id }
 }
 
+/**
+ * A name a person reads: the objective, or for an execution what the frozen
+ * plan restores, else the scenarios it ran.
+ */
 export function cycleTitle(record: CycleRecord): string {
   const input = cycleInput(record)
-  return input.kind === 'objective' ? input.value : `Execution ${input.value}`
+  if (input.kind === 'objective') return input.value
+  const criterion = record.plan?.criterion
+  if (criterion) return `Restore ${criterionName(criterion)} on ${criterion.scenario_id}`
+  const scenarios = record.analyses?.find((analysis) => analysis.role === 'source')?.identity.scenarios ?? []
+  return scenarios.length && record.outcome?.code !== 'no_action'
+    ? `Improve ${scenarios.map((scenario) => scenario.scenario_id).join(', ')}`
+    : `Execution ${shortId(input.value)}`
 }
 
 const STATUS: Record<CycleStatus, { label: string; tone: Tone }> = {
@@ -62,18 +73,6 @@ const STAGE: Record<CycleStage, string> = {
 }
 
 export const stageLabel = (stage: CycleStage) => STAGE[stage]
-
-/**
- * The stages the cycle actually went through, from its history, oldest
- * first: the path is not fixed (an execution may go analysis, triage, then
- * coverage; a validated candidate returns to analysis).
- */
-export function visitedStages(record: CycleRecord): CycleStage[] {
-  const stages: CycleStage[] = []
-  for (const event of record.history) if (stages.at(-1) !== event.stage) stages.push(event.stage)
-  if (stages.at(-1) !== record.stage) stages.push(record.stage)
-  return stages
-}
 
 const DECISION: Record<DecisionOutcome, { label: string; tone: Tone }> = {
   // Approval of the candidate only: not a merge, publication or activation.
@@ -185,23 +184,207 @@ export function actorStatusLine(status: ActorStatus): string {
   }
 }
 
-/** What the cycle is doing now, or what it waits for, from the record itself. */
-export function nextStage(record: CycleRecord): string {
-  const stage = stageLabel(record.stage)
-  switch (record.status) {
-    case 'queued':
-      return `Queued at ${stage}.`
-    case 'running':
-      return `${stage}: ${record.history.at(-1)?.detail ?? 'running'}`
-    case 'waiting':
-      return record.next ? `${stage}: ${record.next.detail}` : `${stage}: waiting on an external event.`
-    case 'cancelled':
-      return `Cancelled at ${stage}; nothing further runs.`
-    case 'failed':
-      return `Failed at ${stage}; nothing further runs.`
-    case 'completed':
-      return 'Completed; nothing further runs.'
+/** The cycle's headline: its outcome once it has one, else its status. */
+export const badge = (record: CycleRecord): { label: string; tone: Tone; reason: string } =>
+  outcomeView(record) ??
+  // Waiting on an E2E execution that runs is, to a reader, running.
+  (record.status === 'waiting' && runningExecution(record)
+    ? { label: 'Running', tone: 'accent', reason: '' }
+    : { ...statusView(record.status), reason: '' })
+
+// ── the four phases ──────────────────────────────────────────────────────
+
+export const PHASES = ['Measure', 'Improve', 'Prove', 'Ship'] as const
+/** `off`: a step its settings never allowed, as opposed to one not reached yet. */
+export type Mark = 'done' | 'now' | 'stop' | 'fail' | 'todo' | 'off'
+
+/** The stage the cycle is at, or stopped at: a finished cycle's own stage is `done`. */
+export function lastStage(record: CycleRecord): CycleStage {
+  if (record.stage !== 'done') return record.stage
+  return [...record.history].reverse().find((event) => event.stage !== 'done')?.stage ?? 'done'
+}
+
+/** Which phase the cycle reached, from what it recorded, so it never moves back. */
+export function phaseOf(record: CycleRecord): number {
+  const stage = lastStage(record)
+  const stopped = stoppedFor(record)
+  if (record.promotion || record.canary || stage === 'promotion') return 3
+  if (record.decision || stage === 'validation' || stopped === 'prove') return 2
+  if (record.executions?.some((entry) => entry.role === 'candidate')) return 2
+  if (record.proposal || record.candidate || stage === 'proposal' || stage === 'candidate' || stopped === 'improve') {
+    return 1
   }
+  return 0
+}
+
+/** One mark per phase: done before the one reached, its state on it, todo after. */
+export function marks(record: CycleRecord): Mark[] {
+  const at = phaseOf(record)
+  const tone = badge(record).tone
+  const current: Mark = isActive(record.status)
+    ? 'now'
+    : record.status === 'cancelled' || tone === 'warn'
+      ? 'stop'
+      : tone === 'alert'
+        ? 'fail'
+        : 'done'
+  return PHASES.map((_, index) => (index < at ? 'done' : index === at ? current : 'todo'))
+}
+
+export type Group = 'you' | 'active' | 'done'
+
+/**
+ * Active; needing you, when there is something to do now (a setting to turn
+ * on, a failure, a promotion or rollback not confirmed); else finished.
+ */
+export function groupOf(record: CycleRecord, current: LoopConfig | null | undefined): Group {
+  if (isActive(record.status)) return 'active'
+  const code = record.outcome?.code
+  const label = badge(record).label
+  const unconfirmed =
+    (code === 'promoted' && label !== 'Promoted') || (code === 'rolled_back' && label !== 'Rolled back')
+  return record.status === 'failed' || unconfirmed || fixFor(record, current) ? 'you' : 'done'
+}
+
+/** A settings section, in the order each needs the one before it. */
+export type Setup = 'measure' | 'improve' | 'prove' | 'ship' | 'judge'
+
+/** How far a new cycle can go with this configuration: 0 nothing runs, 4 it can ship. */
+export function readiness(config: LoopConfig | null | undefined): number {
+  if (!config) return 0
+  if (!config.candidate) return 1
+  if (!config.validation) return 2
+  return config.promotion ? 4 : 3
+}
+
+export const READY_LINE = [
+  'Not configured: a new cycle maps coverage and runs nothing until Measure is set up.',
+  'New cycles measure and stop: no change is written until Improve is on.',
+  'New cycles write a change but cannot prove it until Prove is on.',
+  'New cycles stop at the source decision: nothing is merged or activated until Ship is set up.',
+  'New cycles can ship an accepted change: merge, release, activate locally and watch a canary.',
+]
+
+const SETUP: Setup[] = ['measure', 'improve', 'prove', 'ship']
+/** The next section to set up, if any. */
+export const nextSetup = (config: LoopConfig | null | undefined): Setup | null => SETUP[readiness(config)] ?? null
+
+export const FIX: Record<Setup, { action: string; why: string }> = {
+  measure: { action: 'Set up Measure', why: 'the loop was not configured' },
+  judge: { action: 'Turn on the judge', why: 'no judge settles an ambiguous finding' },
+  improve: { action: 'Turn on Improve', why: 'candidate work is off' },
+  prove: { action: 'Turn on Prove', why: 'nothing can validate the candidate' },
+  ship: { action: 'Set up Ship', why: 'Ship is off, so nothing was merged or activated' },
+}
+
+const CONFIG_KEY: Record<string, Setup> = {
+  candidate: 'improve',
+  judge: 'judge',
+  validation: 'prove',
+  promotion: 'ship',
+}
+
+/**
+ * The setting a finished cycle stopped for: the outcome names the missing
+ * `config.*` key; an accepted change without Ship stops at the decision.
+ */
+function stoppedFor(record: CycleRecord): Setup | null {
+  if (isActive(record.status)) return null
+  if (!record.config) return 'measure'
+  const key = record.outcome?.detail.match(/config\.(candidate|judge|validation|promotion)\b/)?.[1]
+  if (key) return CONFIG_KEY[key]
+  return record.decision?.outcome === 'accepted' && !record.config.config.promotion ? 'ship' : null
+}
+
+/** What to turn on for a cycle like this one to go further; `null` once the current settings have it. */
+export function fixFor(record: CycleRecord, current: LoopConfig | null | undefined): Setup | null {
+  const setup = stoppedFor(record)
+  if (!setup) return null
+  const done: Record<Setup, unknown> = {
+    measure: current,
+    judge: current?.judge,
+    improve: current?.candidate,
+    prove: current?.validation,
+    ship: current?.promotion,
+  }
+  return done[setup] ? null : setup
+}
+
+const DOING: Record<CycleStage, string> = {
+  coverage: 'Finding the E2E tests that cover the goal',
+  baseline: "Measuring today's Harness on the E2E",
+  awaiting_execution: 'Waiting for the E2E execution',
+  analysis: "Reading the execution's reports",
+  triage: 'Deciding whether the findings are worth a change',
+  proposal: 'Proposing one change',
+  candidate: 'Writing the candidate change',
+  validation: 'Running the candidate on the E2E',
+  promotion: 'Shipping the accepted change',
+  done: 'Finishing',
+}
+
+const RUNNING: Record<ExecutionRole, string> = {
+  source: 'Waiting for the execution to finish',
+  baseline: "Measuring today's Harness on the E2E",
+  candidate: 'Running the candidate on the E2E',
+  artifact: 'Running the release candidate on the E2E',
+  canary: 'Running the canary on the target',
+}
+
+/** The E2E execution the cycle waits on now, if any. */
+export const runningExecution = (record: CycleRecord) =>
+  isActive(record.status)
+    ? record.executions?.filter((entry) => entry.state === 'running' || entry.state === 'dispatching').at(-1)
+    : undefined
+
+/** What is happening now, or why it stopped and what would let it go on. */
+export function nowView(
+  record: CycleRecord,
+  current?: LoopConfig | null,
+): { tone: Tone; headline: string; detail: string; fix: Setup | null } {
+  if (isActive(record.status)) {
+    const running = runningExecution(record)
+    const headline =
+      record.status === 'queued'
+        ? 'Queued'
+        : record.recovery
+          ? 'Restoring the prior executable'
+          : running
+            ? RUNNING[running.role]
+            : DOING[record.stage]
+    return {
+      tone: 'accent',
+      headline,
+      detail: record.recovery ?? record.next?.detail ?? record.history.at(-1)?.detail ?? '',
+      fix: null,
+    }
+  }
+  const view = badge(record)
+  const fix = fixFor(record, current)
+  // A short reason reads as the headline itself; a long one stays the detail.
+  const short = !fix && view.reason.length <= SHORT_REASON
+  return {
+    tone: view.tone,
+    headline: fix
+      ? `${view.label}: ${FIX[fix].why}`
+      : short && view.reason
+        ? `${view.label}: ${view.reason}`
+        : view.label,
+    detail: short ? '' : view.reason,
+    fix,
+  }
+}
+
+const SHORT_REASON = 90
+
+/** An execution id short enough for a line: `plan-e46e62e9`. */
+export const shortId = (id: string) => (id.length > 16 ? id.slice(0, id.startsWith('plan-') ? 13 : 8) : id)
+
+/** The row's second line after its source: what it does, why it stopped or how it ended. */
+export function rowLine(record: CycleRecord, current?: LoopConfig | null): string {
+  if (isActive(record.status)) return `${PHASES[phaseOf(record)]} · ${nowView(record).headline}`
+  const fix = fixFor(record, current)
+  return fix ? FIX[fix].why : badge(record).reason
 }
 
 export type GapKind = 'no_coverage' | 'unknown' | 'inconclusive'
@@ -253,12 +436,16 @@ export function gaps(record: CycleRecord): Gap[] {
     }
   }
   for (const analysis of record.analyses ?? []) {
-    const subject = `${analysis.role} · ${analysis.execution_id}`
+    const subject = `${analysis.role} · ${shortId(analysis.execution_id)}`
     for (const reason of analysis.unknowns) found.push({ kind: 'unknown', subject, reason })
     if (analysis.sentinel?.error) {
       found.push({ kind: 'unknown', subject: `${subject} · Sentinel`, reason: analysis.sentinel.error })
     }
-    if (!analysis.child_transcripts_complete) {
+    // The reports' own unknowns may already say it.
+    if (
+      !analysis.child_transcripts_complete &&
+      !analysis.unknowns.some((reason) => reason.startsWith('child transcripts'))
+    ) {
       found.push({ kind: 'unknown', subject, reason: 'Not every child transcript was kept.' })
     }
     for (const finding of analysis.findings) {
@@ -375,7 +562,7 @@ export function formatMetric(metric: CriterionMetric, value: number | undefined)
   switch (metric) {
     case 'pass_rate':
     case 'criterion_score':
-      return `${(value * 100).toFixed(1)}%`
+      return `${Number((value * 100).toFixed(1))}%`
     case 'cost_usd':
       return `$${value.toFixed(4)}`
     case 'duration':
@@ -400,10 +587,28 @@ export function formatEffect(metric: CriterionMetric, value: number): string {
   }
 }
 
-export function criterionLine(criterion: Criterion): string {
-  const target = criterion.pattern ?? criterion.criterion_id
-  const metric = target ? `${METRIC[criterion.metric]} of ${target}` : METRIC[criterion.metric]
-  return `${metric} must ${criterion.direction} by at least ${formatEffect(criterion.metric, criterion.min_effect)}, ≥ ${criterion.min_runs} runs each side, on ${criterion.scenario_id}`
+/** The criterion's own name, or its metric's. */
+export const criterionName = (criterion: Criterion) =>
+  criterion.criterion_id ?? (criterion.pattern ? `${criterion.pattern} per run` : METRIC[criterion.metric])
+
+/** A run's value of the criterion, as the decision reads it; undefined when unmeasured. */
+export function runValue(run: EvidenceRun, criterion: Criterion): number | undefined {
+  switch (criterion.metric) {
+    case 'pass_rate':
+      return run.completed && run.status === 'passed' ? 1 : 0
+    case 'criterion_score':
+      return run.criteria?.[criterion.criterion_id ?? '']
+    case 'signal_per_run':
+      return run.signals?.[criterion.pattern ?? '']
+    case 'cost_usd':
+      return run.cost_usd
+    case 'duration':
+      return run.wall_time_ms
+    case 'tokens':
+      return run.total_tokens
+    case 'function_calls':
+      return run.function_calls
+  }
 }
 
 /** Candidate minus baseline; null when either mean is missing. */
@@ -418,22 +623,13 @@ export function deltaLine(metric: CriterionMetric, evidence: Evidence): string {
   const change = delta(evidence)
   if (!change) return 'unknown'
   const sign = change.absolute > 0 ? '+' : change.absolute < 0 ? '−' : ''
-  const magnitude =
-    metric === 'pass_rate' || metric === 'criterion_score'
-      ? `${(Math.abs(change.absolute) * 100).toFixed(1)} pp`
-      : formatMetric(metric, Math.abs(change.absolute))
-  const relative = change.relative === null ? '' : ` (${sign}${Math.abs(change.relative * 100).toFixed(1)}%)`
-  return `${sign}${magnitude}${relative}`
+  // Rates move in points: a relative change of a rate only confuses.
+  if (metric === 'pass_rate' || metric === 'criterion_score') {
+    return `${sign}${Number((Math.abs(change.absolute) * 100).toFixed(1))} pp`
+  }
+  const relative = change.relative === null ? '' : `, ${sign}${Math.abs(change.relative * 100).toFixed(1)}%`
+  return `${sign}${formatMetric(metric, Math.abs(change.absolute))}${relative}`
 }
-
-const VALIDATION: Record<ValidationOutcome, { label: string; tone: Tone }> = {
-  validated_improvement: { label: 'Improved', tone: 'ok' },
-  no_improvement: { label: 'No improvement', tone: 'neutral' },
-  regression: { label: 'Regression', tone: 'alert' },
-  inconclusive: { label: 'Inconclusive', tone: 'warn' },
-}
-
-export const validationView = (outcome: ValidationOutcome) => VALIDATION[outcome]
 
 const text = (value: unknown) => (typeof value === 'string' && value ? value : undefined)
 const count = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : undefined)
@@ -571,3 +767,14 @@ export function parseOpenContext(context: unknown): { cycleId?: string; start?: 
   if (value.type === 'config') return { config: true }
   return null
 }
+
+/** `38m`, `2h`, `1h 12m`, `45s`: a budget's time in the words a person uses. */
+export function span(ms: number): string {
+  const minutes = Math.round(ms / 60_000)
+  if (minutes < 1) return `${Math.round(ms / 1000)}s`
+  const hours = Math.floor(minutes / 60)
+  return hours ? `${hours}h${minutes % 60 ? ` ${minutes % 60}m` : ''}` : `${minutes}m`
+}
+
+/** `1 case`, `5 cases`. */
+export const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`

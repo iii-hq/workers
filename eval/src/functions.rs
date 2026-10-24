@@ -7,7 +7,7 @@ use serde_json::json;
 
 use crate::contract::{
     ConfigRequestV1, ConfigureRequestV1, CycleIdRequestV1, CycleListRequestV1, CycleStartRequestV1,
-    ExecutionChangedEventV1, StepRequestV1, SweepEventV1,
+    ExecutionChangedEventV1, ExecutionsRequestV1, StepRequestV1, SweepEventV1,
 };
 use crate::runtime::Deps;
 
@@ -22,6 +22,7 @@ pub const LIST_ID: &str = "eval::list";
 pub const STATUS_ID: &str = "eval::status";
 pub const RESULT_ID: &str = "eval::result";
 pub const CANCEL_ID: &str = "eval::cancel";
+pub const EXECUTIONS_ID: &str = "eval::executions";
 pub const STEP_ID: &str = "eval::step";
 pub const SWEEP_ID: &str = "eval::sweep";
 pub const EXECUTION_CHANGED_ID: &str = "eval::execution-changed";
@@ -140,6 +141,24 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             }
         })
         .description("Cancel a loop cycle that is not finished and stop the E2E executions it dispatched; a finished cycle is left as is."),
+    );
+
+    let current = deps.clone();
+    iii.register_function(
+        EXECUTIONS_ID,
+        RegisterFunction::new_async(move |request: ExecutionsRequestV1| {
+            let deps = current.clone();
+            async move {
+                crate::runtime::executions(&deps, request)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description(
+            "List recent finished E2E executions to start a cycle from, newest first: each \
+             with its scenarios' mean score and what a cycle would restore, or the cycle \
+             that already imported it. Executions a cycle dispatched are left out.",
+        ),
     );
 
     let current = deps.clone();

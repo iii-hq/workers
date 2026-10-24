@@ -1,4 +1,4 @@
-// The loop contract of `eval::configure|config|start|list|status|result|cancel`,
+// The loop contract of `eval::configure|config|start|list|status|result|cancel|executions`,
 // mirrored from eval/src/contract.rs. Optional fields are absent when the
 // backend did not record them: never zero, never guessed.
 
@@ -664,4 +664,21 @@ export interface CycleResultResponse {
 export interface CycleCancelResponse {
   cancelled: boolean
   status: CycleStatus
+}
+
+export interface CycleListResponse {
+  cycles: CycleRecord[]
+  /** By `cycle_id`; a cycle that reserved no work is absent. */
+  usage: Record<string, CycleUsage>
+}
+
+/** `ExecutionOptionV1`: a finished E2E execution a cycle can start from. */
+export interface ExecutionOption {
+  execution_id: string
+  status: string
+  started_at?: string
+  /** The cycle that already imported it. */
+  cycle_id?: string
+  /** Empty when it is in a cycle or its reports could not be read. */
+  scenarios: { scenario_id: string; mean_score?: number; lost?: string }[]
 }

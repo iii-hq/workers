@@ -1025,3 +1025,53 @@ async fn a_budget_limit_ends_a_waiting_cycle_and_stops_its_execution() {
         "an ended cycle leaves the open index"
     );
 }
+
+#[tokio::test]
+async fn the_execution_picker_says_what_a_cycle_would_restore_or_which_cycle_has_it() {
+    let h = Harness::start(World::new()).await;
+    h.configure(10.0).await;
+    // A cycle's own dispatch is never offered, finished or not.
+    let objective = h.start_cycle(json!({"objective": OBJECTIVE})).await;
+    h.drain().await;
+    h.finish("plan-1", "passed", full());
+    let lost = vec![run(
+        "r1",
+        "passed",
+        "completed",
+        90_000.0,
+        &[Some(10), Some(5), Some(10), Some(10)],
+    )];
+    for (id, status, runs) in [
+        ("weak", "passed", lost),
+        ("done", "passed", full()),
+        ("live", "running", Vec::new()),
+    ] {
+        h.world()
+            .executions
+            .insert(id.into(), bundle(id, "", status, runs));
+    }
+    let admitted = h.changed("done").await;
+
+    let options = runtime::executions(&h.deps, ExecutionsRequestV1::default())
+        .await
+        .unwrap()
+        .executions;
+    let option = |id: &str| options.iter().find(|option| option.execution_id == id);
+    assert!(option("plan-1").is_none() && option("live").is_none());
+    let done = option("done").unwrap();
+    assert_eq!(done.cycle_id, admitted.cycle_id);
+    assert!(done.scenarios.is_empty(), "a claimed execution is not read");
+    let weak = option("weak").unwrap();
+    assert_eq!(weak.cycle_id, None);
+    assert_eq!(weak.scenarios[0].scenario_id, "context_pressure");
+    let why = weak.scenarios[0].lost.as_deref().unwrap();
+    assert!(why.contains("needles_recovered"), "{why}");
+
+    let listed = runtime::cycle_list(&h.deps, CycleListRequestV1::default())
+        .await
+        .unwrap();
+    assert!(
+        listed.usage[&objective].spend_usd > 0.0,
+        "the reserved baseline"
+    );
+}

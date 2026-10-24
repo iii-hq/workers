@@ -141,11 +141,22 @@ pub async fn claim_admission(
         })
 }
 
+pub async fn get_admission(
+    iii: &IIIClient,
+    admission_key: &str,
+) -> Result<Option<AdmissionV1>, EvalError> {
+    get(iii, ADMISSION_SCOPE, admission_key).await
+}
+
 pub async fn get_ledger(
     iii: &IIIClient,
     cycle_id: &str,
 ) -> Result<Option<CycleLedgerV1>, EvalError> {
     get(iii, BUDGET_SCOPE, cycle_id).await
+}
+
+pub async fn list_ledgers(iii: &IIIClient) -> Result<Vec<CycleLedgerV1>, EvalError> {
+    list(iii, BUDGET_SCOPE).await
 }
 
 /// Compare-and-set update of a cycle's ledger, retried on a concurrent

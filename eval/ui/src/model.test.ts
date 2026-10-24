@@ -3,16 +3,21 @@ import { describe, expect, it, vi } from 'vitest'
 import { createEvalApi } from './api'
 import { configFromDraft, draftFromConfig, draftFromJson, EMPTY_DRAFT } from './config-draft'
 import {
+  cycleTitle,
+  fixFor,
   gaps,
-  nextStage,
+  groupOf,
+  marks,
+  nowView,
   outcomeView,
   parseOpenContext,
+  phaseOf,
   promotionSummary,
+  readiness,
   sentinelResult,
   validateConfig,
-  visitedStages,
 } from './model'
-import type { CycleDecision, CycleRecord, EvidenceSide, LoopConfig, PromotionJournal } from './types'
+import type { CycleDecision, CyclePlan, CycleRecord, EvidenceSide, LoopConfig, PromotionJournal } from './types'
 
 const record = (patch: Partial<CycleRecord> = {}): CycleRecord => ({
   schema_version: 1,
@@ -70,7 +75,7 @@ const CONFIG: LoopConfig = {
 
 describe('loop api', () => {
   it('calls only the loop functions with their exact payloads', async () => {
-    const trigger = vi.fn().mockResolvedValue({ cycles: [] })
+    const trigger = vi.fn().mockResolvedValue({ cycles: [], usage: {}, executions: [] })
     const api = createEvalApi({ iii: { trigger } } as unknown as Host)
     await api.config()
     await api.configure(CONFIG)
@@ -79,6 +84,8 @@ describe('loop api', () => {
     await api.list()
     await api.result('cycle_1')
     await api.cancel('cycle_1')
+    await api.executions('')
+    await api.executions('plan-1')
     expect(trigger.mock.calls.map(([id, payload]) => [id, payload])).toEqual([
       ['eval::config', {}],
       ['eval::configure', { config: CONFIG }],
@@ -87,6 +94,8 @@ describe('loop api', () => {
       ['eval::list', { limit: 200 }],
       ['eval::result', { cycle_id: 'cycle_1' }],
       ['eval::cancel', { cycle_id: 'cycle_1' }],
+      ['eval::executions', {}],
+      ['eval::executions', { query: 'plan-1' }],
     ])
   })
 })
@@ -121,10 +130,15 @@ describe('outcome', () => {
   it('says what a waiting cycle waits for', () => {
     const waiting = record({
       status: 'waiting',
-      stage: 'candidate',
-      next: { action: 'candidate_work', detail: 'two pertinent findings', findings: ['f1'] },
+      stage: 'awaiting_execution',
+      next: { action: 'await_execution', detail: 'baseline plan-9 runs', findings: [] },
+      executions: [{ role: 'baseline', state: 'running', execution_id: 'plan-9' }],
     })
-    expect(nextStage(waiting)).toBe('Candidate: two pertinent findings')
+    expect(nowView(waiting)).toMatchObject({
+      tone: 'accent',
+      headline: "Measuring today's Harness on the E2E",
+      detail: 'baseline plan-9 runs',
+    })
   })
 })
 
@@ -448,18 +462,77 @@ describe('promotion', () => {
 })
 
 describe('stage 2 record', () => {
-  it('lists the stages actually visited, not a fixed path', () => {
+  it('shows four phases that never move back, whatever stage path the cycle took', () => {
     const cycle = record({
       input: { execution_id: 'exec_1' },
+      status: 'running',
       stage: 'coverage',
       history: [
         { at: 1, status: 'queued', stage: 'analysis', detail: 'admitted' },
-        { at: 2, status: 'running', stage: 'triage', detail: 'judging' },
-        { at: 3, status: 'running', stage: 'triage', detail: 'judged' },
+        { at: 2, status: 'running', stage: 'triage', detail: 'judged' },
         { at: 4, status: 'running', stage: 'coverage', detail: 'mapping' },
       ],
     })
-    expect(visitedStages(cycle)).toEqual(['analysis', 'triage', 'coverage'])
+    expect(marks(cycle)).toEqual(['now', 'todo', 'todo', 'todo'])
+    // A finished cycle is at `done`: the phase is where it stopped.
+    const stopped = record({
+      input: { execution_id: 'exec_1' },
+      stage: 'done',
+      outcome: { code: 'inconclusive', detail: 'a proposal needs a frozen plan and config.candidate' },
+      config: { config: CONFIG, revision: 'rev', updated_at: 1 },
+      history: [
+        { at: 1, status: 'running', stage: 'proposal', detail: 'proposing' },
+        { at: 2, status: 'completed', stage: 'done', detail: 'Inconclusive' },
+      ],
+    })
+    expect(phaseOf(stopped)).toBe(1)
+    expect(marks(stopped)).toEqual(['done', 'stop', 'todo', 'todo'])
+    expect(groupOf(stopped, CONFIG)).toBe('you')
+    expect(fixFor(stopped, CONFIG)).toBe('improve')
+    expect(nowView(stopped, CONFIG).headline).toBe('Inconclusive: candidate work is off')
+    // Once the current settings have it, there is nothing to turn on.
+    const improving = { ...CONFIG, candidate: { repository: '/r' } } as LoopConfig
+    expect(fixFor(stopped, improving)).toBeNull()
+    expect(groupOf(stopped, improving)).toBe('done')
+    const promoted = record({ decision: decision(), outcome: { code: 'decided', detail: 'accepted' } })
+    expect(marks(promoted)).toEqual(['done', 'done', 'done', 'todo'])
+    expect(groupOf(promoted, CONFIG)).toBe('done')
+    expect(marks(record({ decision: decision({ outcome: 'rejected' }) }))).toEqual(['done', 'done', 'fail', 'todo'])
+  })
+
+  it('names an execution cycle by what its frozen plan restores', () => {
+    const plan = {
+      criterion: {
+        metric: 'criterion_score',
+        criterion_id: 'needles_recovered',
+        direction: 'increase',
+        min_effect: 10,
+        min_runs: 5,
+        scenario_id: 'context_pressure',
+      },
+    } as CyclePlan
+    expect(cycleTitle(record({ input: { execution_id: 'plan-9' }, plan }))).toBe(
+      'Restore needles_recovered on context_pressure',
+    )
+    expect(
+      cycleTitle(
+        record({
+          input: { execution_id: 'plan-9' },
+          plan: { ...plan, criterion: { ...plan.criterion, metric: 'pass_rate', criterion_id: undefined } },
+        }),
+      ),
+    ).toBe('Restore pass rate on context_pressure')
+    expect(cycleTitle(record({ input: { execution_id: 'plan-9' } }))).toBe('Execution plan-9')
+    expect(cycleTitle(record())).toBe('fewer repeated calls')
+  })
+
+  it('says how far a new cycle can go with the settings', () => {
+    expect(readiness(null)).toBe(0)
+    expect(readiness(CONFIG)).toBe(1)
+    const candidate = { ...CONFIG, candidate: {} } as LoopConfig
+    expect(readiness(candidate)).toBe(2)
+    expect(readiness({ ...candidate, validation: {} } as LoopConfig)).toBe(3)
+    expect(readiness({ ...candidate, validation: {}, promotion: {} } as LoopConfig)).toBe(4)
   })
 
   it('reports an unknown JEV triage and failed or unmeasured actors without inventing results', () => {

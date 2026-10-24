@@ -327,7 +327,10 @@ pub fn select(
 /// What a source execution's own runs show was lost, as a criterion to
 /// restore: the criterion with the lowest mean award, else the pass rate
 /// when a run did not complete and pass. `None`: nothing measurable.
-fn lost(bundle: &Value, scenario_id: &str) -> Option<(CriterionMetricV1, Option<String>, String)> {
+pub(crate) fn lost(
+    bundle: &Value,
+    scenario_id: &str,
+) -> Option<(CriterionMetricV1, Option<String>, String)> {
     let runs = crate::evidence::runs_of(bundle, scenario_id, &[]);
     let mut awards: std::collections::BTreeMap<&str, Vec<f64>> = Default::default();
     for run in runs.iter().filter(|run| run.measurable()) {

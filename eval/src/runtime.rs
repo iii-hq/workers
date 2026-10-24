@@ -393,7 +393,105 @@ pub async fn cycle_list(
             .then_with(|| right.cycle_id.cmp(&left.cycle_id))
     });
     cycles.truncate(limit);
-    Ok(CycleListResponseV1 { cycles })
+    let now = ids::now_ms();
+    let ends: std::collections::HashMap<&str, i64> = cycles
+        .iter()
+        .map(|cycle| (cycle.cycle_id.as_str(), cycle.completed_at.unwrap_or(now)))
+        .collect();
+    let usage = state::list_ledgers(&deps.iii)
+        .await?
+        .into_iter()
+        .filter_map(|ledger| {
+            let end = *ends.get(ledger.cycle_id.as_str())?;
+            Some((ledger.cycle_id.clone(), cost::usage(&ledger, end)))
+        })
+        .collect();
+    Ok(CycleListResponseV1 { cycles, usage })
+}
+
+/// The finished executions `eval::executions` offers, at most.
+const EXECUTION_OPTIONS: usize = 12;
+
+/// Recent finished E2E executions to start a cycle from, newest first. One
+/// a cycle dispatched is left out; one already imported names its cycle;
+/// any other is read to say what a cycle would restore.
+pub async fn executions(
+    deps: &Deps,
+    request: ExecutionsRequestV1,
+) -> Result<ExecutionsResponseV1, EvalError> {
+    let listed: Value = call(
+        deps,
+        "e2e::dashboard::executions-list",
+        json!({ "query": request.query, "limit": EXECUTIONS_PAGE }),
+        BUS_TIMEOUT_MS,
+    )
+    .await?;
+    let finished = listed["executions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|entry| evidence::TERMINAL_STATUSES.contains(&evidence::status_of(entry).as_str()))
+        .filter(|entry| {
+            !evidence::text_at(entry, "/idempotency_key")
+                .and_then(|key| key.split_once(':').map(|(owner, _)| ids::is_cycle(owner)))
+                .unwrap_or(false)
+        })
+        .filter_map(|entry| Some((evidence::text_at(entry, "/id")?, entry)))
+        .take(EXECUTION_OPTIONS);
+    // ponytail: one execution-get per unclaimed option; a listing that named
+    // what each run lost would spare them.
+    let options =
+        futures_util::future::join_all(finished.map(|(execution_id, entry)| async move {
+            let claim = state::get_admission(&deps.iii, &admission_key(entry, &execution_id))
+                .await
+                .ok()
+                .flatten();
+            let scenarios = match claim {
+                Some(_) => Vec::new(),
+                None => execution_get(deps, &execution_id)
+                    .await
+                    .map_or_else(|_| Vec::new(), |bundle| scenarios_of(&bundle, entry)),
+            };
+            ExecutionOptionV1 {
+                status: evidence::status_of(entry),
+                started_at: evidence::text_at(entry, "/started_at"),
+                cycle_id: claim.map(|claim| claim.cycle_id),
+                scenarios,
+                execution_id,
+            }
+        }))
+        .await;
+    Ok(ExecutionsResponseV1 {
+        executions: options,
+    })
+}
+
+/// Each reported scenario with its mean score and what its runs lost.
+fn scenarios_of(bundle: &Value, summary: &Value) -> Vec<ExecutionScenarioV1> {
+    let mut ids: Vec<String> = bundle["detail"]["reports"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|report| evidence::text_at(report, "/scenario_id"))
+        .collect();
+    ids.dedup();
+    ids.into_iter()
+        .map(|scenario_id| ExecutionScenarioV1 {
+            mean_score: mean_score(summary, &scenario_id),
+            lost: coverage::lost(bundle, &scenario_id).map(|(_, _, why)| why),
+            scenario_id,
+        })
+        .collect()
+}
+
+/// A listed scenario's mean score, from the summary's subjects.
+fn mean_score(summary: &Value, scenario_id: &str) -> Option<f64> {
+    summary["subjects"]
+        .as_array()?
+        .iter()
+        .flat_map(|subject| subject["scenarios"].as_array().into_iter().flatten())
+        .find(|scenario| scenario["id"] == scenario_id)?["mean_score"]
+        .as_f64()
 }
 
 /// Takes the cycle's lock, so a step dispatching work finishes first; the
@@ -1241,6 +1339,13 @@ pub(crate) async fn execution_get(deps: &Deps, execution_id: &str) -> Result<Val
     .await
 }
 
+/// One claim per execution/run/attempt, from the execution's summary.
+fn admission_key(summary: &Value, execution_id: &str) -> String {
+    let run_id = evidence::text_at(summary, "/run_id");
+    let attempt_id = evidence::text_at(summary, "/attempt");
+    ids::sha256_json(&(execution_id, &run_id, &attempt_id))
+}
+
 pub(crate) fn claim_of(
     bundle: &Value,
     execution_id: &str,
@@ -1253,7 +1358,7 @@ pub(crate) fn claim_of(
     let run_id = evidence::text_at(&summary, "/run_id");
     let attempt_id = evidence::text_at(&summary, "/attempt");
     AdmissionV1 {
-        admission_key: ids::sha256_json(&(execution_id, &run_id, &attempt_id)),
+        admission_key: admission_key(&summary, execution_id),
         execution_id: execution_id.into(),
         run_id,
         attempt_id,

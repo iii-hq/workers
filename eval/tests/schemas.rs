@@ -19,6 +19,7 @@ fn catalog_matches_the_registered_surface() {
             "eval::status",
             "eval::result",
             "eval::cancel",
+            "eval::executions",
             "eval::step",
             "eval::sweep",
             "eval::execution-changed",

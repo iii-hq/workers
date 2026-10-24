@@ -17,7 +17,8 @@ export interface ConfigDraft {
   min_effect_tokens: string
   min_effect_pass_rate_pp: string
   max_spend_usd: string
-  max_duration_ms: string
+  /** The budget's time limit, typed in minutes. */
+  max_duration_min: string
   max_calls: string
   max_candidates: string
   /** Control scenario ids, comma or newline separated. */
@@ -51,52 +52,87 @@ export interface SectionSpec {
 export const SECTIONS: SectionSpec[] = [
   {
     id: 'judge',
-    title: 'Judge (JEV triage)',
+    title: 'Judge',
     off: 'Off: an ambiguous finding stays inconclusive.',
     fields: [
-      { key: 'provider', label: 'Judge provider', kind: 'text', hint: 'judge::evaluate routing, e.g. typesafe.' },
-      { key: 'estimated_usd', label: 'Estimated USD per question', kind: 'number' },
+      { key: 'provider', label: 'Judge provider', kind: 'text', hint: 'Routes judge::evaluate, e.g. typesafe.' },
+      {
+        key: 'estimated_usd',
+        label: 'Cost per question (USD)',
+        kind: 'number',
+        hint: 'Reserved before the judge is asked.',
+      },
     ],
   },
   {
     id: 'candidate',
-    title: 'Proposal and candidate actor',
-    off: 'Off: a cycle stops before any proposal, inconclusive.',
+    title: 'Improve',
+    off: 'Off: a cycle measures and stops before proposing any change.',
     fields: [
-      { key: 'repository', label: 'Workers repository (absolute path)', kind: 'text' },
-      { key: 'base_sha', label: 'Base commit (40-hex)', kind: 'text' },
-      { key: 'worktrees_dir', label: 'Worktrees directory (absolute path)', kind: 'text' },
-      { key: 'provider', label: 'Provider', kind: 'text' },
-      { key: 'model', label: 'Model', kind: 'text' },
+      {
+        key: 'repository',
+        label: 'Repository',
+        kind: 'text',
+        hint: "The deployment's trusted Workers checkout, an absolute path.",
+      },
+      {
+        key: 'base_sha',
+        label: 'Base commit',
+        kind: 'text',
+        hint: 'Every candidate starts here (40-hex) and must fast-forward main from it.',
+      },
+      {
+        key: 'worktrees_dir',
+        label: 'Worktrees directory',
+        kind: 'text',
+        hint: 'Where each candidate gets its own worktree, an absolute path.',
+      },
+      { key: 'provider', label: 'Actor provider', kind: 'text' },
+      {
+        key: 'model',
+        label: 'Actor model',
+        kind: 'text',
+        hint: 'Writes the change; the read-only proposal uses it too.',
+      },
       { key: 'thinking_level', label: 'Thinking level', kind: 'thinking', optional: true },
-      { key: 'max_turns', label: 'Max turns', kind: 'int' },
+      { key: 'max_turns', label: 'Max turns', kind: 'int', hint: 'Per candidate.' },
       { key: 'max_output_tokens', label: 'Max output tokens', kind: 'int' },
       { key: 'max_total_tokens', label: 'Max total tokens', kind: 'int' },
-      { key: 'max_cost_usd', label: 'Max cost (USD)', kind: 'number' },
+      { key: 'max_cost_usd', label: 'Max cost (USD)', kind: 'number', hint: 'Reserved before the actor starts.' },
       {
         key: 'publish_remote',
-        label: 'Publish remote',
+        label: 'Publish branch to',
         kind: 'text',
         optional: true,
-        hint: 'An already configured git remote; empty disables publishing the branch.',
+        hint: 'A configured git remote, pushed without force so the validation run can pin the commit; empty publishes nothing.',
       },
     ],
   },
   {
     id: 'validation',
-    title: 'Validation stacks',
-    off: 'Off: a candidate cannot be validated.',
+    title: 'Prove',
+    off: 'Off: a written change cannot be proved, so the cycle stops before any decision.',
     fields: [
-      { key: 'where', label: 'Where', kind: 'where' },
+      { key: 'where', label: 'Runs on', kind: 'where', hint: 'The Harness pin needs a stack the E2E builds.' },
       { key: 'stack_name', label: 'Stack name', kind: 'text' },
-      { key: 'source_stack_template', label: 'Source stack YAML ({commit})', kind: 'multiline' },
-      { key: 'artifact_stack_template', label: 'Artifact stack YAML ({version})', kind: 'multiline' },
+      {
+        key: 'source_stack_template',
+        label: 'Candidate stack',
+        kind: 'multiline',
+        hint: '{commit} becomes the candidate commit.',
+      },
+      {
+        key: 'artifact_stack_template',
+        label: 'Release candidate stack',
+        kind: 'multiline',
+        hint: '{version} becomes the Registry version.',
+      },
     ],
   },
   {
     id: 'promotion',
-    title: 'Promotion',
-    off: 'Off: an accepted candidate is never merged, published or activated.',
+    title: 'Ship',
+    off: 'Off: accepted changes stop at the source decision.',
     fields: [
       {
         key: 'artifact_target',
@@ -198,7 +234,7 @@ export const EMPTY_DRAFT: ConfigDraft = {
   min_effect_tokens: '',
   min_effect_pass_rate_pp: '',
   max_spend_usd: '',
-  max_duration_ms: '',
+  max_duration_min: '',
   max_calls: '',
   max_candidates: '',
   controls: '',
@@ -221,7 +257,7 @@ export function draftFromConfig(config: LoopConfig): ConfigDraft {
     min_effect_tokens: String(config.min_effect.tokens),
     min_effect_pass_rate_pp: String(config.min_effect.pass_rate_pp),
     max_spend_usd: String(config.budget.max_spend_usd),
-    max_duration_ms: String(config.budget.max_duration_ms),
+    max_duration_min: String(config.budget.max_duration_ms / 60_000),
     max_calls: String(config.budget.max_calls),
     max_candidates: String(config.budget.max_candidates),
     controls: (config.controls ?? []).join(', '),
@@ -257,7 +293,7 @@ export function configFromDraft(draft: ConfigDraft): LoopConfig | null {
     min_effect: { tokens: num(draft.min_effect_tokens), pass_rate_pp: num(draft.min_effect_pass_rate_pp) },
     budget: {
       max_spend_usd: num(draft.max_spend_usd),
-      max_duration_ms: num(draft.max_duration_ms),
+      max_duration_ms: num(draft.max_duration_min) * 60_000,
       max_calls: num(draft.max_calls),
       max_candidates: num(draft.max_candidates),
     },
