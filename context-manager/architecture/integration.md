@@ -115,8 +115,8 @@ bucket to see or subtract that share).
 
 ## 4. Function catalog
 
-All four are registered with JSON Schemas (`iii worker info context-manager` /
-`get function info`); the shapes below are the contract. All are **sync**.
+All four are registered with JSON Schemas
+(`iii trigger engine::workers::info name=context-manager` / `get function info`); the shapes below are the contract. All are **sync**.
 
 ### `context::assemble` — build the model-ready context
 

@@ -250,7 +250,7 @@ cache), `browser::clear-browser-data` (the whole profile), `browser::resize`
 `browser::styles::read` / `browser::styles::write` (computed styles + live
 inline edits, the design panel backing), and `browser::sessions::list` /
 `browser::sessions::stop`. Function ids and schemas live in the code and
-`iii worker info browser`.
+`iii trigger engine::workers::info name=browser`.
 
 File transfer functions:
 

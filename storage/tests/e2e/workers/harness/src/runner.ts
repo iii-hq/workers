@@ -281,7 +281,7 @@ export class Runner {
     // Surface a useful worker-log hint instead of only the raw readiness error.
     const lastMsg = (lastErr as any)?.message ?? String(lastErr);
     const hint = lastMsg.includes('Function not found')
-      ? '\n  hint: storage may have exited before registering RPCs. Run `iii worker logs storage` to inspect its startup error.'
+      ? '\n  hint: storage may have exited before registering RPCs. Run `iii trigger compose::logs worker=storage` to inspect its startup error.'
       : '';
     throw new Error(
       `storage worker did not become ready within ${READY_TIMEOUT_MS}ms; last error: ${lastMsg}${hint}`,

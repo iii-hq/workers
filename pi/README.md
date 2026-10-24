@@ -177,7 +177,7 @@ when it drives `run::start_and_wait` instead, start it with
 
 ## The agent on the bus
 
-By default every turn's prompt carries the iii runtime context: the same engine-grounded rules as the harness identity prompts, retargeted to the `iii` CLI the agent reaches through its shell. The agent discovers capabilities from the live engine instead of memory — `iii trigger engine::functions::list` to find function ids, `iii trigger <fn> --help` as the contract before every first call, the registry flow (`directory::registry::workers::list/info`, `worker::add`) when nothing registered fits — plus the calling rules and error-handling discipline that go with them. Local file edits stay on Pi's native tools; backend actions go through registered functions.
+By default every turn's prompt carries the iii runtime context: the same engine-grounded rules as the harness identity prompts, retargeted to the `iii` CLI the agent reaches through its shell. The agent discovers capabilities from the live engine instead of memory — `iii trigger engine::functions::list` to find function ids, `iii trigger <fn> --help` as the contract before every first call, the registry flow (`directory::registry::workers::list/info`, `compose::add`) when nothing registered fits — plus the calling rules and error-handling discipline that go with them. Local file edits stay on Pi's native tools; backend actions go through registered functions.
 
 ```bash
 # the agent answers this by querying the live engine itself

@@ -1,7 +1,7 @@
 //! `console::status` — health/identity probe.
 //!
 //! Returns the runtime knobs the worker is operating under so callers
-//! (operators, agents, `iii worker info` smoke tests, dashboards) can
+//! (operators, agents, `engine::workers::info` smoke tests, dashboards) can
 //! confirm the worker is alive and tell where the UI is without parsing
 //! logs or assuming port 3113.
 

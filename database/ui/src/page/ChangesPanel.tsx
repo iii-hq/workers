@@ -105,7 +105,7 @@ export function ChangesPanel({
       <EmptyState
         icon={History}
         title="This worker does not announce row changes"
-        description="Run `iii worker update database` to follow writes as they commit."
+        description="Run `iii trigger compose::update worker=database` to follow writes as they commit."
       />
     )
   }

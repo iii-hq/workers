@@ -119,8 +119,8 @@ Two different "custom" things — don't conflate them:
 
 ## 4. Function catalog
 
-All functions are registered with JSON Schemas (`iii worker info
-session-manager` / `get function info`); the shapes below are the contract.
+All functions are registered with JSON Schemas (`iii trigger engine::workers::info
+name=session-manager` / `get function info`); the shapes below are the contract.
 
 ### Lifecycle
 

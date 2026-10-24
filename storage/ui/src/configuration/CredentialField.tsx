@@ -246,7 +246,7 @@ function CredentialControl({
         {legacyWorker ? (
           <div className="storage-cfg-notice" role="note">
             This storage worker reads credentials only as plain values or <code>{TEMPLATE_SYNTAX}</code> templates.
-            Update it (<code>iii worker update storage</code>) to keep them in the secrets store.
+            Update it (<code>iii trigger compose::update worker=storage</code>) to keep them in the secrets store.
           </div>
         ) : secretsUp === false ? (
           <div className="storage-cfg-notice" role="alert">

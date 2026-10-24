@@ -138,7 +138,7 @@ Auth is the Grok CLI's own: the worker inherits `XAI_API_KEY` from its environme
 
 ## The agent on the bus
 
-By default every turn carries the iii runtime context, prepended to the prompt on the first turn of a session: the same engine-grounded rules as the harness identity prompts, retargeted to the `iii` CLI the agent reaches through its shell. The agent discovers capabilities from the live engine instead of memory — `iii trigger engine::functions::list` to find function ids, `iii trigger <fn> --help` as the contract before every first call, the registry flow (`directory::registry::workers::list/info`, `worker::add`) when nothing registered fits — plus the calling rules and error-handling discipline that go with them. Local file edits stay on Grok's native tools; backend actions go through registered functions.
+By default every turn carries the iii runtime context, prepended to the prompt on the first turn of a session: the same engine-grounded rules as the harness identity prompts, retargeted to the `iii` CLI the agent reaches through its shell. The agent discovers capabilities from the live engine instead of memory — `iii trigger engine::functions::list` to find function ids, `iii trigger <fn> --help` as the contract before every first call, the registry flow (`directory::registry::workers::list/info`, `compose::add`) when nothing registered fits — plus the calling rules and error-handling discipline that go with them. Local file edits stay on Grok's native tools; backend actions go through registered functions.
 
 ```bash
 # the agent answers this by querying the live engine itself

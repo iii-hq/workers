@@ -438,7 +438,7 @@ class WorkerManifest:
     """Parsed view of the public `<worker>/iii.worker.yaml` contract.
 
     Release workflows must use :class:`WorkerSpec` instead. This reader exists
-    for normal CI, scaffolding and the `iii worker` development surface.
+    for normal CI, scaffolding and Compose's local workers.
     """
 
     name: str

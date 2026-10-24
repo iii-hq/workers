@@ -79,4 +79,4 @@ function collectIds(raw: unknown): Set<string> {
 
 /** Version hint for the empty state a hidden panel leaves behind. */
 export const MIN_VERSION_HINT =
-  'this needs a newer database worker — run `iii worker update database`'
+  'this needs a newer database worker — run `iii trigger compose::update worker=database`'

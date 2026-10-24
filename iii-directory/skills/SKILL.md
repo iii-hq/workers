@@ -60,7 +60,7 @@ never appear in `index` and `update`/`delete` refuse them.
 - Only installed workers are visible. If the engine daemon is unreachable at boot, filtering is skipped and everything on disk is shown instead.
 - Writes are downloads plus the per-family `create` / `update` / `delete` calls; every read function leaves disk untouched.
 - Skills under `agents_skills_folder` are read-only: `update`/`delete` refuse them (`D116`), and `create` refuses ids in their namespaces (`D115`). Edit them with their owning tool, or copy one into `skills_folder` on disk to fork it.
-- Not the live-connection view. `directory::*` reflects what is on disk or in the registry, not what is connected right now. For that, call the engine directly (`engine::functions::list`, `engine::workers::list`, …); daemon-managed providers (`http`, `cron`, `state`) open no WebSocket, so merge `worker::list` by `name`.
+- Not the live-connection view. `directory::*` reflects what is on disk or in the registry, not what is connected right now. For that, call the engine directly (`engine::functions::list`, `engine::workers::list`, …); for the workers a compose project declares but that are not connected yet, merge `compose::status` by `name`.
 - Do not put a skill id (`/`) in `agent_trigger`'s `function:` field, and do not pass a function id (`::`) to `directory::skills::get`.
 - System prompt files without a `description:` in frontmatter are silently skipped by `directory::system-prompts::list`.
 - Skills and system prompts share `skills_folder`; a `system-prompts/` path component selects the prompt family, other `prompts/` paths are ignored, and `agents/` is reserved. Agent profiles are direct `<agents_folder>/<id>.md` files.

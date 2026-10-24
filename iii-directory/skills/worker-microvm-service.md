@@ -2,8 +2,9 @@
 title: Exposing a service that runs inside a worker microVM
 type: how-to
 description: >-
-  Locally-added workers run in libkrun microVMs whose network is egress-only: the
-  guest cannot reach its own TCP loopback and the host cannot dial in at all.
+  Workers that Compose runs in sandbox-builtin's libkrun microVMs have an
+  egress-only network: the guest cannot reach its own TCP loopback and the host
+  cannot dial in at all.
   This is the verified networking map plus the guest-initiated tunnel pattern for
   publishing any in-VM HTTP/WebSocket service to a browser, and the console
   injectable-UI contract for embedding it.
@@ -13,29 +14,29 @@ description: >-
 
 When a worker runs a long-lived server of its own — an editor, a dev server, a
 notebook, a database console, a preview renderer — the hard part is not starting
-it, it is *reaching* it. A locally-added worker runs inside a libkrun microVM with
+it, it is *reaching* it. A worker that runs in a libkrun microVM has
 **egress-only** networking, so most of the obvious approaches fail silently. Read
 the map below before writing any code that binds a port inside a worker.
 
 ## 1. Is this worker in a VM?
 
 `engine::workers::info { name }` → `isolation: "libkrun"` with `os: "linux … (arm64)"`
-means yes, whatever the host OS is. Workers added from a local project directory
-(`worker::add { source: { kind: "local" } }`) and other managed Node/Python workers
-get a VM; the always-on Rust workers (console, state, shell, cron, …) run natively
-on the host. Consequences that bite immediately:
+means yes, whatever the host OS is. Compose runs a worker in a VM, through the
+`sandbox-builtin` worker, when it is a bundle package or a `path://` worker whose
+`iii.worker.yaml` sets `runtime.base_image`; binary workers (console, state, shell,
+cron, …) run natively on the host. Consequences that bite immediately:
 
 * `process.platform` / `process.arch` are the **guest's** — on an Apple-silicon host
   a worker must download `linux-arm64` artifacts, not `darwin-arm64`;
-* `process.cwd()` is `/workspace` (the worker's own source, bind-mounted from the
-  host — writes there are real host edits and trip the source watcher), `$HOME` is
-  `/`, and everything else the worker writes lands in the VM's overlay;
+* `process.cwd()` is `/workspace` (a copy of a `path://` worker's source that host
+  edits keep in sync, or a bundle's install directory), `$HOME` is `/`, and
+  everything else the worker writes lands in the VM's overlay;
 * whatever the worker installs is installed **in the VM** — usually the point:
   heavy, untrusted, or OS-specific payloads never touch the host.
 
 ## 2. The networking map (verified, not assumed)
 
-The launcher (`iii worker __vm-boot --network`) runs a **userspace smoltcp stack on
+The launcher (`sandbox-builtin __vm-boot --network`) runs a **userspace smoltcp stack on
 the host** that proxies guest TCP **outward only**. The guest learns its addressing
 from env vars: `III_INIT_IP` (e.g. `100.96.0.2`), `III_INIT_GW` (`100.96.0.1`),
 `III_INIT_CIDR` (`30`), `III_INIT_DNS`.
@@ -48,7 +49,6 @@ from env vars: `III_INIT_IP` (e.g. `100.96.0.2`), `III_INIT_GW` (`100.96.0.1`),
 | guest → its own `III_INIT_IP` | **no** | the userspace stack does not hairpin |
 | host → guest, any address/port | **no** | no route, no ARP entry, no port publishing — `--network` is egress-only |
 | guest → engine `ws://localhost:49134` | yes | pre-wired; the engine sees the worker as `127.0.0.1` |
-| host → guest via `iii worker exec` | yes | multiplexed virtio-console channel, not TCP — the only ingress that exists |
 
 Two traps worth real time:
 
@@ -128,14 +128,12 @@ const { job_id } = await worker.trigger({ function_id: "shell::exec_bg", payload
 
 ## 4. Debugging playbook
 
-* `iii worker exec <worker> --no-tty -- /usr/bin/curl -sS -m 4 http://$GW:PORT/` — a
-  shell **inside** the VM; the only host→guest path.
-* `cat /proc/net/route` (only `eth0` rows ⇒ no loopback) and `cat /proc/net/tcp`
-  (hex ports — `0C8A` = 3210, state `0A` = LISTEN) when `ip`/`ss` are missing from
-  the image.
-* `worker::status { name }` → `stderr_tail` carries VM boot + dependency install;
-  the boot line also reveals mounts (`/mnt/host-src`, `/opt/iii`) and the erofs
-  overlay. `worker::logs` for more.
+* `compose::logs { worker: "<worker>" }` carries the VM boot and the dependency
+  install; the boot lines also reveal mounts (`/mnt/host-src`, `/opt/iii`) and the
+  erofs overlay.
+* From inside the VM (a `<worker>::diag` function, below), `cat /proc/net/route`
+  (only `eth0` rows ⇒ no loopback) and `cat /proc/net/tcp` (hex ports — `0C8A` =
+  3210, state `0A` = LISTEN) when `ip`/`ss` are missing from the image.
 * Ship a `<worker>::diag` function returning guest addressing, routes, DNS, egress
   status, socket listing and both probes. Cheaper than guessing, and it keeps the
   VM's internals observable from the bus.
