@@ -450,26 +450,43 @@ async fn listener_task(
             continue;
         }
 
-        let slot_idx = match claim_slot(&slots) {
-            Some(i) => i,
-            None => {
+        let (vm_write_tx, routes, slots) = (vm_write_tx.clone(), routes.clone(), slots.clone());
+        tokio::spawn(async move {
+            let Some(slot_idx) = wait_for_slot(&slots).await else {
                 tracing::warn!("shell_relay: MAX_CLIENTS reached, refusing new client");
-                // Close immediately.
-                continue;
-            }
-        };
-        let id_offset = (slot_idx as u32).saturating_mul(ID_RANGE_STEP);
-        let id_ceil = id_offset.saturating_add(ID_RANGE_STEP);
+                // Dropping the stream closes it.
+                return;
+            };
+            let id_offset = (slot_idx as u32).saturating_mul(ID_RANGE_STEP);
+            let id_ceil = id_offset.saturating_add(ID_RANGE_STEP);
+            client_session(
+                stream,
+                id_offset,
+                id_ceil,
+                slot_idx,
+                vm_write_tx,
+                routes,
+                slots,
+            )
+            .await;
+        });
+    }
+}
 
-        tokio::spawn(client_session(
-            stream,
-            id_offset,
-            id_ceil,
-            slot_idx,
-            vm_write_tx.clone(),
-            routes.clone(),
-            slots.clone(),
-        ));
+/// A killed session holds its slot until the guest ends it, for at most
+/// two `SLOT_COOLDOWN`s (the wait, then the cooldown). A new client waits
+/// that long for a slot before it is refused, so a burst of timed-out execs
+/// does not refuse the next ones while the guest confirms the kills.
+async fn wait_for_slot(slots: &Slots) -> Option<usize> {
+    let deadline = Instant::now() + 2 * SLOT_COOLDOWN;
+    loop {
+        if let Some(idx) = claim_slot(slots) {
+            return Some(idx);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
 }
 
@@ -1265,6 +1282,31 @@ mod tests {
             .unwrap()
             .expect("frame");
         assert!(end[8] & FLAG_TERMINAL != 0);
+    }
+
+    /// A client over the cap waits briefly for a slot instead of being
+    /// refused at once: a timed-out exec's slot comes back as soon as the
+    /// guest confirms its kill.
+    #[tokio::test]
+    async fn a_client_over_the_cap_waits_for_a_slot() {
+        let (sock, _vm_guest_sim, _tmp) = boot().await;
+        let mut held = Vec::new();
+        for _ in 0..MAX_CLIENTS {
+            let mut s = tokio::net::UnixStream::connect(&sock).await.unwrap();
+            let mut buf = [0u8; 4];
+            s.read_exact(&mut buf).await.unwrap();
+            held.push(s);
+        }
+        let mut late = tokio::net::UnixStream::connect(&sock).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // A clean disconnect frees its slot at once.
+        drop(held.pop());
+
+        let mut buf = [0u8; 4];
+        tokio::time::timeout(Duration::from_secs(1), late.read_exact(&mut buf))
+            .await
+            .expect("no handshake")
+            .expect("refused instead of waiting for the freed slot");
     }
 
     #[tokio::test]
