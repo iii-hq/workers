@@ -6,12 +6,14 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::json;
 
 use crate::contract::{
-    ConfigureRequestV1, CycleIdRequestV1, CycleListRequestV1, CycleStartRequestV1,
-    EvaluationIdRequestV1, ExecutionChangedEventV1, MonitorStateRequestV1, StepRequestV1,
-    SweepEventV1,
+    ConfigRequestV1, ConfigureRequestV1, CycleIdRequestV1, CycleListRequestV1, CycleStartRequestV1,
+    ExecutionChangedEventV1, StepRequestV1, SweepEventV1,
 };
-use crate::events::E2E_CHANGED;
 use crate::runtime::Deps;
+
+/// The E2E dashboard's change event; its payload is only a hint to re-read
+/// `execution-get`.
+pub const E2E_CHANGED: &str = "e2e::dashboard::changed";
 
 pub const CONFIGURE_ID: &str = "eval::configure";
 pub const CONFIG_ID: &str = "eval::config";
@@ -20,7 +22,6 @@ pub const LIST_ID: &str = "eval::list";
 pub const STATUS_ID: &str = "eval::status";
 pub const RESULT_ID: &str = "eval::result";
 pub const CANCEL_ID: &str = "eval::cancel";
-pub const DELETE_ID: &str = "eval::delete";
 pub const STEP_ID: &str = "eval::step";
 pub const SWEEP_ID: &str = "eval::sweep";
 pub const EXECUTION_CHANGED_ID: &str = "eval::execution-changed";
@@ -38,34 +39,27 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             }
         })
         .description(
-            "Choose the Harness model/provider the monitor uses for investigations. A new \
-             selection is checked against router::models::list; credentials stay in the \
-             providers and are never accepted here. An optional code_repository (an absolute \
-             directory on this host, normally the iii workers repository) lets the \
-             investigation read that code like a chat with the directory selected, with only \
-             read-only functions allowed (coder::search, coder::tree, coder::read-file, \
-             github::pr::list and engine::functions::info). An optional daily_cost_cap_usd \
-             stops automatic analyses from starting an investigation for the rest of the UTC \
-             day once the known investigation cost reaches it. Analyses already started keep the configuration they started with.",
+            "Set the loop configuration every new plan freezes (its revision is the \
+             policy_revision): the E2E subject provider/model (and agent), where it runs \
+             (harness, or docker/github with a stack {name, yaml}, e.g. package://harness \
+             pinned to commit:<sha>), runs per side, technical retries, max scenarios, the \
+             per-run cost estimate reserved before dispatch, the minimum effects and the \
+             per-cycle budget. Nothing has a default; credentials stay in the providers.",
         ),
     );
 
     let current = deps.clone();
     iii.register_function(
         CONFIG_ID,
-        RegisterFunction::new_async(move |request: MonitorStateRequestV1| {
+        RegisterFunction::new_async(move |request: ConfigRequestV1| {
             let deps = current.clone();
             async move {
-                crate::runtime::monitor_state(&deps, request)
+                crate::runtime::config(&deps, request)
                     .await
                     .map_err(Error::from)
             }
         })
-        .description(
-            "Read the monitor configuration (null until configured), the day's known \
-             investigation cost against the cap with what one analysis has cost, and, with \
-             check_providers, whether the Jev triage provider answers.",
-        ),
+        .description("Read the loop configuration (null until configured) and the rules version."),
     );
 
     let current = deps.clone();
@@ -80,10 +74,12 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             }
         })
         .description(
-            "Start one loop cycle from exactly one input: a free `objective`, or the \
-             `execution_id` of an existing E2E execution. Both inputs create the same cycle \
-             record in the loop's own history; follow it with eval::status and eval::result \
-             and stop it with eval::cancel.",
+            "Start one loop cycle from exactly one input: a free `objective` (mapped onto the \
+             E2E catalog; no coverage spends nothing; a covered objective freezes its plan and \
+             starts a budgeted baseline) or the `execution_id` of an existing E2E execution \
+             (its reports are imported and analyzed without a model). Both converge on the same \
+             cycle record; follow it with eval::status and eval::result, stop it with \
+             eval::cancel.",
         ),
     );
 
@@ -115,7 +111,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
                     .map_err(Error::from)
             }
         })
-        .description("Read one loop cycle record (input, status, history) or null."),
+        .description("Read one loop cycle record or null."),
     );
 
     let current = deps.clone();
@@ -129,9 +125,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
                     .map_err(Error::from)
             }
         })
-        .description(
-            "Read one loop cycle with its result (null until the cycle completes), or null.",
-        ),
+        .description("Read one loop cycle with what it drew on its budget, or null."),
     );
 
     let current = deps.clone();
@@ -145,21 +139,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
                     .map_err(Error::from)
             }
         })
-        .description("Cancel a loop cycle that is not finished; a finished cycle is left as is."),
-    );
-
-    let current = deps.clone();
-    iii.register_function(
-        DELETE_ID,
-        RegisterFunction::new_async(move |request: EvaluationIdRequestV1| {
-            let deps = current.clone();
-            async move {
-                crate::runtime::delete(&deps, request)
-                    .await
-                    .map_err(Error::from)
-            }
-        })
-        .description("Delete a terminal analysis and its stored previews."),
+        .description("Cancel a loop cycle that is not finished and stop the E2E executions it dispatched; a finished cycle is left as is."),
     );
 
     let current = deps.clone();
@@ -173,7 +153,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
                     .map_err(Error::from)
             }
         })
-        .description("Internal durable analysis step.")
+        .description("Internal durable cycle step.")
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
 
@@ -184,7 +164,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             let deps = current.clone();
             async move { crate::runtime::sweep(&deps).await.map_err(Error::from) }
         })
-        .description("Internal recovery, deadline, retention and admission sweep.")
+        .description("Internal recovery, reconciliation, budget and admission sweep.")
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
 
@@ -201,9 +181,9 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
         })
         .description(
             "Internal: on e2e::dashboard::changed, re-read the execution with \
-             e2e::dashboard::execution-get and admit a normal terminal execution (passed or \
-             failed) into one loop cycle per execution/run/attempt. An execution started to \
-             validate a candidate returns to its original cycle.",
+             e2e::dashboard::execution-get and admit a complete terminal execution into one \
+             cycle per execution/run/attempt. An execution a cycle dispatched (label \
+             eval:<cycle_id>:<role>) returns to that cycle.",
         )
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );

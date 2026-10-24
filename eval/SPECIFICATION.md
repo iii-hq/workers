@@ -1,250 +1,141 @@
-# Especificação do eval: monitor de sessões do Harness
-
-**Status:** proposta para implementação.  
-**Data:** 2026-10-02.  
-**Escopo deste documento:** comportamento esperado, responsabilidades, resultados e critérios de aceite. Os passos técnicos estão no [guia de implementação](IMPLEMENTATION.md).
-
-## 1. Objetivo
-
-Transformar o worker `eval` em um monitor que observa o uso do Harness, identifica oportunidades de melhoria e produz sugestões acompanhadas de evidências e de um plano de validação no E2E.
-
-O objeto das melhorias é o projeto do Harness: execução de ferramentas, recuperação de erros, gerenciamento de contexto, coordenação de sessões e comportamento de execução. Uma tarefa pode terminar corretamente e ainda revelar trabalho desnecessário.
-
-O monitor deve responder:
-
-- O que aconteceu durante a execução?
-- Qual comportamento merece investigação?
-- Qual mudança no Harness pode resolver o problema?
-- Como reproduzir o comportamento e verificar se a mudança ajudou?
-
-O fluxo de avaliações de prompt será substituído pelo monitor de sessões. A comparação objetiva de sessões continua disponível como apoio à investigação.
-
-## 2. Decisões de escopo
-
-| Tema | Decisão |
-| --- | --- |
-| Execução | Análise automática e assíncrona de sessões elegíveis, sem bloquear a tarefa original. |
-| Jev | Usar o provider TypeSafe existente para julgamentos com respostas delimitadas. |
-| LLM convencional | Usar o modelo e o provider escolhidos pelo usuário do Harness para investigar e redigir sugestões. |
-| Configuração | O monitor começa inativo e exige configuração explícita antes da primeira análise com modelos. |
-| Interface | Substituir avaliações de prompt por configuração, histórico e detalhes do monitor. |
-| Validação | O E2E verifica a mudança no Harness com cenários e critérios independentes da sugestão. |
-| Autonomia inicial | Observar, analisar e sugerir. Aplicar alterações e executar campanhas de validação são ações separadas. |
-
-Esta etapa não inclui edição automática do código, criação automática de PR, merge, deploy ou alteração da sessão observada. O monitor também não substitui o executor do Harness, o router, o armazenamento de sessões ou o runner E2E.
-
-## 3. Responsabilidade de cada camada
-
-| Camada | Responsabilidade | Resultado |
-| --- | --- | --- |
-| Código determinístico | Ler evidências, correlacionar chamadas e resultados, contar eventos, calcular métricas e identificar padrões conhecidos. | Observações verificáveis e referências para a sessão. |
-| Jev | Classificar sinais em categorias previamente definidas e expressar incerteza. | Triagem estruturada. |
-| LLM convencional | Relacionar sinais, formular hipóteses, propor mudanças e descrever como testá-las. | Sugestões fundamentadas. |
-| E2E | Executar o mesmo caso contra o Harness de referência e o candidato, verificar a tarefa e comparar esforço. | Evidência de melhoria, regressão ou resultado inconclusivo. |
-
-Jev retorna decisões tipadas, como Choice, Noul e Score. Não gera explicações ou código; por isso a investigação e a redação ficam com a LLM. A calibração de probabilidades não garante que uma resposta individual esteja correta. [Referência: System One](https://docs.typesafe.ai/concepts/system-one).
-
-Contagens, durações, custos e diferenças entre execuções devem ser calculados em código. O contexto enviado a Jev deve conter apenas os dados relevantes para a pergunta, com critérios diretos. [Referência: limitações de Jev](https://docs.typesafe.ai/model-jaggedness/jev-1.13).
-
-`confidence` descreve a distribuição entre as opções de uma pergunta; não representa a probabilidade de uma sugestão melhorar o Harness. Os limiares de triagem precisam ser avaliados com dados do projeto. [Referência: confidence](https://docs.typesafe.ai/confidence).
-
-A divisão híbrida é uma escolha de responsabilidade. Sua qualidade e seu custo devem ser medidos; não se presume que Jev seja superior à LLM para qualquer análise.
-
-## 4. Sessões observadas
-
-### 4.1 Elegibilidade
-
-O monitor deve observar sessões do Harness concluídas, com erro ou canceladas. Sessões bem-sucedidas também precisam ser analisadas: sucesso não elimina repetição, desperdício de contexto ou coordenação ineficiente.
-
-Uma sessão raiz e seus descendentes formam uma unidade de observação. O monitor deve preservar a origem dos sinais em cada sessão e evitar contabilizar um descendente como uma segunda execução independente da mesma tarefa.
-
-Uma conclusão intermediária com continuação pendente não deve ser tratada como encerramento definitivo. Se houver descendentes em execução ou métricas incompletas, a coleta permanece pendente dentro do orçamento da análise.
-
-Sessões criadas pelo próprio monitor para investigar evidências devem ser excluídas da observação automática, inclusive seus descendentes. Essa exclusão evita um ciclo de avaliações das próprias avaliações.
-
-Chats de usuário não são consultados nem admitidos: o eval não observa o fim de turnos do Harness e não oferece análise manual de sessão; o trabalho entra pelo ciclo do loop.
-
-### 4.2 Captura e rastreabilidade
-
-Cada análise deve identificar a sessão e o turno que a originaram, o momento da captura e a versão das regras usadas.
-
-As evidências devem incluir, quando disponíveis:
-
-- Estado de execução, motivo de parada e erros.
-- Mensagens, chamadas de ferramentas, resultados e avisos apresentados ao modelo.
-- Relações entre sessões raiz e descendentes.
-- Chamadas, erros, tokens, custo, duração e informações de contexto.
-- Modelo e provider usados pela tarefa observada.
-
-Métricas acumuladas da sessão inteira devem ser identificadas como tal. Elas não podem ser apresentadas como métricas exclusivas do último turno. Sinais históricos já reportados devem conservar sua identidade para evitar alertas repetidos sem nova ocorrência.
-
-O resultado deve preservar referências para as entradas originais e a identificação da evidência capturada. Prévias reduzidas precisam indicar omissões ou truncamento. Leitura parcial não equivale a ausência de problema.
-
-Se a sessão mudar durante a coleta e impedir uma captura coerente, a análise deve registrar a limitação. Não deve misturar turnos e apresentar o conjunto como uma reprodução fiel da execução anterior.
-
-## 5. Detecção e triagem
-
-### 5.1 Sinais iniciais
-
-| Sinal | Evidência necessária | Limite da conclusão |
-| --- | --- | --- |
-| Redescoberta de contratos já disponíveis | Resultado de descoberta que informa contratos inalterados em contexto, ligado às chamadas e aos resultados anteriores que forneceram esses contratos. | Indica trabalho potencialmente redundante. Não prova sozinho que a chamada era desnecessária. |
-| Aviso do Harness seguido de redescoberta | Aviso apresentado ao modelo entre a descoberta original e a chamada repetida. | Indica correlação temporal; a causa precisa ser validada por uma mudança controlada. |
-| Repetição do mesmo erro | Chamadas consecutivas ao mesmo alvo, argumentos equivalentes, resultados ligados aos IDs corretos e mesmo código explícito de erro. | Indica recuperação potencialmente ineficaz. Erros transitórios podem justificar novas tentativas. |
-
-Uma segunda chamada com argumentos corrigidos, uma tentativa que termina com sucesso ou uma descoberta que traz contratos novos não deve ser marcada como a mesma repetição problemática. Sondagens esperadas pelo protocolo também precisam ser distinguíveis de falhas.
-
-Os detectores devem registrar a observação antes de qualquer julgamento do modelo. Jev e a LLM não podem apagar uma ocorrência verificável; podem explicar por que ela talvez seja esperada ou por que exige mais evidência.
-
-### 5.2 Triagem com Jev
-
-A triagem deve usar perguntas independentes e respostas delimitadas. A classificação inicial deve distinguir:
-
-- **Investigar:** existe um sinal que merece análise de melhoria no Harness.
-- **Comportamento esperado:** a evidência disponível sustenta uma explicação normal para a execução.
-- **Evidência insuficiente:** o material não permite concluir se há um problema.
-
-A análise deve registrar o modelo efetivamente retornado pelo provider, as respostas, as probabilidades, a versão dos critérios e o uso reportado.
-
-O acesso a Jev deve reutilizar o hub `judge` e o provider `judge-typesafe` existentes. Credenciais, transporte e controles do provider permanecem nessa integração; o `eval` não cria outro cliente HTTP nem armazena uma segunda chave TypeSafe.
-
-### 5.3 Investigação com a LLM
-
-A LLM é acionada se, e somente se, a triagem de Jev responder `needs_investigation`, em análises automáticas e manuais. Um sinal determinístico, evidência insuficiente, confidence baixa, cobertura insuficiente, um pedido manual ou uma amostra de sessões sem sinais não a acionam por si sós; os sinais continuam no resultado.
-
-O motivo do roteamento deve ficar registrado na análise. Os limites de análise serão definidos no guia técnico e avaliados com dados reais.
-
-A LLM recebe um resumo das evidências e usa o modelo escolhido pelo usuário. Uma mudança posterior dessa configuração não deve alterar silenciosamente a identidade de uma análise já iniciada.
-
-O monitor pode concluir sem sugestões. Não deve inventar uma melhoria para preencher um resultado.
-
-## 6. Conteúdo de uma sugestão
-
-Toda sugestão deve conter:
-
-| Campo | Conteúdo esperado |
-| --- | --- |
-| Título | Problema ou oportunidade em uma frase. |
-| Observação | Fato encontrado na execução. |
-| Evidências | Sessões, turnos e entradas que sustentam a observação. |
-| Hipótese | Explicação possível, distinguindo-a de uma causa comprovada. |
-| Componente do Harness | Área plausível para investigação, sem inventar arquivos ou linhas não inspecionados. |
-| Mudança proposta | Intervenção concreta no comportamento do Harness. |
-| Efeito esperado | O que deve melhorar e sob quais condições. |
-| Plano E2E | Reprodução, invariantes de correção, métrica de esforço e expectativa de comparação. |
-| Limitações | Evidências ausentes, explicações alternativas e necessidade de um cenário novo. |
-
-Referências inexistentes devem invalidar a sugestão. Um plano E2E precisa permitir a alguém reproduzir o problema e avaliar a mudança sem depender da opinião da LLM que o propôs.
-
-## 7. Integração com o E2E
-
-### 7.1 Caminho da observação à prova
-
-1. O monitor registra um comportamento e uma sugestão com evidências.
-2. A sugestão é revisada e ligada a um cenário existente, ou a um caso novo que reproduz o problema.
-3. O cenário e seus critérios são fixados antes da comparação. Se for necessário ampliá-lo, a mesma versão ampliada deve ser executada na referência e no candidato.
-4. A mudança é desenvolvida no Harness.
-5. O runner E2E executa o caso nas duas versões e produz os resultados e os assets de evidência.
-6. A comparação verifica a tarefa correta, o comportamento investigado e as métricas de esforço.
-7. O resultado é associado à sugestão, com as versões e execuções que o sustentam.
-
-O monitor produz o plano de validação. A execução da campanha e a aplicação da mudança dependem de uma ação explícita nesta primeira versão.
-
-### 7.2 Condições para uma comparação válida
-
-Referência e candidato devem usar o mesmo caso, entradas, versão do cenário, critérios de avaliação, modelo/provider e parâmetros suportados. Dependências, Engine e condições de execução precisam ser comparáveis; a diferença planejada é a versão do Harness.
-
-As sementes do cenário devem ser fixadas. Quando o provider oferecer controles de aleatoriedade, eles também devem ser registrados. Repetir o mesmo caso não garante respostas idênticas de um modelo; métricas sujeitas a variação exigem repetições e um critério de avaliação definido antes da campanha.
-
-Versões, revisões, contratos relevantes e evidências devem acompanhar o resultado. Execuções incompletas, falhas de infraestrutura e medidas ausentes precisam ser identificadas, sem exclusão silenciosa para favorecer o candidato. Custo desconhecido não deve ser convertido em zero.
-
-### 7.3 Correção e esforço
-
-| Dimensão | O que comprova |
-| --- | --- |
-| Correção da tarefa | Entregável e invariantes satisfeitos por um avaliador independente. |
-| Comportamento investigado | O padrão indesejado deixou de ocorrer, ou diminuiu conforme o critério declarado. |
-| Esforço | Chamadas, erros, tokens, tempo e custo, respeitando disponibilidade e variação. |
-| Não regressão | Comportamentos necessários continuam funcionando em cenários relevantes. |
-
-Cada resultado deve distinguir **melhoria validada**, **sem melhoria**, **regressão** e **inconclusivo**, indicando o critério aplicado. Esses resultados pertencem ao experimento E2E e não ao estado de execução da análise do monitor.
-
-Um ganho em chamadas não autoriza afirmar redução de tempo ou custo se essas medidas não sustentarem a afirmação. Um candidato mais barato que entrega a tarefa errada é uma regressão, não uma melhoria.
-
-A comparação de sessões do `eval` auxilia a leitura das métricas. Ela, sozinha, não comprova equivalência entre tarefas nem substitui os critérios do E2E.
-
-### 7.4 Exemplo: aviso que induz redescoberta de ferramentas
-
-**Observação:** o modelo recebe contratos de ferramentas. Depois de um aviso de mudança no registry, consulta novamente os mesmos contratos e recebe apenas `unchanged_in_context`.
-
-**Hipótese:** um aviso amplo sobre mudanças no registry pode induzir nova consulta mesmo quando os contratos usados pela tarefa continuam válidos.
-
-**Mudança proposta:** revisar no Harness quando o aviso é emitido e o que ele informa, preservando a recuperação quando um contrato realmente muda.
-
-**Reprodução:** partir do cenário `tool_contract_recovery`, no qual um runbook antigo deve ser resolvido para as ferramentas atuais de perfil e agendamento. Garantir uma alteração controlada e não relacionada no registry entre a descoberta inicial e a próxima decisão do modelo. Se esse gatilho não estiver no caso existente, acrescentá-lo antes de executar ambas as versões.
-
-**Invariantes:** resolver o contrato antigo, obter os dados atuais de perfil, agendar exatamente uma vez, retornar o recibo correto e não executar a ferramenta destrutiva de distração. A correção deve ser conferida com o transcript, o registro independente das ferramentas e o estado final da fixture.
-
-**Métrica principal:** quantidade de redescobertas dos mesmos contratos sem informação nova, vinculadas ao aviso. Comparar também chamadas totais, tokens, tempo e custo.
-
-**Expectativa:** reduzir a redescoberta induzida pelo aviso, mantendo os invariantes. O experimento deve incluir o controle em que o contrato realmente muda: a otimização não pode eliminar a recuperação necessária.
-
-Este exemplo descreve o teste que deve ser feito; não declara que o novo monitor já foi implementado ou que a hipótese já foi validada por ele.
-
-## 8. Interface e operação
-
-A tela principal do `eval` deve oferecer configuração do monitor, seleção da LLM, ativação ou pausa da observação automática, análise manual de uma sessão elegível, histórico e detalhes das análises.
-
-Os detalhes devem permitir ler evidências, classificação de Jev, hipóteses, sugestões e o plano E2E. A comparação de sessões permanece acessível. A interface de experimentos de prompt será removida.
-
-O usuário deve conseguir distinguir coleta pendente, triagem, investigação, conclusão sem sugestão, conclusão com sugestões, falha e cancelamento. A falha de uma análise não deve aparecer como resultado saudável da sessão.
-
-Pausar a observação impede novas análises automáticas. Cancelar uma análise em andamento é uma ação separada e afeta apenas o trabalho do monitor.
-
-Análises devem ter limites de duração, chamadas, tokens e concorrência. Quando o custo puder ser medido, o consumo também deve ficar visível. Valores e política de retenção serão definidos no guia técnico.
-
-Eventos repetidos e retomadas após reinício não devem criar análises ou chamadas de modelo duplicadas. Trabalho pendente precisa ser recuperável e rastreável.
-
-Se Jev ou a LLM estiverem indisponíveis, o monitor deve conservar as observações já obtidas e registrar a etapa que falhou. Não deve substituir silenciosamente o provider ou o modelo escolhido.
-
-O consumo de Jev e da LLM deve ser contabilizado separadamente do consumo da tarefa observada. O custo do monitor faz parte da avaliação de viabilidade do projeto.
-
-## 9. Tratamento das evidências
-
-Antes de enviar material a providers, o monitor deve minimizar o contexto e remover credenciais dos campos estruturados e dos resultados que conseguir interpretar. Os registros originais permanecem no armazenamento de sessões conforme sua política de acesso.
-
-Texto da sessão, respostas de ferramentas e avisos são dados de análise. Não podem conceder autorização ao monitor para executar ações ou modificar o projeto. Máscara de campos e truncamento não garantem, sozinhos, que todo conteúdo sensível de texto livre foi removido; essa cobertura precisa ser especificada e testada.
-
-## 10. Critérios de aceite
-
-- A observação é inativa até que o usuário configure e ative o monitor; a LLM utilizada corresponde à seleção registrada.
-- Uma sessão concluída, com erro ou cancelada pode gerar análise automática; só as que a triagem marca como `needs_investigation` chegam à LLM.
-- Sessões do próprio monitor não produzem novas análises automáticas.
-- Eventos duplicados e retomadas não duplicam a análise de uma mesma ocorrência.
-- Coleta parcial, turno alterado e provider indisponível ficam explícitos no resultado.
-- Os padrões iniciais são detectados por evidência correlacionada, com casos de controle para recuperações legítimas.
-- Jev é acessado pelo provider existente e retorna triagem estruturada, sem substituir contagens determinísticas.
-- A LLM pode produzir uma lista vazia e não pode publicar uma sugestão com referências inexistentes.
-- Cada sugestão contém uma reprodução E2E, um invariante de correção e uma métrica de esforço.
-- O exemplo de redescoberta pode ser reproduzido e comparado em duas versões do Harness com a mesma versão do cenário.
-- O controle de contrato realmente alterado continua exigindo recuperação válida.
-- Nenhuma sugestão aparece como melhoria comprovada sem resultados E2E independentes e rastreáveis.
-- O consumo da análise fica separado das métricas da tarefa observada.
-- A interface substitui avaliações de prompt pelo monitor e mantém a comparação objetiva de sessões.
-
-A qualidade do monitor deve ser avaliada com um conjunto de sessões revisadas: problemas detectados, falsos alertas, problemas que a triagem deixou de investigar, utilidade das sugestões e custo por análise. Isso mede o monitor; a campanha antes/depois mede a melhoria proposta no Harness.
-
-## 11. Guia de implementação
-
-O [guia técnico](IMPLEMENTATION.md) transforma esta especificação em passos de implementação e validação, cobrindo contratos públicos, configuração, captura de evidências, detecção, integração com o judge, chamadas à LLM, persistência, recuperação, limites, interface, testes e ligação com os resultados E2E.
-
-O guia também define o destino dos registros antigos de avaliações de prompt e a transição da interface. Este documento não estabelece compatibilidade automática com o fluxo que será substituído.
-
-## Referências
-
-- [Comportamento atual documentado do eval](README.md).
-- [Hub judge](../judge/README.md) e [contratos de avaliação](../judge/reference.md).
-- [Provider TypeSafe existente e sua configuração](../judge-typesafe/README.md).
-- [Eventos do Harness](../harness/src/events.rs), [estado de execução](../harness/src/functions/status.rs), [árvore de sessões](../harness/src/functions/session_tree.rs) e [métricas](../harness/src/functions/metrics.rs).
-- [Cenário tool_contract_recovery no Harness E2E](https://github.com/iii-hq/harness-e2e/blob/f42b9008af2da184ca83dfec49062d029be70130/src/scenarios/tool_contract_recovery.rs).
-- [TypeSafe: System One](https://docs.typesafe.ai/concepts/system-one), [limitações de Jev](https://docs.typesafe.ai/model-jaggedness/jev-1.13) e [confidence](https://docs.typesafe.ai/confidence).
+# eval — specification
+
+The Harness E2E improvement loop. Harness E2E runs the scenarios. Eval keeps
+the cycle, the evidence, the budget and every decision. The central Sentinel
+groups the failures that runs recorded. User chats and sessions are never read.
+
+## Inputs
+
+There are exactly two inputs, and both converge on one `CycleRecordV1`:
+
+- `eval::start {objective}`: a free objective.
+- `eval::start {execution_id}` or `e2e::dashboard::changed`: a finished E2E
+  execution, re-read through `execution-get`.
+
+## Guarantees
+
+1. **Frozen configuration.** The configuration is frozen into the cycle
+   (`cycle.config`) when the cycle is created. Its revision is the
+   `policy_revision`. Later edits never change the cycle's actor, budget,
+   target or criteria.
+2. **No spend without coverage.**
+   - An objective selects tests only from their spec text (criteria, summary,
+     prompt, invariants), in their current executable definition.
+   - An execution maps to what its own runs lost, on its executed scenarios.
+     They must still be current.
+   - Otherwise the outcome is `no_coverage` with the exact gap. Skill and
+     provider/model fallback objectives have no coverage today.
+     `tool_contract_recovery` is not provider fallback.
+3. **Plan before results.** Before any dispatch, the plan freezes:
+   - the metric and the controls, e.g. `minimal_path`;
+   - every spec criterion, and the pass rate as preserved correctness;
+   - the cases;
+   - the exact `ExecutionParameters` and the selected test identities;
+   - the policy revision.
+4. **Budget before work.** Every paid or external dispatch reserves its work
+   first: proposal, candidate actor, judge, each E2E execution and each
+   official build. Reservations are keyed by a stable work id, so a
+   redelivery or a restart never dispatches twice.
+   - An unreported cost stays charged at its estimate.
+   - E2E estimates count technical retries.
+   - Builds use the frozen `release_build_estimate_usd`.
+5. **Cheap first pass.** Every imported execution gets a deterministic
+   analysis. It calls no model. An unknown is listed and never assumed. An
+   evaluation gap is the evaluator's to close; it never authorizes a Harness
+   change.
+6. **Bounded judgment.** `judge::evaluate` is used only for an ambiguous
+   improvement opportunity that is already covered, in one grouped question.
+   - A deterministic defect needs no judgment.
+   - Sentinel triage of the same occurrence is reused.
+   - Report-sourced Sentinel groups are excluded from Sentinel's automatic
+     paid model sweep; Eval owns their budgeted semantic triage.
+   - A lost or unavailable answer leaves that step unknown.
+7. **Isolated candidates.**
+   - The read-only proposal and the candidate actor run only when
+     `harness::filesystem::info` reports `boundary: workspace`. Otherwise the
+     cycle stops inconclusive before any dispatch.
+   - The actor gets coder read/write inside `harness/` only. It never gets
+     shell, fp, grants, control or credentials.
+8. **Decision in code.** A decision is accepted only when:
+   - the pair is comparable on behavior, inputs, contract, model, provider,
+     E2E revision, engine, cases and policy;
+   - each side ran what it had to: the base, candidate or rc revision as the
+     E2E recorded it, and the frozen stack template with only the Harness
+     pin differing;
+   - every preserved criterion holds;
+   - the planned metric moved by the minimum effect under the frozen
+     sampling and stop rules (`e2e-loop-rules/3`).
+
+   Effort counts only on completed, passed runs. A cost reduction is never
+   claimed while a cost is unknown.
+9. **Source and artifact are decided separately.** The source decision
+   authorizes only the exact-base, non-forced fast-forward of `main`. The rc
+   artifact built by Release Control from that exact commit gets its own
+   decision under the same plan. It binds the running executable digest
+   (`system_under_test.harness_binary_sha256`), which must equal the single
+   `harness` executable inside the rc's Registry tar.gz. Without that digest
+   nothing is activated. Finalization must republish the same bytes.
+10. **Explicit activation.** Activation only targets the configured local
+    Compose target. It is never the operator's own Harness by default.
+    - Requested and confirmed are recorded apart.
+    - Confirmed means the target runs the approved executable digest.
+    - The prior executable is validated first as the rollback destination.
+    - The canary is reserved before anything is activated.
+11. **Canary.** The canary runs on the activated target through that
+    Engine's own E2E (`where: harness`). Its ownership and route are recorded
+    before the dispatch.
+    - **Held:** every preserved condition and the planned metric were
+      measured, none regressed, and no recorded failure was unexpected or of
+      unknown expectedness. Only Held promotes.
+    - **Violated:** a regression or an unexpected failure. It requests a
+      rollback, and the rollback must be proved by the prior digest.
+    - **Unknown:** anything else, including an executable digest other than
+      the activated one, or no coverage or traffic. The observation stays
+      pending on the activated target (never claimed stable, no new E2E is
+      started) until a cycle limit turns it into a restoration of the prior.
+12. **Never abandon an activation.** The activation's operation id is
+    persisted (`cycle.activation_intent`) before the pin is sent. A cancel or
+    a budget limit after that turns into a recovery (`cycle.recovery`), which
+    needs no model or E2E budget:
+    - the original operation is reconciled read-only
+      (`read_compose_operation`) and never sent again;
+    - running or unknown waits; unknown past the reconcile grace ends
+      `inconclusive` with the target not proved, never restored by
+      assumption;
+    - failed or cancelled means the candidate is not active; succeeded counts
+      only once the candidate's executable is proved;
+    - the prior is then pinned and proved by its executable digest.
+
+    Until that is proved the cycle is not terminal.
+13. **One state, current shape only.** State lives in the `eval_cycle*`
+    scopes. Legacy scopes are never read, migrated or deleted.
+
+## Outcomes
+
+| Outcome | Meaning |
+|---|---|
+| `no_coverage` | The objective or execution has no E2E coverage. |
+| `no_action` | The analysis found nothing worth candidate work. |
+| `budget` | A limit of the cycle was reached. |
+| `inconclusive` | Missing capability or configuration, unknown evidence, isolation not available, credentials unavailable, or an activation whose outcome could not be reconciled. |
+| `decided` | A source decision with nothing released. |
+| `promoted` | Activated, proved, and the canary held. |
+| `rolled_back` | The prior executable is proved running again. |
+
+An accepted source decision alone is never `promoted`.
+
+## Limitation in this release: self-reported metrics
+
+`efficiency.total_tokens`, cost and function-call counts come from
+`harness::metrics`, which is code a candidate may change. The tokens figure
+also counts only input plus output, without cache. These counts therefore
+never qualify a source change in this release:
+
+- With candidate work configured, an objective whose planned metric is
+  tokens, cost or function calls stops before any baseline or paid actor,
+  with outcome `no_coverage` and the exact reason. Context-consumption and
+  skills objectives measured in tokens are in this case.
+- The metric is never replaced by another one.
+- Fixes measured by native, independently assessed E2E criteria (for
+  example a lost `criterion_score` from a finished execution) still go
+  through the full source, artifact and canary path.

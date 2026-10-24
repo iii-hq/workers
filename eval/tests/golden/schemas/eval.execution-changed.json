@@ -2,8 +2,15 @@
   "function_id": "eval::execution-changed",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "An `e2e::dashboard::changed` event. Only the execution it names is read; `execution-get` stays the source of truth. An event naming none runs the checkpointed admission sweep instead.",
+    "description": "An `e2e::dashboard::changed` event (`{kind, execution_id, at}`): only a hint to re-read `execution-get`.",
     "properties": {
+      "at": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "execution_id": {
         "default": null,
         "type": [
@@ -11,7 +18,7 @@
           "null"
         ]
       },
-      "id": {
+      "kind": {
         "default": null,
         "type": [
           "string",

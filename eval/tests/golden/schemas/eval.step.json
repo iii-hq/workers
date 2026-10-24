@@ -3,7 +3,7 @@
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
-      "evaluation_id": {
+      "cycle_id": {
         "type": "string"
       },
       "step": {
@@ -13,7 +13,7 @@
       }
     },
     "required": [
-      "evaluation_id",
+      "cycle_id",
       "step"
     ],
     "title": "StepRequestV1",
@@ -23,17 +23,26 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "additionalProperties": false,
     "definitions": {
-      "EvalStatusV1": {
-        "enum": [
-          "queued",
-          "collecting",
-          "judging",
-          "investigating",
-          "completed",
-          "failed",
-          "cancelled"
-        ],
-        "type": "string"
+      "CycleStatusV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "failed",
+              "cancelled"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Durably paused on an external event: an E2E execution to finish, or the candidate stage (`next`).",
+            "enum": [
+              "waiting"
+            ],
+            "type": "string"
+          }
+        ]
       }
     },
     "properties": {
@@ -41,7 +50,7 @@
         "type": "boolean"
       },
       "status": {
-        "$ref": "#/definitions/EvalStatusV1"
+        "$ref": "#/definitions/CycleStatusV1"
       }
     },
     "required": [

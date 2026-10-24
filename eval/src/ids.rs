@@ -1,16 +1,10 @@
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-/// Prefix of every investigation session the monitor creates. Recursion
-/// guard only — it is not an access check.
-pub const ANALYST_PREFIX: &str = "eval_monitor_";
-
-pub fn evaluation_id() -> String {
-    format!("eval_{}", Uuid::new_v4().simple())
-}
-
-/// Prefix of every loop cycle id; `eval::step` routes on it.
+/// Prefix of every loop cycle id.
 pub const CYCLE_PREFIX: &str = "cycle_";
+/// Prefix of the label of every E2E execution a cycle dispatches.
+pub const LABEL_PREFIX: &str = "eval:";
 
 pub fn cycle_id() -> String {
     format!("{CYCLE_PREFIX}{}", Uuid::new_v4().simple())
@@ -20,18 +14,16 @@ pub fn is_cycle(id: &str) -> bool {
     id.starts_with(CYCLE_PREFIX)
 }
 
-/// Stable identity of one observed session turn. The length prefix keeps the
-/// two parts unambiguous.
-pub fn observation_key(session_id: &str, turn_id: &str) -> String {
-    sha256_text(&format!("{}:{session_id}{turn_id}", session_id.len()))
+/// The deterministic label of an execution a cycle dispatches: the only
+/// correlation `e2e::dashboard::execution-start` keeps.
+pub fn execution_label(cycle_id: &str, role: &str) -> String {
+    format!("{LABEL_PREFIX}{cycle_id}:{role}")
 }
 
-pub fn analyst_session(evaluation_id: &str) -> String {
-    format!("{ANALYST_PREFIX}{evaluation_id}")
-}
-
-pub fn judge_request_id(evaluation_id: &str, step: u64) -> String {
-    format!("{evaluation_id}-judge-{step}")
+/// The cycle a dispatched execution's label names, if any.
+pub fn label_cycle(label: &str) -> Option<&str> {
+    let cycle = label.strip_prefix(LABEL_PREFIX)?.split(':').next()?;
+    is_cycle(cycle).then_some(cycle)
 }
 
 pub fn sha256_text(value: &str) -> String {
@@ -98,10 +90,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn observation_key_is_stable_and_unambiguous() {
-        assert_eq!(observation_key("s", "t"), observation_key("s", "t"));
-        assert_ne!(observation_key("ab", "c"), observation_key("a", "bc"));
-        assert_ne!(evaluation_id(), evaluation_id());
+    fn labels_name_their_cycle() {
+        let cycle = cycle_id();
+        assert_eq!(
+            label_cycle(&execution_label(&cycle, "baseline")),
+            Some(cycle.as_str())
+        );
+        assert_eq!(label_cycle("eval:other:baseline"), None);
+        assert_eq!(label_cycle("nightly"), None);
     }
 
     #[test]

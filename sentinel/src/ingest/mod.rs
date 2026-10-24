@@ -16,13 +16,17 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::adapters::{log as log_adapter, trace as trace_adapter, ErrorEvent};
+use crate::adapters::{
+    log as log_adapter, report as report_adapter, trace as trace_adapter, ErrorEvent,
+};
 use crate::evidence::EvidenceBundleV1;
 use crate::registry::{EngineRegistry, Registry};
 use crate::store::{Db, OccurrenceWrite, PendingLogWrite, RecordOutcome, Store};
 use crate::{
     fingerprint, ids, normalize, Counters, ErrorSourceV1, GroupChangeReasonV1, GroupStatusV1,
-    Normalizer, Redactor, SentinelError, TraceStoreStateV1, WorkerConfig,
+    Normalizer, Redactor, ReportClassificationV1, ReportObservationResultV1, ReportOutcomeV1,
+    ReportsIngestRequestV1, ReportsIngestResponseV1, SentinelError, TraceStoreStateV1,
+    WorkerConfig,
 };
 
 /// One unit of ingest work. `trace_id` is a field of every variant because
@@ -398,6 +402,7 @@ impl<D: Db, E: EngineRegistry> Ingest<D, E> {
                 version: None,
             },
             truncated: Default::default(),
+            report: None,
         });
         self.attribute(&mut event, &mut bundle, config).await;
 
@@ -572,31 +577,145 @@ impl<D: Db, E: EngineRegistry> Ingest<D, E> {
             ),
         };
 
-        let write = OccurrenceWrite {
-            fingerprint,
-            source: event.source,
-            dedupe_key: event.dedupe_key.clone(),
-            at_ms: event.at_ms,
-            namespace: event.namespace.clone(),
-            service_name: event.service_name.clone(),
-            function_id: event.function_id.clone(),
-            exception_type: event.exception_type.clone(),
-            title: normalize::title(
-                event.exception_type.as_deref(),
-                event.function_id.as_deref(),
-                &normalized,
-            ),
-            message: event.message.clone(),
-            trace_id: event.trace_id.clone(),
-            span_id: event.span_id.clone(),
-            session_id: event.session_id.clone(),
-            turn_id: event.turn_id.clone(),
-            worker_version: event.worker_version.clone(),
-            evidence: bundle.and_then(|bundle| serde_json::to_string(bundle).ok()),
-            namespace_ambiguous: event.namespace_ambiguous,
-            pending_occurrence_id: pending_occurrence_id.map(str::to_string),
-        };
+        let mut write = occurrence_write(event, bundle, &normalized, fingerprint);
+        write.pending_occurrence_id = pending_occurrence_id.map(str::to_string);
         self.store.record_occurrence(&write).await
+    }
+
+    /// Record the error observations of an imported E2E report.
+    ///
+    /// Each one goes through the same redactor, normalizer, fingerprint and
+    /// store as a span, keyed by where it was observed so a re-import is a
+    /// no-op. The scenario contract decides what it may do: an unexpected
+    /// error (or a different one than the contract expected) opens or counts
+    /// its group under the normal lifecycle; an expected one lands in a group
+    /// of its own, labelled test traffic by rule, never moving a state; one
+    /// the contract cannot place is counted without moving the group, so it
+    /// regresses nothing and expires no ignore, and waits for triage. An
+    /// observation that carries no error records nothing.
+    pub async fn ingest_report(
+        &self,
+        request: &ReportsIngestRequestV1,
+        config: &WorkerConfig,
+    ) -> Result<(ReportsIngestResponseV1, IngestReport), SentinelError> {
+        report_adapter::validate(request)?;
+        let redactor = Redactor::new(&config.redaction.patterns).unwrap_or_default();
+        let normalizer = Normalizer::new(&config.fingerprint.identity_numbers);
+        let namespace = request
+            .namespace
+            .as_deref()
+            .map(str::trim)
+            .filter(|namespace| !namespace.is_empty())
+            .unwrap_or(report_adapter::DEFAULT_NAMESPACE);
+        let (report_id, hits) = redactor.redact(&request.report_id);
+        self.counters.add_redactions(hits);
+        let captured_at_ms = ids::now_ms();
+        let mut report = IngestReport::default();
+        let mut response = ReportsIngestResponseV1 {
+            recorded: 0,
+            deduped: 0,
+            skipped: 0,
+            results: Vec::with_capacity(request.observations.len()),
+        };
+
+        for observation in &request.observations {
+            let dedupe_key = report_adapter::dedupe_key(observation);
+            let classification = report_adapter::classify(observation);
+            let mut result = ReportObservationResultV1 {
+                dedupe_key: dedupe_key.clone(),
+                classification,
+                outcome: ReportOutcomeV1::Skipped,
+                group_id: None,
+                occurrence_id: None,
+                group_status: None,
+                triage: None,
+            };
+            if !report_adapter::has_error(observation) {
+                response.skipped += 1;
+                response.results.push(result);
+                continue;
+            }
+
+            let mut redactions = 0;
+            let redacted = report_adapter::redact(
+                observation,
+                config.evidence.message_max_bytes as usize,
+                &redactor,
+                &mut redactions,
+            );
+            self.counters.add_redactions(redactions);
+            let service_name = config
+                .resolve_service_alias(&redacted.service_name)
+                .to_string();
+            let event =
+                report_adapter::event_for(&redacted, dedupe_key.clone(), namespace, &service_name);
+            let mut bundle = report_adapter::bundle_for(
+                &redacted,
+                &report_id,
+                classification,
+                &service_name,
+                captured_at_ms,
+            );
+            bundle.fit_within(config.evidence.max_bytes as usize);
+
+            let expected = classification == ReportClassificationV1::Expected;
+            let normalized = normalizer.normalize(&event.message);
+            let fingerprint = fingerprint::report_fingerprint(
+                &event.namespace,
+                &event.service_name,
+                &report_adapter::identity(&redacted),
+                event.exception_type.as_deref(),
+                &normalized,
+                expected,
+            );
+            let write = occurrence_write(&event, Some(&bundle), &normalized, fingerprint);
+            let hold = matches!(
+                classification,
+                ReportClassificationV1::Expected | ReportClassificationV1::InsufficientEvidence
+            );
+            let outcome = self.store.record_occurrence_with(&write, hold).await?;
+            let (kind, group_id) = match &outcome {
+                RecordOutcome::Created { group_id } => {
+                    (ReportOutcomeV1::Created, Some(group_id.clone()))
+                }
+                RecordOutcome::Counted { group_id, .. } => {
+                    (ReportOutcomeV1::Counted, Some(group_id.clone()))
+                }
+                RecordOutcome::Deduped { group_id } => (ReportOutcomeV1::Deduped, group_id.clone()),
+            };
+            self.tally(&mut report, outcome);
+            if kind == ReportOutcomeV1::Deduped {
+                response.deduped += 1;
+            } else {
+                response.recorded += 1;
+            }
+
+            if let Some(group_id) = &group_id {
+                // Only ever the expected group's own label: its fingerprint
+                // carries the expectation, so no real defect group can be
+                // labelled by it, and `set_triage` never overwrites.
+                if expected {
+                    let triage =
+                        report_adapter::expected_triage(observation, &redactor, captured_at_ms);
+                    self.store.set_triage(group_id, &triage).await?;
+                }
+                result.group_status = self
+                    .store
+                    .group_by_id(group_id)
+                    .await?
+                    .map(|group| group.state.status);
+                result.triage = self.store.group_triage(group_id).await?;
+            }
+            result.occurrence_id = self
+                .store
+                .occurrence_by_dedupe_key(&dedupe_key)
+                .await?
+                .map(|(occurrence_id, _)| occurrence_id);
+            result.outcome = kind;
+            result.group_id = group_id;
+            response.results.push(result);
+        }
+        Ok((response, report))
     }
 
     fn tally(&self, report: &mut IngestReport, outcome: RecordOutcome) {
@@ -715,6 +834,39 @@ impl<D: Db, E: EngineRegistry> Ingest<D, E> {
         let (kept, dropped) = self.ring.filter(trace_ids.iter());
         self.counters.add_phantom_ticks_dropped(dropped);
         (kept, dropped)
+    }
+}
+
+/// The row a recorded event becomes, minus the promotion link.
+fn occurrence_write(
+    event: &ErrorEvent,
+    bundle: Option<&EvidenceBundleV1>,
+    normalized: &str,
+    fingerprint: String,
+) -> OccurrenceWrite {
+    OccurrenceWrite {
+        fingerprint,
+        source: event.source,
+        dedupe_key: event.dedupe_key.clone(),
+        at_ms: event.at_ms,
+        namespace: event.namespace.clone(),
+        service_name: event.service_name.clone(),
+        function_id: event.function_id.clone(),
+        exception_type: event.exception_type.clone(),
+        title: normalize::title(
+            event.exception_type.as_deref(),
+            event.function_id.as_deref(),
+            normalized,
+        ),
+        message: event.message.clone(),
+        trace_id: event.trace_id.clone(),
+        span_id: event.span_id.clone(),
+        session_id: event.session_id.clone(),
+        turn_id: event.turn_id.clone(),
+        worker_version: event.worker_version.clone(),
+        evidence: bundle.and_then(|bundle| serde_json::to_string(bundle).ok()),
+        namespace_ambiguous: event.namespace_ambiguous,
+        pending_occurrence_id: None,
     }
 }
 

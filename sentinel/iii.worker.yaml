@@ -6,7 +6,7 @@ manifest: Cargo.toml
 license: Apache-2.0
 bin: sentinel
 tags: [errors, monitoring, observability, incidents, diagnostics]
-description: "Error monitor for the iii engine: groups failures from trace and log telemetry by deterministic fingerprint, freezes the evidence before the in-memory store discards it, and opens assisted harness investigations that record a structured diagnosis."
+description: "Error monitor for the iii engine: groups failures from trace and log telemetry and imported E2E reports by deterministic fingerprint, freezes the evidence before the in-memory store discards it, and opens assisted harness investigations that record a structured diagnosis."
 
 config:
   enabled: true

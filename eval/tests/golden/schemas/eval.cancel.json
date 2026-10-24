@@ -18,14 +18,25 @@
     "additionalProperties": false,
     "definitions": {
       "CycleStatusV1": {
-        "enum": [
-          "queued",
-          "running",
-          "completed",
-          "failed",
-          "cancelled"
-        ],
-        "type": "string"
+        "oneOf": [
+          {
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "failed",
+              "cancelled"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Durably paused on an external event: an E2E execution to finish, or the candidate stage (`next`).",
+            "enum": [
+              "waiting"
+            ],
+            "type": "string"
+          }
+        ]
       }
     },
     "properties": {

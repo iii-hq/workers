@@ -1,13 +1,12 @@
-//! Deterministic detectors over raw `session::messages` entries, and the
-//! masked previews that may leave for a model. Detectors run on complete
-//! transcripts before anything is reduced.
+//! Deterministic detectors over the run transcripts the E2E reports carry
+//! (`session::messages` entries). Detectors run on complete transcripts.
 
 use std::collections::BTreeSet;
 
 use harness::policy::{plan_calls, CallKind};
 use harness::types::message::AgentMessage;
 use harness::types::turn::ExposeMode;
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::contract::{CorrelationV1, DiagnosticV1, EntryRefV1, ExcludedProbeV1, RULES_VERSION};
 use crate::ids;
@@ -405,86 +404,6 @@ fn content_json(content: &Value) -> Option<Value> {
             .and_then(|text| serde_json::from_str::<Value>(text).ok())
             .filter(Value::is_object)
     })
-}
-
-/// What a model may see of an entry: the model-visible content, error details
-/// and identity. Raw result `details` and opaque reasoning payloads are
-/// dropped; JSON carried as text is decoded so secret-named keys inside it are
-/// masked by the shared Harness masker, which also shortens long strings.
-/// Masking is key-based: secrets in free text are not detected.
-pub fn preview(entry: &Value) -> (Value, bool) {
-    let projected = decode_embedded_json(&project(entry));
-    let shown = harness::judge::bounded(&projected);
-    let reduced = shown != projected;
-    (shown, reduced)
-}
-
-fn project(entry: &Value) -> Value {
-    let mut out = Map::new();
-    out.insert("entry_id".into(), entry["entry_id"].clone());
-    if let Some(message) = entry["message"].as_object() {
-        let mut kept = Map::new();
-        for (key, value) in message {
-            match key.as_str() {
-                "timestamp" | "native_stop_reason" => {}
-                "details" => {
-                    if message.get("is_error") == Some(&Value::Bool(true)) {
-                        if let Some(error) = value.get("error") {
-                            kept.insert("details".into(), serde_json::json!({ "error": error }));
-                        }
-                    }
-                }
-                "content" => {
-                    let blocks = value
-                        .as_array()
-                        .map(|blocks| {
-                            blocks
-                                .iter()
-                                .filter(|block| block["type"] != "redacted_thinking")
-                                .map(|block| {
-                                    let mut block = block.clone();
-                                    if let Some(object) = block.as_object_mut() {
-                                        object.remove("signature");
-                                    }
-                                    block
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    kept.insert(key.clone(), Value::Array(blocks));
-                }
-                _ => {
-                    kept.insert(key.clone(), value.clone());
-                }
-            }
-        }
-        out.insert("message".into(), Value::Object(kept));
-    }
-    if let Some(custom) = entry["custom"].as_object() {
-        let mut kept = custom.clone();
-        if let Some(data) = kept.get_mut("data").and_then(Value::as_object_mut) {
-            // `data.message` repeats `data.text` for replay.
-            data.remove("message");
-        }
-        out.insert("custom".into(), Value::Object(kept));
-    }
-    Value::Object(out)
-}
-
-fn decode_embedded_json(value: &Value) -> Value {
-    match value {
-        Value::String(text) => match serde_json::from_str::<Value>(text) {
-            Ok(parsed @ (Value::Object(_) | Value::Array(_))) => decode_embedded_json(&parsed),
-            _ => value.clone(),
-        },
-        Value::Array(items) => Value::Array(items.iter().map(decode_embedded_json).collect()),
-        Value::Object(map) => Value::Object(
-            map.iter()
-                .map(|(key, value)| (key.clone(), decode_embedded_json(value)))
-                .collect(),
-        ),
-        other => other.clone(),
-    }
 }
 
 #[cfg(test)]
@@ -909,40 +828,5 @@ mod tests {
         let entries = vec![json!({"entry_id": "e_t_aaa_0_assistant",
             "message": {"role": "assistant", "content": "not blocks"}})];
         assert_eq!(detect("s", &entries).unreadable_messages, 1);
-    }
-
-    #[test]
-    fn preview_masks_secrets_inside_json_text_and_drops_raw_details() {
-        let entry = json!({"entry_id": "e", "message": {
-            "role": "function_result", "function_call_id": "c", "function_id": "f",
-            "content": [{"type": "text", "text": "{\"api_key\":\"private-value\",\"value\":42}"}],
-            "details": {"api_key": "private-value", "raw": "x"}, "is_error": false, "timestamp": 1
-        }});
-        let (shown, reduced) = preview(&entry);
-        let text = shown.to_string();
-        assert!(!text.contains("private-value"), "{text}");
-        assert!(reduced);
-        assert_eq!(shown["message"]["content"][0]["text"]["value"], 42);
-        assert!(shown["message"].get("details").is_none());
-    }
-
-    #[test]
-    fn preview_keeps_error_details_and_reports_truncation() {
-        let long = "x".repeat(2_000);
-        let entry = json!({"entry_id": "e", "message": {
-            "role": "function_result", "function_call_id": "c", "function_id": "f",
-            "content": [{"type": "text", "text": long}],
-            "details": {"error": {"code": "E", "message": "m"}, "raw": 1}, "is_error": true, "timestamp": 1
-        }});
-        let (shown, reduced) = preview(&entry);
-        assert!(reduced);
-        assert_eq!(
-            shown["message"]["details"],
-            json!({"error": {"code": "E", "message": "m"}})
-        );
-        let (plain, plain_reduced) = preview(&json!({"entry_id": "e", "custom": {
-            "custom_type": "model_notice", "data": {"kind": "k", "text": "t", "message": {}}}}));
-        assert!(!plain_reduced);
-        assert!(plain["custom"]["data"].get("message").is_none());
     }
 }

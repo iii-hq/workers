@@ -9,12 +9,11 @@ use iii_sdk::trigger::Trigger;
 use iii_sdk::{register_worker, InitOptions};
 use serde_json::json;
 
-use eval::events::EvalEvents;
 use eval::runtime::{self, Deps};
 use eval::{functions, manifest, queue, ui};
 
 #[derive(Parser, Debug)]
-#[command(name = "eval", about = "Session monitor for the iii Harness.")]
+#[command(name = "eval", about = "Harness E2E improvement loop.")]
 struct Cli {
     #[arg(long, env = "III_URL", default_value = "ws://127.0.0.1:49134")]
     url: String,
@@ -57,17 +56,15 @@ async fn main() -> Result<()> {
         },
     ));
 
-    let events = EvalEvents::register(&iii);
-    let deps = Deps::new(iii.clone(), events);
+    let deps = Deps::new(iii.clone());
     functions::register_all(&iii, &deps);
     ui::register(&iii);
     queue::ensure_run_queue(&iii)
         .await
         .context("ensuring eval-run queue")?;
 
-    // Publish indexes saved before a crash and resume pending analyses before
-    // the sweep is bound.
-    match runtime::recover(&deps).await {
+    // Resume cycles left pending by a crash before the sweep is bound.
+    match runtime::sweep(&deps).await {
         Ok(recovered) => tracing::info!(?recovered, "eval startup recovery finished"),
         Err(error) => tracing::warn!(%error, "eval startup recovery failed; the sweep retries"),
     }

@@ -62,6 +62,32 @@ pub fn log_fingerprint(
     )
 }
 
+/// A failure read from an E2E report. Built like a span's, plus whether the
+/// scenario provoked it on purpose: a deliberate failure and the same text
+/// happening by accident are two groups, so evidence of the first never
+/// counts against, or hides, the second. Neither the side nor the revision
+/// is part of it, so a baseline and its candidate meet in one group.
+pub fn report_fingerprint(
+    namespace: &str,
+    owner_worker: &str,
+    function_or_case: &str,
+    exception_type: Option<&str>,
+    normalized_message: &str,
+    expected: bool,
+) -> String {
+    fingerprint(
+        ErrorSourceV1::Report,
+        &[
+            namespace,
+            owner_worker,
+            function_or_case,
+            exception_type.unwrap_or_default(),
+            normalized_message,
+            if expected { "expected" } else { "" },
+        ],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

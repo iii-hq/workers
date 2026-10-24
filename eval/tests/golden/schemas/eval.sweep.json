@@ -26,7 +26,17 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "additionalProperties": false,
     "properties": {
+      "admitted": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
       "expired": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "reconciled": {
         "format": "uint64",
         "minimum": 0.0,
         "type": "integer"
@@ -35,17 +45,13 @@
         "format": "uint64",
         "minimum": 0.0,
         "type": "integer"
-      },
-      "retained_deleted": {
-        "format": "uint64",
-        "minimum": 0.0,
-        "type": "integer"
       }
     },
     "required": [
+      "admitted",
       "expired",
-      "requeued",
-      "retained_deleted"
+      "reconciled",
+      "requeued"
     ],
     "title": "SweepResponseV1",
     "type": "object"

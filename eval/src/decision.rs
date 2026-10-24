@@ -1,14 +1,20 @@
 //! The loop's decision on a baseline/candidate pair, computed in code, never
 //! by a model: the comparison of the means, the minimum effect and n, behind
 //! the gates that make it mean something. The plan is frozen before any
-//! result; an incompatible pair, a technical failure or a missing measure is
-//! inconclusive; a gain that loses a preserved correctness condition is
-//! rejected.
+//! result, with the executable identity of every test it runs; each side
+//! must have run exactly that coverage, on the same subject artifact and the
+//! same non-Harness stack. An incompatible pair, a technical failure, a
+//! missing measure or a sample other than the frozen one is inconclusive; a
+//! gain that loses a preserved correctness condition is rejected. A mean
+//! improvement is accepted only with a positive frozen minimum effect and a
+//! one-sided exact sign test over the same-case run pairs (p <= 0.05): five
+//! consistent pairs can pass, one lucky pair cannot. The sign test is
+//! evidence of a consistent direction, not a confidence interval for the
+//! mean.
 
 use crate::contract::*;
 use crate::cost;
 use crate::error::EvalError;
-use crate::runtime;
 
 fn metric_value(run: &EvidenceRunV1, criterion: &CriterionV1) -> Option<f64> {
     match criterion.metric {
@@ -21,9 +27,15 @@ fn metric_value(run: &EvidenceRunV1, criterion: &CriterionV1) -> Option<f64> {
         CriterionMetricV1::PassRate if !run.completed => Some(0.0),
         CriterionMetricV1::PassRate => match run.status.as_deref()? {
             "passed" => Some(1.0),
-            "failed" => Some(0.0),
-            _ => None,
+            _ => Some(0.0),
         },
+        CriterionMetricV1::CriterionScore => run
+            .criteria
+            .get(criterion.criterion_id.as_deref()?)
+            .copied(),
+        // Effort only counts for a task done: fewer tokens from an unfinished
+        // or failed run are no gain.
+        _ if !run.completed || run.status.as_deref() != Some("passed") => None,
         CriterionMetricV1::CostUsd => run.cost_usd,
         CriterionMetricV1::Duration => run.wall_time_ms,
         CriterionMetricV1::Tokens => run.total_tokens,
@@ -36,6 +48,10 @@ fn metric_label(criterion: &CriterionV1) -> String {
         (CriterionMetricV1::SignalPerRun, Some(pattern)) => format!("signal per run {pattern}"),
         (CriterionMetricV1::SignalPerRun, None) => "signal per run".into(),
         (CriterionMetricV1::PassRate, _) => "pass rate".into(),
+        (CriterionMetricV1::CriterionScore, _) => format!(
+            "criterion {}",
+            criterion.criterion_id.as_deref().unwrap_or_default()
+        ),
         (CriterionMetricV1::CostUsd, _) => "cost (USD)".into(),
         (CriterionMetricV1::Duration, _) => "wall time (ms)".into(),
         (CriterionMetricV1::Tokens, _) => "tokens".into(),
@@ -54,7 +70,7 @@ const EFFECT_TOLERANCE: f64 = 1e-9;
 fn effect_unit(metric: CriterionMetricV1) -> (&'static str, f64) {
     match metric {
         CriterionMetricV1::SignalPerRun => ("signals per run", 1.0),
-        CriterionMetricV1::PassRate => ("pp", 0.01),
+        CriterionMetricV1::PassRate | CriterionMetricV1::CriterionScore => ("pp", 0.01),
         CriterionMetricV1::CostUsd => ("USD", 1.0),
         CriterionMetricV1::Duration => ("s", 1_000.0),
         CriterionMetricV1::Tokens => ("tokens", 1.0),
@@ -150,14 +166,24 @@ pub fn compare(
         DirectionV1::Decrease => -change,
         DirectionV1::Increase => change,
     };
-    let outcome = if wanted + EFFECT_TOLERANCE >= criterion.min_effect {
+    // With a zero minimum effect an unchanged mean is held (no improvement),
+    // never a gain; any loss is a regression.
+    let outcome = if criterion.min_effect <= 0.0 {
+        if wanted > EFFECT_TOLERANCE {
+            ValidationOutcomeV1::ValidatedImprovement
+        } else if wanted < -EFFECT_TOLERANCE {
+            ValidationOutcomeV1::Regression
+        } else {
+            ValidationOutcomeV1::NoImprovement
+        }
+    } else if wanted + EFFECT_TOLERANCE >= criterion.min_effect {
         ValidationOutcomeV1::ValidatedImprovement
     } else if wanted - EFFECT_TOLERANCE <= -criterion.min_effect {
         ValidationOutcomeV1::Regression
     } else {
         ValidationOutcomeV1::NoImprovement
     };
-    let reason = format!(
+    let mut reason = format!(
         "{}: baseline {} → candidate {} ({}{} {unit}), n={}/{}; an effect is {} {} {unit} or \
          more with at least {} runs each side",
         metric_label(criterion),
@@ -174,7 +200,286 @@ pub fn compare(
         number(criterion.min_effect),
         criterion.min_runs
     );
+    // A mean gain of the minimum effect is not enough on its own: the paired
+    // runs must show it in a consistent direction (see [`directional`]).
+    if outcome == ValidationOutcomeV1::ValidatedImprovement && criterion.min_effect > 0.0 {
+        match directional(evidence, criterion) {
+            Ok(test) if test.p <= SIGN_TEST_ALPHA + EFFECT_TOLERANCE => {
+                reason = format!("{reason}; {}", test.describe(criterion));
+            }
+            Ok(test) => {
+                return inconclusive(format!(
+                    "{reason}; but {}, above {SIGN_TEST_ALPHA}: the mean effect is not shown in a \
+                     consistent direction",
+                    test.describe(criterion)
+                ));
+            }
+            Err(why) => {
+                return inconclusive(format!(
+                    "{reason}; but the runs cannot be paired for the directional sign test: {why}"
+                ));
+            }
+        }
+    }
     (outcome, reason)
+}
+
+/// The frozen directional rule (part of the rules `RULES_VERSION` names): a
+/// positive improvement with a minimum effect above 0 must also pass a
+/// one-sided exact sign test at this level.
+pub const SIGN_TEST_ALPHA: f64 = 0.05;
+/// Its identifier, written into every reason that applies it.
+pub const SIGN_TEST_RULE: &str = "paired-sign-test/one-sided/alpha-0.05";
+
+/// The directional sign test on one criterion's paired runs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SignTest {
+    /// Pairs whose candidate run beat its baseline run by the minimum effect.
+    pub reached: u32,
+    /// Every planned pair, an unmeasured one counted as not reaching it.
+    pub pairs: u32,
+    /// P(X >= reached) for X ~ Binomial(pairs, 1/2).
+    pub p: f64,
+}
+
+impl SignTest {
+    fn describe(&self, criterion: &CriterionV1) -> String {
+        let (unit, _) = effect_unit(criterion.metric);
+        format!(
+            "{SIGN_TEST_RULE}: {} of {} same-case run pairs (native run order) reached the {} {unit} \
+             effect, one-sided binomial p={:.5}; evidence of a consistent direction, not a \
+             confidence interval for the mean",
+            self.reached,
+            self.pairs,
+            number(criterion.min_effect),
+            self.p
+        )
+    }
+}
+
+/// The one-sided exact binomial tail P(X >= k), X ~ Binomial(n, 1/2).
+pub fn sign_test_p(reached: u32, pairs: u32) -> f64 {
+    if reached == 0 {
+        return 1.0;
+    }
+    if reached > pairs {
+        return 0.0;
+    }
+    // C(n, i) / 2^n accumulated term by term from i = n downwards.
+    let n = f64::from(pairs);
+    let mut term = 0.5_f64.powi(pairs as i32);
+    let mut tail = term;
+    for i in (reached..pairs).rev() {
+        // C(n, i) = C(n, i + 1) * (i + 1) / (n - i)
+        term *= f64::from(i + 1) / (n - f64::from(i));
+        tail += term;
+    }
+    tail.min(1.0)
+}
+
+/// Pairs the i-th baseline run with the i-th candidate run, in the order the
+/// E2E reported them, only when both sides ran exactly the same cases the
+/// same number of times (every run names its case, the i-th runs share it,
+/// no run id repeats). A pair reaches the effect when both runs are
+/// measured and the candidate beats the baseline by `min_effect` in the
+/// wanted direction; an unmeasured run (technical failure, an unfinished or
+/// failed task for an effort metric, an unknown value) never reaches it.
+/// Ambiguous pairing is an error, never a guess.
+pub fn directional(evidence: &EvidenceV1, criterion: &CriterionV1) -> Result<SignTest, String> {
+    let (baseline, candidate) = (&evidence.baseline.runs, &evidence.candidate.runs);
+    if baseline.len() != candidate.len() {
+        return Err(format!(
+            "the baseline has {} run(s) and the candidate {}",
+            baseline.len(),
+            candidate.len()
+        ));
+    }
+    for (name, runs) in [("baseline", baseline), ("candidate", candidate)] {
+        let mut ids = std::collections::BTreeSet::new();
+        if let Some(run) = runs.iter().find(|run| !ids.insert(run.run_id.as_str())) {
+            return Err(format!("the {name} reports run {} twice", run.run_id));
+        }
+    }
+    let (_, scale) = effect_unit(criterion.metric);
+    let mut reached = 0;
+    for (at, (left, right)) in baseline.iter().zip(candidate).enumerate() {
+        match (&left.case_id, &right.case_id) {
+            (Some(left_case), Some(right_case)) if left_case == right_case => {}
+            (left_case, right_case) => {
+                return Err(format!(
+                    "run pair {at} is not of one case (baseline {left_case:?}, candidate {right_case:?})"
+                ))
+            }
+        }
+        let value = |run: &EvidenceRunV1| {
+            run.measurable()
+                .then(|| metric_value(run, criterion))
+                .flatten()
+        };
+        if let (Some(before), Some(after)) = (value(left), value(right)) {
+            let change = (after - before) / scale;
+            let wanted = match criterion.direction {
+                DirectionV1::Decrease => -change,
+                DirectionV1::Increase => change,
+            };
+            if wanted + EFFECT_TOLERANCE >= criterion.min_effect {
+                reached += 1;
+            }
+        }
+    }
+    let pairs = baseline.len() as u32;
+    if pairs == 0 {
+        return Err("no run pair".into());
+    }
+    Ok(SignTest {
+        reached,
+        pairs,
+        p: sign_test_p(reached, pairs),
+    })
+}
+
+/// The frozen sampling plan, held exactly: each side reports exactly
+/// `planned` runs of the scenario, every run id once. An extra, missing or
+/// duplicated sample is never silently accepted. `None`: it holds.
+pub fn sampling_gap(evidence: &EvidenceV1, planned: u32) -> Option<String> {
+    for (name, side) in [
+        ("baseline", &evidence.baseline),
+        ("candidate", &evidence.candidate),
+    ] {
+        if side.runs.len() != planned as usize {
+            return Some(format!(
+                "the {name} reports {} run(s) of {}, the frozen plan samples exactly {planned}",
+                side.runs.len(),
+                evidence.scenario_id
+            ));
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        if let Some(run) = side
+            .runs
+            .iter()
+            .find(|run| !ids.insert(run.run_id.as_str()))
+        {
+            return Some(format!(
+                "the {name} reports run {} of {} more than once",
+                run.run_id, evidence.scenario_id
+            ));
+        }
+    }
+    None
+}
+
+/// The criteria a plan judges: its metric, then every preserved condition.
+fn criteria(plan: &CyclePlanV1) -> impl Iterator<Item = &CriterionV1> {
+    std::iter::once(&plan.criterion).chain(&plan.preserved)
+}
+
+fn patterns(plan: &CyclePlanV1) -> Vec<String> {
+    criteria(plan)
+        .filter_map(|criterion| criterion.pattern.clone())
+        .collect()
+}
+
+/// One side's runs of `criterion`'s scenario with its `n` and `mean`.
+pub fn measure(
+    plan: &CyclePlanV1,
+    criterion: &CriterionV1,
+    execution_id: &str,
+    bundle: &serde_json::Value,
+) -> EvidenceSideV1 {
+    let mut evidence = EvidenceV1 {
+        scenario_id: criterion.scenario_id.clone(),
+        computed_at: 0,
+        baseline: EvidenceSideV1 {
+            execution_id: execution_id.into(),
+            runs: crate::evidence::runs_of(bundle, &criterion.scenario_id, &patterns(plan)),
+            n: 0,
+            mean: None,
+        },
+        candidate: EvidenceSideV1 {
+            execution_id: String::new(),
+            runs: Vec::new(),
+            n: 0,
+            mean: None,
+        },
+        computed_outcome: ValidationOutcomeV1::Inconclusive,
+        reason: String::new(),
+    };
+    judge(&mut evidence, Some(criterion));
+    evidence.baseline
+}
+
+/// The baseline measured against the frozen plan: usable only when every
+/// criterion has its minimum of measured runs with a value.
+pub fn baseline(plan: &CyclePlanV1, execution_id: &str, bundle: &serde_json::Value) -> BaselineV1 {
+    let primary = measure(plan, &plan.criterion, execution_id, bundle);
+    let preserved: Vec<EvidenceSideV1> = plan
+        .preserved
+        .iter()
+        .map(|criterion| measure(plan, criterion, execution_id, bundle))
+        .collect();
+    let short: Vec<String> = criteria(plan)
+        .zip(std::iter::once(&primary).chain(&preserved))
+        .filter(|(criterion, side)| {
+            side.mean.is_none()
+                || side.n < criterion.min_runs.max(plan.sampling.runs_per_side)
+                || side.runs.len() != plan.sampling.runs_per_side as usize
+        })
+        .map(|(criterion, side)| {
+            format!(
+                "{} (n={}, {} of exactly {} planned runs)",
+                metric_label(criterion),
+                side.n,
+                side.runs.len(),
+                plan.sampling.runs_per_side
+            )
+        })
+        .collect();
+    BaselineV1 {
+        execution_id: execution_id.into(),
+        usable: short.is_empty(),
+        reason: if short.is_empty() {
+            "every planned criterion is measured on the baseline".into()
+        } else {
+            format!("not measured on enough valid runs: {}", short.join(", "))
+        },
+        primary,
+        preserved,
+    }
+}
+
+/// The pair's evidence for every scenario the plan judges, read from the two
+/// stored bundles only.
+pub fn pair_evidence(
+    plan: &CyclePlanV1,
+    baseline: (&str, &serde_json::Value),
+    candidate: (&str, &serde_json::Value),
+    now: i64,
+) -> Vec<EvidenceV1> {
+    let mut scenarios: Vec<&str> = criteria(plan)
+        .map(|criterion| criterion.scenario_id.as_str())
+        .collect();
+    scenarios.sort();
+    scenarios.dedup();
+    let patterns = patterns(plan);
+    scenarios
+        .into_iter()
+        .map(|scenario_id| {
+            let side = |(execution_id, bundle): (&str, &serde_json::Value)| EvidenceSideV1 {
+                execution_id: execution_id.into(),
+                runs: crate::evidence::runs_of(bundle, scenario_id, &patterns),
+                n: 0,
+                mean: None,
+            };
+            EvidenceV1 {
+                scenario_id: scenario_id.into(),
+                computed_at: now,
+                baseline: side(baseline),
+                candidate: side(candidate),
+                computed_outcome: ValidationOutcomeV1::Inconclusive,
+                reason: String::new(),
+            }
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -226,12 +531,31 @@ fn validate(plan: &CyclePlanV1) -> Result<(), EvalError> {
     if plan.sampling.runs_per_side == 0 {
         return invalid("sampling.runs_per_side must be at least 1");
     }
+    // Every judged scenario is frozen with its executable identity, once.
+    let mut frozen = std::collections::BTreeSet::new();
+    for test in &plan.tests {
+        if !frozen.insert(test.scenario_id.as_str()) {
+            return invalid("a scenario is frozen twice in tests");
+        }
+    }
+    if std::iter::once(&plan.criterion)
+        .chain(&plan.preserved)
+        .any(|criterion| !frozen.contains(criterion.scenario_id.as_str()))
+    {
+        return invalid(
+            "every judged scenario needs its frozen test (case, seed, behavior, inputs, contract)",
+        );
+    }
     for criterion in std::iter::once(&plan.criterion).chain(&plan.preserved) {
         if !criterion.min_effect.is_finite() || criterion.min_effect < 0.0 {
             return invalid("a min_effect must be a finite number, 0 or more");
         }
         if criterion.metric == CriterionMetricV1::SignalPerRun && criterion.pattern.is_none() {
             return invalid("a signal_per_run criterion needs its pattern");
+        }
+        if criterion.metric == CriterionMetricV1::CriterionScore && criterion.criterion_id.is_none()
+        {
+            return invalid("a criterion_score criterion needs its criterion_id");
         }
     }
     Ok(())
@@ -241,7 +565,7 @@ fn validate(plan: &CyclePlanV1) -> Result<(), EvalError> {
 /// frozen plan, a frozen plan never changes or disappears, and a recorded
 /// decision is never replaced.
 pub fn check_write(stored: Option<&CycleRecordV1>, next: &CycleRecordV1) -> Result<(), EvalError> {
-    if next.decision.is_some() && next.plan.is_none() {
+    if (next.decision.is_some() || next.artifact_decision.is_some()) && next.plan.is_none() {
         return Err(EvalError::Conflict(format!(
             "cycle {} has no frozen plan, so it cannot record a decision",
             next.cycle_id
@@ -253,6 +577,12 @@ pub fn check_write(stored: Option<&CycleRecordV1>, next: &CycleRecordV1) -> Resu
     if stored.plan.is_some() && next.plan != stored.plan {
         return Err(EvalError::Conflict(format!(
             "the frozen plan of cycle {} cannot change",
+            next.cycle_id
+        )));
+    }
+    if stored.artifact_decision.is_some() && next.artifact_decision != stored.artifact_decision {
+        return Err(EvalError::Conflict(format!(
+            "the artifact decision of cycle {} is recorded and cannot change",
             next.cycle_id
         )));
     }
@@ -275,34 +605,156 @@ fn sorted(values: &[String]) -> Option<String> {
     (!values.is_empty()).then(|| values.join(", "))
 }
 
-/// Everything that must match between the two sides: the E2E's own
-/// comparability (scenario, behavior, contract, model, provider, E2E
-/// revision, engine) plus the inputs/seeds and the policy, both of which must
-/// also be the frozen plan's. Unknown values never match.
+fn scenarios(
+    identity: &EvidenceIdentityV1,
+    field: fn(&ScenarioIdentityV1) -> Option<String>,
+) -> Option<String> {
+    let values: Option<Vec<String>> = identity
+        .scenarios
+        .iter()
+        .map(|scenario| field(scenario).map(|value| format!("{}={value}", scenario.scenario_id)))
+        .collect();
+    values.and_then(|values| sorted(&values))
+}
+
+fn coverage_line(
+    scenario_id: &str,
+    case_id: Option<&str>,
+    seed: Option<u64>,
+    behavior: Option<&str>,
+    inputs: Option<&str>,
+    contract: Option<&str>,
+) -> Option<String> {
+    let known = |value: Option<&str>| {
+        value
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+    };
+    Some(format!(
+        "{scenario_id}: case={} seed={} behavior={} inputs={} contract={}",
+        known(case_id)?,
+        seed?,
+        known(behavior)?,
+        known(inputs)?,
+        known(contract)?
+    ))
+}
+
+/// The executable identity the plan froze for every scenario it runs
+/// (selected tests and controls), one line each in scenario order; `None`
+/// when the plan froze none or any is incomplete.
+fn frozen_coverage(plan: &CyclePlanV1) -> Option<String> {
+    let mut lines: Vec<String> = plan
+        .tests
+        .iter()
+        .map(|test| {
+            coverage_line(
+                &test.scenario_id,
+                Some(test.case_id.as_str()),
+                Some(test.seed),
+                Some(test.behavior_sha256.as_str()),
+                Some(test.inputs_sha256.as_str()),
+                Some(test.contract_sha256.as_str()),
+            )
+        })
+        .collect::<Option<_>>()?;
+    lines.sort();
+    (!lines.is_empty()).then(|| lines.join("; "))
+}
+
+/// The same lines as a side's reports state them: every reported scenario,
+/// a scenario reported twice with different identities twice; `None` when a
+/// field is unknown.
+fn observed_coverage(identity: &EvidenceIdentityV1) -> Option<String> {
+    let mut lines: Vec<String> = identity
+        .scenarios
+        .iter()
+        .map(|scenario| {
+            coverage_line(
+                &scenario.scenario_id,
+                scenario.case_id.as_deref(),
+                scenario.seed,
+                scenario.behavior_sha256.as_deref(),
+                scenario.inputs_sha256.as_deref(),
+                scenario.contract_sha256.as_deref(),
+            )
+        })
+        .collect::<Option<_>>()?;
+    lines.sort();
+    (!lines.is_empty()).then(|| lines.join("; "))
+}
+
+/// Everything that must match between the two sides: scenario behavior and
+/// inputs, contract, the whole subject artifact, every stack component but
+/// the Harness, E2E revision, engine, model and provider, the cases and the
+/// policy (both also the frozen plan's), and each side's scenarios exactly
+/// the frozen coverage (case, seed, behavior, inputs and contract digests).
+/// Only the product under test may differ. Unknown values never match.
 pub fn compatibility(
     plan: &CyclePlanV1,
     baseline: &DecisionSideV1,
     candidate: &DecisionSideV1,
 ) -> ComparabilityV1 {
-    let mut comparability = runtime::comparability(&baseline.execution, &candidate.execution);
-    // The E2E's comparability reads a scenario's unknown behavior or
-    // contract as an empty value, which matches another unknown one here.
-    let unknown = |missing: fn(&E2eScenarioV1) -> bool| {
-        [&baseline.execution, &candidate.execution]
-            .iter()
-            .any(|execution| execution.scenarios.iter().any(missing))
-    };
-    for check in &mut comparability.checks {
-        let missing = match check.field.as_str() {
-            "behavior_sha256" => unknown(|scenario| scenario.behavior_sha256.is_none()),
-            "contract_fingerprint" => unknown(|scenario| scenario.contract_fingerprint.is_none()),
-            _ => false,
-        };
-        if missing {
-            check.matches = false;
-        }
-    }
-    let extra = [
+    let (left, right) = (&baseline.identity, &candidate.identity);
+    let pairs = [
+        (
+            "behavior_sha256",
+            scenarios(left, |scenario| scenario.behavior_sha256.clone()),
+            scenarios(right, |scenario| scenario.behavior_sha256.clone()),
+            None,
+        ),
+        (
+            "inputs_sha256",
+            scenarios(left, |scenario| scenario.inputs_sha256.clone()),
+            scenarios(right, |scenario| scenario.inputs_sha256.clone()),
+            None,
+        ),
+        (
+            "contract_digest",
+            left.contract_digest.clone(),
+            right.contract_digest.clone(),
+            None,
+        ),
+        // The whole subject artifact: model, provider, agent profile id and
+        // configuration digest, context and output limits.
+        (
+            "subject_sha256",
+            left.subject_sha256.clone(),
+            right.subject_sha256.clone(),
+            None,
+        ),
+        // Every stack component but the Harness, from the Registry identity
+        // the E2E recorded; unknown in Source mode.
+        (
+            "fixed_stack_digest",
+            left.fixed_stack_digest.clone(),
+            right.fixed_stack_digest.clone(),
+            None,
+        ),
+        (
+            "model",
+            left.model.clone(),
+            right.model.clone(),
+            Some(plan.parameters.model.clone()),
+        ),
+        (
+            "provider",
+            left.provider.clone(),
+            right.provider.clone(),
+            Some(plan.parameters.provider.clone()),
+        ),
+        (
+            "e2e_revision",
+            left.e2e_revision.clone(),
+            right.e2e_revision.clone(),
+            None,
+        ),
+        (
+            "engine_version",
+            left.engine_version.clone(),
+            right.engine_version.clone(),
+            None,
+        ),
         (
             "seeds",
             sorted(&baseline.seeds),
@@ -316,23 +768,62 @@ pub fn compatibility(
             Some(plan.policy_revision.clone()),
         ),
     ];
-    for (field, baseline, candidate, planned) in extra {
-        let matches = baseline.is_some()
-            && baseline == candidate
-            && (planned.is_none() || baseline == planned);
-        comparability.checks.push(ComparabilityCheckV1 {
-            field: field.into(),
-            baseline,
-            candidate,
-            matches,
+    let mut checks: Vec<ComparabilityCheckV1> = pairs
+        .into_iter()
+        .map(
+            |(field, baseline, candidate, planned)| ComparabilityCheckV1 {
+                field: field.into(),
+                matches: baseline.is_some()
+                    && baseline == candidate
+                    && (planned.is_none() || baseline == planned),
+                baseline,
+                candidate,
+            },
+        )
+        .collect();
+    // Each side against the coverage frozen with the plan, not only against
+    // the other side: two sides that both ran a moved catalog definition
+    // agree with each other and still measured something else.
+    let expected = frozen_coverage(plan);
+    for (name, side) in [("baseline", baseline), ("candidate", candidate)] {
+        let observed = observed_coverage(&side.identity);
+        checks.push(ComparabilityCheckV1 {
+            field: format!("{name}_frozen_coverage"),
+            matches: expected.is_some() && observed == expected,
+            baseline: expected.clone(),
+            candidate: observed,
         });
     }
-    comparability.comparable = comparability.checks.iter().all(|check| check.matches);
-    comparability
+    // What each side must have run, as the E2E recorded it: the intended
+    // Harness difference is checked against its expectation, never assumed.
+    // `baseline` holds the expectation and `candidate` the observation.
+    for (name, side) in [("baseline", baseline), ("candidate", candidate)] {
+        for (what, expected, observed) in [
+            (
+                "revision",
+                &side.expected_revision,
+                &side.identity.workers_revision,
+            ),
+            ("stack", &side.expected_stack, &side.observed_stack),
+        ] {
+            if let Some(expected) = expected {
+                checks.push(ComparabilityCheckV1 {
+                    field: format!("{name}_{what}"),
+                    matches: observed.as_deref() == Some(expected.as_str()),
+                    baseline: Some(expected.clone()),
+                    candidate: observed.clone(),
+                });
+            }
+        }
+    }
+    ComparabilityV1 {
+        comparable: checks.iter().all(|check| check.matches),
+        checks,
+    }
 }
 
 /// The decision on a pair by the frozen `plan`. `evidence` holds the runs of
-/// each scenario (see [`crate::review::evidence`]); evidence of another
+/// each scenario (see [`pair_evidence`]); evidence of another
 /// execution than the pair's is never mixed in. Each criterion is judged
 /// with at least the plan's `runs_per_side`. Gates, in order: an incompatible
 /// pair is inconclusive; a lost preserved correctness condition is rejected,
@@ -349,8 +840,8 @@ pub fn decide(
 ) -> CycleDecisionV1 {
     let comparability = compatibility(plan, baseline, candidate);
     let (baseline_id, candidate_id) = (
-        baseline.execution.execution_id.as_str(),
-        candidate.execution.execution_id.as_str(),
+        baseline.execution_id.as_str(),
+        candidate.execution_id.as_str(),
     );
     let empty = |execution_id: &str| EvidenceSideV1 {
         execution_id: execution_id.into(),
@@ -381,15 +872,40 @@ pub fn decide(
             });
         judged.computed_at = now;
         judge(&mut judged, Some(&criterion));
+        // An observed loss stands whatever the sample; anything else on a
+        // sample that is not the frozen one is unknown.
+        if judged.computed_outcome != ValidationOutcomeV1::Regression {
+            if let Some(gap) = sampling_gap(&judged, plan.sampling.runs_per_side) {
+                judged.computed_outcome = ValidationOutcomeV1::Inconclusive;
+                judged.reason = format!("{gap}; {}", judged.reason);
+            }
+        }
         judged
     };
     let primary = judged(&plan.criterion);
     let preserved: Vec<EvidenceV1> = plan.preserved.iter().map(judged).collect();
-    let (outcome, reason) = verdict(&comparability, &primary, &preserved);
+    let (outcome, reason) = verdict(&comparability, &plan.criterion, &primary, &preserved);
+    let (outcome, reason) = if outcome == DecisionOutcomeV1::Accepted
+        && (baseline.expected_revision.is_some() || candidate.expected_revision.is_some())
+        && matches!(
+            plan.criterion.metric,
+            CriterionMetricV1::Tokens
+                | CriterionMetricV1::CostUsd
+                | CriterionMetricV1::FunctionCalls
+        ) {
+        (
+            DecisionOutcomeV1::Inconclusive,
+            "source qualification requires an independent meter: tokens, cost and function-call totals are reported by the Harness candidate itself; uncached input/output tokens do not measure context consumption".into(),
+        )
+    } else {
+        (outcome, reason)
+    };
     CycleDecisionV1 {
         outcome,
         reason,
         policy_revision: plan.policy_revision.clone(),
+        baseline_execution_id: baseline_id.into(),
+        candidate_execution_id: candidate_id.into(),
         comparability,
         primary,
         preserved,
@@ -399,6 +915,7 @@ pub fn decide(
 
 fn verdict(
     comparability: &ComparabilityV1,
+    criterion: &CriterionV1,
     primary: &EvidenceV1,
     preserved: &[EvidenceV1],
 ) -> (DecisionOutcomeV1, String) {
@@ -442,6 +959,15 @@ fn verdict(
         );
     }
     match primary.computed_outcome {
+        // Without a positive frozen minimum effect there is no improvement to
+        // approve: any raw difference, however lucky, stays unknown.
+        ValidationOutcomeV1::ValidatedImprovement if criterion.min_effect <= 0.0 => (
+            Inconclusive,
+            format!(
+                "the primary criterion freezes no positive minimum effect, so no gain is approved: {}",
+                primary.reason
+            ),
+        ),
         ValidationOutcomeV1::ValidatedImprovement => (Accepted, primary.reason.clone()),
         ValidationOutcomeV1::Regression => (Rejected, format!("regression: {}", primary.reason)),
         ValidationOutcomeV1::NoImprovement => (
@@ -452,23 +978,11 @@ fn verdict(
     }
 }
 
-/// Decides the cycle's pair once, by its frozen plan, and stores the decision
-/// in the record. A cycle already decided keeps its decision: a repeated
-/// event never starts another comparison. Without a frozen plan nothing is
-/// decided.
+/// Decides the cycle's pair once by its frozen plan and stores the decision
+/// in the record: a repeated event never starts another comparison. While
+/// any work of the cycle has an unknown cost, a cost reduction is never
+/// accepted (inconclusive).
 pub fn decide_cycle(
-    record: &mut CycleRecordV1,
-    baseline: &DecisionSideV1,
-    candidate: &DecisionSideV1,
-    evidence: &[EvidenceV1],
-    now: i64,
-) -> Result<CycleDecisionV1, EvalError> {
-    decide_cycle_spent(record, None, baseline, candidate, evidence, now)
-}
-
-/// [`decide_cycle`] with the cycle's budget `ledger`: while any of its work
-/// has an unknown cost, a cost reduction is never accepted (inconclusive).
-pub fn decide_cycle_spent(
     record: &mut CycleRecordV1,
     ledger: Option<&CycleLedgerV1>,
     baseline: &DecisionSideV1,
@@ -485,7 +999,63 @@ pub fn decide_cycle_spent(
     if let Some(decided) = &record.decision {
         return Ok(decided.clone());
     }
-    let mut decision = decide(plan, baseline, candidate, evidence, now);
+    let decision = spent(
+        decide(plan, baseline, candidate, evidence, now),
+        plan,
+        ledger,
+        now,
+    );
+    record.decision = Some(decision.clone());
+    record.updated_at = now;
+    Ok(decision)
+}
+
+/// The final decision on the immutable rc artifact, against the same
+/// baseline under the same frozen plan, recorded once in
+/// `artifact_decision`. Only after an accepted source decision: the source
+/// approval never stands for the artifact.
+pub fn decide_artifact(
+    record: &mut CycleRecordV1,
+    ledger: Option<&CycleLedgerV1>,
+    baseline: &DecisionSideV1,
+    artifact: &DecisionSideV1,
+    evidence: &[EvidenceV1],
+    now: i64,
+) -> Result<CycleDecisionV1, EvalError> {
+    let Some(plan) = &record.plan else {
+        return Err(EvalError::InvalidRequest(format!(
+            "cycle {} has no frozen plan",
+            record.cycle_id
+        )));
+    };
+    if record.decision.as_ref().map(|decision| decision.outcome)
+        != Some(DecisionOutcomeV1::Accepted)
+    {
+        return Err(EvalError::Conflict(format!(
+            "cycle {} has no accepted source decision; its artifact is not judged",
+            record.cycle_id
+        )));
+    }
+    if let Some(decided) = &record.artifact_decision {
+        return Ok(decided.clone());
+    }
+    let decision = spent(
+        decide(plan, baseline, artifact, evidence, now),
+        plan,
+        ledger,
+        now,
+    );
+    record.artifact_decision = Some(decision.clone());
+    record.updated_at = now;
+    Ok(decision)
+}
+
+fn spent(
+    mut decision: CycleDecisionV1,
+    plan: &CyclePlanV1,
+    ledger: Option<&CycleLedgerV1>,
+    now: i64,
+) -> CycleDecisionV1 {
     let unknown = ledger.map_or(0, |ledger| cost::usage(ledger, now).unknown_cost);
     if decision.outcome == DecisionOutcomeV1::Accepted
         && plan.criterion.metric == CriterionMetricV1::CostUsd
@@ -497,9 +1067,7 @@ pub fn decide_cycle_spent(
             decision.reason
         );
     }
-    record.decision = Some(decision.clone());
-    record.updated_at = now;
-    Ok(decision)
+    decision
 }
 
 #[cfg(test)]
@@ -515,16 +1083,16 @@ mod tests {
                 .then(|| "repeated_tool_error:crm::schedule".into()),
             direction,
             min_effect: 2.0,
+            criterion_id: None,
             min_runs: 3,
             scenario_id: "s".into(),
-            registered_at: 10,
-            registered_by: "ana".into(),
         }
     }
 
     fn run(completed: bool, signal: Option<u32>, status: &str) -> EvidenceRunV1 {
         EvidenceRunV1 {
             run_id: "r".into(),
+            case_id: Some("s:seed-1".into()),
             completed,
             completion: Some(if completed { "completed" } else { "incomplete" }.into()),
             technical: Some(if completed { "valid" } else { "infrastructure" }.into()),
@@ -533,16 +1101,25 @@ mod tests {
             wall_time_ms: None,
             total_tokens: None,
             function_calls: None,
+            criteria: BTreeMap::new(),
             signals: signal.map(|count| {
                 BTreeMap::from([("repeated_tool_error:crm::schedule".to_string(), count)])
             }),
         }
     }
 
+    /// Native runs carry distinct ids: number them in order.
     fn side(runs: Vec<EvidenceRunV1>) -> EvidenceSideV1 {
         EvidenceSideV1 {
             execution_id: "x".into(),
-            runs,
+            runs: runs
+                .into_iter()
+                .enumerate()
+                .map(|(at, run)| EvidenceRunV1 {
+                    run_id: format!("r{at}"),
+                    ..run
+                })
+                .collect(),
             n: 0,
             mean: None,
         }
@@ -581,69 +1158,122 @@ mod tests {
     }
 
     #[test]
-    fn the_outcome_comes_from_the_means_and_the_minimum_effect() {
+    fn the_sign_test_tail_is_exact() {
+        assert_eq!(sign_test_p(1, 1), 0.5);
+        assert!((sign_test_p(5, 5) - 0.03125).abs() < 1e-12);
+        assert!((sign_test_p(4, 5) - 6.0 / 32.0).abs() < 1e-12);
+        assert!((sign_test_p(3, 3) - 0.125).abs() < 1e-12);
+        assert!((sign_test_p(9, 10) - 11.0 / 1024.0).abs() < 1e-12);
+        assert_eq!(sign_test_p(0, 4), 1.0);
+    }
+
+    #[test]
+    fn the_outcome_comes_from_the_means_the_minimum_effect_and_the_direction() {
         use ValidationOutcomeV1::*;
         let decrease = criterion(CriterionMetricV1::SignalPerRun, DirectionV1::Decrease);
-        // 3.0 → 0.0 is 3 signals fewer per run: above the 2 asked for.
-        let (found, reason, n) = outcome(signals(&[3, 3, 3]), signals(&[0, 0, 0]), &decrease);
-        assert_eq!((found, n), (ValidatedImprovement, (3, 3)));
+        // 3.0 → 0.0 is 3 signals fewer per run, on every one of 5 pairs.
+        let (found, reason, n) = outcome(signals(&[3; 5]), signals(&[0; 5]), &decrease);
+        assert_eq!((found, n), (ValidatedImprovement, (5, 5)), "{reason}");
         assert!(
-            reason.contains("baseline 3 → candidate 0 (-3 signals per run), n=3/3")
-                && reason.contains("a decrease of 2 signals per run or more"),
+            reason.contains("baseline 3 → candidate 0 (-3 signals per run), n=5/5")
+                && reason.contains("a decrease of 2 signals per run or more")
+                && reason.contains("5 of 5 same-case run pairs")
+                && reason.contains("p=0.03125")
+                && reason.contains("not a confidence interval"),
+            "{reason}"
+        );
+        // The same mean effect on 3 pairs cannot reach p <= 0.05.
+        let (found, reason, _) = outcome(signals(&[3; 3]), signals(&[0; 3]), &decrease);
+        assert_eq!(found, Inconclusive, "{reason}");
+        assert!(
+            reason.contains("3 of 3") && reason.contains("p=0.12500"),
             "{reason}"
         );
         // Exactly the minimum counts; one fewer than that does not.
         assert_eq!(
-            outcome(signals(&[3, 3, 3]), signals(&[1, 1, 1]), &decrease).0,
+            outcome(signals(&[3; 5]), signals(&[1; 5]), &decrease).0,
             ValidatedImprovement
         );
         assert_eq!(
-            outcome(signals(&[3, 3, 3]), signals(&[2, 2, 2]), &decrease).0,
+            outcome(signals(&[3; 5]), signals(&[2; 5]), &decrease).0,
             NoImprovement
         );
-        // From nothing there is nothing to reduce, and no relative change to be
-        // undefined: the same rule applies.
         assert_eq!(
-            outcome(signals(&[0, 0, 0]), signals(&[0, 0, 0]), &decrease).0,
+            outcome(signals(&[0; 5]), signals(&[0; 5]), &decrease).0,
             NoImprovement
         );
         // The wrong way by at least the minimum is a regression; by less is not.
         assert_eq!(
-            outcome(signals(&[2, 2, 2]), signals(&[4, 4, 4]), &decrease).0,
+            outcome(signals(&[2; 5]), signals(&[4; 5]), &decrease).0,
             Regression
         );
         assert_eq!(
-            outcome(signals(&[2, 2, 2]), signals(&[3, 3, 3]), &decrease).0,
+            outcome(signals(&[2; 5]), signals(&[3; 5]), &decrease).0,
             NoImprovement
         );
-        // The same data under an increase criterion reads the other way.
         let increase = criterion(CriterionMetricV1::SignalPerRun, DirectionV1::Increase);
         assert_eq!(
-            outcome(signals(&[2, 2, 2]), signals(&[4, 4, 4]), &increase).0,
+            outcome(signals(&[2; 5]), signals(&[4; 5]), &increase).0,
             ValidatedImprovement
         );
-        // Pass rate is the share of completed runs that passed.
-        let pass = CriterionV1 {
-            min_effect: 50.0,
+        // A mean carried by one outlier pair is not a consistent direction.
+        let (found, reason, _) = outcome(
+            signals(&[3; 5]),
+            signals(&[0, 0, 0, 3, 3]),
+            &CriterionV1 {
+                min_effect: 1.0,
+                ..decrease.clone()
+            },
+        );
+        assert_eq!(found, Inconclusive, "{reason}");
+        assert!(reason.contains("3 of 5"), "{reason}");
+    }
+
+    #[test]
+    fn a_zero_threshold_holds_an_unchanged_mean_and_rejects_any_loss() {
+        use ValidationOutcomeV1::*;
+        let held = CriterionV1 {
+            min_effect: 0.0,
             ..criterion(CriterionMetricV1::PassRate, DirectionV1::Increase)
         };
         let runs = |passed: usize| -> Vec<EvidenceRunV1> {
-            (0..4)
+            (0..5)
                 .map(|at| run(true, None, if at < passed { "passed" } else { "failed" }))
                 .collect()
         };
-        assert_eq!(outcome(runs(2), runs(4), &pass).0, ValidatedImprovement);
-        assert_eq!(outcome(runs(2), runs(2), &pass).0, NoImprovement);
+        assert_eq!(outcome(runs(5), runs(5), &held).0, NoImprovement);
+        assert_eq!(outcome(runs(5), runs(4), &held).0, Regression);
+    }
+
+    #[test]
+    fn pairing_must_be_unambiguous() {
+        use ValidationOutcomeV1::*;
+        let decrease = criterion(CriterionMetricV1::SignalPerRun, DirectionV1::Decrease);
+        // Pairs of different cases are never paired.
+        let mut other_case = signals(&[0; 5]);
+        other_case[2].case_id = Some("s:seed-2".into());
+        let (found, reason, _) = outcome(signals(&[3; 5]), other_case, &decrease);
+        assert_eq!(found, Inconclusive, "{reason}");
+        assert!(reason.contains("run pair 2 is not of one case"), "{reason}");
+        // A run reported twice is never counted twice.
+        let mut evidence = evidence_of(signals(&[3; 5]), signals(&[0; 5]));
+        evidence.candidate.runs[4].run_id = "r0".into();
+        judge(&mut evidence, Some(&decrease));
+        assert_eq!(evidence.computed_outcome, Inconclusive);
+        assert!(evidence.reason.contains("twice"), "{}", evidence.reason);
+        assert!(sampling_gap(&evidence, 5).is_some_and(|gap| gap.contains("more than once")));
+        // Sides of different sizes are not paired, and miss the frozen sample.
+        let evidence = evidence_of(signals(&[3; 5]), signals(&[0; 6]));
+        assert!(directional(&evidence, &decrease).is_err());
+        assert!(sampling_gap(&evidence, 5).is_some_and(|gap| gap.contains("exactly 5")));
     }
 
     #[test]
     fn the_minimum_effect_is_in_the_metrics_own_unit() {
         use CriterionMetricV1::*;
         use ValidationOutcomeV1::*;
-        // `wall_time_ms`, `cost_usd`, `total_tokens` or `function_calls` of
-        // every run on a side.
         let measured = |metric: CriterionMetricV1, value: f64| -> Vec<EvidenceRunV1> {
-            (0..3)
+            (0..5)
                 .map(|_| {
                     let mut run = run(true, None, "passed");
                     match metric {
@@ -656,8 +1286,6 @@ mod tests {
                 })
                 .collect()
         };
-        // (metric, minimum in its unit, baseline mean, candidate mean in the
-        // mean's own unit): each a decrease of exactly the minimum.
         for (metric, min_effect, baseline, candidate, unit) in [
             (CostUsd, 0.01, 0.07, 0.06, "USD"),
             (Duration, 5.0, 30_000.0, 25_000.0, "s"),
@@ -675,7 +1303,6 @@ mod tests {
             );
             assert_eq!(found, ValidatedImprovement, "{metric:?}: {reason}");
             assert!(reason.contains(&format!("{unit} or more")), "{reason}");
-            // A smaller drop falls short; the same drop upwards is a regression.
             let half = baseline - (baseline - candidate) / 2.0;
             assert_eq!(
                 outcome(measured(metric, baseline), measured(metric, half), &wanted).0,
@@ -693,8 +1320,8 @@ mod tests {
                 "{metric:?}"
             );
         }
-        // Pass rate is in percentage points: 5 pp is 0.05 of the share, and 10
-        // runs a side put the means one ulp off the paper figure.
+        // Pass rate in percentage points: 0.5 → 0.6 over 10 runs meets the
+        // 10 pp mean effect, but only one pair moved: no consistent direction.
         let pass = CriterionV1 {
             min_effect: 10.0,
             ..criterion(PassRate, DirectionV1::Increase)
@@ -705,11 +1332,16 @@ mod tests {
                 .collect()
         };
         let (found, reason, _) = outcome(passing(5), passing(6), &pass);
-        assert_eq!(found, ValidatedImprovement, "{reason}");
+        assert_eq!(found, Inconclusive, "{reason}");
         assert!(
             reason.contains("baseline 0.5 → candidate 0.6 (+10 pp)")
-                && reason.contains("an increase of 10 pp or more"),
+                && reason.contains("1 of 10 same-case run pairs"),
             "{reason}"
+        );
+        // Five more passes out of ten paired runs is consistent enough.
+        assert_eq!(
+            outcome(passing(0), passing(9), &pass).0,
+            ValidatedImprovement
         );
         assert_eq!(outcome(passing(5), passing(5), &pass).0, NoImprovement);
         assert_eq!(outcome(passing(6), passing(5), &pass).0, Regression);
@@ -725,48 +1357,50 @@ mod tests {
                 .chain((0..failed).map(|_| run(true, None, "failed")))
                 .collect()
         };
-        // The agent gave up: technically valid, not completed, and the E2E may
-        // still call its status `passed`.
         let gave_up = || EvidenceRunV1 {
             completed: false,
             completion: Some("task_incomplete".into()),
             ..run(true, None, "passed")
         };
-        // 3 of 5 passed on both sides: two unfinished runs are not a better
-        // Harness.
         let mut candidate = runs(3, 0);
         candidate.extend([gave_up(), gave_up()]);
         let (found, reason, n) = outcome(runs(3, 2), candidate, &pass);
         assert_eq!((found, n), (NoImprovement, (5, 5)), "{reason}");
         assert!(reason.contains("baseline 0.6 → candidate 0.6"), "{reason}");
-        // A technical failure is not the Harness's: it stays out of the count.
         let mut broken = runs(3, 0);
         broken.extend([run(false, None, "failed"), run(false, None, "failed")]);
         assert_eq!(outcome(runs(3, 2), broken, &pass).2, (5, 3));
-        // The signal of an unfinished run is a measurement too.
-        let signal = criterion(CriterionMetricV1::SignalPerRun, DirectionV1::Decrease);
-        let mut quiet = signals(&[0, 0]);
-        quiet.push(EvidenceRunV1 {
-            completed: false,
-            completion: Some("task_incomplete".into()),
-            ..run(true, Some(9), "passed")
-        });
-        let (_, _, n) = outcome(signals(&[3, 3, 3]), quiet, &signal);
-        assert_eq!(n.1, 3);
+        // An unfinished run's lower effort is never an effort gain.
+        let tokens = CriterionV1 {
+            min_effect: 100.0,
+            ..criterion(CriterionMetricV1::Tokens, DirectionV1::Decrease)
+        };
+        let spent = |value: f64, finished: bool| -> Vec<EvidenceRunV1> {
+            (0..5)
+                .map(|_| EvidenceRunV1 {
+                    total_tokens: Some(value),
+                    ..if finished {
+                        run(true, None, "passed")
+                    } else {
+                        gave_up()
+                    }
+                })
+                .collect()
+        };
+        let (found, _, n) = outcome(spent(1_000.0, true), spent(10.0, false), &tokens);
+        assert_eq!((found, n), (Inconclusive, (5, 0)));
     }
 
     #[test]
     fn missing_data_is_inconclusive_with_the_reason() {
         use ValidationOutcomeV1::*;
         let decrease = criterion(CriterionMetricV1::SignalPerRun, DirectionV1::Decrease);
-        // Fewer completed runs than min_runs on a side.
         let (found, reason, n) = outcome(signals(&[3, 3, 3]), signals(&[0, 0]), &decrease);
         assert_eq!((found, n), (Inconclusive, (3, 2)));
         assert!(
             reason.contains("the candidate has 2 completed run(s)"),
             "{reason}"
         );
-        // More than half of a side's runs did not complete: identified.
         let mut flaky = signals(&[0, 0]);
         flaky.extend([
             run(false, None, "failed"),
@@ -779,25 +1413,22 @@ mod tests {
             reason.contains("3 of 5 candidate runs did not complete"),
             "{reason}"
         );
-        // Exactly half is tolerated while enough completed runs remain.
+        // Exactly half broken passes the completion gate, but a broken pair
+        // never reaches the effect: 3 of 6 is no consistent direction.
         let mut half = signals(&[0, 0, 0]);
         half.extend([
             run(false, None, "failed"),
             run(false, None, "failed"),
             run(false, None, "failed"),
         ]);
-        assert_eq!(
-            outcome(signals(&[3, 3, 3]), half, &decrease).0,
-            ValidatedImprovement
-        );
-        // A completed run with no transcript has no signal count.
+        let (found, reason, _) = outcome(signals(&[3; 6]), half, &decrease);
+        assert_eq!(found, Inconclusive, "{reason}");
+        assert!(reason.contains("3 of 6 same-case run pairs"), "{reason}");
         let blind: Vec<_> = (0..3).map(|_| run(true, None, "passed")).collect();
         assert_eq!(outcome(signals(&[3, 3, 3]), blind, &decrease).2, (3, 0));
-        // No run of the scenario.
         assert!(outcome(vec![], signals(&[0, 0, 0]), &decrease)
             .1
             .contains("no run of s"));
-        // No criterion: counted, not judged.
         let mut evidence = evidence_of(signals(&[1, 1]), signals(&[0]));
         judge(&mut evidence, None);
         assert_eq!(evidence.computed_outcome, Inconclusive);

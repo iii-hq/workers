@@ -1,9 +1,461 @@
-@import './src/styles/shell.css';
-@import './src/styles/settings.css';
-@import './src/styles/detail.css';
-@import './src/styles/validation.css';
-@import './src/styles/replay.css';
+/* eval worker UI: the loop cycle page. Everything is scoped to
+   [data-iii-ui="eval"]; page chrome, rows, badges and status panels come from
+   @iii-dev/console-ui. Narrow is the pane's width (`data-narrow`), never the
+   viewport; only machine values are mono. */
 
-/* eval worker UI. Every rule lives in src/styles/*.css, scoped to
-   [data-iii-ui="eval"]; controls, fields, badges and status panels come from
-   @iii-dev/console-ui, and only machine values are mono. */
+[data-iii-ui="eval"] .eval-ui-shell {
+  min-height: 0;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+[data-iii-ui="eval"] .eval-ui-root {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-body,
+[data-iii-ui="eval"] .eval-ui-sidebar,
+[data-iii-ui="eval"] .eval-ui-main {
+  min-width: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-body {
+  width: 100%;
+}
+
+[data-iii-ui="eval"] .eval-ui-side {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 16px;
+  box-sizing: border-box;
+  min-height: 0;
+  padding: 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+[data-iii-ui="eval"] .eval-ui-main-scroll {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+[data-iii-ui="eval"] .eval-ui-main-scroll:focus {
+  outline: none;
+}
+
+[data-iii-ui="eval"] .eval-ui-main-empty {
+  display: flex;
+  justify-content: center;
+  padding: 48px 24px;
+}
+
+/* ── start form ───────────────────────────────────────────────────── */
+
+[data-iii-ui="eval"] .eval-ui-start {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+[data-iii-ui="eval"] .eval-ui-label {
+  color: var(--color-ink);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+[data-iii-ui="eval"] .eval-ui-mono-input,
+[data-iii-ui="eval"] .eval-ui-mono {
+  font-family: var(--font-mono);
+}
+
+[data-iii-ui="eval"] .eval-ui-hint,
+[data-iii-ui="eval"] .eval-ui-faint {
+  color: var(--color-ink-faint);
+  font-size: 12px;
+}
+
+[data-iii-ui="eval"] .eval-ui-hint {
+  margin: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-form-error {
+  margin: 0;
+  color: var(--color-alert-strong);
+  font-size: 12px;
+}
+
+/* ── history ──────────────────────────────────────────────────────── */
+
+[data-iii-ui="eval"] .eval-ui-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+[data-iii-ui="eval"] .eval-ui-sk-row {
+  height: 44px;
+}
+
+[data-iii-ui="eval"] .eval-ui-history {
+  min-width: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-row-title {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="eval"] .eval-ui-row-time {
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ── detail ───────────────────────────────────────────────────────── */
+
+[data-iii-ui="eval"] .eval-ui-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  box-sizing: border-box;
+  max-width: 920px;
+  padding: 20px 24px 40px;
+}
+
+[data-iii-ui="eval"] [data-narrow="true"] .eval-ui-detail {
+  padding: 12px 14px 32px;
+}
+
+[data-iii-ui="eval"] .eval-ui-back {
+  align-self: flex-start;
+}
+
+[data-iii-ui="eval"] .eval-ui-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+[data-iii-ui="eval"] .eval-ui-head-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+[data-iii-ui="eval"] .eval-ui-section {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+[data-iii-ui="eval"] .eval-ui-section > * {
+  max-width: 100%;
+}
+
+[data-iii-ui="eval"] .eval-ui-section p {
+  margin: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+
+[data-iii-ui="eval"] .eval-ui-section-head h3,
+[data-iii-ui="eval"] .eval-ui-subhead {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+[data-iii-ui="eval"] .eval-ui-facts {
+  display: grid;
+  grid-template-columns: minmax(96px, max-content) minmax(0, 1fr);
+  gap: 6px 14px;
+  width: 100%;
+  margin: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-fact {
+  display: contents;
+}
+
+[data-iii-ui="eval"] .eval-ui-fact dt {
+  color: var(--color-ink-faint);
+  font-size: 13px;
+}
+
+[data-iii-ui="eval"] .eval-ui-fact dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+[data-iii-ui="eval"] [data-narrow="true"] .eval-ui-facts {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+}
+
+[data-iii-ui="eval"] [data-narrow="true"] .eval-ui-fact dd {
+  margin-bottom: 8px;
+}
+
+[data-iii-ui="eval"] .eval-ui-gaps,
+[data-iii-ui="eval"] .eval-ui-checks,
+[data-iii-ui="eval"] .eval-ui-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+[data-iii-ui="eval"] .eval-ui-gaps li,
+[data-iii-ui="eval"] .eval-ui-checks li,
+[data-iii-ui="eval"] .eval-ui-rows li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+[data-iii-ui="eval"] .eval-ui-gap-subject {
+  font-weight: 500;
+}
+
+[data-iii-ui="eval"] .eval-ui-checks li[data-ok="false"] > span:first-child {
+  color: var(--color-alert-strong);
+}
+
+[data-iii-ui="eval"] .eval-ui-checks li[data-ok="true"] > span:first-child {
+  color: var(--color-ok);
+}
+
+[data-iii-ui="eval"] .eval-ui-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="eval"] .eval-ui-table-scroll {
+  width: 100%;
+  overflow-x: auto;
+}
+
+[data-iii-ui="eval"] .eval-ui-table {
+  width: 100%;
+  min-width: 560px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+[data-iii-ui="eval"] .eval-ui-table th,
+[data-iii-ui="eval"] .eval-ui-table td {
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+[data-iii-ui="eval"] .eval-ui-table thead th {
+  color: var(--color-ink-faint);
+  font-weight: 500;
+}
+
+[data-iii-ui="eval"] .eval-ui-table tbody th,
+[data-iii-ui="eval"] .eval-ui-table tbody td {
+  border-top: 1px solid var(--color-rule);
+}
+
+[data-iii-ui="eval"] .eval-ui-table th > .eval-ui-faint,
+[data-iii-ui="eval"] .eval-ui-table td > .eval-ui-faint {
+  display: block;
+  margin-top: 2px;
+}
+
+[data-iii-ui="eval"] .eval-ui-table-narrow {
+  min-width: 320px;
+}
+
+/* ── stages and cards ── */
+
+[data-iii-ui="eval"] .eval-ui-side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+[data-iii-ui="eval"] .eval-ui-stages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+[data-iii-ui="eval"] .eval-ui-stages li {
+  padding: 2px 8px;
+  border-radius: var(--radius-md);
+  color: var(--color-ink-faint);
+  font-size: 12px;
+}
+
+[data-iii-ui="eval"] .eval-ui-stages li[data-state="done"] {
+  color: var(--color-ink);
+}
+
+[data-iii-ui="eval"] .eval-ui-stages li[aria-current="step"] {
+  background: var(--color-surface-selected);
+  color: var(--color-ink);
+  font-weight: 600;
+}
+
+[data-iii-ui="eval"] .eval-ui-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-panel);
+}
+
+[data-iii-ui="eval"] .eval-ui-card p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ── settings ── */
+
+[data-iii-ui="eval"] .eval-ui-settings {
+  max-width: 640px;
+}
+
+[data-iii-ui="eval"] .eval-ui-fieldset {
+  min-width: 0;
+  margin: 0;
+  border: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-legend {
+  float: left;
+  width: 100%;
+  margin-bottom: 4px;
+  padding: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+[data-iii-ui="eval"] .eval-ui-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+
+[data-iii-ui="eval"] .eval-ui-textarea {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--color-panel);
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  resize: vertical;
+}
+
+[data-iii-ui="eval"] .eval-ui-textarea:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 1px;
+}
+
+[data-iii-ui="eval"] .eval-ui-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* Sentinel's own triage, kept apart from the loop's findings */
+
+[data-iii-ui="eval"] .eval-ui-sentinel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-rule);
+}
+
+[data-iii-ui="eval"] .eval-ui-sentinel p {
+  margin: 0;
+}
+
+[data-iii-ui="eval"] .eval-ui-rows li.eval-ui-sentinel-row {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+[data-iii-ui="eval"] .eval-ui-row-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  min-width: 0;
+}
+
+/* raw JSON the backend recorded (judge question, answer, usage) */
+
+[data-iii-ui="eval"] .eval-ui-json {
+  width: 100%;
+}
+
+[data-iii-ui="eval"] .eval-ui-json summary {
+  color: var(--color-ink-faint);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+[data-iii-ui="eval"] .eval-ui-json pre {
+  box-sizing: border-box;
+  max-height: 320px;
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border-radius: var(--radius-md);
+  background: var(--color-panel);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

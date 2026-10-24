@@ -2,7 +2,7 @@
   "function_id": "eval::start",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "Starts a cycle from exactly one of `objective` or `execution_id`.",
+    "description": "Exactly one of `objective` or `execution_id`.",
     "properties": {
       "execution_id": {
         "default": null,
@@ -27,14 +27,25 @@
     "additionalProperties": false,
     "definitions": {
       "CycleStatusV1": {
-        "enum": [
-          "queued",
-          "running",
-          "completed",
-          "failed",
-          "cancelled"
-        ],
-        "type": "string"
+        "oneOf": [
+          {
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "failed",
+              "cancelled"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Durably paused on an external event: an E2E execution to finish, or the candidate stage (`next`).",
+            "enum": [
+              "waiting"
+            ],
+            "type": "string"
+          }
+        ]
       }
     },
     "properties": {

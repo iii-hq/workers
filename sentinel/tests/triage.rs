@@ -172,6 +172,55 @@ fn calls(setup: &Setup) -> usize {
 }
 
 #[tokio::test]
+async fn report_groups_never_start_an_unbudgeted_background_judgment() {
+    let setup = setup(vec!["judge::evaluate"], judge(|_| "defect")).await;
+    setup
+        .store
+        .record_occurrence(&OccurrenceWrite {
+            fingerprint: "report-fingerprint".into(),
+            source: ErrorSourceV1::Report,
+            dedupe_key: "report-occurrence".into(),
+            at_ms: 0,
+            namespace: "e2e".into(),
+            service_name: "harness".into(),
+            function_id: Some("harness::turn".into()),
+            exception_type: None,
+            title: "run failure".into(),
+            message: "unexpected runtime error".into(),
+            trace_id: None,
+            span_id: None,
+            session_id: None,
+            turn_id: None,
+            worker_version: None,
+            evidence: None,
+            namespace_ambiguous: false,
+            pending_occurrence_id: None,
+        })
+        .await
+        .unwrap();
+    group(
+        &setup.store,
+        "live-trace",
+        "fp::get",
+        "index out of bounds",
+        &[0],
+    )
+    .await;
+    for now in [10 * MINUTE, 20 * MINUTE] {
+        setup
+            .triage
+            .sweep(&WorkerConfig::default(), now)
+            .await
+            .unwrap();
+    }
+    assert_eq!(calls(&setup), 1, "only the live trace is judged");
+    assert_eq!(triage_of(&setup.store, "harness::turn").await, None);
+    let requests = setup.judge.requests.lock().unwrap();
+    assert_eq!(requests[0]["evaluations"].as_array().unwrap().len(), 1);
+    assert_eq!(requests[0]["evaluations"][0]["state"]["source"], "trace");
+}
+
+#[tokio::test]
 async fn a_start_up_race_is_labelled_by_rule_without_asking_the_judge() {
     let setup = setup(vec!["state::get", "judge::evaluate"], judge(|_| "defect")).await;
     group(
@@ -470,6 +519,10 @@ async fn the_list_filter_and_the_summary_flag_agree_on_what_is_relevant() {
                 source: TriageSourceV1::Judge,
                 model: None,
                 at_ms: 0,
+                question: None,
+                criterion: None,
+                evidence: None,
+                usage: None,
             };
             setup.store.set_triage(&id, &triage).await.unwrap();
         }

@@ -29,8 +29,9 @@ pub enum ErrorSourceV1 {
     Trace,
     /// An OTel log record at ERROR.
     Log,
-    /// Reserved for the adapters the spec designs but v1 does not implement.
+    /// Reserved for the adapter the spec designs but v1 does not implement.
     HarnessTurn,
+    /// An observation from an E2E report, sent by `sentinel::reports::ingest`.
     Report,
 }
 
@@ -182,6 +183,211 @@ pub struct GroupTriageV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     pub at_ms: i64,
+    /// Which question decided it: [`crate::triage::JUDGE_QUESTION`], or the
+    /// rule that settled it without a judge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+    /// The criterion the chosen kind stands for, verbatim — what the label
+    /// claims and, read beside `confidence`, how far it can be trusted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub criterion: Option<String>,
+    /// The redacted state the decision was made from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<serde_json::Value>,
+    /// Tokens the judge reported for this evaluation; absent for a rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<TriageUsageV1>,
+}
+
+/// What one judge evaluation consumed, as the judge reports it. A counter
+/// the provider did not report stays absent rather than zero.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TriageUsageV1 {
+    #[serde(default)]
+    pub input_tokens: Option<u64>,
+    #[serde(default)]
+    pub output_tokens: Option<u64>,
+}
+
+/// Which side of an E2E comparison an observation came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportSideV1 {
+    Baseline,
+    Candidate,
+}
+
+impl ReportSideV1 {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Baseline => "baseline",
+            Self::Candidate => "candidate",
+        }
+    }
+}
+
+/// One error the scenario contract declares it provokes on purpose. Every
+/// field given must match; an entry with none matches any error.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExpectedErrorV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exception_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function_id: Option<String>,
+    /// A substring of the raw message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_contains: Option<String>,
+}
+
+/// A text excerpt of the artifact the error was read from, frozen into the
+/// evidence so it stays readable after the test stack is gone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReportExcerptV1 {
+    pub name: String,
+    pub content: String,
+}
+
+/// One error observation from an E2E report that was already imported. The
+/// identity fields together name one physical occurrence: sending it again
+/// never counts twice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReportObservationV1 {
+    pub execution_id: String,
+    pub run_id: String,
+    pub attempt: u32,
+    pub scenario_id: String,
+    pub phase: String,
+    pub side: ReportSideV1,
+    /// The revision under test; recorded as the worker version.
+    pub revision: String,
+    /// The artifact inside the imported bundle the error was read from.
+    pub artifact: String,
+    /// Which error inside that artifact, when it holds several.
+    #[serde(default)]
+    pub occurrence_index: u32,
+    pub at_ms: i64,
+    /// The worker that failed.
+    pub service_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exception_type: Option<String>,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stacktrace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// The scenario contract: absent or null when it does not say, an empty
+    /// list when it expects no error at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_errors: Option<Vec<ExpectedErrorV1>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excerpts: Vec<ReportExcerptV1>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReportsIngestRequestV1 {
+    /// The imported report package the observations came from.
+    pub report_id: String,
+    /// Defaults to `e2e`.
+    #[serde(default)]
+    pub namespace: Option<String>,
+    pub observations: Vec<ReportObservationV1>,
+    /// Injected by the iii engine. Accepted on the wire, absent from the
+    /// published schema, and never part of a request's meaning.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub _caller_worker_id: Option<String>,
+}
+
+/// What an observation is, measured against its scenario contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportClassificationV1 {
+    /// Provoked on purpose: kept as evidence, triaged as test traffic, never
+    /// correction work and never a state change.
+    Expected,
+    /// The scenario expected an error and a different one happened.
+    ExpectedMismatch,
+    Unexpected,
+    /// The contract does not say, or the observation carries no error. With
+    /// no error nothing is recorded; otherwise it is recorded without moving
+    /// the group and left to triage.
+    InsufficientEvidence,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportOutcomeV1 {
+    Created,
+    Counted,
+    /// Already recorded: the counts did not move.
+    Deduped,
+    /// Not an error: nothing recorded.
+    Skipped,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReportObservationResultV1 {
+    pub dedupe_key: String,
+    pub classification: ReportClassificationV1,
+    pub outcome: ReportOutcomeV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+    /// Read its frozen evidence with `sentinel::evidence::get`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurrence_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_status: Option<GroupStatusV1>,
+    /// The group's triage, when it has one. Reuse it rather than judging the
+    /// same occurrence again; absent until the triage sweep reaches it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triage: Option<GroupTriageV1>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReportsIngestResponseV1 {
+    pub recorded: u64,
+    pub deduped: u64,
+    pub skipped: u64,
+    pub results: Vec<ReportObservationResultV1>,
+}
+
+/// The report an occurrence came from, frozen with its evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceReportV1 {
+    pub report_id: String,
+    pub execution_id: String,
+    pub run_id: String,
+    pub attempt: u32,
+    pub scenario_id: String,
+    pub phase: String,
+    pub side: ReportSideV1,
+    pub revision: String,
+    pub artifact: String,
+    pub occurrence_index: u32,
+    pub classification: ReportClassificationV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_errors: Option<Vec<ExpectedErrorV1>>,
+    /// Redacted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stacktrace: Option<String>,
+    /// Redacted and capped.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excerpts: Vec<ReportExcerptV1>,
 }
 
 /// A group as the list shows it.

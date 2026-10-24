@@ -1,0 +1,619 @@
+{
+  "_provenance": "Reduced real tests-list/scenarios-list responses from isolated runner on 2026-10-23; never_run is current executable coverage, not history.",
+  "rows": [
+    {
+      "available_versions": [
+        {
+          "execution_count": 0,
+          "last_seen": null,
+          "observation_count": 0,
+          "run_count": 0,
+          "version": "sha256:a4031f97bf351f653017445ca248398fc11a8a0d3391d56b295ca18497a2d6f6"
+        }
+      ],
+      "calibration": {
+        "compatible_sample_count": 0,
+        "maturity": "candidate"
+      },
+      "characterization": {
+        "human_horizon": {
+          "basis": "unknown"
+        },
+        "realism": {
+          "execution": "synthetic",
+          "shadow": "none"
+        }
+      },
+      "current_version": "sha256:a4031f97bf351f653017445ca248398fc11a8a0d3391d56b295ca18497a2d6f6",
+      "last_run": null,
+      "lifecycle": "never_run",
+      "recent_scores": [],
+      "result": null,
+      "runs_current": 0,
+      "runs_total": 0,
+      "selected_version": "sha256:a4031f97bf351f653017445ca248398fc11a8a0d3391d56b295ca18497a2d6f6",
+      "spec": {
+        "area": "long-context",
+        "criteria": [
+          {
+            "description": "Was the charter read only before the first document, and does the final report repeat its mission, checkpoint, quorum and seal verbatim?",
+            "dimension": "deliverable",
+            "gate": true,
+            "id": "charter_preserved",
+            "kind": "signal",
+            "label": "Report repeats the charter values verbatim",
+            "policy": "advisory",
+            "weight": 40
+          },
+          {
+            "description": "Does the final report contain every document's marker, in ascending document order?",
+            "dimension": "structural_integrity",
+            "gate": true,
+            "id": "needles_recovered",
+            "kind": "signal",
+            "label": "Report has every document's marker, in order",
+            "policy": "advisory",
+            "weight": 30
+          },
+          {
+            "description": "Was the charter read first and each segment exactly once in ascending order, with no calls beyond function discovery and no errors?",
+            "dimension": "structural_integrity",
+            "gate": false,
+            "id": "ingestion_discipline",
+            "kind": "signal",
+            "label": "Charter and segments read once, in order",
+            "policy": "advisory",
+            "weight": 20
+          },
+          {
+            "description": "Does the report start with the CONTEXT-LADDER-REPORT header, carry the charter values and every marker, and stay within 1,024 characters plus 64 per document?",
+            "dimension": "structural_integrity",
+            "gate": false,
+            "id": "concise_report",
+            "kind": "signal",
+            "label": "Report keeps the header and length limit",
+            "policy": "advisory",
+            "weight": 10
+          }
+        ],
+        "denied_functions": [
+          "state::*"
+        ],
+        "execution": {
+          "max_output_tokens": 16384,
+          "max_turns": 60,
+          "stuck_timeout_seconds": 600
+        },
+        "prompt": "Complete a context-endurance run over 48 large documents.\n\nTwo functions are already registered:\n- `e2etest::ctx_charter_dash` \u2014 call it FIRST, once, with `{}`. It returns the run charter:\n  `mission`, `checkpoint`, `quorum`, and `seal`. You must reproduce these exactly at the end.\n- `e2etest::ctx_segment_dash` \u2014 call it with `{\"index\": <i>}` for every index 0 through 47,\n  strictly ascending, exactly once each. Each result is a noise document containing exactly\n  one marker that starts with `CTX-N<i>-`. Note each marker; never quote any other document\n  text in your replies.\n\nCall nothing else. After the last segment, finish with a report in exactly this shape, one\nitem per line and nothing more:\n\nCONTEXT-LADDER-REPORT 48\nmission=<mission from the charter>\ncheckpoint=<checkpoint from the charter>\nquorum=<quorum from the charter>\nseal=<seal from the charter>\n<the marker of segment 0>\n<the marker of segment 1>\n... one line per segment, in ascending order.",
+        "protects": "In a long session that reads far more text than the agent can keep verbatim, the Harness context manager keeps the facts the agent needs from the start. If it fails, agents forget instructions and facts from early in long tasks.",
+        "summary": "Read a short charter of four values first, then 48 noise documents of about 8 KB each, one call per document in order, each hiding one marker. Finish with a report that repeats the charter values and lists the 48 markers in order.",
+        "title": "Remember early facts in long sessions"
+      },
+      "test_id": "context_pressure"
+    },
+    {
+      "available_versions": [
+        {
+          "execution_count": 0,
+          "last_seen": null,
+          "observation_count": 0,
+          "run_count": 0,
+          "version": "sha256:6b37b87f6af7165d4646d81ada8c60e64d9ac3d0840d508ba144503cc9a808e6"
+        }
+      ],
+      "calibration": {
+        "compatible_sample_count": 0,
+        "maturity": "candidate"
+      },
+      "characterization": {
+        "human_horizon": {
+          "basis": "unknown"
+        },
+        "realism": {
+          "execution": "synthetic",
+          "shadow": "none"
+        }
+      },
+      "current_version": "sha256:6b37b87f6af7165d4646d81ada8c60e64d9ac3d0840d508ba144503cc9a808e6",
+      "last_run": null,
+      "lifecycle": "never_run",
+      "recent_scores": [],
+      "result": null,
+      "runs_current": 0,
+      "runs_total": 0,
+      "selected_version": "sha256:6b37b87f6af7165d4646d81ada8c60e64d9ac3d0840d508ba144503cc9a808e6",
+      "spec": {
+        "area": "app-building",
+        "criteria": [
+          {
+            "description": "Is the scenario Worker configuration valid and ready, with every required function registered with descriptions and object schemas?",
+            "dimension": "deliverable",
+            "gate": false,
+            "id": "runtime_contract",
+            "kind": "signal",
+            "label": "Worker is ready with every function registered",
+            "policy": "advisory",
+            "weight": 10
+          },
+          {
+            "description": "Does the feature preview list exactly Title, Work type, User story, and Acceptance criteria as visible fields, report no missing required fields, and allow submission?",
+            "dimension": "structural_integrity",
+            "gate": true,
+            "id": "domain_primary",
+            "kind": "signal",
+            "label": "Feature preview shows exactly the right fields",
+            "policy": "advisory",
+            "weight": 20
+          },
+          {
+            "description": "After adding Environment, does the bug preview list exactly Title, Work type, Reproduction, Expected behavior, and Environment as visible fields, report no missing required fields, and allow submission?",
+            "dimension": "structural_integrity",
+            "gate": false,
+            "id": "domain_branch",
+            "kind": "signal",
+            "label": "Bug preview shows exactly the right fields",
+            "policy": "advisory",
+            "weight": 15
+          },
+          {
+            "description": "Does the Worker reject invalid input and preserve the applied edit on the next valid request?",
+            "dimension": "structural_integrity",
+            "gate": false,
+            "id": "invalid_inputs",
+            "kind": "signal",
+            "label": "Invalid input is rejected and the edit kept",
+            "policy": "advisory",
+            "weight": 10
+          },
+          {
+            "description": "Does Canvas store and return the expected initial form flowchart or job state diagram?",
+            "dimension": "structural_integrity",
+            "gate": false,
+            "id": "canvas_initial",
+            "kind": "signal",
+            "label": "Canvas holds the expected initial diagram",
+            "policy": "advisory",
+            "weight": 10
+          },
+          {
+            "description": "Does the live edit save the expected updated diagram under the same Canvas ID?",
+            "dimension": "structural_integrity",
+            "gate": false,
+            "id": "canvas_update",
+            "kind": "signal",
+            "label": "Live edit updates the same Canvas diagram",
+            "policy": "advisory",
+            "weight": 10
+          },
+          {
+            "description": "Does Console expose the enabled Worker and Canvas scripts and styles with content hashes, no warnings, and non-empty Worker files?",
+            "dimension": "deliverable",
+            "gate": true,
+            "id": "console_delivery",
+            "kind": "signal",
+            "label": "Console serves the Worker's page assets",
+            "policy": "advisory",
+            "weight": 10
+          },
+          {
+            "description": "Does the Console page complete its form or simulator flow, apply the edit with Tab and Enter, persist it after reload, open the updated Canvas graph, fit a narrow pane without horizontal overflow, and apply visibly different light and dark themes with at least 3:1 contrast for the result and main control?",
+            "dimension": "deliverable",
+            "gate": false,
+            "id": "browser_interaction",
+            "kind": "signal",
+            "label": "Console page flow, edit and themes work",
+            "policy": "advisory",
+            "weight": 10
+          },
+          {
+            "description": "After the Worker page opens its updated Canvas graph, are screenshots saved before and after editing, of the graph, and in a narrow dark view, with Worker source and Compose hashes?",
+            "dimension": "structural_integrity",
+            "gate": false,
+            "id": "evidence_complete",
+            "kind": "signal",
+            "label": "Screenshots and hashes cover every step",
+            "policy": "advisory",
+            "weight": 5
+          }
+        ],
+        "denied_functions": [],
+        "disciplines": [
+          "frontend",
+          "backend",
+          "testing"
+        ],
+        "execution": {
+          "max_output_tokens": 65536,
+          "max_total_tokens": 6000000,
+          "max_turns": 256,
+          "stuck_timeout_seconds": 1800
+        },
+        "prompt": "Build the Form Flow Builder Worker inside `/home/layon/workspaces/workers/.tmp/loop-engineer-tests-20261023/scenario-workspaces/form_flow_build-dashboard-catalog`. Read README.md first. Inspect the installed\n`@iii-dev/console-ui` types before using components or host APIs. The pinned UI\npackage, React, icons, TypeScript, and build driver are already installed.\n\nThe Harness provided `worker-compose.yaml` in this workspace with the run-scoped container\n`form_flow_dashboardcatal`. Leave that file in place and do not edit another project's Compose file. The Harness\nwill start the Worker after your turn and first stops any process still running in this workspace,\nso a Worker you start for your own checks is not the one evaluated. It already installed pinned\ndependencies; do not change them.\nYou may add build scripts to package.json while keeping dependency versions fixed.\nRegister `form_flow_dashboardcatal::preview`, `form_flow_dashboardcatal::canvas`, and `form_flow_dashboardcatal::ui-content` with non-empty descriptions and object JSON\nschemas. Register console:script and console:style Message-path triggers backed by `form_flow_dashboardcatal::ui-content` at\n`form_flow_dashboardcatal/page.js` and `form_flow_dashboardcatal/styles.css`. Build the ESM asset with `buildWorkerUi`; it must default-export\nsetup(host), register page id `form-flow`, and call Worker functions through host.iii.trigger. Use\nPageShell, PageHeader, PageMain, and appropriate shared controls. Scope CSS under\n`[data-iii-ui=\"form_flow_dashboardcatal\"]`; the Console manifest must have no asset warnings.\n\nThe Worker owns all domain decisions. Canvas is only the stored visual projection. `form_flow_dashboardcatal::canvas`\naccepts only optional `{canvas_id: string, edit: string}`; it must derive Mermaid from its domain\ngraph, call `canvas::validate`, then call `canvas::create` when\n`canvas_id` is absent or `canvas::update` when it is present. Read the record back with\n`canvas::get` and return `{canvas_id, source, family}`. Do not duplicate Canvas storage locally.\nAfter the first create, a call without `canvas_id` must reuse that run-scoped active Canvas record;\nthe live Console page and domain functions therefore edit the same stable id.\nAn accepted edit must persist in the run-scoped Worker's domain state: later domain and Canvas calls\nwithout `edit` and a browser reload must still reflect it. In-memory state is sufficient.\n\n`form_flow_dashboardcatal::preview` accepts `{values: object, edit?: string}`. The SWE issue form has required base\nfields `title` and `work_type`; work_type is `bug` or `feature`. Bug reveals required `reproduction`\nand `expected_behavior`; feature reveals required `user_story` and `acceptance_criteria`. The edit\n`add_environment` adds required `environment` to the bug branch. Return ordered `visible_fields`,\nordered `missing_required`, and `can_submit`. Reject unknown work types, edits, and non-object values.\n\nThe page is an issue-form design tool: edit field rules and fill a working preview. Start with\ntitle and work type controls. Switching branches hides irrelevant fields without losing the\nselected branch. Show which required fields are missing; incomplete input must not appear ready\nto submit, and clearing a required value must disable readiness again. Provide an\n`add_environment` editor control that changes the live preview and updates the same Canvas id.\nUse `data-testid=\"work-type\"`, `user-story`, `acceptance-criteria`, `reproduction`,\n`expected-behavior`, `environment`, and `title`, plus `data-edit=\"add_environment\"` on the edit\ncontrol. Put `data-can-submit=\"true|false\"` on `domain-result` as its preview changes and put\nthe visible missing-field explanation in `data-testid=\"validation-message\"`.\nPersist this default flowchart\nthrough `form_flow_dashboardcatal::canvas`:\n`flowchart TD\\n  Intake --> Type{Work item}\\n  Type -->|bug| Bug\\n  Type -->|feature| Feature\\n  Bug --> Ready\\n  Feature --> Ready`.\nAfter `add_environment`, insert `Environment` between Bug and Ready.\n\nCreate a Console page with a clear editing surface and live preview. Keep the primary action\nusable in a wide pane, a narrow split pane, and on a phone; adapt to pane width, support both\nthemes and keyboard navigation, and avoid horizontal overflow. Show Canvas source in an element\ncarrying `data-testid=\"canvas-source\"` (a disclosure is fine), domain output in\n`data-testid=\"domain-result\"`, and failures in `data-testid=\"error\"`. Preserve the domain edit\nand Canvas id after page reload. The page must remain usable after multiple interactions and must\nuse no external assets. Add a `data-testid=\"open-canvas\"` button carrying the active id in\n`data-canvas-id`; it must call `host.panels.open({ pageId: 'canvas', context: { canvasId } })`.\nAdd focused local tests for domain behavior and verify the UI build before reporting completion.",
+        "protects": "An agent can build a Console Worker that owns its business logic and saves a diagram of it in iii Canvas. If it fails, agents can't ship visual Workers people can actually use in the Console.",
+        "summary": "Build a Worker whose Console page designs a software-issue form: bug or feature fields, a live preview with missing-field checks, and an \"add environment\" rule edit. It saves the form's flowchart in Canvas under one stable id.",
+        "title": "Build an issue-form editor in Console",
+        "workers": [
+          "ade",
+          "canvas",
+          "compose",
+          "ide"
+        ]
+      },
+      "test_id": "form_flow_build"
+    },
+    {
+      "available_versions": [
+        {
+          "execution_count": 1,
+          "last_seen": "2026-10-23T23:41:34.238Z",
+          "observation_count": 1,
+          "run_count": 1,
+          "version": "sha256:8a29af9181e10d642f58520ad53dd885994a521780e0e233aac4d5244863a7fb"
+        }
+      ],
+      "calibration": {
+        "compatible_sample_count": 1,
+        "maturity": "observed"
+      },
+      "characterization": {
+        "human_horizon": {
+          "basis": "unknown"
+        },
+        "realism": {
+          "execution": "synthetic",
+          "shadow": "none"
+        }
+      },
+      "current_version": "sha256:8a29af9181e10d642f58520ad53dd885994a521780e0e233aac4d5244863a7fb",
+      "last_run": {
+        "at": "2026-10-23T23:41:34.238Z",
+        "completion": "task_incomplete",
+        "definition": "current",
+        "score": 10.0,
+        "status": "passed"
+      },
+      "lifecycle": "active",
+      "recent_scores": [
+        10.0
+      ],
+      "result": null,
+      "runs_current": 1,
+      "runs_total": 1,
+      "selected_version": "sha256:8a29af9181e10d642f58520ad53dd885994a521780e0e233aac4d5244863a7fb",
+      "spec": {
+        "area": "core-loop",
+        "criteria": [
+          {
+            "description": "Is the final value exactly the requested object?",
+            "dimension": "structural_integrity",
+            "gate": true,
+            "id": "exact_result",
+            "kind": "signal",
+            "label": "Stored value is exactly the requested object",
+            "policy": "advisory",
+            "weight": 40
+          },
+          {
+            "description": "Did the session make exactly one non-discovery function call, the required state::set?",
+            "dimension": "structural_integrity",
+            "gate": false,
+            "id": "single_task_call",
+            "kind": "signal",
+            "label": "Exactly one call: the required state::set",
+            "policy": "advisory",
+            "weight": 13
+          },
+          {
+            "description": "Did the session make at most two non-discovery calls, all on the owned scope and key, including the required write?",
+            "dimension": "structural_integrity",
+            "gate": false,
+            "id": "at_most_two_task_calls",
+            "kind": "signal",
+            "label": "At most two calls, all on its key",
+            "policy": "advisory",
+            "weight": 12
+          },
+          {
+            "description": "Did the session complete in exactly one turn?",
+            "dimension": "structural_integrity",
+            "gate": false,
+            "id": "single_turn",
+            "kind": "signal",
+            "label": "Finished in exactly one turn",
+            "policy": "advisory",
+            "weight": 10
+          },
+          {
+            "description": "Did the session complete in no more than two turns?",
+            "dimension": "structural_integrity",
+            "gate": false,
+            "id": "at_most_two_turns",
+            "kind": "signal",
+            "label": "Finished in at most two turns",
+            "policy": "advisory",
+            "weight": 10
+          },
+          {
+            "description": "Did the session finish without function-call errors or extra calls and return one concise confirmation line containing MIN-DONE?",
+            "dimension": "structural_integrity",
+            "gate": false,
+            "id": "zero_friction",
+            "kind": "signal",
+            "label": "No errors or extra calls, one-line confirmation",
+            "policy": "advisory",
+            "weight": 15
+          }
+        ],
+        "denied_functions": [],
+        "execution": {
+          "max_output_tokens": 4096,
+          "max_total_tokens": 80000,
+          "max_turns": 8,
+          "stuck_timeout_seconds": 180
+        },
+        "prompt": "Store exactly `{\"case_seed\":13011553812202181534,\"owner\":\"efficiency-suite\",\"status\":\"stored\"}` in scope `e2e-minimal-dashboard-catalog` under key `minimal_result` using a single `state::set` call. Then reply with one short confirmation line containing `MIN-DONE`. Make no other function call except function discovery if it is necessary.",
+        "protects": "The simplest request, storing one value in iii state, finishes in one call and one turn with no errors; overhead added to every agent turn shows up here first. If it fails, even trivial requests get slower and costlier, or don't land at all.",
+        "summary": "Store an exact JSON value under a given key with a single state write, then reply with one line containing MIN-DONE.",
+        "title": "Save one value, no wasted steps",
+        "workers": [
+          "state"
+        ]
+      },
+      "test_id": "minimal_path"
+    }
+  ],
+  "revision": "sha256:86cbc885adc9baccc744058190db7fd029bfe08e13cfef7db93c5aa6656b196d",
+  "catalog": {
+    "catalog_sha256": "sha256:87a098dfbaec2f9d4b5a78a24544d040d69756b3a229f4f8dcc2f24725537cf1",
+    "runner": {
+      "name": "harness-e2e",
+      "revision": "5c488a78174676ec66b034403d6f2e95a9d2ca82",
+      "version": "0.20.7"
+    },
+    "scenarios": [
+      {
+        "area": "long-context",
+        "behavior_sha256": "sha256:a4031f97bf351f653017445ca248398fc11a8a0d3391d56b295ca18497a2d6f6",
+        "case_id": "context_pressure:seed-0000000000000bbb",
+        "characterization": {
+          "human_horizon": {
+            "basis": "unknown"
+          },
+          "realism": {
+            "execution": "synthetic",
+            "shadow": "none"
+          }
+        },
+        "contract_sha256": "sha256:6f65448ccc5f4ac62138ced5f53ab9a3d9ef158b4422255565132cbb603522bd",
+        "deliverable_contract": {
+          "artifacts": [
+            {
+              "id": "context_report",
+              "kind": "context_report",
+              "max_size_bytes": 65536,
+              "media_type": "application/json",
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "content": {
+                    "type": "string"
+                  },
+                  "segments": {
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "content",
+                  "segments"
+                ],
+                "type": "object"
+              }
+            }
+          ],
+          "capture_before_cleanup": true,
+          "invariants": [
+            {
+              "description": "The report reproduces every planted charter fact verbatim after the full load.",
+              "id": "charter_preserved"
+            },
+            {
+              "description": "Every segment needle appears in the report in ascending order.",
+              "id": "needles_recovered"
+            },
+            {
+              "description": "The charter was read first and every segment exactly once in ascending order.",
+              "id": "ingestion_complete"
+            }
+          ],
+          "provenance_required": true
+        },
+        "inputs_sha256": "sha256:64985ff14325eaa89a72e2fd1d70bbbb9fa3f6382b77ef3a0e472c3b0ca0a528",
+        "protects": "In a long session that reads far more text than the agent can keep verbatim, the Harness context manager keeps the facts the agent needs from the start. If it fails, agents forget instructions and facts from early in long tasks.",
+        "required_capabilities": [
+          "e2e::control-plane-v1",
+          "iii::functions"
+        ],
+        "resource_envelope": {
+          "execution": {
+            "max_output_tokens": 16384,
+            "max_turns": 60,
+            "stuck_timeout_seconds": 600
+          }
+        },
+        "scenario_id": "context_pressure",
+        "seed": 3003,
+        "summary": "Read a short charter of four values first, then 48 noise documents of about 8 KB each, one call per document in order, each hiding one marker. Finish with a report that repeats the charter values and lists the 48 markers in order.",
+        "title": "Remember early facts in long sessions"
+      },
+      {
+        "area": "app-building",
+        "behavior_sha256": "sha256:6b37b87f6af7165d4646d81ada8c60e64d9ac3d0840d508ba144503cc9a808e6",
+        "case_id": "form_flow_build:seed-e7a00c060027c5cb",
+        "characterization": {
+          "human_horizon": {
+            "basis": "unknown"
+          },
+          "realism": {
+            "execution": "synthetic",
+            "shadow": "none"
+          }
+        },
+        "contract_sha256": "sha256:c97a91d01f700d492425d0f90f3be2e5c81c14262f5abfb4a0a6cb7ce3dd3d80",
+        "deliverable_contract": {
+          "artifacts": [
+            {
+              "id": "form_flow_worker_evidence",
+              "kind": "visual_worker_audit",
+              "max_size_bytes": 25165824,
+              "media_type": "application/json",
+              "schema": {
+                "properties": {
+                  "checks": {
+                    "type": "object"
+                  },
+                  "files": {
+                    "type": "object"
+                  },
+                  "identity": {
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "identity",
+                  "checks",
+                  "files"
+                ],
+                "type": "object"
+              }
+            }
+          ],
+          "capture_before_cleanup": true,
+          "invariants": [
+            {
+              "description": "The run-scoped visual Worker is ready.",
+              "id": "runtime_contract"
+            },
+            {
+              "description": "The Worker creates its initial diagram through Canvas.",
+              "id": "canvas_initial"
+            },
+            {
+              "description": "The live editor updates the same Canvas record.",
+              "id": "canvas_update"
+            },
+            {
+              "description": "The Console loads the Worker page assets.",
+              "id": "console_delivery"
+            },
+            {
+              "description": "The live preview responds to a real browser interaction.",
+              "id": "browser_interaction"
+            },
+            {
+              "description": "Screenshots show the Worker page and the Canvas graph it opens in the Console.",
+              "id": "evidence_complete"
+            }
+          ],
+          "provenance_required": true
+        },
+        "disciplines": [
+          "frontend",
+          "backend",
+          "testing"
+        ],
+        "inputs_sha256": "sha256:d46cd3255739dac0ea0239bcf3066fa021b1b9318e65839e5834b7e9b41ed189",
+        "protects": "An agent can build a Console Worker that owns its business logic and saves a diagram of it in iii Canvas. If it fails, agents can't ship visual Workers people can actually use in the Console.",
+        "required_capabilities": [
+          "e2e::control-plane-v1",
+          "iii::functions",
+          "iii::coder",
+          "iii::shell",
+          "browser::interactive",
+          "iii::compose",
+          "iii::workers",
+          "node"
+        ],
+        "resource_envelope": {
+          "execution": {
+            "max_output_tokens": 65536,
+            "max_total_tokens": 6000000,
+            "max_turns": 256,
+            "stuck_timeout_seconds": 1800
+          }
+        },
+        "scenario_id": "form_flow_build",
+        "seed": 16690353438947001803,
+        "summary": "Build a Worker whose Console page designs a software-issue form: bug or feature fields, a live preview with missing-field checks, and an \"add environment\" rule edit. It saves the form's flowchart in Canvas under one stable id.",
+        "title": "Build an issue-form editor in Console",
+        "workers": [
+          "ade",
+          "canvas",
+          "compose",
+          "ide"
+        ]
+      },
+      {
+        "area": "core-loop",
+        "behavior_sha256": "sha256:8a29af9181e10d642f58520ad53dd885994a521780e0e233aac4d5244863a7fb",
+        "case_id": "minimal_path:seed-b49253410830d39e",
+        "characterization": {
+          "human_horizon": {
+            "basis": "unknown"
+          },
+          "realism": {
+            "execution": "synthetic",
+            "shadow": "none"
+          }
+        },
+        "contract_sha256": "sha256:cfebecade27d92f798529cb97702f9b2140d16372f69e1122361a2e1f61bb317",
+        "deliverable_contract": {
+          "artifacts": [
+            {
+              "id": "minimal_result_record",
+              "kind": "state_record",
+              "max_size_bytes": 65536,
+              "media_type": "application/json",
+              "schema": {
+                "additionalProperties": true,
+                "required": [
+                  "state",
+                  "task_calls",
+                  "turns",
+                  "response"
+                ],
+                "type": "object"
+              }
+            }
+          ],
+          "capture_before_cleanup": true,
+          "invariants": [],
+          "provenance_required": true
+        },
+        "inputs_sha256": "sha256:622ed5cf0fcb48ef17f571f08b930c7ee23b942105cdd7667f7bf572cab149ea",
+        "protects": "The simplest request, storing one value in iii state, finishes in one call and one turn with no errors; overhead added to every agent turn shows up here first. If it fails, even trivial requests get slower and costlier, or don't land at all.",
+        "required_capabilities": [
+          "e2e::control-plane-v1",
+          "iii::functions",
+          "iii::state"
+        ],
+        "resource_envelope": {
+          "execution": {
+            "max_output_tokens": 4096,
+            "max_total_tokens": 80000,
+            "max_turns": 8,
+            "stuck_timeout_seconds": 180
+          }
+        },
+        "scenario_id": "minimal_path",
+        "seed": 13011553812202181534,
+        "summary": "Store an exact JSON value under a given key with a single state write, then reply with one line containing MIN-DONE.",
+        "title": "Save one value, no wasted steps",
+        "workers": [
+          "state"
+        ]
+      }
+    ],
+    "schema": "e2e-scenario-catalog"
+  }
+}
