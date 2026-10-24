@@ -1685,5 +1685,298 @@
       ],
       "stale": []
     }
+  ],
+  "negatives": [
+    {
+      "id": "neg-greet-how-are-you",
+      "text": "how are you?",
+      "lang": "en",
+      "kind": "greeting",
+      "split": "dev"
+    },
+    {
+      "id": "neg-greet-whats-up",
+      "text": "what's up?",
+      "lang": "en",
+      "kind": "greeting",
+      "split": "dev"
+    },
+    {
+      "id": "neg-greet-and-then",
+      "text": "and then?",
+      "lang": "en",
+      "kind": "greeting",
+      "split": "dev"
+    },
+    {
+      "id": "neg-greet-good-morning",
+      "text": "good morning!",
+      "lang": "en",
+      "kind": "greeting",
+      "split": "dev"
+    },
+    {
+      "id": "neg-greet-nice-to-meet",
+      "text": "nice to meet you",
+      "lang": "en",
+      "kind": "greeting",
+      "split": "dev"
+    },
+    {
+      "id": "neg-greet-so-what-now",
+      "text": "so what now?",
+      "lang": "en",
+      "kind": "greeting",
+      "split": "test"
+    },
+    {
+      "id": "neg-greet-you-there",
+      "text": "you there?",
+      "lang": "en",
+      "kind": "greeting",
+      "split": "test"
+    },
+    {
+      "id": "neg-greet-lovely-evening",
+      "text": "have a lovely evening",
+      "lang": "en",
+      "kind": "greeting",
+      "split": "test"
+    },
+    {
+      "id": "neg-fp-puppy",
+      "text": "Can you suggest what to call my new puppy?",
+      "lang": "en",
+      "kind": "first-person",
+      "split": "dev"
+    },
+    {
+      "id": "neg-fp-sourdough",
+      "text": "I want to bake sourdough bread for my neighbours.",
+      "lang": "en",
+      "kind": "first-person",
+      "split": "dev"
+    },
+    {
+      "id": "neg-fp-bicycle",
+      "text": "My bicycle chain slips constantly; how do I adjust the derailleur?",
+      "lang": "en",
+      "kind": "first-person",
+      "split": "dev"
+    },
+    {
+      "id": "neg-fp-houseplants",
+      "text": "I keep forgetting to water my houseplants, any tricks?",
+      "lang": "en",
+      "kind": "first-person",
+      "split": "dev"
+    },
+    {
+      "id": "neg-fp-paint",
+      "text": "Which paint colour suits my bedroom walls?",
+      "lang": "en",
+      "kind": "first-person",
+      "split": "dev"
+    },
+    {
+      "id": "neg-fp-car-brakes",
+      "text": "My car squeaks whenever I brake hard.",
+      "lang": "en",
+      "kind": "first-person",
+      "split": "test"
+    },
+    {
+      "id": "neg-fp-knitting",
+      "text": "I'd love a knitting pattern for a warm scarf.",
+      "lang": "en",
+      "kind": "first-person",
+      "split": "test"
+    },
+    {
+      "id": "neg-fp-grocery",
+      "text": "How should I split my grocery budget this year?",
+      "lang": "en",
+      "kind": "first-person",
+      "split": "test"
+    },
+    {
+      "id": "neg-word-spring",
+      "text": "When does spring start in the southern hemisphere?",
+      "lang": "en",
+      "kind": "incidental-word",
+      "split": "dev",
+      "shares": {
+        "spring": [
+          "en-work-kotlin-spring"
+        ]
+      }
+    },
+    {
+      "id": "neg-word-python",
+      "text": "Is a python a venomous snake?",
+      "lang": "en",
+      "kind": "incidental-word",
+      "split": "dev",
+      "shares": {
+        "python": [
+          "en-work-python-scripts"
+        ]
+      }
+    },
+    {
+      "id": "neg-word-main",
+      "text": "What is the main ingredient in hummus?",
+      "lang": "en",
+      "kind": "incidental-word",
+      "split": "dev",
+      "shares": {
+        "main": [
+          "en-work-review-two-approvals"
+        ]
+      }
+    },
+    {
+      "id": "neg-word-kilometers",
+      "text": "How many kilometers is a marathon?",
+      "lang": "en",
+      "kind": "incidental-word",
+      "split": "dev",
+      "shares": {
+        "kilometers": [
+          "evt-pref-metric"
+        ]
+      }
+    },
+    {
+      "id": "neg-word-portugal",
+      "text": "What is the capital of Portugal?",
+      "lang": "en",
+      "kind": "incidental-word",
+      "split": "dev",
+      "shares": {
+        "portugal": [
+          "upd-tz-new"
+        ]
+      }
+    },
+    {
+      "id": "neg-word-go",
+      "text": "Where should we go for dinner tonight?",
+      "lang": "en",
+      "kind": "incidental-word",
+      "split": "test",
+      "shares": {
+        "go": [
+          "en-work-go-tools"
+        ]
+      }
+    },
+    {
+      "id": "neg-word-pixel",
+      "text": "What does pixel density mean on a phone screen?",
+      "lang": "en",
+      "kind": "incidental-word",
+      "split": "test",
+      "shares": {
+        "pixel": [
+          "id-gata"
+        ]
+      }
+    },
+    {
+      "id": "neg-word-time",
+      "text": "What time zone is Tokyo in?",
+      "lang": "en",
+      "kind": "incidental-word",
+      "split": "test",
+      "shares": {
+        "time": [
+          "en-work-deploy-window",
+          "dup-deploy-window"
+        ]
+      }
+    },
+    {
+      "id": "neg-near-rotafy-postgres",
+      "text": "What Postgres version does Rotafy use?",
+      "lang": "en",
+      "kind": "near-topic",
+      "split": "dev",
+      "related": [
+        "en-work-rotafy-mongodb",
+        "en-work-ledgerly-postgres"
+      ]
+    },
+    {
+      "id": "neg-near-kafka-partitions",
+      "text": "How many partitions do the Ledgerly Kafka topics have?",
+      "lang": "en",
+      "kind": "near-topic",
+      "split": "dev",
+      "related": [
+        "en-work-ledgerly-kafka"
+      ]
+    },
+    {
+      "id": "neg-near-julia-kids",
+      "text": "Does Júlia have any kids?",
+      "lang": "en",
+      "kind": "near-topic",
+      "split": "dev",
+      "related": [
+        "pt-life-julia-bh",
+        "pt-life-julia-videochamada"
+      ]
+    },
+    {
+      "id": "neg-near-berlin-hotel",
+      "text": "Which hotel is booked for the Berlin conference?",
+      "lang": "en",
+      "kind": "near-topic",
+      "split": "dev",
+      "related": [
+        "evt-trip-berlin"
+      ]
+    },
+    {
+      "id": "neg-near-team-size",
+      "text": "How many people sit on the payments platform team?",
+      "lang": "en",
+      "kind": "near-topic",
+      "split": "dev",
+      "related": [
+        "id-role"
+      ]
+    },
+    {
+      "id": "neg-near-redis-eviction",
+      "text": "Which eviction policy does the Redis balance cache use?",
+      "lang": "en",
+      "kind": "near-topic",
+      "split": "test",
+      "related": [
+        "en-work-ledgerly-redis-cache"
+      ]
+    },
+    {
+      "id": "neg-near-gradle",
+      "text": "Which Gradle version builds the Kotlin services?",
+      "lang": "en",
+      "kind": "near-topic",
+      "split": "test",
+      "related": [
+        "en-work-kotlin-spring"
+      ]
+    },
+    {
+      "id": "neg-near-workshop-room",
+      "text": "Which room is the tracing workshop at the offsite in?",
+      "lang": "en",
+      "kind": "near-topic",
+      "split": "test",
+      "related": [
+        "evt-workshop-offsite"
+      ]
+    }
   ]
 }

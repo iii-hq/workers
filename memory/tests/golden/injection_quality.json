@@ -1,0 +1,391 @@
+{
+  "embedding": {
+    "dims": 256,
+    "model": "text-embedding-3-small",
+    "vectors_fingerprint": "fpa6f239b0a6fddb98"
+  },
+  "half_life_days": 60,
+  "modes": {
+    "hybrid": {
+      "all": {
+        "negatives": {
+          "negative_clean_rate": 0.0625,
+          "negative_injected": 130,
+          "negatives": 32,
+          "unmeasured": 0
+        },
+        "positives": {
+          "duplicate_queries": 11,
+          "expected_injected": 0.9571,
+          "injection_loss": [],
+          "irrelevant_injected": 288,
+          "needed": 70,
+          "queries": 62,
+          "stale_alone": 0,
+          "stale_with_current": 11
+        }
+      },
+      "category:dated-event": {
+        "positives": {
+          "duplicate_queries": 2,
+          "expected_injected": 1.0,
+          "injection_loss": [],
+          "irrelevant_injected": 27,
+          "needed": 7,
+          "queries": 6,
+          "stale_alone": 0,
+          "stale_with_current": 1
+        }
+      },
+      "category:durable-old": {
+        "positives": {
+          "duplicate_queries": 0,
+          "expected_injected": 1.0,
+          "injection_loss": [],
+          "irrelevant_injected": 30,
+          "needed": 6,
+          "queries": 6,
+          "stale_alone": 0,
+          "stale_with_current": 0
+        }
+      },
+      "category:identity": {
+        "positives": {
+          "duplicate_queries": 3,
+          "expected_injected": 0.875,
+          "injection_loss": [],
+          "irrelevant_injected": 56,
+          "needed": 16,
+          "queries": 12,
+          "stale_alone": 0,
+          "stale_with_current": 0
+        }
+      },
+      "category:lexical": {
+        "positives": {
+          "duplicate_queries": 3,
+          "expected_injected": 1.0,
+          "injection_loss": [],
+          "irrelevant_injected": 69,
+          "needed": 14,
+          "queries": 14,
+          "stale_alone": 0,
+          "stale_with_current": 0
+        }
+      },
+      "category:paraphrase": {
+        "positives": {
+          "duplicate_queries": 2,
+          "expected_injected": 1.0,
+          "injection_loss": [],
+          "irrelevant_injected": 66,
+          "needed": 16,
+          "queries": 14,
+          "stale_alone": 0,
+          "stale_with_current": 0
+        }
+      },
+      "category:temporal-update": {
+        "positives": {
+          "duplicate_queries": 1,
+          "expected_injected": 0.9091,
+          "injection_loss": [],
+          "irrelevant_injected": 40,
+          "needed": 11,
+          "queries": 10,
+          "stale_alone": 0,
+          "stale_with_current": 10
+        }
+      },
+      "kind:first-person": {
+        "negatives": {
+          "negative_clean_rate": 0.0,
+          "negative_injected": 48,
+          "negatives": 8,
+          "unmeasured": 0
+        }
+      },
+      "kind:greeting": {
+        "negatives": {
+          "negative_clean_rate": 0.125,
+          "negative_injected": 30,
+          "negatives": 8,
+          "unmeasured": 0
+        }
+      },
+      "kind:incidental-word": {
+        "negatives": {
+          "negative_clean_rate": 0.0,
+          "negative_injected": 20,
+          "negatives": 8,
+          "unmeasured": 0
+        }
+      },
+      "kind:near-topic": {
+        "negatives": {
+          "negative_clean_rate": 0.125,
+          "negative_injected": 32,
+          "negatives": 8,
+          "unmeasured": 0
+        }
+      },
+      "lang:en": {
+        "negatives": {
+          "negative_clean_rate": 0.0625,
+          "negative_injected": 130,
+          "negatives": 32,
+          "unmeasured": 0
+        },
+        "positives": {
+          "duplicate_queries": 7,
+          "expected_injected": 0.9444,
+          "injection_loss": [],
+          "irrelevant_injected": 142,
+          "needed": 36,
+          "queries": 31,
+          "stale_alone": 0,
+          "stale_with_current": 6
+        }
+      },
+      "lang:pt": {
+        "positives": {
+          "duplicate_queries": 4,
+          "expected_injected": 0.9706,
+          "injection_loss": [],
+          "irrelevant_injected": 146,
+          "needed": 34,
+          "queries": 31,
+          "stale_alone": 0,
+          "stale_with_current": 5
+        }
+      },
+      "split:dev": {
+        "negatives": {
+          "negative_clean_rate": 0.1,
+          "negative_injected": 81,
+          "negatives": 20,
+          "unmeasured": 0
+        },
+        "positives": {
+          "duplicate_queries": 9,
+          "expected_injected": 0.94,
+          "injection_loss": [],
+          "irrelevant_injected": 198,
+          "needed": 50,
+          "queries": 43,
+          "stale_alone": 0,
+          "stale_with_current": 8
+        }
+      },
+      "split:test": {
+        "negatives": {
+          "negative_clean_rate": 0.0,
+          "negative_injected": 49,
+          "negatives": 12,
+          "unmeasured": 0
+        },
+        "positives": {
+          "duplicate_queries": 2,
+          "expected_injected": 1.0,
+          "injection_loss": [],
+          "irrelevant_injected": 90,
+          "needed": 20,
+          "queries": 19,
+          "stale_alone": 0,
+          "stale_with_current": 3
+        }
+      }
+    },
+    "lexical": {
+      "all": {
+        "negatives": {
+          "negative_clean_rate": 0.25,
+          "negative_injected": 81,
+          "negatives": 32,
+          "unmeasured": 0
+        },
+        "positives": {
+          "duplicate_queries": 4,
+          "expected_injected": 0.6571,
+          "injection_loss": [],
+          "irrelevant_injected": 305,
+          "needed": 70,
+          "queries": 62,
+          "stale_alone": 0,
+          "stale_with_current": 9
+        }
+      },
+      "category:dated-event": {
+        "positives": {
+          "duplicate_queries": 0,
+          "expected_injected": 0.8571,
+          "injection_loss": [],
+          "irrelevant_injected": 28,
+          "needed": 7,
+          "queries": 6,
+          "stale_alone": 0,
+          "stale_with_current": 1
+        }
+      },
+      "category:durable-old": {
+        "positives": {
+          "duplicate_queries": 1,
+          "expected_injected": 1.0,
+          "injection_loss": [],
+          "irrelevant_injected": 30,
+          "needed": 6,
+          "queries": 6,
+          "stale_alone": 0,
+          "stale_with_current": 0
+        }
+      },
+      "category:identity": {
+        "positives": {
+          "duplicate_queries": 2,
+          "expected_injected": 0.5,
+          "injection_loss": [],
+          "irrelevant_injected": 61,
+          "needed": 16,
+          "queries": 12,
+          "stale_alone": 0,
+          "stale_with_current": 0
+        }
+      },
+      "category:lexical": {
+        "positives": {
+          "duplicate_queries": 1,
+          "expected_injected": 1.0,
+          "injection_loss": [],
+          "irrelevant_injected": 64,
+          "needed": 14,
+          "queries": 14,
+          "stale_alone": 0,
+          "stale_with_current": 0
+        }
+      },
+      "category:paraphrase": {
+        "positives": {
+          "duplicate_queries": 0,
+          "expected_injected": 0.1875,
+          "injection_loss": [],
+          "irrelevant_injected": 79,
+          "needed": 16,
+          "queries": 14,
+          "stale_alone": 0,
+          "stale_with_current": 0
+        }
+      },
+      "category:temporal-update": {
+        "positives": {
+          "duplicate_queries": 0,
+          "expected_injected": 0.8182,
+          "injection_loss": [],
+          "irrelevant_injected": 43,
+          "needed": 11,
+          "queries": 10,
+          "stale_alone": 0,
+          "stale_with_current": 8
+        }
+      },
+      "kind:first-person": {
+        "negatives": {
+          "negative_clean_rate": 0.0,
+          "negative_injected": 48,
+          "negatives": 8,
+          "unmeasured": 0
+        }
+      },
+      "kind:greeting": {
+        "negatives": {
+          "negative_clean_rate": 0.5,
+          "negative_injected": 15,
+          "negatives": 8,
+          "unmeasured": 0
+        }
+      },
+      "kind:incidental-word": {
+        "negatives": {
+          "negative_clean_rate": 0.0,
+          "negative_injected": 9,
+          "negatives": 8,
+          "unmeasured": 0
+        }
+      },
+      "kind:near-topic": {
+        "negatives": {
+          "negative_clean_rate": 0.5,
+          "negative_injected": 9,
+          "negatives": 8,
+          "unmeasured": 0
+        }
+      },
+      "lang:en": {
+        "negatives": {
+          "negative_clean_rate": 0.25,
+          "negative_injected": 81,
+          "negatives": 32,
+          "unmeasured": 0
+        },
+        "positives": {
+          "duplicate_queries": 2,
+          "expected_injected": 0.6667,
+          "injection_loss": [],
+          "irrelevant_injected": 151,
+          "needed": 36,
+          "queries": 31,
+          "stale_alone": 0,
+          "stale_with_current": 5
+        }
+      },
+      "lang:pt": {
+        "positives": {
+          "duplicate_queries": 2,
+          "expected_injected": 0.6471,
+          "injection_loss": [],
+          "irrelevant_injected": 154,
+          "needed": 34,
+          "queries": 31,
+          "stale_alone": 0,
+          "stale_with_current": 4
+        }
+      },
+      "split:dev": {
+        "negatives": {
+          "negative_clean_rate": 0.25,
+          "negative_injected": 54,
+          "negatives": 20,
+          "unmeasured": 0
+        },
+        "positives": {
+          "duplicate_queries": 3,
+          "expected_injected": 0.58,
+          "injection_loss": [],
+          "irrelevant_injected": 219,
+          "needed": 50,
+          "queries": 43,
+          "stale_alone": 0,
+          "stale_with_current": 6
+        }
+      },
+      "split:test": {
+        "negatives": {
+          "negative_clean_rate": 0.25,
+          "negative_injected": 27,
+          "negatives": 12,
+          "unmeasured": 0
+        },
+        "positives": {
+          "duplicate_queries": 1,
+          "expected_injected": 0.85,
+          "injection_loss": [],
+          "irrelevant_injected": 86,
+          "needed": 20,
+          "queries": 19,
+          "stale_alone": 0,
+          "stale_with_current": 3
+        }
+      }
+    }
+  },
+  "recall_limit": 6
+}

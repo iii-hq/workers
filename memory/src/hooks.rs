@@ -28,7 +28,7 @@ use iii_sdk::protocol::TriggerRequest;
 use crate::config::WorkerConfig;
 use crate::deps::Deps;
 use crate::extract;
-use crate::store::Bank;
+use crate::store::{Bank, Evidence};
 use crate::types::{local_date, now_ms, Memory};
 
 pub const PRE_GENERATE_FN: &str = "memory::hook::pre-generate";
@@ -415,21 +415,16 @@ pub(crate) async fn injection(
         bm25_max = bm25_max.max(b.bm25_max(&query, keep).await);
     }
     let (mut hits, mut top, mut held) = (Vec::new(), Vec::new(), HashMap::new());
+    let mut evidence = HashMap::new();
     for (name, b, layered) in sources {
         let keep = |m: &Memory| keeps(name, layered, m);
-        // The default bank's memories it reads as a layer may rank past the
-        // limit; an agent layer keeps every memory, so the limit is enough.
-        let fetch = if layered && name == cfg.default_bank {
-            usize::MAX
-        } else {
-            cfg.recall_limit
-        };
-        let found = b
-            .recall_scaled(
+        // Every candidate: `select` cuts the merged ranking.
+        let (found, mut found_evidence) = b
+            .recall_evidence(
                 &query,
                 qv,
                 query_model,
-                fetch,
+                usize::MAX,
                 cfg.decay_half_life_days,
                 false,
                 bm25_max,
@@ -437,15 +432,25 @@ pub(crate) async fn injection(
             .await;
         let found: Vec<(Memory, f32)> = found.into_iter().filter(|(m, _)| keep(m)).collect();
         let strongest = b.top_memories(cfg.recall_limit, keep).await;
-        // The first bank holding a memory holds it, as `merge_ranked` keeps
-        // the first copy.
+        // The first bank holding a memory holds it and its evidence, as
+        // `merge_ranked` keeps the first copy.
         for m in found.iter().map(|(m, _)| m).chain(&strongest) {
             held.entry(m.id.clone()).or_insert(name);
+        }
+        for (m, _) in &found {
+            if let Some(e) = found_evidence.remove(&m.id) {
+                evidence.entry(m.id.clone()).or_insert(e);
+            }
         }
         hits.extend(found);
         top.extend(strongest);
     }
-    let hits = merge_ranked(hits, cfg.recall_limit);
+    let hits = select(
+        merge_ranked(hits, usize::MAX),
+        &evidence,
+        seen,
+        cfg.recall_limit,
+    );
     let mut scores: HashMap<String, f32> = hits.iter().map(|(m, s)| (m.id.clone(), *s)).collect();
     // Ambient floor: lexical recall misses identity questions and session
     // openers entirely (their words never appear in memory texts), so pad
@@ -507,6 +512,20 @@ pub(crate) fn merge_ranked(mut hits: Vec<(Memory, f32)>, limit: usize) -> Vec<(M
     let mut seen = HashSet::new();
     hits.retain(|(m, _)| seen.insert(m.id.clone()));
     hits.sort_by(|a, b| b.1.total_cmp(&a.1));
+    hits.truncate(limit);
+    hits
+}
+
+/// What a turn is told from its ranked hits (every candidate, best first),
+/// at most `limit`; `seen` holds the memory lines the window shows. For now
+/// the ranking's cut alone: `evidence` (why each hit matched) and `seen`
+/// are not read yet.
+pub fn select(
+    mut hits: Vec<(Memory, f32)>,
+    _evidence: &HashMap<String, Evidence>,
+    _seen: &HashSet<String>,
+    limit: usize,
+) -> Vec<(Memory, f32)> {
     hits.truncate(limit);
     hits
 }
