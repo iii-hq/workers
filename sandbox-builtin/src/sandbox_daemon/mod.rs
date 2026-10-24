@@ -161,8 +161,10 @@ pub async fn serve() -> anyhow::Result<()> {
                     std::process::exit(2);
                 }
             };
-            start(&iii, config, &config_name);
-            exit.await
+            let registry = start(&iii, config, &config_name);
+            let reason = exit.await;
+            stop::stop_all(&registry, &adapters::SignalStopper).await;
+            reason
         }
     };
     tracing::info!(reason, "sandbox-builtin shutting down");
@@ -170,8 +172,8 @@ pub async fn serve() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Register every function and spawn the idle reaper.
-fn start(iii: &IIIClient, config: SandboxConfig, config_name: &str) {
+/// Register every function and spawn the idle reaper; returns the sandboxes.
+fn start(iii: &IIIClient, config: SandboxConfig, config_name: &str) -> Arc<SandboxRegistry> {
     tracing::info!(
         auto_install = config.auto_install,
         allowlist_size = config.image_allowlist.len(),
@@ -188,6 +190,7 @@ fn start(iii: &IIIClient, config: SandboxConfig, config_name: &str) {
              number of simultaneous execs a guest of default_memory_mb can hold."
         );
     }
+    overlay::sweep_stale(std::path::Path::new(overlay::SANDBOX_ROOT));
     let registry = Arc::new(SandboxRegistry::with_max_exec_in_flight(
         config.max_concurrent_exec_per_sandbox,
     ));
@@ -204,6 +207,7 @@ fn start(iii: &IIIClient, config: SandboxConfig, config_name: &str) {
         busy_grace,
     ));
     tracing::info!("sandbox-builtin ready");
+    registry
 }
 
 /// Register every `sandbox-builtin::*` function, `adapter::info` included.
