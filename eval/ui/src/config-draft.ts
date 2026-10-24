@@ -293,7 +293,7 @@ export function configFromDraft(draft: ConfigDraft): LoopConfig | null {
     min_effect: { tokens: num(draft.min_effect_tokens), pass_rate_pp: num(draft.min_effect_pass_rate_pp) },
     budget: {
       max_spend_usd: num(draft.max_spend_usd),
-      max_duration_ms: num(draft.max_duration_min) * 60_000,
+      max_duration_ms: Math.round(num(draft.max_duration_min) * 60_000),
       max_calls: num(draft.max_calls),
       max_candidates: num(draft.max_candidates),
     },

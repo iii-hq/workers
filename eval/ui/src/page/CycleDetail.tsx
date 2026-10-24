@@ -187,7 +187,10 @@ export function CycleDetail({
             <IconButton label="Back to cycles" onClick={nav.home}>
               <ArrowLeft size={16} aria-hidden />
             </IconButton>
-            {narrow ? null : <Breadcrumb items={[{ label: 'Cycles', onClick: nav.home }, { label: title }]} />}
+            {/* A phone has the back button: its path is the cycle alone. */}
+            <Breadcrumb
+              items={narrow ? [{ label: title }] : [{ label: 'Cycles', onClick: nav.home }, { label: title }]}
+            />
           </Toolbar>
           <div className="eval-ui-scroll">
             {response === undefined && !error ? (

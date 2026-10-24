@@ -134,6 +134,7 @@ export function LoopSettings({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [json, setJson] = useState<string | null>(null)
+  const [shown, setShown] = useState<Setup>(section ?? 'measure')
   const anchors = useRef<Partial<Record<Setup, HTMLElement | null>>>({})
 
   // A clean form always shows what is stored, including a change made elsewhere.
@@ -142,7 +143,9 @@ export function LoopSettings({
   }, [dirty, stored])
   useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange])
   useEffect(() => {
-    if (section) anchors.current[section]?.scrollIntoView({ block: 'start' })
+    if (!section) return
+    setShown(section)
+    anchors.current[section]?.scrollIntoView({ block: 'start' })
   }, [section])
 
   const set = (patch: Partial<ConfigDraft>) => {
@@ -198,7 +201,6 @@ export function LoopSettings({
     }
   }
 
-  const [shown, setShown] = useState<Setup>(section ?? 'measure')
   const go = (id: Setup) => {
     setShown(id)
     anchors.current[id]?.scrollIntoView({ block: 'start', behavior: 'smooth' })
@@ -302,9 +304,13 @@ export function LoopSettings({
             <IconButton label="Back to cycles" onClick={nav.home}>
               <ArrowLeft size={16} aria-hidden />
             </IconButton>
-            {narrow ? null : (
-              <Breadcrumb items={[{ label: 'Cycles', onClick: nav.home }, { label: 'Loop settings' }]} />
-            )}
+            <Breadcrumb
+              items={
+                narrow
+                  ? [{ label: 'Loop settings' }]
+                  : [{ label: 'Cycles', onClick: nav.home }, { label: 'Loop settings' }]
+              }
+            />
           </Toolbar>
           <div className="eval-ui-scroll">
             <div className="eval-ui-form">

@@ -324,7 +324,7 @@
 }
 
 [data-iii-ui="eval"] .eval-ui-options {
-  max-height: 320px;
+  max-height: 240px;
   margin: 0 -6px;
   overflow-y: auto;
 }
@@ -879,4 +879,14 @@
 
 [data-iii-ui="eval"] .eval-ui-filter .eval-ui-seg > * {
   white-space: nowrap;
+}
+
+/* The dialog scrolls; its actions stay in view at its bottom edge, over
+   the dialog's own 24px padding (DialogContent's p-6). */
+[data-iii-ui="eval"] .eval-ui-dialog .eval-ui-actions {
+  position: sticky;
+  bottom: -24px;
+  margin-bottom: -24px;
+  padding: 12px 0 24px;
+  background: var(--color-panel-raised);
 }
