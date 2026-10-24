@@ -48,15 +48,30 @@ fn forward_namespace<'a>(function_id: &str, fs_namespace: &'a str) -> Option<&'a
     }
 }
 
+/// Slack over a payload's own `timeout_ms` before the call gives up: the callee
+/// (`sandbox::exec`) may use all of it, then the reply still has to come back.
+const CALL_SLACK_MS: u64 = 30_000;
+
+/// A payload's `timeout_ms` is the callee's own budget. Without a call timeout
+/// the SDK waits only its 30 s default, so a longer sandbox exec failed with
+/// `Timeout` while the VM was still running it.
+fn trigger_request(function_id: &str, payload: Value) -> TriggerRequest {
+    let timeout_ms = payload
+        .get("timeout_ms")
+        .and_then(Value::as_u64)
+        .map(|ms| ms.saturating_add(CALL_SLACK_MS));
+    TriggerRequest {
+        function_id: function_id.to_string(),
+        payload,
+        action: None,
+        timeout_ms,
+    }
+}
+
 #[async_trait]
 impl TriggerFwd for IiiTriggerFwd {
     async fn trigger(&self, function_id: &str, payload: Value) -> Result<Value, Error> {
-        let request = TriggerRequest {
-            function_id: function_id.to_string(),
-            payload,
-            action: None,
-            timeout_ms: None,
-        };
+        let request = trigger_request(function_id, payload);
         match forward_namespace(function_id, &SANDBOX_FS_NAMESPACE) {
             Some(namespace) => self.iii.trigger(request.namespace(namespace)).await,
             None => self.iii.trigger(request).await,
@@ -98,6 +113,20 @@ mod tests {
                 "{function_id}"
             );
         }
+    }
+
+    #[test]
+    fn a_long_exec_call_outlasts_the_sdk_default() {
+        let exec = trigger_request(
+            "sandbox::exec",
+            json!({"cmd": "sleep", "args": ["40"], "timeout_ms": 120_000}),
+        );
+        assert_eq!(exec.timeout_ms, Some(150_000));
+        // No budget in the payload keeps the SDK default.
+        assert_eq!(
+            trigger_request("compose::status", json!({})).timeout_ms,
+            None
+        );
     }
 
     struct CountingFwd {

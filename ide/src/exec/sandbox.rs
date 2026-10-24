@@ -134,7 +134,7 @@ impl ExecBackend for SandboxExecBackend {
 /// after N ms", ... }`. We accept either a recovered `S200` code OR a
 /// `"timed out"` substring in the message — the latter catches engine
 /// builds that use a different code but a stable message.
-fn is_engine_timeout(err: &ExecError) -> bool {
+pub(crate) fn is_engine_timeout(err: &ExecError) -> bool {
     err.code == "S200" || err.message.contains("timed out")
 }
 

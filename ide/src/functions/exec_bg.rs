@@ -3,9 +3,10 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::config::ShellConfig;
+use crate::exec::error::ExecError;
 use crate::exec::host::{build_command, parse_argv};
 use crate::exec::policy::{build_overrides, scope_root_for_target, ExecOverrides};
-use crate::exec::sandbox::SandboxExecResponse;
+use crate::exec::sandbox::{is_engine_timeout, SandboxExecResponse};
 use crate::functions::types::{ExecBgRequest, ExecBgResponse};
 use crate::jobs::{self, JobHandle, JobRecord, JobStatus};
 use crate::target::Target;
@@ -417,7 +418,14 @@ pub(crate) async fn spawn_sandbox_job(
             }
             Err(err) => {
                 if !already_killed {
-                    h.record.status = JobStatus::Failed;
+                    // The adapter reports an in-VM timeout as an S200 error,
+                    // not `timed_out: true`; it is the same kill.
+                    let mapped = crate::scode::map_iii_err(&err, ExecError::new);
+                    h.record.status = if is_engine_timeout(&mapped) {
+                        JobStatus::Killed
+                    } else {
+                        JobStatus::Failed
+                    };
                 }
                 h.record.stderr = format!("engine error: {err:?}");
             }
@@ -822,6 +830,39 @@ mod sandbox_path_tests {
         let h = jobs::get(&resp.job_id).await.expect("job exists");
         let r = h.lock().await;
         assert_eq!(r.record.status, JobStatus::Killed);
+
+        drop(r);
+        jobs::JOBS.map.lock().await.remove(&resp.job_id);
+    }
+
+    #[tokio::test]
+    async fn sandbox_job_in_vm_timeout_error_marks_killed() {
+        // The adapter's in-VM timeout, as the router forwards it.
+        struct TimedOut;
+        #[async_trait]
+        impl TriggerFwd for TimedOut {
+            async fn trigger(&self, _fid: &str, _payload: Value) -> Result<Value, Error> {
+                Err(Error::Remote {
+                    code: "invocation_failed".into(),
+                    message: r#"handler error: {"code":"S200","message":"exec timed out after 1000 ms","retryable":false,"type":"execution"}"#.into(),
+                    stacktrace: None,
+                })
+            }
+        }
+        let resp = handle_sandbox_for_test(
+            cfg_open(),
+            Arc::new(TimedOut),
+            Uuid::new_v4(),
+            vec!["sleep".into(), "30".into()],
+            1000,
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let h = jobs::get(&resp.job_id).await.expect("job exists");
+        let r = h.lock().await;
+        assert_eq!(r.record.status, JobStatus::Killed);
+        assert!(r.record.stderr.contains("exec timed out"));
 
         drop(r);
         jobs::JOBS.map.lock().await.remove(&resp.job_id);
