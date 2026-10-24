@@ -9,8 +9,8 @@
     "hybrid": {
       "all": {
         "negatives": {
-          "negative_clean_rate": 0.3438,
-          "negative_injected": 43,
+          "negative_clean_rate": 0.5313,
+          "negative_injected": 24,
           "negatives": 32,
           "unmeasured": 0
         },
@@ -18,7 +18,7 @@
           "duplicate_queries": 2,
           "expected_injected": 0.9571,
           "injection_loss": [],
-          "irrelevant_injected": 163,
+          "irrelevant_injected": 157,
           "needed": 70,
           "queries": 62,
           "stale_alone": 0,
@@ -42,7 +42,7 @@
           "duplicate_queries": 0,
           "expected_injected": 1.0,
           "injection_loss": [],
-          "irrelevant_injected": 17,
+          "irrelevant_injected": 16,
           "needed": 6,
           "queries": 6,
           "stale_alone": 0,
@@ -54,7 +54,7 @@
           "duplicate_queries": 0,
           "expected_injected": 0.875,
           "injection_loss": [],
-          "irrelevant_injected": 38,
+          "irrelevant_injected": 32,
           "needed": 16,
           "queries": 12,
           "stale_alone": 0,
@@ -90,7 +90,7 @@
           "duplicate_queries": 0,
           "expected_injected": 0.9091,
           "injection_loss": [],
-          "irrelevant_injected": 13,
+          "irrelevant_injected": 14,
           "needed": 11,
           "queries": 10,
           "stale_alone": 0,
@@ -99,16 +99,16 @@
       },
       "kind:first-person": {
         "negatives": {
-          "negative_clean_rate": 0.75,
-          "negative_injected": 3,
+          "negative_clean_rate": 0.875,
+          "negative_injected": 1,
           "negatives": 8,
           "unmeasured": 0
         }
       },
       "kind:greeting": {
         "negatives": {
-          "negative_clean_rate": 0.125,
-          "negative_injected": 16,
+          "negative_clean_rate": 0.75,
+          "negative_injected": 3,
           "negatives": 8,
           "unmeasured": 0
         }
@@ -116,7 +116,7 @@
       "kind:incidental-word": {
         "negatives": {
           "negative_clean_rate": 0.0,
-          "negative_injected": 16,
+          "negative_injected": 12,
           "negatives": 8,
           "unmeasured": 0
         }
@@ -131,8 +131,8 @@
       },
       "lang:en": {
         "negatives": {
-          "negative_clean_rate": 0.3438,
-          "negative_injected": 43,
+          "negative_clean_rate": 0.5313,
+          "negative_injected": 24,
           "negatives": 32,
           "unmeasured": 0
         },
@@ -140,7 +140,7 @@
           "duplicate_queries": 2,
           "expected_injected": 0.9444,
           "injection_loss": [],
-          "irrelevant_injected": 54,
+          "irrelevant_injected": 46,
           "needed": 36,
           "queries": 31,
           "stale_alone": 0,
@@ -152,7 +152,7 @@
           "duplicate_queries": 0,
           "expected_injected": 0.9706,
           "injection_loss": [],
-          "irrelevant_injected": 109,
+          "irrelevant_injected": 111,
           "needed": 34,
           "queries": 31,
           "stale_alone": 0,
@@ -161,8 +161,8 @@
       },
       "split:dev": {
         "negatives": {
-          "negative_clean_rate": 0.35,
-          "negative_injected": 28,
+          "negative_clean_rate": 0.5,
+          "negative_injected": 16,
           "negatives": 20,
           "unmeasured": 0
         },
@@ -170,7 +170,7 @@
           "duplicate_queries": 2,
           "expected_injected": 0.94,
           "injection_loss": [],
-          "irrelevant_injected": 108,
+          "irrelevant_injected": 102,
           "needed": 50,
           "queries": 43,
           "stale_alone": 0,
@@ -179,8 +179,8 @@
       },
       "split:test": {
         "negatives": {
-          "negative_clean_rate": 0.3333,
-          "negative_injected": 15,
+          "negative_clean_rate": 0.5833,
+          "negative_injected": 8,
           "negatives": 12,
           "unmeasured": 0
         },

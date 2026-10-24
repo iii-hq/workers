@@ -564,10 +564,10 @@ pub fn select(
     let ev = |m: &Memory| evidence.get(&m.id).unwrap_or(&none);
     // Every question word `a` matched, `b` matched too.
     let within = |a: &Evidence, b: &Evidence| a.matched.iter().all(|t| b.matched.contains(t));
-    // Evidence: a word of the question, or a meaning above the model's floor.
+    // Evidence: a word of the question, or a meaning at the model's admit cosine.
     let mut pool: Vec<(Memory, f32)> = hits
         .into_iter()
-        .filter(|(m, _)| !ev(m).matched.is_empty() || ev(m).cosine.is_some())
+        .filter(|(m, _)| !ev(m).matched.is_empty() || ev(m).meaning)
         .take(POOL_PER_SLOT.saturating_mul(limit))
         .collect();
     // Before the cut, so a stale best hit never sets the bar.
@@ -1899,6 +1899,7 @@ Formal."
             terms: 3,
             relevance: 0.28,
             cosine: Some(0.45),
+            meaning: true,
             z: Some(z),
             vector: true,
             ..Evidence::default()
@@ -1907,6 +1908,22 @@ Formal."
         assert_eq!(picked, ["fp-best", "fp-far"]);
         let picked = selected(vec![("fp-best", best), ("fp-near", meaning(1.2))], 6);
         assert_eq!(picked, ["fp-best"]);
+    }
+
+    #[test]
+    fn a_meaning_only_hit_below_admit_is_not_injected() {
+        // Above the model's floor, so a cosine, but no word of the question.
+        let near = |meaning| Evidence {
+            terms: 2,
+            relevance: 1.0,
+            cosine: Some(0.27),
+            meaning,
+            z: Some(2.5),
+            vector: true,
+            ..Evidence::default()
+        };
+        assert!(selected(vec![("fp-near", near(false))], 6).is_empty());
+        assert_eq!(selected(vec![("fp-near", near(true))], 6), ["fp-near"]);
     }
 
     #[test]

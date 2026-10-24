@@ -38,7 +38,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
 use memory::config::WorkerConfig;
-use memory::store::{Store, STOPWORDS};
+use memory::store::{Evidence, Store, STOPWORDS};
 use memory::types::{fingerprint, now_ms, Confidence, Memory};
 use serde::{Deserialize, Serialize};
 
@@ -904,6 +904,8 @@ async fn injection_gate(vectors_file: &str, baseline_file: &str) {
 
     let mut report = String::new();
     let mut snapshot = BTreeMap::new();
+    // Dev needed lines delivered with the admit cosine, and with the floor alone.
+    let (mut dev_admit, mut dev_floor) = (0, 0);
     for mode in ["lexical", "hybrid"] {
         let mut rows: Vec<Row> = Vec::new();
         for m in &messages {
@@ -929,11 +931,25 @@ async fn injection_gate(vectors_file: &str, baseline_file: &str) {
             let key = |mem: &Memory| key_of_id[&mem.id].as_str();
             // `Bank::recall` at `recall_limit` is this ranking, cut.
             let ranked: Vec<&str> = hits.iter().take(limit).map(|(mem, _)| key(mem)).collect();
-            let injected = memory::hooks::select(hits, &evidence, &HashSet::new(), limit)
-                .iter()
-                .map(|(mem, _)| key(mem))
-                .collect();
-            rows.push((m, Some(judge(m, injected, &ranked, &cluster))));
+            let inject = |hits, evidence: &HashMap<String, Evidence>| -> Vec<&str> {
+                memory::hooks::select(hits, evidence, &HashSet::new(), limit)
+                    .iter()
+                    .map(|(mem, _)| key(mem))
+                    .collect()
+            };
+            let dev_positive = mode == "hybrid" && !m.negative && split_of(m.id) == "dev";
+            if dev_positive {
+                let mut at_floor = evidence.clone();
+                for e in at_floor.values_mut() {
+                    e.meaning = e.cosine.is_some();
+                }
+                dev_floor += judge(m, inject(hits.clone(), &at_floor), &ranked, &cluster).delivered;
+            }
+            let shown = judge(m, inject(hits, &evidence), &ranked, &cluster);
+            if dev_positive {
+                dev_admit += shown.delivered;
+            }
+            rows.push((m, Some(shown)));
         }
 
         let mut slices: BTreeMap<&str, Vec<&Row>> = BTreeMap::new();
@@ -1042,6 +1058,12 @@ async fn injection_gate(vectors_file: &str, baseline_file: &str) {
         snapshot.insert(mode, serde_json::to_value(&summaries).unwrap());
     }
     println!("{report}");
+    // The admit was chosen on dev to cost no recall there; hybrid negatives
+    // stay snapshot-only (no admit cleans them all on this data).
+    assert_eq!(
+        dev_admit, dev_floor,
+        "hybrid: the admit cosine lost dev needed lines\n{report}"
+    );
 
     let baseline = serde_json::json!({
         "embedding": { "model": vectors.model, "dims": vectors.dims, "vectors_fingerprint": vectors_fp },

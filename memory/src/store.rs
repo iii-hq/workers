@@ -44,20 +44,37 @@ const SEMANTIC_FLOOR: f32 = 0.25;
 /// update becomes a ratio past what the recency multiplier corrects (recall
 /// eval: 3-4 traps at every weight from 2 to 24, against 2).
 const SEMANTIC_ANCHOR: f32 = 0.2;
+/// Cosine a candidate sharing no word with the question needs to be injected
+/// on meaning alone (the injection hook only; ranking never reads it). On the
+/// injection eval's dev split, needed meaning-only lines start at 0.291 and
+/// greeting and first-person negatives reach 0.301, so no value separates
+/// them: 0.29 is the largest that keeps dev recall (0.94), and test confirms
+/// it (recall stays 1.0, greetings 6 lines to 2, first person 1 to 0).
+/// shortcut: "how are you?" and the puppy-name question each still inject
+/// one line, recalibrate when the golden set grows more negatives.
+const SEMANTIC_ADMIT: f32 = 0.29;
 /// iii-directory's local embedder, reported as `<name>@<revision>`.
 const MINILM_MODEL: &str = "sentence-transformers/all-MiniLM-L6-v2";
 
-/// The semantic arm's `(floor, anchor, weight)` for the model the query was
-/// embedded with; the constants above were measured on text-embedding-3-small.
+/// The semantic arm's `(floor, anchor, weight, admit)` for the model the
+/// query was embedded with; the constants above were measured on
+/// text-embedding-3-small, and a model this does not know inherits them.
 /// MiniLM spreads a stale fact and its update further apart, so from 0.2 the
 /// gap outgrew recency (recall eval: 4 traps against 2): raw cosine at a
 /// quarter of the slope keeps BM25 and recency in the vote (2 traps), and its
 /// relevant matches start lower, so the floor does too.
-fn semantic_scale(model: &str) -> (f32, f32, f32) {
+/// shortcut: MiniLM's admit is its floor (the eval's negatives have no MiniLM
+/// vectors to calibrate it on), recalibrate once vectors-minilm.json has them.
+fn semantic_scale(model: &str) -> (f32, f32, f32, f32) {
     if model.split('@').next() == Some(MINILM_MODEL) {
-        (0.2, 0.0, 5.0)
+        (0.2, 0.0, 5.0, 0.2)
     } else {
-        (SEMANTIC_FLOOR, SEMANTIC_ANCHOR, SEMANTIC_WEIGHT)
+        (
+            SEMANTIC_FLOOR,
+            SEMANTIC_ANCHOR,
+            SEMANTIC_WEIGHT,
+            SEMANTIC_ADMIT,
+        )
     }
 }
 
@@ -82,6 +99,9 @@ pub struct Evidence {
     pub relevance: f32,
     /// The cosine, when above the model's floor (`semantic_scale`).
     pub cosine: Option<f32>,
+    /// The cosine reaches the model's `admit` (`semantic_scale`): a meaning
+    /// close enough to inject without a word of the question.
+    pub meaning: bool,
     /// Standard deviations above the question's mean cosine over this
     /// bank, for a cosine above the floor in a bank of MIN_Z_POOL vectors.
     pub z: Option<f32>,
@@ -883,7 +903,7 @@ impl Bank {
             }
         }
         // Semantic candidates join the pool even without a lexical hit.
-        let (floor, anchor, weight) = semantic_scale(embedding_model);
+        let (floor, anchor, weight, admit) = semantic_scale(embedding_model);
         let mut sem: HashMap<String, f32> = HashMap::new();
         // The query's cosine over every same-model vector: what a single
         // cosine stands out from.
@@ -946,6 +966,7 @@ impl Bank {
                     lexical: s / max_bm25,
                     relevance,
                     cosine: cos,
+                    meaning: cos.is_some_and(|c| c >= admit),
                     z: cos.and_then(z_of),
                     vector: query_vec.is_some()
                         && inner.vectors.get(&f.id).is_some_and(|(model, _)| {
@@ -1760,6 +1781,47 @@ mod tests {
         let z = ev[&near.id].z.expect("20 vectors make a pool");
         assert!((z - 4.337).abs() < 0.01, "{z}");
         assert_eq!(ev[&below.id].z, None, "no cosine above the floor, no z");
+    }
+
+    #[tokio::test]
+    async fn a_meaning_only_hit_needs_the_admit_cosine() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let minilm = format!("{MINILM_MODEL}@rev");
+        let near = memory("nearest by meaning");
+        let weak = memory("weak by meaning");
+        let small = memory("weak by meaning, under MiniLM");
+        for m in [&near, &weak, &small] {
+            bank.commit(m.clone()).await.unwrap();
+        }
+        // Cosine 0.27 to the query: above both floors, under the admit.
+        let at_027 = vec![0.27, (1.0f32 - 0.27 * 0.27).sqrt()];
+        bank.set_vector(&near.id, "m", &near.text, vec![1.0, 0.0])
+            .await
+            .unwrap();
+        bank.set_vector(&weak.id, "m", &weak.text, at_027.clone())
+            .await
+            .unwrap();
+        bank.set_vector(&small.id, &minilm, &small.text, at_027)
+            .await
+            .unwrap();
+        let q = [1.0, 0.0];
+
+        // An unknown model has text-embedding-3-small's scale.
+        let (_, ev) = bank
+            .recall_evidence("kiwi", Some(&q), "m", 50, 30, false, 0.0)
+            .await;
+        assert!(ev[&near.id].meaning);
+        let e = &ev[&weak.id];
+        assert!(e.cosine.is_some() && e.matched.is_empty(), "{e:?}");
+        assert!(!e.meaning, "above the floor, under the admit: {e:?}");
+
+        // MiniLM's admit is its floor.
+        let (_, ev) = bank
+            .recall_evidence("kiwi", Some(&q), &minilm, 50, 30, false, 0.0)
+            .await;
+        assert!(ev[&small.id].meaning, "{:?}", ev[&small.id]);
     }
 
     #[tokio::test]
