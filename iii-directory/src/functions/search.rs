@@ -2124,7 +2124,13 @@ async fn benchmark_installed(deps: &Deps, capabilities: &[String]) -> BenchmarkO
     total
 }
 
-fn listed_ids(value: &Value) -> Result<Vec<String>, String> {
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct CatalogFunction {
+    namespace: String,
+    id: String,
+}
+
+fn listed_functions(value: &Value, namespace: &str) -> Result<Vec<CatalogFunction>, String> {
     let items = match value {
         Value::Array(items) => items,
         Value::Object(object) => object
@@ -2134,33 +2140,48 @@ fn listed_ids(value: &Value) -> Result<Vec<String>, String> {
             .ok_or_else(|| "catalog list response was malformed".to_string())?,
         _ => return Err("catalog list response was malformed".into()),
     };
-    let mut ids = items
+    let mut functions = items
         .iter()
-        .map(|item| {
-            item.as_str()
-                .or_else(|| {
-                    item.get("function_id")
-                        .or_else(|| item.get("id"))
-                        .or_else(|| item.get("name"))
-                        .and_then(Value::as_str)
-                })
-                .map(str::to_string)
-                .ok_or_else(|| "catalog list response was malformed".to_string())
+        .map(|item| -> Result<CatalogFunction, String> {
+            let id = item
+                .get("function_id")
+                .or_else(|| item.get("id"))
+                .or_else(|| item.get("name"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| "catalog list response was malformed".to_string())?;
+            let listed_namespace = item
+                .get("namespace")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "catalog list response was malformed".to_string())?;
+            Ok(CatalogFunction {
+                namespace: listed_namespace.to_string(),
+                id: id.to_string(),
+            })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let mut seen = HashSet::with_capacity(ids.len());
-    if ids.iter().any(|id| !seen.insert(id.as_str())) {
-        return Err("catalog list contained duplicate function id".into());
-    }
-    ids.retain(|id| !excluded_from_search(id));
-    Ok(ids)
+    functions.retain(|function| {
+        let builtin =
+            function.id.starts_with("engine::") || function.id.starts_with("configuration::");
+        !excluded_from_search(&function.id)
+            && if builtin {
+                function.namespace == "default"
+            } else {
+                function.namespace == namespace
+            }
+    });
+    functions.dedup();
+    Ok(functions)
 }
 
-/// Pool one `functions::info` batch response's entries by function id.
+/// Pool one `functions::info` batch response by namespace and function id.
 /// Each entry is either a FunctionDetail or `{ function_id, error }` for an
 /// id this caller cannot see; both carry the id, so association survives
 /// any ordering.
-fn pool_info_entries(response: &Value, pool: &mut HashMap<String, Value>) {
+fn pool_info_entries(
+    response: &Value,
+    namespace: &str,
+    pool: &mut HashMap<CatalogFunction, Value>,
+) {
     let Some(functions) = response.get("functions").and_then(Value::as_array) else {
         tracing::warn!("catalog info batch response was malformed; skipping batch");
         return;
@@ -2174,17 +2195,27 @@ fn pool_info_entries(response: &Value, pool: &mut HashMap<String, Value>) {
         else {
             continue;
         };
-        pool.insert(id.to_string(), entry.clone());
+        pool.insert(
+            CatalogFunction {
+                namespace: namespace.to_string(),
+                id: id.to_string(),
+            },
+            entry.clone(),
+        );
     }
 }
 
-/// Build the catalog from pooled per-function entries, in listed-id order.
+/// Build the catalog from pooled per-function entries, in listed order.
 /// Resilient by design: an errored, missing, or malformed entry only drops
 /// THAT function — the surviving contracts still make a working catalog.
-fn catalog_from_entries(ids: &[String], entries: &HashMap<String, Value>) -> Vec<ToolSchema> {
-    ids.iter()
-        .filter_map(|id| {
-            let entry = entries.get(id)?;
+fn catalog_from_entries(
+    functions: &[CatalogFunction],
+    entries: &HashMap<CatalogFunction, Value>,
+) -> Vec<ToolSchema> {
+    functions
+        .iter()
+        .filter_map(|function| {
+            let entry = entries.get(function)?;
             // Per-entry batch errors ({ function_id, error: "forbidden" |
             // "not_found" }) mean this caller cannot see the function.
             if entry.get("error").is_some() {
@@ -2203,7 +2234,7 @@ fn catalog_from_entries(ids: &[String], entries: &HashMap<String, Value>) -> Vec
                 return None;
             }
             Some(ToolSchema {
-                name: id.clone(),
+                name: function.id.clone(),
                 description: entry
                     .get("description")
                     .and_then(Value::as_str)
@@ -2230,29 +2261,41 @@ pub async fn fetch_catalog(iii: &IIIClient) -> Result<Vec<ToolSchema>, String> {
         })
         .await
         .map_err(|_| "catalog list failed".to_string())?;
-    let ids = listed_ids(&list)?;
+    let functions = listed_functions(&list, iii.namespace().as_deref().unwrap_or("default"))?;
     // Contracts arrive in `functions::info` batches (`function_ids`, engine
     // max 32 per call) fired concurrently — fan-out is bounded to
-    // ceil(ids/32) in-flight calls, each under the same per-call timeout.
+    // ceil(functions/32) in-flight calls, each under the same per-call timeout.
     let mut batches = tokio::task::JoinSet::new();
-    for chunk in ids.chunks(CATALOG_INFO_BATCH) {
-        let iii = iii.clone();
-        let chunk: Vec<String> = chunk.to_vec();
-        batches.spawn(async move {
-            iii.trigger(TriggerRequest {
-                function_id: "engine::functions::info".into(),
-                payload: json!({ "function_ids": chunk }),
-                action: None,
-                timeout_ms: Some(CATALOG_TIMEOUT_MS),
-            })
-            .await
-        });
+    let mut by_namespace = HashMap::<String, Vec<String>>::new();
+    for function in &functions {
+        by_namespace
+            .entry(function.namespace.clone())
+            .or_default()
+            .push(function.id.clone());
     }
-    let mut entries: HashMap<String, Value> = HashMap::with_capacity(ids.len());
+    for (namespace, ids) in by_namespace {
+        for chunk in ids.chunks(CATALOG_INFO_BATCH) {
+            let iii = iii.clone();
+            let namespace = namespace.clone();
+            let chunk = chunk.to_vec();
+            batches.spawn(async move {
+                let response = iii
+                    .trigger(TriggerRequest {
+                        function_id: "engine::functions::info".into(),
+                        payload: json!({ "function_ids": chunk, "namespace": namespace }),
+                        action: None,
+                        timeout_ms: Some(CATALOG_TIMEOUT_MS),
+                    })
+                    .await;
+                (namespace, response)
+            });
+        }
+    }
+    let mut entries = HashMap::with_capacity(functions.len());
     while let Some(joined) = batches.join_next().await {
         match joined {
-            Ok(Ok(response)) => pool_info_entries(&response, &mut entries),
-            Ok(Err(error)) => {
+            Ok((namespace, Ok(response))) => pool_info_entries(&response, &namespace, &mut entries),
+            Ok((_, Err(error))) => {
                 tracing::warn!(%error, "catalog info batch failed; skipping its functions")
             }
             Err(error) => {
@@ -2260,10 +2303,10 @@ pub async fn fetch_catalog(iii: &IIIClient) -> Result<Vec<ToolSchema>, String> {
             }
         }
     }
-    let catalog = catalog_from_entries(&ids, &entries);
+    let catalog = catalog_from_entries(&functions, &entries);
     // A listed-but-empty catalog means every batch failed: erroring keeps
     // the previous catalog live instead of activating an empty one.
-    if catalog.is_empty() && !ids.is_empty() {
+    if catalog.is_empty() && !functions.is_empty() {
         return Err("catalog info failed for every function".into());
     }
     Ok(catalog)
@@ -3791,10 +3834,14 @@ mod tests {
 
     #[test]
     fn catalog_entries_skip_errors_internals_and_missing_but_keep_order() {
-        let ids: Vec<String> = ["state::set", "gone::fn", "email::send", "hooks::internal"]
-            .into_iter()
-            .map(String::from)
-            .collect();
+        let functions: Vec<CatalogFunction> =
+            ["state::set", "gone::fn", "email::send", "hooks::internal"]
+                .into_iter()
+                .map(|id| CatalogFunction {
+                    namespace: "project".into(),
+                    id: id.into(),
+                })
+                .collect();
         let mut entries = HashMap::new();
         let mut batch_pool = HashMap::new();
         pool_info_entries(
@@ -3807,10 +3854,11 @@ mod tests {
                   "metadata": { "internal": true } },
                 { "description": "no id, skipped" },
             ]}),
+            "project",
             &mut batch_pool,
         );
         entries.extend(batch_pool);
-        let catalog = catalog_from_entries(&ids, &entries);
+        let catalog = catalog_from_entries(&functions, &entries);
         let names: Vec<&str> = catalog.iter().map(|tool| tool.name.as_str()).collect();
         // Listed order, minus the errored, internal, and id-less entries.
         assert_eq!(names, ["state::set", "email::send"]);
@@ -3822,9 +3870,69 @@ mod tests {
     #[test]
     fn malformed_batch_responses_pool_nothing() {
         let mut pool = HashMap::new();
-        pool_info_entries(&json!({ "nope": true }), &mut pool);
-        pool_info_entries(&json!("not an object"), &mut pool);
+        pool_info_entries(&json!({ "nope": true }), "project", &mut pool);
+        pool_info_entries(&json!("not an object"), "project", &mut pool);
         assert!(pool.is_empty());
+    }
+
+    #[test]
+    fn catalog_scopes_duplicate_ids_to_the_callable_namespace() {
+        let listed = json!({ "functions": [
+            { "function_id": "state::set", "namespace": "foreign" },
+            { "function_id": "state::set", "namespace": "project" },
+            { "function_id": "foreign::only", "namespace": "foreign" },
+            { "function_id": "project::only", "namespace": "project" },
+            { "function_id": "compose::add", "namespace": "default" },
+            { "function_id": "engine::queue::topic_stats", "namespace": "project" },
+            { "function_id": "engine::queue::topic_stats", "namespace": "default" },
+            { "function_id": "configuration::get", "namespace": "default" }
+        ] });
+        let functions = listed_functions(&listed, "project").unwrap();
+        assert_eq!(
+            functions,
+            [
+                ("project", "state::set"),
+                ("project", "project::only"),
+                ("default", "engine::queue::topic_stats"),
+                ("default", "configuration::get"),
+            ]
+            .into_iter()
+            .map(|(namespace, id)| CatalogFunction {
+                namespace: namespace.into(),
+                id: id.into(),
+            })
+            .collect::<Vec<_>>()
+        );
+
+        let mut entries = HashMap::new();
+        pool_info_entries(
+            &json!({ "functions": [
+                { "function_id": "state::set", "description": "local contract" },
+                { "function_id": "project::only", "description": "local only" }
+            ] }),
+            "project",
+            &mut entries,
+        );
+        pool_info_entries(
+            &json!({ "functions": [
+                { "function_id": "state::set", "description": "foreign contract" }
+            ] }),
+            "foreign",
+            &mut entries,
+        );
+        pool_info_entries(
+            &json!({ "functions": [
+                { "function_id": "engine::queue::topic_stats", "description": "builtin" },
+                { "function_id": "configuration::get", "description": "config builtin" }
+            ] }),
+            "default",
+            &mut entries,
+        );
+        let catalog = catalog_from_entries(&functions, &entries);
+        assert_eq!(catalog.len(), 4);
+        assert_eq!(catalog[0].description, "local contract");
+        assert!(!catalog.iter().any(|tool| tool.name == "foreign::only"));
+        assert!(!catalog.iter().any(|tool| tool.name == "compose::add"));
     }
 
     #[test]
