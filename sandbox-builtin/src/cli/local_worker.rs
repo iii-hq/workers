@@ -416,9 +416,9 @@ pub(crate) fn validate_source(
     // Whatever checked the bundle at install time, the
     // install dir is on the host filesystem — any local-FS-write
     // attacker (or a future bug that lets a bundle write to its own
-    // install dir) could modify ~/.iii/workers-bundle/{name}/iii.worker.yaml
-    // between install and start to introduce scripts.setup,
-    // scripts.install, or runtime.base_image. The permissive
+    // install dir) could modify the iii.worker.yaml in that install dir
+    // (Compose's package cache) between install and start to introduce
+    // scripts.setup, scripts.install, or runtime.base_image. The permissive
     // load_from_manifest path below would honor those fields. The
     // strict validator also enforces the 64 KiB manifest cap, which
     // defuses billion-laughs YAML expansion before serde_yaml sees it.
