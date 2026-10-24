@@ -6,7 +6,7 @@
 //!
 //! Sister to `sandbox_lifecycle_integration.rs` (tier-A, hermetic) and
 //! `sandbox_workflow_integration.rs` (tier-A workflow). This file boots
-//! a real microVM through the production adapters (`IiiWorkerLauncher`,
+//! a real microVM through the production adapters (`VmBootLauncher`,
 //! `ShellProtoRunner`, `SignalStopper`) and drives the handlers end-to-end.
 //!
 //! Same gating pattern as `vm_lifecycle_integration.rs`:
@@ -18,7 +18,7 @@
 //!   - Linux + KVM (or macOS with Hypervisor.framework entitlements)
 //!   - A built `iii-init` binary cross-compiled for the guest arch
 //!   - A rootfs with `/bin/sh`, `/bin/echo`, `/bin/cat` available
-//!   - `iii-worker` built with the `integration-vm` feature
+//!   - `sandbox-builtin` built with the `integration-vm` feature
 //!
 //! Gaps tracked here are post-merge work; the test bodies are skeleton
 //! stubs that emit a `[todo]` message and exit cleanly so the test count
@@ -75,7 +75,7 @@ fn full_surface_e2e_walks_all_14_triggers() {
     eprintln!(
         "[todo] sandbox_integration_e2e: full_surface_e2e_walks_all_14_triggers \
          has a rootfs at {} but the driver body is not yet implemented. \
-         Build out using IiiWorkerLauncher + ShellProtoRunner + SignalStopper, \
+         Build out using VmBootLauncher + ShellProtoRunner + SignalStopper, \
          install a SandboxGuard RAII helper for panic-safe teardown.",
         rootfs.display()
     );

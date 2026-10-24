@@ -621,9 +621,9 @@ fn insecure_registries(reference: &oci_client::Reference) -> Vec<String> {
 /// temp directory, so observers either see the fully-extracted rootfs or
 /// nothing at all. A SIGTERM / network failure / disk-full partway through
 /// extraction leaves an orphaned `.tmp-*` sibling that the next pull
-/// cleans up. The cache-hit check at
-/// `crates/iii-worker/src/cli/worker_manager/libkrun.rs:393` can therefore
-/// trust that `dest` existing with `bin/` means the rootfs is complete.
+/// cleans up. The cache-hit check (`rootfs_cache::is_populated`) can
+/// therefore trust that `dest` existing with `bin/` means the rootfs is
+/// complete.
 ///
 /// Atomicity scope is `dest` ONLY — callers can rely on
 /// `dest` either existing with the full rootfs or not existing. Sibling
@@ -1368,7 +1368,7 @@ mod tests {
 
     /// Regression for the ~/.iii/cache/ duplication bug: sandbox
     /// presets pass `iiidev/node:latest` (no registry prefix) while
-    /// managed workers pass `docker.io/iiidev/node:latest`. Without
+    /// worker VMs pass `docker.io/iiidev/node:latest`. Without
     /// canonicalization, both wrote to distinct slug dirs and pulled
     /// the same image twice.
     #[test]

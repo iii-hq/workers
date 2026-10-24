@@ -67,7 +67,7 @@ pub(crate) fn require_overlay_capable(has_embedded_init: bool) -> Result<(), San
 
 /// Build (or reuse) the read-only erofs image of `base_rootfs`, the guest's
 /// overlay lower. Written next to the cache dir (`<dir>.erofs`) and shared
-/// with managed workers on the same image; see `cli::erofs::ensure_base_erofs`.
+/// with worker VMs on the same image; see `cli::erofs::ensure_base_erofs`.
 pub(crate) async fn prepare_overlay_lower(base_rootfs: &Path) -> Result<PathBuf, SandboxError> {
     require_overlay_capable(iii_filesystem::init::has_init())?;
     let base = base_rootfs.to_path_buf();
@@ -85,11 +85,10 @@ pub(crate) async fn prepare_overlay_lower(base_rootfs: &Path) -> Result<PathBuf,
 /// `--rootfs-upper`, so iii-init uses an in-guest tmpfs upper that dies with
 /// the VM. The shared cache directory itself is never passed.
 ///
-/// Mirrors `worker_manager::libkrun::run_dev` arg surface. Flag-name
-/// alignment is not cosmetic: VmBootArgs declares `vcpus` / `ram` / `exec`,
-/// so the older `--cpus` / `--memory-mb` and missing `--exec` caused clap to
-/// reject the args, the child to exit instantly, and a 30s `shell.sock` wait
-/// that ended in an opaque S300.
+/// Flag names follow `VmBootArgs`, and that is not cosmetic: it declares
+/// `vcpus` / `ram` / `exec`, so the older `--cpus` / `--memory-mb` and missing
+/// `--exec` caused clap to reject the args, the child to exit instantly, and a
+/// 30s `shell.sock` wait that ended in an opaque S300.
 pub(crate) fn vm_boot_args(params: &BootParams, rootfs_lower: &Path) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         "--rootfs".into(),
@@ -152,10 +151,10 @@ pub(crate) fn env_stdin_frame(params: &BootParams) -> Result<Vec<u8>, SandboxErr
         .map_err(|e| SandboxError::BootFailed(format!("sandbox env: {e}")))
 }
 
-pub struct IiiWorkerLauncher;
+pub struct VmBootLauncher;
 
 #[async_trait::async_trait]
-impl VmLauncher for IiiWorkerLauncher {
+impl VmLauncher for VmBootLauncher {
     fn preflight(&self) -> Result<(), SandboxError> {
         require_overlay_capable(iii_filesystem::init::has_init())
     }
@@ -203,19 +202,11 @@ impl VmLauncher for IiiWorkerLauncher {
             tracing::debug!("boot_phase: codesign (skipped, cached)");
         }
 
-        // Mirrors `worker_manager::libkrun::run_dev` arg surface. Flag-name
-        // alignment is not cosmetic: VmBootArgs declares `vcpus` / `ram` /
-        // `exec`, so the older `--cpus` / `--memory-mb` and missing
-        // `--exec` caused clap to reject the args, the child to exit
-        // instantly, and a 30s `shell.sock` wait that ended in an opaque
-        // S300.
-        //
-        // Ensure `libkrunfw.<soname>` is discoverable by the loader.
-        // Managed workers call this at startup from
-        // worker_manager::libkrun and local_worker; the sandbox path
-        // skips it entirely. When sandbox-builtin ships with embed-libkrunfw,
-        // this extracts the embedded bytes to ~/.iii/lib/ on first use;
-        // otherwise it falls back to a GitHub-release download. Without
+        // Ensure `libkrunfw.<soname>` is discoverable by the loader, as
+        // local_worker does for worker VMs. When sandbox-builtin ships
+        // with embed-libkrunfw, this extracts the embedded bytes to
+        // ~/.iii/lib/ on first use; otherwise it needs a local libkrunfw
+        // (III_LIBKRUNFW_PATH, ~/.iii/lib or a system path). Without
         // this step, dlopen(libkrunfw.X.dylib) fails inside the spawned
         // __vm-boot subprocess, libkrun's vm.enter() returns "build
         // error: libkrunfw: load", shell_relay binds shell.sock briefly
@@ -257,7 +248,7 @@ impl VmLauncher for IiiWorkerLauncher {
         // lower; the shared cache itself is never handed to the guest, and
         // nothing is written into it (the embedded init serves /init.krun
         // from memory). Deliberately does NOT consult `III_ROOTFS_MODE`:
-        // the managed-worker legacy opt-out would re-open the shared
+        // the worker VMs' legacy opt-out would re-open the shared
         // writable root.
         let t_erofs = Instant::now();
         let rootfs_lower = prepare_overlay_lower(&params.base_rootfs).await?;
@@ -1055,7 +1046,7 @@ mod sandbox_boot_shape_tests {
     #[test]
     fn launcher_preflight_refuses_without_embedded_init() {
         assert!(matches!(
-            IiiWorkerLauncher.preflight(),
+            VmBootLauncher.preflight(),
             Err(SandboxError::BootFailed(_))
         ));
     }
@@ -1063,7 +1054,7 @@ mod sandbox_boot_shape_tests {
     #[cfg(feature = "embed-init")]
     #[test]
     fn launcher_preflight_accepts_embedded_init() {
-        assert!(IiiWorkerLauncher.preflight().is_ok());
+        assert!(VmBootLauncher.preflight().is_ok());
     }
 
     /// The joint the shape tests above cannot see: the sandbox args, through

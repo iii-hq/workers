@@ -223,7 +223,7 @@ pub fn register_all(
     config: Arc<SandboxConfig>,
     registry: Arc<SandboxRegistry>,
 ) -> Vec<FunctionRef> {
-    let launcher = Arc::new(crate::sandbox_daemon::adapters::IiiWorkerLauncher);
+    let launcher = Arc::new(crate::sandbox_daemon::adapters::VmBootLauncher);
     let runner = Arc::new(crate::sandbox_daemon::adapters::ShellProtoRunner::new(
         config.max_exec_timeout_ms,
     ));
@@ -370,7 +370,7 @@ fn register_sandbox_create(
     iii: &iii_sdk::IIIClient,
     registry: Arc<crate::sandbox_daemon::SandboxRegistry>,
     cfg: Arc<crate::sandbox_daemon::config::SandboxConfig>,
-    launcher: Arc<crate::sandbox_daemon::adapters::IiiWorkerLauncher>,
+    launcher: Arc<crate::sandbox_daemon::adapters::VmBootLauncher>,
 ) -> FunctionRef {
     iii.register_function(
         "sandbox-builtin::create",

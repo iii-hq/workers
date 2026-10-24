@@ -1098,7 +1098,7 @@ mod tests {
     /// easily (the `run` entry point opens the path itself), so we
     /// duplicate just enough of the dispatch glue here to prove the
     /// message-handling logic is correct. Integration coverage for
-    /// the full virtio-console path lives in iii-worker's integration
+    /// the full virtio-console path lives in sandbox-builtin's VM
     /// tests.
     fn run_over_socketpair() {
         ensure_test_reaper();
@@ -1275,7 +1275,7 @@ mod tests {
     // all six plan cases exercise dispatcher semantics (spawn, I/O
     // routing, signal delivery, concurrency, exit-code encoding).
     // Full VM-level coverage belongs behind the `integration-vm`
-    // feature flag in `iii-worker` and is tracked as follow-up.
+    // feature flag in `sandbox-builtin` and is tracked as follow-up.
 
     /// Boot the dispatcher glue over a fresh socketpair. Returns a
     /// blocking host-side reader and a writable host-side sender the

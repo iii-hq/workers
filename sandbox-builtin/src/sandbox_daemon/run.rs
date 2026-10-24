@@ -337,7 +337,7 @@ pub(super) fn register(
     iii: &iii_sdk::IIIClient,
     registry: Arc<SandboxRegistry>,
     cfg: Arc<SandboxConfig>,
-    launcher: Arc<crate::sandbox_daemon::adapters::IiiWorkerLauncher>,
+    launcher: Arc<crate::sandbox_daemon::adapters::VmBootLauncher>,
     runner: Arc<crate::sandbox_daemon::adapters::ShellProtoRunner>,
     fs_runner: Arc<dyn FsRunner>,
     stopper: Arc<crate::sandbox_daemon::adapters::SignalStopper>,

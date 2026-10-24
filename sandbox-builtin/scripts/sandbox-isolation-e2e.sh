@@ -2,7 +2,7 @@
 # End-to-end check that sandboxes never write into the shared image cache.
 #
 # Drives the production path: an isolated engine, the sandbox-builtin adapter
-# (handle_create + IiiWorkerLauncher, config from the engine's configuration
+# (handle_create + VmBootLauncher, config from the engine's configuration
 # worker) and `iii trigger` for every call, on a real image pulled from its
 # registry. The default image is Red Hat UBI 9:
 # /usr/bin, /usr/lib and /root ship without owner write bits and

@@ -120,8 +120,8 @@ pub fn validate_bundle_manifest(
     // runtime.base_image may name any OCI image ref — the rootfs is
     // publisher-chosen, same trust context as scripts.start (which we
     // already execute). First-gate the characters here so a bad ref
-    // fails at install time instead of silently falling back to the
-    // kind default at start (see project.rs::load_from_manifest).
+    // fails here instead of silently falling back to the kind default
+    // (see project.rs::load_from_manifest).
     if let Some(img) = doc.get("runtime").and_then(|r| r.get("base_image")) {
         let plausible = img
             .as_str()

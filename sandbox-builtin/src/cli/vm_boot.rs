@@ -37,8 +37,8 @@ pub struct VmBootArgs {
     pub rootfs_upper: Option<String>,
 
     /// Serve `--rootfs` read-only over virtio-fs: every guest write through
-    /// `/dev/root` fails with EROFS. The sandbox daemon sets this for its
-    /// per-sandbox trampoline; managed workers leave it off.
+    /// `/dev/root` fails with EROFS. The sandbox adapter sets this for its
+    /// per-sandbox trampoline; worker VMs leave it off.
     #[arg(long)]
     pub rootfs_readonly: bool,
 
@@ -312,8 +312,8 @@ pub fn rewrite_localhost(s: &str, gateway_ip: &str) -> String {
 /// Why this matters: libkrun starts iii-init (PID 1) with whatever
 /// env we pass to `set_env`, and only that. When `args.env` doesn't
 /// carry `PATH`, PID 1 has none — and neither does any process it
-/// spawns (the worker boot script, the shell dispatcher, `iii worker
-/// exec` children). dash's compile-time default fills `$PATH`
+/// spawns (the worker boot script, the shell dispatcher, `sandbox::exec`
+/// children). dash's compile-time default fills `$PATH`
 /// internally so `node` typed at a shell prompt still works, but
 /// **dash does not mark that internal default as exported**. So a
 /// `#!/usr/bin/env <prog>` shebang re-execs through `/usr/bin/env`,
@@ -661,7 +661,7 @@ fn boot_vm(
         if let Some(upper) = args.rootfs_upper.clone() {
             // Advisory flock guards the rw ext4 upper against a SECOND VM
             // attaching it concurrently (ext4 has no multi-mount protection →
-            // silent corruption). kill_stale_worker covers the sequential
+            // silent corruption). The adapter stops the old VM before a
             // restart; this catches a concurrent same-worker start. The lock
             // fd is leaked so the lock is held for the VM's whole lifetime and
             // released automatically when this __vm-boot process exits.
@@ -674,9 +674,9 @@ fn boot_vm(
                 .open(&upper)
             {
                 Ok(lock) => {
-                    // Bounded retry: on a restart, kill_stale_worker SIGKILLs the
-                    // old __vm-boot but returns before the kernel has reaped it
-                    // and dropped its leaked lock fd, so the first LOCK_NB here
+                    // Bounded retry: on a restart, the old __vm-boot can be
+                    // signalled but not yet reaped by the kernel, which has
+                    // not yet dropped its leaked lock fd, so the first LOCK_NB here
                     // can lose the race against the dying VM. Retry for ~2s
                     // before giving up, so a normal restart doesn't surface as a
                     // spurious "already attached" that leaves the worker down. A
@@ -765,7 +765,7 @@ fn boot_vm(
     // closure so `shell_port_env` reflects whether the host relay
     // actually started. Otherwise a failed `shell_relay::spawn` still
     // sets III_SHELL_PORT and the guest dispatcher spins on a port
-    // nobody reads, silently breaking `iii worker exec` for the VM's
+    // nobody reads, silently breaking `sandbox::exec` for the VM's
     // lifetime. Fail-closed: on relay spawn failure, skip the env var
     // and drop the attached fd so the VM boots without the port.
     let mut shell_port_env = false;

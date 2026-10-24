@@ -7,10 +7,10 @@
 //! Cross-module coordination for child process exits.
 //!
 //! iii-init is PID 1 and reaps every exited process via `waitpid(-1)`
-//! inside `supervisor::run_legacy` / `supervisor::run_supervised`.
+//! inside `supervisor::run_worker`.
 //! Without coordination, that loop consumes exit codes belonging to
 //! **other** subsystems in iii-init — notably `shell_dispatcher`,
-//! which spawns its own short-lived children for `iii worker exec`
+//! which spawns its own short-lived children for `sandbox::exec`
 //! and needs their exit statuses to emit terminal `Exited` frames.
 //!
 //! Design: a process-wide registry of `pid → mpsc::Sender<i32>`.

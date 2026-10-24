@@ -3,7 +3,7 @@
 //! `handle_create` used to hand the launcher the shared, cached image
 //! directory itself as the VM root
 //! (`BootParams.rootfs = rootfs_cache::resolve_cached(..)`), and
-//! `IiiWorkerLauncher` passed it verbatim as `__vm-boot --rootfs`, with no
+//! `VmBootLauncher` passed it verbatim as `__vm-boot --rootfs`, with no
 //! `--rootfs-mode overlay` / read-only lower. Two sandboxes (from two
 //! different callers) therefore shared one writable root.
 //!

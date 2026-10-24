@@ -16,7 +16,7 @@ use super::rootfs::clone_rootfs;
 const PREPARED_MARKER_VERSION: &str = "workspace-copy-in-v1";
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Shared helpers (extracted from dev.rs)
+// Shared helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
 fn prepared_marker_matches_current_workspace(marker: &Path) -> bool {
@@ -37,11 +37,10 @@ fn write_run_script(managed_dir: &Path, overlay: bool, script: &str) -> std::io:
 
 /// Best-effort read of `resources.cpus`/`resources.memory` for VM sizing.
 /// Lenient by design: any read/parse/shape failure falls back to the defaults
-/// (2 vCPUs, 2048 MiB) — strictness lives in the add/start validation and
-/// `worker::validate`, not in this sizing probe. Backed by the typed
-/// [`super::worker_manifest::WorkerManifest`] so add, start, and validate all
-/// read resources through one schema (previously this used the `serde_yml`
-/// fork while everything else used `serde_yaml`).
+/// (2 vCPUs, 2048 MiB) — strictness lives in the start validation, not in
+/// this sizing probe. Backed by the typed
+/// [`super::worker_manifest::WorkerManifest`] so validation and sizing read
+/// resources through one schema.
 pub fn parse_manifest_resources(manifest_path: &Path) -> (u32, u32) {
     let default = (2, 2048);
     let Ok(Some(doc)) = super::project::read_manifest_doc(manifest_path) else {
@@ -245,10 +244,8 @@ pub fn build_local_env(
     let mut env = HashMap::new();
     env.insert("III_ENGINE_URL".to_string(), engine_url.to_string());
     env.insert("III_URL".to_string(), engine_url.to_string());
-    // The config.yaml entry name, so SDKs can self-report the managed
-    // identity. Engine truth (`iii worker status`/`list`, MOT-3931) matches
-    // connections by this name; a worker that reports the SDK's
-    // `hostname:pid` fallback instead reads as "not registered" forever.
+    // The caller's worker name, so the SDK registers under it instead of
+    // its `hostname:pid` fallback.
     env.insert("III_WORKER_NAME".to_string(), worker_name.to_string());
     for (key, value) in project_env {
         if key != "III_ENGINE_URL" && key != "III_URL" && key != "III_WORKER_NAME" {
@@ -416,8 +413,8 @@ pub(crate) fn validate_source(
     }
 
     // 1a. Bundle workers: re-run the strict manifest validator before
-    // we touch the publisher-controlled YAML via load_from_manifest. The
-    // install-time validator (handle_bundle_add) already ran, but the
+    // we touch the publisher-controlled YAML via load_from_manifest.
+    // Whatever checked the bundle at install time, the
     // install dir is on the host filesystem — any local-FS-write
     // attacker (or a future bug that lets a bundle write to its own
     // install dir) could modify ~/.iii/workers-bundle/{name}/iii.worker.yaml
@@ -669,11 +666,9 @@ pub(crate) async fn start_worker_impl(
     let manifest_path = project_path.join(WORKER_MANIFEST);
     let (vcpus, ram) = if is_bundle {
         // Strict clamp at start-time so a publisher-controlled manifest
-        // can't boot a libkrun guest with attacker-chosen resources.
-        // Install-time clamp (handle_bundle_add) only emits a WARN
-        // event; the actual VM boot still re-reads the manifest from
-        // the install dir, which is exactly what a malicious bundle
-        // counts on.
+        // can't boot a libkrun guest with attacker-chosen resources:
+        // the VM boot re-reads the manifest from the install dir, which
+        // may have changed since install.
         match super::bundle_download::parse_bundle_resources(
             project_path,
             super::bundle_download::ResourceCaps::default(),

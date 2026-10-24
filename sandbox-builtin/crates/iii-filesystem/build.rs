@@ -31,7 +31,7 @@ fn main() {
         // process-group kill fix ended up shipped-but-not-embedded: the
         // linux-musl iii-init was rebuilt by `make sandbox`, but this
         // build.rs never re-ran, the OUT_DIR snapshot stayed frozen at
-        // a pre-fix copy, and iii-worker embedded the stale bytes.
+        // a pre-fix copy, and the stale bytes were embedded.
         //
         // `rerun-if-changed` accepts a path that doesn't exist yet —
         // cargo tracks the (non-)existence and reruns when the file
