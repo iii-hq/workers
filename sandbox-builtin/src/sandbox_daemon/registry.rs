@@ -5,6 +5,7 @@ use crate::sandbox_daemon::errors::SandboxError;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -78,6 +79,19 @@ pub struct SandboxRegistry {
     /// ~28 call sites. 0 is treated as 1 by `begin_exec`, so a `Default`
     /// registry serializes rather than deadlocking.
     max_exec_in_flight: u32,
+    /// Creates past the `max_concurrent_sandboxes` check whose sandbox is
+    /// not inserted yet; see [`SandboxRegistry::reserve`].
+    booting: Arc<AtomicUsize>,
+}
+
+/// A create's claim on one of `max_concurrent_sandboxes`, from the cap check
+/// until its sandbox is inserted or its boot fails. Released on drop.
+pub struct CreateSlot(Arc<AtomicUsize>);
+
+impl Drop for CreateSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl Default for SandboxRegistry {
@@ -96,7 +110,20 @@ impl SandboxRegistry {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
             max_exec_in_flight: max,
+            booting: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Claim a sandbox slot under `cap`, counting the creates still booting:
+    /// a count taken before a boot and an insert after it let every parallel
+    /// create through. `None` at the cap.
+    pub async fn reserve(&self, cap: usize) -> Option<CreateSlot> {
+        let map = self.inner.lock().await;
+        if map.len() + self.booting.load(Ordering::SeqCst) >= cap {
+            return None;
+        }
+        self.booting.fetch_add(1, Ordering::SeqCst);
+        Some(CreateSlot(self.booting.clone()))
     }
 
     pub async fn insert(&self, state: SandboxState) {

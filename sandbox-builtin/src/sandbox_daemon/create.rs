@@ -109,12 +109,16 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
     mut on_event: F,
 ) -> Result<CreateResponse, SandboxError> {
     let t_create = Instant::now();
-    if registry.count().await >= cfg.max_concurrent_sandboxes as usize {
+    // Held to the insert below, so parallel creates cannot all pass the cap.
+    let Some(_slot) = registry
+        .reserve(cfg.max_concurrent_sandboxes as usize)
+        .await
+    else {
         return Err(SandboxError::ResourceLimit(format!(
             "max_concurrent_sandboxes ({}) reached",
             cfg.max_concurrent_sandboxes
         )));
-    }
+    };
 
     // `check_allowlist` already proved the image is known, so
     // `resolve_image` cannot miss here.
