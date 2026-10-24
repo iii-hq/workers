@@ -61,12 +61,17 @@ pub struct WorkerVms {
     slots: Mutex<HashMap<String, Slot>>,
     /// Names each `start` call in its `Slot::Preparing` reservation.
     starts: AtomicU64,
+    /// Notified as each `start` drops its reservation, for a `stop` that
+    /// waits out the build it cancelled.
+    unreserved: tokio::sync::Notify,
 }
 
 #[derive(Clone)]
 enum Slot {
-    /// `start` call `.1` is building the VM that will boot as instance `.0`.
-    Preparing(u64, u64),
+    /// `start` call `.1` is building the VM that will boot as instance `.0`;
+    /// `.2` once `worker::stop` cancelled it. It stays until that build
+    /// returns, so no other build or `destroy` of the key overlaps it.
+    Preparing(u64, u64, bool),
     Booted(Arc<Vm>),
     /// `destroy` is removing the state of what was this instance.
     Destroying(u64),
@@ -104,6 +109,7 @@ impl WorkerVms {
             roots,
             slots: Mutex::default(),
             starts: AtomicU64::new(0),
+            unreserved: tokio::sync::Notify::new(),
         }
     }
 
@@ -162,7 +168,7 @@ impl WorkerVms {
             let mut slots = self.slots();
             refuse_busy(&id, slots.get(&id))?;
             let next = stored_instance(&self.base.join(&id))? + 1;
-            slots.insert(id.clone(), Slot::Preparing(next, start));
+            slots.insert(id.clone(), Slot::Preparing(next, start, false));
         }
         let _unreserve = Unreserve(self, &id, start);
         validate_source(&dir, package, run_override).map_err(SandboxError::SourceRejected)?;
@@ -194,15 +200,14 @@ impl WorkerVms {
         // Held to the insert, so two launches of one key cannot both spawn.
         let mut slots = self.slots();
         match (slots.get(&id), start) {
-            (Some(Slot::Preparing(_, held)), Some(start)) if *held == start => {}
+            (slot, None) => refuse_busy(&id, slot)?,
+            (Some(Slot::Preparing(_, held, false)), Some(start)) if *held == start => {}
             // `worker::stop` cancelled the reservation while the VM was being built.
-            (slot, Some(_)) => {
-                refuse_busy(&id, slot)?;
+            _ => {
                 return Err(SandboxError::BootFailed(
                     "worker::stop cancelled this start before its VM booted".to_string(),
                 ));
             }
-            (slot, None) => refuse_busy(&id, slot)?,
         }
         let instance = stored_instance(&dir)? + 1;
         let (console, lifeline, mut child) = spawn(&dir, instance, cmd).map_err(|e| {
@@ -271,25 +276,37 @@ impl WorkerVms {
 
     /// SIGTERM, then SIGKILL after `grace_ms`; `grace_ms: 0` kills at once.
     /// Returns the final status; an exited VM returns it as is, and one still
-    /// preparing is cancelled before it boots.
+    /// preparing is cancelled before it boots, once its build has ended.
     pub async fn stop(&self, req: WorkerStopRequest) -> Result<WorkerStatus, SandboxError> {
         self.authorize(&req.auth)?;
-        // A boot still preparing is cancelled: its `start` finds the reservation
-        // gone and never launches, so the start retried after this boots the only VM.
-        {
-            let mut slots = self.slots();
-            if matches!(slots.get(&req.vm_id), Some(Slot::Preparing(i, _)) if *i == req.instance) {
-                slots.remove(&req.vm_id);
-                return Ok(WorkerStatus {
-                    vm_id: req.vm_id,
-                    instance: req.instance,
-                    state: State::Stopped,
-                    exit_code: None,
-                    signal: None,
-                    started_at_ms: 0,
-                    ended_at_ms: Some(now_ms()),
-                });
+        // A boot still preparing is cancelled: its `start` never launches, and
+        // this returns once that build has ended, so neither the start retried
+        // after it nor a `destroy` writes the VM's state alongside it.
+        let cancelled = match self.slots().get_mut(&req.vm_id) {
+            Some(Slot::Preparing(i, start, cancelled)) if *i == req.instance => {
+                *cancelled = true;
+                Some(*start)
             }
+            _ => None,
+        };
+        if let Some(start) = cancelled {
+            loop {
+                let unreserved = self.unreserved.notified();
+                if !matches!(self.slots().get(&req.vm_id), Some(Slot::Preparing(_, s, _)) if *s == start)
+                {
+                    break;
+                }
+                unreserved.await;
+            }
+            return Ok(WorkerStatus {
+                vm_id: req.vm_id,
+                instance: req.instance,
+                state: State::Stopped,
+                exit_code: None,
+                signal: None,
+                started_at_ms: 0,
+                ended_at_ms: Some(now_ms()),
+            });
         }
         let vm = booted(&req.vm_id, self.lookup(&req.vm_id, req.instance)?)?;
         if vm.ended.borrow().is_none() {
@@ -512,10 +529,12 @@ fn source_parts(source: &WorkerSource) -> (Option<&str>, &str, Option<&str>) {
 fn booted(vm_id: &str, slot: Slot) -> Result<Arc<Vm>, SandboxError> {
     match slot {
         Slot::Booted(vm) => Ok(vm),
-        Slot::Preparing(instance, _) | Slot::Destroying(instance) => Err(SandboxError::StateBusy {
-            vm_id: vm_id.to_string(),
-            instance,
-        }),
+        Slot::Preparing(instance, ..) | Slot::Destroying(instance) => {
+            Err(SandboxError::StateBusy {
+                vm_id: vm_id.to_string(),
+                instance,
+            })
+        }
     }
 }
 
@@ -530,23 +549,25 @@ fn refuse_busy(vm_id: &str, slot: Option<&Slot>) -> Result<(), SandboxError> {
     }
 }
 
-/// Drops `start`'s `Preparing` entry if it never launched (an error, or the
-/// call was dropped), so the key stays startable.
+/// Drops `start`'s `Preparing` entry if it never launched (an error, a
+/// cancel, or the call was dropped), so the key stays startable.
 struct Unreserve<'a>(&'a WorkerVms, &'a str, u64);
 
 impl Drop for Unreserve<'_> {
     fn drop(&mut self) {
         let mut slots = self.0.slots();
-        if matches!(slots.get(self.1), Some(Slot::Preparing(_, start)) if *start == self.2) {
+        if matches!(slots.get(self.1), Some(Slot::Preparing(_, start, _)) if *start == self.2) {
             slots.remove(self.1);
         }
+        drop(slots);
+        self.0.unreserved.notify_waiters();
     }
 }
 
 impl Slot {
     fn instance(&self) -> u64 {
         match self {
-            Slot::Preparing(instance, _) | Slot::Destroying(instance) => *instance,
+            Slot::Preparing(instance, ..) | Slot::Destroying(instance) => *instance,
             Slot::Booted(vm) => vm.instance,
         }
     }
@@ -993,32 +1014,42 @@ mod tests {
     }
 
     /// Compose's S502 stop-and-retry against a start still preparing (one whose
-    /// caller is gone): the stop cancels it, its build then launches nothing,
-    /// and the retry boots the only VM.
+    /// caller is gone): the stop cancels it and returns only once its build
+    /// has ended, so the retry never builds into the same state alongside it.
     #[tokio::test]
     async fn stop_cancels_a_start_still_preparing() {
         let t = tempfile::tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let id = vm_id("k");
-        vms.slots().insert(id.clone(), Slot::Preparing(1, 7));
+        // Start call 7, still building.
+        vms.slots().insert(id.clone(), Slot::Preparing(1, 7, false));
+        let build = Unreserve(&vms, &id, 7);
         assert_eq!(
             code(vms.launch("k", sh("exit 0"), Vec::new(), None)),
             "S502"
         );
 
-        let stopped = vms.stop(stop_req("t", &id, 1, 0)).await.unwrap();
-        assert!(matches!(stopped.state, State::Stopped), "{stopped:?}");
-        assert_eq!(stopped.instance, 1);
-        // The cancelled start's build ends.
-        let cancelled = vms.launch("k", sh("sleep 30"), Vec::new(), Some(7));
-        assert_eq!(code(cancelled), "S300");
-        let retried = vms.launch("k", sh("sleep 30"), Vec::new(), None).unwrap();
-        assert_eq!(retried.instance, 1);
+        let stop = vms.stop(stop_req("t", &id, 1, 0));
+        tokio::pin!(stop);
+        let early = tokio::time::timeout(Duration::from_millis(200), &mut stop).await;
+        assert!(early.is_err(), "stop returned while the build still ran");
+        // Meanwhile neither a retry nor a destroy touches the state.
         assert_eq!(
-            code(vms.launch("k", sh("sleep 30"), Vec::new(), Some(7))),
+            code(vms.launch("k", sh("exit 0"), Vec::new(), None)),
             "S502"
         );
+        assert_eq!(code(vms.destroy(destroy_req("t", "k"))), "S502");
 
+        // The cancelled build ends without a VM.
+        let cancelled = vms.launch("k", sh("sleep 30"), Vec::new(), Some(7));
+        assert_eq!(code(cancelled), "S300");
+        drop(build);
+        let stopped = stop.await.unwrap();
+        assert!(matches!(stopped.state, State::Stopped), "{stopped:?}");
+        assert_eq!(stopped.instance, 1);
+
+        let retried = vms.launch("k", sh("sleep 30"), Vec::new(), None).unwrap();
+        assert_eq!(retried.instance, 1);
         vms.stop(stop_req("t", &id, 1, 0)).await.unwrap();
     }
 

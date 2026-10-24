@@ -2,7 +2,8 @@
 fn main() {
     if let Err(e) = run() {
         eprintln!("iii-init: {e}");
-        std::process::exit(1);
+        // Through the exit-code ioctl, or `__vm-boot` exits 0 on a boot failure.
+        iii_init::supervisor::sync_and_exit(1);
     }
 }
 

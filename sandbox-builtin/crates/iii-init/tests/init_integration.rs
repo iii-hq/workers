@@ -49,6 +49,23 @@ fn etc_hosts_format_maps_localhost_to_gateway() {
     );
 }
 
+/// A boot failure must leave through `sync_and_exit`: its exit-code ioctl is
+/// how the code reaches the host. With a plain `process::exit`, `__vm-boot`
+/// exits 0, and a VM that failed to boot reads as a clean exit.
+#[test]
+fn main_reports_a_boot_failure_through_the_exit_code_ioctl() {
+    let source = include_str!("../src/main.rs");
+    let end = source
+        .find("#[cfg(not(target_os = \"linux\"))]")
+        .expect("the non-Linux main follows the Linux one");
+    let linux_main = &source[..end];
+    assert!(
+        linux_main.contains("supervisor::sync_and_exit(1)"),
+        "{linux_main}"
+    );
+    assert!(!linux_main.contains("process::exit"), "{linux_main}");
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
     use iii_init::error::InitError;
