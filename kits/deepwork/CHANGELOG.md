@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.1
+
+- A card's scope includes its fallout: edits outside `Files:` and `Tests:` that only keep the project consistent with the card's change and add no behaviour (another use of a name it renamed, removed or re-typed, a regenerated golden or snapshot, a test or schema registry entry). The code phase finds and updates other uses of a name it changes, the batch worker may repair fallout on a retry, and review accepts a path outside the union whose whole diff is fallout, recording it in `checks`; anything else outside the union still fails, as does a weakened assertion. In run KAN-456, three batches whose checks were all green failed on scope alone (a schema registry, its goldens, a test fixture) until the orchestrator widened every card by comment; each cost a repair round.
+
 ## 0.5.0
 
 - Dev cards run one Code phase each. The existing wave is the batch boundary: integrate successful cards, write their regression tests together, then verify and review the combined result. `Tests:` replaces `Test first:`; test-first proof is no longer required. Plain reading/research cards keep their existing flow.
