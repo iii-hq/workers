@@ -449,9 +449,15 @@ impl WorkerVms {
             )));
         }
         let roots: Vec<_> = self.roots.iter().map(|r| r.display().to_string()).collect();
+        let roots = roots.join(", ");
+        if let Err(e) = Path::new(host_path).canonicalize() {
+            return Err(SandboxError::SourceRejected(format!(
+                "host_path {host_path} cannot be read ({e}); it must exist under the host \
+                 roots [{roots}] (III_SANDBOX_HOST_ROOTS)"
+            )));
+        }
         Err(SandboxError::SourceRejected(format!(
-            "host_path {host_path} is outside the host roots [{}] (III_SANDBOX_HOST_ROOTS)",
-            roots.join(", ")
+            "host_path {host_path} is outside the host roots [{roots}] (III_SANDBOX_HOST_ROOTS)"
         )))
     }
 }
@@ -1064,6 +1070,22 @@ mod tests {
             assert!(msg.contains("III_SANDBOX_HOST_ROOTS"), "{msg}");
             assert!(msg.contains(needle), "{msg}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_missing_host_path_says_so_not_outside_the_roots() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let err = prepare_err(
+            &vms(t, Some("t"), vec![t.into()]),
+            "t",
+            local(&t.join("gone")),
+        )
+        .await;
+        let msg = err.to_string();
+        assert_eq!(err.code().as_str(), "S501", "{msg}");
+        assert!(msg.contains("cannot be read"), "{msg}");
+        assert!(!msg.contains("is outside"), "{msg}");
     }
 
     #[test]

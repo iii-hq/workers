@@ -885,8 +885,7 @@ fn boot_vm(
             return Err(format!(
                 "No init binary available. /init.krun not found in rootfs '{}' \
                  and no init binary is embedded in this build.\n\
-                 Hint: Run `iii worker dev` which auto-provisions the init binary, \
-                 or rebuild with --features embed-init.",
+                 Hint: rebuild sandbox-builtin with --features embed-init.",
                 args.rootfs
             ));
         }
@@ -1096,7 +1095,7 @@ fn boot_vm(
             Err(e) => {
                 eprintln!(
                     "warning: shell relay failed to start ({e}). \
-                     `iii worker exec` disabled; VM boots normally."
+                     sandbox exec disabled; VM boots normally."
                 );
                 // `host_end` was moved into `shell_relay::spawn` and is
                 // dropped on its Err path. Close our guest half so we

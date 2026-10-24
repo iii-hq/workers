@@ -387,7 +387,12 @@ impl SandboxError {
                 (Some(json!({ "vm_id": vm_id, "instance": found })), None)
             }
             Self::SourceRejected(_) => (None, None),
-            Self::VmNotFound(_) => (None, Some("the adapter restarted; start the VM again")),
+            Self::VmNotFound(_) => (
+                None,
+                Some(
+                    "destroyed, never started on this adapter, or lost in an adapter restart; start the VM again",
+                ),
+            ),
             Self::Unauthorized => (
                 None,
                 Some("call worker::* through Compose, which passes the token"),
@@ -753,7 +758,9 @@ mod tests {
             (
                 SandboxError::VmNotFound("v".into()),
                 "no VM v on this adapter",
-                Some("the adapter restarted; start the VM again"),
+                Some(
+                    "destroyed, never started on this adapter, or lost in an adapter restart; start the VM again",
+                ),
             ),
             (
                 SandboxError::Unauthorized,

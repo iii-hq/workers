@@ -198,7 +198,7 @@ fn maybe_spawn_shell_dispatcher() {
         None => {
             eprintln!(
                 "iii-init: warning: III_SHELL_PORT={port_name} but no matching port \
-                 in /sys/class/virtio-ports. `iii worker exec` disabled for this VM."
+                 in /sys/class/virtio-ports. sandbox exec disabled for this VM."
             );
         }
     }
