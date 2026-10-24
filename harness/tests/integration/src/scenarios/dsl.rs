@@ -745,13 +745,7 @@ impl Generation {
     /// Capture a runtime value from this generation's matched request: the
     /// regex's first group is stored under `name`, and later frames may echo
     /// it as `[[cap:<name>]]` — e.g. a `sub_…` subscription id from a
-    /// registration function_result in the history.
-    ///
-    /// Authored by no checked-in fixture right now (INT-008, the scenario the
-    /// serve-time capture engine was built for, died with the lineage
-    /// unregister grant); the engine stays tested in `types::script`, and this
-    /// remains its authoring surface for the next runtime-id scenario.
-    #[allow(dead_code)]
+    /// registration function_result in the history (INT-041).
     pub(super) fn capture(mut self, name: &str, pattern: &str) -> Self {
         self.captures.push((name.to_string(), pattern.to_string()));
         self
