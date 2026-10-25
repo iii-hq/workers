@@ -518,6 +518,8 @@ export interface CandidateCommit {
   paths: { path: string; change: string }[]
   /** What runs the change: worker names, `kits/<name>`, other top-level paths. */
   units?: string[]
+  /** Other units whose build reads the changed code. */
+  dependents?: string[]
   patch: string
   patch_digest: string
 }

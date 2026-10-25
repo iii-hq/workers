@@ -172,12 +172,32 @@ pub struct CandidateCommitV1 {
     pub base_sha: String,
     pub candidate_sha: String,
     pub paths: Vec<CandidatePathV1>,
-    /// What runs the change: see [`changed_units`].
+    /// The units the change touches: see [`changed_units`].
     #[serde(default)]
     pub units: Vec<String>,
+    /// Other units whose build reads changed code: see [`changed_units`].
+    #[serde(default)]
+    pub dependents: Vec<String>,
     /// `git diff --binary base candidate`.
     pub patch: String,
     pub patch_digest: String,
+}
+
+impl CandidateCommitV1 {
+    /// The workers a run measured the change in: those of its units and
+    /// dependents that `built` (the validation's commit-built workers) holds.
+    pub fn measured_in(&self, built: &std::collections::BTreeSet<String>) -> Vec<String> {
+        let mut measured: Vec<String> = self
+            .units
+            .iter()
+            .chain(&self.dependents)
+            .filter(|unit| built.contains(*unit))
+            .cloned()
+            .collect();
+        measured.sort();
+        measured.dedup();
+        measured
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -776,78 +796,166 @@ const SHARED: [&str; 2] = ["crates", "packages"];
 /// Paths outside any worker that run nowhere.
 const DOCUMENTATION: [&str; 3] = ["docs", "specs", "tech-specs"];
 
-/// What a change at `sha` runs in: each top-level directory it touches (a
-/// worker's name), each kit as `kits/<name>`, and every directory built with
-/// a shared crate or package it touches, transitively. Documentation outside
-/// them runs nowhere.
+/// The unit a repository path belongs to: `crates/<c>`, `packages/<p>` and
+/// `kits/<k>` for the shared and kit directories, else its top-level name.
+/// `None` for documentation outside them, which runs nowhere.
+pub fn unit_of(path: &str) -> Option<String> {
+    let (top, rest) = path.split_once('/').unwrap_or((path, ""));
+    match rest.split_once('/').map_or(rest, |(child, _)| child) {
+        child if !child.is_empty() && (SHARED.contains(&top) || top == "kits") => {
+            Some(format!("{top}/{child}"))
+        }
+        _ if DOCUMENTATION.contains(&top)
+            || (rest.is_empty() && (top.ends_with(".md") || top == "LICENSE")) =>
+        {
+            None
+        }
+        _ => Some(top.to_string()),
+    }
+}
+
+/// Whether `unit` is shared code that runs only inside its dependents.
+pub fn is_shared(unit: &str) -> bool {
+    SHARED
+        .iter()
+        .any(|dir| unit.starts_with(&format!("{dir}/")))
+}
+
+/// Whether `path` is test, bench or example code, which no shipped build
+/// reads.
+fn is_test(path: &str) -> bool {
+    path.split('/').any(|part| {
+        matches!(part, "tests" | "__tests__" | "benches" | "examples")
+            || part.contains(".test.")
+            || part.contains(".spec.")
+            || part.ends_with("_test.go")
+    })
+}
+
+/// `git grep` matches as `(file, match)`; no match is an empty list, any
+/// other failure an error (a dependent must never go unseen).
+fn grep_matches(
+    repo: &Path,
+    sha: &str,
+    pattern: &str,
+    pathspec: &[&str],
+) -> Result<Vec<(String, String)>, CandidateError> {
+    let mut args = vec!["grep", "-I", "-o", "-z", "-E", "-e", pattern, sha, "--"];
+    args.extend_from_slice(pathspec);
+    let output = git_command(repo, &args)
+        .output()
+        .map_err(|error| CandidateError::Git(format!("git grep: {error}")))?;
+    match output.status.code() {
+        Some(0) => {}
+        Some(1) => return Ok(Vec::new()),
+        _ => {
+            return Err(CandidateError::Git(format!(
+                "git grep {pattern}: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )))
+        }
+    }
+    let prefix = format!("{sha}:");
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let (file, found) = line.split_once('\0')?;
+            Some((
+                file.strip_prefix(&prefix).unwrap_or(file).to_string(),
+                found.to_string(),
+            ))
+        })
+        .collect())
+}
+
+/// `relative` resolved against the directory of `file`, inside the
+/// repository.
+fn resolve(file: &str, relative: &str) -> Option<String> {
+    let mut parts: Vec<&str> = file.split('/').collect();
+    parts.pop();
+    for part in relative.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            part => parts.push(part),
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
+/// What a change at `sha` runs in. `units` are the units its paths belong
+/// to ([`unit_of`]). `dependents` are the other units whose non-test files
+/// read changed code, transitively: by a relative path (a Cargo `path`
+/// dependency, `#[path]`, `include_str!`, an import) or by a `workspace:`
+/// package dependency. The loop's own `eval/` is never a dependent.
 pub fn changed_units(
     repo: &Path,
     sha: &str,
     paths: &[CandidatePathV1],
-) -> Result<Vec<String>, CandidateError> {
-    let mut units = std::collections::BTreeSet::new();
-    let mut shared = Vec::new();
-    let mut classify = |path: &str, shared: &mut Vec<String>| {
-        let (top, rest) = path.split_once('/').unwrap_or((path, ""));
-        match rest.split_once('/').map(|(child, _)| child) {
-            Some(child) if SHARED.contains(&top) => shared.push(format!("{top}/{child}")),
-            Some(child) if top == "kits" => {
-                units.insert(format!("kits/{child}"));
-            }
-            _ if DOCUMENTATION.contains(&top)
-                || (rest.is_empty() && (top.ends_with(".md") || top == "LICENSE")) => {}
-            _ => {
-                units.insert(top.to_string());
+) -> Result<(Vec<String>, Vec<String>), CandidateError> {
+    use std::collections::{BTreeMap, BTreeSet};
+    // (target path, referencing unit), across units only.
+    let mut edges: Vec<(String, String)> = Vec::new();
+    let mut add = |target: String, file: &str| {
+        if is_test(file) {
+            return;
+        }
+        if let (Some(from), Some(to)) = (unit_of(file), unit_of(&target)) {
+            if from != to && format!("{from}/") != crate::candidate::LOOP_DIR {
+                edges.push((target, from));
             }
         }
     };
-    for path in paths {
-        classify(&path.path, &mut shared);
-    }
-    let mut seen = std::collections::BTreeSet::new();
-    while let Some(dir) = shared.pop() {
-        if !seen.insert(dir.clone()) {
-            continue;
-        }
-        // Rust dependents name the crate's path, Node ones the package name.
-        let needle = match dir.strip_prefix("packages/") {
-            Some(_) => {
-                let manifest =
-                    git(repo, &["show", &format!("{sha}:{dir}/package.json")]).unwrap_or_default();
-                match serde_json::from_str::<Value>(&manifest)
-                    .ok()
-                    .and_then(|package| package["name"].as_str().map(|name| format!("\"{name}\"")))
-                {
-                    Some(name) => name,
-                    None => continue,
-                }
-            }
-            None => dir.clone(),
-        };
-        // `git grep` exits 1 on no match: no dependent.
-        let found = git(
-            repo,
-            &[
-                "grep",
-                "-l",
-                "-F",
-                "-e",
-                &needle,
-                sha,
-                "--",
-                "*Cargo.toml",
-                "*package.json",
-            ],
-        )
-        .unwrap_or_default();
-        for file in found.lines() {
-            let file = file.strip_prefix(&format!("{sha}:")).unwrap_or(file);
-            if !file.starts_with(&format!("{dir}/")) {
-                classify(file, &mut shared);
-            }
+    for (file, found) in grep_matches(
+        repo,
+        sha,
+        r#"["'](\.\./)+[^"'[:space:]]*["']"#,
+        &[".", ":!*.md"],
+    )? {
+        if let Some(target) = resolve(&file, &found[1..found.len() - 1]) {
+            add(target, &file);
         }
     }
-    Ok(units.into_iter().collect())
+    let mut packages = BTreeMap::new();
+    for (file, found) in grep_matches(repo, sha, r#""name": *"[^"]+""#, &["*package.json"])? {
+        let name = found.rsplit('"').nth(1).unwrap_or_default().to_string();
+        let dir = file.rsplit_once('/').map_or("", |(dir, _)| dir).to_string();
+        packages.entry(name).or_insert(dir);
+    }
+    for (file, found) in grep_matches(repo, sha, r#""[^"]+": *"workspace:"#, &["*package.json"])? {
+        let name = found.split('"').nth(1).unwrap_or_default();
+        if let Some(dir) = packages.get(name) {
+            add(dir.clone(), &file);
+        }
+    }
+    let units: BTreeSet<String> = paths
+        .iter()
+        .filter_map(|path| unit_of(&path.path))
+        .collect();
+    // The first hop reads the exact changed paths (an import may leave out
+    // the extension); past it a whole unit's build has changed.
+    let within = |path: &str, target: &str| {
+        path == target
+            || path.starts_with(&format!("{target}/"))
+            || path.starts_with(&format!("{target}."))
+    };
+    let mut affected: BTreeSet<String> = edges
+        .iter()
+        .filter(|(target, _)| paths.iter().any(|path| within(&path.path, target)))
+        .map(|(_, from)| from.clone())
+        .collect();
+    let mut frontier: Vec<String> = affected.iter().cloned().collect();
+    while let Some(unit) = frontier.pop() {
+        for (target, from) in &edges {
+            if unit_of(target).as_deref() == Some(unit.as_str()) && affected.insert(from.clone()) {
+                frontier.push(from.clone());
+            }
+        }
+    }
+    let dependents = affected.difference(&units).cloned().collect();
+    Ok((units.into_iter().collect(), dependents))
 }
 
 fn commit_message(id: &CandidateIdentityV1) -> String {
@@ -968,12 +1076,13 @@ pub fn collect_commit(
         Ok(patch) => patch,
         Err(rejection) => return Ok(Err(rejection)),
     };
-    let units = changed_units(worktree, &tip, &paths)?;
+    let (units, dependents) = changed_units(worktree, &tip, &paths)?;
     Ok(Ok(CandidateCommitV1 {
         base_sha: base.into(),
         candidate_sha: tip,
         paths,
         units,
+        dependents,
         patch_digest: sha256_hex(patch.as_bytes()),
         patch,
     }))

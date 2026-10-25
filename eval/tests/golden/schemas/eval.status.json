@@ -126,6 +126,14 @@
           "candidate_sha": {
             "type": "string"
           },
+          "dependents": {
+            "default": [],
+            "description": "Other units whose build reads changed code: see [`changed_units`].",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "patch": {
             "description": "`git diff --binary base candidate`.",
             "type": "string"
@@ -141,7 +149,7 @@
           },
           "units": {
             "default": [],
-            "description": "What runs the change: see [`changed_units`].",
+            "description": "The units the change touches: see [`changed_units`].",
             "items": {
               "type": "string"
             },

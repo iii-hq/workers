@@ -102,6 +102,10 @@ fn setup() -> (Scratch, CandidateConfigV1) {
         "#[test]\nfn window() {}\n",
     );
     write(&repo.join("eval/src/decision.rs"), "pub fn decide() {}\n");
+    write(
+        &repo.join("eval/Cargo.toml"),
+        "[dependencies]\nharness = { path = \"../harness\" }\n",
+    );
     // Shared code: a crate one worker builds with, a package another links.
     write(&repo.join("crates/paths/src/lib.rs"), "pub fn root() {}\n");
     write(
@@ -458,12 +462,119 @@ fn a_commit_names_every_worker_its_change_runs_in() {
     assert_eq!(
         commit.units,
         [
-            "context-manager",
-            "judge",
+            "crates/paths",
             "kits/deepwork",
+            "packages/ui",
             "rust-toolchain.toml"
         ],
-        "dependents of the shared crate and package, the kit and the build file; no docs"
+        "what it touches; no docs"
+    );
+    assert_eq!(
+        commit.dependents,
+        ["context-manager", "judge"],
+        "who builds with the shared crate and package"
+    );
+}
+
+/// Every way one directory reads another, each a hiding place for a change
+/// that would otherwise ship unmeasured.
+#[test]
+fn no_dependency_hides_a_reader_of_changed_code() {
+    let (_scratch, cfg) = setup();
+    let repo = Path::new(&cfg.repository);
+    for (path, text) in [
+        // A worker used as a library by another worker.
+        ("llm-router/src/lib.rs", "pub fn route() {}\n"),
+        (
+            "provider-x/Cargo.toml",
+            "[dependencies]\nllm-router = { path = \"../llm-router\" }\n",
+        ),
+        // A crate that names its sibling relative to `crates/`, read by a worker.
+        ("crates/a/src/lib.rs", "pub fn a() {}\n"),
+        (
+            "crates/b/Cargo.toml",
+            "[dependencies]\na = { path = \"../a\" }\n",
+        ),
+        (
+            "w/Cargo.toml",
+            "[dependencies]\nb = { path = \"../crates/b\" }\n",
+        ),
+        // Source included by path, not declared as a dependency.
+        ("crates/c/src/init.rs", "pub fn init() {}\n"),
+        (
+            "v/src/config.rs",
+            "#[path = \"../../crates/c/src/init.rs\"]\nmod init;\n",
+        ),
+        // A test helper borrowed from another worker's tests only.
+        ("k/src/lib.rs", "pub fn k() {}\n"),
+        ("k/tests/support/fake.rs", "pub fn fake() {}\n"),
+        (
+            "j/tests/flow.rs",
+            "#[path = \"../../k/tests/support/fake.rs\"]\nmod fake;\n",
+        ),
+        // The same helper read by j's shipped source does make j a reader.
+        (
+            "m/src/check.rs",
+            "#[path = \"../../k/tests/support/fake.rs\"]\nmod fake;\n",
+        ),
+        // A TypeScript import with single quotes into a shared package.
+        ("packages/kit/src/a.ts", "export const a = 1\n"),
+        (
+            "u/ui/src/x.ts",
+            "import { a } from '../../../packages/kit/src/a'\n",
+        ),
+        // Documentation that names a path builds nothing.
+        ("docs/guide.md", "path = \"../llm-router\"\n"),
+    ] {
+        write(&repo.join(path), text);
+    }
+    sh(repo, &["add", "-A"]);
+    sh(repo, &["commit", "-q", "-m", "readers"]);
+    let sha = sh(repo, &["rev-parse", "HEAD"]);
+    let units = |changed: &[&str]| {
+        let paths: Vec<CandidatePathV1> = changed
+            .iter()
+            .map(|path| CandidatePathV1 {
+                path: path.to_string(),
+                change: "M".into(),
+            })
+            .collect();
+        changed_units(repo, &sha, &paths).unwrap()
+    };
+    let named = |list: &[&str]| list.iter().map(|unit| unit.to_string()).collect::<Vec<_>>();
+    // `eval` reads harness/ by path, yet the loop is never a dependent.
+    assert_eq!(
+        units(&["llm-router/src/lib.rs"]),
+        (named(&["llm-router"]), named(&["provider-x"]))
+    );
+    assert_eq!(
+        units(&["crates/a/src/lib.rs"]),
+        (named(&["crates/a"]), named(&["crates/b", "w"])),
+        "transitively, through a sibling crate"
+    );
+    assert_eq!(
+        units(&["crates/c/src/init.rs"]),
+        (named(&["crates/c"]), named(&["v"]))
+    );
+    assert_eq!(
+        units(&["k/src/lib.rs"]),
+        (named(&["k"]), named(&[])),
+        "a helper elsewhere in k does not make j read k's library"
+    );
+    assert_eq!(
+        units(&["k/tests/support/fake.rs"]),
+        (named(&["k"]), named(&["m"])),
+        "m's source reads it; j's tests do too, but tests ship in no build"
+    );
+    assert_eq!(
+        units(&["packages/kit/src/a.ts"]),
+        (named(&["packages/kit"]), named(&["u"]))
+    );
+    assert_eq!(units(&["docs/guide.md"]), (named(&[]), named(&[])));
+    assert_eq!(
+        units(&["harness/src/lib.rs"]),
+        (named(&["harness"]), named(&[])),
+        "eval/ builds with harness/ but is never a dependent"
     );
 }
 

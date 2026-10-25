@@ -136,7 +136,10 @@ false result.
   candidate may change as a `package://<worker>` container with
   `commit: {commit}`, so both sides build it from their own commit. A
   change to a unit it does not build that way is never accepted: no run
-  measured it.
+  measured it. Neither is a change no commit-built worker runs (only
+  documentation, or shared code only unbuilt workers read). A dependent
+  the stack does not build is named in the decision: not measured, never
+  released by the loop.
 - `promotion`: `artifact_target` and an explicit activation `target`
   (`engine_url`, `namespace`, `compose_file`), with
   `release_build_estimate_usd`.
@@ -158,9 +161,12 @@ cycle runs these steps:
 1. The read-only proposal produces an evidence-backed hypothesis and change.
 2. The isolated candidate actor commits on the base. It may change any file
    of the repository but the loop's own `eval/` and git metadata. The
-   commit records the units it runs in: each worker it touches, every
-   dependent of a shared crate or package it touches, and each kit. Its
-   changed paths are recorded and it is published to its own branch.
+   commit records its units (each top-level directory or kit it touches,
+   `crates/<c>` and `packages/<p>` for shared code) and its dependents:
+   every other unit whose non-test files read changed code, transitively,
+   by a relative path (Cargo `path`, `#[path]`, `include_str!`, an import,
+   a build script) or a `workspace:` package. Its changed paths are
+   recorded and it is published to its own branch.
 3. A source validation runs under the frozen plan.
 4. The source decision is made. Steps 5 to 11 release the Harness only: an
    accepted change to any other unit ends `decided`, delivered from its

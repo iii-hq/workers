@@ -1383,7 +1383,7 @@ fn a_candidate_cannot_qualify_by_changing_its_own_meter() {
         evidence::runs_of(&after, "s", &[]),
     );
     let decide = |plan: &CyclePlanV1, units: &[&str], evidence: &[EvidenceV1]| {
-        let mut cycle = changing(units, BUILDS_HARNESS_AND_CONTEXT);
+        let mut cycle = changing(units, &[], BUILDS_HARNESS_AND_CONTEXT);
         decision::freeze(&mut cycle, plan.clone()).unwrap();
         decision::decide_cycle(&mut cycle, None, &baseline, &candidate, evidence, NOW).unwrap()
     };
@@ -1405,6 +1405,26 @@ fn a_candidate_cannot_qualify_by_changing_its_own_meter() {
     assert_eq!(
         result.outcome,
         DecisionOutcomeV1::Accepted,
+        "{}",
+        result.reason
+    );
+    // Shared code the Harness builds with changes the meter too.
+    let mut cycle = changing(
+        &["crates/console-ui"],
+        &["harness"],
+        BUILDS_HARNESS_AND_CONTEXT,
+    );
+    decision::freeze(&mut cycle, plan.clone()).unwrap();
+    let result =
+        decision::decide_cycle(&mut cycle, None, &baseline, &candidate, &evidence, NOW).unwrap();
+    assert_eq!(
+        result.outcome,
+        DecisionOutcomeV1::Inconclusive,
+        "{}",
+        result.reason
+    );
+    assert!(
+        result.reason.contains("harness counts"),
         "{}",
         result.reason
     );
@@ -1432,8 +1452,9 @@ fn a_candidate_cannot_qualify_by_changing_its_own_meter() {
 
 const BUILDS_HARNESS_AND_CONTEXT: &str = "containers:\n  harness:\n    worker: package://harness\n    commit: {commit}\n  context-manager:\n    worker: package://context-manager\n    commit: \"{commit}\"\n  fp:\n    worker: package://fp\n    version: 1.0.0\n";
 
-/// A cycle whose candidate commit changes `units`, validated on `template`.
-fn changing(units: &[&str], template: &str) -> CycleRecordV1 {
+/// A cycle whose candidate commit changes `units` (read by `dependents`),
+/// validated on `template`.
+fn changing(units: &[&str], dependents: &[&str], template: &str) -> CycleRecordV1 {
     let config: LoopConfigV1 = serde_json::from_value(json!({
         "subject": {"provider": "p", "model": "m"}, "where": "harness",
         "runs_per_side": RUNS, "technical_retries": 0, "max_scenarios": 2,
@@ -1467,6 +1488,7 @@ fn changing(units: &[&str], template: &str) -> CycleRecordV1 {
                 candidate_sha: "b".repeat(40),
                 paths: Vec::new(),
                 units: units.iter().map(|unit| unit.to_string()).collect(),
+                dependents: dependents.iter().map(|unit| unit.to_string()).collect(),
                 patch: String::new(),
                 patch_digest: String::new(),
             }),
@@ -1486,19 +1508,58 @@ fn a_change_the_validation_stack_did_not_build_is_never_accepted() {
     candidate.identity.workers_revision = candidate.expected_revision.clone();
     let harness_only =
         "containers:\n  harness:\n    worker: package://harness\n    commit: {commit}\n";
-    for (units, template, accepted) in [
-        (&["context-manager"][..], harness_only, false),
-        (&["context-manager"][..], BUILDS_HARNESS_AND_CONTEXT, true),
+    let unbuilt = "does not build it from the candidate commit";
+    let unrun = "no worker the validation stack builds";
+    for (units, dependents, template, expected) in [
+        (
+            &["context-manager"][..],
+            &[][..],
+            harness_only,
+            Some(unbuilt),
+        ),
+        (
+            &["context-manager"][..],
+            &[][..],
+            BUILDS_HARNESS_AND_CONTEXT,
+            None,
+        ),
         (
             &["context-manager", "ade"][..],
+            &[][..],
             BUILDS_HARNESS_AND_CONTEXT,
-            false,
+            Some(unbuilt),
         ),
-        (&["kits/deepwork"][..], BUILDS_HARNESS_AND_CONTEXT, false),
+        (
+            &["kits/deepwork"][..],
+            &[][..],
+            BUILDS_HARNESS_AND_CONTEXT,
+            Some(unbuilt),
+        ),
         // A worker the stack pins to a release still runs the old code.
-        (&["fp"][..], BUILDS_HARNESS_AND_CONTEXT, false),
+        (
+            &["fp"][..],
+            &[][..],
+            BUILDS_HARNESS_AND_CONTEXT,
+            Some(unbuilt),
+        ),
+        // Documentation only: nothing any run executes changed.
+        (&[][..], &[][..], BUILDS_HARNESS_AND_CONTEXT, Some(unrun)),
+        // Shared code only the unbuilt `kanban` reads was never run.
+        (
+            &["crates/x"][..],
+            &["kanban"][..],
+            BUILDS_HARNESS_AND_CONTEXT,
+            Some(unrun),
+        ),
+        // Run in context-manager: accepted, `kanban` named as unmeasured.
+        (
+            &["crates/x"][..],
+            &["context-manager", "kanban"][..],
+            BUILDS_HARNESS_AND_CONTEXT,
+            None,
+        ),
     ] {
-        let mut cycle = changing(units, template);
+        let mut cycle = changing(units, dependents, template);
         decision::freeze(&mut cycle, plan()).unwrap();
         let decided = decision::decide_cycle(
             &mut cycle,
@@ -1509,26 +1570,35 @@ fn a_change_the_validation_stack_did_not_build_is_never_accepted() {
             NOW,
         )
         .unwrap();
-        if accepted {
-            assert_eq!(
-                decided.outcome,
-                DecisionOutcomeV1::Accepted,
-                "{units:?}: {}",
-                decided.reason
-            );
-        } else {
-            assert_eq!(
-                decided.outcome,
-                DecisionOutcomeV1::Inconclusive,
-                "{units:?}"
-            );
-            assert!(
-                decided
-                    .reason
-                    .contains("does not build it from the candidate commit"),
-                "{units:?}: {}",
-                decided.reason
-            );
+        match expected {
+            None => {
+                assert_eq!(
+                    decided.outcome,
+                    DecisionOutcomeV1::Accepted,
+                    "{units:?}: {}",
+                    decided.reason
+                );
+                assert_eq!(
+                    decided
+                        .reason
+                        .contains("never released by the loop: kanban"),
+                    dependents.contains(&"kanban"),
+                    "{}",
+                    decided.reason
+                );
+            }
+            Some(gap) => {
+                assert_eq!(
+                    decided.outcome,
+                    DecisionOutcomeV1::Inconclusive,
+                    "{units:?}"
+                );
+                assert!(
+                    decided.reason.contains(gap),
+                    "{units:?}: {}",
+                    decided.reason
+                );
+            }
         }
     }
 }

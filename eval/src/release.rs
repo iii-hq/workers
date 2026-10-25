@@ -1051,25 +1051,34 @@ pub async fn promotion_stage(
         )
         .await;
     };
-    // ponytail: the release ships one worker, the Harness. A change to any
-    // other unit stays approved on its branch; releasing every changed worker
-    // (and proving each running digest) lifts this.
+    // ponytail: the release ships one worker, the Harness. A change measured
+    // in any other worker stays approved on its branch; releasing every
+    // measured worker (and proving each running digest) lifts this.
     let candidate = record.candidate.as_ref();
-    let units = candidate
-        .and_then(|state| state.candidate.as_ref()?.commit.as_ref())
-        .map(|commit| commit.units.clone())
+    let built = record
+        .config
+        .as_ref()
+        .and_then(|stored| stored.config.validation.as_ref())
+        .map(ValidationConfigV1::built_from_commit)
         .unwrap_or_default();
-    if journal.last().is_none() && !units.is_empty() && units != [crate::promotion::WORKER] {
+    let measured = candidate
+        .and_then(|state| state.candidate.as_ref()?.commit.as_ref())
+        .map(|commit| commit.measured_in(&built));
+    if journal.last().is_none()
+        && measured
+            .as_ref()
+            .is_some_and(|measured| measured != &[crate::promotion::WORKER])
+    {
         let branch = candidate.map_or("", |state| state.identity.branch.as_str());
         return end(
             deps,
             record,
             OutcomeCodeV1::Decided,
             &format!(
-                "approved, not released: the release ships only the {}, and this change is to {}; \
-                 it is delivered from {branch} by hand",
+                "approved, not released: the release ships only the {}, and this change runs in \
+                 {}; it is delivered from {branch} by hand",
                 crate::promotion::WORKER,
-                units.join(", ")
+                measured.unwrap_or_default().join(", ")
             ),
         )
         .await;

@@ -1053,21 +1053,24 @@ fn meters(worker: &str) -> bool {
 }
 
 /// An accepted source decision stands only on what the validation ran:
-/// every unit the candidate changes is built from the candidate commit by
-/// the source stack, and a total the changed code itself reports never
-/// qualifies that change.
+/// every unit the candidate touches (shared code aside) is built from the
+/// candidate commit by the source stack, some built worker runs the change,
+/// and a total the changed code reports itself never qualifies it.
+/// Dependents the stack does not build are named: not measured, so never
+/// released by the loop.
 fn measured(
     mut decision: CycleDecisionV1,
     plan: &CyclePlanV1,
     record: &CycleRecordV1,
 ) -> CycleDecisionV1 {
-    let units = record
+    let Some(commit) = record
         .candidate
         .as_ref()
         .and_then(|state| state.candidate.as_ref()?.commit.as_ref())
-        .map(|commit| commit.units.as_slice())
-        .unwrap_or_default();
-    if decision.outcome != DecisionOutcomeV1::Accepted || units.is_empty() {
+    else {
+        return decision;
+    };
+    if decision.outcome != DecisionOutcomeV1::Accepted {
         return decision;
     }
     let built = record
@@ -1076,28 +1079,51 @@ fn measured(
         .and_then(|stored| stored.config.validation.as_ref())
         .map(ValidationConfigV1::built_from_commit)
         .unwrap_or_default();
-    let unbuilt: Vec<&str> = units
+    let unbuilt: Vec<&str> = commit
+        .units
         .iter()
-        .filter(|unit| !built.contains(*unit))
+        .filter(|unit| !crate::candidate::is_shared(unit) && !built.contains(*unit))
         .map(String::as_str)
         .collect();
     let self_reported = matches!(
         plan.criterion.metric,
         CriterionMetricV1::Tokens | CriterionMetricV1::CostUsd | CriterionMetricV1::FunctionCalls
     );
+    let measured = commit.measured_in(&built);
     let gap = if !unbuilt.is_empty() {
         format!(
             "the candidate changes {} and the validation stack does not build it from the \
              candidate commit, so no run measured that change",
             unbuilt.join(", ")
         )
-    } else if let Some(meter) = units.iter().find(|unit| self_reported && meters(unit)) {
+    } else if measured.is_empty() {
+        "no worker the validation stack builds from the candidate commit runs this change".into()
+    } else if let Some(meter) = commit
+        .units
+        .iter()
+        .chain(&commit.dependents)
+        .find(|unit| self_reported && meters(unit))
+    {
         format!(
             "source qualification requires an independent meter: {meter} counts the {:?} \
              total this plan measures, and the candidate changes it",
             plan.criterion.metric
         )
     } else {
+        let unmeasured: Vec<&str> = commit
+            .dependents
+            .iter()
+            .filter(|unit| !built.contains(*unit))
+            .map(String::as_str)
+            .collect();
+        if !unmeasured.is_empty() {
+            decision.reason = format!(
+                "{}; not measured and never released by the loop: {}, which build with the \
+                 changed code",
+                decision.reason,
+                unmeasured.join(", ")
+            );
+        }
         return decision;
     };
     decision.outcome = DecisionOutcomeV1::Inconclusive;
