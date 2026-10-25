@@ -402,15 +402,30 @@ fn lands<'a>(
 /// same fact.
 const NEGATIONS: &[&str] = &["no", "not", "never", "nor", "without"];
 
+/// Not an English stopword, or a negation.
+fn is_content(token: &str) -> bool {
+    NEGATIONS.contains(&token) || !crate::store::STOPWORDS.contains(&token)
+}
+
 /// A memory text's content words: its tokens minus English stopwords, with
 /// negations kept.
 fn content_words(text: &str) -> BTreeSet<String> {
     crate::index::tokenize(text)
         .into_iter()
-        .filter(|t| {
-            NEGATIONS.contains(&t.as_str()) || !crate::store::STOPWORDS.contains(&t.as_str())
-        })
+        .filter(|t| is_content(t))
         .collect()
+}
+
+/// The word a statement leads with, stemmed: its first content word, past a
+/// possessive `user's` ("the user's sister" leads with "sister"). English
+/// puts the subject there.
+fn lead(text: &str) -> Option<String> {
+    let tokens = crate::index::tokenize(text);
+    let mut at = tokens.iter().position(|t| is_content(t))?;
+    if tokens[at] == "user" && tokens.get(at + 1).is_some_and(|t| t == "s") {
+        at += 2 + tokens[at + 2..].iter().position(|t| is_content(t))?;
+    }
+    Some(stem(&tokens[at]).into_owned())
 }
 
 /// The same fact in other words: at least four in five content words shared
@@ -510,17 +525,28 @@ fn words(text: &str, values: &BTreeSet<String>) -> BTreeSet<String> {
         .collect()
 }
 
-/// The same fact reworded, for injection: equal values, two other words or
-/// more each, three in five of the shorter's shared; with no number, name
-/// or date to anchor them, only a [`near_duplicate`]. Looser than
-/// extraction's on purpose: a hidden line is back next turn, a merge is forever.
-// shortcut: text alone joins siblings with the same values ("billing" and
-// "ledger" service on Postgres 16); the injection step keeps twins whose entity
-// tags differ, add a subject check here if untagged siblings collapse.
+/// The same fact reworded, for injection: equal values, the same subject,
+/// two other words or more each, three in five of the shorter's shared;
+/// with no number, name or date to anchor them, only a [`near_duplicate`].
+/// Looser than extraction's on purpose: a hidden line is back next turn, a
+/// merge is forever. Two texts each leading with a word the other lacks
+/// ([`lead`]) are about two subjects ("the billing service" and "the ledger
+/// service" on Postgres 16), however much else they share.
+// shortcut: only the lead word is read as the subject, so siblings that differ
+// past it ("Postgres 16 backs the billing/ledger service", "takes 10 mg of
+// vitamin D/zinc") still join unless their entity tags differ, and a paraphrase
+// where each leads with a word the other lacks ("Deploys to production
+// happen..." / "User ships to production...") is told twice; parse the subject
+// if the eval or a case shows either.
 pub(crate) fn same_fact(a: &str, b: &str) -> bool {
     let n = &names(a) | &names(b);
     let (va, vb) = (values(a, &n), values(b, &n));
     if va != vb {
+        return false;
+    }
+    let leads_apart =
+        |x: &str, y: &str| lead(x).is_some_and(|w| !content_words(y).iter().any(|c| stem(c) == w));
+    if leads_apart(a, b) && leads_apart(b, a) {
         return false;
     }
     let (wa, wb) = (words(a, &va), words(b, &vb));
@@ -3083,13 +3109,25 @@ mod tests {
             "Database migrations in this project run through pnpm migrate:v2 before each deploy.",
             "Before each deploy, apply the database migrations using pnpm migrate:v2.",
         ];
-        for (i, a) in migrate.iter().enumerate() {
-            for b in &migrate[i + 1..] {
-                assert!(same_fact(a, b), "{a} ~ {b}");
-                assert!(same_fact(b, a), "{b} ~ {a}");
+        // Led by "ledger", "ledger" and "migrate": each lead is in the others.
+        let ledger = [
+            "The ledger service applies its database migrations with migrate-1c5fdf5f.",
+            "Ledger database migrations are run with the migrate-1c5fdf5f command.",
+            "To migrate the ledger database, run migrate-1c5fdf5f.",
+        ];
+        for triple in [migrate, ledger] {
+            for (i, a) in triple.iter().enumerate() {
+                for b in &triple[i + 1..] {
+                    assert!(same_fact(a, b), "{a} ~ {b}");
+                    assert!(same_fact(b, a), "{b} ~ {a}");
+                }
             }
         }
         let same = [
+            (
+                "User's partner is Rafael, a UX designer she has been dating since 2019.",
+                "Rafael, a UX designer, has been the user's partner since 2019.",
+            ),
             (
                 "User ships to production only on Tuesdays and Thursdays, between 10:00 and 15:00 local time.",
                 "User deploys to production only on Tuesday and Thursday, from 10:00 to 15:00 local time.",
@@ -3153,14 +3191,42 @@ mod tests {
     }
 
     #[test]
-    fn same_fact_by_text_alone_joins_same_value_siblings() {
-        // Known limit: two services on one database share every value and most
-        // words. The text cannot tell them apart; the injection step keeps
-        // twins that carry different entity tags.
-        assert!(same_fact(
+    fn same_fact_by_text_alone_keeps_same_value_siblings_apart() {
+        // Two services on one database share every value and most words, but
+        // each leads with a subject the other lacks: two facts, both told.
+        let (billing, ledger) = (
             "The billing service uses Postgres 16.",
-            "The ledger service uses Postgres 16."
-        ));
+            "The ledger service uses Postgres 16.",
+        );
+        assert!(!same_fact(billing, ledger));
+        assert!(!same_fact(ledger, billing));
+    }
+
+    #[test]
+    fn same_value_siblings_about_different_subjects_are_not_twins() {
+        let siblings = [
+            (
+                "The billing service runs on Postgres 16.",
+                "The ledger service runs on Postgres 16.",
+            ),
+            (
+                "The staging cluster runs Kubernetes 1.29.",
+                "The production cluster runs Kubernetes 1.29.",
+            ),
+            (
+                "Ledgerly runs on PostgreSQL 16 in production.",
+                "Rotafy runs on PostgreSQL 16 in production.",
+            ),
+            // Past the user's possessive, the subject is whose it is.
+            (
+                "The user's sister works as a nurse in Madrid.",
+                "The user's cousin works as a nurse in Madrid.",
+            ),
+        ];
+        for (a, b) in siblings {
+            assert!(!same_fact(a, b), "{a} !~ {b}");
+            assert!(!same_fact(b, a), "{b} !~ {a}");
+        }
     }
 
     #[test]

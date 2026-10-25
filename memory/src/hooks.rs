@@ -2161,12 +2161,29 @@ Formal."
     }
 
     #[test]
+    fn sibling_facts_both_reach_a_question_about_both() {
+        // "Which of our services run on Postgres 16?", untagged.
+        let billing = memory("fp-billing", "The billing service runs on Postgres 16.");
+        let ledger = memory("fp-ledger", "The ledger service runs on Postgres 16.");
+        let e = Evidence {
+            matched: vec!["postgres".into(), "16".into()],
+            ..words(0, 4, 1.0)
+        };
+        let hits = vec![(billing.clone(), e.clone()), (ledger.clone(), e.clone())];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-billing", "fp-ledger"]);
+        // One already visible is no rewording of the other.
+        let seen: HashSet<String> = [memory_line_text(&billing)].into();
+        assert_eq!(kept(vec![(ledger, e)], &seen, 6), ["fp-ledger"]);
+    }
+
+    #[test]
     fn differently_tagged_twins_both_stay() {
+        // The subject sits past the lead word, where the text alone misses it.
         let service = |name: &str, entities: &[&str]| Memory {
             entities: entities.iter().map(|e| e.to_string()).collect(),
             ..memory(
                 &format!("fp-{name}"),
-                &format!("The {name} service uses Postgres 16."),
+                &format!("Postgres 16 backs the {name} service."),
             )
         };
         let pair = |billing: &[&str], ledger: &[&str]| {
