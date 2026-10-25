@@ -2201,26 +2201,38 @@ Formal."
 
     #[test]
     fn differently_tagged_twins_both_stay() {
-        // The subject sits past the lead word, where the text alone misses it.
-        let service = |name: &str, entities: &[&str]| Memory {
+        // Two rewordings by text: their tags alone keep them apart.
+        let tagged = |id: &str, text: &str, entities: &[&str]| Memory {
             entities: entities.iter().map(|e| e.to_string()).collect(),
-            ..memory(
+            ..memory(id, text)
+        };
+        let pair = |a: &[&str], b: &[&str]| {
+            let e = words(2, 3, 1.0);
+            let hits = vec![
+                (tagged("fp-mig0", MIGRATE[0], a), e.clone()),
+                (tagged("fp-mig1", MIGRATE[1], b), e),
+            ];
+            kept(hits, &HashSet::new(), 6)
+        };
+        assert_eq!(pair(&["billing"], &["ledger"]), ["fp-mig0", "fp-mig1"]);
+        // Untagged, or one's entities within the other's: the text decides.
+        assert_eq!(pair(&[], &[]), ["fp-mig0"]);
+        assert_eq!(pair(&["billing"], &["billing", "postgres"]), ["fp-mig0"]);
+    }
+
+    #[test]
+    fn known_limit_untagged_siblings_whose_subject_comes_late_are_told_once() {
+        // Two facts, but the subject sits past the lead word, where the text
+        // alone misses it: only entity tags keep them apart.
+        let service = |name: &str| {
+            memory(
                 &format!("fp-{name}"),
                 &format!("Postgres 16 backs the {name} service."),
             )
         };
-        let pair = |billing: &[&str], ledger: &[&str]| {
-            let e = words(2, 3, 1.0);
-            let hits = vec![
-                (service("billing", billing), e.clone()),
-                (service("ledger", ledger), e),
-            ];
-            kept(hits, &HashSet::new(), 6)
-        };
-        assert_eq!(pair(&["billing"], &["ledger"]), ["fp-billing", "fp-ledger"]);
-        // Untagged, or one's entities within the other's: the text decides.
-        assert_eq!(pair(&[], &[]), ["fp-billing"]);
-        assert_eq!(pair(&["billing"], &["billing", "postgres"]), ["fp-billing"]);
+        let e = words(2, 3, 1.0);
+        let hits = vec![(service("billing"), e.clone()), (service("ledger"), e)];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-billing"]);
     }
 
     #[test]
