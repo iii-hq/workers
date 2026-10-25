@@ -132,7 +132,11 @@ false result.
   provider, and its bounds. It is checked by `eval::configure`, and it needs
   `runs_per_side` of at least 5: the sign test accepts nothing on fewer pairs.
 - `validation`: `where: docker|github`, `stack_name` and two stack templates
-  (`{commit}` and `{version}`) that pin only the Harness.
+  (`{commit}` and `{version}`). The source template declares each worker a
+  candidate may change as a `package://<worker>` container with
+  `commit: {commit}`, so both sides build it from their own commit. A
+  change to a unit it does not build that way is never accepted: no run
+  measured it.
 - `promotion`: `artifact_target` and an explicit activation `target`
   (`engine_url`, `namespace`, `compose_file`), with
   `release_build_estimate_usd`.
@@ -152,10 +156,15 @@ After a measured baseline, or a covered and triaged source execution, the
 cycle runs these steps:
 
 1. The read-only proposal produces an evidence-backed hypothesis and change.
-2. The isolated candidate actor commits on the base. Its changed paths are
-   recorded and it is published to its own branch.
+2. The isolated candidate actor commits on the base. It may change any file
+   of the repository but the loop's own `eval/` and git metadata. The
+   commit records the units it runs in: each worker it touches, every
+   dependent of a shared crate or package it touches, and each kit. Its
+   changed paths are recorded and it is published to its own branch.
 3. A source validation runs under the frozen plan.
-4. The source decision is made.
+4. The source decision is made. Steps 5 to 11 release the Harness only: an
+   accepted change to any other unit ends `decided`, delivered from its
+   branch by hand.
 5. `main` is fast-forwarded to exactly that commit.
 6. Release Control builds an rc from that commit.
 7. The rc artifact is validated and gets its own decision, which binds the
@@ -231,18 +240,16 @@ cd eval && SKIP_UI_BUILD=1 cargo test --lib --test flow --test lifecycle --test 
 To regenerate the schema goldens, run the same command with
 `UPDATE_GOLDENS=1`.
 
-## Limitation in this release: self-reported metrics
+## Self-reported metrics
 
 `efficiency.total_tokens`, cost and function-call counts come from
-`harness::metrics`, which is code a candidate may change. The tokens figure
-also counts only input plus output, without cache. These counts therefore
-never qualify a source change in this release:
+`harness::metrics`, which counts the usage `llm-router` and the
+`provider-*` workers report. The tokens figure counts only input plus
+output, without cache.
 
-- With candidate work configured, an objective whose planned metric is
-  tokens, cost or function calls stops before any baseline or paid actor,
-  with outcome `no_coverage` and the exact reason. Context-consumption and
-  skills objectives measured in tokens are in this case.
+- A candidate that changes `harness`, `llm-router` or a `provider-*`
+  worker changes its own meter: these totals do not qualify it, and the
+  decision is inconclusive with the exact reason.
+- A change anywhere else (for example `context-manager` or a kit) is
+  qualified by these totals like by any other metric.
 - The metric is never replaced by another one.
-- Fixes measured by native, independently assessed E2E criteria (for
-  example a lost `criterion_score` from a finished execution) still go
-  through the full source, artifact and canary path.

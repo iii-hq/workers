@@ -376,14 +376,14 @@
       },
       "ValidationConfigV1": {
         "additionalProperties": false,
-        "description": "E2E stacks in the E2E's own shape that pin only the Harness: everything else (Engine, evaluator, other workers) stays fixed between the sides.",
+        "description": "E2E stacks in the E2E's own shape. Every worker a candidate may change is declared in the source stack as a `package://<worker>` container with `commit: {commit}`, so both sides build it from their own commit; everything else (Engine, evaluator, unchanged workers) stays fixed.",
         "properties": {
           "artifact_stack_template": {
             "description": "Stack YAML pinning an immutable Registry version; `{version}` is replaced by it.",
             "type": "string"
           },
           "source_stack_template": {
-            "description": "Stack YAML pinning a source revision; `{commit}` is replaced by the 40-hex sha.",
+            "description": "Stack YAML pinning a source revision; every `{commit}` is replaced by the 40-hex sha.",
             "type": "string"
           },
           "stack_name": {
@@ -816,14 +816,14 @@
       },
       "ValidationConfigV1": {
         "additionalProperties": false,
-        "description": "E2E stacks in the E2E's own shape that pin only the Harness: everything else (Engine, evaluator, other workers) stays fixed between the sides.",
+        "description": "E2E stacks in the E2E's own shape. Every worker a candidate may change is declared in the source stack as a `package://<worker>` container with `commit: {commit}`, so both sides build it from their own commit; everything else (Engine, evaluator, unchanged workers) stays fixed.",
         "properties": {
           "artifact_stack_template": {
             "description": "Stack YAML pinning an immutable Registry version; `{version}` is replaced by it.",
             "type": "string"
           },
           "source_stack_template": {
-            "description": "Stack YAML pinning a source revision; `{commit}` is replaced by the 40-hex sha.",
+            "description": "Stack YAML pinning a source revision; every `{commit}` is replaced by the 40-hex sha.",
             "type": "string"
           },
           "stack_name": {

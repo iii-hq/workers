@@ -816,14 +816,6 @@ async fn tests_catalog(deps: &Deps) -> Result<(Vec<Value>, String), EvalError> {
     )))
 }
 
-/// Metrics the Harness under test reports about itself.
-fn self_reported(metric: CriterionMetricV1) -> bool {
-    matches!(
-        metric,
-        CriterionMetricV1::Tokens | CriterionMetricV1::CostUsd | CriterionMetricV1::FunctionCalls
-    )
-}
-
 /// Opens the cycle's budget ledger from its frozen configuration, once.
 pub(crate) async fn open_ledger(deps: &Deps, record: &CycleRecordV1) -> Result<(), EvalError> {
     let Some(stored) = &record.config else {
@@ -939,39 +931,6 @@ async fn coverage_stage(
     let Some(plan) = coverage::plan(&objective, &found, goal, &stored, now) else {
         return fail(deps, record, "the coverage maps to no plan").await;
     };
-    // A source change is qualified only by an independent measure. Tokens,
-    // cost and function calls come from `harness::metrics`, code the
-    // candidate itself may change: with candidate work configured such a
-    // metric stops here, before any baseline or paid actor, never replaced
-    // by another metric.
-    if stored.config.candidate.is_some() && self_reported(plan.criterion.metric) {
-        let gap = format!(
-            "the planned metric {:?} is reported by the Harness under test (harness::metrics), \
-             which a candidate may change; no independent E2E measure of it qualifies a source \
-             change in this release (native E2E criteria do)",
-            plan.criterion.metric
-        );
-        return transition(
-            deps,
-            &record.cycle_id,
-            record.step,
-            CycleStatusV1::Completed,
-            CycleStageV1::Done,
-            &format!("no coverage: {gap}"),
-            |next| {
-                let mut found = found.clone();
-                found.covered = false;
-                found.gaps.push(gap.clone());
-                next.coverage = Some(found);
-                next.outcome = Some(CycleOutcomeV1 {
-                    code: OutcomeCodeV1::NoCoverage,
-                    detail: gap.clone(),
-                });
-                Ok(())
-            },
-        )
-        .await;
-    }
     open_ledger(deps, record).await?;
     let detail = format!(
         "plan frozen under policy {} over {}",

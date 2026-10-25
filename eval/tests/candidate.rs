@@ -1,7 +1,7 @@
 //! Candidate implementation (KAN-447): deterministic identity, a coder-only
 //! actor that a hostile brief cannot widen, fail-closed isolation, and a
-//! trusted controller that commits only regular files under harness/src and
-//! harness/tests. Git runs on throwaway local repositories; the Harness is an
+//! trusted controller that commits only regular files outside git metadata
+//! and the loop's own `eval/`. Git runs on throwaway local repositories; the Harness is an
 //! in-memory engine over the real SDK wire protocol. No model, network or
 //! credential is used, and nothing here proves a candidate semantically.
 
@@ -102,6 +102,20 @@ fn setup() -> (Scratch, CandidateConfigV1) {
         "#[test]\nfn window() {}\n",
     );
     write(&repo.join("eval/src/decision.rs"), "pub fn decide() {}\n");
+    // Shared code: a crate one worker builds with, a package another links.
+    write(&repo.join("crates/paths/src/lib.rs"), "pub fn root() {}\n");
+    write(
+        &repo.join("context-manager/Cargo.toml"),
+        "[dependencies]\npaths = { path = \"../crates/paths\" }\n",
+    );
+    write(
+        &repo.join("packages/ui/package.json"),
+        "{\"name\": \"@iii-dev/ui\"}\n",
+    );
+    write(
+        &repo.join("judge/ui/package.json"),
+        "{\"dependencies\": {\"@iii-dev/ui\": \"workspace:*\"}}\n",
+    );
     sh(&repo, &["add", "-A"]);
     sh(&repo, &["commit", "-q", "-m", "base"]);
     let base_sha = sh(&repo, &["rev-parse", "HEAD"]);
@@ -173,7 +187,7 @@ fn identity_is_deterministic_and_bound_to_cycle_base_and_brief() {
     assert_eq!(a.branch, format!("feat/loop-candidate-{}", a.candidate_id));
     assert_eq!(a.session_id, format!("loop-candidate-{}", a.candidate_id));
     assert_eq!(a.idempotency_key, format!("{}:send", a.session_id));
-    assert_eq!(a.harness_root, format!("{}/harness", a.worktree));
+    assert_eq!(a.root, a.worktree);
     assert!(a.worktree.starts_with(&cfg.worktrees_dir));
     assert_ne!(
         a.candidate_id,
@@ -240,10 +254,7 @@ fn hostile_brief_cannot_widen_the_coder_only_bounded_actor() {
         Some(id.idempotency_key.as_str())
     );
     let metadata = request.session.unwrap().metadata.unwrap();
-    assert_eq!(
-        metadata[FS_SCOPE_KEY][FS_SCOPE_ROOT_KEY],
-        json!(id.harness_root)
-    );
+    assert_eq!(metadata[FS_SCOPE_KEY][FS_SCOPE_ROOT_KEY], json!(id.root));
     // The hostile text travels only as data inside the user message.
     let serialized_options = serde_json::to_string(&options).unwrap();
     assert!(!serialized_options.contains("ghp_stolen"));
@@ -288,14 +299,26 @@ fn raw_diff_rejects_escaping_paths_and_non_regular_files() {
         "escaping_path"
     );
     assert_eq!(
-        code(record("100644", "A", "harness/srcx/lib.rs")),
+        code(record("100644", "A", "eval/src/x.rs")),
+        "forbidden_path"
+    );
+    assert_eq!(
+        code(record("100644", "M", ".github/workflows/ci.yml")),
         "forbidden_path"
     );
     assert_eq!(code(record("160000", "A", "harness/src/vendor")), "gitlink");
     assert_eq!(code(record("120000", "A", "harness/tests/link")), "symlink");
     assert_eq!(code(String::new()), "no_diff");
-    let paths = check_raw_diff(&record("100644", "A", "harness/tests/window.rs")).unwrap();
-    assert_eq!(paths[0].change, "A");
+    for path in [
+        "harness/tests/window.rs",
+        "harness/Cargo.toml",
+        "context-manager/src/lib.rs",
+        "kits/deepwork/agents/deepwork.md",
+        "crates/console-ui/src/lib.rs",
+    ] {
+        let paths = check_raw_diff(&record("100644", "A", path)).unwrap();
+        assert_eq!(paths[0].change, "A");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -308,7 +331,7 @@ fn allowed_change_commits_once_and_survives_a_lost_worktree() {
     let before = active_state(&cfg);
     let id = prepared(&cfg, "cycle_ok");
     assert_eq!(tip(&cfg, &id), cfg.base_sha);
-    let crate_root = Path::new(&id.harness_root);
+    let crate_root = Path::new(&id.root).join("harness");
     assert_eq!(
         std::fs::read_to_string(crate_root.join("src/lib.rs")).unwrap(),
         "pub fn window() {}\n",
@@ -368,13 +391,8 @@ fn hostile_or_empty_diffs_are_rejected_without_a_commit() {
     type Write = fn(&Path);
     let cases: [(&str, Write, &str); 5] = [
         (
-            "manifest",
-            |wt| {
-                write(
-                    &wt.join("harness/Cargo.toml"),
-                    "[package]\nbuild = \"evil.rs\"\n",
-                )
-            },
+            "workflow",
+            |wt| write(&wt.join(".github/workflows/ci.yml"), "on: push\njobs: {}\n"),
             "forbidden_path",
         ),
         (
@@ -410,7 +428,7 @@ fn hostile_or_empty_diffs_are_rejected_without_a_commit() {
         // A legitimate edit alongside does not launder the hostile one.
         if code != "no_diff" {
             write(
-                &Path::new(&id.harness_root).join("src/lib.rs"),
+                &Path::new(&id.root).join("harness/src/lib.rs"),
                 "pub fn window() { 1; }\n",
             );
         }
@@ -422,13 +440,40 @@ fn hostile_or_empty_diffs_are_rejected_without_a_commit() {
     assert_eq!(active_state(&cfg), before);
 }
 
+#[test]
+fn a_commit_names_every_worker_its_change_runs_in() {
+    let (_scratch, cfg) = setup();
+    let id = prepared(&cfg, "cycle_units");
+    let worktree = Path::new(&id.worktree);
+    write(
+        &worktree.join("crates/paths/src/lib.rs"),
+        "pub fn root() { 1; }\n",
+    );
+    write(&worktree.join("packages/ui/index.js"), "export {}\n");
+    write(&worktree.join("kits/deepwork/agents/lead.md"), "lead\n");
+    write(&worktree.join("docs/notes.md"), "notes\n");
+    write(&worktree.join("README.md"), "readme\n");
+    write(&worktree.join("rust-toolchain.toml"), "[toolchain]\n");
+    let commit = collect_commit(&cfg, &id).unwrap().unwrap();
+    assert_eq!(
+        commit.units,
+        [
+            "context-manager",
+            "judge",
+            "kits/deepwork",
+            "rust-toolchain.toml"
+        ],
+        "dependents of the shared crate and package, the kit and the build file; no docs"
+    );
+}
+
 #[tokio::test]
 async fn repository_authority_is_checked_before_checkout_and_publication() {
     let (scratch, mut cfg) = setup();
     let repo = Path::new(&cfg.repository);
     let id = prepared(&cfg, "cycle_pub");
     write(
-        &Path::new(&id.harness_root).join("src/lib.rs"),
+        &Path::new(&id.root).join("harness/src/lib.rs"),
         "pub fn window() { 2; }\n",
     );
     let commit = collect_commit(&cfg, &id).unwrap().unwrap();
@@ -552,7 +597,7 @@ async fn publication_timeout_is_bounded_and_keeps_the_remote_outcome_unknown() {
     );
     let id = prepared(&cfg, "timeout");
     write(
-        &Path::new(&id.harness_root).join("src/lib.rs"),
+        &Path::new(&id.root).join("harness/src/lib.rs"),
         "pub fn window() { 2; }\n",
     );
     let commit = collect_commit(&cfg, &id).unwrap().unwrap();
@@ -753,7 +798,7 @@ async fn start_reconciles_before_sending_and_poll_commits_with_measured_cost() {
     ));
     // What the coder calls would have written inside the scoped crate.
     write(
-        &Path::new(&first.identity.harness_root).join("src/lib.rs"),
+        &Path::new(&first.identity.root).join("harness/src/lib.rs"),
         "pub fn window() { 3; }\n",
     );
     rig.harness.lock().unwrap().turn = Some(("turn-1".into(), "completed"));
@@ -863,10 +908,7 @@ fn proposal_actor_is_read_only_and_a_hostile_case_cannot_widen_it() {
         Some(id.idempotency_key.as_str())
     );
     let metadata = request.session.unwrap().metadata.unwrap();
-    assert_eq!(
-        metadata[FS_SCOPE_KEY][FS_SCOPE_ROOT_KEY],
-        json!(id.harness_root)
-    );
+    assert_eq!(metadata[FS_SCOPE_KEY][FS_SCOPE_ROOT_KEY], json!(id.root));
     assert!(!serde_json::to_string(&options)
         .unwrap()
         .contains("ghp_stolen"));
@@ -891,17 +933,22 @@ fn invented_references_and_insufficient_evidence_are_rejected() {
     let cite = |path: &str, start: u64, end: u64| {
         answer(json!([{ "path": path, "line_start": start, "line_end": end }]))
     };
-    assert_eq!(code(cite("src/ghost.rs", 1, 1)), "invented_reference");
-    assert_eq!(code(cite("src/wip.rs", 1, 1)), "invented_reference");
-    assert_eq!(code(cite("src/lib.rs", 1, 2)), "invented_reference");
-    assert_eq!(code(cite("src/lib.rs", 0, 1)), "invented_reference");
+    assert_eq!(
+        code(cite("harness/src/ghost.rs", 1, 1)),
+        "invented_reference"
+    );
+    assert_eq!(code(cite("harness/src/wip.rs", 1, 1)), "invented_reference");
+    assert_eq!(code(cite("harness/src/lib.rs", 1, 2)), "invented_reference");
+    assert_eq!(code(cite("harness/src/lib.rs", 0, 1)), "invented_reference");
     assert_eq!(code(cite("../eval/src/decision.rs", 1, 1)), "escaping_path");
-    assert_eq!(code(cite("Cargo.toml", 1, 1)), "forbidden_path");
+    assert_eq!(code(cite("eval/src/decision.rs", 1, 1)), "forbidden_path");
+    // Any other worker's source is a place to change.
+    check_proposal(&cfg, &id, &cite("harness/Cargo.toml", 1, 2)).unwrap();
     assert_eq!(code(answer(json!([]))), "proposal_invalid");
-    let mut blank = cite("src/lib.rs", 1, 1);
+    let mut blank = cite("harness/src/lib.rs", 1, 1);
     blank["hypothesis"] = json!(" ");
     assert_eq!(code(blank), "proposal_invalid");
-    let mut extra = cite("src/lib.rs", 1, 1);
+    let mut extra = cite("harness/src/lib.rs", 1, 1);
     extra["new_criteria"] = json!(["passes"]);
     assert_eq!(code(extra), "proposal_invalid");
     let insufficient = json!({ "verdict": "insufficient_evidence", "hypothesis": "", "change": "",
@@ -909,8 +956,8 @@ fn invented_references_and_insufficient_evidence_are_rejected() {
     let rejection = check_proposal(&cfg, &id, &insufficient).unwrap_err();
     assert_eq!(rejection.code, "insufficient_evidence");
     assert!(rejection.reason.contains("which step grew"));
-    // Absolute tool paths inside the scoped crate are accepted.
-    let absolute = format!("{}/tests/window.rs", id.harness_root);
+    // Absolute tool paths inside the checkout are accepted.
+    let absolute = format!("{}/harness/tests/window.rs", id.root);
     let proposal = check_proposal(&cfg, &id, &cite(&absolute, 1, 2)).unwrap();
     assert_eq!(proposal.citations[0].path, "harness/tests/window.rs");
 }
@@ -965,7 +1012,8 @@ async fn proposal_resumes_without_redispatch_and_becomes_the_actual_brief() {
     {
         let mut harness = rig.harness.lock().unwrap();
         harness.turn = Some(("turn-1".into(), "completed"));
-        harness.result = answer(json!([{ "path": "src/lib.rs", "line_start": 1, "line_end": 1 }]));
+        harness.result =
+            answer(json!([{ "path": "harness/src/lib.rs", "line_start": 1, "line_end": 1 }]));
     }
     let done = poll_proposal(&rig.iii, &cfg, &started).await.unwrap();
     assert_eq!(

@@ -891,21 +891,6 @@ pub fn decide(
     let primary = judged(&plan.criterion);
     let preserved: Vec<EvidenceV1> = plan.preserved.iter().map(judged).collect();
     let (outcome, reason) = verdict(&comparability, &plan.criterion, &primary, &preserved);
-    let (outcome, reason) = if outcome == DecisionOutcomeV1::Accepted
-        && (baseline.expected_revision.is_some() || candidate.expected_revision.is_some())
-        && matches!(
-            plan.criterion.metric,
-            CriterionMetricV1::Tokens
-                | CriterionMetricV1::CostUsd
-                | CriterionMetricV1::FunctionCalls
-        ) {
-        (
-            DecisionOutcomeV1::Inconclusive,
-            "source qualification requires an independent meter: tokens, cost and function-call totals are reported by the Harness candidate itself; uncached input/output tokens do not measure context consumption".into(),
-        )
-    } else {
-        (outcome, reason)
-    };
     CycleDecisionV1 {
         outcome,
         reason,
@@ -1005,11 +990,15 @@ pub fn decide_cycle(
     if let Some(decided) = &record.decision {
         return Ok(decided.clone());
     }
-    let decision = spent(
-        decide(plan, baseline, candidate, evidence, now),
+    let decision = measured(
+        spent(
+            decide(plan, baseline, candidate, evidence, now),
+            plan,
+            ledger,
+            now,
+        ),
         plan,
-        ledger,
-        now,
+        record,
     );
     record.decision = Some(decision.clone());
     record.updated_at = now;
@@ -1054,6 +1043,66 @@ pub fn decide_artifact(
     record.artifact_decision = Some(decision.clone());
     record.updated_at = now;
     Ok(decision)
+}
+
+/// Whether `worker` produces the token, cost and function-call totals: the
+/// Harness counts them (`harness::metrics`) from the usage the router and
+/// the providers report.
+fn meters(worker: &str) -> bool {
+    matches!(worker, "harness" | "llm-router") || worker.starts_with("provider-")
+}
+
+/// An accepted source decision stands only on what the validation ran:
+/// every unit the candidate changes is built from the candidate commit by
+/// the source stack, and a total the changed code itself reports never
+/// qualifies that change.
+fn measured(
+    mut decision: CycleDecisionV1,
+    plan: &CyclePlanV1,
+    record: &CycleRecordV1,
+) -> CycleDecisionV1 {
+    let units = record
+        .candidate
+        .as_ref()
+        .and_then(|state| state.candidate.as_ref()?.commit.as_ref())
+        .map(|commit| commit.units.as_slice())
+        .unwrap_or_default();
+    if decision.outcome != DecisionOutcomeV1::Accepted || units.is_empty() {
+        return decision;
+    }
+    let built = record
+        .config
+        .as_ref()
+        .and_then(|stored| stored.config.validation.as_ref())
+        .map(ValidationConfigV1::built_from_commit)
+        .unwrap_or_default();
+    let unbuilt: Vec<&str> = units
+        .iter()
+        .filter(|unit| !built.contains(*unit))
+        .map(String::as_str)
+        .collect();
+    let self_reported = matches!(
+        plan.criterion.metric,
+        CriterionMetricV1::Tokens | CriterionMetricV1::CostUsd | CriterionMetricV1::FunctionCalls
+    );
+    let gap = if !unbuilt.is_empty() {
+        format!(
+            "the candidate changes {} and the validation stack does not build it from the \
+             candidate commit, so no run measured that change",
+            unbuilt.join(", ")
+        )
+    } else if let Some(meter) = units.iter().find(|unit| self_reported && meters(unit)) {
+        format!(
+            "source qualification requires an independent meter: {meter} counts the {:?} \
+             total this plan measures, and the candidate changes it",
+            plan.criterion.metric
+        )
+    } else {
+        return decision;
+    };
+    decision.outcome = DecisionOutcomeV1::Inconclusive;
+    decision.reason = format!("{gap}; {}", decision.reason);
+    decision
 }
 
 fn spent(

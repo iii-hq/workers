@@ -465,7 +465,7 @@ export interface ProposalIdentity {
   base_sha: string
   input_digest: string
   worktree: string
-  harness_root: string
+  root: string
   session_id: string
   idempotency_key: string
 }
@@ -507,7 +507,7 @@ export interface CandidateIdentity {
   brief_digest: string
   branch: string
   worktree: string
-  harness_root: string
+  root: string
   session_id: string
   idempotency_key: string
 }
@@ -516,6 +516,8 @@ export interface CandidateCommit {
   base_sha: string
   candidate_sha: string
   paths: { path: string; change: string }[]
+  /** What runs the change: worker names, `kits/<name>`, other top-level paths. */
+  units?: string[]
   patch: string
   patch_digest: string
 }

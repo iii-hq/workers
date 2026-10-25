@@ -137,16 +137,18 @@ pub struct JudgeConfigV1 {
     pub estimated_usd: f64,
 }
 
-/// E2E stacks in the E2E's own shape that pin only the Harness: everything
-/// else (Engine, evaluator, other workers) stays fixed between the sides.
+/// E2E stacks in the E2E's own shape. Every worker a candidate may change is
+/// declared in the source stack as a `package://<worker>` container with
+/// `commit: {commit}`, so both sides build it from their own commit;
+/// everything else (Engine, evaluator, unchanged workers) stays fixed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ValidationConfigV1 {
     #[serde(rename = "where")]
     pub where_: WhereV1,
     pub stack_name: String,
-    /// Stack YAML pinning a source revision; `{commit}` is replaced by the
-    /// 40-hex sha.
+    /// Stack YAML pinning a source revision; every `{commit}` is replaced by
+    /// the 40-hex sha.
     pub source_stack_template: String,
     /// Stack YAML pinning an immutable Registry version; `{version}` is
     /// replaced by it.
@@ -159,6 +161,25 @@ impl ValidationConfigV1 {
             name: self.stack_name.clone(),
             yaml: self.source_stack_template.replace("{commit}", commit),
         }
+    }
+
+    /// The workers the source stack builds from the commit: each container
+    /// `package://<worker>` whose `commit` is `{commit}`.
+    pub fn built_from_commit(&self) -> std::collections::BTreeSet<String> {
+        // A letters-only stand-in stays a YAML string however it is quoted.
+        const PIN: &str = "candidatecommit";
+        let yaml = self.source_stack_template.replace("{commit}", PIN);
+        let Ok(stack) = serde_yaml::from_str::<serde_yaml::Value>(&yaml) else {
+            return Default::default();
+        };
+        stack["containers"]
+            .as_mapping()
+            .into_iter()
+            .flatten()
+            .filter(|(_, container)| container["commit"].as_str() == Some(PIN))
+            .filter_map(|(_, container)| container["worker"].as_str()?.strip_prefix("package://"))
+            .map(str::to_string)
+            .collect()
     }
 
     pub fn artifact_stack(&self, version: &str) -> StackV1 {

@@ -42,7 +42,7 @@ const PRIOR: &str = "0.9.0";
 const PLAN_HASH: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const TARGET: &str = "x86_64-unknown-linux-gnu";
 const NAMESPACE: &str = "promotion-target";
-const SOURCE_TEMPLATE: &str = "workers:\n  harness: commit:{commit}\n  engine: 0.22.0\n";
+const SOURCE_TEMPLATE: &str = "iii: 0.22.0\ncontainers:\n  harness:\n    worker: package://harness\n    commit: \"{commit}\"\n  context-manager:\n    worker: package://context-manager\n    commit: \"{commit}\"\n";
 const ARTIFACT_TEMPLATE: &str = "workers:\n  harness: {version}\n  engine: 0.22.0\n";
 
 fn sha256(bytes: &[u8]) -> String {
@@ -1138,6 +1138,11 @@ impl Rig {
     }
 
     async fn reach_validation(&mut self) -> (String, String) {
+        Box::pin(self.reach_validation_changing("harness/src/lib.rs")).await
+    }
+
+    /// [`Self::reach_validation`] with the actor writing `file`.
+    async fn reach_validation_changing(&mut self, file: &str) -> (String, String) {
         let cycle_id = self.begin_source().await;
         let record = self.cycle(&cycle_id).await;
         assert_eq!(
@@ -1174,7 +1179,7 @@ impl Rig {
             json!({
             "verdict": "proposal", "hypothesis": "window() keeps every distractor document",
             "change": "summarise ingested documents in window()",
-            "citations": [{"path": "src/lib.rs", "line_start": 1, "line_end": 1}],
+            "citations": [{"path": "harness/src/lib.rs", "line_start": 1, "line_end": 1}],
             "insufficient_reason": ""}),
         );
         self.tick().await;
@@ -1195,11 +1200,9 @@ impl Rig {
         );
 
         let identity = record.candidate.as_ref().unwrap().identity.clone();
-        std::fs::write(
-            Path::new(&identity.harness_root).join("src/lib.rs"),
-            "pub fn window() { summarise(); }\n",
-        )
-        .unwrap();
+        let written = Path::new(&identity.root).join(file);
+        std::fs::create_dir_all(written.parent().unwrap()).unwrap();
+        std::fs::write(written, "pub fn window() { summarise(); }\n").unwrap();
         self.world().complete_session("loop-candidate-", json!({}));
         // The push to the official origin is the one effect an offline test
         // cannot perform (and must never attempt): its recorded result is
@@ -1244,7 +1247,7 @@ impl Rig {
                 .iter()
                 .map(|path| path.path.as_str())
                 .collect::<Vec<_>>(),
-            ["harness/src/lib.rs"]
+            [file]
         );
         assert_eq!(
             state.publish.as_ref().unwrap().candidate_sha,
@@ -1724,6 +1727,54 @@ async fn without_promotion_an_accepted_source_candidate_is_decided_and_never_rel
         outcome.detail.contains("nothing released"),
         "{}",
         outcome.detail
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn an_accepted_change_to_another_worker_is_decided_and_left_on_its_branch() {
+    let Some(mut rig) = Rig::start("otherworker").await else {
+        return;
+    };
+    rig.configure(true).await;
+    let (cycle_id, candidate_sha) =
+        Box::pin(rig.reach_validation_changing("context-manager/src/lib.rs")).await;
+    rig.world().e2e.finish(
+        "plan-2",
+        "passed",
+        side(TOKENS, FIXED),
+        &candidate_system(candidate_sha),
+    );
+    rig.changed("plan-2").await;
+    let record = rig.cycle(&cycle_id).await;
+    let commit = record
+        .candidate
+        .as_ref()
+        .unwrap()
+        .candidate
+        .as_ref()
+        .unwrap();
+    assert_eq!(commit.commit.as_ref().unwrap().units, ["context-manager"]);
+    assert_eq!(
+        record.decision.as_ref().unwrap().outcome,
+        DecisionOutcomeV1::Accepted,
+        "{:?}",
+        record.decision
+    );
+    let outcome = record.outcome.unwrap();
+    assert_eq!(outcome.code, OutcomeCodeV1::Decided);
+    assert!(
+        outcome.detail.contains("approved, not released")
+            && outcome.detail.contains("context-manager"),
+        "{}",
+        outcome.detail
+    );
+    let seen = rig.services.lock().unwrap().seen.clone();
+    assert!(
+        !seen
+            .iter()
+            .any(|(key, _)| key.contains("refs/heads/main") || key.contains("/operations")),
+        "nothing merged or built: {seen:?}"
     );
 }
 
@@ -2688,31 +2739,19 @@ async fn assert_pending_then_restored_at_a_limit(rig: &mut Rig, cycle_id: &str) 
 
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
-async fn a_token_objective_never_qualifies_a_source_change() {
+async fn a_token_objective_is_planned_and_judged_by_what_the_candidate_changes() {
     let Some(rig) = Rig::start("tokens").await else {
         return;
     };
     rig.configure(true).await;
     let cycle_id = rig.begin(json!({"objective": OBJECTIVE})).await;
     let record = rig.cycle(&cycle_id).await;
-    let outcome = record.outcome.clone().unwrap();
-    assert_eq!(
-        outcome.code,
-        OutcomeCodeV1::NoCoverage,
-        "{}",
-        outcome.detail
-    );
-    assert!(
-        outcome.detail.contains("harness::metrics"),
-        "{}",
-        outcome.detail
-    );
-    assert!(record.plan.is_none(), "nothing frozen to spend on");
-    assert!(rig.world().e2e.dispatched.is_empty(), "no baseline");
-    assert!(
-        rig.world().calls_to("harness::send").is_empty(),
-        "no paid actor"
-    );
+    // Whether the totals are independent depends on the candidate's diff
+    // (see the decision tests); the cycle is not stopped before one exists.
+    let plan = record.plan.clone().expect("a frozen plan");
+    assert_eq!(plan.criterion.metric, CriterionMetricV1::Tokens);
+    assert_eq!(record.outcome, None, "{:?}", record.history);
+    assert_eq!(rig.world().e2e.dispatched.len(), 1, "the baseline");
 }
 
 #[cfg(target_os = "linux")]

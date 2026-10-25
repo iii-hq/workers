@@ -56,14 +56,21 @@ There are exactly two inputs, and both converge on one `CycleRecordV1`:
    - The read-only proposal and the candidate actor run only when
      `harness::filesystem::info` reports `boundary: workspace`. Otherwise the
      cycle stops inconclusive before any dispatch.
-   - The actor gets coder read/write inside `harness/` only. It never gets
-     shell, fp, grants, control or credentials.
+   - The actor gets coder read/write/move/delete anywhere in the
+     repository worktree except the loop's own `eval/` and git metadata
+     (`.git*`, `.github/`). It never gets shell, fp, grants, control or
+     credentials.
 8. **Decision in code.** A decision is accepted only when:
    - the pair is comparable on behavior, inputs, contract, model, provider,
      E2E revision, engine, cases and policy;
    - each side ran what it had to: the base, candidate or rc revision as the
-     E2E recorded it, and the frozen stack template with only the Harness
-     pin differing;
+     E2E recorded it, and the frozen stack template with only the commit
+     or rc pin differing;
+   - every unit the candidate changes is built from the candidate commit
+     by the source template;
+   - a total the changed code reports itself (tokens, cost, function
+     calls, counted by `harness`, `llm-router` and `provider-*`) does not
+     qualify a change to that code;
    - every preserved criterion holds;
    - the planned metric moved by the minimum effect under the frozen
      sampling and stop rules (`e2e-loop-rules/5`).
@@ -133,18 +140,16 @@ There are exactly two inputs, and both converge on one `CycleRecordV1`:
 
 An accepted source decision alone is never `promoted`.
 
-## Limitation in this release: self-reported metrics
+## Self-reported metrics
 
 `efficiency.total_tokens`, cost and function-call counts come from
-`harness::metrics`, which is code a candidate may change. The tokens figure
-also counts only input plus output, without cache. These counts therefore
-never qualify a source change in this release:
+`harness::metrics`, which counts the usage `llm-router` and the
+`provider-*` workers report. The tokens figure counts only input plus
+output, without cache.
 
-- With candidate work configured, an objective whose planned metric is
-  tokens, cost or function calls stops before any baseline or paid actor,
-  with outcome `no_coverage` and the exact reason. Context-consumption and
-  skills objectives measured in tokens are in this case.
+- A candidate that changes `harness`, `llm-router` or a `provider-*`
+  worker changes its own meter: these totals do not qualify it, and the
+  decision is inconclusive with the exact reason.
+- A change anywhere else (for example `context-manager` or a kit) is
+  qualified by these totals like by any other metric.
 - The metric is never replaced by another one.
-- Fixes measured by native, independently assessed E2E criteria (for
-  example a lost `criterion_score` from a finished execution) still go
-  through the full source, artifact and canary path.

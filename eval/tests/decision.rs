@@ -1382,7 +1382,12 @@ fn a_candidate_cannot_qualify_by_changing_its_own_meter() {
         evidence::runs_of(&before, "s", &[]),
         evidence::runs_of(&after, "s", &[]),
     );
-    let result = decision::decide(&plan, &baseline, &candidate, &evidence, NOW);
+    let decide = |plan: &CyclePlanV1, units: &[&str], evidence: &[EvidenceV1]| {
+        let mut cycle = changing(units, BUILDS_HARNESS_AND_CONTEXT);
+        decision::freeze(&mut cycle, plan.clone()).unwrap();
+        decision::decide_cycle(&mut cycle, None, &baseline, &candidate, evidence, NOW).unwrap()
+    };
+    let result = decide(&plan, &["harness"], &evidence);
     assert_eq!(
         result.primary.computed_outcome,
         ValidationOutcomeV1::ValidatedImprovement,
@@ -1391,7 +1396,15 @@ fn a_candidate_cannot_qualify_by_changing_its_own_meter() {
     );
     assert_eq!(result.outcome, DecisionOutcomeV1::Inconclusive);
     assert!(
-        result.reason.contains("independent meter"),
+        result.reason.contains("independent meter") && result.reason.contains("harness"),
+        "{}",
+        result.reason
+    );
+    // The same totals qualify a change the meter does not run.
+    let result = decide(&plan, &["context-manager"], &evidence);
+    assert_eq!(
+        result.outcome,
+        DecisionOutcomeV1::Accepted,
         "{}",
         result.reason
     );
@@ -1407,13 +1420,116 @@ fn a_candidate_cannot_qualify_by_changing_its_own_meter() {
                 run.function_calls = Some(0.0);
             }
         }
-        let result = decision::decide(&plan, &baseline, &candidate, &evidence, NOW);
+        let result = decide(&plan, &["llm-router"], &evidence);
         assert_eq!(
             result.outcome,
             DecisionOutcomeV1::Inconclusive,
             "{}",
             result.reason
         );
+    }
+}
+
+const BUILDS_HARNESS_AND_CONTEXT: &str = "containers:\n  harness:\n    worker: package://harness\n    commit: {commit}\n  context-manager:\n    worker: package://context-manager\n    commit: \"{commit}\"\n  fp:\n    worker: package://fp\n    version: 1.0.0\n";
+
+/// A cycle whose candidate commit changes `units`, validated on `template`.
+fn changing(units: &[&str], template: &str) -> CycleRecordV1 {
+    let config: LoopConfigV1 = serde_json::from_value(json!({
+        "subject": {"provider": "p", "model": "m"}, "where": "harness",
+        "runs_per_side": RUNS, "technical_retries": 0, "max_scenarios": 2,
+        "estimated_usd_per_run": 0.5, "min_effect": {"tokens": 1000.0, "pass_rate_pp": 10.0},
+        "budget": {"max_spend_usd": 10.0, "max_duration_ms": 3_600_000, "max_calls": 50,
+            "max_candidates": 1},
+        "validation": {"where": "docker", "stack_name": "loop",
+            "source_stack_template": template, "artifact_stack_template": "{version}"},
+    }))
+    .unwrap();
+    let identity: eval::candidate::CandidateIdentityV1 = serde_json::from_value(json!({
+        "candidate_id": "c", "cycle_id": "cycle-1", "base_sha": "a".repeat(40),
+        "brief_digest": "d", "branch": "feat/loop-candidate-c", "worktree": "/w", "root": "/w",
+        "session_id": "loop-candidate-c", "idempotency_key": "loop-candidate-c:send"}))
+    .unwrap();
+    let mut cycle = record();
+    cycle.config = Some(StoredConfigV1 {
+        config,
+        revision: "r".into(),
+        updated_at: 1,
+    });
+    cycle.candidate = Some(CandidateStateV1 {
+        identity: identity.clone(),
+        candidate: Some(eval::candidate::CandidateV1 {
+            identity,
+            status: eval::candidate::CandidateStatusV1::Completed,
+            turn_id: None,
+            cost: Default::default(),
+            commit: Some(eval::candidate::CandidateCommitV1 {
+                base_sha: "a".repeat(40),
+                candidate_sha: "b".repeat(40),
+                paths: Vec::new(),
+                units: units.iter().map(|unit| unit.to_string()).collect(),
+                patch: String::new(),
+                patch_digest: String::new(),
+            }),
+        }),
+        candidate_tree: None,
+        publish: None,
+    });
+    cycle
+}
+
+#[test]
+fn a_change_the_validation_stack_did_not_build_is_never_accepted() {
+    let (mut baseline, mut candidate) = pair();
+    baseline.expected_revision = Some("a".repeat(40));
+    baseline.identity.workers_revision = baseline.expected_revision.clone();
+    candidate.expected_revision = Some("b".repeat(40));
+    candidate.identity.workers_revision = candidate.expected_revision.clone();
+    let harness_only =
+        "containers:\n  harness:\n    worker: package://harness\n    commit: {commit}\n";
+    for (units, template, accepted) in [
+        (&["context-manager"][..], harness_only, false),
+        (&["context-manager"][..], BUILDS_HARNESS_AND_CONTEXT, true),
+        (
+            &["context-manager", "ade"][..],
+            BUILDS_HARNESS_AND_CONTEXT,
+            false,
+        ),
+        (&["kits/deepwork"][..], BUILDS_HARNESS_AND_CONTEXT, false),
+        // A worker the stack pins to a release still runs the old code.
+        (&["fp"][..], BUILDS_HARNESS_AND_CONTEXT, false),
+    ] {
+        let mut cycle = changing(units, template);
+        decision::freeze(&mut cycle, plan()).unwrap();
+        let decided = decision::decide_cycle(
+            &mut cycle,
+            None,
+            &baseline,
+            &candidate,
+            &cheaper_and_correct(),
+            NOW,
+        )
+        .unwrap();
+        if accepted {
+            assert_eq!(
+                decided.outcome,
+                DecisionOutcomeV1::Accepted,
+                "{units:?}: {}",
+                decided.reason
+            );
+        } else {
+            assert_eq!(
+                decided.outcome,
+                DecisionOutcomeV1::Inconclusive,
+                "{units:?}"
+            );
+            assert!(
+                decided
+                    .reason
+                    .contains("does not build it from the candidate commit"),
+                "{units:?}: {}",
+                decided.reason
+            );
+        }
     }
 }
 

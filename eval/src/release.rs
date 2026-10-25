@@ -1051,6 +1051,29 @@ pub async fn promotion_stage(
         )
         .await;
     };
+    // ponytail: the release ships one worker, the Harness. A change to any
+    // other unit stays approved on its branch; releasing every changed worker
+    // (and proving each running digest) lifts this.
+    let candidate = record.candidate.as_ref();
+    let units = candidate
+        .and_then(|state| state.candidate.as_ref()?.commit.as_ref())
+        .map(|commit| commit.units.clone())
+        .unwrap_or_default();
+    if journal.last().is_none() && !units.is_empty() && units != [crate::promotion::WORKER] {
+        let branch = candidate.map_or("", |state| state.identity.branch.as_str());
+        return end(
+            deps,
+            record,
+            OutcomeCodeV1::Decided,
+            &format!(
+                "approved, not released: the release ships only the {}, and this change is to {}; \
+                 it is delivered from {branch} by hand",
+                crate::promotion::WORKER,
+                units.join(", ")
+            ),
+        )
+        .await;
+    }
     let origins = match deps.release_origins.clone() {
         Some(origins) => Ok(origins),
         None => crate::promotion::PromotionOrigins::from_deployment_env(),
