@@ -117,6 +117,21 @@ impl Deps {
         self
     }
 
+    /// Closes every activation target connection. Each client's connection
+    /// thread outlives the client and keeps redialling its Engine.
+    pub fn close_targets(&self) {
+        let clients: Vec<Arc<IIIClient>> = self
+            .targets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .drain()
+            .map(|(_, client)| client)
+            .collect();
+        for client in clients {
+            client.shutdown();
+        }
+    }
+
     /// A client connected to the explicit activation target's Engine, never
     /// this worker's own Engine unless configured so.
     pub(crate) async fn target(&self, engine_url: &str) -> Result<Arc<IIIClient>, EvalError> {

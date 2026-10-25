@@ -982,10 +982,15 @@ impl Drop for Rig {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.scratch);
         // Each client runs its own connection thread, which outlives the
-        // client and keeps redialling the stopped engine: one rig after
-        // another (the fault matrix) would pile them up.
+        // client and keeps redialling its stopped engine: a later rig's
+        // one-connection fake engine on the same port would serve it
+        // instead of that rig's own client.
         let iii = self.iii.clone();
-        std::thread::spawn(move || iii.shutdown());
+        let deps = self.deps.clone();
+        std::thread::spawn(move || {
+            deps.close_targets();
+            iii.shutdown();
+        });
     }
 }
 
@@ -1137,6 +1142,7 @@ impl Rig {
 
     /// A fresh process on the same storage.
     fn restart(&mut self) {
+        self.deps.close_targets();
         self.deps = Deps::new(self.iii.clone())
             .with_release_origins(origins(&self.http_url))
             .with_candidate_roots(roots(&self.repo));
