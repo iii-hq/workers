@@ -547,9 +547,11 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 
 /// Per-worker in-flight guard shared between the event handler and the
-/// reconciler. Prevents concurrent downloads of the same worker.
+/// reconciler. Prevents concurrent downloads of the same worker, and
+/// remembers which worker versions this process already asked for.
 pub struct InFlightGuard {
     inner: Mutex<HashSet<String>>,
+    tried: Mutex<HashSet<(String, String)>>,
 }
 
 impl Default for InFlightGuard {
@@ -562,7 +564,17 @@ impl InFlightGuard {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(HashSet::new()),
+            tried: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// `true` the first time this process tries `worker` at `version`: a
+    /// worker with no skills bundle, or whose download failed, is not asked
+    /// again on every worker connection, only once Compose reports another
+    /// version of it.
+    pub fn first_try(&self, worker: &str, version: &str) -> bool {
+        let mut tried = self.tried.lock().unwrap_or_else(|p| p.into_inner());
+        tried.insert((worker.to_string(), version.to_string()))
     }
 
     /// Attempt to claim a worker for download. Returns `true` if the

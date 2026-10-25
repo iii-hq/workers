@@ -9,6 +9,11 @@ Coverage: the reads (`list` / `get` / `index`), the registry proxy, the
 downloads, the prose error contract (`D110` / `D112` / `D210` / `D310` /
 `D311`), security validation, and ~150 adversarial / dumb-LLM scenarios.
 
+> **Does not run against the current engine.** The engine refuses the
+> `workers:` entry in `config.yaml` (`UNSUPPORTED_CONFIG_WORKERS`) and no
+> longer starts workers from `~/.iii/workers`; the harness needs porting to a
+> Compose project first.
+
 ## Prerequisites
 
 - Rust toolchain (`cargo` on `$PATH`)

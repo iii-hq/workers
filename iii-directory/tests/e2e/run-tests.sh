@@ -513,21 +513,8 @@ iserr "dumb: bare worker name to functions::info -> error"     "$out"
 out=$(trig directory::engine::functions::info --json '{"function":"directory::skills::get"}')
 iserr "dumb: wrong param 'function' (function_id missing) -> error" "$out"
 
-# ── 11. auto-download + boot reconcile (config has auto_download: true) ───────
-# main.rs registers the internal directory::__on_workers_changed handler, bound
-# to engine::workers-available, and spawns the boot-reconcile task only when
-# auto_download is on. On a worker_connected event the handler reruns the boot
-# reconcile's worker pass over compose::status; with no compose project here
-# that pass is a benign no-op. We drive the handler directly (no daemon).
-echo "==> auto-download + boot reconcile (auto_download:true)"
-out=$(trig directory::engine::functions::info function_id=directory::__on_workers_changed)
-jtrue "auto-download handler registered (auto_download:true)"    "$out" '.function_id == "directory::__on_workers_changed"'
-out=$(trig directory::__on_workers_changed --json '{"event":"worker_connected","worker_id":"w-1"}')
-jtrue "__on_workers_changed worker_connected -> ok"              "$out" '.ok == true'
-out=$(trig directory::__on_workers_changed --json '{"event":"worker_disconnected","worker_id":"w-1"}')
-jtrue "__on_workers_changed worker_disconnected -> ok (no pass)" "$out" '.ok == true'
-out=$(trig directory::__on_workers_changed --json '{}')
-jtrue "__on_workers_changed {} -> ok (no pass)"                  "$out" '.ok == true'
+# ── 11. auto-download: covered in CI by the_worker_pass_downloads_new_workers_and_asks_once_per_version
+# (src/main.rs), against a fake compose::status and registry.
 
 # ── 12. git source: a REAL clone — covers sources/git.rs (run_git_clone + copy) ──
 # Network-dependent (clones a public repo). Set SKIP_GIT=1 to skip in offline CI.

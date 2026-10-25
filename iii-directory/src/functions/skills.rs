@@ -291,7 +291,7 @@ impl RegisteredWorkersCache {
     /// cache, and return the current registered set (falling back to the
     /// last-known set on error). Used by `directory::skills::index` so a
     /// just-registered worker shows up immediately instead of waiting on
-    /// the TTL or a worker-add cache invalidation.
+    /// the TTL or a worker-change cache invalidation.
     pub async fn get_fresh(&self, iii: &IIIClient) -> Option<HashSet<String>> {
         self.fetch_and_store(iii).await
     }
