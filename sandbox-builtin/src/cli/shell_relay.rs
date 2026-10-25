@@ -1031,26 +1031,16 @@ mod tests {
     /// REGRESSION: a tight burst of clean (no owned-id) disconnects
     /// must NOT exhaust the slot pool.
     ///
-    /// Prior bug: every disconnect put the slot into a 250 ms
-    /// `Cooldown` window unconditionally. With `MAX_CLIENTS=16`, a
-    /// burst of 17+ fast sequential connections (tens of ms each)
-    /// finished before slot 0 cooled, so the 17th claim_slot found
-    /// every slot still cooling and the listener refused with
-    /// `early eof on handshake` → host saw S216
-    /// (`relay rejected connection (uid mismatch?)`). Real-world
-    /// repro: `fs-example.mjs` running ~14 happy-path triggers then
-    /// a few adversarial-section setup triggers in <250 ms.
+    /// Prior bug: every disconnect held its slot for a 250 ms cooldown,
+    /// so a burst of 17+ fast sequential connections found every slot
+    /// still held and the 17th was refused (`early eof on handshake`,
+    /// S216 on the host). Real-world repro: `fs-example.mjs` running
+    /// ~14 happy-path triggers then a few more in <250 ms.
     ///
-    /// Fix: only enter Cooldown when SIGKILL fan-out actually
-    /// happened (owned_ids non-empty at session end). Clean
-    /// disconnects — every FS trigger that received its terminal
-    /// frame, every cleanly-exited exec — drop straight to Free,
-    /// so back-to-back trigger bursts don't burn slot capacity.
-    ///
+    /// A clean disconnect now frees its range at once (`release_range`).
     /// This test fires 32 sequential connect/handshake/disconnect
     /// cycles — twice MAX_CLIENTS — and asserts every one received
-    /// its 4-byte handshake. Under the old behavior the 17th would
-    /// time out on read; under the fix all 32 succeed.
+    /// its 4-byte handshake.
     #[tokio::test]
     async fn burst_of_clean_disconnects_does_not_exhaust_slots() {
         let (sock, _vm_guest_sim, _tmp) = boot().await;
