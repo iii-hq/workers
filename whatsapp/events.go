@@ -16,6 +16,7 @@ import (
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 )
 
@@ -177,8 +178,9 @@ func nativeMessageView(e *events.Message, source string) MessageView {
 	case msg.DocumentMessage != nil:
 		v.Kind = "document"
 		v.Text = msg.GetDocumentMessage().GetCaption()
+		v.FileName = msg.GetDocumentMessage().GetFileName()
 		if v.Text == "" {
-			v.Text = msg.GetDocumentMessage().GetFileName()
+			v.Text = v.FileName
 		}
 		contextInfo = msg.GetDocumentMessage().GetContextInfo()
 	case msg.StickerMessage != nil:
@@ -249,12 +251,70 @@ func nativeMessageView(e *events.Message, source string) MessageView {
 	}
 	if v.ExpiresAtMS != nil && *v.ExpiresAtMS <= time.Now().UnixMilli() {
 		v.Kind = "expired"
-		v.Text = ""
+		v.Text, v.FileName = "", ""
 	} else if unknownExpiry && v.ExpiresAtMS == nil {
 		v.Kind = "ephemeral"
-		v.Text = ""
+		v.Text, v.FileName = "", ""
+	} else if v.ExpiresAtMS == nil {
+		// Disappearing messages keep no context, so a quote cannot leak them.
+		v.Context = contextInfo
 	}
 	return v
+}
+
+// nativeMessageEvent projects message.received data. own and ownLID identify the
+// linked account; either may be empty before login.
+func nativeMessageEvent(e *events.Message, v MessageView, own, ownLID types.JID) map[string]any {
+	isMe := func(raw string) bool {
+		j, err := types.ParseJID(raw)
+		if err != nil || j.IsEmpty() {
+			return false
+		}
+		j = j.ToNonAD()
+		return j == own.ToNonAD() || (!ownLID.IsEmpty() && j == ownLID.ToNonAD())
+	}
+	orNil := func(value string) any {
+		if value == "" {
+			return nil
+		}
+		return value
+	}
+	preview, fileName := v.Text, v.FileName
+	if v.ExpiresAtMS != nil {
+		preview, fileName = "", ""
+	}
+	ci := v.Context
+	mentioned := append([]string{}, ci.GetMentionedJID()...)
+	mentionedMe := []string{}
+	for _, jid := range mentioned {
+		if isMe(jid) {
+			mentionedMe = append(mentionedMe, jid)
+		}
+	}
+	var quoted any
+	if ci.GetStanzaID() != "" {
+		// whatsmeow unwraps only the top-level message; a quote keeps its
+		// document-with-caption, ephemeral or view-once wrapper.
+		qe := (&events.Message{Info: types.MessageInfo{Timestamp: e.Info.Timestamp}, RawMessage: ci.GetQuotedMessage()}).UnwrapRaw()
+		q := nativeMessageView(qe, "quoted")
+		if q.ExpiresAtMS != nil {
+			q.Text, q.FileName = "", ""
+		}
+		quoted = map[string]any{"id": ci.GetStanzaID(), "participant": ci.GetParticipant(), "is_me": isMe(ci.GetParticipant()), "kind": q.Kind, "text": clipInboxText(q.Text, 4096), "file_name": q.FileName}
+	}
+	// A revoke or edit reports the original author as sender. When that is not
+	// the envelope's sender (a group admin's revoke), the envelope's alternate
+	// JID and push name are someone else's.
+	senderAlt, pushName := e.Info.SenderAlt.ToNonAD().String(), e.Info.PushName
+	if v.SenderID != e.Info.Sender.ToNonAD().String() {
+		senderAlt, pushName = "", ""
+	}
+	source := map[string]any{"chat": v.ChatID, "sender": v.SenderID, "sender_alt": orNil(senderAlt), "is_from_me": v.FromMe, "is_group": e.Info.IsGroup, "addressing_mode": orNil(string(e.Info.AddressingMode))}
+	return map[string]any{
+		"info":    map[string]any{"id": v.MessageID, "timestamp_ms": v.TimestampMS, "push_name": pushName, "edited": v.Edited, "source": source},
+		"message": map[string]any{"conversation": preview, "mentioned_jids": mentioned, "mentions_me": len(mentionedMe) > 0, "mentioned_me_jids": mentionedMe, "file_name": fileName, "quoted": quoted},
+		"kind":    v.Kind,
+	}
 }
 func (m *Manager) handleNativeEvent(s *Session, client *whatsmeow.Client, capture *InboxCapture, event any) bool {
 	s.callbacks.Lock()
@@ -331,11 +391,7 @@ func (m *Manager) handleNativeEvent(s *Session, client *whatsmeow.Client, captur
 		}
 		err = capture.Record([]MessageView{view})
 		if err == nil {
-			preview := view.Text
-			if view.ExpiresAtMS != nil {
-				preview = ""
-			}
-			err = m.emit(s, "message.received", map[string]any{"info": map[string]any{"id": view.MessageID, "source": map[string]any{"chat": view.ChatID, "sender": view.SenderID, "is_from_me": view.FromMe}}, "message": map[string]any{"conversation": preview}, "kind": view.Kind})
+			err = m.emit(s, "message.received", nativeMessageEvent(e, view, client.Store.GetJID(), client.Store.GetLID()))
 		}
 	case *events.HistorySync:
 		var count int

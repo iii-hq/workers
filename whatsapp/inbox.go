@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"go.mau.fi/whatsmeow/proto/waE2E"
 )
 
 type MessageView struct {
@@ -30,6 +32,10 @@ type MessageView struct {
 	Status      *string `json:"status"`
 	ExpiresAtMS *int64  `json:"-"`
 	Edited      bool    `json:"-"`
+	// Mentions, the quoted message and a document's file name, kept only for
+	// live event projection.
+	Context  *waE2E.ContextInfo `json:"-"`
+	FileName string             `json:"-"`
 }
 type ExternalReceipt struct {
 	MessageID, ChatID, Status string
