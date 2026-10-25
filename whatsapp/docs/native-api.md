@@ -59,6 +59,28 @@ Payloads contain `session_id`, `sequence`, `kind`, `timestamp_ms`, and `data`.
 Callbacks preserve the binding's namespace and metadata. QR/pairing events
 announce availability/expiry and do not contain the pairing secret.
 
+`message.received` data contains `info`, `message` and `kind`. `info` holds
+`id`, `timestamp_ms`, `push_name`, `edited` and `source` (`chat`, `sender`,
+`sender_alt`, `is_from_me`, `is_group`, `addressing_mode`; `sender_alt` and
+`addressing_mode` are `null` when absent). A revoke reports the original author
+as `sender`; when someone else revoked it (a group admin), `sender_alt` is `null`
+and `push_name` is empty, because the envelope's values are the admin's.
+
+`message` holds `conversation`, `mentioned_jids`, `mentions_me`,
+`mentioned_me_jids`, `file_name` and `quoted`. `mentions_me` matches any
+mentioned JID, device ignored, against the linked account's phone JID or LID;
+`mentioned_me_jids` lists the entries that matched. `file_name` is the message's
+own document file name (empty for other kinds); a document without a caption
+repeats it in `conversation`. `quoted` is `null` unless the message replies to
+another one, and otherwise holds its `id`, `participant`, `is_me`, `kind`, `text`
+(at most 4096 bytes) and `file_name` (empty unless it is a document). A reply
+whose quoted message was not sent along (a stanza ID without the message) still
+gets `quoted`, with `kind` `unknown` and empty `text` and `file_name`.
+
+View-once and disappearing messages expose no text, file name, mentions or
+quote. A quoted view-once message has `kind` `view_once`; a quoted disappearing
+one keeps its kind with empty `text` and `file_name`.
+
 Delivery is best effort, with a bounded broadcast queue and per-session event
 ring. Reconcile with `whatsapp::events::poll` using `after_sequence` and
 `limit`; use `whatsapp::chats::list` and `whatsapp::messages::list` for the local
