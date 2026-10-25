@@ -1218,6 +1218,10 @@ mod tests {
             writer.write_all(&end.unwrap()).unwrap();
             let rest = FRAMES - SEND_WINDOW as usize;
             stream_with_credit(&mut reader, &mut writer, ids[0], rest, 0);
+            // Keep the port open, as a live VM does: closing it fails the
+            // relay's next Credit write, which ends the slow client before
+            // its last frames reach it.
+            while let Ok(Some(_)) = read_frame_blocking(&mut reader) {}
         });
         let (mut slow, _) = open_session(&sock, &cat_request()).await;
         // So the guest sees the slow session's request first.
