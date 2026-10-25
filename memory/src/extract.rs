@@ -3230,6 +3230,25 @@ mod tests {
     }
 
     #[test]
+    fn known_limit_user_facts_that_both_lead_with_user_still_join() {
+        // Extraction's usual form for user facts leads both with "User", so
+        // the lead rule never sees their subjects: one line when untagged.
+        let joined = [
+            (
+                "User takes 10 mg of zinc every morning.",
+                "User takes 10 mg of iron every morning.",
+            ),
+            (
+                "User has a sister who works as a nurse in Madrid.",
+                "User has a cousin who works as a nurse in Madrid.",
+            ),
+        ];
+        for (a, b) in joined {
+            assert!(same_fact(a, b), "{a} ~ {b}");
+        }
+    }
+
+    #[test]
     fn supersedes_needs_a_marker_new_values_and_most_old_words() {
         let changes = [
             (
