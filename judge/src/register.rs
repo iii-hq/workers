@@ -213,7 +213,21 @@ async fn forward(
         action: None,
         timeout_ms: Some(timeout_ms),
     };
-    match iii.trigger(request).await {
+    let reply = if public_id == FUNCTION_ID {
+        // The caller's name is looked up beside the call, never before it.
+        let started = std::time::Instant::now();
+        let (named, reply) =
+            tokio::join!(crate::usage::caller_name(iii, caller.as_deref()), async {
+                let reply = iii.trigger(request).await;
+                (reply, started.elapsed())
+            });
+        let (reply, elapsed) = reply;
+        crate::usage::record(&named, &provider, &reply, elapsed);
+        reply
+    } else {
+        iii.trigger(request).await
+    };
+    match reply {
         Ok(reply) => Ok(Ok(reply)),
         Err(Error::Remote { code, .. }) if code.eq_ignore_ascii_case("function_not_found") => {
             Ok(Err(ErrorCode::ProviderUnavailable))
