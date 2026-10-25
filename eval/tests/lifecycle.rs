@@ -2457,7 +2457,7 @@ async fn interrupted_two_worker_ship(
     at: impl Fn(&CycleRecordV1, usize) -> bool,
 ) -> ShipEnd {
     let mut rig = Rig::start("fault").await.unwrap();
-    let (cycle_id, context_digest) = two_worker_ship(&mut rig).await;
+    let (cycle_id, context_digest) = Box::pin(two_worker_ship(&mut rig)).await;
     let mut failures = HashMap::new();
     let mut ran = 0;
     while !at(&rig.cycle(&cycle_id).await, ran) && deliver_one(&rig, &mut failures).await {
@@ -2472,12 +2472,12 @@ async fn interrupted_two_worker_ship(
             rig.world().steps.pop_front();
         }
         Fault::Cancel => {
-            runtime::cycle_cancel(
+            Box::pin(runtime::cycle_cancel(
                 &rig.deps,
                 CycleIdRequestV1 {
                     cycle_id: cycle_id.clone(),
                 },
-            )
+            ))
             .await
             .unwrap();
         }
@@ -2579,7 +2579,7 @@ fn first_activated(record: &CycleRecordV1, _: usize) -> bool {
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_refused_second_pin_is_asked_again_and_the_ship_completes() {
-    let end = interrupted_two_worker_ship(Fault::Refused, first_activated).await;
+    let end = Box::pin(interrupted_two_worker_ship(Fault::Refused, first_activated)).await;
     assert!(end.fine, "{}", shown_end(&end));
     assert_eq!(
         end.record.outcome.as_ref().map(|outcome| outcome.code),
@@ -2594,7 +2594,7 @@ async fn a_refused_second_pin_is_asked_again_and_the_ship_completes() {
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
 async fn an_activation_whose_process_exits_restores_every_worker() {
-    let end = interrupted_two_worker_ship(Fault::Exits, first_activated).await;
+    let end = Box::pin(interrupted_two_worker_ship(Fault::Exits, first_activated)).await;
     assert!(end.fine, "{}", shown_end(&end));
     assert_eq!(
         end.record.outcome.as_ref().map(|outcome| outcome.code),
@@ -2608,7 +2608,7 @@ async fn an_activation_whose_process_exits_restores_every_worker() {
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
 async fn cancelling_between_two_activations_restores_both() {
-    let end = interrupted_two_worker_ship(Fault::Cancel, first_activated).await;
+    let end = Box::pin(interrupted_two_worker_ship(Fault::Cancel, first_activated)).await;
     assert!(end.fine, "{}", shown_end(&end));
 }
 
@@ -2673,8 +2673,8 @@ async fn a_refused_rollback_never_keeps_the_other_worker_from_its_prior() {
 async fn every_interruption_of_a_two_worker_ship_ends_all_released_or_all_prior() {
     let steps = {
         let mut rig = Rig::start("count").await.unwrap();
-        two_worker_ship(&mut rig).await;
-        deliver_all(&rig).await
+        Box::pin(two_worker_ship(&mut rig)).await;
+        Box::pin(deliver_all(&rig)).await
     };
     assert!(steps >= 6, "the ship takes several steps: {steps}");
     let mut broken = Vec::new();
@@ -2690,7 +2690,7 @@ async fn every_interruption_of_a_two_worker_ship_ends_all_released_or_all_prior(
             Fault::Deny,
         ] {
             let started = std::time::Instant::now();
-            let end = interrupted_two_worker_ship(fault, |_, ran| ran == at).await;
+            let end = Box::pin(interrupted_two_worker_ship(fault, |_, ran| ran == at)).await;
             eprintln!(
                 "{at:>2} {fault:<8?} {:>5}ms {:<6} {}",
                 started.elapsed().as_millis(),

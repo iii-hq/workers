@@ -186,6 +186,10 @@ cycle runs these steps:
 11. One canary runs on the target's own E2E and must have run every
     activated executable.
 
+A target Engine that does not answer is waited for on the sweep at any of
+these steps, within the cycle's limits; nothing is sent to it before it
+does.
+
 The canary ends one of three ways:
 
 - **Held:** the cycle is `promoted`. Any loss of a measured condition is a
