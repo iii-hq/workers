@@ -32,7 +32,8 @@
 //! no live client holds and no session the guest may still be ending
 //! uses (see [`Clients`]), so a session's late frames can never reach
 //! another client, and a client's slot is free again the moment it
-//! leaves.
+//! leaves. A client frame for an id whose session has ended registers
+//! nothing.
 //!
 //! Flow control: the guest sends a session at most
 //! [`iii_shell_proto::SEND_WINDOW`] output frames ahead of what its
@@ -74,6 +75,18 @@ pub const MAX_CLIENTS: u32 = 16;
 /// Size of each connection's `corr_id` range. Ranges cycle through the
 /// `u32` space, one per connection.
 pub const ID_RANGE_STEP: u32 = 1 << 16;
+
+/// How many ranges there are: the whole `u32` space. Tests use one per
+/// client, so a freed range is handed out again at once.
+#[cfg(not(test))]
+const RANGES: u32 = u32::MAX / ID_RANGE_STEP + 1;
+#[cfg(test)]
+const RANGES: u32 = MAX_CLIENTS;
+
+/// How long a session whose client left may keep its range out of use
+/// while the guest ends it. A SIGKILLed session ends at once; one the guest
+/// never ends (it never had that session) must not park its range for good.
+const LINGER_MAX: Duration = Duration::from_secs(60);
 
 /// A pre-read frame ready to forward. Owns its bytes — tasks hand
 /// these around via mpsc and write them out whole.
@@ -124,10 +137,11 @@ struct Clients {
     live: HashSet<u32>,
     /// Where the search for the next free range starts.
     next_range: u32,
-    /// Sessions whose client left before the guest ended them. Their
-    /// late frames find no route, and their range is not handed out
-    /// again until the guest's terminal frame for them arrives.
-    lingering: HashSet<u32>,
+    /// Sessions whose client left before the guest ended them, with when
+    /// they stop counting. Their late frames find no route, and their range
+    /// is not handed out again until the guest's terminal frame for them
+    /// arrives or [`LINGER_MAX`] passes.
+    lingering: HashMap<u32, Instant>,
 }
 
 type ClientTable = Arc<Mutex<Clients>>;
@@ -342,8 +356,7 @@ async fn vm_writer_task(
 /// Reads framed bytes from the VM, extracts the `corr_id` + flags
 /// header without parsing the JSON payload, and forwards to the
 /// owning client's mpsc. Terminal frames remove the route entry
-/// after forwarding so the next request with the same id (if any)
-/// gets a fresh session.
+/// after forwarding; the client's later frames for that id go nowhere.
 async fn vm_reader_task(
     mut vm_read: tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>,
     routes: Routes,
@@ -478,13 +491,15 @@ fn claim_range(clients: &ClientTable) -> Option<u32> {
     if clients.live.len() >= MAX_CLIENTS as usize {
         return None;
     }
-    for _ in 0..=u32::MAX / ID_RANGE_STEP {
+    let now = Instant::now();
+    clients.lingering.retain(|_, until| *until > now);
+    for _ in 0..RANGES {
         let id_offset = clients.next_range;
-        clients.next_range = id_offset.wrapping_add(ID_RANGE_STEP);
+        clients.next_range = (id_offset / ID_RANGE_STEP + 1) % RANGES * ID_RANGE_STEP;
         let in_use = clients.live.contains(&id_offset)
             || clients
                 .lingering
-                .iter()
+                .keys()
                 .any(|id| id.wrapping_sub(id_offset) < ID_RANGE_STEP);
         if !in_use {
             clients.live.insert(id_offset);
@@ -499,7 +514,10 @@ fn claim_range(clients: &ClientTable) -> Option<u32> {
 fn release_range(clients: &ClientTable, id_offset: u32, lingering: Vec<u32>) {
     let mut clients = clients.lock().expect("clients mutex poisoned");
     clients.live.remove(&id_offset);
-    clients.lingering.extend(lingering);
+    let until = Instant::now() + LINGER_MAX;
+    clients
+        .lingering
+        .extend(lingering.into_iter().map(|id| (id, until)));
 }
 
 /// Per-client task. Sends handshake, then concurrently reads client →
@@ -595,6 +613,8 @@ async fn client_session(
     // reader owns its own clone so the moves don't conflict.
     let vm_write_tx_for_reader = vm_write_tx.clone();
     let reader_fut = async move {
+        // Every id this client registered; at most ID_RANGE_STEP of them.
+        let mut seen: HashSet<u32> = HashSet::new();
         loop {
             let frame = match read_frame(&mut client_read).await {
                 Ok(Some(f)) => f,
@@ -632,6 +652,12 @@ async fn client_session(
                     .expect("owned_ids mutex poisoned");
                 let mut map = routes_for_reader.lock().expect("routes mutex poisoned");
                 if let Entry::Vacant(slot) = map.entry(corr_id) {
+                    // Its session has ended: a late frame (stdin the child
+                    // never read) must not register it again, or the
+                    // disconnect would park the ended id in `lingering`.
+                    if seen.contains(&corr_id) {
+                        continue;
+                    }
                     if owned_guard.len() >= MAX_OWNED_IDS_PER_CLIENT {
                         drop(map);
                         drop(owned_guard);
@@ -651,6 +677,7 @@ async fn client_session(
                         overrun: false,
                     });
                     owned_guard.insert(corr_id);
+                    seen.insert(corr_id);
                 }
             }
             // At the cap, wait for this client's earlier frames to reach
@@ -1661,6 +1688,65 @@ mod tests {
         assert_eq!(claim_range(&clients), Some(0));
     }
 
+    /// A session the guest never ends (it never had it) holds its range
+    /// for LINGER_MAX only.
+    #[test]
+    fn a_lingering_session_holds_its_range_for_a_while_only() {
+        let clients = ClientTable::default();
+        assert_eq!(claim_range(&clients), Some(0));
+        release_range(&clients, 0, vec![5]);
+        clients.lock().unwrap().next_range = 0;
+        assert_eq!(claim_range(&clients), Some(ID_RANGE_STEP));
+        // LINGER_MAX has passed.
+        clients.lock().unwrap().lingering.insert(5, Instant::now());
+        clients.lock().unwrap().next_range = 0;
+        assert_eq!(claim_range(&clients), Some(0));
+        assert!(clients.lock().unwrap().lingering.is_empty());
+    }
+
+    /// A client frame that arrives after its session ended (stdin the child
+    /// never read) goes nowhere. It once registered the id again, so the
+    /// disconnect SIGKILLed the ended session and parked its range for good.
+    #[tokio::test]
+    async fn a_client_frame_after_its_sessions_end_registers_nothing() {
+        let (sock, vm_guest_sim, _tmp) = boot().await;
+        let mut writer = vm_guest_sim.try_clone().unwrap();
+        let (seen_tx, seen_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let mut reader = std::io::BufReader::new(vm_guest_sim);
+            let Ok(Some((id, _, _))) = read_frame_blocking(&mut reader) else {
+                return;
+            };
+            let end = encode_frame(id, FLAG_TERMINAL, &ShellMessage::Exited { code: 0 });
+            writer.write_all(&end.unwrap()).unwrap();
+            while let Ok(Some((_, _, msg))) = read_frame_blocking(&mut reader) {
+                let _ = seen_tx.send(msg);
+            }
+        });
+        let (mut client, corr_id) = open_session(&sock, &cat_request()).await;
+        let end = tokio::time::timeout(Duration::from_secs(2), read_frame(&mut client))
+            .await
+            .expect("no end")
+            .unwrap()
+            .expect("frame");
+        assert!(end[8] & FLAG_TERMINAL != 0);
+        // Past the relay's handling of that end.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let stdin = ShellMessage::Stdin {
+            data_b64: "QUJD".into(),
+        };
+        let late = encode_frame(corr_id, 0, &stdin).unwrap();
+        client.write_all(&late).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(client);
+        let after =
+            tokio::task::spawn_blocking(move || seen_rx.recv_timeout(Duration::from_millis(500)))
+                .await
+                .unwrap();
+        assert!(after.is_err(), "the guest got {after:?} after the end");
+    }
+
     /// A client past its byte cap waits for the VM queue to drain. Its
     /// frames once got dropped there, so an upload landed short while the
     /// guest still replied ok.
@@ -1758,9 +1844,11 @@ mod tests {
     /// A guest that keeps both windows the way iii-init does: `/bin/cat`
     /// echoes each stdin frame once its output has credit, then credits that
     /// input; an upload credits its chunks a window at a time; any other
-    /// command runs until SIGKILLed. A killed session sends a late frame
-    /// before its end. Returns how many frames clients sent past a window.
+    /// command runs until SIGKILLed. A killed session takes DYING to die,
+    /// then sends a late frame before its end. Returns how many frames
+    /// clients sent past a window.
     fn fake_guest(vm: StdUS) -> Arc<std::sync::atomic::AtomicUsize> {
+        const DYING: Duration = Duration::from_millis(50);
         use base64::Engine;
         use std::io::Write;
         #[derive(Default)]
@@ -1775,9 +1863,15 @@ mod tests {
         let overruns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let overruns_in = overruns.clone();
         std::thread::spawn(move || {
-            let mut writer = vm.try_clone().unwrap();
-            let mut send = |id: u32, flags: u8, msg: &ShellMessage| {
-                let _ = writer.write_all(&encode_frame(id, flags, msg).unwrap());
+            let writer = Arc::new(Mutex::new(vm.try_clone().unwrap()));
+            let send_on = |writer: &Mutex<StdUS>, frames: &[(u32, u8, ShellMessage)]| {
+                let mut writer = writer.lock().unwrap();
+                for (id, flags, msg) in frames {
+                    let _ = writer.write_all(&encode_frame(*id, *flags, msg).unwrap());
+                }
+            };
+            let send = |id: u32, flags: u8, msg: &ShellMessage| {
+                send_on(&writer, &[(id, flags, msg.clone())]);
             };
             let control = ShellMessage::Credit { frames: 1 };
             let mut reader = std::io::BufReader::new(vm);
@@ -1847,11 +1941,15 @@ mod tests {
                         }
                     }
                     ShellMessage::Signal { signal: 9 } if sessions.remove(&id).is_some() => {
-                        let late = ShellMessage::Stdout {
-                            data_b64: "bGF0ZQ==".into(),
-                        };
-                        send(id, 0, &late);
-                        send(id, FLAG_TERMINAL, &ShellMessage::Exited { code: 137 });
+                        let writer = writer.clone();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(DYING);
+                            let late = ShellMessage::Stdout {
+                                data_b64: "bGF0ZQ==".into(),
+                            };
+                            let end = ShellMessage::Exited { code: 137 };
+                            send_on(&writer, &[(id, 0, late), (id, FLAG_TERMINAL, end)]);
+                        });
                     }
                     _ => {}
                 }
@@ -1929,8 +2027,10 @@ mod tests {
     }
 
     /// Fifteen clients at a time echo, time out mid-stream or walk away
-    /// mid-stream, over and over: every echo arrives whole (no frame of
-    /// another session in it), and no client outruns a window.
+    /// mid-stream, over and over, on ranges handed out again as soon as they
+    /// are free (RANGES) while killed sessions are still dying: no session
+    /// sees a frame of another (its late output, its end), and no client
+    /// outruns a window.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn sessions_under_churn_never_see_each_others_frames() {
         let (sock, vm_guest_sim, _tmp) = boot().await;
@@ -1963,6 +2063,22 @@ mod tests {
                                 let stdin = ShellMessage::Stdin { data_b64 };
                                 let frame = encode_frame(corr_id, 0, &stdin).unwrap();
                                 s.write_all(&frame).await.unwrap();
+                                // Every frame up to its echo is its own.
+                                let frame = tokio::time::timeout(
+                                    Duration::from_secs(20),
+                                    read_frame(&mut s),
+                                )
+                                .await
+                                .expect("no echo")
+                                .unwrap()
+                                .expect("frame");
+                                let (id, _, msg) =
+                                    iii_supervisor::shell_protocol::decode_frame_body(&frame[4..])
+                                        .unwrap();
+                                let echo = ShellMessage::Stdout {
+                                    data_b64: "QUJD".into(),
+                                };
+                                assert_eq!((id, msg), (corr_id, echo), "session {w}/{round}");
                                 drop(s);
                             }
                         }
