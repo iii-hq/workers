@@ -63,6 +63,9 @@ const WRITE_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// On early channel close (sender dropped before `FsEnd`) the temp file
 /// is unlinked and `S218` is returned.
 ///
+/// `credit` runs after each chunk is written, so the host sends at most
+/// [`iii_shell_proto::SEND_WINDOW`] chunks ahead of the disk.
+///
 /// Errors:
 /// - `S210` — bad octal `mode` or bad base64 in a chunk.
 /// - `S211` — parent dir missing and `parents=false`.
@@ -73,8 +76,9 @@ pub fn handle_write_start(
     mode: String,
     parents: bool,
     inbound: Receiver<ShellMessage>,
+    credit: &dyn Fn(),
 ) -> FsCallResult {
-    handle_write_start_with_timeout(path, mode, parents, inbound, WRITE_IDLE_TIMEOUT)
+    handle_write_start_with_timeout(path, mode, parents, inbound, credit, WRITE_IDLE_TIMEOUT)
 }
 
 /// Internal entry point exposed to tests so they can drive the
@@ -85,6 +89,7 @@ pub(crate) fn handle_write_start_with_timeout(
     mode: String,
     parents: bool,
     inbound: Receiver<ShellMessage>,
+    credit: &dyn Fn(),
     idle_timeout: Duration,
 ) -> FsCallResult {
     let bits = parse_mode(&mode)?;
@@ -143,6 +148,7 @@ pub(crate) fn handle_write_start_with_timeout(
                     return Err(FsError::from_io(&path, e));
                 }
                 written += bytes.len() as u64;
+                credit();
             }
             ShellMessage::FsEnd => {
                 ended_cleanly = true;

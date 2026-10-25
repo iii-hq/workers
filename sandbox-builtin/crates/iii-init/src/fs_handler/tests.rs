@@ -333,9 +333,14 @@ fn write_stream_happy_path_atomic() {
         tx.send(ShellMessage::FsEnd).unwrap();
     });
 
-    let res =
-        streaming::handle_write_start(target.to_string_lossy().into(), "0600".into(), false, rx)
-            .unwrap();
+    let res = streaming::handle_write_start(
+        target.to_string_lossy().into(),
+        "0600".into(),
+        false,
+        rx,
+        &|| {},
+    )
+    .unwrap();
     let FsResult::Write {
         bytes_written,
         path,
@@ -364,9 +369,14 @@ fn write_stream_early_channel_close_unlinks_temp() {
         // Drop tx without sending FsEnd — simulates caller abort.
     });
 
-    let err =
-        streaming::handle_write_start(target.to_string_lossy().into(), "0644".into(), false, rx)
-            .unwrap_err();
+    let err = streaming::handle_write_start(
+        target.to_string_lossy().into(),
+        "0644".into(),
+        false,
+        rx,
+        &|| {},
+    )
+    .unwrap_err();
     assert_eq!(err.code, "S218");
     assert!(!target.exists(), "target must not exist");
 
@@ -413,6 +423,7 @@ fn write_stream_idle_timeout_unlinks_temp_and_returns_s218() {
         "0644".into(),
         false,
         rx,
+        &|| {},
         Duration::from_millis(100),
     )
     .unwrap_err();
@@ -454,8 +465,14 @@ fn write_stream_parents_true_creates_ancestors() {
         .unwrap();
         tx.send(ShellMessage::FsEnd).unwrap();
     });
-    streaming::handle_write_start(target.to_string_lossy().into(), "0644".into(), true, rx)
-        .unwrap();
+    streaming::handle_write_start(
+        target.to_string_lossy().into(),
+        "0644".into(),
+        true,
+        rx,
+        &|| {},
+    )
+    .unwrap();
     assert_eq!(std::fs::read(&target).unwrap(), b"hi");
 }
 
@@ -464,9 +481,14 @@ fn write_stream_parents_false_missing_parent_returns_s211() {
     let dir = tmpdir();
     let target = dir.path().join("missing/x.bin");
     let (_tx, rx) = std::sync::mpsc::sync_channel::<ShellMessage>(4);
-    let err =
-        streaming::handle_write_start(target.to_string_lossy().into(), "0644".into(), false, rx)
-            .unwrap_err();
+    let err = streaming::handle_write_start(
+        target.to_string_lossy().into(),
+        "0644".into(),
+        false,
+        rx,
+        &|| {},
+    )
+    .unwrap_err();
     assert_eq!(err.code, "S211");
 }
 

@@ -18,16 +18,22 @@
 //! Threading model:
 //!
 //! - One reader thread (the `run` call) owns the port read half and
-//!   dispatches incoming frames.
+//!   dispatches incoming frames. It never waits on a session, so the
+//!   `Credit` and `Signal` frames that unblock one are always read.
+//! - Per-session stdin writer thread feeds the child (see
+//!   [`spawn_stdin_writer`]); an upload has its own write thread.
 //! - Per-session stdout/stderr reader threads stream child output
 //!   back through the shared writer.
 //! - Per-session wait thread observes child exit and sends `Exited`
 //!   with the terminal flag.
-//! - All writes funnel through `Arc<Mutex<File>>` so frames don't
+//! - All frames funnel through one writer thread so they don't
 //!   interleave on the wire.
-//! - A session's output (`Stdout`, `Stderr`, `FsChunk`) waits for the
-//!   host's `Credit` on its own [`Window`], so a slow client stalls only
-//!   its own session, and SIGKILL from the host stops it.
+//! - Flow control both ways ([`sp::SEND_WINDOW`]): a session's output
+//!   waits for the host's `Credit` on its own [`Window`], and the host
+//!   sends a session's input at most a window ahead of the `Credit` its
+//!   stdin or write thread returns. A slow client or a child that does
+//!   not read stdin stalls only its own session, and SIGKILL from the
+//!   host stops it.
 //!
 //! Signals, stdin EOF, and cleanup are all routed by `corr_id` via the
 //! shared `SessionRegistry`; session entries are removed after the
@@ -39,27 +45,29 @@ use std::io::{BufReader, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{ChildStdin, Command, Stdio};
-use std::sync::mpsc::{SyncSender, sync_channel};
+use std::process::{Command, Stdio};
+use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::thread;
 
-use iii_supervisor::shell_protocol::{self as sp, ShellMessage, flags::FLAG_TERMINAL};
+use iii_supervisor::shell_protocol::{
+    self as sp, ShellMessage,
+    flags::{FLAG_CONTROL, FLAG_TERMINAL},
+};
 
 /// One live exec session tracked by the dispatcher.
 ///
 /// The only state we keep per session is what inbound-frame handling
-/// needs: the pid (to deliver signals) and the open stdin handle (to
-/// forward input bytes, or drop to signal EOF). Stdout/stderr reader
-/// threads and the waiter thread own their own `Child` pieces and
-/// finish independently — the waiter removes the entry from the
-/// registry after emitting the terminal frame.
+/// needs: the pid (to deliver signals) and the session's stdin queue.
+/// Stdout/stderr reader threads, the stdin writer and the waiter thread
+/// own their own `Child` pieces and finish independently — the waiter
+/// removes the entry from the registry after emitting the terminal frame.
 struct SessionHandle {
     pid: u32,
-    /// Pipe-mode stdin, shared so writers can drop the session-map
-    /// lock before calling `write_all`. `None` after EOF or exit.
-    stdin: Option<Arc<Mutex<ChildStdin>>>,
-    /// TTY-mode master fd. Exactly one of `stdin` / `master` is set.
+    /// Input queue of the session's stdin writer thread; see
+    /// [`spawn_stdin_writer`].
+    stdin: SyncSender<Vec<u8>>,
+    /// TTY-mode master fd, for `Resize`. `None` in pipe mode.
     master: Option<Arc<Mutex<File>>>,
     /// Set by the waiter after `exit_rx.recv()` returns. Once true
     /// the pid has been reaped and the kernel may recycle the pgid,
@@ -267,49 +275,22 @@ fn handle_frame(
                 Ok(d) => d,
                 Err(_) => return,
             };
-            // Snapshot under the map lock, then write without it.
-            // Otherwise a full child-stdin pipe buffer stalls every
-            // other session's Signal/Resize/Stdin dispatch.
-            enum Target {
-                Tty(Arc<Mutex<File>>),
-                Pipe(Arc<Mutex<ChildStdin>>),
-                PipeEof,
-                None,
-            }
-            let target = {
-                let mut map = sessions.lock().expect("session map mutex poisoned");
-                match map.get_mut(&corr_id) {
-                    Some(session) if session.terminated => Target::None,
-                    Some(session) => {
-                        if let Some(master) = session.master.clone() {
-                            Target::Tty(master)
-                        } else if decoded.is_empty() {
-                            session.stdin.take();
-                            Target::PipeEof
-                        } else if let Some(stdin) = session.stdin.clone() {
-                            Target::Pipe(stdin)
-                        } else {
-                            Target::None
-                        }
-                    }
-                    None => Target::None,
-                }
+            let session = {
+                let map = sessions.lock().expect("session map mutex poisoned");
+                map.get(&corr_id)
+                    .filter(|s| !s.terminated)
+                    .map(|s| (s.stdin.clone(), s.pid))
             };
-            match target {
-                Target::Tty(master) => {
-                    // Empty frame is a no-op — in a TTY, EOF is the
-                    // Ctrl-D byte, not a close. Closing the master
-                    // would SIGHUP the child.
-                    if !decoded.is_empty() {
-                        let mut file = master.lock().expect("master mutex poisoned");
-                        let _ = file.write_all(&decoded);
-                    }
+            // Never waits: the queue holds the window the host may send.
+            // A host past it gets its session killed, not a dropped frame.
+            // Disconnected: the child's stdin is already closed (EOF).
+            if let Some((stdin, pid)) = session
+                && let Err(TrySendError::Full(_)) = stdin.try_send(decoded)
+            {
+                eprintln!("iii-init: corr_id={corr_id} sent stdin past its window; killing it");
+                unsafe {
+                    libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
                 }
-                Target::Pipe(stdin_mu) => {
-                    let mut stdin = stdin_mu.lock().expect("stdin mutex poisoned");
-                    let _ = stdin.write_all(&decoded);
-                }
-                Target::PipeEof | Target::None => {}
             }
         }
         ShellMessage::Signal { signal } => {
@@ -406,8 +387,10 @@ fn handle_frame(
                 } => {
                     // Create a sync channel for this write session and
                     // register the sender so FsChunk/FsEnd frames can
-                    // be forwarded to the write thread.
-                    let (chunk_tx, chunk_rx) = std::sync::mpsc::sync_channel::<ShellMessage>(64);
+                    // be forwarded to the write thread. It holds the
+                    // window the host may send ahead of our Credit.
+                    let (chunk_tx, chunk_rx) =
+                        sync_channel::<ShellMessage>(sp::SEND_WINDOW as usize);
                     fs_writes
                         .lock()
                         .expect("fs_writes mutex poisoned")
@@ -418,8 +401,11 @@ fn handle_frame(
                     thread::Builder::new()
                         .name(format!("iii-fs-write-{corr_id}"))
                         .spawn(move || {
+                            let credit = || {
+                                send_frame(&writer, corr_id, FLAG_CONTROL, &CREDIT_ONE);
+                            };
                             let result = crate::fs_handler::streaming::handle_write_start(
-                                path, mode, parents, chunk_rx,
+                                path, mode, parents, chunk_rx, &credit,
                             );
                             // Always remove the registry entry when done.
                             fs_writes
@@ -521,13 +507,12 @@ fn handle_frame(
                 .get(&corr_id)
                 .cloned();
             if let Some(tx) = sender {
-                // try_send avoids blocking the dispatcher loop. Stdin
-                // can tolerate a dropped frame; an upload cannot —
-                // dropping a chunk while a later FsEnd still arrives
-                // would let the writer thread set ended_cleanly=true
-                // and rename a truncated temp file into place
-                // (streaming.rs:147-188), giving the caller a
-                // success response for a corrupt file. Abort the
+                // try_send never blocks the dispatcher loop, and the
+                // queue holds the window the host may send ahead of the
+                // write thread's Credit, so only a host past its window
+                // finds it full. Dropping that chunk while a later
+                // FsEnd still arrives would rename a truncated temp
+                // file into place with a success reply. Abort the
                 // session instead: drop the registry entry so the
                 // writer thread observes Disconnected on its next
                 // recv_timeout, unlinks the temp file, and emits a
@@ -535,12 +520,11 @@ fn handle_frame(
                 // frames for this corr_id find no sender and are
                 // silently ignored — correct, the session is over.
                 if let Err(e) = tx.try_send(msg) {
-                    use std::sync::mpsc::TrySendError;
                     match e {
                         TrySendError::Full(_) => {
                             eprintln!(
-                                "iii-init: fs write channel full, \
-                                 aborting upload for corr_id={corr_id}"
+                                "iii-init: corr_id={corr_id} sent an upload past its \
+                                 window; aborting it"
                             );
                             fs_writes
                                 .lock()
@@ -710,7 +694,20 @@ fn spawn_pipe_session(
     let mut child = maybe_child.expect("register_spawn returned pid without child");
     let stdout = child.stdout.take().expect("stdout requested");
     let stderr = child.stderr.take().expect("stderr requested");
-    let stdin = child.stdin.take().map(|s| Arc::new(Mutex::new(s)));
+    let child_stdin = child.stdin.take().expect("stdin requested");
+    let live = Arc::new(Mutex::new(true));
+    let stdin = match spawn_stdin_writer(corr_id, child_stdin, writer.clone(), live.clone(), true) {
+        Ok(stdin) => stdin,
+        Err(e) => {
+            // Its stdin is already closed: the child must not run on a
+            // short input. See spawn_tty_session for the order.
+            unsafe {
+                libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+            }
+            crate::child_exits::unregister(pid);
+            return Err(e.into());
+        }
+    };
 
     // Register before announcing so a racing Stdin frame finds the
     // entry.
@@ -780,6 +777,7 @@ fn spawn_pipe_session(
                 if let Some(h) = stderr_handle {
                     let _ = h.join();
                 }
+                *live.lock().expect("live mutex poisoned") = false;
                 send_frame(
                     &writer,
                     corr_id,
@@ -918,9 +916,9 @@ fn spawn_tty_session(
     };
     let child = maybe_child.expect("register_spawn returned pid without child");
 
-    // Master end: wrap as File so we get blocking Read/Write. Dup
-    // once for the reader thread; the original goes into the session
-    // map (Arc<Mutex<File>>) for inbound Stdin + Resize.
+    // Master end: wrap as File so we get blocking Read/Write. Dup it
+    // for the reader thread and the stdin writer; the original goes
+    // into the session map (Arc<Mutex<File>>) for Resize.
     //
     // try_clone can fail (EMFILE under FD pressure). At this point the
     // child is already spawned and registered with `child_exits`, so a
@@ -938,8 +936,14 @@ fn spawn_tty_session(
     // `Child::drop` is a no-op on Unix (no waitpid), so no extra step
     // is needed for the handle; it falls out of scope at return.
     let master_file: File = unsafe { File::from_raw_fd(master_owned.into_raw_fd()) };
-    let master_reader = match master_file.try_clone() {
-        Ok(f) => f,
+    let live = Arc::new(Mutex::new(true));
+    let fds = master_file.try_clone().and_then(|reader| {
+        let input = master_file.try_clone()?;
+        let stdin = spawn_stdin_writer(corr_id, input, writer.clone(), live.clone(), false)?;
+        Ok((reader, stdin))
+    });
+    let (master_reader, stdin) = match fds {
+        Ok(fds) => fds,
         Err(e) => {
             // Kill the whole session (setsid() made pid the pgroup
             // leader, so -pid targets every descendant spawned before
@@ -958,7 +962,7 @@ fn spawn_tty_session(
         corr_id,
         SessionHandle {
             pid,
-            stdin: None,
+            stdin,
             master: Some(master.clone()),
             terminated: false,
         },
@@ -991,6 +995,7 @@ fn spawn_tty_session(
                 if let Some(h) = output_handle {
                     let _ = h.join();
                 }
+                *live.lock().expect("live mutex poisoned") = false;
                 send_frame(
                     &writer,
                     corr_id,
@@ -1067,6 +1072,50 @@ fn stream_fd<R: Read>(
     }
 }
 
+/// The guest's input credit: one more `Stdin`/`FsChunk` frame taken.
+const CREDIT_ONE: ShellMessage = ShellMessage::Credit { frames: 1 };
+
+/// Feeds a session's stdin on its own thread, so the dispatcher never waits
+/// on a child that is slow to read: a blocking write there would also hold up
+/// the `Credit` and `Signal` frames that unblock this session and every other.
+/// Each frame taken earns the host one more ([`sp::SEND_WINDOW`]). An empty
+/// frame closes the child's stdin when `eof_closes` (pipe mode); in a TTY, EOF
+/// is the Ctrl-D byte, and closing would SIGHUP the child.
+///
+/// `live` goes false before the session's terminal frame: no credit may
+/// follow it, or it could reach a later session on the same `corr_id`.
+fn spawn_stdin_writer<W: Write + Send + 'static>(
+    corr_id: u32,
+    mut child_stdin: W,
+    writer: Writer,
+    live: Arc<Mutex<bool>>,
+    eof_closes: bool,
+) -> std::io::Result<SyncSender<Vec<u8>>> {
+    let (tx, rx) = sync_channel::<Vec<u8>>(sp::SEND_WINDOW as usize);
+    thread::Builder::new()
+        .name(format!("iii-exec-{corr_id}-in"))
+        .spawn(move || {
+            // Once the child stops reading stdin, keep taking frames so the
+            // host can finish sending; the child sees what it read.
+            let mut closed = false;
+            while let Ok(bytes) = rx.recv() {
+                let eof = bytes.is_empty();
+                if !eof && !closed {
+                    closed = child_stdin.write_all(&bytes).is_err();
+                }
+                let live = live.lock().expect("live mutex poisoned");
+                if *live {
+                    send_frame(&writer, corr_id, FLAG_CONTROL, &CREDIT_ONE);
+                }
+                drop(live);
+                if eof && eof_closes {
+                    break;
+                }
+            }
+        })?;
+    Ok(tx)
+}
+
 /// Queue one frame for the writer thread; `false` once that thread is gone.
 pub(crate) fn send_frame(writer: &Writer, corr_id: u32, flags: u8, msg: &ShellMessage) -> bool {
     let frame = match sp::encode_frame(corr_id, flags, msg) {
@@ -1078,10 +1127,10 @@ pub(crate) fn send_frame(writer: &Writer, corr_id: u32, flags: u8, msg: &ShellMe
     };
     // Waits for room rather than dropping the frame: a dropped frame was
     // lost output, a short fs::read, or a lost `Exited` that left an exec
-    // hanging. The host relay never stops reading the port, and output
-    // frames are bounded by their session's Window, so the wait is short.
-    // No lock is held across this send, and the writer thread waits on
-    // nothing but the port, so it cannot deadlock.
+    // hanging. The host relay never stops reading the port, and each
+    // session's frames are bounded by its windows, so the wait is short.
+    // The writer thread waits on nothing but the port, and the dispatcher
+    // thread on no session, so it cannot deadlock.
     writer.send(frame).is_ok()
 }
 
@@ -1296,6 +1345,8 @@ mod tests {
                     assert!(flags & FLAG_TERMINAL != 0, "Exited missing terminal flag");
                     exited_code = Some(code);
                 }
+                // The guest took our stdin frames.
+                ShellMessage::Credit { .. } => {}
                 other => panic!("unexpected message: {other:?}"),
             }
         }
@@ -1500,6 +1551,8 @@ mod tests {
                     assert!(flags & FLAG_TERMINAL != 0, "Exited without terminal flag");
                     exit_code = Some(code);
                 }
+                // The guest took our stdin frames.
+                ShellMessage::Credit { .. } => {}
                 other => panic!("unexpected inbound: {other:?}"),
             }
         }
@@ -1741,5 +1794,377 @@ mod tests {
                 break;
             }
         }
+    }
+
+    // ----- Flow control, both ways ---------------------------------
+    //
+    // `SimHost` plays relay and client on one socketpair: each session
+    // takes its own frames, grants output Credit for each one it takes,
+    // and sends input at most a window ahead of the guest's Credit. Any
+    // frame for a corr_id that already ended, or never started, is a leak.
+
+    #[cfg(target_os = "linux")]
+    type Route = std::sync::mpsc::Sender<(u8, ShellMessage)>;
+
+    #[cfg(target_os = "linux")]
+    struct SimHost {
+        out: Arc<Mutex<UnixStream>>,
+        routes: Arc<Mutex<HashMap<u32, Route>>>,
+        leaks: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl SimHost {
+        fn start() -> Self {
+            let (host_read, host_write) = start_dispatcher_over_socketpair();
+            // A guest that stops reading fails the test instead of hanging it.
+            host_write
+                .set_write_timeout(Some(Duration::from_secs(30)))
+                .unwrap();
+            let routes: Arc<Mutex<HashMap<u32, Route>>> = Arc::default();
+            let leaks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let (routes_in, leaks_in) = (routes.clone(), leaks.clone());
+            thread::spawn(move || {
+                host_read.set_read_timeout(None).unwrap();
+                let mut reader = BufReader::new(host_read);
+                while let Ok(Some((id, flags, msg))) = sp::read_frame_blocking(&mut reader) {
+                    let mut routes = routes_in.lock().unwrap();
+                    let Some(route) = routes.get(&id) else {
+                        leaks_in.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        eprintln!("leak: corr_id={id} {msg:?}");
+                        continue;
+                    };
+                    let _ = route.send((flags, msg));
+                    if flags & FLAG_TERMINAL != 0 {
+                        routes.remove(&id);
+                    }
+                }
+            });
+            Self {
+                out: Arc::new(Mutex::new(host_write)),
+                routes,
+                leaks,
+            }
+        }
+
+        fn open(&self, id: u32, first: ShellMessage) -> SimSession {
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.routes.lock().unwrap().insert(id, tx);
+            let session = SimSession {
+                id,
+                rx,
+                out: self.out.clone(),
+                credit: sp::SEND_WINDOW,
+                data: Vec::new(),
+                end: None,
+                delay: Duration::ZERO,
+            };
+            session.send(first);
+            session
+        }
+
+        /// Runs `cmd` with `stdin` (then EOF); its stdout and exit code.
+        fn run(&self, id: u32, cmd: &str, stdin: &[u8]) -> (Vec<u8>, ShellMessage) {
+            let mut s = self.open(id, sh(cmd));
+            for chunk in stdin.chunks(64 * 1024).chain([&[][..]]) {
+                s.send_input(ShellMessage::Stdin {
+                    data_b64: encode_b64(chunk),
+                });
+            }
+            s.wait()
+        }
+
+        fn upload(&self, id: u32, path: &Path, data: &[u8]) -> ShellMessage {
+            let mut s = self.open(
+                id,
+                ShellMessage::FsRequest(iii_shell_proto::FsOp::WriteStart {
+                    path: path.to_string_lossy().into_owned(),
+                    mode: "0644".into(),
+                    parents: true,
+                }),
+            );
+            for chunk in data.chunks(64 * 1024) {
+                s.send_input(ShellMessage::FsChunk {
+                    data_b64: encode_b64(chunk),
+                });
+            }
+            s.send_input(ShellMessage::FsEnd);
+            s.wait().1
+        }
+
+        fn download(&self, id: u32, path: &Path) -> (Vec<u8>, ShellMessage) {
+            let path = path.to_string_lossy().into_owned();
+            let read = iii_shell_proto::FsOp::ReadStart { path };
+            self.open(id, ShellMessage::FsRequest(read)).wait()
+        }
+
+        fn leaks(&self) -> usize {
+            self.leaks.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    struct SimSession {
+        id: u32,
+        rx: std::sync::mpsc::Receiver<(u8, ShellMessage)>,
+        out: Arc<Mutex<UnixStream>>,
+        /// Input frames the guest still takes.
+        credit: u32,
+        /// Output bytes so far.
+        data: Vec<u8>,
+        /// The terminal frame, once it came.
+        end: Option<ShellMessage>,
+        /// How long the consumer takes over each frame.
+        delay: Duration,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl SimSession {
+        fn send(&self, msg: ShellMessage) {
+            let mut out = self.out.lock().unwrap();
+            sp::write_frame_blocking(&mut *out, self.id, 0, &msg).unwrap();
+        }
+
+        /// Takes one frame. A stall this long is a deadlock.
+        fn pump(&mut self) {
+            thread::sleep(self.delay);
+            let (flags, msg) = self
+                .rx
+                .recv_timeout(Duration::from_secs(30))
+                .unwrap_or_else(|_| panic!("corr_id={} stalled", self.id));
+            match msg {
+                ShellMessage::Credit { frames } => {
+                    assert!(flags & FLAG_CONTROL != 0, "input credit must be control");
+                    self.credit += frames;
+                }
+                ShellMessage::Stdout { data_b64 }
+                | ShellMessage::Stderr { data_b64 }
+                | ShellMessage::FsChunk { data_b64 } => {
+                    self.data.extend(decode_b64(&data_b64).unwrap());
+                    self.send(ShellMessage::Credit { frames: 1 });
+                }
+                ShellMessage::Started { .. } | ShellMessage::FsMeta(_) => {}
+                end => {
+                    assert!(flags & FLAG_TERMINAL != 0, "not an end: {end:?}");
+                    self.end = Some(end);
+                }
+            }
+        }
+
+        fn send_input(&mut self, msg: ShellMessage) {
+            while self.credit == 0 {
+                self.pump();
+                assert!(self.end.is_none(), "ended mid-input: {:?}", self.end);
+            }
+            self.send(msg);
+            self.credit -= 1;
+        }
+
+        fn wait(mut self) -> (Vec<u8>, ShellMessage) {
+            while self.end.is_none() {
+                self.pump();
+            }
+            (self.data, self.end.unwrap())
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn sh(cmd: &str) -> ShellMessage {
+        ShellMessage::Request {
+            cmd: "/bin/sh".into(),
+            args: vec!["-c".into(), cmd.into()],
+            env: vec![],
+            cwd: None,
+            tty: false,
+            rows: 24,
+            cols: 80,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn pattern(len: usize, seed: usize) -> Vec<u8> {
+        (0..len)
+            .map(|i| ((i / 7 + i + seed * 31) % 251) as u8)
+            .collect()
+    }
+
+    #[cfg(target_os = "linux")]
+    const EXITED_0: ShellMessage = ShellMessage::Exited { code: 0 };
+
+    /// 128 MiB through `cat`. The dispatcher once wrote stdin itself: with
+    /// `cat` blocked on its output, that write never returned, and the
+    /// Credit that would unblock the output sat unread behind it.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_child_echoing_a_large_stdin_finishes() {
+        let _g = serial_spawn_guard();
+        let host = SimHost::start();
+        let data = pattern(128 << 20, 1);
+        let (out, end) = host.run(1, "cat", &data);
+        assert_eq!((out.len(), end), (data.len(), EXITED_0));
+        assert!(out == data, "the echo differs from its stdin");
+        assert_eq!(host.leaks(), 0);
+    }
+
+    /// A child that never reads its stdin holds back only its own session:
+    /// another exec runs meanwhile, and the SIGKILL still reaches it.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_child_that_reads_no_stdin_holds_back_only_its_session() {
+        let _g = serial_spawn_guard();
+        let host = SimHost::start();
+        let mut stuck = host.open(1, sh("sleep 30"));
+        // A window of input: more than the child's pipe holds.
+        for _ in 0..sp::SEND_WINDOW {
+            stuck.send_input(ShellMessage::Stdin {
+                data_b64: encode_b64(&[7u8; 64 * 1024]),
+            });
+        }
+        let (out, end) = host.run(2, "echo hi", &[]);
+        assert_eq!((out, end), (b"hi\n".to_vec(), EXITED_0));
+        stuck.send(ShellMessage::Signal { signal: 9 });
+        assert_eq!(stuck.wait().1, ShellMessage::Exited { code: 137 });
+        assert_eq!(host.leaks(), 0);
+    }
+
+    /// Input past the window is never dropped: the session is killed.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn stdin_past_its_window_kills_its_session() {
+        let _g = serial_spawn_guard();
+        let host = SimHost::start();
+        let flood = host.open(1, sh("sleep 30"));
+        for _ in 0..3 * sp::SEND_WINDOW {
+            flood.send(ShellMessage::Stdin {
+                data_b64: encode_b64(&[7u8; 64 * 1024]),
+            });
+        }
+        assert_eq!(flood.wait().1, ShellMessage::Exited { code: 137 });
+    }
+
+    /// A consumer that takes its output slowly holds back only its own
+    /// session, which still arrives whole.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_slow_consumer_holds_back_only_its_own_session() {
+        let _g = serial_spawn_guard();
+        let host = Arc::new(SimHost::start());
+        let slow_host = host.clone();
+        let slow = thread::spawn(move || {
+            let data = pattern(4 << 20, 2);
+            let mut s = slow_host.open(1, sh("cat"));
+            s.delay = Duration::from_millis(20);
+            for chunk in data.chunks(64 * 1024).chain([&[][..]]) {
+                s.send_input(ShellMessage::Stdin {
+                    data_b64: encode_b64(chunk),
+                });
+            }
+            let (out, end) = s.wait();
+            assert_eq!(end, EXITED_0);
+            assert!(out == data, "the slow echo differs");
+            std::time::Instant::now()
+        });
+        thread::sleep(Duration::from_millis(100));
+        let data = pattern(8 << 20, 3);
+        let (out, end) = host.run(2, "cat", &data);
+        let fast_done = std::time::Instant::now();
+        assert_eq!(end, EXITED_0);
+        assert!(out == data, "the fast echo differs");
+        assert!(fast_done < slow.join().unwrap(), "the fast session waited");
+        assert_eq!(host.leaks(), 0);
+    }
+
+    /// An echo killed mid-stream ends with 137, and nothing of it follows
+    /// its end: no stdout, no input credit from its stdin writer, which a
+    /// process outside the killed group holds up until after that end.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_killed_echo_sends_nothing_after_its_end() {
+        if skip_if_missing("/usr/bin/setsid") {
+            return;
+        }
+        let _g = serial_spawn_guard();
+        let host = SimHost::start();
+        // fd 3: sh gives a background job /dev/null for stdin.
+        let holder = "exec 3<&0; setsid sleep 2 <&3 >/dev/null 2>&1 &";
+        let s = host.open(1, sh(&format!("{holder} exec cat")));
+        let chunk = encode_b64(&pattern(64 * 1024, 4));
+        // A window of input and no output taken: `cat` stops on its full
+        // stdout, so most of the window is still queued when the kill lands.
+        for _ in 0..sp::SEND_WINDOW {
+            s.send(ShellMessage::Stdin {
+                data_b64: chunk.clone(),
+            });
+        }
+        thread::sleep(Duration::from_millis(300));
+        s.send(ShellMessage::Signal { signal: 9 });
+        assert_eq!(s.wait().1, ShellMessage::Exited { code: 137 });
+        // Past the holder's exit, which frees the stdin writer.
+        thread::sleep(Duration::from_millis(2500));
+        assert_eq!(host.leaks(), 0, "frames after the session's end");
+    }
+
+    /// 128 MiB uploaded within its window lands whole; the guest's write
+    /// queue once held 64 chunks and aborted the upload past them (S218).
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_large_upload_lands_whole() {
+        let _g = serial_spawn_guard();
+        let host = SimHost::start();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.bin");
+        let data = pattern(128 << 20, 5);
+        let reply = host.upload(1, &path, &data);
+        assert!(
+            matches!(reply, ShellMessage::FsResponse(iii_shell_proto::FsResult::Write { bytes_written, .. }) if bytes_written == data.len() as u64),
+            "{reply:?}"
+        );
+        assert!(std::fs::read(&path).unwrap() == data, "the file differs");
+        assert_eq!(host.leaks(), 0);
+    }
+
+    /// 30 sessions at once in both directions: echoes, uploads and reads
+    /// all arrive whole, each on its own corr_id.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn thirty_sessions_both_ways_arrive_whole() {
+        let _g = serial_spawn_guard();
+        let host = Arc::new(SimHost::start());
+        let dir = Arc::new(tempfile::tempdir().unwrap());
+        for i in 0..10 {
+            std::fs::write(dir.path().join(format!("r{i}")), pattern(2 << 20, i)).unwrap();
+        }
+        let sessions: Vec<_> = (0..30u32)
+            .map(|id| {
+                let (host, dir) = (host.clone(), dir.clone());
+                thread::spawn(move || {
+                    let i = id as usize / 3;
+                    let data = pattern(2 << 20, i);
+                    match id % 3 {
+                        0 => {
+                            let (out, end) = host.run(id + 1, "cat", &data);
+                            assert_eq!(end, EXITED_0);
+                            assert!(out == data, "echo {id} differs");
+                        }
+                        1 => {
+                            let path = dir.path().join(format!("w{i}"));
+                            let reply = host.upload(id + 1, &path, &data);
+                            assert!(matches!(reply, ShellMessage::FsResponse(_)), "{reply:?}");
+                            assert!(std::fs::read(&path).unwrap() == data, "upload {id} differs");
+                        }
+                        _ => {
+                            let path = dir.path().join(format!("r{i}"));
+                            let (out, end) = host.download(id + 1, &path);
+                            assert_eq!(end, ShellMessage::FsEnd);
+                            assert!(out == data, "read {id} differs");
+                        }
+                    }
+                })
+            })
+            .collect();
+        for session in sessions {
+            session.join().unwrap();
+        }
+        assert_eq!(host.leaks(), 0);
     }
 }
