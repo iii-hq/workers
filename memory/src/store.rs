@@ -874,12 +874,16 @@ impl Bank {
             .filter(|t| !STOPWORDS.contains(t) && !(expanded && *t == "user"))
             .collect();
         // What memory holds of "me", not who is told ("tell me more") or a bare "I know".
+        let words = crate::index::tokenize(query);
+        let has = |w: &str| words.iter().any(|t| t == w);
+        let verb = content.iter().any(|t| MEMORY_VERBS.contains(t));
+        // "tell" asks it only beside a memory verb or "myself" ("tell me about myself").
+        let tell = verb || has("myself");
         let of_me = content
             .iter()
-            .all(|t| MEMORY_VERBS.contains(t) || *t == "anything")
-            && crate::index::tokenize(query)
-                .iter()
-                .any(|t| t == "me" || t == "myself");
+            .all(|t| MEMORY_VERBS.contains(t) || *t == "anything" || (*t == "tell" && tell))
+            // Or asked of the user addressed as "I": "do you know who I am?".
+            && (has("me") || has("myself") || (has("you") && verb && has("i")));
         if expanded && (content.is_empty() || of_me) {
             // A question of pronouns alone, or of what memory holds of them, is about the user.
             content = vec!["user"];
@@ -1699,6 +1703,10 @@ mod tests {
             "what do you remember about me",
             "what do you know about me?",
             "can you recall anything about me?",
+            "tell me what you know about me",
+            "tell me what you remember about me",
+            "tell me about myself",
+            "do you know who I am?",
         ] {
             let (_, evidence) = evidence_for(&bank, query).await;
             for m in [&mine, &also] {
@@ -1723,6 +1731,7 @@ mod tests {
             "tell me again",
             "can you tell me more about it?",
             "I know.",
+            "you know.",
             "I remember",
         ] {
             let (_, evidence) = evidence_for(&bank, query).await;
