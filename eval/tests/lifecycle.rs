@@ -1215,6 +1215,30 @@ impl Rig {
         .await
         .unwrap();
         self.drain().await;
+        self.until_target_answers().await;
+    }
+
+    /// Under load the target's Engine may answer after the first promotion
+    /// step gave up waiting; the cycle waits for it, and the next sweeps ask
+    /// again, as in production.
+    async fn until_target_answers(&self) {
+        for _ in 0..5 {
+            let waiting = state::list_cycles(&self.iii)
+                .await
+                .unwrap()
+                .iter()
+                .any(|record| {
+                    record.status == CycleStatusV1::Waiting
+                        && record
+                            .history
+                            .last()
+                            .is_some_and(|event| event.detail.contains("is not reachable"))
+                });
+            if !waiting {
+                return;
+            }
+            self.tick().await;
+        }
     }
 
     fn base(&self) -> System {
@@ -1748,6 +1772,61 @@ async fn a_canary_of_another_executable_is_unknown_and_never_promoted() {
         CanaryOutcomeV1::Unknown
     );
     assert_pending_then_restored_at_a_limit(&mut rig, &cycle_id).await;
+}
+
+/// The target's Engine does not answer when the ship starts: the accepted
+/// candidate waits for it on the sweep instead of ending, and nothing is
+/// merged meanwhile.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn an_accepted_candidate_waits_for_an_unreachable_target_before_any_merge() {
+    let Some(mut rig) = Rig::start("unreachable").await else {
+        return;
+    };
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    rig.target_url = format!("ws://{}", closed.local_addr().unwrap());
+    drop(closed);
+    rig.configure(true).await;
+    let (cycle_id, candidate_sha) = Box::pin(rig.reach_validation()).await;
+    rig.world().e2e.finish(
+        "plan-2",
+        "passed",
+        side(TOKENS, FIXED),
+        &candidate_system(candidate_sha),
+    );
+    Box::pin(runtime::execution_changed(
+        &rig.deps,
+        serde_json::from_value(json!({"kind": "completed", "execution_id": "plan-2"})).unwrap(),
+    ))
+    .await
+    .unwrap();
+    rig.drain().await;
+    let record = rig.cycle(&cycle_id).await;
+    assert_eq!(
+        (record.status, record.stage),
+        (CycleStatusV1::Waiting, CycleStageV1::Promotion),
+        "{:?}",
+        record.history.last()
+    );
+    assert!(
+        record
+            .history
+            .last()
+            .unwrap()
+            .detail
+            .contains("asked again on the next sweep"),
+        "{:?}",
+        record.history.last()
+    );
+    assert!(
+        !rig.services
+            .lock()
+            .unwrap()
+            .seen
+            .iter()
+            .any(|(key, _)| key.starts_with("PATCH ")),
+        "nothing merged"
+    );
 }
 
 #[cfg(target_os = "linux")]

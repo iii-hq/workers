@@ -1397,8 +1397,11 @@ pub async fn promotion_stage(
     };
     let outcome = match (origins, deps.target(&config.target.engine_url).await) {
         (Err(error), _) => Err(error),
-        // An Engine restarting is retried where the phase is retried.
-        (_, Err(error)) => Err(PromotionError::inconclusive(error.to_string())),
+        // An Engine restarting is waited for at any phase: nothing is sent
+        // to it before it answers, and the cycle's limits bound the wait.
+        (_, Err(error)) => Ok(Next::Wait(format!(
+            "{error}; asked again on the next sweep"
+        ))),
         (Ok(origins), Ok(target)) => {
             match Promotion::new(config.clone(), origins, target.clone()) {
                 Ok(promotion) => Box::pin(next(deps, record, &promotion, &target, &journal)).await,
