@@ -622,11 +622,15 @@ pub fn select(
     // The share of the best counts in a turn with a subject in the bank: a hit
     // that stands alone, or hits holding two of its words between them. A
     // turn sharing one word ("Great, go ahead.") injects nothing on it.
+    // shortcut: the two words may land in two different memories, so chatter sharing
+    // one word with each ("great, carry on" beside a "great" and a "carry" memory)
+    // anchors itself; per-hit anchors alone lose two needed lines in the MiniLM hybrid
+    // eval (q-id-apelido, q-evt-next-week): revisit when a per-hit signal delivers them.
     let covered: HashSet<&String> = pool.iter().flat_map(|(m, _)| &ev(m).matched).collect();
-    let anchored = pool.iter().any(|(m, _)| {
-        let e = ev(m);
-        alone(e) || (!covered.is_empty() && covered.len() >= e.terms.min(2))
-    });
+    // The question's term count, the same on every hit.
+    let terms = pool.first().map_or(0, |(m, _)| ev(m).terms);
+    let anchored = (!covered.is_empty() && covered.len() >= terms.min(2))
+        || pool.iter().any(|(m, _)| alone(ev(m)));
     let stands = |m: &Memory| {
         let e = ev(m);
         alone(e) || (anchored && e.relevance >= RELEVANCE_SHARE * best)
