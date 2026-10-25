@@ -119,10 +119,18 @@ There are exactly two inputs, and both converge on one `CycleRecordV1`:
       like a failed operation;
     - failed or cancelled settles the operation but does not prove its
       partial effects were undone; the prior must still be restored;
-      succeeded counts only once the candidate's executable is proved;
+      succeeded counts only once the candidate's executable is proved, and
+      a succeeded pin whose process has exited is restored like a failed
+      one;
     - the prior is then pinned and proved by its executable digest; a pin
       that ends or runs another executable is pinned again, up to three
-      attempts, before the cycle ends with the target not proved.
+      attempts, before the cycle ends with the target not proved;
+    - a Compose call that errors says nothing about the target and is
+      asked again on the next sweep; only an observation (the target runs
+      neither the prior nor the candidate) refuses a restoration;
+    - with several workers, a refused restoration never stops the others:
+      every other worker is restored first, then the cycle ends naming
+      what was restored and what was refused.
 
     Until that is proved the cycle is not terminal.
 13. **One state, current shape only.** State lives in the `eval_cycle*`

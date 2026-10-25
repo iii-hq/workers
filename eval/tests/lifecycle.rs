@@ -480,6 +480,10 @@ struct Target {
     /// until the test lets it land.
     hold: bool,
     fail_after_pin: bool,
+    /// The next `compose::add` is refused before it changes anything.
+    refuse_next: bool,
+    /// The next activation succeeds, but its process has already exited.
+    exit_after_pin: bool,
 }
 
 fn harness_row(pid: u32, version: &str) -> Value {
@@ -494,6 +498,9 @@ fn worker_row(worker: &str, pid: u32, version: &str) -> Value {
 impl Target {
     fn respond(&mut self, function: &str, data: &Value) -> Result<Value, String> {
         self.calls.push((function.into(), data.clone()));
+        if function == "compose::add" && std::mem::take(&mut self.refuse_next) {
+            return Err("compose::add refused: the daemon is busy".into());
+        }
         if let Some(answer) = self.e2e.respond(function, data) {
             return answer;
         }
@@ -547,6 +554,15 @@ impl Target {
                         id.clone(),
                         json!({"operation_id": id, "status": "succeeded"}),
                     );
+                }
+                if std::mem::take(&mut self.exit_after_pin) {
+                    let row = if worker == "harness" {
+                        &mut self.harness
+                    } else {
+                        self.others.get_mut(&worker).unwrap()
+                    };
+                    row["state"] = json!("failed");
+                    row["pid"] = Value::Null;
                 }
                 if std::mem::take(&mut self.fail_after_pin) {
                     self.operations.get_mut(&id).unwrap()["status"] = json!("failed");
@@ -1042,6 +1058,8 @@ impl Rig {
             },
             hold: false,
             fail_after_pin: false,
+            refuse_next: false,
+            exit_after_pin: false,
         }));
         let shared = target.clone();
         let theirs = fake_engine::start(move |frame: Value| {
@@ -2233,6 +2251,379 @@ async fn a_violated_canary_rolls_back_every_worker_last_activated_first() {
         "{}",
         outcome.detail
     );
+}
+
+/// What interrupts a two-worker ship.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Fault {
+    /// The queue delivers the next step twice.
+    Twice,
+    /// The queued step is lost: only the sweep can find the work again.
+    Lost,
+    /// The operator cancels.
+    Cancel,
+    /// The next activation fails after it changed the target.
+    FailPin,
+    /// Compose refuses the next pin before changing anything.
+    Refused,
+    /// The next activation succeeds and its process exits at once.
+    Exits,
+    /// The next activation keeps running for two sweeps, then lands.
+    Hold,
+    /// GitHub and Release Control refuse access for two sweeps.
+    Deny,
+}
+
+/// Lets every activation still running land.
+fn land_all(rig: &Rig) {
+    let mut target = rig.target();
+    let running: Vec<String> = target
+        .operations
+        .iter()
+        .filter(|(_, operation)| operation["status"] == "running")
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in running {
+        let add = target
+            .adds()
+            .into_iter()
+            .find(|add| add["operation_id"] == id.as_str())
+            .unwrap();
+        let version = add["workers"][0]["version"].as_str().unwrap().to_string();
+        let worker =
+            add["workers"][0]["worker"].as_str().unwrap()["package://".len()..].to_string();
+        if worker == "harness" {
+            let pid = target.pids[&version];
+            target.harness = harness_row(pid, &version);
+        } else {
+            let pid = target.pids[&format!("{worker}@{version}")];
+            target
+                .others
+                .insert(worker.clone(), worker_row(&worker, pid, &version));
+        }
+        target.operations.insert(
+            id.clone(),
+            json!({"operation_id": id, "status": "succeeded"}),
+        );
+    }
+}
+
+/// Delivers one queued step like the queue does: a failed step is delivered
+/// again later, at most five times. False when nothing was queued.
+async fn deliver_one(rig: &Rig, failures: &mut HashMap<String, u32>) -> bool {
+    let next = rig.world().steps.pop_front();
+    let Some(payload) = next else {
+        return false;
+    };
+    let request = serde_json::from_value(payload.clone()).unwrap();
+    if Box::pin(runtime::step(&rig.deps, request)).await.is_err() {
+        let failed = failures.entry(payload.to_string()).or_default();
+        *failed += 1;
+        if *failed < 5 {
+            rig.world().steps.push_back(payload);
+        }
+    }
+    true
+}
+
+async fn deliver_all(rig: &Rig) -> usize {
+    let mut failures = HashMap::new();
+    let mut ran = 0;
+    while ran < 500 && deliver_one(rig, &mut failures).await {
+        ran += 1;
+    }
+    ran
+}
+
+/// Two workers, context-manager then harness, past their artifact run that
+/// measured both rc executables. Returns the cycle and the context-manager
+/// candidate digest; nothing after the artifact run has run yet.
+async fn two_worker_ship(rig: &mut Rig) -> (String, String) {
+    let (cycle_id, context_digest) = Box::pin(reach_two_worker_artifact(rig)).await;
+    let mut rc = System {
+        workers_revision: String::new(),
+        harness_version: RC.into(),
+        binary: Some(format!("sha256:{}", rig.candidate_digest)),
+        workers: Default::default(),
+    };
+    rc.workers
+        .insert("context-manager".into(), format!("sha256:{context_digest}"));
+    rig.world()
+        .e2e
+        .finish("plan-3", "passed", side(TOKENS, FIXED), &rc);
+    Box::pin(runtime::execution_changed(
+        &rig.deps,
+        serde_json::from_value(json!({"kind": "completed", "execution_id": "plan-3"})).unwrap(),
+    ))
+    .await
+    .unwrap();
+    (cycle_id, context_digest)
+}
+
+/// How an interrupted two-worker ship ended.
+struct ShipEnd {
+    record: CycleRecordV1,
+    /// `harness <version> context-manager <version>` on the target.
+    versions: String,
+    /// The end is one of the two allowed ones: both released, proved and
+    /// held by a canary that ran both, or both back on their priors.
+    fine: bool,
+}
+
+/// A two-worker ship interrupted by `fault` once `at` holds, then driven by
+/// sweeps, every canary passing on both released executables, until the
+/// cycle ends.
+async fn interrupted_two_worker_ship(
+    fault: Fault,
+    at: impl Fn(&CycleRecordV1, usize) -> bool,
+) -> ShipEnd {
+    let mut rig = Rig::start("fault").await.unwrap();
+    let (cycle_id, context_digest) = two_worker_ship(&mut rig).await;
+    let mut failures = HashMap::new();
+    let mut ran = 0;
+    while !at(&rig.cycle(&cycle_id).await, ran) && deliver_one(&rig, &mut failures).await {
+        ran += 1;
+    }
+    match fault {
+        Fault::Twice => {
+            let next = rig.world().steps.front().cloned();
+            rig.world().steps.extend(next);
+        }
+        Fault::Lost => {
+            rig.world().steps.pop_front();
+        }
+        Fault::Cancel => {
+            runtime::cycle_cancel(
+                &rig.deps,
+                CycleIdRequestV1 {
+                    cycle_id: cycle_id.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        }
+        Fault::FailPin => rig.target().fail_after_pin = true,
+        Fault::Refused => rig.target().refuse_next = true,
+        Fault::Exits => rig.target().exit_after_pin = true,
+        Fault::Hold => rig.target().hold = true,
+        Fault::Deny => rig.credentials(false),
+    }
+    let mut stable = rig.stable(&rig.candidate_digest.clone());
+    stable
+        .workers
+        .insert("context-manager".into(), format!("sha256:{context_digest}"));
+    for sweep in 0..16 {
+        deliver_all(&rig).await;
+        if sweep == 2 {
+            rig.credentials(true);
+            land_all(&rig);
+        }
+        let running: Vec<String> = {
+            let target = rig.target();
+            target
+                .e2e
+                .executions
+                .iter()
+                .filter(|(_, bundle)| bundle["manifest"]["executions"][0]["status"] == "running")
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        for id in running {
+            rig.target()
+                .e2e
+                .finish(&id, "passed", side(TOKENS, FIXED), &stable);
+        }
+        let _ = Box::pin(runtime::sweep(&rig.deps)).await;
+        if rig.cycle(&cycle_id).await.status.is_terminal() && rig.world().steps.is_empty() {
+            break;
+        }
+    }
+    deliver_all(&rig).await;
+    let record = rig.cycle(&cycle_id).await;
+    let target = rig.target();
+    let versions = format!(
+        "harness {} context-manager {}",
+        target.harness["version"], target.others["context-manager"]["version"]
+    );
+    let settled = target
+        .operations
+        .values()
+        .all(|operation| operation["status"] != "running");
+    let held = record
+        .canary
+        .as_ref()
+        .is_some_and(|canary| canary.outcome == CanaryOutcomeV1::Held)
+        && serde_json::to_string(&record)
+            .unwrap()
+            .contains(&context_digest);
+    let fine = settled
+        && record.status.is_terminal()
+        && if record.outcome.as_ref().map(|outcome| outcome.code) == Some(OutcomeCodeV1::Promoted) {
+            held && versions == format!("harness \"{STABLE}\" context-manager \"{STABLE}\"")
+        } else {
+            versions == format!("harness \"{PRIOR}\" context-manager \"{PRIOR}\"")
+        };
+    drop(target);
+    ShipEnd {
+        record,
+        versions,
+        fine,
+    }
+}
+
+fn shown_end(end: &ShipEnd) -> String {
+    let record = &end.record;
+    format!(
+        "{:?} {:?} | {} | {}",
+        record.status,
+        record.outcome.as_ref().map(|outcome| outcome.code),
+        end.versions,
+        record
+            .outcome
+            .as_ref()
+            .map(|outcome| outcome.detail.clone())
+            .or_else(|| record.history.last().map(|event| event.detail.clone()))
+            .unwrap_or_default()
+    )
+}
+
+/// Once the first worker's activation is proved.
+fn first_activated(record: &CycleRecordV1, _: usize) -> bool {
+    record.promotion.is_some()
+        && phases(record)
+            .iter()
+            .any(|phase| phase == "activation_confirmed")
+}
+
+/// Compose refuses the second worker's pin once: the pin is asked again on
+/// the next sweep, never taken for a refusal of the target.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_second_pin_is_asked_again_and_the_ship_completes() {
+    let end = interrupted_two_worker_ship(Fault::Refused, first_activated).await;
+    assert!(end.fine, "{}", shown_end(&end));
+    assert_eq!(
+        end.record.outcome.as_ref().map(|outcome| outcome.code),
+        Some(OutcomeCodeV1::Promoted),
+        "{}",
+        shown_end(&end)
+    );
+}
+
+/// The second worker's pin succeeds and its process exits at once: both
+/// workers are restored, never left waiting on a process that is gone.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn an_activation_whose_process_exits_restores_every_worker() {
+    let end = interrupted_two_worker_ship(Fault::Exits, first_activated).await;
+    assert!(end.fine, "{}", shown_end(&end));
+    assert_eq!(
+        end.record.outcome.as_ref().map(|outcome| outcome.code),
+        Some(OutcomeCodeV1::RolledBack),
+        "{}",
+        shown_end(&end)
+    );
+}
+
+/// A cancel between the two activations restores both workers.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_between_two_activations_restores_both() {
+    let end = interrupted_two_worker_ship(Fault::Cancel, first_activated).await;
+    assert!(end.fine, "{}", shown_end(&end));
+}
+
+/// After a violated canary the operator has pinned another harness: that
+/// restoration is refused, yet context-manager is still restored, and the
+/// end names both.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_rollback_never_keeps_the_other_worker_from_its_prior() {
+    let Some(mut rig) = Rig::start("two-refused-rollback").await else {
+        return;
+    };
+    let (cycle_id, context_digest) = reach_two_worker_canary(&mut rig).await;
+    {
+        let mut target = rig.target();
+        let pid = target.pids[PRIOR];
+        target.harness = harness_row(pid, "0.9.5");
+    }
+    let mut stable = rig.stable(&rig.candidate_digest.clone());
+    stable
+        .workers
+        .insert("context-manager".into(), format!("sha256:{context_digest}"));
+    rig.target().e2e.finish(
+        "canary-1",
+        "passed",
+        side(TOKENS, [Some(3), Some(10), Some(10), Some(10)]),
+        &stable,
+    );
+    for _ in 0..6 {
+        rig.tick().await;
+    }
+    let record = rig.cycle(&cycle_id).await;
+    let outcome = record.outcome.clone().unwrap();
+    assert_eq!(
+        outcome.code,
+        OutcomeCodeV1::Inconclusive,
+        "{} {:?}",
+        outcome.detail,
+        record.history
+    );
+    let target = rig.target();
+    assert_eq!(
+        target.harness["version"], "0.9.5",
+        "the operator's pin stays"
+    );
+    assert_eq!(target.others["context-manager"]["version"], PRIOR);
+    assert!(
+        outcome.detail.contains("restoring harness")
+            && outcome.detail.contains("context-manager 0.9.0"),
+        "{}",
+        outcome.detail
+    );
+}
+
+/// Every interruption at every step of a two-worker ship ends with both
+/// workers on the released executables and a canary that ran both, or with
+/// both on their proved priors; never one of each, never unfinished.
+/// About 20 s a case: `cargo test --test lifecycle -- --ignored`.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "exhaustive, about 40 minutes"]
+async fn every_interruption_of_a_two_worker_ship_ends_all_released_or_all_prior() {
+    let steps = {
+        let mut rig = Rig::start("count").await.unwrap();
+        two_worker_ship(&mut rig).await;
+        deliver_all(&rig).await
+    };
+    assert!(steps >= 6, "the ship takes several steps: {steps}");
+    let mut broken = Vec::new();
+    for at in 0..=steps {
+        for fault in [
+            Fault::Twice,
+            Fault::Lost,
+            Fault::Cancel,
+            Fault::FailPin,
+            Fault::Refused,
+            Fault::Exits,
+            Fault::Hold,
+            Fault::Deny,
+        ] {
+            let started = std::time::Instant::now();
+            let end = interrupted_two_worker_ship(fault, |_, ran| ran == at).await;
+            eprintln!(
+                "{at:>2} {fault:<8?} {:>5}ms {:<6} {}",
+                started.elapsed().as_millis(),
+                if end.fine { "ok" } else { "BROKEN" },
+                shown_end(&end)
+            );
+            if !end.fine {
+                broken.push(format!("{fault:?} at {at}: {}", shown_end(&end)));
+            }
+        }
+    }
+    assert!(broken.is_empty(), "{}", broken.join("\n"));
 }
 
 #[cfg(target_os = "linux")]

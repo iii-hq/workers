@@ -1572,6 +1572,14 @@ impl Promotion {
             }
         }
         let observed = self.observe_target(&expected.worker).await?;
+        // The pin is done and its process has already exited: a failure to
+        // restore from, never something to wait for.
+        if matches!(observed.state.as_str(), "failed" | "stopped") {
+            return Err(PromotionError::rejected(format!(
+                "{} {} exited after its pin ({})",
+                observed.container, expected.version, observed.state
+            )));
+        }
         if observed.state != "ready" {
             return pending(format!(
                 "{} is {}",
@@ -1668,7 +1676,7 @@ impl Promotion {
                 Err(ComposeFailure::UnknownOperation)
             }
             Ok(Err(iii_sdk::errors::Error::Remote { .. })) => Err(ComposeFailure::Stop(
-                PromotionError::rejected(format!("{function} refused the call")),
+                PromotionError::inconclusive(format!("{function} did not accept the call")),
             )),
             Ok(Err(iii_sdk::errors::Error::Timeout)) | Err(_) => Err(ComposeFailure::Stop(
                 PromotionError::inconclusive(format!("{function} did not answer")),

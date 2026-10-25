@@ -199,7 +199,11 @@ The canary ends one of three ways:
 
 A cancel or a budget limit after an activation request restores and proves
 the prior executable before the cycle ends. A rollback pin that ends or
-runs another executable is pinned again, up to three attempts. See `SPECIFICATION.md` and
+runs another executable is pinned again, up to three attempts. A Compose
+call that errors is asked again on the next sweep; an activation whose
+process exits is restored like a failed one; a worker whose restoration is
+refused (the target runs something the loop did not pin) never keeps the
+other workers from theirs. See `SPECIFICATION.md` and
 `IMPLEMENTATION.md`.
 
 ## Decision and budget

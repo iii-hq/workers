@@ -242,7 +242,9 @@ async fn reconcile_activation(
 /// Completes the restoration of a recovering cycle: for each worker whose
 /// pin may have changed the target, last activated first, reconcile the
 /// requested activation, pin the prior back and prove its executable
-/// running. Needs no model or E2E budget.
+/// running. A worker whose restoration is refused never keeps the others
+/// from theirs: they are restored first, then the refusal stops the cycle.
+/// Needs no model or E2E budget.
 async fn recover(
     promotion: &Promotion,
     journal: &PromotionJournal,
@@ -250,34 +252,64 @@ async fn recover(
     since_ms: i64,
     reason: &str,
 ) -> Result<Next, PromotionError> {
-    let Some(worker) = in_flight(journal, intent).into_iter().next() else {
-        let restored: Vec<String> = journal
-            .phases
-            .iter()
-            .filter_map(|phase| match phase {
-                PromotionPhase::RollbackConfirmed(running) => Some(format!(
-                    "{} {} (executable {})",
-                    running.worker, running.version, running.binary_sha256
-                )),
-                _ => None,
-            })
-            .collect();
-        if restored.is_empty() {
-            return Err(PromotionError::inconclusive(format!(
-                "{reason}: the activation state cannot be restored automatically; the target's running artifact is not proved"
-            )));
+    let mut refused = Vec::new();
+    for worker in in_flight(journal, intent) {
+        match recover_worker(promotion, journal, intent, since_ms, reason, &worker).await {
+            Err(error) if error.kind == StopKind::Rejected => {
+                refused.push(format!("{worker}: {}", error.reason));
+            }
+            other => return other,
         }
-        return Ok(Next::Finish(
-            OutcomeCodeV1::RolledBack,
-            format!(
-                "{reason}; prior proved running again: {}",
+    }
+    let restored: Vec<String> = journal
+        .phases
+        .iter()
+        .filter_map(|phase| match phase {
+            PromotionPhase::RollbackConfirmed(running) => Some(format!(
+                "{} {} (executable {})",
+                running.worker, running.version, running.binary_sha256
+            )),
+            _ => None,
+        })
+        .collect();
+    if !refused.is_empty() {
+        // What was restored first: a long refusal is cut, never the outcome.
+        return Err(PromotionError::rejected(format!(
+            "prior proved running again: {}; restoring {} was refused ({reason})",
+            if restored.is_empty() {
+                "none".to_string()
+            } else {
                 restored.join(", ")
-            ),
-        ));
-    };
-    let prior = prior_of(journal, &worker)
+            },
+            refused.join("; "),
+        )));
+    }
+    if restored.is_empty() {
+        return Err(PromotionError::inconclusive(format!(
+            "{reason}: the activation state cannot be restored automatically; the target's running artifact is not proved"
+        )));
+    }
+    Ok(Next::Finish(
+        OutcomeCodeV1::RolledBack,
+        format!(
+            "{reason}; prior proved running again: {}",
+            restored.join(", ")
+        ),
+    ))
+}
+
+/// The next restoration step of one in-flight `worker`.
+async fn recover_worker(
+    promotion: &Promotion,
+    journal: &PromotionJournal,
+    intent: Option<&str>,
+    since_ms: i64,
+    reason: &str,
+    worker: &str,
+) -> Result<Next, PromotionError> {
+    let prior = prior_of(journal, worker)
         .ok_or_else(|| PromotionError::inconclusive(format!("no {worker} rollback destination")))?;
-    let stable = validated_stable(journal, &worker)?;
+    let stable = validated_stable(journal, worker)?;
     let id = &journal.promotion_id;
     let restored = restore_step(
         promotion, journal, intent, since_ms, reason, &prior, &stable,
@@ -294,7 +326,7 @@ async fn recover(
         if error.kind != StopKind::Rejected {
             break;
         }
-        let operation = compose_operation_id(id, "rollback", &worker, &prior.version, attempt);
+        let operation = compose_operation_id(id, "rollback", worker, &prior.version, attempt);
         if journal.phases.iter().any(|phase| {
             matches!(phase, PromotionPhase::RollbackRequested(request) if request.operation_id == operation)
         }) {
@@ -1486,14 +1518,39 @@ pub async fn promotion_stage(
                     .phases
                     .iter()
                     .any(|phase| matches!(phase, PromotionPhase::ActivationRequested(_)));
+            // A stop between two finalizations leaves the first on `latest`
+            // beside the others' prior: never a combination the artifact
+            // run measured, so it is named for the operator.
+            let published: Vec<String> = journal
+                .phases
+                .iter()
+                .filter_map(|phase| match phase {
+                    PromotionPhase::StablePublished(artifact) => {
+                        Some(format!("{} {}", artifact.worker, artifact.version))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let unpublished = workers_of(&journal)
+                .into_iter()
+                .filter(|worker| stable_of(&journal, worker).is_none())
+                .count();
             let detail = format!(
-                "promotion stopped at {step} ({:?}): {}{}",
+                "promotion stopped at {step} ({:?}): {}{}{}",
                 error.kind,
                 error.reason,
                 if activated {
                     "; the target's running artifact is not proved"
                 } else {
                     "; nothing was activated"
+                },
+                if published.is_empty() || unpublished == 0 {
+                    String::new()
+                } else {
+                    format!(
+                        "; already on latest without the rest of the change: {}",
+                        published.join(", ")
+                    )
                 }
             );
             let mut stopped = journal.clone();
