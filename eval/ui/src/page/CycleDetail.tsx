@@ -917,11 +917,14 @@ const PHASE_LABEL: Record<PromotionPhase['phase'], string> = {
   stopped: 'Stopped',
 }
 
+/** The worker a step acts on; a journal from before workers were named is the Harness's. */
+const who = (worker: string | undefined) => worker ?? 'harness'
+
 /** One journal entry in words, with the evidence that phase carries. */
 function phaseLine(entry: PromotionPhase): string {
   switch (entry.phase) {
     case 'source_approved':
-      return `${entry.outcome} · candidate ${short(entry.candidate_sha)} on ${short(entry.base_sha)}`
+      return `${entry.outcome} · candidate ${short(entry.candidate_sha)} on ${short(entry.base_sha)} · releases ${(entry.workers ?? ['harness']).join(', ')}`
     case 'pull_request':
       return `#${entry.number} ${entry.created ? 'opened' : 'found'} · head ${short(entry.head_sha)}`
     case 'merge_requested':
@@ -930,23 +933,23 @@ function phaseLine(entry: PromotionPhase): string {
       return `${short(entry.merged_sha)} · tree ${entry.merged_tree === entry.candidate_tree ? 'matches' : 'differs from'} the approved tree`
     case 'rc_planned':
     case 'finalize_planned':
-      return `${entry.target_version} on ${entry.channel}, plan ${entry.plan_id}`
+      return `${who(entry.worker)} ${entry.target_version} on ${entry.channel}, plan ${entry.plan_id}`
     case 'rc_confirmed':
     case 'finalize_confirmed':
-      return `plan ${entry.plan.plan_id} · operation ${entry.operation_id}`
+      return `${who(entry.plan.worker)} · plan ${entry.plan.plan_id} · operation ${entry.operation_id}`
     case 'rc_published':
     case 'stable_published':
-      return `${entry.version} · archive ${short(entry.archive_sha256)} · from ${short(entry.source_sha)}`
+      return `${who(entry.worker)} ${entry.version} · archive ${short(entry.archive_sha256)} · from ${short(entry.source_sha)}`
     case 'artifact_approved':
-      return `${entry.outcome} · ${entry.version}`
+      return `${entry.outcome} · ${who(entry.worker)} ${entry.version}`
     case 'rollback_destination':
-      return `${entry.version} · binary ${short(entry.binary_sha256)}`
+      return `${who(entry.worker)} ${entry.version} · binary ${short(entry.binary_sha256)}`
     case 'activation_requested':
     case 'rollback_requested':
-      return `${entry.version} · ${entry.accepted ? 'accepted by Compose' : 'not accepted'}`
+      return `${who(entry.worker)} ${entry.version} · ${entry.accepted ? 'accepted by Compose' : 'not accepted'}`
     case 'activation_confirmed':
     case 'rollback_confirmed':
-      return `${entry.version} running · pid ${entry.pid} · binary ${short(entry.binary_sha256)}`
+      return `${who(entry.worker)} ${entry.version} running · pid ${entry.pid} · binary ${short(entry.binary_sha256)}`
     case 'stopped':
       return `${entry.step} · ${entry.kind}: ${entry.reason}`
   }

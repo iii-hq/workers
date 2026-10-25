@@ -221,6 +221,7 @@ async fn http_promotion() -> (Http, Promotion) {
 
 fn approval() -> SourceApproval {
     SourceApproval {
+        workers: vec!["harness".into()],
         candidate_id: "c42".into(),
         outcome: ApprovalOutcome::Accepted,
         policy_revision: "policy-7".into(),
@@ -297,6 +298,7 @@ fn tar_gz(entries: &[(&str, tar::EntryType, &[u8])]) -> Vec<u8> {
 
 fn rc_artifact(archive: &str) -> ReleaseArtifact {
     ReleaseArtifact {
+        worker: "harness".into(),
         version: "0.9.1-rc.1".into(),
         tags: vec!["next".into()],
         target: TARGET.into(),
@@ -349,6 +351,7 @@ fn artifact_approval_binds_version_source_archive_and_the_running_binary() {
     let binary = sha256(b"executable");
     let rc = rc_artifact(&archive);
     let approved = ArtifactApproval {
+        worker: "harness".into(),
         outcome: ApprovalOutcome::Accepted,
         policy_revision: "policy-7".into(),
         version: rc.version.clone(),
@@ -364,6 +367,7 @@ fn artifact_approval_binds_version_source_archive_and_the_running_binary() {
     );
 
     let cached_build = ArtifactApproval {
+        worker: "harness".into(),
         binary_sha256: Some(sha256(b"a cached build of the same version")),
         ..approved.clone()
     };
@@ -376,6 +380,7 @@ fn artifact_approval_binds_version_source_archive_and_the_running_binary() {
     );
 
     let unknown = ArtifactApproval {
+        worker: "harness".into(),
         binary_sha256: None,
         ..approved.clone()
     };
@@ -385,6 +390,7 @@ fn artifact_approval_binds_version_source_archive_and_the_running_binary() {
         "an unmeasured running binary never authorizes finalization"
     );
     let other_archive = ArtifactApproval {
+        worker: "harness".into(),
         archive_sha256: sha256(b"other"),
         ..approved.clone()
     };
@@ -395,6 +401,7 @@ fn artifact_approval_binds_version_source_archive_and_the_running_binary() {
         StopKind::Rejected
     );
     let source_only = ArtifactApproval {
+        worker: "harness".into(),
         source_sha: CANDIDATE.into(),
         ..approved
     };
@@ -641,7 +648,7 @@ async fn remote_error_fields_never_reach_a_reason() {
         for status in [400u16, 403, 404, 409, 422, 500] {
             let body = json!({ (field): "leaked-secret-value" });
             http.json("POST /operations/preview", status, body.clone());
-            let preview = promotion.preview_rc(&merge()).await.unwrap_err();
+            let preview = promotion.preview_rc(&merge(), "harness").await.unwrap_err();
             assert!(
                 !preview.to_string().contains("leaked-secret"),
                 "{field} {status}: {preview}"
@@ -662,7 +669,7 @@ async fn remote_error_fields_never_reach_a_reason() {
         200,
         rc_preview(MERGED, json!("leaked-secret-value")),
     );
-    let blocked = promotion.preview_rc(&merge()).await.unwrap_err();
+    let blocked = promotion.preview_rc(&merge(), "harness").await.unwrap_err();
     assert!(!blocked.to_string().contains("leaked-secret"), "{blocked}");
 }
 
@@ -682,7 +689,7 @@ async fn the_rc_plan_is_frozen_and_a_repeated_confirmation_returns_the_original_
         json!({ "operation": { "id": "op-1", "kind": "deploy" } }),
     );
 
-    let plan = promotion.preview_rc(&merge()).await.unwrap();
+    let plan = promotion.preview_rc(&merge(), "harness").await.unwrap();
     assert_eq!(plan.kind, ReleaseKind::Deploy);
     assert_eq!(plan.source_sha, MERGED);
     assert_eq!(plan.target_version, "0.9.1-rc.1");
@@ -728,7 +735,11 @@ async fn a_plan_for_another_source_or_a_blocked_plan_stops() {
         rc_preview(BASE, Value::Null),
     );
     assert_eq!(
-        promotion.preview_rc(&merge()).await.unwrap_err().kind,
+        promotion
+            .preview_rc(&merge(), "harness")
+            .await
+            .unwrap_err()
+            .kind,
         StopKind::Rejected
     );
     http.json(
@@ -739,7 +750,7 @@ async fn a_plan_for_another_source_or_a_blocked_plan_stops() {
             json!("harness: Registry channel snapshot is unavailable"),
         ),
     );
-    let blocked = promotion.preview_rc(&merge()).await.unwrap_err();
+    let blocked = promotion.preview_rc(&merge(), "harness").await.unwrap_err();
     assert_eq!(blocked.kind, StopKind::Rejected);
     assert!(blocked.reason.contains("1 blocking"), "{blocked}");
     assert!(
@@ -762,7 +773,7 @@ async fn missing_session_child() {
         idle_engine(),
     )
     .unwrap();
-    let missing = promotion.preview_rc(&merge()).await.unwrap_err();
+    let missing = promotion.preview_rc(&merge(), "harness").await.unwrap_err();
     assert_eq!(missing.kind, StopKind::Unavailable, "{missing}");
     assert!(missing.reason.contains(RELEASE_CONTROL_SESSION_ENV));
     assert!(
@@ -796,7 +807,7 @@ async fn expired_sessions_and_stale_plans_never_echo_bodies() {
         401,
         json!({ "error": "unauthorized", "echo": "session-secret-expired" }),
     );
-    let expired = promotion.preview_rc(&merge()).await.unwrap_err();
+    let expired = promotion.preview_rc(&merge(), "harness").await.unwrap_err();
     assert_eq!(expired.kind, StopKind::Unavailable);
     assert!(!expired.to_string().contains("session-secret"), "{expired}");
 
@@ -806,6 +817,7 @@ async fn expired_sessions_and_stale_plans_never_echo_bodies() {
         json!({ "error": "stale plan", "code": "stale_plan", "echo": "session-secret-expired" }),
     );
     let plan = ReleasePlan {
+        worker: "harness".into(),
         kind: ReleaseKind::Deploy,
         plan_id: "p".into(),
         plan_hash: PLAN_HASH.into(),
@@ -828,6 +840,7 @@ async fn expired_sessions_and_stale_plans_never_echo_bodies() {
 async fn the_operation_and_the_registry_archive_must_be_the_planned_build() {
     let (http, promotion) = http_promotion().await;
     let plan = ReleasePlan {
+        worker: "harness".into(),
         kind: ReleaseKind::Deploy,
         plan_id: "p".into(),
         plan_hash: PLAN_HASH.into(),
@@ -965,11 +978,13 @@ async fn finalization_requires_next_on_the_approved_rc_and_latest_where_it_was_f
     let archive = sha256(b"archive");
     let rc = rc_artifact(&archive);
     let approved = ValidatedArtifact {
+        worker: "harness".into(),
         version: rc.version.clone(),
         archive_sha256: archive.clone(),
         binary_sha256: sha256(b"executable"),
     };
     let rc_plan = ReleasePlan {
+        worker: "harness".into(),
         kind: ReleaseKind::Deploy,
         plan_id: "p".into(),
         plan_hash: PLAN_HASH.into(),
@@ -1262,7 +1277,7 @@ async fn the_harness_under_a_shell_wrapper_is_hashed_never_the_wrapper() {
     );
     let (daemon, _fake, promotion, compose_file) = compose_rig(row(shell_pid, "0.9.1")).await;
 
-    let observed = promotion.observe_target().await.unwrap();
+    let observed = promotion.observe_target("harness").await.unwrap();
     assert_eq!(observed.supervisor_pid, Some(shell_pid));
     assert_eq!(observed.pid, Some(harness[0]), "the actual Harness pid");
     assert_eq!(
@@ -1272,11 +1287,12 @@ async fn the_harness_under_a_shell_wrapper_is_hashed_never_the_wrapper() {
     );
 
     let candidate = ValidatedArtifact {
+        worker: "harness".into(),
         version: "0.9.1".into(),
         archive_sha256: sha256(b"archive"),
         binary_sha256: digest.clone(),
     };
-    let operation = compose_operation_id("p1", "activate", "0.9.1", 1);
+    let operation = compose_operation_id("p1", "activate", "harness", "0.9.1", 1);
     daemon
         .lock()
         .unwrap()
@@ -1297,7 +1313,7 @@ async fn the_harness_under_a_shell_wrapper_is_hashed_never_the_wrapper() {
     // Two Harness processes under one wrapper: which one serves is unknown.
     let (_twice, twice_pid, _, _) = spawn_wrapped("twice", 2);
     daemon.lock().unwrap().harness = row(twice_pid, "0.9.1");
-    let ambiguous = promotion.observe_target().await.unwrap();
+    let ambiguous = promotion.observe_target("harness").await.unwrap();
     assert_eq!(ambiguous.binary_sha256, None);
     assert!(
         ambiguous
@@ -1320,7 +1336,7 @@ async fn the_harness_under_a_shell_wrapper_is_hashed_never_the_wrapper() {
         .spawn()
         .unwrap();
     daemon.lock().unwrap().harness = row(bare.id(), "0.9.1");
-    let missing = promotion.observe_target().await.unwrap();
+    let missing = promotion.observe_target("harness").await.unwrap();
     let _ = bare.kill();
     let _ = bare.wait();
     assert_eq!(missing.binary_sha256, None);
@@ -1335,7 +1351,7 @@ async fn the_harness_under_a_shell_wrapper_is_hashed_never_the_wrapper() {
         .unwrap();
     std::thread::sleep(Duration::from_millis(100));
     daemon.lock().unwrap().harness = row(shell.id(), "0.9.1");
-    let unrelated = promotion.observe_target().await.unwrap();
+    let unrelated = promotion.observe_target("harness").await.unwrap();
     let _ = shell.kill();
     let _ = shell.wait();
     assert_eq!(unrelated.binary_sha256, None, "{unrelated:?}");
@@ -1401,24 +1417,26 @@ async fn activation_and_rollback_are_proved_by_the_running_executable() {
     .unwrap();
 
     let prior = ValidatedArtifact {
+        worker: "harness".into(),
         version: "0.9.0".into(),
         archive_sha256: sha256(b"prior archive"),
         binary_sha256: prior_digest.clone(),
     };
     let candidate = ValidatedArtifact {
+        worker: "harness".into(),
         version: "0.9.1".into(),
         archive_sha256: sha256(b"candidate archive"),
         binary_sha256: candidate_digest.clone(),
     };
 
     // The target runs the validated prior: that is the rollback destination.
-    let observed = promotion.observe_target().await.unwrap();
+    let observed = promotion.observe_target("harness").await.unwrap();
     assert_eq!(
         classify_target(&observed, &prior, &candidate),
         TargetIs::Prior
     );
 
-    let activate = compose_operation_id("p1", "activate", "0.9.1", 1);
+    let activate = compose_operation_id("p1", "activate", "harness", "0.9.1", 1);
     // Recovery reads the operation without dispatching it.
     assert_eq!(
         promotion.read_compose_operation(&activate).await.unwrap(),
@@ -1499,7 +1517,7 @@ async fn activation_and_rollback_are_proved_by_the_running_executable() {
     assert_eq!(running.pid, candidate_pid);
 
     // Rollback pins the exact prior and is confirmed only by its executable.
-    let rollback = compose_operation_id("p1", "rollback", "0.9.0", 1);
+    let rollback = compose_operation_id("p1", "rollback", "harness", "0.9.0", 1);
     assert!(
         promotion
             .request_rollback(&prior, &candidate, &rollback)
@@ -1531,7 +1549,7 @@ async fn activation_and_rollback_are_proved_by_the_running_executable() {
 
     // An operation cancelled before its add is read as cancelled and never
     // dispatched by the read.
-    let cancelled = compose_operation_id("p1", "activate", "0.9.1", 9);
+    let cancelled = compose_operation_id("p1", "activate", "harness", "0.9.1", 9);
     daemon
         .lock()
         .unwrap()
@@ -1546,7 +1564,7 @@ async fn activation_and_rollback_are_proved_by_the_running_executable() {
 
     // An operator's own change is never overwritten.
     daemon.lock().unwrap().harness = row(other_pid, "0.9.0-local");
-    let fresh = compose_operation_id("p1", "activate", "0.9.1", 2);
+    let fresh = compose_operation_id("p1", "activate", "harness", "0.9.1", 2);
     assert_eq!(
         promotion
             .request_activation(&prior, &candidate, &fresh)
@@ -1560,7 +1578,7 @@ async fn activation_and_rollback_are_proved_by_the_running_executable() {
     // A daemon for another namespace is not the target.
     daemon.lock().unwrap().namespace = "my-project".into();
     assert_eq!(
-        promotion.observe_target().await.unwrap_err().kind,
+        promotion.observe_target("harness").await.unwrap_err().kind,
         StopKind::Rejected
     );
     let _ = std::fs::remove_file(&compose_file);

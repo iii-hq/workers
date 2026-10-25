@@ -1485,6 +1485,13 @@
               "null"
             ]
           },
+          "worker_binaries": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "SHA-256 of each running worker executable the E2E captured (`system_under_test.worker_binaries`), by worker; every report must agree.",
+            "type": "object"
+          },
           "workers_revision": {
             "type": [
               "string",
@@ -2138,6 +2145,16 @@
               },
               "policy_revision": {
                 "type": "string"
+              },
+              "workers": {
+                "default": [
+                  "harness"
+                ],
+                "description": "The workers the candidate was measured in, released in this order.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               }
             },
             "required": [
@@ -2315,6 +2332,10 @@
               "target_version": {
                 "description": "The version the operation will publish: the rc for a deploy, the stable version for a finalization.",
                 "type": "string"
+              },
+              "worker": {
+                "default": "harness",
+                "type": "string"
               }
             },
             "required": [
@@ -2362,7 +2383,7 @@
                 "type": "string"
               },
               "binary_sha256": {
-                "description": "sha256 of the archive's one regular `harness` entry: the executable this release installs. A separate fact from `archive_sha256`.",
+                "description": "sha256 of the archive's one regular entry named after the worker: the executable this release installs. A separate fact from `archive_sha256`.",
                 "type": "string"
               },
               "build_run_id": {
@@ -2398,6 +2419,10 @@
                 "type": "string"
               },
               "version": {
+                "type": "string"
+              },
+              "worker": {
+                "default": "harness",
                 "type": "string"
               }
             },
@@ -2444,6 +2469,10 @@
                 "type": "string"
               },
               "version": {
+                "type": "string"
+              },
+              "worker": {
+                "default": "harness",
                 "type": "string"
               }
             },
@@ -2510,6 +2539,10 @@
               "target_version": {
                 "description": "The version the operation will publish: the rc for a deploy, the stable version for a finalization.",
                 "type": "string"
+              },
+              "worker": {
+                "default": "harness",
+                "type": "string"
               }
             },
             "required": [
@@ -2557,7 +2590,7 @@
                 "type": "string"
               },
               "binary_sha256": {
-                "description": "sha256 of the archive's one regular `harness` entry: the executable this release installs. A separate fact from `archive_sha256`.",
+                "description": "sha256 of the archive's one regular entry named after the worker: the executable this release installs. A separate fact from `archive_sha256`.",
                 "type": "string"
               },
               "build_run_id": {
@@ -2594,6 +2627,10 @@
               },
               "version": {
                 "type": "string"
+              },
+              "worker": {
+                "default": "harness",
+                "type": "string"
               }
             },
             "required": [
@@ -2627,6 +2664,10 @@
               },
               "version": {
                 "type": "string"
+              },
+              "worker": {
+                "default": "harness",
+                "type": "string"
               }
             },
             "required": [
@@ -2653,6 +2694,10 @@
                 "type": "string"
               },
               "version": {
+                "type": "string"
+              },
+              "worker": {
+                "default": "harness",
                 "type": "string"
               }
             },
@@ -2699,6 +2744,10 @@
               },
               "version": {
                 "type": "string"
+              },
+              "worker": {
+                "default": "harness",
+                "type": "string"
               }
             },
             "required": [
@@ -2729,6 +2778,10 @@
                 "type": "string"
               },
               "version": {
+                "type": "string"
+              },
+              "worker": {
+                "default": "harness",
                 "type": "string"
               }
             },
@@ -2774,6 +2827,10 @@
                 "type": "integer"
               },
               "version": {
+                "type": "string"
+              },
+              "worker": {
+                "default": "harness",
                 "type": "string"
               }
             },
@@ -3054,6 +3111,10 @@
           },
           "target_version": {
             "description": "The version the operation will publish: the rc for a deploy, the stable version for a finalization.",
+            "type": "string"
+          },
+          "worker": {
+            "default": "harness",
             "type": "string"
           }
         },
@@ -3529,7 +3590,7 @@
         "description": "E2E stacks in the E2E's own shape. Every worker a candidate may change is declared in the source stack as a `package://<worker>` container with `commit: {commit}`, so both sides build it from their own commit; everything else (Engine, evaluator, unchanged workers) stays fixed.",
         "properties": {
           "artifact_stack_template": {
-            "description": "Stack YAML pinning an immutable Registry version; `{version}` is replaced by it.",
+            "description": "Stack YAML pinning immutable Registry versions: each `{version:<worker>}` is replaced by that worker's rc, a bare `{version}` by the Harness's.",
             "type": "string"
           },
           "source_stack_template": {

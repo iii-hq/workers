@@ -43,7 +43,7 @@ const PLAN_HASH: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 const TARGET: &str = "x86_64-unknown-linux-gnu";
 const NAMESPACE: &str = "promotion-target";
 const SOURCE_TEMPLATE: &str = "iii: 0.22.0\ncontainers:\n  harness:\n    worker: package://harness\n    commit: \"{commit}\"\n  context-manager:\n    worker: package://context-manager\n    commit: \"{commit}\"\n";
-const ARTIFACT_TEMPLATE: &str = "workers:\n  harness: {version}\n  engine: 0.22.0\n";
+const ARTIFACT_TEMPLATE: &str = "iii: 0.22.0\ncontainers:\n  harness:\n    worker: package://harness\n    version: \"{version:harness}\"\n  context-manager:\n    worker: package://context-manager\n    version: \"{version:context-manager}\"\n";
 
 fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -59,6 +59,8 @@ struct System {
     workers_revision: String,
     harness_version: String,
     binary: Option<String>,
+    /// Other running worker executables, `system_under_test.worker_binaries`.
+    workers: BTreeMap<String, String>,
 }
 
 fn run(run_id: &str, status: &str, tokens: f64, awards: &[Option<u8>], criteria: &[&str]) -> Value {
@@ -179,6 +181,7 @@ fn bundle(
                                       "engine": "0.22.0", "state": "1.0.0"}},
                         "engine_version": "0.22.0", "harness_version": system.harness_version,
                         "harness_binary_sha256": system.binary,
+                        "worker_binaries": system.workers,
                         // A source-built Harness: the validated build links
                         // the full commit to the executable measured.
                         "harness_source": if system.workers_revision.len() == 40 {
@@ -220,6 +223,7 @@ impl Dashboard {
                     workers_revision: String::new(),
                     harness_version: String::new(),
                     binary: None,
+                    workers: Default::default(),
                 };
                 let mut execution =
                     bundle(&id, &label, "running", &parameters, Vec::new(), &system);
@@ -465,6 +469,8 @@ struct Target {
     namespace: String,
     file: String,
     harness: Value,
+    /// Containers other than the Harness, by name.
+    others: BTreeMap<String, Value>,
     /// The local process that runs each version once pinned.
     pids: HashMap<String, u32>,
     operations: HashMap<String, Value>,
@@ -477,8 +483,12 @@ struct Target {
 }
 
 fn harness_row(pid: u32, version: &str) -> Value {
-    json!({"container": "harness", "state": "ready", "version": version, "pid": pid,
-        "owned": true, "log_path": "/tmp/harness.log"})
+    worker_row("harness", pid, version)
+}
+
+fn worker_row(worker: &str, pid: u32, version: &str) -> Value {
+    json!({"container": worker, "state": "ready", "version": version, "pid": pid,
+        "owned": true, "log_path": format!("/tmp/{worker}.log")})
 }
 
 impl Target {
@@ -488,8 +498,12 @@ impl Target {
             return answer;
         }
         match function {
-            "compose::status" => Ok(json!({"namespace": self.namespace, "file": self.file,
-                "daemon_pid": 1, "state_dir": "/tmp/state", "containers": [self.harness.clone()]})),
+            "compose::status" => {
+                let mut containers = vec![self.harness.clone()];
+                containers.extend(self.others.values().cloned());
+                Ok(json!({"namespace": self.namespace, "file": self.file,
+                    "daemon_pid": 1, "state_dir": "/tmp/state", "containers": containers}))
+            }
             "compose::operation" => {
                 let id = data["progress_operation_id"].as_str().unwrap_or_default();
                 self.operations
@@ -507,10 +521,26 @@ impl Target {
                     .as_str()
                     .unwrap_or_default()
                     .to_string();
-                let pid = self.pids[&version];
+                let worker = data["workers"][0]["worker"]
+                    .as_str()
+                    .and_then(|worker| worker.strip_prefix("package://"))
+                    .unwrap_or_default()
+                    .to_string();
+                let pid = if worker == "harness" {
+                    self.pids[&version]
+                } else {
+                    self.pids[&format!("{worker}@{version}")]
+                };
                 if std::mem::take(&mut self.hold) {
                     self.operations
                         .insert(id.clone(), json!({"operation_id": id, "status": "running"}));
+                } else if worker != "harness" {
+                    self.others
+                        .insert(worker.clone(), worker_row(&worker, pid, &version));
+                    self.operations.insert(
+                        id.clone(),
+                        json!({"operation_id": id, "status": "succeeded"}),
+                    );
                 } else {
                     self.harness = harness_row(pid, &version);
                     self.operations.insert(
@@ -553,6 +583,8 @@ struct Services {
     deny: bool,
     archive_new: Vec<u8>,
     archive_prior: Vec<u8>,
+    /// (new, prior) archives of the workers other than the Harness.
+    workers: HashMap<String, (Vec<u8>, Vec<u8>)>,
     url: String,
     seen: Vec<(String, String)>,
 }
@@ -575,16 +607,54 @@ impl Services {
             self.base_sha.clone()
         };
         let archive = |name: &str, bytes: &[u8]| json!({(TARGET): {"url": format!("{}/{name}", self.url), "sha256": sha256(bytes)}});
-        let versions = json!({"versions": [
-            {"version": RC, "tags": ["next"], "binaries": archive("archive-new", &self.archive_new)},
-            {"version": STABLE, "tags": ["latest"], "binaries": archive("archive-new", &self.archive_new)},
-            {"version": PRIOR, "tags": [], "binaries": archive("archive-prior", &self.archive_prior)}]});
-        let deployment = |id: &str, version: &str, channel: &str, from: Value| {
+        let versions_of = |suffix: &str, new: &[u8], prior: &[u8]| {
+            json!({"versions": [
+            {"version": RC, "tags": ["next"], "binaries": archive(&format!("archive-new{suffix}"), new)},
+            {"version": STABLE, "tags": ["latest"], "binaries": archive(&format!("archive-new{suffix}"), new)},
+            {"version": PRIOR, "tags": [], "binaries": archive(&format!("archive-prior{suffix}"), prior)}]})
+        };
+        let versions = versions_of("", &self.archive_new, &self.archive_prior);
+        // The worker a Release Control request names, and its id suffix.
+        let named = body_json["workers"][0]["name"]
+            .as_str()
+            .unwrap_or("harness")
+            .to_string();
+        let suffix = |worker: &str| {
+            if worker == "harness" {
+                String::new()
+            } else {
+                format!("-{worker}")
+            }
+        };
+        let deployment = |id: &str, worker: &str, version: &str, channel: &str, from: Value| {
             json!({"operation": {"id": id},
-            "deployments": [{"id": format!("dep-{id}"), "worker": "harness", "version": version, "channel": channel,
+            "deployments": [{"id": format!("dep-{id}"), "worker": worker, "version": version, "channel": channel,
                 "fromVersion": from, "sourceSha": source, "status": "converged", "statusDetail": null,
                 "descriptorSha256": PLAN_HASH, "executions": [{"runId": 11, "conclusion": "success", "hasManifest": true}]}]})
         };
+        if let Some(worker) = key
+            .strip_prefix("GET /w/")
+            .and_then(|rest| rest.strip_suffix("/versions"))
+            .filter(|worker| *worker != "harness")
+        {
+            let Some((new, prior)) = self.workers.get(worker) else {
+                return (404, json!({"error": "no such worker"}));
+            };
+            return (200, versions_of(&suffix(worker), new, prior));
+        }
+        if let Some(rest) = key.strip_prefix("GET /operations/op-") {
+            let (kind, worker) = rest.split_once('-').unwrap_or((rest, "harness"));
+            return match kind {
+                "rc" => (
+                    200,
+                    deployment(&format!("op-{rest}"), worker, RC, "next", Value::Null),
+                ),
+                _ => (
+                    200,
+                    deployment(&format!("op-{rest}"), worker, STABLE, "latest", json!(RC)),
+                ),
+            };
+        }
         match key {
             k if k.starts_with(&format!("GET {repo}/git/ref/heads/feat/")) => {
                 (200, json!({"object": {"sha": source}}))
@@ -607,26 +677,23 @@ impl Services {
             "POST /operations/preview" if body_json["type"] == "deploy" => (
                 200,
                 json!({
-                "planId": "plan-rc", "planHash": PLAN_HASH, "expiresAt": "later",
-                "preview": {"sourceSha": source, "blocked": false, "plan": [{"worker": "harness",
+                "planId": format!("plan-rc{}", suffix(&named)), "planHash": PLAN_HASH, "expiresAt": "later",
+                "preview": {"sourceSha": source, "blocked": false, "plan": [{"worker": named,
                     "channel": "next", "sourceSha": source, "targetVersion": RC, "blocking": null,
                     "snapshots": {"next": {"version": "0.9.0-rc.3"}, "latest": {"version": PRIOR}}}]}}),
             ),
             "POST /operations/preview" => (
                 200,
                 json!({
-                "planId": "plan-final", "planHash": PLAN_HASH, "expiresAt": "later",
-                "preview": {"blocked": false, "plan": [{"worker": "harness", "candidateVersion": RC,
+                "planId": format!("plan-final{}", suffix(&named)), "planHash": PLAN_HASH, "expiresAt": "later",
+                "preview": {"blocked": false, "plan": [{"worker": named, "candidateVersion": RC,
                     "stableVersion": STABLE, "channel": "latest", "sourceSha": source,
                     "expectedNextVersion": RC, "expectedLatestVersion": PRIOR, "blocking": null}]}}),
             ),
-            "POST /operations" if body_json["planId"] == "plan-rc" => {
-                (201, json!({"operation": {"id": "op-rc"}}))
-            }
-            "POST /operations" => (201, json!({"operation": {"id": "op-final"}})),
-            "GET /operations/op-rc" => (200, deployment("op-rc", RC, "next", Value::Null)),
-            "GET /operations/op-final" => {
-                (200, deployment("op-final", STABLE, "latest", json!(RC)))
+            "POST /operations" => {
+                let plan = body_json["planId"].as_str().unwrap_or_default();
+                let op = plan.replacen("plan-", "op-", 1);
+                (201, json!({"operation": {"id": op}}))
             }
             "GET /w/harness/versions" => (200, versions),
             other => (404, json!({"error": format!("no route {other}")})),
@@ -694,6 +761,13 @@ async fn serve(services: Arc<Mutex<Services>>) -> Http {
                     match key.as_str() {
                         "GET /archive-new" => services.archive_new.clone(),
                         "GET /archive-prior" => services.archive_prior.clone(),
+                        k if k.starts_with("GET /archive-new-") => {
+                            services.workers[&k["GET /archive-new-".len()..]].0.clone()
+                        }
+                        k if k.starts_with("GET /archive-prior-") => services.workers
+                            [&k["GET /archive-prior-".len()..]]
+                            .1
+                            .clone(),
                         _ => {
                             let (status, value) = services.respond(&key, &body);
                             let text = value.to_string().into_bytes();
@@ -758,6 +832,11 @@ impl Drop for Proc {
 /// A runnable executable named `harness` (the name the target observation
 /// requires), made distinct by `salt` appended past its end.
 fn harness_executable(dir: &Path, salt: &[u8]) -> PathBuf {
+    worker_executable(dir, "harness", salt)
+}
+
+/// A runnable executable named `worker`, made distinct by `salt`.
+fn worker_executable(dir: &Path, worker: &str, salt: &[u8]) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(dir).unwrap();
     let source = std::fs::canonicalize(
@@ -767,7 +846,7 @@ fn harness_executable(dir: &Path, salt: &[u8]) -> PathBuf {
             .expect("python3"),
     )
     .unwrap();
-    let path = dir.join("harness");
+    let path = dir.join(worker);
     let mut bytes = std::fs::read(source).unwrap();
     bytes.extend_from_slice(salt);
     std::fs::write(&path, bytes).unwrap();
@@ -778,13 +857,16 @@ fn harness_executable(dir: &Path, salt: &[u8]) -> PathBuf {
 /// A release archive as the Registry serves it: a tar.gz holding the one
 /// regular `harness` executable.
 fn archive(executable: &Path) -> Vec<u8> {
+    archive_named(executable, "harness")
+}
+
+/// A release archive holding the one regular executable named `worker`.
+fn archive_named(executable: &Path, worker: &str) -> Vec<u8> {
     let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
         Vec::new(),
         flate2::Compression::fast(),
     ));
-    builder
-        .append_path_with_name(executable, "harness")
-        .unwrap();
+    builder.append_path_with_name(executable, worker).unwrap();
     builder.into_inner().unwrap().finish().unwrap()
 }
 
@@ -866,6 +948,9 @@ struct Rig {
     _http: Http,
     _engines: (fake_engine::FakeEngine, fake_engine::FakeEngine),
     _procs: (Proc, Proc),
+    /// The processes of workers added with [`Rig::add_worker`].
+    _extra: Vec<Proc>,
+    artifact_template: &'static str,
     scratch: PathBuf,
     /// One rig at a time: the credential variables are process-global and
     /// setenv races with every getenv (process spawn included) of a
@@ -944,6 +1029,7 @@ impl Rig {
             namespace: NAMESPACE.into(),
             file: compose_file.to_string_lossy().to_string(),
             harness: harness_row(prior_pid, PRIOR),
+            others: BTreeMap::new(),
             pids: HashMap::from([
                 (PRIOR.to_string(), prior_pid),
                 (STABLE.to_string(), candidate_pid),
@@ -995,6 +1081,8 @@ impl Rig {
             _http: http,
             _engines: (ours, theirs),
             _procs: (prior_proc, candidate_proc),
+            _extra: Vec::new(),
+            artifact_template: ARTIFACT_TEMPLATE,
             scratch,
             _serial: serial,
         };
@@ -1049,7 +1137,7 @@ impl Rig {
                 "max_output_tokens": 4000, "max_total_tokens": 200000, "max_cost_usd": 1.5,
                 "publish_remote": null},
             "validation": {"where": "docker", "stack_name": "loop",
-                "source_stack_template": SOURCE_TEMPLATE, "artifact_stack_template": ARTIFACT_TEMPLATE},
+                "source_stack_template": SOURCE_TEMPLATE, "artifact_stack_template": self.artifact_template},
         });
         if promotion {
             config["promotion"] = json!({"artifact_target": TARGET,
@@ -1116,6 +1204,7 @@ impl Rig {
             workers_revision: self.base_sha.clone(),
             harness_version: "h-base".into(),
             binary: Some(format!("sha256:{}", sha256(b"base harness build"))),
+            workers: Default::default(),
         }
     }
 
@@ -1138,11 +1227,11 @@ impl Rig {
     }
 
     async fn reach_validation(&mut self) -> (String, String) {
-        Box::pin(self.reach_validation_changing("harness/src/lib.rs")).await
+        Box::pin(self.reach_validation_changing(&["harness/src/lib.rs"])).await
     }
 
-    /// [`Self::reach_validation`] with the actor writing `file`.
-    async fn reach_validation_changing(&mut self, file: &str) -> (String, String) {
+    /// [`Self::reach_validation`] with the actor writing `files`.
+    async fn reach_validation_changing(&mut self, files: &[&str]) -> (String, String) {
         let cycle_id = self.begin_source().await;
         let record = self.cycle(&cycle_id).await;
         assert_eq!(
@@ -1200,9 +1289,11 @@ impl Rig {
         );
 
         let identity = record.candidate.as_ref().unwrap().identity.clone();
-        let written = Path::new(&identity.root).join(file);
-        std::fs::create_dir_all(written.parent().unwrap()).unwrap();
-        std::fs::write(written, "pub fn window() { summarise(); }\n").unwrap();
+        for file in files {
+            let written = Path::new(&identity.root).join(file);
+            std::fs::create_dir_all(written.parent().unwrap()).unwrap();
+            std::fs::write(written, "pub fn window() { summarise(); }\n").unwrap();
+        }
         self.world().complete_session("loop-candidate-", json!({}));
         // The push to the official origin is the one effect an offline test
         // cannot perform (and must never attempt): its recorded result is
@@ -1247,7 +1338,7 @@ impl Rig {
                 .iter()
                 .map(|path| path.path.as_str())
                 .collect::<Vec<_>>(),
-            [file]
+            files
         );
         assert_eq!(
             state.publish.as_ref().unwrap().candidate_sha,
@@ -1338,6 +1429,7 @@ impl Rig {
             workers_revision: String::new(),
             harness_version: RC.into(),
             binary: Some(format!("sha256:{}", self.candidate_digest)),
+            workers: Default::default(),
         };
         self.world()
             .e2e
@@ -1390,11 +1482,47 @@ impl Rig {
         cycle_id
     }
 
+    /// Another worker on the target, running its prior release, with a
+    /// distinct candidate executable for its rc and stable versions.
+    /// Returns the (prior, candidate) executable digests.
+    fn add_worker(&mut self, worker: &str) -> (String, String) {
+        let sleeper = ["-c", "import time; time.sleep(600)"];
+        let dir = self.scratch.join(worker);
+        let prior_exe = worker_executable(&dir.join("prior"), worker, worker.as_bytes());
+        let candidate_exe = worker_executable(
+            &dir.join("candidate"),
+            worker,
+            format!("{worker}+").as_bytes(),
+        );
+        let (prior_proc, prior_pid, prior_digest) = spawn(prior_exe.to_str().unwrap(), &sleeper);
+        let (candidate_proc, candidate_pid, candidate_digest) =
+            spawn(candidate_exe.to_str().unwrap(), &sleeper);
+        self._extra.extend([prior_proc, candidate_proc]);
+        let mut target = self.target();
+        target
+            .others
+            .insert(worker.into(), worker_row(worker, prior_pid, PRIOR));
+        target.pids.insert(format!("{worker}@{PRIOR}"), prior_pid);
+        target
+            .pids
+            .insert(format!("{worker}@{STABLE}"), candidate_pid);
+        drop(target);
+        self.services.lock().unwrap().workers.insert(
+            worker.into(),
+            (
+                archive_named(&candidate_exe, worker),
+                archive_named(&prior_exe, worker),
+            ),
+        );
+        (prior_digest, candidate_digest)
+    }
+
     fn stable(&self, binary: &str) -> System {
         System {
             workers_revision: String::new(),
             harness_version: STABLE.into(),
             binary: Some(format!("sha256:{binary}")),
+            workers: Default::default(),
         }
     }
 }
@@ -1417,6 +1545,7 @@ fn candidate_system(sha: String) -> System {
         workers_revision: sha,
         harness_version: "h-candidate".into(),
         binary: Some(format!("sha256:{}", sha256(b"candidate harness build"))),
+        workers: Default::default(),
     }
 }
 
@@ -1732,13 +1861,14 @@ async fn without_promotion_an_accepted_source_candidate_is_decided_and_never_rel
 
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
-async fn an_accepted_change_to_another_worker_is_decided_and_left_on_its_branch() {
+async fn an_accepted_change_the_artifact_template_cannot_pin_is_left_on_its_branch() {
     let Some(mut rig) = Rig::start("otherworker").await else {
         return;
     };
+    rig.artifact_template = "iii: 0.22.0\ncontainers:\n  harness:\n    worker: package://harness\n    version: \"{version}\"\n";
     rig.configure(true).await;
     let (cycle_id, candidate_sha) =
-        Box::pin(rig.reach_validation_changing("context-manager/src/lib.rs")).await;
+        Box::pin(rig.reach_validation_changing(&["context-manager/src/lib.rs"])).await;
     rig.world().e2e.finish(
         "plan-2",
         "passed",
@@ -1765,7 +1895,7 @@ async fn an_accepted_change_to_another_worker_is_decided_and_left_on_its_branch(
     assert_eq!(outcome.code, OutcomeCodeV1::Decided);
     assert!(
         outcome.detail.contains("approved, not released")
-            && outcome.detail.contains("context-manager"),
+            && outcome.detail.contains("pins no rc of context-manager"),
         "{}",
         outcome.detail
     );
@@ -1775,6 +1905,333 @@ async fn an_accepted_change_to_another_worker_is_decided_and_left_on_its_branch(
             .iter()
             .any(|(key, _)| key.contains("refs/heads/main") || key.contains("/operations")),
         "nothing merged or built: {seen:?}"
+    );
+}
+
+/// A change measured in two workers up to its artifact run: both rc builds,
+/// and one artifact run that pins both. Returns the cycle and the
+/// context-manager candidate digest.
+async fn reach_two_worker_artifact(rig: &mut Rig) -> (String, String) {
+    let (_, context_digest) = rig.add_worker("context-manager");
+    rig.configure(true).await;
+    let (cycle_id, candidate_sha) = Box::pin(
+        rig.reach_validation_changing(&["context-manager/src/lib.rs", "harness/src/lib.rs"]),
+    )
+    .await;
+    rig.world().e2e.finish(
+        "plan-2",
+        "passed",
+        side(TOKENS, FIXED),
+        &candidate_system(candidate_sha),
+    );
+    rig.changed("plan-2").await;
+    let record = rig.cycle(&cycle_id).await;
+    assert_eq!(
+        record.decision.as_ref().unwrap().outcome,
+        DecisionOutcomeV1::Accepted,
+        "{:?}",
+        record.decision
+    );
+    let approved = serde_json::to_value(record.promotion.as_ref().unwrap()).unwrap()["phases"][0]
+        ["workers"]
+        .clone();
+    assert_eq!(approved, json!(["context-manager", "harness"]));
+    let artifact = rig.world().e2e.dispatched[2].clone();
+    assert_eq!(artifact.1, format!("eval:{cycle_id}:artifact"));
+    let yaml = artifact.2["stack"]["yaml"].as_str().unwrap().to_string();
+    assert_eq!(
+        yaml,
+        ARTIFACT_TEMPLATE
+            .replace("{version:harness}", RC)
+            .replace("{version:context-manager}", RC),
+        "one artifact run pins both rcs"
+    );
+    let seen = rig.services.lock().unwrap().seen.clone();
+    for route in [
+        "GET /operations/op-rc",
+        "GET /operations/op-rc-context-manager",
+    ] {
+        assert!(seen.iter().any(|(key, _)| key == route), "{route}");
+    }
+    (cycle_id, context_digest)
+}
+
+/// … then the artifact run measures both rc executables: both finalized,
+/// then each activated and proved in turn.
+async fn reach_two_worker_canary(rig: &mut Rig) -> (String, String) {
+    let (cycle_id, context_digest) = reach_two_worker_artifact(rig).await;
+    // The artifact run measured both rc executables.
+    let mut rc = System {
+        workers_revision: String::new(),
+        harness_version: RC.into(),
+        binary: Some(format!("sha256:{}", rig.candidate_digest)),
+        workers: Default::default(),
+    };
+    rc.workers
+        .insert("context-manager".into(), format!("sha256:{context_digest}"));
+    rig.world()
+        .e2e
+        .finish("plan-3", "passed", side(TOKENS, FIXED), &rc);
+    rig.changed("plan-3").await;
+    let record = rig.cycle(&cycle_id).await;
+    assert_eq!(
+        record.artifact_decision.as_ref().unwrap().outcome,
+        DecisionOutcomeV1::Accepted,
+        "{:?}",
+        record.artifact_decision
+    );
+    let adds: Vec<Value> = rig
+        .target()
+        .adds()
+        .iter()
+        .map(|add| add["workers"].clone())
+        .collect();
+    assert_eq!(
+        adds,
+        [
+            json!([{"worker": "package://context-manager", "version": STABLE}]),
+            json!([{"worker": "package://harness", "version": STABLE}]),
+        ],
+        "each worker pinned once, in order: {:?}",
+        record.history
+    );
+    let journal = phases(&record);
+    for (phase, count) in [
+        ("rc_published", 2),
+        ("artifact_approved", 2),
+        ("stable_published", 2),
+        ("rollback_destination", 2),
+        ("activation_confirmed", 2),
+    ] {
+        assert_eq!(
+            journal.iter().filter(|name| name.as_str() == phase).count(),
+            count,
+            "{phase}: {journal:?}"
+        );
+    }
+    assert_eq!(
+        rig.target().e2e.dispatched[0].1,
+        format!("eval:{cycle_id}:canary")
+    );
+    (cycle_id, context_digest)
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_canary_without_every_activated_digest_is_never_held() {
+    let Some(mut rig) = Rig::start("two-workers").await else {
+        return;
+    };
+    let (cycle_id, context_digest) = reach_two_worker_canary(&mut rig).await;
+    // A canary that ran the harness but an unknown context-manager is never held.
+    let stable = rig.stable(&rig.candidate_digest.clone());
+    rig.target()
+        .e2e
+        .finish("canary-1", "passed", side(TOKENS, FIXED), &stable);
+    rig.tick().await;
+    let record = rig.cycle(&cycle_id).await;
+    let canary = record.canary.clone().unwrap();
+    assert_eq!(
+        canary.outcome,
+        CanaryOutcomeV1::Unknown,
+        "{}",
+        canary.reason
+    );
+    assert!(
+        canary.reason.contains("context-manager executable unknown"),
+        "{}",
+        canary.reason
+    );
+    assert_ne!(
+        record.outcome.as_ref().map(|outcome| outcome.code),
+        Some(OutcomeCodeV1::Promoted)
+    );
+    let _ = context_digest;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn an_artifact_run_of_another_context_manager_build_releases_nothing() {
+    let Some(mut rig) = Rig::start("two-mismatch").await else {
+        return;
+    };
+    let (cycle_id, _) = reach_two_worker_artifact(&mut rig).await;
+    // Same version, same metrics, but not the executable the rc archive
+    // installs: a cached build is never approved for release.
+    let mut rc = System {
+        workers_revision: String::new(),
+        harness_version: RC.into(),
+        binary: Some(format!("sha256:{}", rig.candidate_digest)),
+        workers: Default::default(),
+    };
+    rc.workers.insert(
+        "context-manager".into(),
+        format!("sha256:{}", "f".repeat(64)),
+    );
+    rig.world()
+        .e2e
+        .finish("plan-3", "passed", side(TOKENS, FIXED), &rc);
+    rig.changed("plan-3").await;
+    let record = rig.cycle(&cycle_id).await;
+    let outcome = record.outcome.clone().unwrap();
+    assert_eq!(
+        outcome.code,
+        OutcomeCodeV1::Inconclusive,
+        "{}",
+        outcome.detail
+    );
+    assert!(
+        outcome.detail.contains(&"f".repeat(64))
+            && outcome.detail.contains("nothing was activated"),
+        "{}",
+        outcome.detail
+    );
+    assert!(rig.target().adds().is_empty(), "nothing pinned");
+    assert!(
+        !rig.services
+            .lock()
+            .unwrap()
+            .seen
+            .iter()
+            .any(|(_, body)| body.contains("finalize_release")),
+        "nothing finalized"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_after_both_activations_restores_both_priors() {
+    let Some(mut rig) = Rig::start("two-cancel").await else {
+        return;
+    };
+    let (cycle_id, _) = reach_two_worker_canary(&mut rig).await;
+    let cancelled = runtime::cycle_cancel(
+        &rig.deps,
+        CycleIdRequestV1 {
+            cycle_id: cycle_id.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        cancelled.status,
+        CycleStatusV1::Running,
+        "not terminal before both priors are proved"
+    );
+    rig.drain().await;
+    for _ in 0..4 {
+        rig.tick().await;
+    }
+    let record = rig.cycle(&cycle_id).await;
+    let outcome = record.outcome.clone().unwrap();
+    assert_eq!(
+        outcome.code,
+        OutcomeCodeV1::RolledBack,
+        "{} {:?}",
+        outcome.detail,
+        record.history
+    );
+    let adds: Vec<Value> = rig
+        .target()
+        .adds()
+        .iter()
+        .map(|add| add["workers"].clone())
+        .collect();
+    assert_eq!(
+        adds[2..],
+        [
+            json!([{"worker": "package://harness", "version": PRIOR}]),
+            json!([{"worker": "package://context-manager", "version": PRIOR}]),
+        ]
+    );
+    let target = rig.target();
+    assert_eq!(target.harness["version"], PRIOR);
+    assert_eq!(target.others["context-manager"]["version"], PRIOR);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_canary_that_ran_both_activated_workers_promotes_them() {
+    let Some(mut rig) = Rig::start("two-promoted").await else {
+        return;
+    };
+    let (cycle_id, context_digest) = reach_two_worker_canary(&mut rig).await;
+    let mut stable = rig.stable(&rig.candidate_digest.clone());
+    stable
+        .workers
+        .insert("context-manager".into(), format!("sha256:{context_digest}"));
+    rig.target()
+        .e2e
+        .finish("canary-1", "passed", side(TOKENS, FIXED), &stable);
+    rig.tick().await;
+    let record = rig.cycle(&cycle_id).await;
+    let outcome = record.outcome.clone().unwrap();
+    assert_eq!(
+        outcome.code,
+        OutcomeCodeV1::Promoted,
+        "{} {:?}",
+        outcome.detail,
+        record.history
+    );
+    let target = rig.target();
+    assert_eq!(target.harness["version"], STABLE);
+    assert_eq!(target.others["context-manager"]["version"], STABLE);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_violated_canary_rolls_back_every_worker_last_activated_first() {
+    let Some(mut rig) = Rig::start("two-rollback").await else {
+        return;
+    };
+    let (cycle_id, context_digest) = reach_two_worker_canary(&mut rig).await;
+    let mut stable = rig.stable(&rig.candidate_digest.clone());
+    stable
+        .workers
+        .insert("context-manager".into(), format!("sha256:{context_digest}"));
+    rig.target().e2e.finish(
+        "canary-1",
+        "passed",
+        side(TOKENS, [Some(3), Some(10), Some(10), Some(10)]),
+        &stable,
+    );
+    for _ in 0..4 {
+        rig.tick().await;
+    }
+    let record = rig.cycle(&cycle_id).await;
+    assert_eq!(
+        record.canary.as_ref().unwrap().outcome,
+        CanaryOutcomeV1::Violated
+    );
+    let outcome = record.outcome.clone().unwrap();
+    assert_eq!(
+        outcome.code,
+        OutcomeCodeV1::RolledBack,
+        "{} {:?}",
+        outcome.detail,
+        record.history
+    );
+    let adds: Vec<Value> = rig
+        .target()
+        .adds()
+        .iter()
+        .map(|add| add["workers"].clone())
+        .collect();
+    assert_eq!(
+        adds[2..],
+        [
+            json!([{"worker": "package://harness", "version": PRIOR}]),
+            json!([{"worker": "package://context-manager", "version": PRIOR}]),
+        ],
+        "the last activated is restored first"
+    );
+    let target = rig.target();
+    assert_eq!(target.harness["version"], PRIOR);
+    assert_eq!(target.others["context-manager"]["version"], PRIOR);
+    assert!(
+        outcome.detail.contains("context-manager") && outcome.detail.contains(&rig.prior_digest),
+        "{}",
+        outcome.detail
     );
 }
 
@@ -2196,6 +2653,7 @@ async fn a_budget_that_cannot_cover_the_canary_never_activates() {
         workers_revision: String::new(),
         harness_version: RC.into(),
         binary: Some(format!("sha256:{}", rig.candidate_digest)),
+        workers: Default::default(),
     };
     rig.world()
         .e2e
@@ -2330,6 +2788,7 @@ async fn to_held_activation(rig: &mut Rig) -> String {
         workers_revision: String::new(),
         harness_version: RC.into(),
         binary: Some(format!("sha256:{}", rig.candidate_digest)),
+        workers: Default::default(),
     };
     rig.world()
         .e2e
@@ -2401,6 +2860,7 @@ async fn round2_an_activation_error_after_the_persisted_intent_still_restores() 
         workers_revision: String::new(),
         harness_version: RC.into(),
         binary: Some(format!("sha256:{}", rig.candidate_digest)),
+        workers: Default::default(),
     };
     rig.world()
         .e2e
@@ -2797,6 +3257,7 @@ async fn an_rc_whose_compiled_version_label_lags_is_judged_by_its_bytes() {
         workers_revision: String::new(),
         harness_version: PRIOR.into(),
         binary: Some(format!("sha256:{}", rig.candidate_digest)),
+        workers: Default::default(),
     };
     rig.world()
         .e2e
@@ -2830,6 +3291,7 @@ async fn an_rc_run_with_other_bytes_is_refused_before_finalization() {
         workers_revision: String::new(),
         harness_version: RC.into(),
         binary: Some(format!("sha256:{}", rig.prior_digest)),
+        workers: Default::default(),
     };
     rig.world()
         .e2e

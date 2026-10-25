@@ -208,6 +208,8 @@ export interface EvidenceIdentity {
   e2e_revision: string | null
   /** SHA-256 of the running Harness executable, as the E2E runner captured it. */
   harness_binary_sha256?: string | null
+  /** Each running worker executable the E2E captured, by worker. */
+  worker_binaries?: Record<string, string>
   /** Digest of the native subject configuration (model, provider, agent). */
   subject_sha256?: string | null
   /** Digest of every stack component but the Harness. */
@@ -545,6 +547,7 @@ export type StopKind = 'unavailable' | 'inconclusive' | 'rejected'
 export type ApprovalOutcome = 'accepted' | 'rejected' | 'inconclusive'
 
 export interface ReleasePlan {
+  worker?: string
   kind: 'deploy' | 'finalize_release'
   plan_id: string
   plan_hash: string
@@ -559,6 +562,8 @@ export interface ReleasePlan {
 }
 
 export interface ReleaseArtifact {
+  /** Absent in a journal from before workers were named: the Harness. */
+  worker?: string
   version: string
   tags: string[]
   target: string
@@ -572,6 +577,7 @@ export interface ReleaseArtifact {
 }
 
 export interface ComposeRequest {
+  worker?: string
   operation_id: string
   version: string
   accepted: boolean
@@ -579,6 +585,7 @@ export interface ComposeRequest {
 
 /** The target proved to run the expected executable. */
 export interface RunningEvidence {
+  worker?: string
   operation_id: string
   version: string
   pid: number
@@ -597,6 +604,8 @@ export type PromotionPhase =
       candidate_sha: string
       candidate_tree: string
       evidence_urls?: string[]
+      /** The workers released, in order. */
+      workers?: string[]
     })
   | ({ phase: 'pull_request' } & { number: number; url: string; head_ref: string; head_sha: string; created: boolean })
   | ({ phase: 'merge_requested' } & { pull_request: number; head_sha: string; merge_sha: string | null })
@@ -612,6 +621,7 @@ export type PromotionPhase =
   | ({ phase: 'rc_confirmed' } & { plan: ReleasePlan; operation_id: string })
   | ({ phase: 'rc_published' } & ReleaseArtifact)
   | ({ phase: 'artifact_approved' } & {
+      worker?: string
       outcome: ApprovalOutcome
       policy_revision: string
       version: string
@@ -622,7 +632,12 @@ export type PromotionPhase =
   | ({ phase: 'finalize_planned' } & ReleasePlan)
   | ({ phase: 'finalize_confirmed' } & { plan: ReleasePlan; operation_id: string })
   | ({ phase: 'stable_published' } & ReleaseArtifact)
-  | ({ phase: 'rollback_destination' } & { version: string; archive_sha256: string; binary_sha256: string })
+  | ({ phase: 'rollback_destination' } & {
+      worker?: string
+      version: string
+      archive_sha256: string
+      binary_sha256: string
+    })
   | ({ phase: 'activation_requested' } & ComposeRequest)
   | ({ phase: 'activation_confirmed' } & RunningEvidence)
   | ({ phase: 'rollback_requested' } & ComposeRequest)

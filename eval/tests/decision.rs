@@ -1694,7 +1694,7 @@ fn a_canary_on_the_targets_own_stack_holds_and_any_loss_violates() {
             &on_target(&binary),
             evidence,
             &canary_analysis(),
-            Some(&binary),
+            &[("harness".to_string(), binary.clone())].into(),
             NOW,
         )
     };

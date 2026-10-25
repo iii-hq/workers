@@ -80,10 +80,12 @@ There are exactly two inputs, and both converge on one `CycleRecordV1`:
 9. **Source and artifact are decided separately.** The source decision
    authorizes only the exact-base, non-forced fast-forward of `main`. The rc
    artifact built by Release Control from that exact commit gets its own
-   decision under the same plan. It binds the running executable digest
-   (`system_under_test.harness_binary_sha256`), which must equal the single
-   `harness` executable inside the rc's Registry tar.gz. Without that digest
-   nothing is activated. Finalization must republish the same bytes.
+   decision under the same plan, from one run that pins every released
+   worker's rc. It binds each worker's running executable digest
+   (`system_under_test.worker_binaries`, and `harness_binary_sha256` for the
+   Harness), which must equal the single executable named after the worker
+   inside its rc's Registry tar.gz. Without every digest nothing is
+   activated. Finalization must republish the same bytes.
 10. **Explicit activation.** Activation only targets the configured local
     Compose target. It is never the operator's own Harness by default.
     - Requested and confirmed are recorded apart.

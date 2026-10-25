@@ -1660,37 +1660,32 @@ async fn analysis_stage(
             // compiled Harness version label is never compared: the official
             // build does not rewrite it for an rc, and the executable digest
             // (archive to measured run) is the proof of what ran.
-            let side = |evidence: &ExecutionEvidenceV1,
-                        expected_revision: Option<String>,
-                        pin: Option<String>| {
-                // Every stack component but the Harness pin must be the frozen
-                // template's: the recorded YAML with only its pin put back.
-                let (expected_stack, observed_stack) = match (&validation, &expected_revision, &pin)
-                {
-                    (Some(validation), Some(commit), _) => stack_proof(
-                        evidence,
-                        &validation.source_stack_template,
-                        commit,
-                        "{commit}",
-                    ),
-                    (Some(validation), None, Some(version)) => stack_proof(
-                        evidence,
-                        &validation.artifact_stack_template,
-                        version,
-                        "{version}",
-                    ),
-                    _ => (None, None),
+            let side =
+                |evidence: &ExecutionEvidenceV1,
+                 expected_revision: Option<String>,
+                 pins: Option<std::collections::BTreeMap<String, String>>| {
+                    // The recorded stack must be the frozen template with only its
+                    // pins put in: the commit, or each worker's rc.
+                    let (expected_stack, observed_stack) =
+                        match (&validation, &expected_revision, &pins) {
+                            (Some(validation), Some(commit), _) => {
+                                stack_proof(evidence, &validation.source_stack(commit).yaml)
+                            }
+                            (Some(validation), None, Some(pins)) => {
+                                stack_proof(evidence, &validation.artifact_stack(pins).yaml)
+                            }
+                            _ => (None, None),
+                        };
+                    DecisionSideV1 {
+                        execution_id: evidence.execution_id.clone(),
+                        identity: evidence.identity.clone(),
+                        seeds: evidence::seeds(&evidence.bundle),
+                        policy_revision: Some(plan.policy_revision.clone()),
+                        expected_revision,
+                        expected_stack,
+                        observed_stack,
+                    }
                 };
-                DecisionSideV1 {
-                    execution_id: evidence.execution_id.clone(),
-                    identity: evidence.identity.clone(),
-                    seeds: evidence::seeds(&evidence.bundle),
-                    policy_revision: Some(plan.policy_revision.clone()),
-                    expected_revision,
-                    expected_stack,
-                    observed_stack,
-                }
-            };
             // With a pinned stack the baseline must have run the base commit.
             let base_revision = config
                 .and_then(|config| config.validation.as_ref().zip(config.candidate.as_ref()))
@@ -1706,7 +1701,7 @@ async fn analysis_stage(
                 ExecutionRoleV1::Artifact => side(
                     &evidence,
                     None,
-                    Some(crate::release::rc_version(record).ok_or_else(|| {
+                    Some(crate::release::rc_pins(record).ok_or_else(|| {
                         EvalError::State("an artifact execution without an rc".into())
                     })?),
                 ),
@@ -1729,7 +1724,7 @@ async fn analysis_stage(
                     &other,
                     &pairs,
                     &analysis,
-                    crate::release::stable_binary(record).as_deref(),
+                    &crate::release::stable_binaries(record),
                     now,
                 );
                 match judged_canary.outcome {
@@ -1842,16 +1837,11 @@ async fn analysis_stage(
 
 /// (sha256 of the frozen template, sha256 of the recorded stack YAML with
 /// only `pin` replaced by `placeholder`); unknown when nothing was recorded.
-fn stack_proof(
-    evidence: &ExecutionEvidenceV1,
-    template: &str,
-    pin: &str,
-    placeholder: &str,
-) -> (Option<String>, Option<String>) {
+fn stack_proof(evidence: &ExecutionEvidenceV1, expected: &str) -> (Option<String>, Option<String>) {
     let observed = evidence::summary(&evidence.bundle, &evidence.execution_id)
         .and_then(|summary| evidence::text_at(summary, "/parameters/stack/yaml"))
-        .map(|yaml| ids::sha256_text(yaml.replace(pin, placeholder).trim()));
-    (Some(ids::sha256_text(template.trim())), observed)
+        .map(|yaml| ids::sha256_text(yaml.trim()));
+    (Some(ids::sha256_text(expected.trim())), observed)
 }
 
 /// [`transition`] whose target status, stage and detail are decided inside

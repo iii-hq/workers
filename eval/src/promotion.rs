@@ -1,5 +1,5 @@
-//! Promotion of an approved Harness candidate to the official release, and
-//! its activation on an explicit local target.
+//! Promotion of an approved candidate's workers to the official release, and
+//! their activation on an explicit local target.
 //!
 //! Every helper performs one external read or action against the official
 //! surface it names and returns the evidence it saw; the caller journals a
@@ -10,7 +10,7 @@
 //!    then fast-forward `main` to the candidate with a non-forced ref update
 //!    (the candidate is one commit on the approved base, so GitHub refuses the
 //!    update the moment `main` moves), and prove the new `main`.
-//! 2. Release Control (`rc_session` cookie): preview the Harness rc deploy
+//! 2. Release Control (`rc_session` cookie): preview each worker's rc deploy
 //!    from the merged SHA, confirm the frozen plan, read the operation, then
 //!    read the exact Registry version and hash its archive bytes.
 //! 3. Release Control: preview the finalization of that rc, confirm, read,
@@ -19,8 +19,9 @@
 //!    Engine: pin the stable version and prove the running executable's
 //!    digest; roll back by pinning the validated prior version the same way.
 //!
-//! R1 releases one worker from one place: Harness, `iii-hq/workers`, `main`,
-//! exact fast-forward only.
+//! Every step that names a worker takes it from the evidence it acts on:
+//! the release names each worker the candidate was measured in, from one
+//! place, `iii-hq/workers` `main`, exact fast-forward only.
 //!
 //! Authority is not configurable per cycle: credentials come from the fixed
 //! variables [`GITHUB_TOKEN_ENV`] and [`RELEASE_CONTROL_SESSION_ENV`], read at
@@ -41,8 +42,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-/// The one worker this promotion releases.
-pub const WORKER: &str = "harness";
+/// The worker a journal recorded before it named its workers.
+pub const HARNESS: &str = "harness";
+
+fn harness() -> String {
+    HARNESS.into()
+}
+
+fn harnesses() -> Vec<String> {
+    vec![harness()]
+}
 pub const OFFICIAL_REGISTRY_URL: &str = "https://api.workers.iii.dev";
 pub const GITHUB_API_URL: &str = "https://api.github.com";
 pub const REPOSITORY: &str = "iii-hq/workers";
@@ -283,6 +292,9 @@ pub struct SourceApproval {
     pub candidate_tree: String,
     #[serde(default)]
     pub evidence_urls: Vec<String>,
+    /// The workers the candidate was measured in, released in this order.
+    #[serde(default = "harnesses")]
+    pub workers: Vec<String>,
 }
 
 /// The frozen decision on the immutable rc build, from an E2E run against
@@ -290,6 +302,8 @@ pub struct SourceApproval {
 /// (`system_under_test.harness_binary_sha256`); absent is unknown.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ArtifactApproval {
+    #[serde(default = "harness")]
+    pub worker: String,
     pub outcome: ApprovalOutcome,
     pub policy_revision: String,
     pub version: String,
@@ -303,6 +317,8 @@ pub struct ArtifactApproval {
 /// validated. The two digests are separate facts and never compared.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ValidatedArtifact {
+    #[serde(default = "harness")]
+    pub worker: String,
     pub version: String,
     pub archive_sha256: String,
     pub binary_sha256: String,
@@ -360,10 +376,10 @@ pub fn check_artifact_approval(
             "artifact approval names no policy revision",
         ));
     }
-    if approval.version != rc.version {
+    if approval.worker != rc.worker || approval.version != rc.version {
         return Err(PromotionError::rejected(format!(
-            "artifact approval is for {}, the rc is {}",
-            approval.version, rc.version
+            "artifact approval is for {} {}, the rc is {} {}",
+            approval.worker, approval.version, rc.worker, rc.version
         )));
     }
     if approval.source_sha != rc.source_sha {
@@ -395,6 +411,7 @@ pub fn check_artifact_approval(
         )));
     }
     Ok(ValidatedArtifact {
+        worker: rc.worker.clone(),
         version: rc.version.clone(),
         archive_sha256: rc.archive_sha256.clone(),
         binary_sha256: rc.binary_sha256.clone(),
@@ -407,7 +424,9 @@ pub fn check_republished(
     rc: &ValidatedArtifact,
     stable: &ReleaseArtifact,
 ) -> Step<ValidatedArtifact> {
-    if stable_for_candidate(&rc.version).as_deref() != Some(stable.version.as_str()) {
+    if stable.worker != rc.worker
+        || stable_for_candidate(&rc.version).as_deref() != Some(stable.version.as_str())
+    {
         return Err(PromotionError::rejected(format!(
             "{} is not the stable version of {}",
             stable.version, rc.version
@@ -426,6 +445,7 @@ pub fn check_republished(
         )));
     }
     Ok(ValidatedArtifact {
+        worker: stable.worker.clone(),
         version: stable.version.clone(),
         archive_sha256: stable.archive_sha256.clone(),
         binary_sha256: rc.binary_sha256.clone(),
@@ -449,15 +469,17 @@ pub fn candidate_branch(candidate_id: &str) -> String {
     format!("feat/loop-candidate-{candidate_id}")
 }
 
-/// The Compose operation id for one activation or rollback attempt: the
-/// same inputs always name the same operation, so a restart reconciles it.
+/// The Compose operation id for one activation or rollback attempt of one
+/// worker: the same inputs always name the same operation, so a restart
+/// reconciles it.
 pub fn compose_operation_id(
     promotion_id: &str,
     action: &str,
+    worker: &str,
     version: &str,
     attempt: u32,
 ) -> String {
-    format!("loop-promotion:{promotion_id}:{action}:{version}:{attempt}")
+    format!("loop-promotion:{promotion_id}:{action}:{worker}:{version}:{attempt}")
 }
 
 // ── evidence ──────────────────────────────────────────────────────────────────
@@ -515,6 +537,8 @@ impl ReleaseKind {
 /// A Release Control preview frozen as it was answered.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ReleasePlan {
+    #[serde(default = "harness")]
+    pub worker: String,
     pub kind: ReleaseKind,
     pub plan_id: String,
     pub plan_hash: String,
@@ -540,6 +564,8 @@ pub struct ConfirmedPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DeploymentEvidence {
+    #[serde(default = "harness")]
+    pub worker: String,
     pub operation_id: String,
     pub deployment_id: String,
     pub version: String,
@@ -568,13 +594,16 @@ pub enum OperationState {
 /// hashed, matching the digest the Registry claims.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ReleaseArtifact {
+    #[serde(default = "harness")]
+    pub worker: String,
     pub version: String,
     pub tags: Vec<String>,
     pub target: String,
     pub archive_url: String,
     pub archive_sha256: String,
-    /// sha256 of the archive's one regular `harness` entry: the executable
-    /// this release installs. A separate fact from `archive_sha256`.
+    /// sha256 of the archive's one regular entry named after the worker: the
+    /// executable this release installs. A separate fact from
+    /// `archive_sha256`.
     pub binary_sha256: String,
     pub source_sha: String,
     pub operation_id: String,
@@ -617,6 +646,8 @@ pub enum TargetIs {
 /// already ran the destination and nothing was sent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ComposeRequest {
+    #[serde(default = "harness")]
+    pub worker: String,
     pub operation_id: String,
     pub version: String,
     pub accepted: bool,
@@ -625,6 +656,8 @@ pub struct ComposeRequest {
 /// The target proved to run the expected executable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RunningEvidence {
+    #[serde(default = "harness")]
+    pub worker: String,
     pub operation_id: String,
     pub version: String,
     /// The Compose-supervised process the Harness was found under.
@@ -1010,9 +1043,10 @@ impl Promotion {
 
     // ── Release Control ──────────────────────────────────────────────────────
 
-    /// Preview the Harness rc deploy from the merged commit. The plan must
-    /// be unblocked and name exactly Harness, that source and `next`.
-    pub async fn preview_rc(&self, merge: &MergeEvidence) -> Step<ReleasePlan> {
+    /// Preview the rc deploy of `worker` from the merged commit. The plan
+    /// must be unblocked and name exactly that worker, that source and
+    /// `next`.
+    pub async fn preview_rc(&self, merge: &MergeEvidence, worker: &str) -> Step<ReleasePlan> {
         let (status, envelope) = self
             .release_control(
                 Method::POST,
@@ -1021,7 +1055,7 @@ impl Promotion {
                     "type": "deploy",
                     "sourceSha": merge.merged_sha,
                     "workers": [{
-                        "name": WORKER,
+                        "name": worker,
                         "version": { "mode": "bump", "bump": "patch", "suffix": "rc" },
                         "channel": "next",
                     }],
@@ -1030,7 +1064,7 @@ impl Promotion {
             .await?;
         expect_status(status, 200, "Release Control preview")?;
         let preview = &envelope["preview"];
-        let entry = single_entry(preview)?;
+        let entry = single_entry(preview, worker)?;
         if text(preview, "/sourceSha") != Some(merge.merged_sha.as_str())
             || text(entry, "/sourceSha") != Some(merge.merged_sha.as_str())
         {
@@ -1054,6 +1088,7 @@ impl Promotion {
         }
         frozen_plan(
             &envelope,
+            worker,
             ReleaseKind::Deploy,
             merge.merged_sha.clone(),
             target_version,
@@ -1073,7 +1108,9 @@ impl Promotion {
         approved: &ValidatedArtifact,
         rc_plan: &ReleasePlan,
     ) -> Step<ReleasePlan> {
-        if approved.version != rc.version
+        if approved.worker != rc.worker
+            || rc_plan.worker != rc.worker
+            || approved.version != rc.version
             || approved.archive_sha256 != rc.archive_sha256
             || rc_plan.target_version != rc.version
             || rc_plan.source_sha != rc.source_sha
@@ -1091,12 +1128,12 @@ impl Promotion {
                 "/operations/preview",
                 Some(&json!({
                     "type": "finalize_release",
-                    "workers": [{ "name": WORKER, "candidateVersion": rc.version }],
+                    "workers": [{ "name": rc.worker, "candidateVersion": rc.version }],
                 })),
             )
             .await?;
         expect_status(status, 200, "Release Control finalize preview")?;
-        let entry = single_entry(&envelope["preview"])?;
+        let entry = single_entry(&envelope["preview"], &rc.worker)?;
         let expected_next = text(entry, "/expectedNextVersion").map(str::to_string);
         let expected_latest = text(entry, "/expectedLatestVersion").map(str::to_string);
         if text(entry, "/candidateVersion") != Some(rc.version.as_str())
@@ -1127,6 +1164,7 @@ impl Promotion {
         }
         frozen_plan(
             &envelope,
+            &rc.worker,
             ReleaseKind::FinalizeRelease,
             rc.source_sha.clone(),
             stable,
@@ -1168,8 +1206,8 @@ impl Promotion {
         })
     }
 
-    /// One read of the operation. The Harness deployment must be the one the
-    /// plan froze; anything else is a divergence, not progress.
+    /// One read of the operation. The worker's deployment must be the one
+    /// the plan froze; anything else is a divergence, not progress.
     pub async fn read_operation(&self, confirmed: &ConfirmedPlan) -> Step<OperationState> {
         let plan = &confirmed.plan;
         let (status, detail) = self
@@ -1189,14 +1227,15 @@ impl Promotion {
             .as_array()
             .map(|rows| {
                 rows.iter()
-                    .filter(|row| text(row, "/worker") == Some(WORKER))
+                    .filter(|row| text(row, "/worker") == Some(plan.worker.as_str()))
                     .collect()
             })
             .unwrap_or_default();
         let [deployment] = deployments.as_slice() else {
             return Err(PromotionError::rejected(format!(
-                "the operation carries {} Harness deployments, not one",
-                deployments.len()
+                "the operation carries {} {} deployments, not one",
+                deployments.len(),
+                plan.worker
             )));
         };
         if text(deployment, "/version") != Some(plan.target_version.as_str())
@@ -1204,13 +1243,15 @@ impl Promotion {
             || text(deployment, "/channel") != Some(plan.channel.as_str())
             || text(deployment, "/fromVersion") != plan.candidate_version.as_deref()
         {
-            return Err(PromotionError::rejected(
-                "the Harness deployment differs from the confirmed plan",
-            ));
+            return Err(PromotionError::rejected(format!(
+                "the {} deployment differs from the confirmed plan",
+                plan.worker
+            )));
         }
         let status = text(deployment, "/status").unwrap_or_default().to_string();
         Ok(match status.as_str() {
             "converged" => OperationState::Converged(DeploymentEvidence {
+                worker: plan.worker.clone(),
                 operation_id: confirmed.operation_id.clone(),
                 deployment_id: text(deployment, "/id").unwrap_or_default().to_string(),
                 version: plan.target_version.clone(),
@@ -1238,8 +1279,9 @@ impl Promotion {
     /// the digest the Registry claims must be the one downloaded.
     pub async fn read_artifact(&self, deployment: &DeploymentEvidence) -> Step<ReleaseArtifact> {
         let url = format!(
-            "{}/w/{WORKER}/versions",
-            self.origins.registry_url.trim_end_matches('/')
+            "{}/w/{}/versions",
+            self.origins.registry_url.trim_end_matches('/'),
+            deployment.worker
         );
         let (status, listing) = self.send(self.http.get(url), "Registry").await?;
         expect_status(status, 200, "Registry versions read")?;
@@ -1275,7 +1317,9 @@ impl Promotion {
                 deployment.version
             )));
         }
+        let worker = deployment.worker.clone();
         Ok(ReleaseArtifact {
+            worker: worker.clone(),
             version: deployment.version.clone(),
             tags: row["tags"]
                 .as_array()
@@ -1289,9 +1333,11 @@ impl Promotion {
             target: target.clone(),
             archive_url,
             archive_sha256: downloaded,
-            binary_sha256: tokio::task::spawn_blocking(move || archive_binary_sha256(&archive))
-                .await
-                .map_err(|_| PromotionError::unavailable("the archive read task failed"))??,
+            binary_sha256: tokio::task::spawn_blocking(move || {
+                archive_binary_sha256(&archive, &worker)
+            })
+            .await
+            .map_err(|_| PromotionError::unavailable("the archive read task failed"))??,
             source_sha: deployment.source_sha.clone(),
             operation_id: deployment.operation_id.clone(),
             deployment_id: deployment.deployment_id.clone(),
@@ -1301,9 +1347,10 @@ impl Promotion {
 
     // ── Compose ────────────────────────────────────────────────────────────────
 
-    /// What the configured target runs right now, with the digest of the
-    /// executable behind its pid when the target is local Linux.
-    pub async fn observe_target(&self) -> Step<TargetObservation> {
+    /// What the configured target runs as `worker` right now, with the
+    /// digest of the executable behind its pid when the target is local
+    /// Linux.
+    pub async fn observe_target(&self, worker: &str) -> Step<TargetObservation> {
         let target = &self.config.target;
         let status = self
             .compose(
@@ -1327,10 +1374,10 @@ impl Promotion {
             .as_array()
             .and_then(|rows| {
                 rows.iter()
-                    .find(|row| text(row, "/container") == Some(WORKER))
+                    .find(|row| text(row, "/container") == Some(worker))
             })
             .ok_or_else(|| {
-                PromotionError::rejected(format!("{WORKER} is not declared on the target"))
+                PromotionError::rejected(format!("{worker} is not declared on the target"))
             })?;
         let state = text(row, "/state").unwrap_or_default().to_string();
         let supervisor_pid = row["pid"].as_u64().and_then(|pid| u32::try_from(pid).ok());
@@ -1341,18 +1388,19 @@ impl Promotion {
                 Some("the target is not a local Linux engine".to_string()),
             ),
             ("ready", Some(supervisor)) => {
-                match tokio::task::spawn_blocking(move || capture_harness(supervisor)).await {
+                let name = worker.to_string();
+                match tokio::task::spawn_blocking(move || capture_worker(supervisor, &name)).await {
                     Ok(Ok((pid, digest))) => (Some(pid), Some(digest), None),
                     Ok(Err(reason)) => (None, None, Some(reason)),
                     Err(_) => (None, None, Some("the capture task failed".to_string())),
                 }
             }
-            _ => (None, None, Some(format!("{WORKER} is {}", shown(&state)))),
+            _ => (None, None, Some(format!("{worker} is {}", shown(&state)))),
         };
         Ok(TargetObservation {
             file,
             namespace,
-            container: WORKER.to_string(),
+            container: worker.to_string(),
             state,
             version: text(row, "/version").map(str::to_string),
             supervisor_pid,
@@ -1410,6 +1458,12 @@ impl Promotion {
         destination: &ValidatedArtifact,
         operation_id: &str,
     ) -> Step<ComposeRequest> {
+        let worker = destination.worker.as_str();
+        if prior.worker != worker || candidate.worker != worker {
+            return Err(PromotionError::rejected(
+                "the prior and the candidate name different workers",
+            ));
+        }
         for artifact in [prior, candidate] {
             if !is_sha256(&artifact.binary_sha256) {
                 return Err(PromotionError::rejected(format!(
@@ -1419,6 +1473,7 @@ impl Promotion {
             }
         }
         let requested = ComposeRequest {
+            worker: worker.to_string(),
             operation_id: operation_id.to_string(),
             version: destination.version.clone(),
             accepted: true,
@@ -1434,7 +1489,7 @@ impl Promotion {
                 ))),
             };
         }
-        let observed = self.observe_target().await?;
+        let observed = self.observe_target(worker).await?;
         let source = if destination == candidate {
             prior
         } else {
@@ -1474,7 +1529,7 @@ impl Promotion {
                 json!({
                     "namespace": target.namespace,
                     "file": target.compose_file,
-                    "workers": [{ "worker": format!("package://{WORKER}"), "version": destination.version }],
+                    "workers": [{ "worker": format!("package://{worker}"), "version": destination.version }],
                     "operation_id": operation_id,
                 }),
             )
@@ -1516,7 +1571,7 @@ impl Promotion {
                 }
             }
         }
-        let observed = self.observe_target().await?;
+        let observed = self.observe_target(&expected.worker).await?;
         if observed.state != "ready" {
             return pending(format!(
                 "{} is {}",
@@ -1550,6 +1605,7 @@ impl Promotion {
             )));
         }
         Ok(Confirmation::Confirmed(RunningEvidence {
+            worker: expected.worker.clone(),
             operation_id: operation_id.to_string(),
             version: expected.version.clone(),
             supervisor_pid,
@@ -1726,7 +1782,7 @@ impl Promotion {
         {
             if bytes.len() + chunk.len() > ARCHIVE_MAX_BYTES {
                 return Err(PromotionError::rejected(
-                    "the archive is larger than any Harness release",
+                    "the archive is larger than any worker release",
                 ));
             }
             bytes.extend_from_slice(&chunk);
@@ -1768,7 +1824,7 @@ fn expect_status(status: u16, expected: u16, what: &str) -> Step<()> {
     )))
 }
 
-fn single_entry(preview: &Value) -> Step<&Value> {
+fn single_entry<'a>(preview: &'a Value, worker: &str) -> Step<&'a Value> {
     let entries = preview["plan"]
         .as_array()
         .map(Vec::as_slice)
@@ -1784,16 +1840,17 @@ fn single_entry(preview: &Value) -> Step<&Value> {
         )));
     }
     match entries {
-        [entry] if text(entry, "/worker") == Some(WORKER) => Ok(entry),
-        _ => Err(PromotionError::rejected(
-            "the plan does not contain exactly the Harness entry",
-        )),
+        [entry] if text(entry, "/worker") == Some(worker) => Ok(entry),
+        _ => Err(PromotionError::rejected(format!(
+            "the plan does not contain exactly the {worker} entry"
+        ))),
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn frozen_plan(
     envelope: &Value,
+    worker: &str,
     kind: ReleaseKind,
     source_sha: String,
     target_version: String,
@@ -1810,6 +1867,7 @@ fn frozen_plan(
         ));
     }
     Ok(ReleasePlan {
+        worker: worker.to_string(),
         kind,
         plan_id: plan_id.to_string(),
         plan_hash: plan_hash.to_string(),
@@ -1855,7 +1913,7 @@ fn pull_evidence(pull: &Value, candidate_sha: &str, created: bool) -> Step<PullR
 /// the bytes are read its parent chain must still lead to the unchanged
 /// supervisor. A reused or detached pid is reported, never hashed as
 /// Harness. None or several Harness processes is unknown.
-fn capture_harness(supervisor: u32) -> Result<(u32, String), String> {
+fn capture_worker(supervisor: u32, worker: &str) -> Result<(u32, String), String> {
     const MAX_PROCESSES: usize = 4096;
     let (supervisor_token, _) = stat(supervisor)?;
     let mut found = Vec::new();
@@ -1869,7 +1927,7 @@ fn capture_harness(supervisor: u32) -> Result<(u32, String), String> {
         if !seen.insert(pid) {
             continue;
         }
-        if is_harness(pid) {
+        if is_named(pid, worker) {
             found.push((pid, token, walked_parent));
         }
         for child in children(pid) {
@@ -1890,17 +1948,17 @@ fn capture_harness(supervisor: u32) -> Result<(u32, String), String> {
         [one] => *one,
         [] => {
             return Err(format!(
-                "no {WORKER} process runs under supervisor {supervisor}"
+                "no {worker} process runs under supervisor {supervisor}"
             ))
         }
         many => {
             return Err(format!(
-                "{} {WORKER} processes run under supervisor {supervisor}",
+                "{} {worker} processes run under supervisor {supervisor}",
                 many.len()
             ))
         }
     };
-    let changed = || format!("{WORKER} process {pid} changed while it was hashed");
+    let changed = || format!("{worker} process {pid} changed while it was hashed");
     let (before, parent) = stat(pid).map_err(|_| changed())?;
     if before != token || (walked_parent.is_some() && Some(parent) != walked_parent) {
         return Err(changed());
@@ -1912,7 +1970,7 @@ fn capture_harness(supervisor: u32) -> Result<(u32, String), String> {
         Ok(format!("{:x}", digest.finalize()))
     })()
     .map_err(|_| format!("/proc/{pid}/exe could not be read"))?;
-    if stat(pid).map_err(|_| changed())?.0 != token || !is_harness(pid) {
+    if stat(pid).map_err(|_| changed())?.0 != token || !is_named(pid, worker) {
         return Err(changed());
     }
     // After the read: the hashed process must still descend from the same
@@ -1927,7 +1985,7 @@ fn capture_harness(supervisor: u32) -> Result<(u32, String), String> {
         let (_, parent) = stat(current).map_err(|_| changed())?;
         if parent <= 1 {
             return Err(format!(
-                "{WORKER} process {pid} no longer runs under supervisor {supervisor}"
+                "{worker} process {pid} no longer runs under supervisor {supervisor}"
             ));
         }
         current = parent;
@@ -1938,16 +1996,16 @@ fn capture_harness(supervisor: u32) -> Result<(u32, String), String> {
     Ok((pid, digest))
 }
 
-/// Whether the executable behind a pid is named `harness`, including one
+/// Whether the executable behind a pid is named `worker`, including one
 /// replaced on disk since it started.
-fn is_harness(pid: u32) -> bool {
+fn is_named(pid: u32, worker: &str) -> bool {
     std::fs::read_link(format!("/proc/{pid}/exe"))
         .ok()
         .and_then(|path| {
             let path = path.to_string_lossy().to_string();
             path.rsplit('/').next().map(str::to_string)
         })
-        .is_some_and(|name| name == WORKER || name == format!("{WORKER} (deleted)"))
+        .is_some_and(|name| name == worker || name == format!("{worker} (deleted)"))
 }
 
 /// Direct children of every thread of a process; empty once it is gone.
@@ -1980,32 +2038,32 @@ fn stat(pid: u32) -> Result<(u64, u32), String> {
         .ok_or_else(|| format!("process {pid} is gone"))
 }
 
-/// sha256 of the archive's one regular-file entry named `harness` at its
-/// root (`harness` or `./harness`), streamed from the gzip tar in memory.
+/// sha256 of the archive's one regular-file entry named `worker` at its
+/// root (`<worker>` or `./<worker>`), streamed from the gzip tar in memory.
 /// Another entry type under that name, a second one, or none is refused.
 /// Other entries (runtime companions) are skipped unread.
-fn archive_binary_sha256(archive: &[u8]) -> Step<String> {
+fn archive_binary_sha256(archive: &[u8], worker: &str) -> Step<String> {
     let unreadable = || PromotionError::rejected("the release archive is not a readable tar.gz");
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
     let mut digest = None;
     for entry in tar.entries().map_err(|_| unreadable())? {
         let mut entry = entry.map_err(|_| unreadable())?;
-        let named_harness = {
+        let named = {
             let path = entry.path().map_err(|_| unreadable())?;
             let path = path.to_string_lossy();
-            path == WORKER || path == format!("./{WORKER}")
+            path == worker || path == format!("./{worker}")
         };
-        if !named_harness {
+        if !named {
             continue;
         }
         if entry.header().entry_type() != tar::EntryType::Regular {
             return Err(PromotionError::rejected(format!(
-                "the archive's {WORKER} entry is not a regular file"
+                "the archive's {worker} entry is not a regular file"
             )));
         }
         if digest.is_some() {
             return Err(PromotionError::rejected(format!(
-                "the archive holds more than one {WORKER} entry"
+                "the archive holds more than one {worker} entry"
             )));
         }
         let mut hasher = Sha256::new();
@@ -2013,7 +2071,7 @@ fn archive_binary_sha256(archive: &[u8]) -> Step<String> {
         digest = Some(format!("{:x}", hasher.finalize()));
     }
     digest.ok_or_else(|| {
-        PromotionError::rejected(format!("the archive holds no {WORKER} executable"))
+        PromotionError::rejected(format!("the archive holds no {worker} executable"))
     })
 }
 

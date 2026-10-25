@@ -318,6 +318,27 @@ pub fn identity(bundle: &Value, execution_id: &str) -> EvidenceIdentityV1 {
                         }),
                 ),
         ),
+        // Each worker executable the E2E captured, where every report agrees.
+        worker_binaries: natives
+            .iter()
+            .flat_map(|report| {
+                report["system_under_test"]["worker_binaries"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .map(|(worker, _)| worker.clone())
+            })
+            .collect::<BTreeSet<String>>()
+            .into_iter()
+            .filter_map(|worker| {
+                let digest = agreed(natives.iter().map(|report| {
+                    report["system_under_test"]["worker_binaries"][&worker]
+                        .as_str()
+                        .map(str::to_string)
+                }))?;
+                Some((worker, digest))
+            })
+            .collect(),
         workers_revision: agreed(natives.iter().map(|report| {
             let source = &report["system_under_test"]["harness_source"];
             let revision = source["revision"].as_str()?;
@@ -336,6 +357,16 @@ pub fn identity(bundle: &Value, execution_id: &str) -> EvidenceIdentityV1 {
         engine_version: system("/system_under_test/engine_version"),
         e2e_revision: system("/system_under_test/e2e_revision"),
     }
+}
+
+/// The running executable of `worker` the E2E captured; for the Harness
+/// also its own `harness_binary_sha256`.
+pub fn binary_of(identity: &EvidenceIdentityV1, worker: &str) -> Option<String> {
+    identity.worker_binaries.get(worker).cloned().or_else(|| {
+        (worker == crate::promotion::HARNESS)
+            .then(|| identity.harness_binary_sha256.clone())
+            .flatten()
+    })
 }
 
 /// Every native run with its scenario.

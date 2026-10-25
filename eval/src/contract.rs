@@ -150,8 +150,9 @@ pub struct ValidationConfigV1 {
     /// Stack YAML pinning a source revision; every `{commit}` is replaced by
     /// the 40-hex sha.
     pub source_stack_template: String,
-    /// Stack YAML pinning an immutable Registry version; `{version}` is
-    /// replaced by it.
+    /// Stack YAML pinning immutable Registry versions: each
+    /// `{version:<worker>}` is replaced by that worker's rc, a bare
+    /// `{version}` by the Harness's.
     pub artifact_stack_template: String,
 }
 
@@ -182,10 +183,39 @@ impl ValidationConfigV1 {
             .collect()
     }
 
-    pub fn artifact_stack(&self, version: &str) -> StackV1 {
+    /// The workers the artifact stack can pin to an rc: each
+    /// `{version:<worker>}`, and the Harness for a bare `{version}`.
+    pub fn artifact_workers(&self) -> std::collections::BTreeSet<String> {
+        let template = &self.artifact_stack_template;
+        let mut workers: std::collections::BTreeSet<String> = template
+            .split("{version:")
+            .skip(1)
+            .filter_map(|rest| Some(rest.split_once('}')?.0.to_string()))
+            .collect();
+        if template.contains("{version}") {
+            workers.insert(crate::promotion::HARNESS.into());
+        }
+        workers
+    }
+
+    /// The artifact stack with each worker's `{version:<worker>}` (the
+    /// Harness's also `{version}`) replaced by its pinned version; a worker
+    /// this cycle does not release runs its `latest` release.
+    pub fn artifact_stack(&self, pins: &BTreeMap<String, String>) -> StackV1 {
+        let pinned = |worker: &str| {
+            pins.get(worker)
+                .map_or("latest", String::as_str)
+                .to_string()
+        };
+        let mut yaml = self
+            .artifact_stack_template
+            .replace("{version}", &pinned(crate::promotion::HARNESS));
+        for worker in self.artifact_workers() {
+            yaml = yaml.replace(&format!("{{version:{worker}}}"), &pinned(&worker));
+        }
         StackV1 {
             name: self.stack_name.clone(),
-            yaml: self.artifact_stack_template.replace("{version}", version),
+            yaml,
         }
     }
 }
@@ -252,11 +282,11 @@ impl LoopConfigV1 {
                 return invalid("validation pins the Harness: where must be docker or github");
             }
             if !validation.source_stack_template.contains("{commit}")
-                || !validation.artifact_stack_template.contains("{version}")
+                || validation.artifact_workers().is_empty()
                 || validation.stack_name.trim().is_empty()
             {
                 return invalid(
-                    "validation needs a stack_name and templates with {commit} and {version}",
+                    "validation needs a stack_name and templates with {commit} and {version} or {version:<worker>}",
                 );
             }
         }
@@ -1118,6 +1148,11 @@ pub struct EvidenceIdentityV1 {
     /// fixed comparability; a final artifact decision and activation bind it.
     #[serde(default)]
     pub harness_binary_sha256: Option<String>,
+    /// SHA-256 of each running worker executable the E2E captured
+    /// (`system_under_test.worker_binaries`), by worker; every report must
+    /// agree.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub worker_binaries: BTreeMap<String, String>,
     pub workers_revision: Option<String>,
     pub engine_version: Option<String>,
     pub e2e_revision: Option<String>,

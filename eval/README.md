@@ -132,7 +132,9 @@ false result.
   provider, and its bounds. It is checked by `eval::configure`, and it needs
   `runs_per_side` of at least 5: the sign test accepts nothing on fewer pairs.
 - `validation`: `where: docker|github`, `stack_name` and two stack templates
-  (`{commit}` and `{version}`). The source template declares each worker a
+  (`{commit}`, and `{version:<worker>}` for each worker an rc can be pinned
+  to; a bare `{version}` is the Harness's, and a worker this cycle does not
+  release runs its `latest`). The source template declares each worker a
   candidate may change as a `package://<worker>` container with
   `commit: {commit}`, so both sides build it from their own commit. A
   change to a unit it does not build that way is never accepted: no run
@@ -168,25 +170,29 @@ cycle runs these steps:
    a build script) or a `workspace:` package. Its changed paths are
    recorded and it is published to its own branch.
 3. A source validation runs under the frozen plan.
-4. The source decision is made. Steps 5 to 11 release the Harness only: an
-   accepted change to any other unit ends `decided`, delivered from its
-   branch by hand.
+4. The source decision is made. Steps 5 to 11 release every worker the
+   change was measured in (its units and dependents the source stack
+   built), and only those. One the artifact template cannot pin ends
+   `decided`, delivered from its branch by hand.
 5. `main` is fast-forwarded to exactly that commit.
-6. Release Control builds an rc from that commit.
-7. The rc artifact is validated and gets its own decision, which binds the
-   running executable digest.
-8. Finalization republishes the same bytes.
-9. The prior executable is validated as the rollback destination, and the
+6. Release Control builds each worker's rc from that commit.
+7. One artifact run pins every rc and gets its own decision, which binds
+   each worker's running executable digest.
+8. Finalization republishes each worker's same bytes.
+9. Each prior executable is validated as its rollback destination, and the
    canary is reserved.
-10. The stable version is activated on the target and proved by its digest.
-11. A canary runs on the target's own E2E.
+10. Each stable version is activated on the target and proved by its digest,
+    one worker at a time.
+11. One canary runs on the target's own E2E and must have run every
+    activated executable.
 
 The canary ends one of three ways:
 
 - **Held:** the cycle is `promoted`. Any loss of a measured condition is a
   violation; the target's own stack, E2E revision and engine are not
   compared with the baseline's, the activated digest is.
-- **Violated:** a proved rollback, then `rolled_back`.
+- **Violated:** a proved rollback of every worker, last activated first,
+  then `rolled_back`.
 - **Unknown:** the observation stays pending on the activated target until
   a cycle limit, which restores the prior. It is never claimed stable and no
   new canary is started.
