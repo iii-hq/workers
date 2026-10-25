@@ -180,7 +180,8 @@ pub fn fused_score(
         } else {
             1.0
         };
-    let age_days = (now_ms.saturating_sub(memory.updated_at)) as f32 / 86_400_000.0;
+    // Aged from when the fact was said: a pin or a retag never makes it new.
+    let age_days = (now_ms.saturating_sub(memory.last_stated())) as f32 / 86_400_000.0;
     let half_life = half_life_days.max(1) as f32;
     // Freshness in (0, 1], neutral (0.5) at the half-life, folded in as a
     // MILD multiplier — Hindsight's `1 + alpha * (recency - 0.5)`. A full

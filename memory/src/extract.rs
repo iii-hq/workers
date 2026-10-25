@@ -921,6 +921,16 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
         .collect::<Vec<_>>()
         .join("\n");
     let user_words = user_words(&entries);
+    // What this pass learns was said when its span ended, not when the pass
+    // runs (a queue retry, a first pass over an old session run late), and
+    // never later than now: a message clock ahead of ours must not outrank
+    // later statements.
+    // shortcut: one date for the whole span, not the line that says each
+    // item; date per line if spans ever cover days.
+    let said = entries
+        .last()
+        .map_or_else(now_ms, |(.., ts)| *ts)
+        .min(now_ms());
     let (transcript, newest_id, content_len) = excerpt(entries, cfg.extraction_window);
     // Measured on message text, not the dated transcript: the per-line
     // `role [date]: ` prefix alone would clear any threshold.
@@ -1192,13 +1202,13 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
         let (mut memory, event) = match existing {
             // Known memory re-observed: never duplicated; reinforced, or left
             // exactly as it is (still retiring what the item corrects).
-            Some(existing) => match reinforced(existing, text, &user_words, retires, now) {
+            Some(existing) => match reinforced(existing, text, &user_words, retires, now, said) {
                 Some((f, true)) => (f, Some(ItemEvent::Updated)),
                 Some((f, false)) => (f, None),
                 None => continue,
             },
             None => (
-                new_memory(item, session_id, newest_id.as_deref(), now),
+                new_memory(item, session_id, newest_id.as_deref(), now, said),
                 Some(ItemEvent::Created),
             ),
         };
@@ -1269,6 +1279,7 @@ fn reinforced(
     user_words: &BTreeSet<String>,
     retires: bool,
     now: u64,
+    said_at: u64,
 ) -> Option<(Memory, bool)> {
     if !m.is_live() || m.pinned {
         return None;
@@ -1282,7 +1293,8 @@ fn reinforced(
     }
     m.corroboration = m.corroboration.saturating_add(1);
     m.updated_at = now;
-    m.stated_at = Some(now);
+    // An older restatement (a late pass) never moves the fact back in time.
+    m.stated_at = Some(m.last_stated().max(said_at));
     m.revision += 1;
     Some((m, true))
 }
@@ -1295,10 +1307,17 @@ fn extracts(kind: Option<&str>) -> bool {
     matches!(kind, None | Some("user"))
 }
 
-/// A fresh record for one extracted item. `entry_id` is the newest
+/// A fresh record for one extracted item, written `now` and stated at
+/// `said_at`, when its message was sent. `entry_id` is the newest
 /// transcript entry of the extracted span — the turn's last message — so
 /// the memory points back at the turn it came from.
-fn new_memory(item: ExtractedItem, session_id: &str, entry_id: Option<&str>, now: u64) -> Memory {
+fn new_memory(
+    item: ExtractedItem,
+    session_id: &str,
+    entry_id: Option<&str>,
+    now: u64,
+    said_at: u64,
+) -> Memory {
     let text = item.text.trim().to_string();
     Memory {
         id: fingerprint(&text),
@@ -1333,7 +1352,7 @@ fn new_memory(item: ExtractedItem, session_id: &str, entry_id: Option<&str>, now
         invalid_at: None,
         superseded_by: None,
         revision: 0,
-        stated_at: Some(now),
+        stated_at: Some(said_at),
     }
 }
 
@@ -2521,7 +2540,7 @@ mod tests {
             scope: None,
             agent: None,
         };
-        new_memory(item, "s", None, 1)
+        new_memory(item, "s", None, 1, 1)
     }
 
     #[test]
@@ -2743,17 +2762,17 @@ mod tests {
             ),
         ]);
         assert!(
-            reinforced(porto.clone(), &porto.text, &echo, false, 9).is_none(),
+            reinforced(porto.clone(), &porto.text, &echo, false, 9, 9).is_none(),
             "the assistant echoing an injected memory is not the user"
         );
         assert_eq!(
-            reinforced(porto.clone(), &porto.text, &echo, true, 9),
+            reinforced(porto.clone(), &porto.text, &echo, true, 9, 9),
             Some((porto.clone(), false)),
             "unbacked, the twin is left as it is and still retires what it corrects"
         );
 
         let restated = user_words(&[said("u", "user", "I still live in Porto, by the way.")]);
-        let (m, changed) = reinforced(porto.clone(), &porto.text, &restated, false, 9).unwrap();
+        let (m, changed) = reinforced(porto.clone(), &porto.text, &restated, false, 9, 9).unwrap();
         assert!(changed);
         assert_eq!(
             (m.corroboration, m.revision, m.updated_at, m.stated_at),
@@ -2762,7 +2781,7 @@ mod tests {
         // "The user" is not a word the user has to say again.
         let acme = known("The user works at Acme as a backend engineer.");
         let at_acme = user_words(&[said("u", "user", "I still work at Acme, by the way.")]);
-        assert!(reinforced(acme.clone(), &acme.text, &at_acme, false, 9).is_some_and(|(_, r)| r));
+        assert!(reinforced(acme.clone(), &acme.text, &at_acme, false, 9, 9).is_some_and(|(_, r)| r));
 
         let pinned = Memory {
             pinned: true,
@@ -2775,7 +2794,7 @@ mod tests {
         for m in [pinned, retired] {
             for retires in [false, true] {
                 assert!(
-                    reinforced(m.clone(), &porto.text, &restated, retires, 9).is_none(),
+                    reinforced(m.clone(), &porto.text, &restated, retires, 9, 9).is_none(),
                     "left exactly as it is"
                 );
             }
@@ -3501,7 +3520,7 @@ mod tests {
             scope: None,
             agent: None,
         };
-        let m = new_memory(item, "s_1", Some("e_9"), 42);
+        let m = new_memory(item, "s_1", Some("e_9"), 42, 42);
         assert_eq!(m.text, "user prefers tea");
         assert_eq!(m.id, fingerprint("user prefers tea"));
         assert_eq!(m.entities, vec!["mike"]);
@@ -3511,6 +3530,39 @@ mod tests {
         assert_eq!(src.session_id.as_deref(), Some("s_1"));
         assert_eq!(src.entry_id.as_deref(), Some("e_9"));
         assert_eq!((m.created_at, m.updated_at), (42, 42));
+    }
+
+    #[test]
+    fn an_extracted_memory_is_stated_when_its_message_was_said() {
+        // A pass that runs late (a queue retry, a first pass over an old
+        // session) writes the record now, but the fact is as old as its
+        // message.
+        let day = 86_400_000;
+        let now = 1_760_443_200_000;
+        let item = ExtractedItem {
+            text: "The user lives in Porto.".into(),
+            entities: vec![],
+            tags: vec![],
+            confidence: None,
+            kind: None,
+            replaces: None,
+            scope: None,
+            agent: None,
+        };
+        let m = new_memory(item, "s", Some("e_1"), now, now - 3 * day);
+        assert_eq!(
+            (m.created_at, m.updated_at, m.stated_at),
+            (now, now, Some(now - 3 * day))
+        );
+
+        // A restatement read late is dated by its message too, and an older
+        // one never moves the fact back in time.
+        let restated = user_words(&[said("u", "user", "I still live in Porto.")]);
+        let (again, _) = reinforced(m.clone(), &m.text, &restated, false, now, now - day).unwrap();
+        assert_eq!((again.updated_at, again.stated_at), (now, Some(now - day)));
+        let (older, _) =
+            reinforced(m.clone(), &m.text, &restated, false, now, now - 9 * day).unwrap();
+        assert_eq!(older.stated_at, Some(now - 3 * day));
     }
 
     #[test]

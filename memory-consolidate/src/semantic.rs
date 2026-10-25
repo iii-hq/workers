@@ -165,11 +165,12 @@ pub fn stamp(ms: u64) -> String {
 
 /// When the record's fact was last asserted: a re-observation (reinforce)
 /// counts, so a fact the user restated after its "replacement" stays
-/// current (Hindsight: the latest `mentioned_at` wins).
+/// current. Memory's own clock (`Memory::last_stated`): keep both alike.
 pub fn last_stated(row: &MemoryRow) -> u64 {
-    // `stated_at` ignores pin/tag edits; legacy records without it fall
-    // back to `updated_at`.
-    row.created_at.max(row.stated_at.unwrap_or(row.updated_at))
+    // `stated_at` ignores pin/tag edits and a late write (an extraction
+    // pass run after newer turns); legacy records without it fall back to
+    // `updated_at`.
+    row.stated_at.unwrap_or(row.updated_at)
 }
 
 /// One judge batch: aliased records, ownership, and the prompt.
@@ -1119,6 +1120,24 @@ mod tests {
         // A was stated first and only TAG-edited later (updated_at 300,
         // stated_at 10): the move B (stated 200) still supersedes it.
         let mut a = row("a", "User lives in São Paulo.", 10, 300);
+        a.stated_at = Some(10);
+        let mut b = row("b", "User moved to Lisbon.", 200, 200);
+        b.stated_at = Some(200);
+        let batch = build_batch(&[(b, vec![a])]);
+        let v = validate(
+            &[action("supersede", "n1", "c1", "moved")],
+            &batch,
+            &HashSet::new(),
+            10,
+        );
+        assert_eq!(v.accepted.len(), 1, "{:?}", v.rejected);
+    }
+
+    #[test]
+    fn the_newer_statement_wins_by_when_it_was_said_not_written() {
+        // A was said first (10) but written last (300: a late extraction
+        // pass); the move B, said at 200, supersedes it.
+        let mut a = row("a", "User lives in São Paulo.", 300, 300);
         a.stated_at = Some(10);
         let mut b = row("b", "User moved to Lisbon.", 200, 200);
         b.stated_at = Some(200);

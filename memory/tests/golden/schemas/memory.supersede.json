@@ -133,7 +133,7 @@
             ]
           },
           "stated_at": {
-            "description": "When the fact was last STATED (created, re-observed, text edited). Unlike `updated_at`, pin/tag/entity edits never bump it, so consolidation can order \"which statement is current\" by it. Legacy records load as None.",
+            "description": "When the fact was last STATED (said, re-observed, text edited): an extracted memory takes its message's time, not the pass's. Unlike `updated_at`, pin/tag/entity edits never bump it, so recency, the shown date and \"which statement is current\" go by it. Legacy records load as None.",
             "format": "uint64",
             "minimum": 0.0,
             "type": [

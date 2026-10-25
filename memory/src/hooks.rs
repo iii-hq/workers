@@ -531,11 +531,6 @@ const SEMANTIC_Z: f32 = 2.0;
 // ranked past it (stale_alone > 0).
 const POOL_PER_SLOT: usize = 4;
 
-/// When a memory's fact was last stated; pin and tag edits never move it.
-fn last_stated(m: &Memory) -> u64 {
-    m.created_at.max(m.stated_at.unwrap_or(m.updated_at))
-}
-
 /// Both tagged and sharing no entity: a change to one says nothing of the
 /// other. `user`, which every user fact carries, is no subject of its own.
 fn unrelated(a: &Memory, b: &Memory) -> bool {
@@ -588,7 +583,7 @@ pub fn select(
                 return None;
             }
             let newer = pool.iter().enumerate().filter(|(_, (new, _))| {
-                last_stated(new) > last_stated(old)
+                new.last_stated() > old.last_stated()
                     && !unrelated(old, new)
                     // An older line answering a word the newer lacks stays.
                     && within(ev(old), ev(new))
@@ -596,7 +591,7 @@ pub fn select(
             });
             newer
                 .rev()
-                .max_by_key(|(_, (new, _))| last_stated(new))
+                .max_by_key(|(_, (new, _))| new.last_stated())
                 .map(|(j, _)| j)
         })
         .collect();
@@ -1109,10 +1104,10 @@ fn newest_lines(body: &str, budget: usize) -> String {
 }
 
 /// The one appended `<memory>` message: bulleted memory texts, each dated
-/// with its last update, under a 4-chars-per-token budget counted over the
-/// whole rendered line, plus the ids of the memories that made the cut. A
-/// memory too long for what is left is skipped, not a stop — shorter ones
-/// ranked below it still fit. The header names the day the recall ran,
+/// when its fact was last stated, under a 4-chars-per-token budget counted
+/// over the whole rendered line, plus the ids of the memories that made the
+/// cut. A memory too long for what is left is skipped, not a stop — shorter
+/// ones ranked below it still fit. The header names the day the recall ran,
 /// never "today": the message is persisted and replayed on later turns.
 /// `None` when nothing fits.
 pub(crate) fn memories_message(
@@ -1128,7 +1123,7 @@ pub(crate) fn memories_message(
         let line = format!(
             "- {} ({})",
             memory_line_text(memory),
-            local_date(memory.updated_at, "%Y-%m-%d")
+            local_date(memory.last_stated(), "%Y-%m-%d")
         );
         if line.len() > budget {
             continue;
@@ -1141,7 +1136,7 @@ pub(crate) fn memories_message(
         return None;
     }
     let body = format!(
-        "<memory bank=\"{bank}\">\nRelevant remembered memories (\"the user\" is the person you are talking to; recalled {}; each dated when last updated; verify anything surprising):\n{}\n</memory>",
+        "<memory bank=\"{bank}\">\nRelevant remembered memories (\"the user\" is the person you are talking to; recalled {}; each dated when last stated; verify anything surprising):\n{}\n</memory>",
         local_date(now, "%Y-%m-%d %A"),
         lines.join("\n")
     );
@@ -2351,6 +2346,20 @@ Formal."
     }
 
     #[test]
+    fn an_older_statement_written_late_stays_older() {
+        // Said at 1 but written at 9 (a late extraction pass): the change
+        // said at 5 is still the current statement.
+        let e = words(2, 3, 1.0);
+        let late = Memory {
+            created_at: 9,
+            updated_at: 9,
+            ..stated("fp-old", BACKUP_OLD, 1)
+        };
+        let hits = vec![(late, e.clone()), (stated("fp-new", BACKUP_NEW, 5), e)];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-new"]);
+    }
+
+    #[test]
     fn equal_last_stated_keeps_both() {
         let pair = |new: Memory| {
             let e = words(2, 3, 1.0);
@@ -2438,6 +2447,42 @@ Formal."
         );
         assert!(body.ends_with("</memory>"));
         assert_eq!(ids, vec!["fp1", "fp2"]);
+    }
+
+    #[tokio::test]
+    async fn a_pin_keeps_an_old_facts_recency_and_its_shown_date() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = offline_deps(dir.path(), offline_cfg(6));
+        let (bank, _) = deps.store().await.ensure_bank("main", None).await.unwrap();
+        let now = now_ms();
+        let then = now - 200 * 86_400_000;
+        let old = stated("fp-old", "The user drinks oolong tea.", then);
+        bank.commit(old.clone()).await.unwrap();
+        crate::functions::items::update(
+            &deps,
+            crate::functions::items::UpdateRequest {
+                bank: Some("main".into()),
+                id: old.id.clone(),
+                text: None,
+                entities: None,
+                tags: None,
+                pinned: Some(true),
+            },
+        )
+        .await
+        .unwrap();
+        let pinned = bank.get(&old.id).await.unwrap();
+        assert!(pinned.pinned && pinned.updated_at > then, "{pinned:?}");
+        // Only the pin boost moves the score: the fact is as old as it was.
+        let score = |m: &Memory| crate::index::fused_score(1.0, m, &[], now, 30);
+        let as_stated = Memory {
+            pinned: true,
+            ..old
+        };
+        assert_eq!(score(&pinned), score(&as_stated));
+        let (body, _) = memories_message("main", &[pinned], 1_200, now).unwrap();
+        let day = local_date(then, "%Y-%m-%d");
+        assert!(body.contains(&format!("oolong tea. ({day})")), "{body}");
     }
 
     #[test]
