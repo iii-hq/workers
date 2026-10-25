@@ -39,7 +39,11 @@
 //! client has read, and the relay grants more with a `Credit` frame as
 //! it writes them to the client. So `vm_reader_task` never waits for a
 //! client: a slow reader holds back only its own session, and a large
-//! `fs::read` arrives whole however many other sessions are live.
+//! `fs::read` arrives whole however many other sessions are live. The
+//! other way, the client keeps a session's input within the window of the
+//! guest's own `Credit` frames (`FLAG_CONTROL`, passed through uncounted),
+//! and the guest never waits on a session either. Nothing here drops a
+//! frame of a live session: a full queue makes its sender wait.
 //!
 //! Authorization: connecting peers must share our euid (checked via
 //! `SO_PEERCRED` on Linux, `getpeereid` on macOS/BSD). Exec is a
@@ -48,7 +52,7 @@
 use std::collections::{HashMap, HashSet};
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -58,7 +62,7 @@ use tokio::sync::mpsc;
 
 use iii_supervisor::shell_protocol::{
     FRAME_HEADER_SIZE, MAX_FRAME_SIZE, SEND_WINDOW, ShellMessage, encode_frame,
-    flags::FLAG_TERMINAL,
+    flags::{FLAG_CONTROL, FLAG_TERMINAL},
 };
 
 /// Maximum concurrent clients. Each gets a non-overlapping slice of
@@ -78,27 +82,17 @@ type FrameBytes = Vec<u8>;
 /// Per-client bytes-in-flight cap for the shared VM write queue.
 /// Bounds aggregate relay memory at `MAX_CLIENTS × cap = 1 GiB` —
 /// without it, the frame-count bound on `vm_write_tx` lets one
-/// client pin ~4 GiB with max-sized frames.
-const PER_CLIENT_VM_BYTES_CAP: u64 = 64 * 1024 * 1024;
+/// client pin ~4 GiB with max-sized frames. A client at the cap waits
+/// for the queue to drain; its frame is never dropped.
+const PER_CLIENT_VM_BYTES_CAP: usize = 64 * 1024 * 1024;
 
-/// A frame waiting in the shared client→VM queue. The optional
-/// [`ClientBytesGuard`]'s `Drop` decrements the owning client's
-/// byte counter when `vm_writer_task` consumes the frame. `None`
-/// for internal frames (e.g. SIGKILL fan-out on disconnect).
+/// A frame waiting in the shared client→VM queue. The optional permit
+/// returns its bytes to the owning client's [`PER_CLIENT_VM_BYTES_CAP`]
+/// when `vm_writer_task` consumes the frame. `None` for internal frames
+/// (credit, SIGKILL fan-out on disconnect).
 struct QueuedFrame {
     bytes: FrameBytes,
-    _guard: Option<ClientBytesGuard>,
-}
-
-struct ClientBytesGuard {
-    counter: Arc<AtomicU64>,
-    size: u64,
-}
-
-impl Drop for ClientBytesGuard {
-    fn drop(&mut self) {
-        self.counter.fetch_sub(self.size, Ordering::Release);
-    }
+    _permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 /// Route entry: a frame sender paired with a back-pointer to the
@@ -152,11 +146,12 @@ const SLOT_WAIT: Duration = Duration::from_millis(500);
 const VM_WRITE_CAPACITY: usize = 1024;
 
 /// Bound on each VM → client channel. Flow control keeps a session
-/// within [`SEND_WINDOW`] frames plus a few control frames, so only a
-/// guest that ignores its credit fills it. `vm_reader_task` then fails
-/// that session alone: it drops its frames from there on and
-/// disconnects its client, whose read or exec reports the cut.
-const CLIENT_WRITE_CAPACITY: usize = 1024;
+/// within [`SEND_WINDOW`] output frames, [`SEND_WINDOW`] input credits
+/// and a few others (`Started`, `FsMeta`, its end), so only a guest that
+/// ignores its credit fills it. `vm_reader_task` then fails that session
+/// alone: it drops its frames from there on and disconnects its client,
+/// whose read or exec reports the cut.
+const CLIENT_WRITE_CAPACITY: usize = MAX_OWNED_IDS_PER_CLIENT * (2 * SEND_WINDOW as usize + 4);
 
 /// Delivered frames of a session per `Credit` frame back to the guest;
 /// below [`SEND_WINDOW`], so the guest never waits on a batch.
@@ -177,9 +172,8 @@ const CLIENT_STALL: Duration = Duration::from_secs(1);
 /// shared `routes` map plus a `Vec` slot in the client's `owned_ids`.
 /// Without a cap, a same-uid peer can flood distinct ids (up to
 /// `ID_RANGE_STEP` ≈ 268M) to balloon relay memory — roughly 6 GiB per
-/// saturated slot. 256 concurrent sessions is already more than any
-/// realistic interactive workload; real clients never come close.
-const MAX_OWNED_IDS_PER_CLIENT: usize = 256;
+/// saturated slot. Real clients run one session per connection.
+const MAX_OWNED_IDS_PER_CLIENT: usize = 32;
 
 /// Identity of a bound Unix socket, recorded at bind time so a later
 /// cleanup can refuse to unlink the path if it's been replaced.
@@ -554,6 +548,10 @@ async fn client_session(
                 delivered.remove(&corr_id);
                 continue;
             }
+            // The guest's input credit takes none of the output window.
+            if frame[8] & FLAG_CONTROL != 0 {
+                continue;
+            }
             let count = delivered.entry(corr_id).or_default();
             *count += 1;
             if *count < CREDIT_BATCH {
@@ -565,7 +563,7 @@ async fn client_session(
             };
             let credit = QueuedFrame {
                 bytes,
-                _guard: None,
+                _permit: None,
             };
             if vm_write_tx_for_writer.send(credit).await.is_err() {
                 break;
@@ -591,13 +589,8 @@ async fn client_session(
     // session; silent thereafter.
     let cap_logged = Arc::new(AtomicBool::new(false));
     let cap_logged_for_reader = cap_logged.clone();
-    let bytes_cap_logged = Arc::new(AtomicBool::new(false));
-    let bytes_cap_logged_for_reader = bytes_cap_logged.clone();
-    // Per-client bytes-in-flight. Forwarded frames carry a
-    // ClientBytesGuard that decrements this on consume; see
-    // PER_CLIENT_VM_BYTES_CAP.
-    let client_bytes: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
-    let client_bytes_for_reader = client_bytes.clone();
+    // Per-client bytes in flight; see PER_CLIENT_VM_BYTES_CAP.
+    let client_bytes = Arc::new(tokio::sync::Semaphore::new(PER_CLIENT_VM_BYTES_CAP));
     // Keep a clone for the post-disconnect SIGKILL path below; the
     // reader owns its own clone so the moves don't conflict.
     let vm_write_tx_for_reader = vm_write_tx.clone();
@@ -660,31 +653,24 @@ async fn client_session(
                     owned_guard.insert(corr_id);
                 }
             }
-            // Reserve bytes atomically; unwind and drop if over cap.
-            let frame_len = frame.len() as u64;
-            let before = client_bytes_for_reader.fetch_add(frame_len, Ordering::AcqRel);
-            if before.saturating_add(frame_len) > PER_CLIENT_VM_BYTES_CAP {
-                client_bytes_for_reader.fetch_sub(frame_len, Ordering::Release);
-                if !bytes_cap_logged_for_reader.swap(true, Ordering::Relaxed) {
-                    tracing::warn!(
-                        "shell_relay: client reached bytes-in-flight cap \
-                         ({PER_CLIENT_VM_BYTES_CAP} bytes); dropping frame \
-                         corr_id={corr_id} (logging once per session)"
-                    );
-                }
-                continue;
-            }
+            // At the cap, wait for this client's earlier frames to reach
+            // the VM. read_frame bounds a frame far below the cap.
+            let Ok(permit) = client_bytes
+                .clone()
+                .acquire_many_owned(frame.len() as u32)
+                .await
+            else {
+                break;
+            };
             let queued = QueuedFrame {
                 bytes: frame,
-                _guard: Some(ClientBytesGuard {
-                    counter: client_bytes_for_reader.clone(),
-                    size: frame_len,
-                }),
+                _permit: Some(permit),
             };
             // Bounded `.send().await`: applies backpressure to this
             // one reader when the VM queue is full, which is exactly
             // the behavior we want. A flooding client stalls on its
-            // own read loop rather than ballooning relay memory.
+            // own read loop rather than ballooning relay memory. The
+            // guest never waits on a session, so the queue drains.
             if vm_write_tx_for_reader.send(queued).await.is_err() {
                 break;
             }
@@ -724,12 +710,12 @@ async fn client_session(
                 continue;
             }
         };
-        // Internal-source frame: no guard (client counter is being
-        // torn down). try_send first so parallel disconnects don't
+        // Internal-source frame: no permit (the client's byte cap is
+        // being torn down). try_send first so parallel disconnects don't
         // serialize; await on Full so SIGKILL can't be dropped.
         let queued = QueuedFrame {
             bytes: frame,
-            _guard: None,
+            _permit: None,
         };
         match vm_write_tx.try_send(queued) {
             Ok(()) => {}
@@ -1031,26 +1017,16 @@ mod tests {
     /// REGRESSION: a tight burst of clean (no owned-id) disconnects
     /// must NOT exhaust the slot pool.
     ///
-    /// Prior bug: every disconnect put the slot into a 250 ms
-    /// `Cooldown` window unconditionally. With `MAX_CLIENTS=16`, a
-    /// burst of 17+ fast sequential connections (tens of ms each)
-    /// finished before slot 0 cooled, so the 17th claim_slot found
-    /// every slot still cooling and the listener refused with
-    /// `early eof on handshake` → host saw S216
-    /// (`relay rejected connection (uid mismatch?)`). Real-world
-    /// repro: `fs-example.mjs` running ~14 happy-path triggers then
-    /// a few adversarial-section setup triggers in <250 ms.
+    /// Prior bug: every disconnect held its slot for a 250 ms cooldown,
+    /// so a burst of 17+ fast sequential connections found every slot
+    /// still held and the 17th was refused (`early eof on handshake`,
+    /// S216 on the host). Real-world repro: `fs-example.mjs` running
+    /// ~14 happy-path triggers then a few more in <250 ms.
     ///
-    /// Fix: only enter Cooldown when SIGKILL fan-out actually
-    /// happened (owned_ids non-empty at session end). Clean
-    /// disconnects — every FS trigger that received its terminal
-    /// frame, every cleanly-exited exec — drop straight to Free,
-    /// so back-to-back trigger bursts don't burn slot capacity.
-    ///
+    /// A clean disconnect now frees its range at once (`release_range`).
     /// This test fires 32 sequential connect/handshake/disconnect
     /// cycles — twice MAX_CLIENTS — and asserts every one received
-    /// its 4-byte handshake. Under the old behavior the 17th would
-    /// time out on read; under the fix all 32 succeed.
+    /// its 4-byte handshake.
     #[tokio::test]
     async fn burst_of_clean_disconnects_does_not_exhaust_slots() {
         let (sock, _vm_guest_sim, _tmp) = boot().await;
@@ -1218,6 +1194,10 @@ mod tests {
             writer.write_all(&end.unwrap()).unwrap();
             let rest = FRAMES - SEND_WINDOW as usize;
             stream_with_credit(&mut reader, &mut writer, ids[0], rest, 0);
+            // Keep the port open, as a live VM does: closing it fails the
+            // relay's next Credit write, which ends the slow client before
+            // its last frames reach it.
+            while let Ok(Some(_)) = read_frame_blocking(&mut reader) {}
         });
         let (mut slow, _) = open_session(&sock, &cat_request()).await;
         // So the guest sees the slow session's request first.
@@ -1530,13 +1510,13 @@ mod tests {
             );
         }
 
-        // Phase 2 — terminal Exited frames for the first 64 ids
+        // Phase 2 — terminal Exited frames for the first half of the ids
         // should decrement the cap. The decrement is entirely
         // host-side and has no client-visible signal to poll on
         // (test client doesn't read client_rx), so a bounded sleep
         // is the least-bad option. 500ms is well above observed
         // worst case (microseconds).
-        let drain = 64u32;
+        let drain = MAX_OWNED_IDS_PER_CLIENT as u32 / 2;
         for i in 0..drain {
             reply_tx.send(off + 1 + i).unwrap();
         }
@@ -1679,5 +1659,318 @@ mod tests {
         clients.lock().unwrap().lingering.remove(&5);
         clients.lock().unwrap().next_range = 0;
         assert_eq!(claim_range(&clients), Some(0));
+    }
+
+    /// A client past its byte cap waits for the VM queue to drain. Its
+    /// frames once got dropped there, so an upload landed short while the
+    /// guest still replied ok.
+    #[tokio::test]
+    async fn a_client_past_the_byte_cap_waits_instead_of_losing_frames() {
+        const FRAMES: usize = 30; // 30 × 3 MiB, past PER_CLIENT_VM_BYTES_CAP
+        let (sock, vm_guest_sim, _tmp) = boot().await;
+        let (seen_tx, seen_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            // A guest that takes nothing for a while, then everything.
+            std::thread::sleep(Duration::from_millis(500));
+            let mut reader = std::io::BufReader::new(vm_guest_sim);
+            while let Ok(Some((_, _, msg))) = read_frame_blocking(&mut reader) {
+                if let ShellMessage::Stdin { data_b64 } = msg {
+                    let _ = seen_tx.send(data_b64[..3].to_string());
+                }
+            }
+        });
+        let (mut client, corr_id) = open_session(&sock, &cat_request()).await;
+        for i in 0..FRAMES {
+            let data_b64 = format!("{i:03}{}", "A".repeat(3 << 20));
+            let frame = encode_frame(corr_id, 0, &ShellMessage::Stdin { data_b64 }).unwrap();
+            client.write_all(&frame).await.unwrap();
+        }
+        let seen = tokio::task::spawn_blocking(move || {
+            (0..FRAMES)
+                .map_while(|_| seen_rx.recv_timeout(Duration::from_secs(10)).ok())
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap();
+        let sent: Vec<String> = (0..FRAMES).map(|i| format!("{i:03}")).collect();
+        assert_eq!(seen, sent, "the relay lost or reordered frames");
+    }
+
+    /// The guest's input credit (`FLAG_CONTROL`) reaches the client but
+    /// earns the guest no output credit; counting it would let the guest
+    /// run ever further ahead of a slow client.
+    #[tokio::test]
+    async fn the_guests_input_credit_earns_no_output_credit() {
+        let (sock, vm_guest_sim, _tmp) = boot().await;
+        let mut writer = vm_guest_sim.try_clone().unwrap();
+        let (granted_tx, granted_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let mut reader = std::io::BufReader::new(vm_guest_sim);
+            let Ok(Some((id, _, _))) = read_frame_blocking(&mut reader) else {
+                return;
+            };
+            let credit = ShellMessage::Credit { frames: 1 };
+            let output = ShellMessage::Stdout {
+                data_b64: "QQ==".into(),
+            };
+            for _ in 0..4 * CREDIT_BATCH {
+                writer
+                    .write_all(&encode_frame(id, FLAG_CONTROL, &credit).unwrap())
+                    .unwrap();
+            }
+            for _ in 0..CREDIT_BATCH {
+                writer
+                    .write_all(&encode_frame(id, 0, &output).unwrap())
+                    .unwrap();
+            }
+            reader
+                .get_ref()
+                .set_read_timeout(Some(Duration::from_millis(500)))
+                .unwrap();
+            let mut granted = 0;
+            while let Ok(Some((_, _, msg))) = read_frame_blocking(&mut reader) {
+                if let ShellMessage::Credit { frames } = msg {
+                    granted += frames;
+                }
+            }
+            let _ = granted_tx.send(granted);
+        });
+        let (mut client, _) = open_session(&sock, &cat_request()).await;
+        for _ in 0..5 * CREDIT_BATCH {
+            tokio::time::timeout(Duration::from_secs(2), read_frame(&mut client))
+                .await
+                .expect("a frame never reached the client")
+                .unwrap()
+                .expect("frame");
+        }
+        let granted =
+            tokio::task::spawn_blocking(move || granted_rx.recv_timeout(Duration::from_secs(5)))
+                .await
+                .unwrap()
+                .expect("no result");
+        assert_eq!(
+            granted, CREDIT_BATCH,
+            "credit for frames that were not output"
+        );
+    }
+
+    /// A guest that keeps both windows the way iii-init does: `/bin/cat`
+    /// echoes each stdin frame once its output has credit, then credits that
+    /// input; an upload credits its chunks a window at a time; any other
+    /// command runs until SIGKILLed. A killed session sends a late frame
+    /// before its end. Returns how many frames clients sent past a window.
+    fn fake_guest(vm: StdUS) -> Arc<std::sync::atomic::AtomicUsize> {
+        use base64::Engine;
+        use std::io::Write;
+        #[derive(Default)]
+        struct Session {
+            echo: bool,
+            credit: u32,
+            pending: std::collections::VecDeque<String>,
+            unacked: u32,
+            eof: bool,
+            uploaded: u64,
+        }
+        let overruns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let overruns_in = overruns.clone();
+        std::thread::spawn(move || {
+            let mut writer = vm.try_clone().unwrap();
+            let mut send = |id: u32, flags: u8, msg: &ShellMessage| {
+                let _ = writer.write_all(&encode_frame(id, flags, msg).unwrap());
+            };
+            let control = ShellMessage::Credit { frames: 1 };
+            let mut reader = std::io::BufReader::new(vm);
+            let mut sessions: HashMap<u32, Session> = HashMap::new();
+            while let Ok(Some((id, _, msg))) = read_frame_blocking(&mut reader) {
+                let overrun = |s: &mut Session| {
+                    s.unacked += 1;
+                    if s.unacked > SEND_WINDOW {
+                        overruns_in.fetch_add(1, Ordering::SeqCst);
+                    }
+                };
+                match msg {
+                    ShellMessage::Request { cmd, .. } => {
+                        let echo = cmd == "/bin/cat";
+                        let credit = SEND_WINDOW;
+                        sessions.insert(
+                            id,
+                            Session {
+                                echo,
+                                credit,
+                                ..Default::default()
+                            },
+                        );
+                    }
+                    ShellMessage::FsRequest(iii_shell_proto::FsOp::WriteStart { .. }) => {
+                        sessions.insert(id, Session::default());
+                    }
+                    ShellMessage::Stdin { data_b64 } => {
+                        let Some(s) = sessions.get_mut(&id) else {
+                            continue;
+                        };
+                        overrun(s);
+                        if data_b64.is_empty() {
+                            s.eof = true;
+                            s.unacked -= 1;
+                            send(id, FLAG_CONTROL, &control);
+                        } else if s.echo {
+                            s.pending.push_back(data_b64);
+                        }
+                    }
+                    ShellMessage::FsChunk { data_b64 } => {
+                        let Some(s) = sessions.get_mut(&id) else {
+                            continue;
+                        };
+                        overrun(s);
+                        let chunk = base64::engine::general_purpose::STANDARD.decode(data_b64);
+                        s.uploaded += chunk.unwrap().len() as u64;
+                        if s.unacked == SEND_WINDOW {
+                            s.unacked = 0;
+                            let frames = SEND_WINDOW;
+                            send(id, FLAG_CONTROL, &ShellMessage::Credit { frames });
+                        }
+                    }
+                    ShellMessage::FsEnd => {
+                        let Some(s) = sessions.remove(&id) else {
+                            continue;
+                        };
+                        let written = iii_shell_proto::FsResult::Write {
+                            bytes_written: s.uploaded,
+                            path: String::new(),
+                        };
+                        send(id, FLAG_TERMINAL, &ShellMessage::FsResponse(written));
+                    }
+                    ShellMessage::Credit { frames } => {
+                        if let Some(s) = sessions.get_mut(&id) {
+                            s.credit += frames;
+                        }
+                    }
+                    ShellMessage::Signal { signal: 9 } if sessions.remove(&id).is_some() => {
+                        let late = ShellMessage::Stdout {
+                            data_b64: "bGF0ZQ==".into(),
+                        };
+                        send(id, 0, &late);
+                        send(id, FLAG_TERMINAL, &ShellMessage::Exited { code: 137 });
+                    }
+                    _ => {}
+                }
+                let Some(s) = sessions.get_mut(&id) else {
+                    continue;
+                };
+                while s.credit > 0
+                    && let Some(data_b64) = s.pending.pop_front()
+                {
+                    send(id, 0, &ShellMessage::Stdout { data_b64 });
+                    s.credit -= 1;
+                    s.unacked -= 1;
+                    send(id, FLAG_CONTROL, &control);
+                }
+                if s.echo && s.eof && s.pending.is_empty() {
+                    sessions.remove(&id);
+                    send(id, FLAG_TERMINAL, &ShellMessage::Exited { code: 0 });
+                }
+            }
+        });
+        overruns
+    }
+
+    fn pattern(len: usize, seed: usize) -> Vec<u8> {
+        (0..len)
+            .map(|i| ((i / 7 + i + seed * 31) % 251) as u8)
+            .collect()
+    }
+
+    fn spec(cmd: &str, stdin: Vec<u8>) -> iii_shell_client::RequestSpec {
+        iii_shell_client::RequestSpec {
+            cmd: cmd.into(),
+            stdin: Some(stdin),
+            ..Default::default()
+        }
+    }
+
+    /// 16 MiB, 16 windows of stdin, through `cat` via the real client and
+    /// relay. The client once sent all its stdin as one frame before reading
+    /// any output. (128 MiB runs against the real guest in iii-init.)
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_large_echo_through_client_and_relay_arrives_whole() {
+        let (sock, vm_guest_sim, _tmp) = boot().await;
+        let overruns = fake_guest(vm_guest_sim);
+        let data = pattern(16 << 20, 1);
+        let session = iii_shell_client::Session::connect(&sock).await.unwrap();
+        let mut sink = iii_shell_client::VecSink::with_cap(256 << 20);
+        let timeout = Some(Duration::from_secs(120));
+        let out = session
+            .run(spec("/bin/cat", data.clone()), &mut sink, timeout)
+            .await;
+        assert_eq!(out.unwrap().status.code, Some(0));
+        assert_eq!(sink.stdout.len(), data.len());
+        assert!(sink.stdout == data, "the echo differs from its stdin");
+        assert_eq!(overruns.load(Ordering::SeqCst), 0);
+    }
+
+    /// 16 MiB uploaded via the real client and relay, within the guest's
+    /// window; the client once sent every chunk without waiting.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_large_upload_through_client_and_relay_stays_in_its_window() {
+        let (sock, vm_guest_sim, _tmp) = boot().await;
+        let overruns = fake_guest(vm_guest_sim);
+        let data = pattern(16 << 20, 2);
+        let session = iii_shell_client::Session::connect(&sock).await.unwrap();
+        let written = session
+            .fs_write_stream("/f".into(), "0644".into(), true, &data[..])
+            .await
+            .unwrap();
+        let iii_shell_proto::FsResult::Write { bytes_written, .. } = written else {
+            panic!("{written:?}");
+        };
+        assert_eq!(bytes_written, data.len() as u64);
+        assert_eq!(overruns.load(Ordering::SeqCst), 0);
+    }
+
+    /// Fifteen clients at a time echo, time out mid-stream or walk away
+    /// mid-stream, over and over: every echo arrives whole (no frame of
+    /// another session in it), and no client outruns a window.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sessions_under_churn_never_see_each_others_frames() {
+        let (sock, vm_guest_sim, _tmp) = boot().await;
+        let overruns = fake_guest(vm_guest_sim);
+        let workers: Vec<_> = (0..15usize)
+            .map(|w| {
+                let sock = sock.clone();
+                async move {
+                    for round in 0..6usize {
+                        let data = pattern(256 << 10, w * 6 + round);
+                        match (w + round) % 3 {
+                            0 => {
+                                let s = iii_shell_client::Session::connect(&sock).await.unwrap();
+                                let mut sink = iii_shell_client::VecSink::with_cap(1 << 20);
+                                let timeout = Some(Duration::from_secs(20));
+                                let out = s.run(spec("/bin/cat", data.clone()), &mut sink, timeout);
+                                assert_eq!(out.await.unwrap().status.code, Some(0));
+                                assert!(sink.stdout == data, "echo {w}/{round} differs");
+                            }
+                            1 => {
+                                let s = iii_shell_client::Session::connect(&sock).await.unwrap();
+                                let mut sink = iii_shell_client::VecSink::with_cap(1 << 20);
+                                let timeout = Some(Duration::from_millis(30));
+                                let out = s.run(spec("/bin/sleep", data), &mut sink, timeout);
+                                assert!(out.await.unwrap().status.timed_out);
+                            }
+                            _ => {
+                                let (mut s, corr_id) = open_session(&sock, &cat_request()).await;
+                                let data_b64 = "QUJD".into();
+                                let stdin = ShellMessage::Stdin { data_b64 };
+                                let frame = encode_frame(corr_id, 0, &stdin).unwrap();
+                                s.write_all(&frame).await.unwrap();
+                                drop(s);
+                            }
+                        }
+                    }
+                }
+            })
+            .collect();
+        futures::future::join_all(workers).await;
+        assert_eq!(overruns.load(Ordering::SeqCst), 0);
     }
 }

@@ -14,7 +14,7 @@
 //!                                    read 4-byte id_offset ◀──────────  write handshake
 //!   Session::run(req, sink,   ─────▶ encode Request frame
 //!       timeout, stdin)              write frame
-//!                                    (optional) write Stdin + EOF frame
+//!                                    (optional) write Stdin + EOF frames
 //!                                    loop: read frame
 //!                                      Stdout → sink.on_stdout() (drain-always)
 //!                                      Stderr → sink.on_stderr() (drain-always)
@@ -48,8 +48,8 @@ use std::time::Duration;
 
 use base64::Engine;
 use iii_shell_proto::{
-    FRAME_HEADER_SIZE, FRAME_READ_INITIAL_CAP, MAX_FRAME_SIZE, ShellMessage, decode_frame_body,
-    encode_frame, flags::FLAG_TERMINAL,
+    FRAME_HEADER_SIZE, FRAME_READ_INITIAL_CAP, MAX_FRAME_SIZE, SEND_WINDOW, ShellMessage,
+    decode_frame_body, encode_frame, flags::FLAG_TERMINAL,
 };
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -77,6 +77,9 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
 /// against a dead relay whose write side has filled and will never
 /// drain.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Bytes per `Stdin` and upload `FsChunk` frame.
+const STDIN_CHUNK: usize = 64 * 1024;
 
 /// Per-read idle timeout for `Session::fs_write_stream`. If the
 /// caller-supplied `AsyncRead` (typically a `ChannelReader`-backed
@@ -121,7 +124,7 @@ pub struct RequestSpec {
     /// Environment variable overrides in `KEY=VALUE` form. Layered on
     /// top of the guest init's environment.
     pub env: Vec<String>,
-    /// Pre-packaged stdin bytes sent as a single `Stdin` frame
+    /// Pre-packaged stdin bytes sent as `Stdin` frames
     /// followed by an EOF `Stdin { data_b64: "" }` frame. `None`
     /// skips the pump entirely.
     pub stdin: Option<Vec<u8>>,
@@ -403,30 +406,16 @@ impl Session {
         })?;
         write_frame_bounded(&mut self.stream, &frame).await?;
 
-        // Optional pre-packaged stdin: one Stdin frame with the bytes,
-        // then one zero-byte Stdin frame as EOF.
-        if let Some(data) = req.stdin.as_deref() {
-            if !data.is_empty() {
-                let stdin_frame = encode_frame(
-                    self.corr_id,
-                    0,
-                    &ShellMessage::Stdin {
-                        data_b64: B64.encode(data),
-                    },
-                )
-                .map_err(|e| VmClientError::Encode(e.to_string()))?;
-                write_frame_bounded(&mut self.stream, &stdin_frame).await?;
-            }
-            let eof = encode_frame(
-                self.corr_id,
-                0,
-                &ShellMessage::Stdin {
-                    data_b64: String::new(),
-                },
-            )
-            .map_err(|e| VmClientError::Encode(e.to_string()))?;
-            write_frame_bounded(&mut self.stream, &eof).await?;
-        }
+        // Optional stdin, then a zero-byte Stdin frame as EOF. It goes out
+        // in chunks at most SEND_WINDOW ahead of the guest's Credit, between
+        // reads of the output: a child that echoes its stdin (`cat`) never
+        // waits on a client still writing it, however large it is.
+        let stdin: Vec<&[u8]> = match req.stdin.as_deref() {
+            Some(data) => data.chunks(STDIN_CHUNK).chain([&[][..]]).collect(),
+            None => Vec::new(),
+        };
+        let mut stdin = stdin.into_iter();
+        let mut credit = SEND_WINDOW;
 
         let (mut reader, mut writer) = self.stream.into_split();
         let mut stdout_truncated = false;
@@ -434,35 +423,36 @@ impl Session {
         let deadline = timeout.map(|d| tokio::time::Instant::now() + d);
 
         loop {
-            let frame_opt = match deadline {
-                Some(dl) => {
-                    let remaining = dl.saturating_duration_since(tokio::time::Instant::now());
-                    if remaining.is_zero() {
-                        let _ = send_signal(&mut writer, self.corr_id, SIG_KILL).await;
-                        let status = await_exited_with_grace(&mut reader, self.corr_id).await;
-                        return Ok(RunOutcome {
-                            status: ExitStatus {
-                                code: status,
-                                timed_out: true,
-                            },
-                            stdout_truncated,
-                            stderr_truncated,
-                        });
-                    }
+            let remaining =
+                deadline.map(|dl| dl.saturating_duration_since(tokio::time::Instant::now()));
+            if remaining.is_some_and(|r| r.is_zero()) {
+                let _ = send_signal(&mut writer, self.corr_id, SIG_KILL).await;
+                let status = await_exited_with_grace(&mut reader, self.corr_id).await;
+                return Ok(RunOutcome {
+                    status: ExitStatus {
+                        code: status,
+                        timed_out: true,
+                    },
+                    stdout_truncated,
+                    stderr_truncated,
+                });
+            }
+            if credit > 0
+                && let Some(chunk) = stdin.next()
+            {
+                let data_b64 = B64.encode(chunk);
+                let frame = encode_frame(self.corr_id, 0, &ShellMessage::Stdin { data_b64 })
+                    .map_err(|e| VmClientError::Encode(e.to_string()))?;
+                write_frame_bounded(&mut writer, &frame).await?;
+                credit -= 1;
+                continue;
+            }
+            let frame_opt = match remaining {
+                Some(remaining) => {
                     match tokio::time::timeout(remaining, read_one_frame(&mut reader)).await {
                         Ok(v) => v,
-                        Err(_) => {
-                            let _ = send_signal(&mut writer, self.corr_id, SIG_KILL).await;
-                            let status = await_exited_with_grace(&mut reader, self.corr_id).await;
-                            return Ok(RunOutcome {
-                                status: ExitStatus {
-                                    code: status,
-                                    timed_out: true,
-                                },
-                                stdout_truncated,
-                                stderr_truncated,
-                            });
-                        }
+                        // The deadline: the top of the loop ends the session.
+                        Err(_) => continue,
                     }
                 }
                 None => read_one_frame(&mut reader).await,
@@ -515,6 +505,7 @@ impl Session {
                     }
                     tracing::warn!("dispatcher non-terminal error: {message}");
                 }
+                ShellMessage::Credit { frames } => credit = credit.saturating_add(frames),
                 // Host-directed messages (Request/Stdin/Resize/Signal)
                 // should never come back from the guest. Log and ignore.
                 other => {
@@ -606,7 +597,8 @@ impl Session {
         // shell.sock, the relay's SIGKILL fan-out cascades into the
         // supervisor, the temp file gets unlinked, and the caller sees
         // a typed S218 error well before any outer SDK trigger timeout.
-        let mut buf = vec![0u8; 64 * 1024];
+        let mut credit = SEND_WINDOW;
+        let mut buf = vec![0u8; STDIN_CHUNK];
         loop {
             let n = match tokio::time::timeout(FS_WRITE_READ_IDLE_TIMEOUT, reader.read(&mut buf))
                 .await
@@ -636,25 +628,46 @@ impl Session {
                 },
             )
             .map_err(|e| VmClientError::Encode(e.to_string()))?;
-            write_frame_bounded(&mut self.stream, &chunk_frame).await?;
+            self.send_upload_frame(&chunk_frame, &mut credit).await?;
         }
 
         // Terminate the upload sequence.
         let end_frame = encode_frame(self.corr_id, FLAG_TERMINAL, &ShellMessage::FsEnd)
             .map_err(|e| VmClientError::Encode(e.to_string()))?;
-        write_frame_bounded(&mut self.stream, &end_frame).await?;
+        self.send_upload_frame(&end_frame, &mut credit).await?;
 
-        // Read the single reply frame.
-        match read_frame_async(&mut self.stream).await? {
-            None => Err(VmClientError::SessionTerminated),
-            Some((_, _, ShellMessage::FsResponse(result))) => Ok(result),
-            Some((_, _, ShellMessage::FsError { code, message })) => {
-                Err(VmClientError::FsError { code, message })
+        // The reply, after any Credit still on its way.
+        loop {
+            match read_frame_async(&mut self.stream).await? {
+                Some((_, _, ShellMessage::Credit { .. })) => {}
+                reply => return write_reply(reply),
             }
-            Some((_, _, other)) => Err(VmClientError::ProtocolViolation(format!(
-                "unexpected fs write reply: {other:?}"
-            ))),
         }
+    }
+
+    /// Sends one upload frame at most `SEND_WINDOW` ahead of the guest's
+    /// Credit, so the guest never has to drop or refuse one. A reply that
+    /// comes first ends the upload: the guest failed the write.
+    async fn send_upload_frame(
+        &mut self,
+        frame: &[u8],
+        credit: &mut u32,
+    ) -> Result<(), VmClientError> {
+        while *credit == 0 {
+            match read_frame_async(&mut self.stream).await? {
+                Some((_, _, ShellMessage::Credit { frames })) => {
+                    *credit = credit.saturating_add(frames)
+                }
+                reply => {
+                    return Err(write_reply(reply).err().unwrap_or_else(|| {
+                        VmClientError::ProtocolViolation("fs write reply before FsEnd".into())
+                    }));
+                }
+            }
+        }
+        write_frame_bounded(&mut self.stream, frame).await?;
+        *credit -= 1;
+        Ok(())
     }
 
     /// Begin a streaming download of `path` from the guest.
@@ -846,7 +859,26 @@ impl tokio::io::AsyncRead for FsStreamReader {
     }
 }
 
-async fn write_frame_bounded(stream: &mut UnixStream, frame: &[u8]) -> Result<(), VmClientError> {
+/// The reply that ends an upload.
+fn write_reply(
+    frame: Option<(u32, u8, ShellMessage)>,
+) -> Result<iii_shell_proto::FsResult, VmClientError> {
+    match frame {
+        None => Err(VmClientError::SessionTerminated),
+        Some((_, _, ShellMessage::FsResponse(result))) => Ok(result),
+        Some((_, _, ShellMessage::FsError { code, message })) => {
+            Err(VmClientError::FsError { code, message })
+        }
+        Some((_, _, other)) => Err(VmClientError::ProtocolViolation(format!(
+            "unexpected fs write reply: {other:?}"
+        ))),
+    }
+}
+
+async fn write_frame_bounded<W: tokio::io::AsyncWrite + Unpin>(
+    stream: &mut W,
+    frame: &[u8],
+) -> Result<(), VmClientError> {
     match tokio::time::timeout(WRITE_TIMEOUT, stream.write_all(frame)).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(e)) => Err(VmClientError::WriteFailed(e.to_string())),
