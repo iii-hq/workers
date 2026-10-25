@@ -928,7 +928,9 @@ async fn connect(url: &str) -> Arc<IIIClient> {
             ..InitOptions::default()
         },
     ));
-    tokio::time::timeout(Duration::from_secs(10), async {
+    // A local socket, but a loaded machine can starve the connection
+    // thread for seconds.
+    tokio::time::timeout(Duration::from_secs(30), async {
         while iii.get_connection_state() != iii_sdk::runtime::IIIConnectionState::Connected {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -979,6 +981,11 @@ static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 impl Drop for Rig {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.scratch);
+        // Each client runs its own connection thread, which outlives the
+        // client and keeps redialling the stopped engine: one rig after
+        // another (the fault matrix) would pile them up.
+        let iii = self.iii.clone();
+        std::thread::spawn(move || iii.shutdown());
     }
 }
 
