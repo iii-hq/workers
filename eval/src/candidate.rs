@@ -868,6 +868,22 @@ fn grep_matches(
         .collect())
 }
 
+/// `(path, target)` of every symlink at `sha`: its target is read like a
+/// quoted relative path.
+fn symlinks(repo: &Path, sha: &str) -> Result<Vec<(String, String)>, CandidateError> {
+    git(repo, &["ls-tree", "-r", "-z", sha])?
+        .split('\0')
+        .filter_map(|entry| {
+            let (meta, path) = entry.split_once('\t')?;
+            let mut fields = meta.split(' ');
+            let mode = fields.next()?;
+            let object = fields.nth(1)?;
+            (mode == "120000").then(|| (object.to_string(), path.to_string()))
+        })
+        .map(|(object, path)| Ok((path, git(repo, &["cat-file", "blob", &object])?)))
+        .collect()
+}
+
 /// `relative` resolved against the directory of `file`, inside the
 /// repository.
 fn resolve(file: &str, relative: &str) -> Option<String> {
@@ -888,8 +904,8 @@ fn resolve(file: &str, relative: &str) -> Option<String> {
 /// What a change at `sha` runs in. `units` are the units its paths belong
 /// to ([`unit_of`]). `dependents` are the other units whose non-test files
 /// read changed code, transitively: by a relative path (a Cargo `path`
-/// dependency, `#[path]`, `include_str!`, an import) or by a `workspace:`
-/// package dependency. The loop's own `eval/` is never a dependent.
+/// dependency, `#[path]`, `include_str!`, an import, a symlink) or by a
+/// `workspace:` package dependency. The loop's own `eval/` is never a dependent.
 pub fn changed_units(
     repo: &Path,
     sha: &str,
@@ -914,7 +930,14 @@ pub fn changed_units(
         r#"["'](\.\./)+[^"'[:space:]]*["']"#,
         &[".", ":!*.md"],
     )? {
-        if let Some(target) = resolve(&file, &found[1..found.len() - 1]) {
+        // A bundler query or fragment (`icon.svg?raw`) is not part of the path.
+        let relative = found[1..found.len() - 1].split(['?', '#']).next();
+        if let Some(target) = relative.and_then(|relative| resolve(&file, relative)) {
+            add(target, &file);
+        }
+    }
+    for (file, target) in symlinks(repo, sha)? {
+        if let Some(target) = resolve(&file, target.trim_end_matches('\n')) {
             add(target, &file);
         }
     }

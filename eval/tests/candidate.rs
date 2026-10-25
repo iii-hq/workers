@@ -523,11 +523,20 @@ fn no_dependency_hides_a_reader_of_changed_code() {
             "u/ui/src/x.ts",
             "import { a } from '../../../packages/kit/src/a'\n",
         ),
+        // A bundler import with a query: the file it reads is the path.
+        ("provider-y/assets/icon.svg", "<svg/>\n"),
+        (
+            "ade/web/src/Mark.tsx",
+            "import icon from '../../../provider-y/assets/icon.svg?raw'\n",
+        ),
         // Documentation that names a path builds nothing.
         ("docs/guide.md", "path = \"../llm-router\"\n"),
+        // A file another worker ships through a symlink.
+        ("permissions.yaml", "allow: []\n"),
     ] {
         write(&repo.join(path), text);
     }
+    std::os::unix::fs::symlink("../permissions.yaml", repo.join("w/permissions.yaml")).unwrap();
     sh(repo, &["add", "-A"]);
     sh(repo, &["commit", "-q", "-m", "readers"]);
     let sha = sh(repo, &["rev-parse", "HEAD"]);
@@ -569,6 +578,16 @@ fn no_dependency_hides_a_reader_of_changed_code() {
     assert_eq!(
         units(&["packages/kit/src/a.ts"]),
         (named(&["packages/kit"]), named(&["u"]))
+    );
+    assert_eq!(
+        units(&["provider-y/assets/icon.svg"]),
+        (named(&["provider-y"]), named(&["ade"])),
+        "a `?raw` import reads the file before the query"
+    );
+    assert_eq!(
+        units(&["permissions.yaml"]),
+        (named(&["permissions.yaml"]), named(&["w"])),
+        "w ships the file through its symlink"
     );
     assert_eq!(units(&["docs/guide.md"]), (named(&[]), named(&[])));
     assert_eq!(
