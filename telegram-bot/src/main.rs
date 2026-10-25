@@ -102,7 +102,7 @@ async fn main() -> Result<()> {
     }
 
     functions::bind_triggers(&iii);
-    if approval_gate.is_available() {
+    if approval_gate.is_available() && approval_gate.take_first_bind() {
         functions::bind_approval_triggers(&iii);
     }
 

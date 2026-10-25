@@ -23,6 +23,7 @@ const WATCH_FN_ID: &str = "telegram-bot::__on-approval-gate-worker";
 pub struct ApprovalGateStatus {
     present: AtomicBool,
     loading: AtomicBool,
+    bound: AtomicBool,
 }
 
 impl ApprovalGateStatus {
@@ -30,6 +31,7 @@ impl ApprovalGateStatus {
         Self {
             present: AtomicBool::new(false),
             loading: AtomicBool::new(true),
+            bound: AtomicBool::new(false),
         }
     }
 
@@ -40,6 +42,14 @@ impl ApprovalGateStatus {
     /// Sets presence and returns what it was.
     fn swap_present(&self, present: bool) -> bool {
         self.present.swap(present, Ordering::Relaxed)
+    }
+
+    /// True only the first time: the gate's triggers are bound once per
+    /// process. The engine parks those bindings while the gate is away and
+    /// replays them when it registers again, so binding again would deliver
+    /// every event twice.
+    pub fn take_first_bind(&self) -> bool {
+        !self.bound.swap(true, Ordering::Relaxed)
     }
 
     pub fn finish_loading(&self) {
@@ -99,11 +109,12 @@ struct WorkersChangedAck {
 /// Bind the engine's `engine::workers-available` trigger type so presence
 /// follows the gate: every worker connect, metadata update (when the gate's
 /// name arrives) and disconnect re-probes `engine::workers::list`, and
-/// `on_present` runs each time the gate appears.
+/// `on_first_present` runs the first time the gate appears, unless the boot
+/// probe already bound its triggers ([`ApprovalGateStatus::take_first_bind`]).
 pub fn start_watch(
     iii: Arc<IIIClient>,
     status: Arc<ApprovalGateStatus>,
-    on_present: Arc<dyn Fn() + Send + Sync>,
+    on_first_present: Arc<dyn Fn() + Send + Sync>,
 ) {
     // One probe at a time, so the last one applied saw the latest state.
     let probing = Arc::new(tokio::sync::Mutex::new(()));
@@ -111,7 +122,8 @@ pub fn start_watch(
     iii.register_function(
         WATCH_FN_ID,
         RegisterFunction::new_async(move |_change: WorkersChanged| {
-            let (iii, status, on_present) = (iii_probe.clone(), status.clone(), on_present.clone());
+            let (iii, status, on_present) =
+                (iii_probe.clone(), status.clone(), on_first_present.clone());
             let probing = probing.clone();
             async move {
                 // Off the trigger's path: the probe is a round trip.
@@ -162,7 +174,9 @@ fn apply_presence(status: &ApprovalGateStatus, on_present: &dyn Fn(), present: b
     match (status.swap_present(present), present) {
         (false, true) => {
             tracing::info!("approval-gate connected");
-            on_present();
+            if status.take_first_bind() {
+                on_present();
+            }
         }
         (true, false) => {
             tracing::info!("approval-gate disconnected — approval prompts disabled");
@@ -214,9 +228,10 @@ mod tests {
     }
 
     /// Presence follows each probe, and `on_present` (which binds the
-    /// gate's triggers) runs once per appearance, not on every probe.
+    /// gate's triggers) runs on the first appearance only: the engine
+    /// replays the binding when the gate comes back.
     #[test]
-    fn on_present_runs_when_the_gate_appears() {
+    fn the_gate_triggers_are_bound_on_its_first_appearance_only() {
         let status = status_with(false, false);
         let calls = std::sync::atomic::AtomicUsize::new(0);
         let on_present = || {
@@ -227,11 +242,18 @@ mod tests {
             (true, true, 1),
             (false, false, 1),
             (false, false, 1),
-            (true, true, 2),
+            (true, true, 1),
         ] {
             apply_presence(&status, &on_present, present);
             assert_eq!(status.is_available(), available);
             assert_eq!(calls.load(Ordering::Relaxed), total_calls);
         }
+
+        // Bound at boot: a later reappearance binds nothing.
+        let booted = status_with(true, false);
+        assert!(booted.take_first_bind());
+        apply_presence(&booted, &on_present, false);
+        apply_presence(&booted, &on_present, true);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 }
