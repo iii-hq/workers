@@ -1825,6 +1825,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_bank_too_small_for_z_still_injects_on_meaning() {
+        // A new bank: five memories, each question close in meaning to one,
+        // sharing one word with it or none.
+        let texts = [
+            memory("The API gateway is written in Go."),
+            memory("Nightly backups run at 2am UTC."),
+            memory("The billing service runs on Postgres 16."),
+            user_memory("The user works as a senior backend engineer."),
+            user_memory("The user prefers a dark editor theme."),
+        ];
+        let questions = [
+            "What language is the gateway in?",
+            "When do backups happen?",
+            "Which postgres version again?",
+            "what's my job title?",
+            "which theme do I like",
+        ];
+        for model in ["m", "sentence-transformers/all-MiniLM-L6-v2@rev"] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::open(dir.path().to_path_buf()).unwrap();
+            let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+            let one_hot = |i: usize| {
+                let mut v = vec![0.0f32; texts.len() + 1];
+                v[i] = 1.0;
+                v
+            };
+            for (i, m) in texts.iter().enumerate() {
+                bank.commit(m.clone()).await.unwrap();
+                bank.set_vector(&m.id, model, &m.text, one_hot(i))
+                    .await
+                    .unwrap();
+            }
+            for (target, question) in questions.iter().enumerate() {
+                // Cosine 0.8 to its memory, 0 to the others.
+                let mut q = one_hot(target);
+                q[target] = 0.8;
+                q[texts.len()] = 0.6;
+                let (hits, ev) = bank
+                    .recall_evidence(question, Some(&q), model, usize::MAX, 30, false, 0.0)
+                    .await;
+                assert_eq!(ev[&texts[target].id].z, None, "{question}");
+                let picked = crate::hooks::select(hits, &ev, &std::collections::HashSet::new(), 6);
+                let picked: Vec<&str> = picked.iter().map(|(m, _)| m.text.as_str()).collect();
+                assert!(
+                    picked.contains(&texts[target].text.as_str()),
+                    "{model} {question}: {picked:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn semantic_ranks_raw_cosine_with_floor_model_and_liveness() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().to_path_buf()).unwrap();

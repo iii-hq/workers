@@ -557,9 +557,10 @@ fn two_subjects(a: &Memory, b: &Memory) -> bool {
 }
 
 /// What a turn is told from its ranked hits (every candidate, best first):
-/// those with evidence ([`Evidence`], why each matched) that stand with the
-/// turn's best, one line per fact, at most `limit`; nothing when none has
-/// any. An older statement of a changed fact is never told: when it stands,
+/// those with evidence ([`Evidence`], why each matched) that stand on their
+/// own, or with the turn's best in a turn anchored in the bank (a bank too
+/// small for a z-score anchors on any meaning match), one line per fact, at
+/// most `limit`; nothing when none has any. An older statement of a changed fact is never told: when it stands,
 /// the current statement takes its place, whatever the newer's own rank or
 /// relevance. `seen` holds the memory lines the window shows: a rewording of
 /// one is not sent again.
@@ -620,8 +621,13 @@ pub fn select(
             || (!e.vector && words > 0 && e.lexical >= RELEVANCE_SHARE)
     };
     // The share of the best counts in a turn with a subject in the bank: a hit
-    // that stands alone, or hits holding two of its words between them. A
-    // turn sharing one word ("Great, go ahead.") injects nothing on it.
+    // that stands alone, hits holding two of its words between them, or, in a
+    // bank under MIN_Z_POOL vectors (no z to tell a meaning that stands out),
+    // any meaning match. A turn sharing one word ("Great, go ahead.") injects
+    // nothing on it.
+    // shortcut: so in a small embedded bank small talk close in meaning to a
+    // memory anchors itself again; calibrate a cosine bar on a small-bank eval
+    // slice if that noise matters.
     // shortcut: the two words may land in two different memories, so chatter sharing
     // one word with each ("great, carry on" beside a "great" and a "carry" memory)
     // anchors itself; per-hit anchors alone lose two needed lines in the MiniLM hybrid
@@ -630,7 +636,10 @@ pub fn select(
     // The question's term count, the same on every hit.
     let terms = pool.first().map_or(0, |(m, _)| ev(m).terms);
     let anchored = (!covered.is_empty() && covered.len() >= terms.min(2))
-        || pool.iter().any(|(m, _)| alone(ev(m)));
+        || pool.iter().any(|(m, _)| {
+            let e = ev(m);
+            alone(e) || (e.cosine.is_some() && e.z.is_none())
+        });
     let stands = |m: &Memory| {
         let e = ev(m);
         alone(e) || (anchored && e.relevance >= RELEVANCE_SHARE * best)
@@ -1983,6 +1992,20 @@ Formal."
             ),
         ];
         assert!(kept(hits, &HashSet::new(), 6).is_empty());
+    }
+
+    #[test]
+    fn a_meaning_match_anchors_only_a_bank_too_small_for_z() {
+        // One word of two, close in meaning: "When do backups happen?".
+        let close = |z| Evidence {
+            cosine: Some(0.8),
+            z,
+            ..embedded(1, 2, 1.0)
+        };
+        // Under MIN_Z_POOL vectors no z exists: the cosine anchors, as before z did.
+        assert_eq!(selected(vec![("fp-backup", close(None))], 6), ["fp-backup"]);
+        // With z, the meaning must stand out to anchor the turn.
+        assert!(selected(vec![("fp-backup", close(Some(1.0)))], 6).is_empty());
     }
 
     #[test]
