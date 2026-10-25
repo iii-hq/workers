@@ -607,14 +607,29 @@ pub fn select(
         .filter(|(_, newer)| newer.is_none())
         .map(|((m, _), _)| ev(m).relevance)
         .fold(0.0, f32::max);
-    let stands = |m: &Memory| {
-        let e = ev(m);
+    // Stands on its own evidence, whatever the turn's best.
+    let alone = |e: &Evidence| {
         let words = e.matched.len();
         (words > 0 && words >= e.terms.min(2))
-            || e.relevance >= RELEVANCE_SHARE * best
             || e.z.is_some_and(|z| z >= SEMANTIC_Z)
             // No vector to weigh it against meaning matches: judge its words, as in lexical mode.
+            // shortcut: so without vectors the best hit anchors the turn on one word ("go
+            // ahead" injects a Go memory); gating this arm too loses two needed lines in the
+            // lexical eval ("my current diet", "which units"): revisit with a lexical signal
+            // that tells them apart.
             || (!e.vector && words > 0 && e.lexical >= RELEVANCE_SHARE)
+    };
+    // The share of the best counts in a turn with a subject in the bank: a hit
+    // that stands alone, or hits holding two of its words between them. A
+    // turn sharing one word ("Great, go ahead.") injects nothing on it.
+    let covered: HashSet<&String> = pool.iter().flat_map(|(m, _)| &ev(m).matched).collect();
+    let anchored = pool.iter().any(|(m, _)| {
+        let e = ev(m);
+        alone(e) || (!covered.is_empty() && covered.len() >= e.terms.min(2))
+    });
+    let stands = |m: &Memory| {
+        let e = ev(m);
+        alone(e) || (anchored && e.relevance >= RELEVANCE_SHARE * best)
     };
     // A line that stands, told by the statement nothing in `pool` supersedes
     // (later statements are newer, so this ends), once, at its first place.
@@ -1931,13 +1946,67 @@ Formal."
         assert_eq!(picked, ["fp-best", "fp-half", "fp-two"]);
     }
 
+    /// [`words`], for a memory with a vector, close in meaning to nothing.
+    fn embedded(words_matched: usize, terms: usize, relevance: f32) -> Evidence {
+        Evidence {
+            vector: true,
+            ..words(words_matched, terms, relevance)
+        }
+    }
+
     #[test]
-    fn a_one_word_question_keeps_every_match() {
+    fn a_one_word_question_still_keeps_every_match() {
+        // "deploy?": the one word is the whole question.
         let picked = selected(
-            vec![("fp1", words(1, 1, 1.0)), ("fp2", words(1, 1, 0.4))],
+            vec![("fp1", embedded(1, 1, 1.0)), ("fp2", embedded(1, 1, 0.4))],
             6,
         );
         assert_eq!(picked, ["fp1", "fp2"]);
+    }
+
+    #[test]
+    fn a_lone_one_word_best_hit_is_not_injected() {
+        // "Great, go ahead." beside "The API gateway is written in Go.": the
+        // best hit, on one word of three, however many memories hold it.
+        let hits = vec![
+            (
+                memory("fp-gateway", "The API gateway is written in Go."),
+                embedded(1, 3, 1.0),
+            ),
+            (
+                memory("fp-tools", "Internal tools are written in Go."),
+                embedded(1, 3, 0.9),
+            ),
+        ];
+        assert!(kept(hits, &HashSet::new(), 6).is_empty());
+    }
+
+    #[test]
+    fn an_anchored_turn_keeps_its_share_hits() {
+        let one = |word: &str, relevance| Evidence {
+            matched: vec![word.into()],
+            ..embedded(1, 3, relevance)
+        };
+        // A hit holding two of the question's words anchors the turn.
+        let picked = selected(
+            vec![("fp-two", embedded(2, 3, 1.0)), ("fp-half", one("w0", 0.6))],
+            6,
+        );
+        assert_eq!(picked, ["fp-two", "fp-half"]);
+        // So do two hits holding one word each.
+        let picked = selected(vec![("fp-a", one("w0", 1.0)), ("fp-b", one("w1", 0.6))], 6);
+        assert_eq!(picked, ["fp-a", "fp-b"]);
+        // And a meaning outlier.
+        let far = Evidence {
+            terms: 3,
+            relevance: 1.0,
+            cosine: Some(0.45),
+            z: Some(2.3),
+            vector: true,
+            ..Evidence::default()
+        };
+        let picked = selected(vec![("fp-far", far), ("fp-half", one("w0", 0.6))], 6);
+        assert_eq!(picked, ["fp-far", "fp-half"]);
     }
 
     #[test]
@@ -1966,6 +2035,7 @@ Formal."
         let best = Evidence {
             relevance: 5.0,
             cosine: Some(0.6),
+            z: Some(3.0),
             vector: true,
             ..words(1, 3, 1.0)
         };
@@ -2004,7 +2074,8 @@ Formal."
 
     #[test]
     fn a_hit_past_the_pool_cap_neither_sets_the_bar_nor_hides_a_line() {
-        // One slot: the bar and the pair passes see the best 4 admitted hits.
+        // One slot: the bar and the pair passes see the best 4 admitted hits,
+        // and the fillers' two words each anchor the turn.
         let at = |relevance| Evidence {
             vector: true,
             ..words(1, 4, relevance)
@@ -2013,7 +2084,7 @@ Formal."
             let mut hits = vec![(stated("fp-old", BACKUP_OLD, 1), at(1.0))];
             hits.extend((1..POOL_PER_SLOT).map(|n| {
                 let id = format!("fp-{n}");
-                (memory(&id, &id), at(1.0))
+                (memory(&id, &id), embedded(2, 4, 1.0))
             }));
             hits.push(last);
             kept(hits, &HashSet::new(), 1)
@@ -2156,7 +2227,8 @@ Formal."
 
     #[test]
     fn a_stale_top_hit_does_not_set_the_bar() {
-        // One word of four each, the older over twice the newer's relevance.
+        // One word of four each, the older over twice the newer's relevance,
+        // in a turn another hit anchors.
         let at = |relevance| Evidence {
             vector: true,
             ..words(1, 4, relevance)
@@ -2164,8 +2236,9 @@ Formal."
         let hits = vec![
             (stated("fp-old", BACKUP_OLD, 1), at(2.5)),
             (stated("fp-new", BACKUP_NEW, 2), at(1.0)),
+            (memory("fp-anchor", "fp-anchor"), embedded(2, 4, 0.9)),
         ];
-        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-new"]);
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-new", "fp-anchor"]);
     }
 
     #[test]

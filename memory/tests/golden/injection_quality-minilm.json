@@ -11,14 +11,14 @@
         "negatives": {
           "negative_clean_rate": null,
           "negative_injected": 0,
-          "negatives": 32,
-          "unmeasured": 32
+          "negatives": 41,
+          "unmeasured": 41
         },
         "positives": {
           "duplicate_queries": 1,
           "expected_injected": 0.7714,
           "injection_loss": [],
-          "irrelevant_injected": 202,
+          "irrelevant_injected": 196,
           "needed": 70,
           "queries": 62,
           "stale_alone": 0,
@@ -78,7 +78,7 @@
           "duplicate_queries": 0,
           "expected_injected": 0.625,
           "injection_loss": [],
-          "irrelevant_injected": 57,
+          "irrelevant_injected": 51,
           "needed": 16,
           "queries": 14,
           "stale_alone": 0,
@@ -95,6 +95,14 @@
           "queries": 10,
           "stale_alone": 0,
           "stale_with_current": 6
+        }
+      },
+      "kind:chatter": {
+        "negatives": {
+          "negative_clean_rate": null,
+          "negative_injected": 0,
+          "negatives": 8,
+          "unmeasured": 8
         }
       },
       "kind:first-person": {
@@ -117,8 +125,8 @@
         "negatives": {
           "negative_clean_rate": null,
           "negative_injected": 0,
-          "negatives": 8,
-          "unmeasured": 8
+          "negatives": 9,
+          "unmeasured": 9
         }
       },
       "kind:near-topic": {
@@ -133,8 +141,8 @@
         "negatives": {
           "negative_clean_rate": null,
           "negative_injected": 0,
-          "negatives": 32,
-          "unmeasured": 32
+          "negatives": 41,
+          "unmeasured": 41
         },
         "positives": {
           "duplicate_queries": 1,
@@ -152,7 +160,7 @@
           "duplicate_queries": 0,
           "expected_injected": 0.6176,
           "injection_loss": [],
-          "irrelevant_injected": 154,
+          "irrelevant_injected": 148,
           "needed": 34,
           "queries": 31,
           "stale_alone": 0,
@@ -163,14 +171,14 @@
         "negatives": {
           "negative_clean_rate": null,
           "negative_injected": 0,
-          "negatives": 20,
-          "unmeasured": 20
+          "negatives": 26,
+          "unmeasured": 26
         },
         "positives": {
           "duplicate_queries": 1,
           "expected_injected": 0.76,
           "injection_loss": [],
-          "irrelevant_injected": 133,
+          "irrelevant_injected": 127,
           "needed": 50,
           "queries": 43,
           "stale_alone": 0,
@@ -181,8 +189,8 @@
         "negatives": {
           "negative_clean_rate": null,
           "negative_injected": 0,
-          "negatives": 12,
-          "unmeasured": 12
+          "negatives": 15,
+          "unmeasured": 15
         },
         "positives": {
           "duplicate_queries": 0,
@@ -199,9 +207,9 @@
     "lexical": {
       "all": {
         "negatives": {
-          "negative_clean_rate": 0.7188,
-          "negative_injected": 10,
-          "negatives": 32,
+          "negative_clean_rate": 0.7561,
+          "negative_injected": 11,
+          "negatives": 41,
           "unmeasured": 0
         },
         "positives": {
@@ -296,6 +304,14 @@
           "stale_with_current": 5
         }
       },
+      "kind:chatter": {
+        "negatives": {
+          "negative_clean_rate": 1.0,
+          "negative_injected": 0,
+          "negatives": 8,
+          "unmeasured": 0
+        }
+      },
       "kind:first-person": {
         "negatives": {
           "negative_clean_rate": 1.0,
@@ -315,8 +331,8 @@
       "kind:incidental-word": {
         "negatives": {
           "negative_clean_rate": 0.0,
-          "negative_injected": 8,
-          "negatives": 8,
+          "negative_injected": 9,
+          "negatives": 9,
           "unmeasured": 0
         }
       },
@@ -330,9 +346,9 @@
       },
       "lang:en": {
         "negatives": {
-          "negative_clean_rate": 0.7188,
-          "negative_injected": 10,
-          "negatives": 32,
+          "negative_clean_rate": 0.7561,
+          "negative_injected": 11,
+          "negatives": 41,
           "unmeasured": 0
         },
         "positives": {
@@ -364,9 +380,9 @@
       },
       "split:dev": {
         "negatives": {
-          "negative_clean_rate": 0.7,
-          "negative_injected": 7,
-          "negatives": 20,
+          "negative_clean_rate": 0.7308,
+          "negative_injected": 8,
+          "negatives": 26,
           "unmeasured": 0
         },
         "positives": {
@@ -386,9 +402,9 @@
       },
       "split:test": {
         "negatives": {
-          "negative_clean_rate": 0.75,
+          "negative_clean_rate": 0.8,
           "negative_injected": 3,
-          "negatives": 12,
+          "negatives": 15,
           "unmeasured": 0
         },
         "positives": {

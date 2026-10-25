@@ -1897,6 +1897,18 @@
       }
     },
     {
+      "id": "neg-word-go-ahead",
+      "text": "Great, go ahead.",
+      "lang": "en",
+      "kind": "incidental-word",
+      "split": "dev",
+      "shares": {
+        "go": [
+          "en-work-go-tools"
+        ]
+      }
+    },
+    {
       "id": "neg-near-rotafy-postgres",
       "text": "What Postgres version does Rotafy use?",
       "lang": "en",
@@ -1977,6 +1989,62 @@
       "related": [
         "evt-workshop-offsite"
       ]
+    },
+    {
+      "id": "neg-chat-tell-more-that",
+      "text": "tell me more about that",
+      "lang": "en",
+      "kind": "chatter",
+      "split": "dev"
+    },
+    {
+      "id": "neg-chat-i-know-that",
+      "text": "I know that.",
+      "lang": "en",
+      "kind": "chatter",
+      "split": "dev"
+    },
+    {
+      "id": "neg-chat-sounds-good",
+      "text": "sounds good, do it",
+      "lang": "en",
+      "kind": "chatter",
+      "split": "dev"
+    },
+    {
+      "id": "neg-chat-carry-on",
+      "text": "great, carry on",
+      "lang": "en",
+      "kind": "chatter",
+      "split": "dev"
+    },
+    {
+      "id": "neg-chat-i-remember-now",
+      "text": "I remember it now.",
+      "lang": "en",
+      "kind": "chatter",
+      "split": "dev"
+    },
+    {
+      "id": "neg-chat-tell-more-it",
+      "text": "can you tell me more about it?",
+      "lang": "en",
+      "kind": "chatter",
+      "split": "test"
+    },
+    {
+      "id": "neg-chat-tell-again",
+      "text": "tell me again",
+      "lang": "en",
+      "kind": "chatter",
+      "split": "test"
+    },
+    {
+      "id": "neg-chat-makes-sense",
+      "text": "ok, makes sense",
+      "lang": "en",
+      "kind": "chatter",
+      "split": "test"
     }
   ]
 }

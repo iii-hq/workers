@@ -71,8 +71,8 @@ const MIN_Z_POOL: usize = 20;
 pub struct Evidence {
     /// The question's content terms the memory holds: never a stopword,
     /// never the `user` a pronoun added, except `user` alone for a
-    /// question of pronouns only ("who am I"), or of pronouns and
-    /// `MEMORY_VERBS` ("what do you remember about me").
+    /// question of pronouns only ("who am I"), or of `MEMORY_VERBS` asked
+    /// of "me" ("what do you remember about me").
     pub matched: Vec<String>,
     /// How many content terms the question has.
     pub terms: usize,
@@ -217,7 +217,8 @@ pub const STOPWORDS: &[&str] = &[
 ];
 
 /// Verbs that ask what memory holds ("what do you remember about me"); English only, by decision.
-const MEMORY_VERBS: &[&str] = &["remember", "know", "tell", "recall"];
+/// Not "tell": its "me" is who is told ("tell me more").
+const MEMORY_VERBS: &[&str] = &["remember", "know", "recall"];
 
 /// Bytes of a recall query kept: half from its head, half from its tail.
 const QUERY_MAX_BYTES: usize = 800;
@@ -872,7 +873,14 @@ impl Bank {
             .map(String::as_str)
             .filter(|t| !STOPWORDS.contains(t) && !(expanded && *t == "user"))
             .collect();
-        if expanded && content.iter().all(|t| MEMORY_VERBS.contains(t)) {
+        // What memory holds of "me", not who is told ("tell me more") or a bare "I know".
+        let of_me = content
+            .iter()
+            .all(|t| MEMORY_VERBS.contains(t) || *t == "anything")
+            && crate::index::tokenize(query)
+                .iter()
+                .any(|t| t == "me" || t == "myself");
+        if expanded && (content.is_empty() || of_me) {
             // A question of pronouns alone, or of what memory holds of them, is about the user.
             content = vec!["user"];
         }
@@ -1690,13 +1698,35 @@ mod tests {
         for query in [
             "what do you remember about me",
             "what do you know about me?",
-            "tell me about myself",
+            "can you recall anything about me?",
         ] {
             let (_, evidence) = evidence_for(&bank, query).await;
             for m in [&mine, &also] {
                 assert_eq!(evidence[&m.id].matched, ["user"], "{query}: {}", m.text);
             }
             let e = evidence.get(&stray.id).cloned().unwrap_or_default();
+            assert!(e.matched.is_empty(), "{query}: {e:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn tell_and_bare_verbs_are_not_about_the_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let mine = user_memory("The user lives in Recife");
+        bank.commit(mine.clone()).await.unwrap();
+
+        // "me" as who is told, or no object at all: a follow-up, not a question about the user.
+        for query in [
+            "tell me more",
+            "tell me again",
+            "can you tell me more about it?",
+            "I know.",
+            "I remember",
+        ] {
+            let (_, evidence) = evidence_for(&bank, query).await;
+            let e = evidence.get(&mine.id).cloned().unwrap_or_default();
             assert!(e.matched.is_empty(), "{query}: {e:?}");
         }
     }

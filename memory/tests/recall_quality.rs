@@ -69,7 +69,8 @@ struct Negative {
     id: String,
     text: String,
     lang: String,
-    /// `greeting`, `first-person`, `incidental-word` or `near-topic`.
+    /// `greeting`, `first-person`, `incidental-word`, `near-topic` or
+    /// `chatter` (a follow-up with no subject of its own: "tell me more").
     kind: String,
     /// `dev` (tune on it) or `test` (held out).
     split: String,
@@ -158,8 +159,8 @@ fn load_golden() -> Golden {
 /// Fixture integrity, checked before any scoring so a broken fixture never
 /// reads as a quality change: unique keys, ids and texts, every
 /// `expect`/`stale`/`related` key present, every `shares` word in the
-/// memories it names, and no `first-person` negative sharing a content word
-/// with the bank, so only the pronoun can pull a memory in.
+/// memories it names, and no `first-person` or `chatter` negative sharing a
+/// content word with the bank, so only the pronoun can pull a memory in.
 fn validate(golden: &Golden) {
     let mut keys = HashSet::new();
     let mut texts = HashSet::new();
@@ -218,7 +219,7 @@ fn validate(golden: &Golden) {
                 );
             }
         }
-        if n.kind == "first-person" {
+        if n.kind == "first-person" || n.kind == "chatter" {
             let shared: Vec<String> = memory::index::tokenize(&n.text)
                 .into_iter()
                 .filter(|t| !STOPWORDS.contains(&t.as_str()))
@@ -226,7 +227,8 @@ fn validate(golden: &Golden) {
                 .collect();
             assert!(
                 shared.is_empty(),
-                "first-person {} shares {shared:?} with the bank",
+                "{} {} shares {shared:?} with the bank",
+                n.kind,
                 n.id
             );
         }
@@ -1045,10 +1047,10 @@ async fn injection_gate(vectors_file: &str, baseline_file: &str) {
             lost, known,
             "{mode}: injection dropped a needed line recall ranks\n{report}"
         );
-        // Nothing relevant, nothing injected: a greeting, or a task in the
-        // first person the bank shares no word with.
+        // Nothing relevant, nothing injected: a greeting, a task in the
+        // first person or a follow-up the bank shares no word with.
         if mode == "lexical" {
-            for kind in ["kind:greeting", "kind:first-person"] {
+            for kind in ["kind:greeting", "kind:first-person", "kind:chatter"] {
                 let clean = summaries[kind]
                     .negatives
                     .as_ref()
