@@ -1,14 +1,7 @@
 import uiClasses from '@iii-dev/console-ui/ui-classes'
-import {
-  Bot,
-  Check,
-  ChevronRight,
-  MessageSquare,
-  Pencil,
-  X,
-} from 'lucide-react'
+import { Bot, ChevronRight, MessageSquare, Pencil, X } from 'lucide-react'
 import type { CSSProperties } from 'react'
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { SUBAGENT_ICON_COMPONENTS } from '@/components/chat/ActiveSubagentChips'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { TriggerIcon } from '@/components/ui/TriggerIcon'
@@ -19,19 +12,16 @@ import type {
   ConversationKind,
   SubagentColor,
 } from '@/types/chat'
-
-// viewport: phone chrome — the sm and md utilities here are the console's
-// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
-// not pane layout; see viewport-breakpoint-conformance.test.ts.
+import { MarqueeLabel } from './MarqueeLabel'
+import { RenameConversationDialog } from './RenameConversationDialog'
 
 const rowActionClassName = `${uiClasses.treeItemAction} pointer-coarse:min-h-12 pointer-coarse:min-w-12`
 
 /**
- * Renaming is a desktop affordance — it pairs with double-click and F2, and
- * its editor is a cramped inline field on a phone. `data-pointer="fine"`
- * drops the pencil on coarse pointers, which also returns touch rows to the
- * single trailing action the tree recipe is built around. No coarse hit area
- * here on purpose: it is never shown to one.
+ * Renaming is a desktop affordance — it pairs with double-click and F2.
+ * `data-pointer="fine"` drops the pencil on coarse pointers, which also
+ * returns touch rows to the single trailing action the tree recipe is built
+ * around. No coarse hit area here on purpose: it is never shown to one.
  */
 const renameActionClassName = uiClasses.treeItemAction
 
@@ -94,8 +84,15 @@ function resolveGlyph(conversation: Conversation, depth: number): RowGlyph {
     }
   }
   if (profile) {
+    const chosen = profile.icon && SUBAGENT_ICON_COMPONENTS[profile.icon]
+    // A root chat on a profile that picked no glyph keeps the quiet chat
+    // mark: the robot fallback is for spawned agents, and a column of them
+    // on the stock profile reads as noise, not identity.
+    if (!chosen && depth === 0) {
+      return { Icon: MessageSquare, title: profile.name }
+    }
     return {
-      Icon: (profile.icon && SUBAGENT_ICON_COMPONENTS[profile.icon]) || Bot,
+      Icon: chosen || Bot,
       color: profile.color,
       title: profile.name,
     }
@@ -128,39 +125,10 @@ export function ConversationRow({
   onToggleTree,
   kind,
 }: ConversationRowProps) {
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState(conversation.title)
-  const inputRef = useRef<HTMLInputElement>(null)
+  // Renaming opens a centred dialog (the row is too narrow to show a whole
+  // title while it is edited); the dialog hands focus back to the row.
+  const [renaming, setRenaming] = useState(false)
   const rowRef = useRef<HTMLDivElement>(null)
-  const restoreFocusRef = useRef(false)
-
-  useEffect(() => {
-    if (editing) {
-      inputRef.current?.focus()
-      inputRef.current?.select()
-    } else if (restoreFocusRef.current) {
-      restoreFocusRef.current = false
-      rowRef.current?.focus({ preventScroll: true })
-    }
-  }, [editing])
-
-  useEffect(() => {
-    if (!editing) setDraft(conversation.title)
-  }, [conversation.title, editing])
-
-  /** Persist a nonempty changed title; blur callers retain their focus destination. */
-  const commit = () => {
-    setEditing(false)
-    const next = draft.trim()
-    if (next && next !== conversation.title) onRename(next)
-  }
-
-  /** Discard explicit edits and restore focus after the editor unmounts. */
-  const cancel = () => {
-    restoreFocusRef.current = true
-    setEditing(false)
-    setDraft(conversation.title)
-  }
 
   const glyph = resolveGlyph(conversation, depth)
   const kindTag = kind ? CONVERSATION_KIND_TAGS[kind] : undefined
@@ -170,23 +138,23 @@ export function ConversationRow({
     <div
       ref={rowRef}
       role="button"
-      tabIndex={editing ? -1 : 0}
+      tabIndex={0}
       aria-current={active ? 'page' : undefined}
       aria-label={`open ${conversation.title}`}
       className={uiClasses.treeItem}
       style={{ '--iii-ui-tree-depth': depth } as CSSProperties}
-      onClick={() => !editing && onSelect()}
+      onClick={() => !renaming && onSelect()}
       onDoubleClick={(e) => {
-        if (!(e.target as HTMLElement).closest('button, form')) setEditing(true)
+        if (!(e.target as HTMLElement).closest('button')) setRenaming(true)
       }}
       onKeyDown={(e) => {
-        if (editing || e.target !== e.currentTarget) return
+        if (renaming || e.target !== e.currentTarget) return
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
           onSelect()
         } else if (e.key === 'F2') {
           e.preventDefault()
-          setEditing(true)
+          setRenaming(true)
         }
       }}
     >
@@ -197,110 +165,66 @@ export function ConversationRow({
       >
         <glyph.Icon aria-hidden />
       </span>
-      {editing ? (
-        <form
-          className="flex min-w-0 flex-1 items-center gap-2"
-          onClick={(e) => e.stopPropagation()}
-          onSubmit={(e) => {
-            e.preventDefault()
-            restoreFocusRef.current = true
-            commit()
-          }}
-          onBlur={(e) => {
-            if (!e.currentTarget.contains(e.relatedTarget)) commit()
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') {
-              e.preventDefault()
-              cancel()
-            }
-          }}
-        >
-          <input
-            name="conversation-title"
-            aria-label="conversation title"
-            ref={inputRef}
-            value={draft}
-            onChange={(e) => setDraft(e.currentTarget.value)}
-            className="min-w-0 flex-1 rounded-xs bg-surface px-1 py-0.5 font-sans text-base font-medium text-ink outline-none sm:text-[13px]"
+      {/* A long title fades at its right edge and slides into view while the
+          row is hovered (MarqueeLabel), so the whole name is readable
+          without widening the sidebar. */}
+      <MarqueeLabel className={uiClasses.treeItemLabel}>
+        {conversation.title}
+      </MarqueeLabel>
+      <span className={uiClasses.treeItemTrailing}>
+        {conversation.status === 'working' ? (
+          <StatusDot tone="accent" pulse title="working" />
+        ) : conversation.status === 'error' ? (
+          <StatusDot
+            tone="alert"
+            title={conversation.statusReason ?? 'error'}
           />
-          <button
-            type="submit"
-            className={rowActionClassName}
-            aria-label="Save conversation title"
-            onPointerDown={(e) => e.preventDefault()}
+        ) : null}
+        {kindTag ? (
+          <span
+            className={cn(
+              uiClasses.treeItemMeta,
+              'rounded-xs bg-surface px-1 font-mono',
+            )}
+            title={kindTag.title}
           >
-            <Check aria-hidden />
+            {kindTag.label}
+          </span>
+        ) : null}
+        <span className={uiClasses.treeItemMeta}>
+          {formatRelative(conversation.updatedAt)}
+        </span>
+        <span className={uiClasses.treeItemActions}>
+          <button
+            type="button"
+            className={renameActionClassName}
+            data-pointer="fine"
+            aria-label={`rename ${conversation.title}`}
+            title="Rename conversation"
+            onClick={(e) => {
+              e.stopPropagation()
+              setRenaming(true)
+            }}
+          >
+            <Pencil aria-hidden />
           </button>
           <button
             type="button"
             className={rowActionClassName}
-            aria-label="Cancel rename"
-            onPointerDown={(e) => e.preventDefault()}
-            onClick={cancel}
+            data-tone="alert"
+            aria-label={`delete ${conversation.title}`}
+            onClick={(e) => {
+              e.stopPropagation()
+              onRemove()
+            }}
           >
             <X aria-hidden />
           </button>
-        </form>
-      ) : (
-        <span className={uiClasses.treeItemLabel}>{conversation.title}</span>
-      )}
-      {!editing ? (
-        <span className={uiClasses.treeItemTrailing}>
-          {conversation.status === 'working' ? (
-            <StatusDot tone="accent" pulse title="working" />
-          ) : conversation.status === 'error' ? (
-            <StatusDot
-              tone="alert"
-              title={conversation.statusReason ?? 'error'}
-            />
-          ) : null}
-          {kindTag ? (
-            <span
-              className={cn(
-                uiClasses.treeItemMeta,
-                'rounded-xs bg-surface px-1 font-mono',
-              )}
-              title={kindTag.title}
-            >
-              {kindTag.label}
-            </span>
-          ) : null}
-          <span className={uiClasses.treeItemMeta}>
-            {formatRelative(conversation.updatedAt)}
-          </span>
-          <span className={uiClasses.treeItemActions}>
-            <button
-              type="button"
-              className={renameActionClassName}
-              data-pointer="fine"
-              aria-label={`rename ${conversation.title}`}
-              title="Rename conversation"
-              onClick={(e) => {
-                e.stopPropagation()
-                setEditing(true)
-              }}
-            >
-              <Pencil aria-hidden />
-            </button>
-            <button
-              type="button"
-              className={rowActionClassName}
-              data-tone="alert"
-              aria-label={`delete ${conversation.title}`}
-              onClick={(e) => {
-                e.stopPropagation()
-                onRemove()
-              }}
-            >
-              <X aria-hidden />
-            </button>
-          </span>
         </span>
-      ) : null}
+      </span>
       {/* Last in the row: the hover actions widen the trailing cluster, and a
           caret before it would slide left under the pointer as they appear. */}
-      {hasChildren && !editing ? (
+      {hasChildren ? (
         <button
           type="button"
           className={uiClasses.treeItemCaret}
@@ -315,9 +239,16 @@ export function ConversationRow({
         >
           <ChevronRight aria-hidden />
         </button>
-      ) : caretColumn && !editing ? (
+      ) : caretColumn ? (
         <span aria-hidden className={uiClasses.treeItemCaret} data-slot="" />
       ) : null}
+      <RenameConversationDialog
+        open={renaming}
+        title={conversation.title}
+        onOpenChange={setRenaming}
+        onSave={onRename}
+        returnFocusTo={rowRef}
+      />
     </div>
   )
 }

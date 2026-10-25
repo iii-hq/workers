@@ -642,7 +642,7 @@ describe('ProviderConfigurationPanel lifecycle with real QueryClient hooks', () 
     expect(
       view.querySelector<HTMLInputElement>('input[inputmode="url"]')?.value,
     ).toBe('https://second.example')
-    expect(view.textContent).toContain('unsaved changes')
+    expect(view.textContent).toContain('Unsaved changes')
   })
 
   it('isolates an old A save after switching A→B→A', async () => {
@@ -884,6 +884,6 @@ describe('ProviderConfigurationPanel lifecycle with real QueryClient hooks', () 
       (node) => node.textContent,
     )
     expect(alerts).toContain('invalid endpoint')
-    expect(alerts).toContain('error: invalid endpoint')
+    expect(alerts).toContain('Error: invalid endpoint')
   })
 })

@@ -108,16 +108,18 @@ export function GroupedTraceList({
 
   if (unavailable) {
     return (
-      <div className="flex flex-col items-center justify-center py-12 px-6 text-center text-[13px] text-ink-faint">
-        <Layers className="w-6 h-6 mb-2 opacity-50" />
-        <div className="font-medium text-ink mb-1">Group-by not available</div>
-        <div className="max-w-md leading-[1.7]">
+      <div className="flex flex-col items-center justify-center px-6 py-12 text-center font-inter text-[13px] text-muted-foreground">
+        <Layers className="mb-2 size-5" aria-hidden />
+        <div className="mb-1 font-medium text-foreground">
+          Group-by not available
+        </div>
+        <div className="max-w-md leading-[1.6]">
           The engine doesn't expose{' '}
-          <code className="text-warn">engine::traces::group_by</code>. Either
-          the engine is older than the version that introduced it, or the{' '}
-          <code className="text-warn">iii-observability</code> worker is not
-          configured. Switch &quot;group by&quot; back to &quot;no
-          grouping&quot; to use the flat trace list.
+          <code className="text-warn-strong">engine::traces::group_by</code>.
+          Either the engine is older than the version that introduced it, or the{' '}
+          <code className="text-warn-strong">iii-observability</code> worker is
+          not configured. Switch grouping back to &quot;No grouping&quot; to use
+          the flat trace list.
         </div>
       </div>
     )
@@ -125,8 +127,8 @@ export function GroupedTraceList({
 
   if (isLoading && groups.length === 0) {
     return (
-      <div className="flex items-center justify-center py-12 text-[13px] text-ink-faint gap-2">
-        <Loader2 className="w-4 h-4 animate-spin" />
+      <div className="flex items-center justify-center gap-2 py-12 font-inter text-[13px] text-muted-foreground">
+        <Loader2 className="size-4 animate-spin" aria-hidden />
         Loading groups…
       </div>
     )
@@ -134,8 +136,8 @@ export function GroupedTraceList({
 
   if (groups.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-12 px-6 text-center text-[13px] text-ink-faint">
-        <Layers className="w-6 h-6 mb-2 opacity-50" />
+      <div className="flex flex-col items-center justify-center px-6 py-12 text-center font-inter text-[13px] text-muted-foreground">
+        <Layers className="mb-2 size-5" aria-hidden />
         <div>No traces carry this attribute yet.</div>
       </div>
     )
@@ -151,7 +153,7 @@ export function GroupedTraceList({
   }
 
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col gap-px px-2">
       {groups.map((group) => {
         const isExpanded = expanded.has(group.value)
         return (
@@ -214,32 +216,34 @@ function GroupHeaderRow({
       onClick={onToggle}
       aria-expanded={isExpanded}
       className={cn(
-        'flex h-10 w-full items-center gap-2 rounded-xl px-3 text-left transition-colors hover:bg-muted/60',
-        containsSelection && 'border-l-2 border-l-edge',
+        'flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left font-inter transition-colors duration-[var(--motion-duration-fast)] hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50',
+        containsSelection && 'bg-muted/40',
       )}
       title={`${heading} (${group.trace_ids.length} trace${group.trace_ids.length === 1 ? '' : 's'})`}
     >
       <ChevronRight
         className={cn(
-          'size-4 flex-shrink-0 text-ink-faint transition-transform',
+          'size-4 shrink-0 text-muted-foreground transition-transform duration-[var(--motion-duration-control)]',
           isExpanded && 'rotate-90',
         )}
+        aria-hidden
       />
       <Layers
         className={cn(
-          'size-4 flex-shrink-0',
-          group.error_count > 0 ? 'text-alert' : 'text-ink-faint',
+          'size-4 shrink-0',
+          group.error_count > 0 ? 'text-alert' : 'text-muted-foreground',
         )}
+        aria-hidden
       />
       <span
         className={cn(
           'truncate text-[13px] font-medium',
-          opaque ? 'text-ink-faint' : 'text-ink',
+          opaque ? 'text-muted-foreground' : 'text-foreground',
         )}
       >
         {heading}
       </span>
-      <span className="ml-auto flex-shrink-0 text-xs text-muted-foreground tabular-nums">
+      <span className="ml-auto shrink-0 font-mono text-[11px] text-muted-foreground tabular-nums">
         {summarizeGroup(group)}
       </span>
     </button>
@@ -304,8 +308,8 @@ function GroupMembers({
 
   if (isLoading && !data) {
     return (
-      <div className="flex items-center gap-2 pl-8 py-2 text-xs text-ink-faint">
-        <Loader2 className="size-4 animate-spin" />
+      <div className="flex items-center gap-2 py-2 pl-8 font-inter text-xs text-muted-foreground">
+        <Loader2 className="size-4 animate-spin" aria-hidden />
         Loading traces…
       </div>
     )
@@ -318,14 +322,14 @@ function GroupMembers({
 
   if (rows.length === 0) {
     return (
-      <div className="pl-8 py-2 text-xs text-ink-faint">
+      <div className="py-2 pl-8 font-inter text-xs text-muted-foreground">
         No visible traces in this group.
       </div>
     )
   }
 
   return (
-    <div className="pl-5 ml-3">
+    <div className="ml-4 border-l border-border pl-2">
       {rows.map((trace) => (
         <div key={trace.traceId} data-trace-row-id={trace.traceId}>
           <TraceListRow

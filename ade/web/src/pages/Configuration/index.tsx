@@ -1,5 +1,4 @@
 import {
-  ArrowLeft,
   BookOpen,
   Bot,
   Box,
@@ -28,7 +27,6 @@ import {
   Radio,
   Route,
   ScanSearch,
-  Search,
   Send,
   Settings2,
   ShieldCheck,
@@ -36,20 +34,23 @@ import {
   SquareTerminal,
   Webhook,
   Workflow,
-  X,
 } from 'lucide-react'
-import { useMemo, useRef, useState } from 'react'
-import { Input } from '@/components/ui/Input'
+import { MotionConfig } from 'motion/react'
+import { useMemo } from 'react'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { useContainerNarrow } from '@/hooks/use-container-narrow'
-import {
-  useWorkersConfigurationRoute,
-  type WorkersConfigurationRoute,
-} from '@/hooks/use-hash-route'
+import { useWorkersConfigurationRoute } from '@/hooks/use-hash-route'
 import type { ThemePreference } from '@/hooks/use-theme'
 import { configurationFormFamily } from '@/lib/configuration-family'
+import { NEUTRAL_SURFACE } from '@/lib/neutral-surface'
 import { useExtConfigForms, useUiAssetsStatus } from '@/lib/ui-slots'
 import { cn } from '@/lib/utils'
+import { SettingsPageTransition } from './components/motion'
+import { SettingsPageHeader } from './components/primitives'
+import {
+  type SettingsNavEntry,
+  SettingsNavigation,
+} from './components/SettingsNavigation'
 import { isOperatorConfiguration } from './lib/configuration-catalog'
 import { ConsoleSettingsTab } from './tabs/ConsoleSettingsTab'
 import type { ConfigurationSchemaView } from './tabs/WorkersTab/api'
@@ -59,10 +60,6 @@ import {
   useWorkerRegistryReactivity,
 } from './tabs/WorkersTab/hooks'
 import { WorkerEditor } from './tabs/WorkersTab/WorkerEditor'
-
-// viewport: phone chrome — the sm and md utilities here are the console's
-// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
-// not pane layout; see viewport-breakpoint-conformance.test.ts.
 
 const NARROW_BELOW = 720
 
@@ -179,6 +176,9 @@ interface ConfigurationProps {
   onThemeChange: (next: ThemePreference) => void
   onDirtyChange: (dirty: boolean) => void
   tryNavigate: (action: () => void) => boolean
+  /** Close the hosting dialog; drawn in the content header (and the sidebar
+   * when it is the whole dialog). */
+  onClose?: () => void
 }
 
 /**
@@ -192,6 +192,7 @@ export function Configuration({
   onThemeChange,
   onDirtyChange,
   tryNavigate,
+  onClose,
 }: ConfigurationProps) {
   const [route, navigateWorker] = useWorkersConfigurationRoute()
   const configurationsQuery = useConfigurationsList()
@@ -242,342 +243,135 @@ export function Configuration({
     tryNavigate(() => navigateWorker(null))
   }
 
-  return (
-    <div
-      ref={rootRef}
-      className="configuration-surface flex min-h-0 min-w-0 flex-1 gap-px bg-edge font-sans"
-    >
-      {showNavigation ? (
-        <SettingsNavigation
-          entries={entries}
-          route={route}
-          onSelectGeneral={selectGeneral}
-          onSelectWorker={selectWorker}
-          isLoading={settingsLoading}
-          isError={configurationsQuery.isError}
-          errorMessage={(configurationsQuery.error as Error | null)?.message}
-          narrow={narrow}
-        />
-      ) : null}
-
-      {showContent ? (
-        <main
-          className="flex min-h-0 min-w-0 flex-1 flex-col bg-panel"
-          aria-label={
-            route.configurationId
-              ? `${route.configurationId} settings`
-              : 'General settings'
-          }
-        >
-          {!route.open ? (
-            <>
-              <SettingsContentHeader
-                icon={Settings2}
-                title="General"
-                description="ADE appearance, permissions, providers, and filesystem access."
-                onBack={narrow ? showMobileNavigation : undefined}
-              />
-              <ConsoleSettingsTab theme={theme} onThemeChange={onThemeChange} />
-            </>
-          ) : settingsLoading ? (
-            <ConfigurationLoading
-              onBack={narrow ? showMobileNavigation : undefined}
-            />
-          ) : configurationsQuery.isError ? (
-            <ConfigurationUnavailable
-              onBack={narrow ? showMobileNavigation : undefined}
-              headerTitle="Worker settings"
-              title="Could not load worker settings"
-              description={
-                (configurationsQuery.error as Error | null)?.message ??
-                'The configuration service did not return the registered workers.'
-              }
-            />
-          ) : selectedEntry ? (
-            <WorkerEditor
-              key={selectedEntry.id}
-              entry={selectedEntry}
-              onDirtyChange={onDirtyChange}
-              onBack={narrow ? showMobileNavigation : undefined}
-            />
-          ) : route.configurationId ? (
-            <ConfigurationUnavailable
-              onBack={narrow ? showMobileNavigation : undefined}
-              headerTitle={configurationName({
-                id: route.configurationId,
-                name: route.configurationId,
-              })}
-              title="Worker settings unavailable"
-              description={`No configurable worker named “${route.configurationId}” is available. Start or enable its worker and ensure it provides a settings UI, then try again.`}
-            />
-          ) : (
-            <EditorEmptyState
-              title="Select a worker"
-              description="Choose a worker from the settings sidebar to view its configuration."
-            />
-          )}
-        </main>
-      ) : null}
-    </div>
+  const navEntries = useMemo<SettingsNavEntry[]>(
+    () =>
+      entries.map((entry) => ({
+        id: entry.id,
+        label: configurationName(entry),
+        description: entry.description || entry.id,
+        icon: iconForConfiguration(entry),
+      })),
+    [entries],
   )
-}
 
-interface SettingsNavigationProps {
-  entries: ConfigurationSchemaView[]
-  route: WorkersConfigurationRoute
-  onSelectGeneral: () => void
-  onSelectWorker: (configurationId: string) => void
-  isLoading: boolean
-  isError: boolean
-  errorMessage?: string
-  narrow: boolean
-}
-
-function SettingsNavigation({
-  entries,
-  route,
-  onSelectGeneral,
-  onSelectWorker,
-  isLoading,
-  isError,
-  errorMessage,
-  narrow,
-}: SettingsNavigationProps) {
-  const [query, setQuery] = useState('')
-  const searchRef = useRef<HTMLInputElement | null>(null)
-  const normalizedQuery = query.trim().toLowerCase()
-  const filteredEntries = useMemo(() => {
-    if (!normalizedQuery) return entries
-    return entries.filter((entry) =>
-      `${entry.name} ${entry.id} ${entry.description}`
-        .toLowerCase()
-        .includes(normalizedQuery),
-    )
-  }, [entries, normalizedQuery])
+  const paneKey = !route.open
+    ? 'general'
+    : settingsLoading
+      ? 'loading'
+      : configurationsQuery.isError
+        ? 'error'
+        : (route.configurationId ?? 'none')
 
   return (
-    <aside
-      className={cn(
-        'flex min-h-0 flex-col bg-sidebar',
-        narrow ? 'min-w-0 flex-1' : 'w-80 shrink-0',
-      )}
-      aria-label="Settings navigation"
-    >
-      <div className="shrink-0 px-4 pb-3 pt-5 pr-12 sm:px-3 sm:pt-4 sm:pr-12">
-        <h1 className="text-balance font-sans text-xl font-semibold text-ink sm:text-lg">
-          Settings
-        </h1>
-        <div className="relative mt-4 sm:mt-3">
-          <Search
-            className="pointer-events-none absolute left-2.5 top-1/2 size-4 shrink-0 -translate-y-1/2 text-ink-ghost"
-            aria-hidden
-          />
-          <Input
-            ref={searchRef}
-            name="settings-search"
-            value={query}
-            onChange={setQuery}
-            placeholder="Search settings"
-            aria-label="Search settings"
-            className="h-11 pl-8 pr-9 text-base sm:h-9 sm:text-[0.8125rem]"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape' && query) setQuery('')
-            }}
-          />
-          {query ? (
-            <button
-              type="button"
-              aria-label="Clear settings search"
-              onClick={() => {
-                setQuery('')
-                searchRef.current?.focus()
-              }}
-              className="absolute right-1 top-1/2 flex size-8 shrink-0 -translate-y-1/2 items-center justify-center rounded-sm text-ink-ghost hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
-            >
-              <span
-                className="pointer-events-none absolute left-1/2 top-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-                aria-hidden="true"
-              />
-              <X className="size-4 shrink-0" aria-hidden />
-            </button>
-          ) : null}
-        </div>
-      </div>
-
-      <nav
-        className="min-h-0 flex-1 overflow-y-auto px-2 pb-4"
-        aria-label="Settings sections"
+    <MotionConfig reducedMotion="user">
+      <div
+        ref={rootRef}
+        className={cn(
+          NEUTRAL_SURFACE,
+          'configuration-surface flex min-h-0 min-w-0 flex-1 bg-white font-inter text-sm text-foreground antialiased dark:bg-black',
+          // A neutral focus stroke: the console's light accent ring is burnt
+          // orange, which the neutral settings page has no other use for.
+          '[--ring:var(--color-neutral-500)] [--color-rule-focus:var(--color-neutral-500)] dark:[--ring:var(--color-neutral-400)] dark:[--color-rule-focus:var(--color-neutral-400)]',
+        )}
       >
-        {/* biome-ignore lint/a11y/noRedundantRoles: list-none removes native list semantics in Safari/VoiceOver. */}
-        <ul role="list" className="flex list-none flex-col gap-1">
-          <li>
-            <SettingsNavItem
-              icon={Settings2}
-              label="General"
-              description="ADE preferences"
-              selected={!route.open}
-              onClick={onSelectGeneral}
-            />
-          </li>
-        </ul>
-
-        <div className="flex items-center gap-2 px-2 pb-1 pt-5">
-          <h2 className="font-sans text-sm font-medium text-ink-faint">
-            Workers
-          </h2>
-          {!isLoading && !isError ? (
-            <p
-              className="font-mono text-sm tabular-nums text-ink-ghost"
-              aria-live="polite"
-            >
-              {filteredEntries.length}
-            </p>
-          ) : null}
-        </div>
-
-        {isLoading ? <NavigationLoading /> : null}
-        {isError ? (
-          <p className="px-2 py-4 font-sans text-base text-alert sm:text-sm">
-            {errorMessage ?? 'Could not load worker settings.'}
-          </p>
-        ) : null}
-        {!isLoading && !isError && filteredEntries.length === 0 ? (
-          <p className="px-2 py-4 font-sans text-base text-ink-faint sm:text-sm">
-            {entries.length === 0
-              ? 'No workers with a settings UI are registered.'
-              : `No settings match “${query.trim()}”.`}
-          </p>
-        ) : null}
-        {/* biome-ignore lint/a11y/noRedundantRoles: list-none removes native list semantics in Safari/VoiceOver. */}
-        <ul role="list" className="flex list-none flex-col gap-1">
-          {filteredEntries.map((entry) => (
-            <li key={entry.id}>
-              <SettingsNavItem
-                icon={iconForConfiguration(entry)}
-                label={configurationName(entry)}
-                description={entry.description || entry.id}
-                selected={route.configurationId === entry.id}
-                onClick={() => onSelectWorker(entry.id)}
-              />
-            </li>
-          ))}
-        </ul>
-      </nav>
-    </aside>
-  )
-}
-
-interface SettingsNavItemProps {
-  icon: LucideIcon
-  label: string
-  description: string
-  selected: boolean
-  onClick: () => void
-}
-
-function SettingsNavItem({
-  icon: Icon,
-  label,
-  description,
-  selected,
-  onClick,
-}: SettingsNavItemProps) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-current={selected ? 'page' : undefined}
-      className={cn(
-        'flex min-h-12 w-full items-start gap-2.5 rounded-md px-2.5 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-rule-focus sm:min-h-0',
-        selected
-          ? 'bg-surface-selected text-ink'
-          : 'text-ink-faint hover:bg-surface-hover hover:text-ink',
-      )}
-    >
-      <Icon className="size-4 shrink-0" aria-hidden />
-      <div className="min-w-0 flex-1">
-        <p className="truncate font-sans text-base font-medium sm:text-sm leading-4">
-          {label}
-        </p>
-        <p className="line-clamp-1 font-sans text-sm text-ink-ghost sm:text-[0.75rem]">
-          {description}
-        </p>
-      </div>
-    </button>
-  )
-}
-
-function SettingsContentHeader({
-  icon: Icon,
-  title,
-  description,
-  onBack,
-}: {
-  icon: LucideIcon
-  title: string
-  description: string
-  onBack?: () => void
-}) {
-  return (
-    <header className="flex min-h-16 shrink-0 items-start gap-3 border-b border-edge bg-panel-raised px-4 py-3 pr-12 sm:min-h-14 sm:px-5">
-      {onBack ? (
-        <button
-          type="button"
-          onClick={onBack}
-          aria-label="Open settings navigation"
-          className="relative flex size-9 shrink-0 items-center justify-center rounded-md text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
-        >
-          <span
-            className="pointer-events-none absolute left-1/2 top-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-            aria-hidden="true"
+        {showNavigation ? (
+          <SettingsNavigation
+            entries={navEntries}
+            generalSelected={!route.open}
+            selectedId={route.configurationId}
+            onSelectGeneral={selectGeneral}
+            onSelectWorker={selectWorker}
+            isLoading={settingsLoading}
+            isError={configurationsQuery.isError}
+            errorMessage={(configurationsQuery.error as Error | null)?.message}
+            narrow={narrow}
+            onClose={onClose}
           />
-          <ArrowLeft className="size-4 shrink-0" aria-hidden />
-        </button>
-      ) : (
-        <Icon className="size-4 shrink-0 text-ink-faint" aria-hidden />
-      )}
-      <div className="min-w-0 flex-1">
-        <h2 className="text-balance font-sans text-lg font-semibold text-ink">
-          {title}
-        </h2>
-        <p className="line-clamp-2 text-pretty font-sans text-sm text-ink-faint">
-          {description}
-        </p>
-      </div>
-    </header>
-  )
-}
+        ) : null}
 
-function NavigationLoading() {
-  return (
-    // biome-ignore lint/a11y/noRedundantRoles: list-none removes native list semantics in Safari/VoiceOver.
-    <ul role="list" className="flex list-none flex-col gap-2 px-2 py-1">
-      {[0, 1, 2].map((item) => (
-        <li key={item} className="flex items-start gap-2.5 py-2">
-          <Skeleton className="size-4 shrink-0" />
-          <div className="flex min-w-0 flex-1 flex-col gap-2">
-            <Skeleton className="h-4 w-28" />
-            <Skeleton className="h-3 w-full" />
-          </div>
-        </li>
-      ))}
-    </ul>
+        {showContent ? (
+          <main
+            // The dialog parks its initial focus here, so opening settings
+            // paints no focus ring; Tab moves on to the first control.
+            data-settings-focus-root
+            tabIndex={-1}
+            className="@container flex min-h-0 min-w-0 flex-1 flex-col outline-none"
+            aria-label={
+              route.configurationId
+                ? `${route.configurationId} settings`
+                : 'General settings'
+            }
+          >
+            <SettingsPageTransition pageKey={paneKey}>
+              {!route.open ? (
+                <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain">
+                  <SettingsPageHeader
+                    title="General"
+                    description="ADE appearance, permissions, providers, and filesystem access."
+                    onBack={narrow ? showMobileNavigation : undefined}
+                  />
+                  <ConsoleSettingsTab
+                    theme={theme}
+                    onThemeChange={onThemeChange}
+                  />
+                </div>
+              ) : settingsLoading ? (
+                <ConfigurationLoading
+                  onBack={narrow ? showMobileNavigation : undefined}
+                />
+              ) : configurationsQuery.isError ? (
+                <ConfigurationUnavailable
+                  onBack={narrow ? showMobileNavigation : undefined}
+                  headerTitle="Worker settings"
+                  title="Could not load worker settings"
+                  description={
+                    (configurationsQuery.error as Error | null)?.message ??
+                    'The configuration service did not return the registered workers.'
+                  }
+                />
+              ) : selectedEntry ? (
+                <WorkerEditor
+                  key={selectedEntry.id}
+                  entry={selectedEntry}
+                  onDirtyChange={onDirtyChange}
+                  onBack={narrow ? showMobileNavigation : undefined}
+                />
+              ) : route.configurationId ? (
+                <ConfigurationUnavailable
+                  onBack={narrow ? showMobileNavigation : undefined}
+                  headerTitle={configurationName({
+                    id: route.configurationId,
+                    name: route.configurationId,
+                  })}
+                  title="Worker settings unavailable"
+                  description={`No configurable worker named “${route.configurationId}” is available. Start or enable its worker and ensure it provides a settings UI, then try again.`}
+                />
+              ) : (
+                <EditorEmptyState
+                  title="Select a worker"
+                  description="Choose a worker from the settings sidebar to view its configuration."
+                />
+              )}
+            </SettingsPageTransition>
+          </main>
+        ) : null}
+      </div>
+    </MotionConfig>
   )
 }
 
 function ConfigurationLoading({ onBack }: { onBack?: () => void }) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-panel">
-      <SettingsContentHeader
-        icon={Box}
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain">
+      <SettingsPageHeader
         title="Worker settings"
         description="Loading the registered configuration."
         onBack={onBack}
       />
-      <div className="flex flex-col gap-4 p-6">
+      <div className="flex w-full max-w-[760px] flex-col gap-4 px-5 pt-6 @3xl:px-14">
         <Skeleton className="h-5 w-40" />
-        <Skeleton className="h-10 w-full" />
-        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-9 w-full" />
+        <Skeleton className="h-9 w-full" />
       </div>
     </div>
   )
@@ -595,9 +389,8 @@ function ConfigurationUnavailable({
   onBack?: () => void
 }) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-panel">
-      <SettingsContentHeader
-        icon={Box}
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain">
+      <SettingsPageHeader
         title={headerTitle}
         description="Configuration is temporarily unavailable."
         onBack={onBack}

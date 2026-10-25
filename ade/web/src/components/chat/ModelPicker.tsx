@@ -4,32 +4,31 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  ChevronUp,
   Plus,
   RefreshCw,
 } from 'lucide-react'
 import {
   type KeyboardEvent,
   type RefObject,
-  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from 'react'
 import { BottomSheet, BottomSheetContent } from '@/components/ui/BottomSheet'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/Tooltip'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
-import { getIiiClient } from '@/lib/iii-client'
 import {
   discoveryBlocksModels,
   type ProviderListEntry,
 } from '@/lib/models-catalog'
+import { NEUTRAL_SURFACE } from '@/lib/neutral-surface'
+import {
+  resolvePinnedModels,
+  savePinnedModels,
+  usePinnedModels,
+  withPinnedEffort,
+} from '@/lib/pinned-models'
 import { cn } from '@/lib/utils'
 import { useUnsavedGuard } from '@/pages/Configuration/tabs/WorkersTab/useUnsavedGuard'
 import {
@@ -41,11 +40,23 @@ import {
   type ThinkingLevel,
 } from '@/types/chat'
 import { AddProviderPanel } from './AddProviderPanel'
+import { ModelLibraryDialog } from './ModelLibraryDialog'
+import { ModelMark } from './ModelMark'
 import {
+  buildProviderGroups,
+  filterWordsOf,
+  modellessCandidates,
+  providerGroupState,
+  useModellessProviders,
+} from './model-picker-catalog'
+import {
+  formatEffortLabel,
   formatModelLabel,
   formatProviderLabel,
   providerForModel,
+  providerPresentationFor,
 } from './model-picker-presentation'
+import { PinnedModelMenu } from './PinnedModelMenu'
 import { ProviderConfigurationPanel } from './ProviderConfigurationPanel'
 import { ProviderIcon } from './ProviderIcon'
 import { ReasoningEffortSlider } from './ReasoningEffortSlider'
@@ -62,8 +73,6 @@ const DEFAULT_EFFORT: ReasoningEffortOption = {
 
 const FILTER_KEYS = ['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter', 'Escape']
 const MODEL_PICKER_PAGE_TRANSITION_MS = 250
-/** After a rail tap the scroll spy stays quiet until the smooth scroll lands. */
-const RAIL_JUMP_SETTLE_MS = 700
 
 export interface ModelPickerProps {
   value: ModelId | null
@@ -82,11 +91,13 @@ export interface ModelPickerProps {
   showProviderConfiguration?: boolean
   /** Worker/profile pickers can choose a model without configuring effort. */
   showReasoningEffort?: boolean
+  /** Providers declared to the router; defaults to the chat context's list. */
+  providers?: ProviderListEntry[]
   className?: string
   /** Styling hook for compact placements such as the chat composer. */
   triggerClassName?: string
   /**
-   * `subtle` renders the trigger as quiet text (no chevron, no chrome) that
+   * `subtle` renders the trigger as quiet text with a disclosure chevron that
    * only gains a background on hover — the chat composer's model label.
    */
   triggerAppearance?: 'default' | 'subtle'
@@ -123,8 +134,8 @@ function PickerSubpageHeader({
         </button>
       ) : null}
       <div className={cn('min-w-0 flex-1', onBack && 'pt-0.5')}>
-        <h2 className="font-sans text-lg font-semibold text-ink">{title}</h2>
-        <p className="font-sans text-sm text-pretty text-ink-faint">
+        <h2 className="font-inter text-lg font-semibold text-ink">{title}</h2>
+        <p className="font-inter text-sm text-pretty text-ink-faint">
           {description}
         </p>
       </div>
@@ -134,24 +145,6 @@ function PickerSubpageHeader({
 
 function stopMenuTabPropagation(event: KeyboardEvent<HTMLElement>) {
   if (event.key === 'Tab') event.stopPropagation()
-}
-
-interface ModelGroup {
-  label: string
-  options: ModelOption[]
-}
-
-function groupByProvider(options: ModelOption[]): ModelGroup[] {
-  const byProvider = new Map<string, ModelOption[]>()
-  for (const opt of options) {
-    const provider = providerForModel(opt.id) ?? '—'
-    const bucket = byProvider.get(provider) ?? []
-    bucket.push(opt)
-    byProvider.set(provider, bucket)
-  }
-  return [...byProvider.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([label, opts]) => ({ label, options: opts }))
 }
 
 /**
@@ -204,11 +197,33 @@ function effortSupported(
   return options.some((option) => option.effort === effort && !option.disabled)
 }
 
-function providerDisplayName(
-  provider: ProviderListEntry | undefined,
-  id: string,
-): string {
-  return provider?.display_name ?? formatProviderLabel(id) ?? id
+/**
+ * Hand a pick to the host and apply its effort once the host accepts it:
+ * a synchronous host takes both at once, a promise-returning one (a model
+ * switch mid-conversation) gets the effort only on `true`.
+ */
+function commitModelSelection(args: {
+  next: ModelId
+  effort: ThinkingLevel
+  thinkingLevel: ThinkingLevel
+  onChange: (next: ModelId, thinkingLevel?: ThinkingLevel) => unknown
+  onThinkingLevelChange: (next: ThinkingLevel) => void
+}): void {
+  const { next, effort, thinkingLevel, onChange, onThinkingLevelChange } = args
+  const result = onChange(next, effort)
+  const applyEffort = () => {
+    if (effort !== thinkingLevel) onThinkingLevelChange(effort)
+  }
+  if (result instanceof Promise) {
+    void result.then(
+      (accepted) => {
+        if (accepted === true) applyEffort()
+      },
+      () => undefined,
+    )
+  } else {
+    applyEffort()
+  }
 }
 
 type PickerPage = 'models' | 'provider' | 'add-provider'
@@ -226,11 +241,13 @@ export function ModelPicker({
   placeholder = 'Choose model',
   showProviderConfiguration = true,
   showReasoningEffort = true,
+  providers,
   className,
   triggerClassName,
   triggerAppearance = 'default',
 }: ModelPickerProps) {
   const ctx = useConversationsCtxOptional()
+  const presentProviders = providers ?? ctx?.presentProviders ?? []
   const mobileSheet = useMediaQuery('(max-width: 767px)')
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -241,7 +258,13 @@ export function ModelPicker({
   const [renderedConfigurationProvider, setRenderedConfigurationProvider] =
     useState<string | null>(null)
   const [addProviderOpen, setAddProviderOpen] = useState(false)
+  // The library dialog behind All models: every model, the five slots.
+  const [libraryOpen, setLibraryOpen] = useState(false)
   const configurationGuard = useUnsavedGuard()
+  // The favorites: up to five, remembered per model with the effort they
+  // were last used at; starred and unstarred from the menu's catalog view.
+  const storedPinned = usePinnedModels()
+  const effortByModel = useRef(new Map<ModelId, ThinkingLevel>())
   const providerBackRef = useRef<HTMLButtonElement | null>(null)
   const addProviderBackRef = useRef<HTMLButtonElement | null>(null)
   const configurationOriginRef = useRef<HTMLElement | null>(null)
@@ -259,13 +282,19 @@ export function ModelPicker({
       : undefined
   const selected = safeValue ? optionsById.get(safeValue) : undefined
   const selectedEfforts = useMemo(() => effortOptionsFor(selected), [selected])
+  const pinned = useMemo(
+    () => resolvePinnedModels(storedPinned, options, safeValue ?? null),
+    [storedPinned, options, safeValue],
+  )
   const pickerDisabled = disabled || loading
   const subtle = triggerAppearance === 'subtle'
   const showEffort = selectedEfforts.length > 1 && thinkingLevel !== 'default'
+  const effortLabel = formatEffortLabel(thinkingLevel)
+  // Who serves it: the worker's own name and mark, so an Anthropic API key
+  // and a Claude Code subscription read differently on the same model.
+  const provider = providerPresentationFor(safeValue, presentProviders)
   const triggerLabel = selected
-    ? subtle
-      ? formatModelLabel(selected.label)
-      : selected.label
+    ? formatModelLabel(selected.label)
     : loading
       ? 'Loading…'
       : options.length > 0
@@ -385,7 +414,7 @@ export function ModelPicker({
         loading
           ? 'model (loading catalog)'
           : selected
-            ? `model: ${selected.label}, reasoning effort: ${thinkingLevel}`
+            ? `model: ${selected.label}${provider.label ? ` via ${provider.label}` : ''}, reasoning effort: ${thinkingLevel}`
             : 'model'
       }
       aria-busy={loading || undefined}
@@ -394,76 +423,142 @@ export function ModelPicker({
       data-state={open ? 'open' : 'closed'}
       disabled={pickerDisabled}
       onClick={mobileSheet ? () => handleOpenChange(!open) : undefined}
-      title={subtle && selected ? selected.label : undefined}
+      title={
+        selected
+          ? `${selected.label}${provider.label ? ` · ${provider.label}` : ''}`
+          : undefined
+      }
       className={cn(
         subtle
           ? // Quiet text that reads as part of the composer surface; the
-            // hover/open chip is background only, no border, no chevron.
-            'flex h-10 min-w-0 items-center gap-x-1 rounded-full border border-transparent bg-transparent px-2.5 font-sans text-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:bg-surface-hover data-[state=open]:text-ink sm:h-8 sm:text-[13px]'
-          : 'flex h-12 min-w-0 flex-1 items-center justify-between gap-x-2 rounded-sm border border-transparent bg-transparent px-3 font-sans text-base text-ink-faint hover:bg-surface-hover hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:bg-surface data-[state=open]:text-ink sm:h-9 sm:text-[13px]',
+            // hover/open chip is background only, with a disclosure chevron.
+            'flex h-10 min-w-0 items-center gap-x-1.5 rounded-lg px-2 font-inter text-sm text-ink hover:bg-surface-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:bg-surface-hover sm:h-8'
+          : 'flex h-12 min-w-0 flex-1 items-center justify-between gap-x-2 rounded-lg px-3 font-inter text-base text-ink hover:bg-surface-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:bg-surface sm:h-9 sm:text-sm',
         pickerDisabled && 'pointer-events-none opacity-40',
         triggerClassName,
       )}
     >
-      <span className="flex min-w-0 flex-1 items-baseline gap-1.5 overflow-hidden whitespace-nowrap text-left">
+      {selected ? (
+        <ModelMark
+          modelId={safeValue}
+          modelLabel={selected.label}
+          providerIconSvg={provider.iconSvg}
+          providerLabel={provider.label ?? provider.id ?? '?'}
+          providerId={provider.id}
+          className="text-ink-faint"
+        />
+      ) : null}
+      <span className="flex min-w-0 flex-1 items-baseline gap-x-1.5 overflow-hidden whitespace-nowrap text-left">
         <span
           className={cn(
-            'min-w-0 flex-1 truncate',
+            'min-w-0 truncate',
             !selected && 'text-ink-faint',
+            selected && subtle && 'font-medium',
           )}
         >
           {triggerLabel}
         </span>
-        {showEffort ? (
-          subtle ? (
-            <span className="shrink-0 capitalize">{thinkingLevel}</span>
-          ) : (
-            <span className="shrink-0 text-[11px] text-ink-faint">
-              · {thinkingLevel}
-            </span>
-          )
+        {selected && (provider.label || showEffort) ? (
+          <span className="min-w-0 truncate text-ink-faint">
+            {provider.label}
+            {provider.label && showEffort ? ' · ' : ''}
+            {showEffort ? effortLabel : ''}
+          </span>
         ) : null}
       </span>
-      {subtle ? null : open ? (
-        <ChevronUp size={16} aria-hidden />
-      ) : (
-        <ChevronDown size={16} aria-hidden />
-      )}
+      <ChevronDown
+        aria-hidden
+        className={cn(
+          'size-4 shrink-0 text-ink-faint transition-transform duration-[var(--motion-duration-control)]',
+          open && 'rotate-180',
+        )}
+      />
     </button>
   )
 
+  // The models page: the sheet lists the whole catalog on one page; the
+  // desktop menu is the favorites, with the catalog behind All models.
+  const modelsPage = mobileSheet ? (
+    <ModelPickerPanel
+      value={value}
+      options={options}
+      thinkingLevel={thinkingLevel}
+      onChange={(next, effort) => {
+        const result = onChange(next, effort)
+        if (result instanceof Promise) setOpen(false)
+        return result
+      }}
+      onThinkingLevelChange={onThinkingLevelChange}
+      onConfigureProvider={
+        showProviderConfiguration ? openProviderConfiguration : undefined
+      }
+      onAddProvider={showProviderConfiguration ? openAddProvider : undefined}
+      showReasoningEffort={showReasoningEffort}
+      disabled={disabled}
+      loading={loading}
+      autoFocusFilter={false}
+    />
+  ) : (
+    <PinnedModelMenu
+      value={safeValue ?? null}
+      options={options}
+      providers={presentProviders}
+      pinned={pinned}
+      thinkingLevel={thinkingLevel}
+      efforts={selectedEfforts}
+      disabled={disabled}
+      loading={loading}
+      onSelect={(next, pinEffort) => {
+        const nextEfforts = effortOptionsFor(optionsById.get(next))
+        const wanted = pinEffort ?? effortByModel.current.get(next) ?? 'default'
+        const effort = effortSupported(nextEfforts, wanted) ? wanted : 'default'
+        effortByModel.current.set(next, effort)
+        commitModelSelection({
+          next,
+          effort,
+          thinkingLevel,
+          onChange,
+          onThinkingLevelChange,
+        })
+        setOpen(false)
+      }}
+      onThinkingLevelChange={(next) => {
+        onThinkingLevelChange(next)
+        if (safeValue) {
+          effortByModel.current.set(safeValue, next)
+          // A favorite remembers the effort it is used at.
+          if (pinned.some((entry) => entry.id === safeValue)) {
+            savePinnedModels(withPinnedEffort(pinned, safeValue, next))
+          }
+        }
+      }}
+      onPinnedChange={savePinnedModels}
+      onConfigureProvider={
+        showProviderConfiguration ? openProviderConfiguration : undefined
+      }
+      onAddProvider={showProviderConfiguration ? openAddProvider : undefined}
+      onEdit={() => {
+        setOpen(false)
+        setLibraryOpen(true)
+      }}
+    />
+  )
+
+  // The three pages stack in one grid cell: the active one is laid out
+  // and the others slide away (`iii-ui-motion-picker-page`). Stacking
+  // rather than absolute positioning lets the models page size the
+  // desktop popover to its rows; the subpages mount only when open, so
+  // they add no height until then.
   const pickerPages = (
-    <div className="relative min-h-0 flex-1 overflow-hidden">
+    <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)] overflow-hidden">
       <div
         data-active={activePage === 'models'}
         aria-hidden={activePage !== 'models'}
         inert={activePage !== 'models'}
-        className={cn(
-          'iii-ui-motion-picker-page absolute inset-0 flex min-h-0 flex-col [--picker-page-offset:calc(var(--distance-base)*-1)]',
-          !mobileSheet && 'pt-4',
-        )}
+        onKeyDown={mobileSheet ? undefined : stopMenuTabPropagation}
+        className="iii-ui-motion-picker-page col-start-1 row-start-1 flex min-h-0 flex-col [--picker-page-offset:calc(var(--distance-base)*-1)]"
       >
-        <ModelPickerPanel
-          value={value}
-          options={options}
-          thinkingLevel={thinkingLevel}
-          onChange={(next, effort) => {
-            const result = onChange(next, effort)
-            if (result instanceof Promise) setOpen(false)
-            return result
-          }}
-          onThinkingLevelChange={onThinkingLevelChange}
-          onConfigureProvider={
-            showProviderConfiguration ? openProviderConfiguration : undefined
-          }
-          onAddProvider={
-            showProviderConfiguration ? openAddProvider : undefined
-          }
-          showReasoningEffort={showReasoningEffort}
-          disabled={disabled}
-          loading={loading}
-          autoFocusFilter={!mobileSheet}
-        />
+        {modelsPage}
       </div>
 
       <div
@@ -471,21 +566,25 @@ export function ModelPicker({
         aria-hidden={activePage !== 'add-provider'}
         inert={activePage !== 'add-provider'}
         onKeyDown={stopMenuTabPropagation}
-        className="iii-ui-motion-picker-page absolute inset-0 flex min-h-0 flex-col [--picker-page-offset:var(--distance-base)]"
+        className="iii-ui-motion-picker-page col-start-1 row-start-1 flex min-h-0 flex-col [--picker-page-offset:var(--distance-base)]"
       >
-        <PickerSubpageHeader
-          title="Add a provider"
-          description="Provider workers from the workers registry."
-          backButtonRef={addProviderBackRef}
-          onBack={closeAddProvider}
-        />
         {addProviderOpen ? (
-          <AddProviderPanel
-            disabled={disabled}
-            onConfigureProvider={
-              showProviderConfiguration ? openProviderConfiguration : undefined
-            }
-          />
+          <>
+            <PickerSubpageHeader
+              title="Add a provider"
+              description="Provider workers from the workers registry."
+              backButtonRef={addProviderBackRef}
+              onBack={closeAddProvider}
+            />
+            <AddProviderPanel
+              disabled={disabled}
+              onConfigureProvider={
+                showProviderConfiguration
+                  ? openProviderConfiguration
+                  : undefined
+              }
+            />
+          </>
         ) : null}
       </div>
 
@@ -494,7 +593,7 @@ export function ModelPicker({
         aria-hidden={activePage !== 'provider'}
         inert={activePage !== 'provider'}
         onKeyDown={stopMenuTabPropagation}
-        className="iii-ui-motion-picker-page absolute inset-0 flex min-h-0 flex-col [--picker-page-offset:var(--distance-base)]"
+        className="iii-ui-motion-picker-page col-start-1 row-start-1 flex min-h-0 flex-col [--picker-page-offset:var(--distance-base)]"
       >
         {renderedConfigurationProvider ? (
           <>
@@ -546,19 +645,36 @@ export function ModelPicker({
 
           <DropdownMenuPrimitive.Portal>
             <DropdownMenuPrimitive.Content
-              sideOffset={4}
-              // The composer's quiet trigger is right-aligned and grows to the
-              // left as the effort label changes, so anchoring its end edge
-              // keeps the open menu still while the slider moves.
-              align={subtle ? 'end' : 'start'}
+              sideOffset={6}
+              align="start"
               collisionPadding={12}
-              className="iii-ui-motion-dropdown z-50 flex h-[min(60vh,540px)] w-[min(400px,calc(100vw-24px))] flex-col overflow-hidden rounded-lg border border-edge bg-panel-raised text-ink shadow-floating"
+              className={cn(
+                NEUTRAL_SURFACE,
+                'iii-ui-motion-dropdown z-50 flex w-[min(360px,calc(100vw-24px))] flex-col overflow-hidden rounded-xl bg-popover font-inter text-ink shadow-md ring-1 ring-foreground/10',
+                // Sized to its rows around the favorites; the provider
+                // pages take the full height so their lists scroll inside.
+                activePage !== 'models'
+                  ? 'h-[min(70vh,560px)]'
+                  : 'max-h-[min(70vh,560px)]',
+              )}
             >
               {pickerPages}
             </DropdownMenuPrimitive.Content>
           </DropdownMenuPrimitive.Portal>
         </DropdownMenuPrimitive.Root>
       )}
+
+      <ModelLibraryDialog
+        open={libraryOpen}
+        onOpenChange={setLibraryOpen}
+        value={safeValue ?? null}
+        options={options}
+        providers={presentProviders}
+        pinned={pinned}
+        thinkingLevel={thinkingLevel}
+        onPinnedChange={savePinnedModels}
+        disabled={disabled}
+      />
 
       {ctx && showRefresh ? (
         <button
@@ -582,133 +698,6 @@ export function ModelPicker({
       ) : null}
     </span>
   )
-}
-
-interface ProviderRailProps {
-  groups: readonly { label: string }[]
-  providerById: ReadonlyMap<string, ProviderListEntry>
-  activeGroup: string | null
-  onJump: (label: string) => void
-  onAdd?: () => void
-  disabled?: boolean
-}
-
-/**
- * One glyph per provider group, in list order, plus the add affordance at
- * the end. Tapping a glyph scrolls the list to that group; the highlighted
- * glyph follows the group under the top of the list as it scrolls.
- */
-function ProviderRail({
-  groups,
-  providerById,
-  activeGroup,
-  onJump,
-  onAdd,
-  disabled,
-}: ProviderRailProps) {
-  return (
-    <nav
-      aria-label="providers"
-      className="flex w-14 shrink-0 flex-col items-center gap-1 overflow-y-auto pb-3 pl-2 pr-1 sm:w-12"
-    >
-      {groups.map((group) => {
-        const provider = providerById.get(group.label)
-        const label = providerDisplayName(provider, group.label)
-        const active = group.label === activeGroup
-        return (
-          <Tooltip key={group.label}>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                aria-label={label}
-                aria-current={active ? 'true' : undefined}
-                data-provider-rail={group.label}
-                onClick={() => onJump(group.label)}
-                className={cn(
-                  'flex size-11 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:size-9',
-                  active &&
-                    'bg-surface-selected text-ink hover:bg-surface-selected',
-                  provider?.available === false && 'opacity-50',
-                )}
-              >
-                <ProviderIcon
-                  iconSvg={provider?.icon_svg}
-                  label={label}
-                  className="size-[18px] sm:size-4"
-                />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">{label}</TooltipContent>
-          </Tooltip>
-        )
-      })}
-      {onAdd ? (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              aria-label="Add a provider"
-              disabled={disabled}
-              onClick={onAdd}
-              className={cn(
-                'flex size-11 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40 sm:size-9',
-                groups.length > 0 && 'mt-1',
-              )}
-            >
-              <Plus className="size-[18px] sm:size-4" aria-hidden />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="right">Add a provider</TooltipContent>
-        </Tooltip>
-      ) : null}
-    </nav>
-  )
-}
-
-/**
- * Of `candidates` — configured providers with no chat models — the ones that
- * list no models of any modality. A speech or embedding provider lists its
- * own; one that lists nothing has a credential the upstream refused.
- */
-function useModellessProviders(candidates: string[]): ReadonlySet<string> {
-  const [modelless, setModelless] = useState<ReadonlySet<string>>(
-    () => new Set(),
-  )
-  const key = candidates.slice().sort().join(' ')
-  useEffect(() => {
-    const ids = key ? key.split(' ') : []
-    if (ids.length === 0) {
-      setModelless(new Set())
-      return
-    }
-    let cancelled = false
-    void (async () => {
-      try {
-        const client = await getIiiClient()
-        const result = await client.trigger<{ models?: unknown }>(
-          'router::models::list',
-          { modality: 'any' },
-        )
-        const listed = new Set(
-          (Array.isArray(result?.models) ? result.models : []).flatMap(
-            (row) => {
-              const provider = (row as { provider?: unknown } | null)?.provider
-              return typeof provider === 'string' ? [provider] : []
-            },
-          ),
-        )
-        if (!cancelled) {
-          setModelless(new Set(ids.filter((id) => !listed.has(id))))
-        }
-      } catch {
-        if (!cancelled) setModelless(new Set())
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [key])
-  return modelless
 }
 
 interface ModelPickerPanelProps {
@@ -764,10 +753,7 @@ export function ModelPickerPanel({
   // (the choice itself) and arrows walk from there; typing or hovering pins
   // an explicit row.
   const [activeIndex, setActiveIndex] = useState<number | null>(null)
-  const [activeGroup, setActiveGroup] = useState<string | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
-  const scrollFrameRef = useRef<number | null>(null)
-  const railJumpRef = useRef<{ label: string; until: number } | null>(null)
   const optionsById = useMemo(
     () => new Map(options.map((option) => [option.id, option])),
     [options],
@@ -776,58 +762,19 @@ export function ModelPickerPanel({
   const selected = safeValue ? optionsById.get(safeValue) : undefined
   const selectedEfforts = useMemo(() => effortOptionsFor(selected), [selected])
   const presentProviders = providers ?? ctx?.presentProviders ?? []
-  const presentIds = presentProviders.map((provider) => provider.id)
   const providerById = new Map(
     presentProviders.map((provider) => [provider.id, provider]),
   )
-  const modelGroups = groupByProvider(options)
-  const grouped = new Set(modelGroups.map((group) => group.label))
   const modelless = useModellessProviders(
-    presentProviders
-      .filter((provider) => provider.configured === true)
-      .map((provider) => provider.id)
-      .filter((id) => !grouped.has(id)),
+    modellessCandidates(presentProviders, options),
   )
-  const filterWords = filter.toLowerCase().split(/\s+/).filter(Boolean)
-  const matchesFilter = (option: ModelOption, provider: string) => {
-    if (filterWords.length === 0) return true
-    const hay =
-      `${formatModelLabel(option.label)} ${option.id} ${formatProviderLabel(provider) ?? provider}`.toLowerCase()
-    return filterWords.every((word) => hay.includes(word))
-  }
-  const groups = [
-    ...modelGroups.map((group) => ({
-      label: group.label,
-      options: group.options.filter((option) =>
-        matchesFilter(option, group.label),
-      ),
-    })),
-    // A provider with no chat models is listed only while it still needs
-    // setup: a configured one without chat models usually serves another
-    // modality (speech, embeddings) and has nothing to offer this picker.
-    // One that lists no models at all, or whose credential failed, is broken
-    // rather than elsewhere — it stays, so its key can be fixed from here.
-    ...presentIds
-      .filter((id) => !grouped.has(id))
-      .filter(
-        (id) =>
-          providerById.get(id)?.configured !== true ||
-          providerById.get(id)?.credential_error !== undefined ||
-          (id === 'xai' && providerById.get(id)?.discovery !== undefined) ||
-          modelless.has(id),
-      )
-      .map((id) => ({ label: id, options: [] })),
-  ]
-    .filter(
-      (group) =>
-        filterWords.length === 0 ||
-        group.options.length > 0 ||
-        (group.label === 'xai' &&
-          providerById.get('xai')?.discovery !== undefined &&
-          filterWords.every((word) => 'xai'.includes(word))),
-    )
-    .sort((a, b) => a.label.localeCompare(b.label))
-  const groupsKey = groups.map((group) => group.label).join(' ')
+  const filterWords = filterWordsOf(filter)
+  const groups = buildProviderGroups({
+    options,
+    providers: presentProviders,
+    modelless,
+    words: filterWords,
+  })
   const visibleIds = groups.flatMap((group) =>
     group.options.map((option) => option.id),
   )
@@ -852,80 +799,6 @@ export function ModelPickerPanel({
       ?.querySelector(`[data-model-option="${CSS.escape(activeId)}"]`)
       ?.scrollIntoView({ block: 'nearest' })
   }, [activeId])
-
-  // The rail highlights the group whose heading sits at (or just above) the
-  // top of the list — or the last group once the list is scrolled to the end,
-  // since a short trailing group can never reach the top on its own.
-  const syncActiveGroup = useCallback(() => {
-    const list = listRef.current
-    if (!list) return
-    const pinned = railJumpRef.current
-    if (pinned && Date.now() < pinned.until) {
-      setActiveGroup(pinned.label)
-      return
-    }
-    railJumpRef.current = null
-    const sections = Array.from(
-      list.querySelectorAll<HTMLElement>('[data-provider-group]'),
-    )
-    if (sections.length === 0) {
-      setActiveGroup(null)
-      return
-    }
-    const scrollable = list.scrollHeight > list.clientHeight + 2
-    const atEnd =
-      scrollable && list.scrollTop + list.clientHeight >= list.scrollHeight - 2
-    let current = sections[0]
-    if (atEnd) {
-      current = sections[sections.length - 1]
-    } else {
-      const threshold = list.scrollTop + 16
-      for (const section of sections) {
-        if (section.offsetTop <= threshold) current = section
-        else break
-      }
-    }
-    setActiveGroup(current.dataset.providerGroup ?? null)
-  }, [])
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the spy reads the DOM, so it re-runs whenever the rendered groups (filter, catalog, providers, loading) change
-  useEffect(() => {
-    syncActiveGroup()
-  }, [syncActiveGroup, groupsKey, loading])
-
-  useEffect(
-    () => () => {
-      if (scrollFrameRef.current !== null) {
-        window.cancelAnimationFrame(scrollFrameRef.current)
-      }
-    },
-    [],
-  )
-
-  const onListScroll = () => {
-    if (scrollFrameRef.current !== null) return
-    scrollFrameRef.current = window.requestAnimationFrame(() => {
-      scrollFrameRef.current = null
-      syncActiveGroup()
-    })
-  }
-
-  const jumpToGroup = (label: string) => {
-    const list = listRef.current
-    const section = list?.querySelector<HTMLElement>(
-      `[data-provider-group="${CSS.escape(label)}"]`,
-    )
-    if (!list || !section) return
-    const reduceMotion =
-      typeof window.matchMedia === 'function' &&
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    railJumpRef.current = { label, until: Date.now() + RAIL_JUMP_SETTLE_MS }
-    setActiveGroup(label)
-    list.scrollTo({
-      top: section.offsetTop,
-      behavior: reduceMotion ? 'auto' : 'smooth',
-    })
-  }
 
   const onFilterKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (!FILTER_KEYS.includes(event.key)) return
@@ -968,27 +841,18 @@ export function ModelPickerPanel({
     const nextEffort = effortSupported(nextEfforts, remembered)
       ? remembered
       : 'default'
-    const result = onChange(next, nextEffort)
-    const applyEffort = () => {
-      if (nextEffort !== thinkingLevel) onThinkingLevelChange(nextEffort)
-    }
-    if (result instanceof Promise) {
-      void result.then(
-        (accepted) => {
-          if (accepted === true) applyEffort()
-        },
-        () => undefined,
-      )
-    } else {
-      applyEffort()
-    }
+    commitModelSelection({
+      next,
+      effort: nextEffort,
+      thinkingLevel,
+      onChange,
+      onThinkingLevelChange,
+    })
   }
-
-  const showRail = onAddProvider !== undefined || groups.length > 0
 
   return (
     <div className={cn('flex min-h-0 flex-1 flex-col', className)}>
-      <div className="shrink-0 px-3 pb-3">
+      <div className="shrink-0 px-3 pb-2">
         <input
           type="search"
           value={filter}
@@ -999,7 +863,7 @@ export function ModelPickerPanel({
           onKeyDown={onFilterKeyDown}
           // biome-ignore lint/a11y/noAutofocus: the dropdown opened to pick a model; typing is the fastest way to one
           autoFocus={autoFocusFilter}
-          placeholder="Filter models…"
+          placeholder="Search models…"
           aria-label="filter models"
           aria-activedescendant={
             activeId ? `model-option-${activeId}` : undefined
@@ -1011,169 +875,160 @@ export function ModelPickerPanel({
           autoCorrect="off"
           autoComplete="off"
           spellCheck={false}
-          className="h-9 w-full rounded-md bg-surface px-3 font-sans text-sm text-ink outline-none ring-1 ring-inset ring-edge placeholder:text-ink-ghost focus-visible:ring-rule-focus"
+          className="h-9 w-full rounded-lg bg-surface px-3 font-inter text-sm text-ink outline-none placeholder:text-ink-faint focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-rule-focus"
         />
       </div>
-      <div className="flex min-h-0 flex-1">
-        {showRail ? (
-          <ProviderRail
-            groups={groups}
-            providerById={providerById}
-            activeGroup={activeGroup}
-            onJump={jumpToGroup}
-            onAdd={onAddProvider}
-            disabled={disabled}
-          />
-        ) : null}
-        <div
-          id="model-picker-list"
-          ref={listRef}
-          onScroll={onListScroll}
-          className={cn(
-            'relative min-h-0 flex-1 space-y-4 overflow-y-auto pb-3 pr-3',
-            showRail ? 'pl-1' : 'pl-3',
-            contentClassName,
-          )}
-        >
-          {loading ? (
-            <div className="rounded-lg bg-surface px-3 py-4 font-sans text-base text-ink-faint sm:text-sm">
-              Loading model catalog…
-            </div>
-          ) : groups.length === 0 ? (
-            <div className="rounded-lg bg-surface px-3 py-4 font-sans text-base text-ink-faint sm:text-sm">
-              {filterWords.length > 0
-                ? `No model matches "${filter.trim()}".`
-                : onAddProvider
-                  ? 'No providers yet. Add one from the registry to get models.'
-                  : 'No models are configured.'}
-            </div>
-          ) : (
-            groups.map((group) => {
-              const provider = providerById.get(group.label)
-              const providerLabel = providerDisplayName(provider, group.label)
-              const unavailable =
-                provider?.available === false || discoveryBlocksModels(provider)
-              const hasModels = group.options.length > 0
-              const configured = provider?.configured ?? hasModels
-              // OAuth/companion-app providers can be authenticated even though
-              // the router slice has no API key and reports `configured: false`.
-              // A successfully discovered catalog is authoritative for them.
-              const providerOwnsAuthentication =
-                provider !== undefined &&
-                provider.credential_env_var === undefined
-              const catalogIsUsable =
-                hasModels && (configured || providerOwnsAuthentication)
-              return (
-                <section
-                  key={group.label}
-                  aria-label={providerLabel}
-                  data-provider-group={group.label}
-                >
-                  <div className="flex items-center justify-between gap-3 px-1 pb-2">
-                    <h3 className="flex min-w-0 items-center gap-2 font-sans text-[11px] font-medium text-ink-ghost">
-                      <ProviderIcon
-                        iconSvg={provider?.icon_svg}
-                        label={providerLabel}
-                        className="text-ink-faint"
-                      />
-                      <span className="min-w-0 truncate">{providerLabel}</span>
-                    </h3>
-                    {(configured || catalogIsUsable) && onConfigureProvider ? (
-                      <button
-                        type="button"
-                        onClick={() => onConfigureProvider(group.label)}
-                        className="shrink-0 rounded-sm font-sans text-xs font-medium text-accent hover:text-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
-                      >
-                        Configure
-                      </button>
-                    ) : null}
-                  </div>
-                  {group.label === 'xai' && provider?.discovery ? (
-                    <XaiDiscoveryStatus
-                      status={provider.discovery}
-                      onRetry={ctx ? () => ctx.refreshModels('xai') : undefined}
-                      unavailable={provider.available === false}
+      <div
+        id="model-picker-list"
+        ref={listRef}
+        className={cn(
+          'relative min-h-0 flex-1 overflow-y-auto px-2 pb-2',
+          contentClassName,
+        )}
+      >
+        {loading ? (
+          <div className="px-2 py-3 font-inter text-sm text-ink-faint">
+            Loading model catalog…
+          </div>
+        ) : groups.length === 0 ? (
+          <div className="px-2 py-3 font-inter text-sm text-ink-faint">
+            {filterWords.length > 0
+              ? `No model matches "${filter.trim()}".`
+              : onAddProvider
+                ? 'No providers yet. Add one from the registry to get models.'
+                : 'No models are configured.'}
+          </div>
+        ) : (
+          groups.map((group) => {
+            const provider = providerById.get(group.label)
+            const { providerLabel, unavailable, configured, catalogIsUsable } =
+              providerGroupState(group, provider)
+            return (
+              <section
+                key={group.label}
+                aria-label={providerLabel}
+                data-provider-group={group.label}
+                className="pt-2 first:pt-0"
+              >
+                {/* The group label: the provider's mark and its own name
+                    (`Anthropic`, `Claude Code (subscription)`), so the same
+                    model family under two credentials reads as two. */}
+                <div className="flex h-8 items-center justify-between gap-3 px-2">
+                  <h3 className="flex min-w-0 items-center gap-2 font-inter text-xs font-medium text-ink-faint">
+                    <ProviderIcon
+                      iconSvg={provider?.icon_svg}
+                      label={providerLabel}
+                      providerId={group.label}
+                      className="text-ink-faint"
                     />
+                    <span className="min-w-0 truncate">{providerLabel}</span>
+                  </h3>
+                  {(configured || catalogIsUsable) && onConfigureProvider ? (
+                    <button
+                      type="button"
+                      onClick={() => onConfigureProvider(group.label)}
+                      className="shrink-0 rounded-sm font-inter text-xs font-medium text-ink-faint hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+                    >
+                      Configure
+                    </button>
                   ) : null}
-                  <div className="divide-y divide-edge overflow-hidden rounded-lg bg-surface ring-1 ring-inset ring-edge">
-                    {!catalogIsUsable && !configured && onConfigureProvider ? (
+                </div>
+                {group.label === 'xai' && provider?.discovery ? (
+                  <XaiDiscoveryStatus
+                    status={provider.discovery}
+                    onRetry={ctx ? () => ctx.refreshModels('xai') : undefined}
+                    unavailable={provider.available === false}
+                  />
+                ) : null}
+                {!catalogIsUsable && !configured && onConfigureProvider ? (
+                  <button
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => onConfigureProvider(group.label)}
+                    className="flex min-h-14 w-full min-w-0 items-center gap-3 rounded-md px-2 py-2 text-left font-inter text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40 sm:min-h-12 sm:text-sm"
+                  >
+                    <span className="flex min-w-0 flex-1 flex-col">
+                      <span className="font-medium">Configure provider</span>
+                      <span className="text-xs leading-relaxed text-ink-faint">
+                        Add credentials and provider settings.
+                      </span>
+                    </span>
+                    <ChevronRight
+                      className="size-4 shrink-0 text-ink-faint"
+                      aria-hidden
+                    />
+                  </button>
+                ) : catalogIsUsable ? (
+                  group.options.map((option) => {
+                    const selectedOption = option.id === safeValue
+                    const highlighted = option.id === activeId
+                    return (
                       <button
+                        key={option.id}
+                        id={`model-option-${option.id}`}
+                        data-model-option={option.id}
                         type="button"
-                        disabled={disabled}
-                        onClick={() => onConfigureProvider(group.label)}
-                        className="flex min-h-16 w-full min-w-0 items-center gap-3 px-3 py-2 text-left font-sans text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40 sm:min-h-12 sm:text-sm"
+                        disabled={disabled || unavailable}
+                        onClick={() => selectModel(option.id)}
+                        onMouseEnter={() =>
+                          setActiveIndex(visibleIds.indexOf(option.id))
+                        }
+                        aria-pressed={selectedOption}
+                        className={cn(
+                          // Hover and keyboard focus share the lighter wash;
+                          // the selected row keeps the stronger one, so the
+                          // choice stays legible while the pointer roams.
+                          'flex min-h-11 w-full min-w-0 items-center gap-3 rounded-md px-2 py-1.5 text-left font-inter text-base text-ink hover:bg-surface-hover active:bg-surface-active focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40 sm:min-h-8 sm:text-sm',
+                          selectedOption
+                            ? 'bg-surface-selected hover:bg-surface-selected'
+                            : highlighted && 'bg-surface-hover',
+                        )}
                       >
-                        <span className="flex min-w-0 flex-1 flex-col">
-                          <span className="font-medium">
-                            Configure provider
-                          </span>
-                          <span className="text-sm leading-relaxed text-ink-faint sm:text-[12px]">
-                            Add credentials and provider settings.
-                          </span>
+                        <span className="min-w-0 flex-1 truncate">
+                          {formatModelLabel(option.label)}
                         </span>
-                        <ChevronRight
-                          className="size-4 shrink-0 text-ink-faint"
-                          aria-hidden
-                        />
+                        {selectedOption ? (
+                          <Check
+                            className="size-4 shrink-0 text-ink"
+                            aria-hidden
+                          />
+                        ) : null}
                       </button>
-                    ) : catalogIsUsable ? (
-                      group.options.map((option) => {
-                        const selectedOption = option.id === safeValue
-                        const highlighted = option.id === activeId
-                        return (
-                          <button
-                            key={option.id}
-                            id={`model-option-${option.id}`}
-                            data-model-option={option.id}
-                            type="button"
-                            disabled={disabled || unavailable}
-                            onClick={() => selectModel(option.id)}
-                            onMouseEnter={() =>
-                              setActiveIndex(visibleIds.indexOf(option.id))
-                            }
-                            aria-pressed={selectedOption}
-                            className={cn(
-                              // Hover and keyboard focus share the lighter wash;
-                              // the selected row keeps the stronger one, so the
-                              // choice stays legible while the pointer roams.
-                              'flex min-h-14 w-full min-w-0 items-center gap-3 px-3 py-2 text-left font-sans text-base text-ink hover:bg-surface-hover active:bg-surface-active focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40 sm:min-h-10 sm:text-sm',
-                              selectedOption
-                                ? 'bg-surface-selected hover:bg-surface-selected'
-                                : highlighted && 'bg-surface-hover',
-                            )}
-                          >
-                            <span className="min-w-0 flex-1 truncate font-medium">
-                              {formatModelLabel(option.label)}
-                            </span>
-                            {selectedOption ? (
-                              <Check
-                                className="size-5 shrink-0 text-ink sm:size-4"
-                                aria-hidden
-                              />
-                            ) : null}
-                          </button>
-                        )
-                      })
-                    ) : group.label === 'xai' && provider?.discovery ? null : (
-                      <div className="px-3 py-4 font-sans text-base text-ink-faint sm:text-sm">
-                        {unavailable
-                          ? 'Provider not loaded.'
-                          : (provider?.credential_error ??
-                            (configured
-                              ? 'No models with this key. Configure to check it.'
-                              : 'No models available.'))}
-                      </div>
-                    )}
+                    )
+                  })
+                ) : group.label === 'xai' && provider?.discovery ? null : (
+                  <div className="px-2 py-2 font-inter text-sm text-ink-faint">
+                    {unavailable
+                      ? 'Provider not loaded.'
+                      : (provider?.credential_error ??
+                        (configured
+                          ? 'No models with this key. Configure to check it.'
+                          : 'No models available.'))}
                   </div>
-                </section>
-              )
-            })
-          )}
-        </div>
+                )}
+              </section>
+            )
+          })
+        )}
+        {onAddProvider ? (
+          <button
+            type="button"
+            aria-label="Add a provider"
+            disabled={disabled}
+            onClick={onAddProvider}
+            className={cn(
+              'flex min-h-11 w-full items-center gap-3 rounded-md px-2 py-1.5 text-left font-inter text-base text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40 sm:min-h-8 sm:text-sm',
+              groups.length > 0 && 'mt-2',
+            )}
+          >
+            <Plus className="size-4 shrink-0" aria-hidden />
+            <span className="min-w-0 flex-1 truncate">Add a provider</span>
+          </button>
+        ) : null}
       </div>
 
       {showReasoningEffort ? (
-        <div className="shrink-0 bg-surface px-4 py-3 sm:py-2.5">
+        <div className="shrink-0 bg-surface px-3 py-3 sm:py-2.5">
           {selected && selectedEfforts.length > 1 ? (
             <ReasoningEffortSlider
               options={selectedEfforts}
@@ -1183,10 +1038,10 @@ export function ModelPickerPanel({
             />
           ) : (
             <div className="flex min-h-6 items-baseline justify-between gap-3">
-              <span className="font-sans text-sm font-medium text-ink-faint sm:text-[13px]">
+              <span className="font-inter text-sm font-medium text-ink-faint">
                 Reasoning effort
               </span>
-              <span className="font-sans text-sm text-ink-ghost sm:text-[12px]">
+              <span className="font-inter text-sm text-ink-faint">
                 {selected ? 'Fixed for this model' : 'Choose a model to adjust'}
               </span>
             </div>

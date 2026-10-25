@@ -17,33 +17,35 @@
  */
 
 import {
-  Boxes,
-  Command,
+  AppWindow,
+  Box,
+  Circle,
   File,
-  FunctionSquare,
-  History,
-  Layers,
-  LayoutGrid,
   MessageSquareText,
   Search,
-  Settings,
+  SquareChevronRight,
+  SquareFunction,
   X,
   Zap,
 } from 'lucide-react'
 import {
   type CSSProperties,
   type KeyboardEvent,
+  type ReactNode,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from 'react'
+import { Kbd } from '@/components/ui/Kbd'
 import { KeyCombo } from '@/components/ui/KeyCombo'
 import { useMediaQuery } from '@/hooks/use-media-query'
+import { useTypewriter } from '@/hooks/use-typewriter'
 import { shortcutPlatform } from '@/lib/keybindings/bindings'
 import {
   bindingsFor,
   type KeybindingActionId,
+  matchDigitIndex,
   matchesKeybinding,
 } from '@/lib/keybindings/registry'
 import {
@@ -61,6 +63,8 @@ import {
   filterEntries,
   groupEntries,
   KIND_LABEL,
+  type MatchRange,
+  matchRanges,
   type PaletteEntry,
   type PaletteKind,
   parseQuery,
@@ -85,48 +89,110 @@ const FILTERS: Array<{ id: PaletteKind | 'all'; label: string }> = [
 
 /** The footer's key hints, in the order they read. The chords come from the
  *  registry; only the wording is local. */
-const HINTS: Array<{ ids: KeybindingActionId[]; label: string }> = [
-  { ids: ['palette.choose'], label: 'Open' },
+const HINTS: Array<{
+  ids: KeybindingActionId[]
+  label: string
+  digitRange?: boolean
+}> = [
   // Both arrows: one direction is not a hint about moving through a list.
-  { ids: ['palette.previous', 'palette.next'], label: 'Select' },
+  { ids: ['palette.previous', 'palette.next'], label: 'Navigate' },
   { ids: ['palette.cycleFilter'], label: 'Filter' },
-  { ids: ['palette.close'], label: 'Close' },
+  { ids: ['palette.pick'], label: 'Jump', digitRange: true },
 ]
 
-/** Icon plus the tint its chip carries. Colour is category, not severity —
- *  worker status gets its own dot below, where severity belongs. */
-const KIND_STYLE = {
-  worker: { Icon: Boxes, chip: 'bg-accent-muted text-accent' },
-  function: { Icon: FunctionSquare, chip: 'bg-ok-muted text-ok' },
-  page: { Icon: Zap, chip: 'bg-warn-muted text-warn' },
-  chat: { Icon: MessageSquareText, chip: 'bg-surface-active text-ink-faint' },
-  workspace: { Icon: LayoutGrid, chip: 'bg-surface-active text-ink-faint' },
-  command: { Icon: Command, chip: 'bg-ok-muted text-ok' },
-  action: { Icon: Settings, chip: 'bg-accent-muted text-accent' },
-  file: { Icon: File, chip: 'bg-warn-muted text-warn' },
-  item: { Icon: Layers, chip: 'bg-surface-active text-ink-faint' },
+/** What Enter does to the lit row, said in the footer the way Raycast names
+ *  its primary action. */
+const KIND_ACTION: Record<PaletteKind, string> = {
+  worker: 'Open worker',
+  function: 'Open function',
+  page: 'Go to page',
+  chat: 'Open chat',
+  workspace: 'Switch workspace',
+  command: 'Run command',
+  action: 'Run action',
+  file: 'Open file',
+  item: 'Open',
+}
+
+/** Flat key caps: a hairline box, no fill and no shadow, so a row's
+ *  shortcut reads as a label, not a button. */
+const CAP =
+  'h-5 min-w-5 rounded-[5px] border border-neutral-200 bg-transparent px-1 font-inter text-[11px] font-medium text-neutral-500 shadow-none dark:border-neutral-700/80 dark:text-neutral-400'
+
+/** The filter row's chips: a quiet label that fills when chosen. Tab
+ *  cycles them from the keyboard; the pointer picks one outright. */
+const CHIP =
+  'inline-flex h-6 shrink-0 items-center rounded-md px-2 text-xs font-medium whitespace-nowrap transition-colors duration-[var(--motion-duration-control)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 dark:focus-visible:ring-neutral-400'
+const CHIP_IDLE =
+  'text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-white/[0.06] dark:hover:text-neutral-100'
+const CHIP_ON =
+  'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+
+/** One glyph per kind, for rows that bring none of their own. They echo
+ *  the rest of the app: a workspace is the tab strip's window, a command
+ *  is the `>` that opens command mode. Category is carried by the glyph and
+ *  the group header, not by colour: the only tint in the list is a worker's
+ *  status dot, where colour means something. */
+const KIND_ICON = {
+  worker: Box,
+  function: SquareFunction,
+  page: AppWindow,
+  chat: MessageSquareText,
+  workspace: AppWindow,
+  command: SquareChevronRight,
+  action: Zap,
+  file: File,
+  item: Circle,
 } as const
+
+/** A leading `>`, `/`, `#` or `@` becomes a chip in front of the caret, so
+ *  the mode reads as a scope rather than as a stray character in the query. */
+const MODE_LABEL: Record<string, string> = {
+  '>': 'Commands',
+  '/': 'Commands',
+  '#': 'Files',
+  '@': 'Chats',
+}
+
+/** The bare palette's placeholder types these in turn: what it searches,
+ *  then each prefix, so the modes are learnt by watching. */
+const PROMPTS = [
+  'Search pages, chats and workers…',
+  'Type > to run a command',
+  'Type # to find a file',
+  'Type @ to jump to a chat',
+] as const
 
 const SOURCE_DEBOUNCE_MS = 120
 const SLOW_ANSWER_MS = 200
 const EMPTY_SOURCES: readonly RegisteredPaletteSource[] = []
 
-function placeholderFor(prefix: string | null): string {
-  if (prefix === '#') return 'File name…'
-  if (prefix !== null) return 'Command…'
-  return 'Go to a page, workspace or chat — > commands, # files, @ chats…'
+function placeholderFor(
+  prefix: string | null,
+  filter: PaletteKind | 'all',
+): string {
+  if (prefix === '#') return 'Search files…'
+  if (prefix === '@') return 'Search chats…'
+  if (prefix !== null) return 'Search commands…'
+  const label = FILTERS.find((option) => option.id === filter)?.label
+  return `Search ${label?.toLowerCase() ?? 'the ADE'}…`
 }
 
 function emptyText(
   searching: boolean,
   prefix: string | null,
+  text: string,
   sourceCount: number,
 ): string {
   if (searching) return 'Searching…'
   if (prefix === '#' && sourceCount === 0)
     return 'No worker is providing files right now.'
-  return 'No matches'
+  return text ? `No results for “${text}”` : 'Nothing here yet'
 }
+
+/** The key the quick-open digits ride on (⌃ on a Mac, Alt elsewhere, as
+ *  `palette.pick` is bound). Holding it numbers the first nine rows. */
+const PICK_MODIFIER = shortcutPlatform() === 'mac' ? 'Control' : 'Alt'
 
 /**
  * The slice of the screen a phone keyboard leaves behind.
@@ -177,16 +243,69 @@ function useKeyboardInset(active: boolean): CSSProperties | undefined {
 
 /** `worker::rest-of-id` reads better with the owner dimmed, the way the
  *  console's own function labels render it. */
-function FunctionId({ id }: { id: string }) {
+function FunctionId({
+  id,
+  ranges,
+}: {
+  id: string
+  ranges: readonly MatchRange[]
+}) {
   const marker = id.indexOf('::')
   if (marker <= 0)
-    return <span className="font-mono text-sm sm:text-[0.8rem]">{id}</span>
+    return (
+      <span className="max-w-[70%] shrink-0 truncate font-mono text-sm">
+        <Highlighted text={id} ranges={ranges} />
+      </span>
+    )
+  const owner = id.slice(0, marker + 2)
   return (
-    <span className="font-mono text-sm sm:text-[0.8rem]">
-      <span className="text-ink-ghost">{id.slice(0, marker + 2)}</span>
-      <span className="text-ink">{id.slice(marker + 2)}</span>
+    <span className="max-w-[70%] shrink-0 truncate font-mono text-sm">
+      <span className="text-neutral-400 dark:text-neutral-500">
+        <Highlighted text={owner} ranges={ranges} />
+      </span>
+      <span className="text-neutral-900 dark:text-neutral-100">
+        <Highlighted
+          text={id.slice(marker + 2)}
+          ranges={ranges}
+          offset={owner.length}
+        />
+      </span>
     </span>
   )
+}
+
+/** The query's letters in a label, in blue: you see why a row matched
+ *  without reading it twice. `offset` places `text` inside a longer label
+ *  the ranges were measured against. */
+function Highlighted({
+  text,
+  ranges,
+  offset = 0,
+}: {
+  text: string
+  ranges: readonly MatchRange[]
+  offset?: number
+}) {
+  if (ranges.length === 0) return text
+  const parts: ReactNode[] = []
+  let cursor = 0
+  for (const [from, to] of ranges) {
+    const start = Math.max(from - offset, cursor)
+    const end = Math.min(to - offset, text.length)
+    if (end <= start) continue
+    if (start > cursor) parts.push(text.slice(cursor, start))
+    parts.push(
+      <mark
+        key={start}
+        className="bg-transparent text-blue-600 dark:text-blue-400"
+      >
+        {text.slice(start, end)}
+      </mark>,
+    )
+    cursor = end
+  }
+  if (cursor < text.length) parts.push(text.slice(cursor))
+  return parts
 }
 
 /** connected is the healthy state; `available` is a built-in that has no
@@ -239,10 +358,34 @@ export function CommandPalette({
   const [sourceEntries, setSourceEntries] = useState<PaletteEntry[]>([])
   const [searching, setSearching] = useState(false)
   const [recents, setRecents] = useState<RecentEntry[]>([])
+  const [numbering, setNumbering] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const viewportStyle = useKeyboardInset(open)
   const platform = shortcutPlatform()
+  const mode = MODE_LABEL[query[0] ?? ''] ? query[0] : null
+  const typed = mode ? query.slice(1) : query
+  const prompt = useTypewriter(
+    PROMPTS,
+    open && query === '' && filter === 'all',
+  )
+
+  // The digits only show while their modifier is down; letting go anywhere
+  // (or leaving the window with it held) puts the row tags back.
+  useEffect(() => {
+    if (!open) return
+    const release = (event: globalThis.KeyboardEvent) => {
+      if (event.key === PICK_MODIFIER) setNumbering(false)
+    }
+    const reset = () => setNumbering(false)
+    window.addEventListener('keyup', release)
+    window.addEventListener('blur', reset)
+    return () => {
+      window.removeEventListener('keyup', release)
+      window.removeEventListener('blur', reset)
+      setNumbering(false)
+    }
+  }, [open])
 
   // Reset per opening: a palette that reopens on the last query is a palette
   // you have to clear before you can use it. Closing returns focus to whatever
@@ -262,11 +405,6 @@ export function CommandPalette({
   }, [open, initialQuery])
 
   const parsed = useMemo(() => parseQuery(query, filter), [query, filter])
-  const filterActive = (id: PaletteKind | 'all'): boolean => {
-    if (parsed.prefix === null) return filter === id
-    return id !== 'all' && parsed.kinds?.has(id) === true
-  }
-
   // Sources answer as you type, one query at a time: a new keystroke aborts
   // the last ask, and a slow answer to an old query is dropped.
   useEffect(() => {
@@ -326,9 +464,13 @@ export function CommandPalette({
         kind: 'worker',
         title: worker.name,
         detail: `${worker.functionCount} function${worker.functionCount === 1 ? '' : 's'}`,
-        meta: worker.version
-          ? `${worker.status} · ${worker.version}`
-          : worker.status,
+        // The dot already says connected; words only for anything else.
+        meta: [
+          worker.status.startsWith('connected') ? '' : worker.status,
+          worker.version ? `v${worker.version}` : '',
+        ]
+          .filter(Boolean)
+          .join(' · '),
         keywords: [worker.status],
         run: () => onOpenWorker(worker.name),
       }))
@@ -416,9 +558,18 @@ export function CommandPalette({
   // scope: documented in the shortcut overlay, dispatched here, because only
   // one of us is listening at a time.
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === PICK_MODIFIER && !event.repeat) {
+      setNumbering(true)
+    }
     if (matchesKeybinding('palette.close', event, platform)) {
       event.preventDefault()
       onClose()
+      return
+    }
+    const picked = matchDigitIndex('palette.pick', event, platform)
+    if (picked !== null) {
+      event.preventDefault()
+      choose(flat[picked])
       return
     }
     if (matchesKeybinding('palette.next', event, platform)) {
@@ -443,15 +594,47 @@ export function CommandPalette({
     if (matchesKeybinding('palette.choose', event, platform)) {
       event.preventDefault()
       choose(flat[active])
+      return
+    }
+    // Backspace in an empty field peels off one layer of scope: the mode
+    // chip first, then the filter, so getting back to "everything" never
+    // needs the mouse.
+    if (
+      event.key === 'Backspace' &&
+      typed === '' &&
+      event.target === inputRef.current
+    ) {
+      if (mode) {
+        event.preventDefault()
+        setQuery('')
+        setActive(0)
+      } else if (filter !== 'all') {
+        event.preventDefault()
+        setFilter('all')
+        setActive(0)
+      }
     }
   }
 
   let cursor = -1
+  const lit = flat[active]
+  // The chip in front of the caret is a typed prefix; a Tab filter shows in
+  // the filter row instead, so the two never say the same thing twice.
+  const scope = mode ? { glyph: mode, label: MODE_LABEL[mode] } : null
+  const scoped = mode !== null || filter !== 'all'
+
+  // Tab cycles the chips; the pointer picks one, then the caret goes back
+  // to the field so the next keystroke still searches.
+  const pickFilter = (id: PaletteKind | 'all') => {
+    setFilter(id)
+    setActive(0)
+    inputRef.current?.focus()
+  }
 
   return (
     <div
       style={viewportStyle}
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 sm:pt-[12vh] sm:backdrop-blur-sm"
+      className="command-palette-scrim fixed inset-0 z-50 flex items-start justify-center bg-neutral-950/10 sm:pt-[14vh] dark:bg-black/50"
     >
       {/* The scrim is a real button so dismissing by click is reachable
           without a mouse; the dialog below owns every other key. On a phone
@@ -468,152 +651,228 @@ export function CommandPalette({
         role="dialog"
         aria-modal="true"
         aria-label="Command palette"
-        className="relative flex h-full w-full min-w-0 flex-col overflow-hidden border-edge bg-panel sm:h-auto sm:max-h-[70vh] sm:w-[min(44rem,92vw)] sm:rounded-lg sm:border sm:shadow-2xl"
+        className="command-palette-card relative flex h-full w-full min-w-0 flex-col overflow-hidden border-neutral-200 bg-white font-inter tracking-[-0.006em] antialiased sm:h-auto sm:max-h-[min(34rem,78vh)] sm:w-[min(42rem,92vw)] sm:rounded-xl sm:border dark:border-neutral-800 dark:bg-neutral-900"
         onKeyDown={onKeyDown}
       >
-        <div className="flex shrink-0 items-center gap-2 border-b border-edge pr-1 pl-4 sm:gap-3 sm:pr-4">
-          <Search aria-hidden className="size-4 shrink-0 text-ink-ghost" />
-          <input
-            ref={inputRef}
-            value={query}
-            onChange={(event) => {
-              setQuery(event.target.value)
-              setActive(0)
-            }}
-            placeholder={placeholderFor(parsed.prefix)}
-            aria-label="Search the ADE"
-            // Under 16px iOS Safari zooms the page on focus, which strands a
-            // fixed overlay off screen. Worker and function ids are not prose,
-            // so autocorrect and the automatic leading capital both mangle them.
-            className="w-full bg-transparent py-3.5 text-base text-ink outline-none placeholder:text-ink-ghost sm:text-sm"
-            inputMode="search"
-            enterKeyHint="go"
-            autoCapitalize="none"
-            autoCorrect="off"
-            autoComplete="off"
-            spellCheck={false}
+        {/* The field: a magnifier, the mode chip when a prefix is typed, the
+            query, and on a phone the close button. */}
+        <div className="flex shrink-0 items-center gap-2.5 border-b border-neutral-100 pr-1 pl-4 sm:pr-4 dark:border-neutral-800">
+          <Search
+            aria-hidden
+            className="size-4 shrink-0 text-neutral-400 dark:text-neutral-500"
           />
-          <KeyCombo
-            binding={bindingsFor('palette.toggle', platform)[0]}
-            platform={platform}
-            className="hidden shrink-0 sm:inline-flex"
-          />
+          {scope ? (
+            <span className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md bg-neutral-100 px-1.5 text-xs font-medium text-neutral-700 dark:bg-white/[0.08] dark:text-neutral-200">
+              {scope.glyph ? (
+                <span className="text-neutral-400 dark:text-neutral-500">
+                  {scope.glyph}
+                </span>
+              ) : null}
+              {scope.label}
+            </span>
+          ) : null}
+          <div className="relative min-w-0 flex-1">
+            <input
+              ref={inputRef}
+              value={typed}
+              onChange={(event) => {
+                setQuery((mode ?? '') + event.target.value)
+                setActive(0)
+              }}
+              aria-label="Search the ADE"
+              aria-describedby="command-palette-prompt"
+              // Under 16px iOS Safari zooms the page on focus, which strands a
+              // fixed overlay off screen. Worker and function ids are not prose,
+              // so autocorrect and the automatic leading capital both mangle them.
+              className="h-14 w-full bg-transparent text-base text-neutral-900 caret-neutral-900 outline-none dark:text-neutral-100 dark:caret-neutral-100"
+              inputMode="search"
+              enterKeyHint="go"
+              autoCapitalize="none"
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck={false}
+            />
+            {/* The placeholder is drawn, not native, so it can type itself;
+                screen readers get it once, through the description. */}
+            {typed === '' ? (
+              <span
+                id="command-palette-prompt"
+                className="pointer-events-none absolute inset-y-0 left-0 flex max-w-full items-center truncate text-base text-neutral-400 dark:text-neutral-500"
+              >
+                {scoped ? placeholderFor(mode, filter) : prompt || '\u00a0'}
+              </span>
+            ) : null}
+          </div>
+          {/* Escape, spelled where a pointer can see it; a phone has no Escape
+              and gets a real close button instead. */}
+          <Kbd
+            aria-hidden
+            className={`${CAP} hidden shrink-0 pointer-fine:inline-flex`}
+          >
+            esc
+          </Kbd>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close search"
-            className="flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:hidden"
+            className="flex size-12 shrink-0 items-center justify-center rounded-md text-neutral-500 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:hidden dark:hover:text-neutral-100"
           >
             <X className="size-5" aria-hidden />
           </button>
         </div>
-        {/* Six filters do not fit a phone's width; scrolling them beats
-            crushing them into unreadable slivers. */}
-        <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-edge px-3 py-2">
-          {FILTERS.map((option) => (
-            <button
-              key={option.id}
-              type="button"
-              onClick={() => {
-                setFilter(option.id)
-                setActive(0)
-              }}
-              className={`min-h-11 shrink-0 rounded-full border px-3 text-sm transition-colors sm:min-h-0 sm:px-2.5 sm:py-1 sm:text-xs ${
-                filterActive(option.id)
-                  ? 'border-edge bg-surface-selected text-ink'
-                  : 'border-transparent text-ink-faint hover:bg-surface-hover hover:text-ink'
-              }`}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
+
+        {/* The filter row: every kind the palette can narrow to, so the
+            scopes are discoverable before Tab is pressed. A typed prefix is
+            a scope of its own and takes the row away. */}
+        {!mode ? (
+          <div
+            role="radiogroup"
+            aria-label="Filter results"
+            className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-neutral-100 px-3 py-2 [scrollbar-width:none] dark:border-neutral-800 [&::-webkit-scrollbar]:hidden"
+          >
+            {FILTERS.map((option) => {
+              const on = option.id === filter
+              return (
+                // biome-ignore lint/a11y/useSemanticElements: a native radio cannot be a styled chip the palette's own Tab handler drives
+                <button
+                  key={option.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={on}
+                  tabIndex={-1}
+                  onClick={() => pickFilter(option.id)}
+                  className={`${CHIP} ${on ? CHIP_ON : CHIP_IDLE}`}
+                >
+                  {option.label}
+                </button>
+              )
+            })}
+          </div>
+        ) : null}
+
         <div
           ref={listRef}
-          className="min-h-0 flex-1 overflow-y-auto overscroll-contain py-1"
+          className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1.5"
         >
           {engineError ? (
-            <p className="px-4 py-2 text-sm text-warn sm:text-xs">
+            <p className="px-2.5 py-1.5 text-xs text-warn-strong">
               Engine inventory unavailable: {engineError}
             </p>
           ) : null}
           {flat.length === 0 ? (
-            <p className="px-4 py-6 text-center text-base text-ink-faint sm:text-sm">
-              {emptyText(searching, parsed.prefix, sources.length)}
-            </p>
+            <div className="px-4 py-12 text-center">
+              <p className="text-sm text-neutral-600 dark:text-neutral-300">
+                {emptyText(
+                  searching,
+                  parsed.prefix,
+                  parsed.text,
+                  sources.length,
+                )}
+              </p>
+              {!searching && !mode ? (
+                <p className="mt-2 flex items-center justify-center gap-1.5 text-xs text-neutral-400 dark:text-neutral-500">
+                  Try
+                  <Kbd className={`${CAP} font-mono`}>&gt;</Kbd>
+                  for commands or
+                  <Kbd className={`${CAP} font-mono`}>#</Kbd>
+                  for files
+                </p>
+              ) : null}
+            </div>
           ) : (
             groups.map(([kind, entries]) => (
-              <div key={kind}>
-                <p className="flex items-center gap-2 px-4 pt-3 pb-1 text-xs font-semibold text-ink-ghost sm:text-[11px]">
-                  <span>{KIND_LABEL[kind]}</span>
-                  <span className="rounded-full bg-surface-active px-1.5 py-px text-[11px] font-normal tracking-normal tabular-nums">
-                    {entries.length}
-                  </span>
-                  <span className="h-px flex-1 bg-edge" />
+              <div key={kind} className="pb-1">
+                <p className="px-2.5 pt-2.5 pb-1 text-xs font-medium text-neutral-500 dark:text-neutral-400">
+                  {KIND_LABEL[kind]}
                 </p>
                 {entries.map((entry) => {
                   cursor += 1
                   const index = cursor
-                  const { Icon: KindIcon, chip } = KIND_STYLE[entry.kind]
-                  const Icon =
-                    entry.icon ?? (kind === 'recent' ? History : KindIcon)
+                  // A recent row keeps its own glyph; the group header
+                  // already says it is recent.
+                  const Icon = entry.icon ?? KIND_ICON[entry.kind]
                   const selected = index === active
+                  const digit = numbering && index < 9 ? index + 1 : null
+                  const titleRanges = matchRanges(
+                    entry.title,
+                    parsed.text,
+                    entry.kind,
+                  )
                   return (
                     <button
                       key={entry.id}
                       type="button"
+                      tabIndex={-1}
                       data-palette-index={index}
-                      onMouseEnter={() => select(index)}
+                      data-selected={selected || undefined}
+                      onMouseMove={() => {
+                        if (!selected) select(index)
+                      }}
                       onClick={() => choose(entry)}
-                      className={`flex min-h-12 w-full items-center gap-3 border-l-2 py-2.5 pr-4 pl-3.5 text-left sm:min-h-0 sm:py-2 ${
+                      className={`flex min-h-12 w-full scroll-my-1.5 items-center gap-3 rounded-lg px-2.5 text-left transition-colors duration-[var(--motion-duration-control)] sm:min-h-10 ${
                         selected
-                          ? 'border-edge bg-surface-selected'
-                          : 'border-transparent hover:bg-surface-hover'
+                          ? 'bg-neutral-100 dark:bg-white/[0.06]'
+                          : 'hover:bg-neutral-50 dark:hover:bg-white/[0.03]'
                       }`}
                     >
-                      <span
-                        className={`flex size-7 shrink-0 items-center justify-center rounded ${chip}`}
-                      >
-                        <Icon aria-hidden className="size-4" />
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="flex items-center gap-2 truncate">
-                          {entry.kind === 'function' ? (
-                            <FunctionId id={entry.title} />
-                          ) : (
-                            <span
-                              className={`truncate text-base text-ink sm:text-sm ${
-                                entry.kind === 'worker'
-                                  ? 'font-mono sm:text-[0.82rem]'
-                                  : ''
-                              }`}
-                            >
-                              {entry.title}
-                            </span>
-                          )}
-                          {entry.kind === 'worker' && entry.keywords?.[0] ? (
-                            <span
-                              aria-hidden
-                              className={`size-1.5 shrink-0 rounded-full ${statusTone(entry.keywords[0])}`}
+                      <Icon
+                        aria-hidden
+                        className={`size-4 shrink-0 ${
+                          selected
+                            ? 'text-neutral-900 dark:text-neutral-100'
+                            : 'text-neutral-400 dark:text-neutral-500'
+                        }`}
+                      />
+                      <span className="flex min-w-0 flex-1 items-baseline gap-2">
+                        {entry.kind === 'function' ? (
+                          <FunctionId id={entry.title} ranges={titleRanges} />
+                        ) : (
+                          <span
+                            className={`max-w-[70%] shrink-0 truncate text-base text-neutral-900 sm:text-sm dark:text-neutral-100 ${
+                              entry.kind === 'worker'
+                                ? 'font-mono sm:text-[13px]'
+                                : ''
+                            }`}
+                          >
+                            <Highlighted
+                              text={entry.title}
+                              ranges={titleRanges}
                             />
-                          ) : null}
-                        </span>
+                          </span>
+                        )}
+                        {entry.kind === 'worker' && entry.keywords?.[0] ? (
+                          <span
+                            aria-hidden
+                            className={`size-1.5 shrink-0 self-center rounded-full ${statusTone(entry.keywords[0])}`}
+                          />
+                        ) : null}
                         {entry.detail ? (
-                          <span className="block truncate text-sm text-ink-faint sm:text-xs">
-                            {entry.detail}
+                          <span className="min-w-0 truncate text-[13px] text-neutral-400 dark:text-neutral-500">
+                            <Highlighted
+                              text={entry.detail}
+                              ranges={matchRanges(entry.detail, parsed.text)}
+                            />
                           </span>
                         ) : null}
                       </span>
                       {/* The right-hand tag is the first thing to give up when
-                          the row has to fit a phone. */}
-                      {entry.shortcut ? (
+                          the row has to fit a phone. Holding the pick key swaps it for
+                          the row's number. */}
+                      {digit !== null ? (
+                        <Kbd
+                          className={`${CAP} hidden shrink-0 text-neutral-900 sm:inline-flex dark:text-neutral-100`}
+                        >
+                          {digit}
+                        </Kbd>
+                      ) : entry.shortcut ? (
                         <KeyCombo
                           binding={entry.shortcut}
                           platform={platform}
                           className="hidden shrink-0 sm:inline-flex"
+                          capClassName={CAP}
                         />
                       ) : entry.meta ? (
-                        <span className="hidden shrink-0 rounded border border-edge px-1.5 py-0.5 font-mono text-[11px] text-ink-ghost sm:block">
+                        <span className="hidden max-w-[40%] shrink-0 truncate text-xs text-neutral-400 tabular-nums sm:block dark:text-neutral-500">
                           {entry.meta}
                         </span>
                       ) : null}
@@ -624,25 +883,37 @@ export function CommandPalette({
             ))
           )}
         </div>
-        <div className="flex shrink-0 items-center gap-3 border-t border-edge px-4 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] text-[11px] text-ink-ghost sm:pb-2">
-          {/* Key hints are noise on a surface with no keys to press. */}
-          <div className="hidden items-center gap-3 sm:flex">
-            {HINTS.map((hint) => (
-              <span key={hint.label} className="flex items-center gap-1.5">
+        {/* Key hints are noise on a surface with no keys to press. */}
+        <div className="hidden h-10 shrink-0 items-center gap-4 border-t border-neutral-100 bg-neutral-50/80 px-4 text-xs text-neutral-500 sm:flex dark:border-neutral-800 dark:bg-white/[0.02] dark:text-neutral-400">
+          {HINTS.map((hint) => (
+            <span key={hint.label} className="flex items-center gap-1.5">
+              <span className="flex items-center gap-0.5">
                 {hint.ids.map((id) => (
                   <KeyCombo
                     key={id}
                     binding={bindingsFor(id, platform)[0]}
                     platform={platform}
+                    digitRange={hint.digitRange}
+                    capClassName={CAP}
                   />
                 ))}
-                {hint.label}
               </span>
-            ))}
-          </div>
-          <span className="ml-auto tabular-nums">
-            {searching ? 'searching… ' : ''}
-            {flat.length} result{flat.length === 1 ? '' : 's'}
+              {hint.label}
+            </span>
+          ))}
+          {/* Raycast's corner: what Enter does to the lit row, by name. */}
+          <span className="ml-auto flex items-center gap-2 font-medium text-neutral-900 dark:text-neutral-100">
+            {searching ? (
+              <span className="font-normal text-neutral-400">Searching…</span>
+            ) : null}
+            {lit ? KIND_ACTION[lit.kind] : null}
+            {lit ? (
+              <KeyCombo
+                binding={bindingsFor('palette.choose', platform)[0]}
+                platform={platform}
+                capClassName={CAP}
+              />
+            ) : null}
           </span>
         </div>
       </div>

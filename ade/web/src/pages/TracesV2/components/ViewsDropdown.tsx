@@ -7,7 +7,7 @@
 // component renders nothing when that entry is unreachable so the tab
 // degrades to plain filters.
 
-import { Check, ChevronDown, Circle, SlidersVertical } from 'lucide-react'
+import { ChevronDown, Circle, SlidersVertical } from 'lucide-react'
 import { useState } from 'react'
 import { Button } from '@/components/shadcn/button'
 import {
@@ -22,10 +22,13 @@ import {
   DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/shadcn/dropdown-menu'
 import { Input } from '@/components/shadcn/input'
+import { cn } from '@/lib/utils'
 import type { TracesView } from '../lib/tracesViews'
 
 interface ViewsDropdownProps {
@@ -56,7 +59,7 @@ export function ViewsDropdown({
   const [nameInput, setNameInput] = useState('')
 
   const activeView = views.find((v) => v.id === activeViewId) ?? null
-  const triggerLabel = activeView ? activeView.name : 'all traces'
+  const triggerLabel = activeView ? activeView.name : 'All traces'
 
   const openDialog = (mode: Exclude<NameDialogMode, null>) => {
     setNameInput(mode === 'rename' ? (activeView?.name ?? '') : '')
@@ -80,62 +83,75 @@ export function ViewsDropdown({
       <DropdownMenu modal={false}>
         <DropdownMenuTrigger
           render={
+            // A quiet chip at the start of the row: ghost on "All traces",
+            // the soft fill once a saved view is active.
             <Button
               type="button"
-              variant={activeView ? 'secondary' : 'outline'}
-              className="rounded-xl"
+              variant={activeView ? 'secondary' : 'ghost'}
+              size="sm"
+              className={cn(
+                'max-w-[14rem] rounded-md',
+                !activeView && 'text-muted-foreground',
+              )}
               aria-label="switch traces view"
             />
           }
         >
-          <SlidersVertical data-icon="inline-start" />
-          <span className="max-w-[160px] truncate">{triggerLabel}</span>
+          <SlidersVertical data-icon="inline-start" className="size-4" />
+          <span className="min-w-0 truncate">{triggerLabel}</span>
           {activeModified && (
             <Circle
-              className="size-1.5! fill-amber-500 text-amber-500"
+              className="size-1.5! fill-warn text-warn"
               aria-label="view modified"
             />
           )}
-          <ChevronDown data-icon="inline-end" />
+          <ChevronDown
+            data-icon="inline-end"
+            className="size-4 text-muted-foreground"
+          />
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start">
+        <DropdownMenuContent align="start" className="w-56 rounded-lg">
           <DropdownMenuGroup>
             <DropdownMenuLabel>Views</DropdownMenuLabel>
+            <DropdownMenuRadioGroup
+              value={activeViewId ?? ''}
+              onValueChange={(id) =>
+                onSelectView(views.find((v) => v.id === id) ?? null)
+              }
+            >
+              <DropdownMenuRadioItem value="">All traces</DropdownMenuRadioItem>
+              {views.map((view) => (
+                <DropdownMenuRadioItem key={view.id} value={view.id}>
+                  <span className="truncate">{view.name}</span>
+                </DropdownMenuRadioItem>
+              ))}
+            </DropdownMenuRadioGroup>
           </DropdownMenuGroup>
-          <DropdownMenuItem onClick={() => onSelectView(null)}>
-            <span className="w-3">
-              {!activeView && <Check className="size-4" />}
-            </span>
-            all traces
-          </DropdownMenuItem>
-          {views.map((view) => (
-            <DropdownMenuItem key={view.id} onClick={() => onSelectView(view)}>
-              <span className="w-3">
-                {view.id === activeViewId && <Check className="size-4" />}
-              </span>
-              <span className="truncate">{view.name}</span>
-            </DropdownMenuItem>
-          ))}
           <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={() => openDialog('save')}>
-            save current as view…
-          </DropdownMenuItem>
-          {activeView && (
-            <>
-              <DropdownMenuItem
-                disabled={!activeModified}
-                onClick={onUpdateActive}
-              >
-                update “{activeView.name}”
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => openDialog('rename')}>
-                rename…
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={onDeleteActive}>
-                delete view
-              </DropdownMenuItem>
-            </>
-          )}
+          <DropdownMenuGroup>
+            <DropdownMenuItem onClick={() => openDialog('save')}>
+              Save current as view…
+            </DropdownMenuItem>
+            {activeView && (
+              <>
+                <DropdownMenuItem
+                  disabled={!activeModified}
+                  onClick={onUpdateActive}
+                >
+                  Update “{activeView.name}”
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => openDialog('rename')}>
+                  Rename…
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  variant="destructive"
+                  onClick={onDeleteActive}
+                >
+                  Delete view
+                </DropdownMenuItem>
+              </>
+            )}
+          </DropdownMenuGroup>
         </DropdownMenuContent>
       </DropdownMenu>
 

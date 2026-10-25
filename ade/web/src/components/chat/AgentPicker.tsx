@@ -61,7 +61,7 @@ function AgentItem({
       <div className="min-w-0">
         <SelectPrimitive.ItemText>{label}</SelectPrimitive.ItemText>
         {description ? (
-          <div className="truncate text-[11px] leading-[1.5] text-ink-faint">
+          <div className="truncate text-xs leading-[1.5] text-ink-faint">
             {description}
           </div>
         ) : null}
@@ -131,7 +131,7 @@ export function AgentPicker({
       <SelectPrimitive.Trigger
         aria-label="agent profile"
         className={cn(
-          'inline-flex w-full items-center justify-between gap-x-2 rounded-sm border border-transparent bg-bg px-3 h-9 text-ink font-sans text-[13px] hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:bg-surface-active transition-colors',
+          'inline-flex w-full items-center justify-between gap-x-2 rounded-sm border border-transparent bg-bg px-3 h-9 text-ink font-inter text-sm hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:bg-surface-active transition-colors',
           disabled && 'opacity-40 pointer-events-none',
           className,
         )}
@@ -152,7 +152,7 @@ export function AgentPicker({
           position="popper"
           sideOffset={4}
           className={cn(
-            'z-50 min-w-[var(--radix-select-trigger-width)] max-w-[var(--radix-select-content-available-width)] overflow-hidden rounded-md border border-rule-2 bg-panel-raised text-ink font-sans text-[13px] shadow-floating',
+            'z-50 min-w-[var(--radix-select-trigger-width)] max-w-[var(--radix-select-content-available-width)] overflow-hidden rounded-md border border-rule-2 bg-panel-raised text-ink font-inter text-sm shadow-floating',
             'data-[state=open]:animate-in data-[state=closed]:animate-out',
             'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
           )}

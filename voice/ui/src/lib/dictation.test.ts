@@ -69,3 +69,18 @@ describe('reduceTranscriptEvent', () => {
     expect(state).toEqual(afterFirst)
   })
 })
+
+describe('levelFromPcm16', () => {
+  it('maps silence to 0, full scale to 1 and speech to the middle', async () => {
+    const { levelFromPcm16 } = await import('./dictation')
+    expect(levelFromPcm16(new Int16Array(0))).toBe(0)
+    expect(levelFromPcm16(new Int16Array(160))).toBe(0)
+    expect(levelFromPcm16(new Int16Array(160).fill(0x7fff))).toBeCloseTo(1, 2)
+    // A -20 dBFS tone: 0.1 of full scale.
+    const tone = new Int16Array(160)
+    for (let i = 0; i < tone.length; i++) tone[i] = Math.round(0.1 * 0x7fff * Math.SQRT2 * Math.sin((i / 16) * Math.PI))
+    const level = levelFromPcm16(tone)
+    expect(level).toBeGreaterThan(0.5)
+    expect(level).toBeLessThan(0.7)
+  })
+})

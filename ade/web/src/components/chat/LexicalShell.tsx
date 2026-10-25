@@ -5,6 +5,7 @@ import { ClearEditorPlugin } from '@lexical/react/LexicalClearEditorPlugin'
 import { LexicalComposer } from '@lexical/react/LexicalComposer'
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext'
 import { ContentEditable } from '@lexical/react/LexicalContentEditable'
+import { EditorRefPlugin } from '@lexical/react/LexicalEditorRefPlugin'
 import { LexicalErrorBoundary } from '@lexical/react/LexicalErrorBoundary'
 import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin'
 import { ListPlugin } from '@lexical/react/LexicalListPlugin'
@@ -53,6 +54,7 @@ import {
   type ComposerEditorSize,
   classifyComposerResize,
 } from './composer-resize'
+import { AttachmentNode } from './lexical/AttachmentNode'
 import { $insertCodeLine, $isOnLastCodeLine } from './lexical/code-block'
 import {
   $composerNodesFromMarkdown,
@@ -79,6 +81,7 @@ import { WorkerMentionNode } from './lexical/WorkerMentionNode'
 import { WorkerMentionTransformPlugin } from './lexical/WorkerMentionTransformPlugin'
 
 interface LexicalShellProps {
+  lexicalEditorRef?: RefObject<LexicalEditor | null>
   onChange: (text: string) => void
   /** Called on `SEND_BINDING` or `SEND_CHORD`; the send button is the other way in. */
   onSubmit: () => void
@@ -126,6 +129,7 @@ const baseConfig = {
     FileMentionNode,
     SlashCommandNode,
     WorkerMentionNode,
+    AttachmentNode,
     ...COMPOSER_MARKDOWN_NODES,
   ],
   onError(error: Error) {
@@ -704,9 +708,10 @@ interface LexicalShellExtendedProps extends LexicalShellProps {
 }
 
 export function LexicalShell({
+  lexicalEditorRef,
   onChange,
   onSubmit,
-  placeholder = 'send a message…',
+  placeholder = 'Send a message…',
   disabled,
   autoFocus,
   externalInput = true,
@@ -761,6 +766,9 @@ export function LexicalShell({
           />
         </div>
         <HistoryPlugin />
+        {lexicalEditorRef ? (
+          <EditorRefPlugin editorRef={lexicalEditorRef} />
+        ) : null}
         <ClearEditorPlugin />
         <ClearOnDemandPlugin token={clearToken} />
         <ChangePlugin onChange={onChange} />

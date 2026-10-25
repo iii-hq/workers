@@ -159,8 +159,8 @@ export function Select<T extends string>({
   const chevronVisible = showChevron ?? appearance === 'default'
   const triggerClassName = cn(
     appearance === 'inline'
-      ? 'relative inline-flex min-h-5.5 min-w-0 items-center border-dashed border-b border-ink-faint/50 px-0.5 font-sans text-base font-medium text-ink hover:border-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:border-ink sm:text-[0.8125rem]'
-      : 'inline-flex h-12 max-w-full min-w-0 items-center justify-between gap-x-2 rounded-sm border border-transparent bg-surface px-3 font-sans text-base text-ink hover:bg-surface-hover focus:border-rule-focus focus:outline-none data-[state=open]:border-rule-focus data-[placeholder]:text-ink-ghost sm:h-9 sm:text-[13px]',
+      ? 'relative inline-flex min-h-5.5 min-w-0 items-center border-dashed border-b border-ink-faint/50 px-0.5 font-inter text-base font-medium text-ink hover:border-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:border-ink sm:text-sm'
+      : 'inline-flex h-12 max-w-full min-w-0 items-center justify-between gap-x-2 rounded-sm border border-transparent bg-surface px-3 font-inter text-base text-ink hover:bg-surface-hover focus:border-rule-focus focus:outline-none data-[state=open]:border-rule-focus data-[placeholder]:text-ink-ghost sm:h-9 sm:text-sm',
     disabled && 'pointer-events-none opacity-40',
     className,
   )
@@ -403,7 +403,7 @@ export function Select<T extends string>({
               collisionPadding={8}
               collisionBoundary={panelBoundary ?? undefined}
               className={cn(
-                'iii-ui-motion-dropdown z-50 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-md bg-panel-raised font-sans text-base text-ink shadow-floating sm:text-[13px]',
+                'iii-ui-motion-dropdown z-50 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-md bg-panel-raised font-inter text-base text-ink shadow-floating sm:text-sm',
               )}
             >
               <SelectPrimitive.ScrollUpButton className="flex items-center justify-center h-5 text-ink-faint cursor-default">
@@ -422,7 +422,7 @@ export function Select<T extends string>({
                         {renderGroupHeader ? (
                           renderGroupHeader(g)
                         ) : (
-                          <SelectPrimitive.Label className="px-3 pt-2 pb-1 text-[12px] font-semibold text-ink-faint">
+                          <SelectPrimitive.Label className="px-3 pt-2 pb-1 text-xs font-medium text-ink-faint">
                             {g.label}
                           </SelectPrimitive.Label>
                         )}
@@ -501,7 +501,7 @@ function SelectSheetPanel<T extends string>({
           onChange(option.value)
         }}
         className={cn(
-          'relative flex min-h-14 w-full min-w-0 cursor-pointer items-center gap-3 px-3 py-2 text-left font-sans text-base text-ink hover:bg-surface-hover has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-inset has-[:focus-visible]:ring-rule-focus',
+          'relative flex min-h-14 w-full min-w-0 cursor-pointer items-center gap-3 px-3 py-2 text-left font-inter text-base text-ink hover:bg-surface-hover has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-inset has-[:focus-visible]:ring-rule-focus',
           (disabled || option.disabled) &&
             'pointer-events-none cursor-default opacity-40',
         )}
@@ -544,7 +544,7 @@ function SelectSheetPanel<T extends string>({
         ) : null}
         {groups.map((group) => (
           <fieldset key={group.label} disabled={disabled}>
-            <legend className="px-1 pb-1 font-sans text-sm font-medium text-ink-faint">
+            <legend className="px-1 pb-1 font-inter text-sm font-medium text-ink-faint">
               {group.label}
             </legend>
             <div className="divide-y divide-edge overflow-hidden rounded-lg bg-surface ring-1 ring-inset ring-edge">
@@ -601,7 +601,7 @@ function SelectItem({
       <div className="min-w-0">
         <SelectPrimitive.ItemText>{label}</SelectPrimitive.ItemText>
         {description ? (
-          <div className="truncate text-[11px] leading-[1.5] text-ink-faint">
+          <div className="truncate text-xs leading-[1.5] text-ink-faint">
             {description}
           </div>
         ) : null}

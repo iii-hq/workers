@@ -26,7 +26,7 @@ export const DEFAULT_AGENT_ID = 'default'
 export const COMPOSER_PLACEHOLDER_MAX_CHARS = 200
 
 /** The composer's hint when the selected profile has no example of its own. */
-export const GENERIC_COMPOSER_PLACEHOLDER = 'send a message…'
+export const GENERIC_COMPOSER_PLACEHOLDER = 'Send a message…'
 
 /**
  * Plain-text example from a catalog row or persisted metadata: whitespace

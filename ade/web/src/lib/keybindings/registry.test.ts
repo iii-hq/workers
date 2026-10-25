@@ -88,7 +88,7 @@ describe('lookup', () => {
   it('finds a definition by id', () => {
     expect(keybinding('palette.toggle').bindings).toEqual(['Mod+K'])
     expect(bindingsFor('workspace.close', 'mac')).toEqual(['Ctrl+W'])
-    expect(keybinding('panel.split').title).toBe('Split right')
+    expect(keybinding('panel.split').title).toBe('Split panel right')
   })
 
   it('resolves a per-platform binding list', () => {
@@ -111,7 +111,8 @@ describe('lookup', () => {
     expect(hoverTitle('Search', 'palette.toggle', 'other')).toBe(
       'Search (ctrl K)',
     )
-    expect(hoverTitle('Chat', 'page.chat', 'mac')).toBe('Chat (⌃ G then C)')
+    expect(hoverTitle('Chat', 'page.chat', 'mac')).toBe('Chat (⌃ ⌘ C)')
+    expect(hoverTitle('Chat', 'page.chat', 'other')).toBe('Chat (alt shift C)')
     expect(hoverTitle('Panels', 'panel.next', 'mac')).toBe('Panels (⌃ })')
   })
 
@@ -122,7 +123,8 @@ describe('lookup', () => {
     expect(shortcutClaimReason('Mod+W', 'mac')).toBe('the browser owns it')
     expect(shortcutClaimReason('Hyper+Q', 'mac')).toBe('it does not parse')
     expect(shortcutClaimReason('Ctrl+T', 'mac')).toMatch(/New workspace/)
-    expect(shortcutClaimReason('Ctrl+G L', 'mac')).toMatch(/starts like/)
+    expect(shortcutClaimReason('Ctrl+Cmd+C', 'mac')).toMatch(/Go to chat/)
+    expect(shortcutClaimReason('Alt+C', 'mac')).toBeNull()
     expect(shortcutClaimReason('Ctrl+J', 'mac')).toBeNull()
     expect(shortcutClaimReason('Ctrl+`', 'other')).toBeNull()
     expect(shortcutClaimReason('Mod+Shift+P', 'mac')).toBeNull()
@@ -191,10 +193,12 @@ describe('lookup', () => {
     ).toBe(false)
   })
 
-  it('lists the chords of a go-to sequence, and none for a plain chord', () => {
-    expect(sequencesFor('page.workers', 'mac')).toEqual([['Ctrl+G', 'W']])
-    expect(sequencesFor('page.workers', 'other')).toEqual([['Alt+G', 'W']])
-    expect(sequencesFor('workspace.create', 'mac')).toEqual([])
+  it('keeps every console shortcut to one press: no global sequences', () => {
+    for (const platform of PLATFORMS) {
+      for (const definition of KEYBINDINGS) {
+        expect(sequencesFor(definition.id, platform)).toEqual([])
+      }
+    }
   })
 })
 
@@ -320,5 +324,41 @@ describe('keybindingGroups', () => {
   it('keeps registry order inside a group', () => {
     const [, first] = keybindingGroups()[0]
     expect(first[0].id).toBe(KEYBINDINGS[0].id)
+  })
+})
+
+describe('palette quick open', () => {
+  it('opens the Nth row on ⌃ plus the digit on a Mac', () => {
+    const controlThree = {
+      key: '3',
+      code: 'Digit3',
+      metaKey: false,
+      ctrlKey: true,
+      altKey: false,
+      shiftKey: false,
+    }
+    expect(matchDigitIndex('palette.pick', controlThree, 'mac')).toBe(2)
+    expect(
+      matchDigitIndex(
+        'palette.pick',
+        { ...controlThree, ctrlKey: false },
+        'mac',
+      ),
+    ).toBeNull()
+  })
+
+  it('reads Alt+1–9 from the digit row elsewhere even when the layout turns it into a symbol', () => {
+    const altThree = {
+      key: '£',
+      code: 'Digit3',
+      metaKey: false,
+      ctrlKey: false,
+      altKey: true,
+      shiftKey: false,
+    }
+    expect(matchDigitIndex('palette.pick', altThree, 'other')).toBe(2)
+    expect(
+      matchDigitIndex('palette.pick', { ...altThree, altKey: false }, 'other'),
+    ).toBeNull()
   })
 })

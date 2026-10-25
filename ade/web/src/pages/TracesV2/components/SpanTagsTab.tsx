@@ -1,7 +1,9 @@
-import { ChevronRight, Copy, Search } from 'lucide-react'
+import { Check, ChevronRight, Copy, Search } from 'lucide-react'
 import { useMemo, useState } from 'react'
+import { Input } from '@/components/shadcn/input'
 import { EmptyState } from '@/components/ui/EmptyState'
-import { Eyebrow } from '@/components/ui/Eyebrow'
+import { JsonHighlight } from '@/lib/syntax'
+import { cn } from '@/lib/utils'
 import { redactAttributeEntries } from '../lib/redactAttributes'
 import type { VisualizationSpan } from '../lib/traceTransform'
 import { useCopyToClipboard } from '../lib/traceUtils'
@@ -143,15 +145,19 @@ export function SpanTagsTab({ span, redact }: SpanTagsTabProps) {
   const showGrouped = groups.length > 1 && !searchQuery
 
   return (
-    <div className="p-5 space-y-3">
+    <div className="flex flex-col gap-3 p-4 font-inter">
       <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-ink-faint" />
-        <input
-          type="text"
-          placeholder="filter attributes..."
+        <Search
+          className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+          aria-hidden
+        />
+        <Input
+          type="search"
+          placeholder="Filter attributes"
+          aria-label="filter attributes"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          className="w-full pl-9 pr-4 py-2 rounded-sm bg-surface border border-rule-2 font-mono text-[13px] text-ink placeholder-ink-ghost hover:border-rule focus:outline-none focus:border-rule-focus transition-colors"
+          className="h-8 rounded-md bg-muted/50 pl-8 text-sm [&::-webkit-search-cancel-button]:hidden"
         />
       </div>
 
@@ -160,23 +166,33 @@ export function SpanTagsTab({ span, redact }: SpanTagsTabProps) {
           const isCollapsed = collapsedGroups.has(group.namespace)
 
           return (
-            <div key={group.namespace} className="rounded-md bg-surface">
+            <div
+              key={group.namespace}
+              className="overflow-hidden rounded-lg border border-border"
+            >
               <button
                 type="button"
                 onClick={() => toggleGroup(group.namespace)}
-                className="w-full flex items-center gap-2 px-4 py-2.5 hover:bg-surface-hover transition-colors text-left"
+                aria-expanded={!isCollapsed}
+                className="flex h-8 w-full items-center gap-2 px-3 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50"
               >
                 <ChevronRight
-                  className={`size-4 text-ink-faint transition-transform ${isCollapsed ? '' : 'rotate-90'}`}
+                  className={cn(
+                    'size-4 text-muted-foreground transition-transform duration-[var(--motion-duration-control)]',
+                    !isCollapsed && 'rotate-90',
+                  )}
+                  aria-hidden
                 />
-                <span className="iii-ui-eyebrow">{group.label}</span>
-                <span className="font-mono text-[11px] text-ink-ghost ml-auto tabular-nums">
+                <span className="text-xs font-semibold text-foreground">
+                  {group.label}
+                </span>
+                <span className="ml-auto font-mono text-[11px] text-muted-foreground tabular-nums">
                   {group.entries.length}
                 </span>
               </button>
 
               {!isCollapsed && (
-                <div className="border-t border-rule divide-y divide-rule">
+                <div className="divide-y divide-border border-t border-border">
                   {group.entries.map(([key, value]) => (
                     <AttributeRow
                       key={key}
@@ -192,7 +208,7 @@ export function SpanTagsTab({ span, redact }: SpanTagsTabProps) {
           )
         })
       ) : (
-        <div className="rounded-md bg-surface divide-y divide-rule-2">
+        <div className="divide-y divide-border overflow-hidden rounded-lg border border-border">
           {filteredEntries.map(([key, value]) => (
             <AttributeRow
               key={key}
@@ -206,14 +222,14 @@ export function SpanTagsTab({ span, redact }: SpanTagsTabProps) {
       )}
 
       {filteredEntries.length === 0 && searchQuery && (
-        <div className="text-center py-6">
-          <p className="font-mono text-[13px] text-ink-faint">
+        <div className="py-6 text-center">
+          <p className="text-[13px] text-muted-foreground">
             No attributes match &ldquo;{searchQuery}&rdquo;
           </p>
         </div>
       )}
 
-      <div className="font-mono text-[11px] text-ink-ghost text-center pt-2 tabular-nums">
+      <div className="pt-1 text-center font-mono text-[11px] text-muted-foreground tabular-nums">
         {filteredEntries.length} of {entries.length} attributes
       </div>
     </div>
@@ -241,25 +257,31 @@ function AttributeRow({
     <button
       type="button"
       onClick={() => onCopy(attrKey, value)}
-      className="w-full px-4 py-2 hover:bg-surface-hover transition-colors text-left group"
+      aria-label={`copy ${attrKey}`}
+      className="group/attr w-full px-3 py-1.5 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50"
     >
       <div className="flex items-start justify-between gap-3">
-        <div className="flex-1 min-w-0">
-          <div className="iii-ui-eyebrow mb-0.5">{attrKey}</div>
+        <div className="min-w-0 flex-1">
+          <div className="mb-0.5 truncate font-mono text-[11px] text-muted-foreground">
+            {attrKey}
+          </div>
           {isObject ? (
-            <pre className="rounded-sm bg-bg px-3 py-2 font-mono text-[12.5px] leading-[1.55] text-ink overflow-x-auto whitespace-pre">
-              {formatted}
-            </pre>
+            <div className="code-theme-editor overflow-hidden rounded-md border border-border">
+              <JsonHighlight code={formatted} wrap className="px-3 py-2" />
+            </div>
           ) : (
-            <div className="font-mono text-[12px] text-ink break-all leading-relaxed tabular-nums">
+            <div className="font-mono text-xs leading-relaxed break-all text-foreground tabular-nums">
               {formatted}
             </div>
           )}
         </div>
         {isCopied ? (
-          <Eyebrow className="text-accent flex-shrink-0 mt-0.5">copied</Eyebrow>
+          <Check className="mt-0.5 size-4 shrink-0 text-ok" aria-hidden />
         ) : (
-          <Copy className="size-4 text-ink-ghost opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-0.5" />
+          <Copy
+            className="mt-0.5 size-4 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover/attr:opacity-100 group-focus-visible/attr:opacity-100"
+            aria-hidden
+          />
         )}
       </div>
     </button>

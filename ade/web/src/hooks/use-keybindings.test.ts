@@ -103,22 +103,18 @@ describe('createKeyDispatcher', () => {
     expect(seen).toEqual(['create', 'select 2', 'palette'])
   })
 
-  it('arms the go-to prefix from its chord, never the bare letter', () => {
+  it('goes to a page on one ⌃⌘ chord', () => {
     const seen: string[] = []
     const dispatcher = createKeyDispatcher(
       () => ({ 'page.chat': () => seen.push('chat') }),
       'mac',
     )
-    const bare = key('g')
-    dispatcher.onKeyDown(bare)
-    expect(bare.defaultPrevented).toBe(false)
     dispatcher.onKeyDown(key('c'))
+    dispatcher.onKeyDown(key('c', { metaKey: true }))
     expect(seen).toEqual([])
-
-    const prefix = key('g', { ctrlKey: true })
-    dispatcher.onKeyDown(prefix)
-    expect(prefix.defaultPrevented).toBe(true)
-    dispatcher.onKeyDown(key('c'))
+    const chord = key('c', { ctrlKey: true, metaKey: true, code: 'KeyC' })
+    dispatcher.onKeyDown(chord)
+    expect(chord.defaultPrevented).toBe(true)
     expect(seen).toEqual(['chat'])
   })
 
@@ -138,17 +134,21 @@ describe('createKeyDispatcher', () => {
     expect(seen).toEqual([])
   })
 
-  it('never arms a chord from a field or a dialog', () => {
+  it('leaves ⌃⌘C alone in a field instead of going to chat', () => {
     const seen: string[] = []
     const dispatcher = createKeyDispatcher(
       () => ({ 'page.chat': () => seen.push('chat') }),
       'mac',
     )
     const input = { tagName: 'INPUT', dataset: {} } as unknown as EventTarget
-    const prefix = key('g', { target: input })
-    dispatcher.onKeyDown(prefix)
-    expect(prefix.defaultPrevented).toBe(false)
-    dispatcher.onKeyDown(key('c'))
+    const chord = key('c', {
+      ctrlKey: true,
+      metaKey: true,
+      code: 'KeyC',
+      target: input,
+    })
+    dispatcher.onKeyDown(chord)
+    expect(chord.defaultPrevented).toBe(false)
     expect(seen).toEqual([])
   })
 

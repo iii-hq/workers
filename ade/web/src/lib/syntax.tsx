@@ -35,27 +35,33 @@ if (!prism.languages.json) {
   }
 }
 
-/* Monochrome blueprint theme — every color references a design token so the
-   palette inverts automatically with `[data-theme="dark"]`. Keys get the
-   strongest ink, structural punctuation fades to `ink-ghost`, and the single
-   tonal hit is the hot orange `accent` reserved for literals (numbers,
-   booleans, null) so the eye lands on the values that actually matter. */
+/* The token palette is a set of CSS variables (`--syntax-*`, index.css).
+   Their defaults are the monochrome blueprint: keys get the strongest ink,
+   structural punctuation fades to `ink-ghost`, and the single tonal hit is
+   the accent reserved for literals (numbers, booleans, null) so the eye
+   lands on the values that actually matter. A surface may repoint them —
+   the trace panes wear `code-theme-editor` — without touching this file,
+   and every palette inverts with `[data-theme="dark"]` because the tokens
+   do. */
 export const syntaxTheme: PrismTheme = {
-  plain: { color: 'var(--color-ink)' },
+  plain: { color: 'var(--syntax-plain)' },
   styles: [
-    { types: ['property'], style: { color: 'var(--color-ink)' } },
-    { types: ['string'], style: { color: 'var(--color-ink-faint)' } },
+    { types: ['property'], style: { color: 'var(--syntax-key)' } },
+    { types: ['string'], style: { color: 'var(--syntax-string)' } },
+    // Italic or not is the theme's call too (`--syntax-literal-style`), but
+    // PrismTheme only types a literal `normal`/`italic`, so the slant is a
+    // rule on `.token.number/.boolean/.null/.keyword` in index.css.
     {
       types: ['number', 'boolean', 'null', 'keyword'],
-      style: { color: 'var(--color-accent)', fontStyle: 'italic' },
+      style: { color: 'var(--syntax-literal)' },
     },
     {
       types: ['punctuation', 'operator'],
-      style: { color: 'var(--color-ink-ghost)' },
+      style: { color: 'var(--syntax-punctuation)' },
     },
     {
       types: ['comment'],
-      style: { color: 'var(--color-ink-ghost)', fontStyle: 'italic' },
+      style: { color: 'var(--syntax-comment)', fontStyle: 'italic' },
     },
   ],
 }

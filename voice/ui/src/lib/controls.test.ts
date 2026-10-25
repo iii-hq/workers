@@ -40,6 +40,8 @@ vi.mock('@iii-dev/console-ui', () => ({ IconButton: 'button' }))
 vi.mock('./capture', () => ({ startCapture: vi.fn() }))
 vi.mock('./client', () => ({
   speak: vi.fn(),
+  // The footer row asks the worker whether it should show at all.
+  doctor: vi.fn(async () => ({ chat_controls: true })),
   dictationStart: (iii: any, req: any) => iii.trigger('voice::dictation::start', req),
   dictationStop: (iii: any, req: any) => iii.trigger('voice::dictation::stop', req),
 }))
@@ -120,6 +122,7 @@ describe('chat read-aloud controls use current availability on every attempt', (
     const registration = createVoiceTurnSummary({ iii: { trigger } } as unknown as Host)
     const component = registration.render as (props: SessionTurnSummaryProps) => ReactNode
     const view = () => render(() => component({ sessionId: 'chat', isStreaming: true } as SessionTurnSummaryProps))
+    view(); await Promise.resolve(); await Promise.resolve()
     const toggle = all(view()).find((node) => isValidElement<any>(node) && (node.props as { 'aria-pressed'?: boolean })['aria-pressed'] === false) as ReactElement<any>
     toggle.props.onClick(); view()
     const options = vi.mocked(subscribeAutoReplies).mock.calls.at(-1)![2]

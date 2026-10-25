@@ -1,10 +1,16 @@
+/**
+ * The trace card's footer: how the run's time splits across workers.
+ *
+ * Collapsed, it is one line — the toggle, the worker count and the latency
+ * percentiles. Expanded, one row per worker in a quiet table: a colour
+ * mark and the name, span and error counts, the total time, and a share
+ * bar against the busiest worker (the percent is its share of all span
+ * time). Rows sort busiest first so the worker that owned the run is
+ * always on top.
+ */
+
 import { ChevronRight } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import {
-  Progress,
-  ProgressIndicator,
-  ProgressTrack,
-} from '@/components/shadcn/progress'
 import { cn } from '@/lib/utils'
 import { getWorkerColor } from '../lib/traceColors'
 import type { WaterfallData } from '../lib/traceTransform'
@@ -28,6 +34,17 @@ function calculatePercentile(values: number[], percentile: number): number {
   const sorted = [...values].sort((a, b) => a - b)
   const index = Math.ceil((percentile / 100) * sorted.length) - 1
   return sorted[Math.max(0, index)]
+}
+
+function Percentile({ label, value }: { label: string; value: number }) {
+  return (
+    <span className="inline-flex items-baseline gap-1 whitespace-nowrap">
+      <span className="text-[11px] text-muted-foreground">{label}</span>
+      <span className="font-mono text-[11px] text-foreground tabular-nums">
+        {formatDuration(value)}
+      </span>
+    </span>
+  )
 }
 
 export function WorkerBreakdown({ data }: WorkerBreakdownProps) {
@@ -64,9 +81,14 @@ export function WorkerBreakdown({ data }: WorkerBreakdownProps) {
       }
     }
 
-    const totalDuration = data.total_duration_ms
+    // Share of all span time, not of the trace's wall clock: a parent span
+    // runs for the whole of its children, so wall-clock shares sum past
+    // 100% and the busiest worker read as "191%". Span time is additive.
+    let spanTime = 0
+    for (const stats of statsMap.values()) spanTime += stats.totalDuration
     for (const stats of statsMap.values()) {
-      stats.percentage = (stats.totalDuration / totalDuration) * 100
+      stats.percentage =
+        spanTime > 0 ? (stats.totalDuration / spanTime) * 100 : 0
     }
 
     const workerStats = Array.from(statsMap.values()).sort(
@@ -83,86 +105,130 @@ export function WorkerBreakdown({ data }: WorkerBreakdownProps) {
     return { workerStats, percentiles }
   }, [data])
 
+  // The share bar is scaled to the busiest worker, so the first row reads
+  // as the full width and the rest as fractions of it; the number beside
+  // each bar is still the honest share of the trace.
+  const maxDuration = workerStats[0]?.totalDuration || 1
+
   return (
-    <div className="bg-panel">
+    <div className="@container font-inter" data-worker-breakdown>
       <button
         type="button"
         onClick={() => setIsExpanded(!isExpanded)}
-        className="flex w-full items-center gap-2 px-4 py-2.5 text-left transition-colors hover:bg-surface-hover"
+        className="flex h-9 w-full items-center gap-2 px-3 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50"
         aria-label="toggle workers section"
         aria-expanded={isExpanded}
       >
         <ChevronRight
           className={cn(
-            'size-4 text-ink-faint transition-transform duration-[var(--motion-duration-control)]',
+            'size-4 shrink-0 text-muted-foreground transition-transform duration-[var(--motion-duration-control)]',
             isExpanded && 'rotate-90',
           )}
+          aria-hidden
         />
-        <span className="text-[13px] font-medium text-ink">Workers</span>
+        <span className="text-xs font-semibold text-foreground">Workers</span>
+        <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
+          {workerStats.length}
+        </span>
 
-        <div className="ml-auto flex items-center gap-3 text-xs text-ink-faint">
-          <span>
-            p50{' '}
-            <span className="font-mono text-ink tabular-nums">
-              {formatDuration(percentiles.p50)}
-            </span>
+        <span className="ml-auto flex items-center gap-3">
+          <Percentile label="p50" value={percentiles.p50} />
+          <Percentile label="p95" value={percentiles.p95} />
+          <Percentile label="p99" value={percentiles.p99} />
+          <span className="hidden @lg:inline">
+            <Percentile label="max" value={percentiles.max} />
           </span>
-          <span>
-            p95{' '}
-            <span className="font-mono text-ink tabular-nums">
-              {formatDuration(percentiles.p95)}
-            </span>
-          </span>
-          <span>
-            p99{' '}
-            <span className="font-mono text-ink tabular-nums">
-              {formatDuration(percentiles.p99)}
-            </span>
-          </span>
-        </div>
+        </span>
       </button>
 
       {isExpanded && (
-        <div className="px-4 pb-3 flex flex-col gap-2.5">
-          {workerStats.map((worker) => (
-            <div key={worker.name} className="group">
-              <div className="flex items-center gap-2 mb-1">
-                <span
-                  aria-hidden
-                  className="size-2 flex-shrink-0 rounded-sm"
-                  style={{ backgroundColor: worker.color }}
-                />
-                <span className="flex-1 truncate text-[13px] font-medium text-ink">
-                  {worker.name}
-                </span>
-                <span className="text-xs text-ink-faint tabular-nums">
-                  {worker.spanCount} span{worker.spanCount !== 1 ? 's' : ''}
-                </span>
-                <span className="w-16 text-right font-mono text-xs text-ink tabular-nums">
-                  {formatDuration(worker.totalDuration)}
-                </span>
-                {worker.errorCount > 0 && (
-                  <span className="text-xs font-semibold text-alert tabular-nums">
-                    {worker.errorCount} err
-                  </span>
+        <div className="border-t border-border">
+          <div
+            className={cn(
+              WORKER_GRID,
+              'h-7 items-center gap-3 px-3 text-[11px] text-muted-foreground',
+            )}
+            aria-hidden
+          >
+            <span className="pl-4">Worker</span>
+            <span className="text-right">Spans</span>
+            <span className="text-right">Errors</span>
+            <span className="text-right">Time</span>
+            <span className="hidden @md:block">Share</span>
+            <span className="text-right">%</span>
+          </div>
+          <ul className="divide-y divide-border border-t border-border">
+            {workerStats.map((worker) => (
+              <li
+                key={worker.name}
+                className={cn(
+                  WORKER_GRID,
+                  'h-8 items-center gap-3 px-3 transition-colors hover:bg-muted/50',
                 )}
-              </div>
-              <Progress
-                value={Math.max(2, Math.min(100, worker.percentage))}
-                aria-label={`${worker.name} share of the trace`}
-                className="ml-4"
+                data-worker-row={worker.name}
               >
-                <ProgressTrack className="h-1.5">
-                  <ProgressIndicator
-                    className="rounded-full transition-all duration-[var(--motion-duration-panel)]"
+                <span className="flex min-w-0 items-center gap-2">
+                  <span
+                    aria-hidden
+                    className="size-2 shrink-0 rounded-full"
                     style={{ backgroundColor: worker.color }}
                   />
-                </ProgressTrack>
-              </Progress>
-            </div>
-          ))}
+                  <span
+                    className="truncate text-xs font-medium text-foreground"
+                    title={worker.name}
+                  >
+                    {worker.name}
+                  </span>
+                </span>
+                <span className="text-right font-mono text-[11px] text-muted-foreground tabular-nums">
+                  {worker.spanCount}
+                </span>
+                <span
+                  className={cn(
+                    'text-right font-mono text-[11px] tabular-nums',
+                    worker.errorCount > 0
+                      ? 'font-medium text-alert-strong'
+                      : 'text-muted-foreground',
+                  )}
+                >
+                  {worker.errorCount > 0 ? worker.errorCount : '—'}
+                </span>
+                <span className="text-right font-mono text-[11px] text-foreground tabular-nums">
+                  {formatDuration(worker.totalDuration)}
+                </span>
+                <span
+                  className="hidden h-1.5 w-full overflow-hidden rounded-full bg-muted @md:block"
+                  role="progressbar"
+                  aria-label={`${worker.name} share of span time`}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.round(
+                    Math.min(100, Math.max(0, worker.percentage)),
+                  )}
+                >
+                  <span
+                    className="block h-full rounded-full transition-[width] duration-[var(--motion-duration-panel)]"
+                    style={{
+                      width: `${Math.max(2, Math.min(100, (worker.totalDuration / maxDuration) * 100))}%`,
+                      backgroundColor: worker.color,
+                    }}
+                  />
+                </span>
+                <span className="text-right font-mono text-[11px] text-muted-foreground tabular-nums">
+                  {worker.percentage >= 10
+                    ? Math.round(worker.percentage)
+                    : worker.percentage.toFixed(1)}
+                  %
+                </span>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
     </div>
   )
 }
+
+/** name · spans · errors · time · (share bar, from @md) · percent */
+const WORKER_GRID =
+  'grid grid-cols-[minmax(0,1fr)_3rem_3rem_4.5rem_3rem] @md:grid-cols-[minmax(0,1fr)_3rem_3rem_4.5rem_minmax(0,8rem)_3rem]'

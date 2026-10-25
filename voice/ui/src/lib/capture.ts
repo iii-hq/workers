@@ -132,6 +132,8 @@ export interface StartCaptureOptions {
 const FLUSH_TIMEOUT_MS = 300
 
 export interface CaptureHandle {
+  /** A tap on the microphone for meters such as the dictation waveform; it feeds nothing else. */
+  analyser?: AnalyserNode
   /** Deliver the audio still buffered, then release the track, disconnect the graph and close the context. */
   stop: () => Promise<void>
 }
@@ -169,6 +171,10 @@ async function wireNodes(
   options: StartCaptureOptions,
 ): Promise<CaptureHandle> {
   const source = audioContext.createMediaStreamSource(stream)
+  const analyser = audioContext.createAnalyser()
+  analyser.fftSize = 256
+  analyser.smoothingTimeConstant = 0.5
+  source.connect(analyser)
   const supportsWorklet = typeof AudioWorkletNode !== 'undefined' && 'audioWorklet' in audioContext
 
   let teardown: () => void
@@ -238,6 +244,7 @@ async function wireNodes(
 
   let stopped = false
   return {
+    analyser,
     stop: async () => {
       if (stopped) return
       stopped = true

@@ -63,9 +63,26 @@ pub struct TtsReport {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
+pub struct CleanupReport {
+    /// Whether finished dictations go through the language-model clean-up.
+    pub enabled: bool,
+    /// The configured `provider::model`, or the provider default that will
+    /// be used; empty when no provider is configured.
+    pub model: String,
+    /// Set when the pass is on but cannot run (no configured provider, no
+    /// router).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct Response {
     pub stt: SttReport,
     pub tts: TtsReport,
+    /// The clean-up pass over finished dictations.
+    pub cleanup: CleanupReport,
+    /// Whether the Read aloud / Voice chat controls show above the composer.
+    pub chat_controls: bool,
     pub sessions: usize,
     pub version: String,
 }
@@ -215,10 +232,66 @@ pub async fn handle(state: &AppState, _req: Request) -> Result<Response, String>
             device: None,
         },
     };
+    let cleanup = cleanup_report(state, &cfg).await;
     Ok(Response {
         stt,
         tts,
+        cleanup,
+        chat_controls: cfg.tts.chat_controls,
         sessions: state.sessions.count().await,
         version: env!("CARGO_PKG_VERSION").to_string(),
     })
+}
+
+/// Where the clean-up pass stands: off, pinned to a model, or on the first
+/// configured provider's default (resolved now so the Settings page can say
+/// which model will answer).
+async fn cleanup_report(state: &AppState, cfg: &crate::config::WorkerConfig) -> CleanupReport {
+    let pinned = cfg.stt.cleanup.model.trim();
+    if !cfg.stt.cleanup.enabled {
+        return CleanupReport {
+            enabled: false,
+            model: pinned.to_string(),
+            problem: None,
+        };
+    }
+    if !pinned.is_empty() {
+        return CleanupReport {
+            enabled: true,
+            model: pinned.to_string(),
+            problem: None,
+        };
+    }
+    let reply = state
+        .iii
+        .trigger(iii_sdk::protocol::TriggerRequest {
+            function_id: "router::provider::list".into(),
+            payload: serde_json::json!({}),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await;
+    match reply {
+        Ok(reply) => match crate::cleanup::default_model_from(&reply) {
+            Some(model) => CleanupReport {
+                enabled: true,
+                model,
+                problem: None,
+            },
+            None => CleanupReport {
+                enabled: true,
+                model: String::new(),
+                problem: Some(
+                    "no llm-router provider is configured; add a provider key in Settings or \
+                     set stt.cleanup.model"
+                        .into(),
+                ),
+            },
+        },
+        Err(error) => CleanupReport {
+            enabled: true,
+            model: String::new(),
+            problem: Some(format!("llm-router is not reachable: {error}")),
+        },
+    }
 }

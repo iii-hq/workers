@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/Button'
+import { Hint } from '@/components/ui/Hint'
 import { hashForSettingsLanding } from '@/hooks/use-hash-route'
 import { hideSideChats } from '@/lib/chat-aside'
 import {
@@ -36,6 +37,7 @@ import {
 } from '@/lib/keybindings/registry'
 import { NEUTRAL_SURFACE } from '@/lib/neutral-surface'
 import { requestPaletteOpen } from '@/lib/palette/open-request'
+import { requestShortcutsDialog } from '@/lib/shortcuts-request'
 import { cn } from '@/lib/utils'
 import type { Conversation } from '@/types/chat'
 import { ConversationFilterMenu } from './ConversationFilterMenu'
@@ -309,15 +311,16 @@ export function ConversationSidebar({
         </h2>
         <div className="flex items-center gap-0.5">
           {onImport ? (
-            <button
-              type="button"
-              onClick={onImport}
-              aria-label="Import conversations"
-              title="Import conversations"
-              className={cn(QUIET_ACTION, narrow ? 'size-12' : 'size-7')}
-            >
-              <Download className="size-4" aria-hidden />
-            </button>
+            <Hint label="Import conversations" disabled={narrow}>
+              <button
+                type="button"
+                onClick={onImport}
+                aria-label="Import conversations"
+                className={cn(QUIET_ACTION, narrow ? 'size-12' : 'size-7')}
+              >
+                <Download className="size-4" aria-hidden />
+              </button>
+            </Hint>
           ) : null}
           <ConversationFilterMenu
             view={view}
@@ -352,9 +355,10 @@ export function ConversationSidebar({
           <div
             className={cn(
               uiClasses.tree,
-              // 14px/500 titles on 36px rows, 12px timestamps: the list
-              // reads at the sidebar's own size, not the tree recipe's 13px.
-              '[--iii-ui-tree-row:2.25rem] [&_.iii-ui-tree-item]:rounded-xl [&_.iii-ui-tree-item]:text-sm [&_.iii-ui-tree-item__meta]:text-xs',
+              // 14px/500 titles in full ink on 36px rows, 12px timestamps:
+              // the list reads at the sidebar's own size and weight, not the
+              // tree recipe's 13px faint rows (the nav rows above are ink).
+              '[--iii-ui-tree-row:2.25rem] [&_.iii-ui-tree-item]:rounded-xl [&_.iii-ui-tree-item]:text-sm [&_.iii-ui-tree-item]:text-ink [&_.iii-ui-tree-item__meta]:text-xs',
             )}
             data-narrow={narrow || undefined}
           >
@@ -394,33 +398,46 @@ export function ConversationSidebar({
         )}
       </div>
 
-      {/* The bottom row: help on the left of settings, nothing else. */}
+      {/* The bottom row: help on the left of settings, nothing else. Help
+          opens the shortcuts reference outright, not a palette search. */}
       <div className="flex shrink-0 items-center justify-end gap-1 px-2 py-2">
-        <button
-          type="button"
-          onClick={() => requestPaletteOpen({ query: 'shortcuts' })}
-          aria-label="Help and keyboard shortcuts"
-          title="Help and keyboard shortcuts"
-          className={cn(QUIET_ACTION, narrow ? 'size-12' : 'size-8')}
+        <Hint
+          label="Keyboard shortcuts"
+          shortcut="app.shortcuts"
+          side="top"
+          disabled={narrow}
         >
-          <CircleQuestionMark className="size-4" aria-hidden />
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            window.location.hash = hashForSettingsLanding(narrow)
-          }}
-          aria-label="ADE settings"
-          title="ADE settings"
-          // onboarding-settings: tour anchor (workers/onboarding). Do not remove.
-          className={cn(
-            'onboarding-settings',
-            QUIET_ACTION,
-            narrow ? 'size-12' : 'size-8',
-          )}
+          <button
+            type="button"
+            onClick={() => requestShortcutsDialog()}
+            aria-label="Help and keyboard shortcuts"
+            className={cn(QUIET_ACTION, narrow ? 'size-12' : 'size-8')}
+          >
+            <CircleQuestionMark className="size-4" aria-hidden />
+          </button>
+        </Hint>
+        <Hint
+          label="Settings"
+          shortcut="app.settings"
+          side="top"
+          disabled={narrow}
         >
-          <Settings className="size-4" aria-hidden />
-        </button>
+          <button
+            type="button"
+            onClick={() => {
+              window.location.hash = hashForSettingsLanding(narrow)
+            }}
+            aria-label="ADE settings"
+            // onboarding-settings: tour anchor (workers/onboarding). Do not remove.
+            className={cn(
+              'onboarding-settings',
+              QUIET_ACTION,
+              narrow ? 'size-12' : 'size-8',
+            )}
+          >
+            <Settings className="size-4" aria-hidden />
+          </button>
+        </Hint>
       </div>
     </div>
   )

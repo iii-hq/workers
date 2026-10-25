@@ -48,7 +48,7 @@ function renderComposer(
 }
 
 describe('composer controls placement', () => {
-  it('puts project controls in the folder strip and the rest in the footer', () => {
+  it('keeps project controls beside the folder inside the composer', () => {
     const offs = [
       registerExtComposerControl(control('ide-worktree', 'project')),
       registerExtComposerControl(control('judge-provider')),
@@ -64,18 +64,20 @@ describe('composer controls placement', () => {
 
     const html = renderComposer(controls)
     const card = html.indexOf('composer-card')
-    const strip = html.slice(html.indexOf('composer-project-tab'), card)
-    const footer = html.slice(card)
-    expect(strip).toContain('data-control="ide-worktree" data-dir="/repo"')
-    expect(strip).not.toContain('judge-provider')
-    expect(footer).toContain('data-control="judge-provider"')
-    expect(footer).not.toContain('ide-worktree')
-    // Tab order: folder, then the project controls, then the fold toggle.
-    const folder = strip.indexOf('aria-label="working directory"')
-    const worktree = strip.indexOf('data-control="ide-worktree"')
+    const context = html.indexOf('composer-project-context')
+    const toolbar = html.indexOf('composer-mobile-toolbar')
+    expect(context).toBeGreaterThan(card)
+    const project = html.slice(context, toolbar)
+    expect(project).toContain('data-control="ide-worktree" data-dir="/repo"')
+    expect(project).not.toContain('judge-provider')
+    expect(html.slice(toolbar)).toContain('data-control="judge-provider"')
+    const folder = project.indexOf(
+      'aria-label="select project folder, current folder: repo"',
+    )
+    const worktree = project.indexOf('data-control="ide-worktree"')
     expect(folder).toBeGreaterThan(-1)
     expect(worktree).toBeGreaterThan(folder)
-    expect(strip.indexOf('collapse composer')).toBeGreaterThan(worktree)
+    expect(project.indexOf('collapse composer')).toBeGreaterThan(worktree)
 
     // No strip, no project controls.
     expect(renderComposer(controls, false)).not.toContain('ide-worktree')

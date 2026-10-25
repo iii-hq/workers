@@ -6,6 +6,7 @@ import * as JsxRuntime from 'react/jsx-runtime'
 import * as ReactDOM from 'react-dom'
 import * as ReactDOMClient from 'react-dom/client'
 import { createRoot } from 'react-dom/client'
+import { TooltipProvider as HintProvider } from '@/components/shadcn/tooltip'
 import { TooltipProvider } from '@/components/ui/Tooltip'
 import { routeFromHash, standaloneRouteFromHash } from '@/hooks/use-hash-route'
 import { sideChatsLeftByClosedTabs } from '@/lib/chat-aside'
@@ -105,9 +106,11 @@ const queryClient = new QueryClient({
 createRoot(root).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider delayDuration={150}>
-        <Root injectableUiRuntime={injectableUiRuntime} />
-      </TooltipProvider>
+      <HintProvider delay={400} closeDelay={0}>
+        <TooltipProvider delayDuration={150}>
+          <Root injectableUiRuntime={injectableUiRuntime} />
+        </TooltipProvider>
+      </HintProvider>
     </QueryClientProvider>
   </StrictMode>,
 )

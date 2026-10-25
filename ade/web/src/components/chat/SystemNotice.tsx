@@ -24,6 +24,7 @@ import {
   CollapsibleCardContent,
   CollapsibleCardTrigger,
 } from '@/components/ui/CollapsibleCard'
+import { Fact, FactList } from '@/components/ui/FactCard'
 import {
   Card,
   CardBody,
@@ -380,17 +381,17 @@ function WorkingDirMarker({
               </div>
             </div>
             <CardHighlight className="p-3">
-              <dl className="grid grid-cols-[max-content_minmax(0,1fr)] items-baseline gap-x-4 gap-y-2 font-mono text-[12px]">
+              <FactList className="gap-y-2">
                 {scope.cause !== 'selected' || previous !== null ? (
-                  <>
-                    <dt className="text-ink-ghost">Before</dt>
-                    <dd className="min-w-0 wrap-break-word text-ink-faint">
-                      {previous ?? 'unscoped'}
-                    </dd>
-                  </>
+                  <Fact label="Before" mono muted>
+                    {previous ?? 'unscoped'}
+                  </Fact>
                 ) : null}
-                <dt className="text-ink-ghost">Now</dt>
-                <dd className="flex min-w-0 items-baseline gap-2 text-ink">
+                <Fact
+                  label="Now"
+                  mono
+                  className="flex min-w-0 items-baseline gap-2"
+                >
                   <span className="min-w-0 wrap-break-word">
                     {scope.path ?? 'unscoped'}
                   </span>
@@ -401,8 +402,8 @@ function WorkingDirMarker({
                       className="shrink-0 self-center"
                     />
                   ) : null}
-                </dd>
-              </dl>
+                </Fact>
+              </FactList>
             </CardHighlight>
           </div>
         </CollapsibleCardContent>
@@ -723,19 +724,19 @@ function TechnicalDetails({
           framed ? 'px-4 pb-4 sm:px-3 sm:pb-3' : 'mt-2',
         )}
       >
-        <dl className="grid grid-cols-[max-content_minmax(0,1fr)] items-baseline gap-x-4 gap-y-1.5 font-mono text-[12px]">
+        <FactList className="gap-y-1.5">
           {rows.map(([label, value]) => (
-            <div key={label} className="contents">
-              <dt className="text-ink-ghost">{label}</dt>
-              <dd
-                data-technical-detail={label.toLowerCase()}
-                className="min-w-0 wrap-break-word text-ink-faint"
-              >
-                {value}
-              </dd>
-            </div>
+            <Fact
+              key={label}
+              label={label}
+              mono
+              muted
+              data-technical-detail={label.toLowerCase()}
+            >
+              {value}
+            </Fact>
           ))}
-        </dl>
+        </FactList>
         <div className="flex items-center gap-1.5 font-sans text-sm text-ink-faint sm:text-[0.8125rem]">
           <CopyMessageButton text={copyText} label="copy technical details" />
           <span>Copy for a bug report</span>

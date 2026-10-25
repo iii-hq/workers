@@ -17,15 +17,14 @@ import { EmailPrompt } from '@/components/EmailPrompt'
 import { ExtOverlays } from '@/components/ExtOverlays'
 import { OnboardingWizardHost } from '@/components/onboarding/OnboardingWizard'
 import { PaletteHost, type PaletteWorkspace } from '@/components/PaletteHost'
-import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { ShortcutsDialog } from '@/components/ShortcutsDialog'
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogTitle,
-} from '@/components/ui/Dialog'
-import { Eyebrow } from '@/components/ui/Eyebrow'
-import { KeyCombo } from '@/components/ui/KeyCombo'
+} from '@/components/shadcn/dialog'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { Sheet } from '@/components/ui/Sheet'
 import { EmptyPane } from '@/components/workspace/EmptyPane'
 import {
@@ -68,12 +67,6 @@ import {
   type InjectableUiRuntime,
   useConversationsCtx,
 } from '@/lib/conversations-context'
-import { shortcutPlatform } from '@/lib/keybindings/bindings'
-import {
-  bindingsFor,
-  keybindingGroups,
-  resolveBindings,
-} from '@/lib/keybindings/registry'
 import { registerPageCommands } from '@/lib/page-commands'
 import { onPaletteOpenRequest } from '@/lib/palette/open-request'
 import {
@@ -82,6 +75,7 @@ import {
   takePaneFocusRequest,
 } from '@/lib/pane-focus'
 import { subscribePanelOpen, subscribeScreenOpen } from '@/lib/panel-context'
+import { onShortcutsDialogRequest } from '@/lib/shortcuts-request'
 import { loadEdgeAddDiscovered, saveEdgeAddDiscovered } from '@/lib/storage'
 import { cn } from '@/lib/utils'
 import {
@@ -211,6 +205,8 @@ export function App({
   const [view] = useHashRoute()
   const narrowSettings = useMediaQuery('(max-width: 639px)')
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  // The sidebar's help button and any worker page open the same dialog.
+  useEffect(() => onShortcutsDialogRequest(() => setShortcutsOpen(true)), [])
   // Held here, not in `PaletteHost`: ⌘K is one way in and the phone header's
   // search affordance is the other, so the state has to sit above both.
   const [paletteOpen, setPaletteOpen] = useState(false)
@@ -441,6 +437,7 @@ export function App({
       setPaletteOpen((current) => !current)
     },
     'app.settings': toggleSettings,
+    'app.shortcuts': () => setShortcutsOpen((current) => !current),
     // Both open the chat pane first: the dialogs live in it.
     'chat.new': () => {
       openWorkspaceScreen(CHAT_SCREEN)
@@ -1690,7 +1687,14 @@ export function ConfigurationOverlay({
         if (!open) onClose()
       }}
     >
-      <DialogContent className="flex h-[calc(100dvh-1rem)] max-h-[calc(100dvh-1rem)] w-[calc(100vw-1rem)] max-w-6xl flex-col overflow-hidden rounded-xl p-0 shadow-floating sm:h-[min(52rem,calc(100dvh-3rem))] sm:max-h-[calc(100dvh-3rem)] sm:w-[calc(100vw-3rem)]">
+      <DialogContent
+        showCloseButton={false}
+        initialFocus={() =>
+          document.querySelector<HTMLElement>('[data-settings-focus-root]') ??
+          true
+        }
+        className="fixed inset-0 top-0 left-0 flex h-dvh max-h-none w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 rounded-none bg-white p-0 ring-0 sm:max-w-none data-open:animate-none data-closed:animate-none dark:bg-black"
+      >
         <DialogTitle className="sr-only">Settings</DialogTitle>
         <DialogDescription className="sr-only">
           Configure the ADE and registered workers.
@@ -1700,79 +1704,8 @@ export function ConfigurationOverlay({
           onThemeChange={onThemeChange}
           onDirtyChange={onDirtyChange}
           tryNavigate={tryNavigate}
+          onClose={onClose}
         />
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-interface ShortcutsDialogProps {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-}
-
-/* Generated from the registry, so the overlay cannot drift from what the
-   keys actually do, and each chord is spelled for the reader's keyboard. */
-function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
-  const platform = shortcutPlatform()
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogTitle className="text-[11px] font-semibold text-ink-faint">
-          Keyboard shortcuts
-        </DialogTitle>
-        <DialogDescription className="mt-1">
-          Every row in{' '}
-          <KeyCombo binding={bindingsFor('palette.toggle')[0] ?? 'Mod+K'} />{' '}
-          shows its key, so this list is a reference, not homework.
-        </DialogDescription>
-        {keybindingGroups()
-          .map(
-            ([group, entries]) =>
-              [
-                group,
-                entries.filter(
-                  (entry) =>
-                    resolveBindings(entry.bindings, platform).length > 0,
-                ),
-              ] as const,
-          )
-          .filter(([, entries]) => entries.length > 0)
-          .map(([group, entries]) => (
-            <section key={group} className="mt-4">
-              <Eyebrow as="h3" size="lg" className="text-ink-ghost">
-                {group}
-              </Eyebrow>
-              <ul className="mt-1 divide-y divide-rule-2 border-t border-b border-rule-2">
-                {entries.map((entry) => (
-                  <li
-                    key={entry.id}
-                    className="flex items-center justify-between gap-6 py-2 font-mono text-[12px] text-ink"
-                  >
-                    <span className="text-ink-faint">{entry.title}</span>
-                    {/* Alternatives, not one chord: without a separator `tab`
-                      and `shift tab` read as a single four-key press. */}
-                    <span className="flex shrink-0 items-center gap-2">
-                      {resolveBindings(entry.bindings, platform).map(
-                        (binding, index) => (
-                          <Fragment key={binding}>
-                            {index > 0 ? (
-                              <span className="text-ink-ghost">or</span>
-                            ) : null}
-                            <KeyCombo
-                              binding={binding}
-                              platform={platform}
-                              digitRange={entry.digitIndex}
-                            />
-                          </Fragment>
-                        ),
-                      )}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ))}
       </DialogContent>
     </Dialog>
   )

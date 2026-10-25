@@ -119,7 +119,8 @@ export function XaiDiscoveryStatus({
               ) : null}
               {retryFailed ? (
                 <p>
-                  The check could not be completed. The last diagnostic has been kept.
+                  The check could not be completed. The last diagnostic has been
+                  kept.
                 </p>
               ) : null}
               <div className="flex min-w-0 flex-col items-stretch gap-2">

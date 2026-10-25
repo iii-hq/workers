@@ -217,6 +217,54 @@ const SUBSEQUENCE_KINDS: ReadonlySet<PaletteKind> = new Set([
   'file',
 ])
 
+/**
+ * Verbs and nouns people use interchangeably for the same intent. "change
+ * theme", "switch theme" and "toggle theme" are one request, so a word also
+ * matches through its group, a step below a match on the word itself.
+ */
+const SYNONYM_GROUPS: readonly (readonly string[])[] = [
+  ['change', 'switch', 'toggle', 'set', 'pick', 'select'],
+  ['open', 'show', 'view', 'go', 'goto', 'jump'],
+  ['new', 'create', 'add', 'start'],
+  ['close', 'hide', 'dismiss', 'exit'],
+  ['delete', 'remove', 'clear'],
+  ['find', 'search', 'look'],
+  ['settings', 'preferences', 'config', 'configuration', 'options'],
+  ['theme', 'appearance', 'mode'],
+  ['panel', 'pane', 'column', 'split'],
+  ['workspace', 'tab'],
+  ['chat', 'conversation', 'session'],
+  ['shortcut', 'shortcuts', 'keys', 'keybinding', 'hotkey'],
+]
+
+const SYNONYMS = new Map<string, readonly string[]>()
+for (const group of SYNONYM_GROUPS) {
+  for (const word of group) {
+    SYNONYMS.set(
+      word,
+      group.filter((other) => other !== word),
+    )
+  }
+}
+
+/** A word's own score, or 45 when a synonym appears as a whole word. Whole
+ *  words only: "mode" must not find "model". */
+function scoreIntent(
+  haystacks: string[],
+  word: string,
+  fuzzy: boolean,
+): number {
+  const direct = scoreWord(haystacks, word, fuzzy)
+  if (direct > 0) return direct
+  const others = SYNONYMS.get(word)
+  if (!others) return 0
+  for (const hay of haystacks) {
+    const tokens = hay.split(/[\s:/._-]+/)
+    if (others.some((other) => tokens.includes(other))) return 45
+  }
+  return 0
+}
+
 export function scoreEntry(entry: PaletteEntry, query: string): number {
   if (!query) return 1
   const haystacks = [
@@ -231,14 +279,14 @@ export function scoreEntry(entry: PaletteEntry, query: string): number {
   if (words.length > 1) {
     let weakest = Number.POSITIVE_INFINITY
     for (const word of words) {
-      const score = scoreWord(haystacks, word, fuzzy)
+      const score = scoreIntent(haystacks, word, fuzzy)
       if (score === 0) return 0
       weakest = Math.min(weakest, score)
     }
     const whole = scoreWord(haystacks, words.join(' '), fuzzy)
     return Math.max(whole, weakest)
   }
-  return scoreWord(haystacks, words[0] ?? '', fuzzy)
+  return scoreIntent(haystacks, words[0] ?? '', fuzzy)
 }
 
 function scoreWord(
@@ -339,4 +387,66 @@ export function groupEntries(
     (kind) => groups.has(kind),
   ).map((kind) => [kind, groups.get(kind) as PaletteEntry[]])
   return recent.length > 0 ? [['recent', recent], ...ordered] : ordered
+}
+
+/** A half-open `[start, end)` slice of a label that the query matched. */
+export type MatchRange = readonly [number, number]
+
+/**
+ * Which characters of `text` the query matched, for highlighting. It follows
+ * the scorer: each word lands on its best occurrence (a word start before a
+ * match inside a word), and an id-like label falls back to the subsequence
+ * (`ewl` lighting e, w and l of `engine::workers::list`). Ranges come back
+ * sorted and merged.
+ */
+export function matchRanges(
+  text: string,
+  query: string,
+  kind?: PaletteKind,
+): MatchRange[] {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean)
+  if (words.length === 0 || !text) return []
+  const hay = text.toLowerCase()
+  const found: Array<[number, number]> = []
+  for (const typed of words) {
+    // "switch model" lights the "Change" it matched through.
+    const tokens = hay.split(/[\s:/._-]+/)
+    const word =
+      hay.includes(typed) || !SYNONYMS.has(typed)
+        ? typed
+        : ((SYNONYMS.get(typed) ?? []).find((other) =>
+            tokens.includes(other),
+          ) ?? typed)
+    let at = -1
+    for (let from = hay.indexOf(word); from !== -1; ) {
+      const boundary = from === 0 || /[\s:/._-]/.test(hay[from - 1])
+      if (at === -1) at = from
+      if (boundary) {
+        at = from
+        break
+      }
+      from = hay.indexOf(word, from + 1)
+    }
+    if (at !== -1) found.push([at, at + word.length])
+  }
+  if (found.length === 0 && kind && SUBSEQUENCE_KINDS.has(kind)) {
+    const needle = words.join('')
+    let cursor = 0
+    const chars: Array<[number, number]> = []
+    for (const char of needle) {
+      const at = hay.indexOf(char, cursor)
+      if (at === -1) return []
+      chars.push([at, at + 1])
+      cursor = at + 1
+    }
+    found.push(...chars)
+  }
+  found.sort((a, b) => a[0] - b[0])
+  const merged: Array<[number, number]> = []
+  for (const range of found) {
+    const last = merged.at(-1)
+    if (last && range[0] <= last[1]) last[1] = Math.max(last[1], range[1])
+    else merged.push([range[0], range[1]])
+  }
+  return merged
 }

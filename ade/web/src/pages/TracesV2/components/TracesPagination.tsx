@@ -18,7 +18,8 @@ interface TracesPaginationProps {
   pageSizeOptions?: number[]
 }
 
-/** The list's footer: rows per page, the window shown, and page arrows. */
+/** The list's footer: rows per page, the window shown, and page arrows —
+ *  quiet by design, secondary to the search above it. */
 export function TracesPagination({
   currentPage,
   totalPages,
@@ -34,17 +35,25 @@ export function TracesPagination({
     value: String(size),
     label: `${size} per page`,
   }))
+  const pages = Math.max(1, totalPages)
   return (
-    <div className="flex items-center justify-between gap-4 text-xs text-muted-foreground">
+    <nav
+      aria-label="trace pages"
+      className="flex h-8 items-center justify-between gap-3 font-inter text-[11px] text-muted-foreground"
+    >
       <Select
         value={String(pageSize)}
         onValueChange={(value) => onPageSizeChange(Number(value))}
         items={items}
       >
-        <SelectTrigger size="sm" aria-label="rows per page">
+        <SelectTrigger
+          size="sm"
+          aria-label="rows per page"
+          className="h-7 rounded-md border-transparent bg-transparent px-1.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
           <SelectValue />
         </SelectTrigger>
-        <SelectContent>
+        <SelectContent align="start" className="rounded-lg">
           {items.map((item) => (
             <SelectItem key={item.value} value={item.value}>
               {item.label}
@@ -53,26 +62,30 @@ export function TracesPagination({
         </SelectContent>
       </Select>
       <div className="flex items-center gap-1">
-        <span className="mr-2 font-mono tabular-nums">
-          {start}–{end} of {totalItems}
+        <span className="font-mono tabular-nums">
+          {start.toLocaleString('en-US')}–{end.toLocaleString('en-US')} of{' '}
+          {totalItems.toLocaleString('en-US')}
+        </span>
+        <span aria-hidden className="mx-1 text-border">
+          |
         </span>
         <Button
           type="button"
           variant="ghost"
-          size="icon-sm"
+          size="icon-xs"
           aria-label="previous page"
           disabled={currentPage <= 1}
           onClick={() => onPageChange(currentPage - 1)}
         >
           <ChevronLeft />
         </Button>
-        <span className="tabular-nums">
-          page {currentPage} of {Math.max(1, totalPages)}
+        <span className="font-mono tabular-nums">
+          {currentPage} / {pages}
         </span>
         <Button
           type="button"
           variant="ghost"
-          size="icon-sm"
+          size="icon-xs"
           aria-label="next page"
           disabled={currentPage >= totalPages}
           onClick={() => onPageChange(currentPage + 1)}
@@ -80,6 +93,6 @@ export function TracesPagination({
           <ChevronRight />
         </Button>
       </div>
-    </div>
+    </nav>
   )
 }

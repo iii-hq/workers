@@ -5,8 +5,8 @@
  * asset. `setup(host)` creates one shared dictation controller and
  * registers the voice page, its palette commands, the mic (in the composer
  * toolbar when the console has that slot, otherwise as a chat-header chip),
- * the live-transcript row above the composer, and the read-aloud turn
- * summary.
+ * the live-transcript row above the composer (only where the mic is a
+ * chip), and the read-aloud turn summary.
  */
 
 import type { Host } from '@iii-dev/console-ui'
@@ -51,11 +51,12 @@ export default function setup(host: Host) {
   ])
 
   if (typeof chat?.registerComposerAction === 'function') {
+    // The mic shows the live words beside itself; nothing stacks above the editor.
     chat.registerComposerAction(createVoiceComposerAction(host, controller))
   } else {
     chat?.registerSessionChip(createVoiceSessionChip(host, controller))
+    chat?.registerTurnSummary?.(createVoiceLiveSummary(host, controller))
   }
-  chat?.registerTurnSummary?.(createVoiceLiveSummary(host, controller))
   chat?.registerTurnSummary?.(createVoiceTurnSummary(host))
 
   return () => { void controller.cancel() }

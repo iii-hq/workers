@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from 'react'
+import { DrawnCheck } from '@/components/chat/ChatGlyphs'
 import { CopyMessageButton } from '@/components/chat/CopyMessageButton'
 import {
   TimelineActivityDisclosure,
@@ -34,7 +35,6 @@ import {
   CollapsibleCardContent,
   CollapsibleCardTrigger,
 } from '@/components/ui/CollapsibleCard'
-import { eyebrowClassName } from '@/components/ui/Eyebrow'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
@@ -242,9 +242,9 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
 
 function FunctionIdentityRow({ functionId }: { functionId: string }) {
   return (
-    <div className="flex min-w-0 items-center gap-2 border-b border-rule-2 bg-paper-2 px-3 py-1.5">
-      <span className="shrink-0 iii-ui-eyebrow">function</span>
-      <span className="min-w-0 flex-1 truncate font-mono text-[12px]">
+    <div className="flex min-w-0 items-center gap-3 border-b border-edge px-4 py-2.5 sm:px-3">
+      <span className={cn('shrink-0', PANE_LABEL_CLS)}>Function</span>
+      <span className="min-w-0 flex-1 truncate font-geist-mono text-[12px] text-ink">
         <span className="text-accent italic font-semibold">ƒ</span>{' '}
         <FunctionIdLabel functionId={functionId} />
       </span>
@@ -397,12 +397,9 @@ function FunctionTriggerStatusIcon({
         <X strokeWidth={2.5} className="size-4 stroke-alert" />
       </span>
       <span data-activity-status-layer="done">
-        <Check
-          strokeWidth={2.5}
-          className={cn(
-            'size-4',
-            expanded ? 'stroke-ok' : 'stroke-muted-foreground',
-          )}
+        <DrawnCheck
+          active={status === 'done'}
+          className={cn('size-4', expanded ? 'text-ok' : 'text-ink-faint')}
         />
       </span>
     </span>
@@ -972,22 +969,31 @@ export function FunctionTriggerCard({
             <ValuePane label="request" value={rawInput} />
           ) : null}
           {!pending && displayCustomTerminal ? (
-            <div className="border-t border-rule-2 bg-paper-2">
+            <div className="border-t border-edge bg-paper-2">
               <button
                 type="button"
                 aria-expanded={showRawDetails}
                 onClick={() => setShowRawDetails((value) => !value)}
                 className={cn(
-                  eyebrowClassName,
-                  'w-full cursor-pointer px-3 py-2 text-left hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent',
+                  PANE_LABEL_CLS,
+                  'flex w-full cursor-pointer items-center gap-2 px-4 py-2.5 text-left text-ink-faint transition-[background-color,color] duration-[var(--motion-duration-fast)] hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent sm:px-3',
                 )}
               >
-                {showRawDetails ? 'hide' : 'show'} raw request and response
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    'inline-block text-ink-ghost transition-transform duration-[var(--motion-duration-control)]',
+                    showRawDetails && 'rotate-90',
+                  )}
+                >
+                  ▸
+                </span>
+                {showRawDetails ? 'Hide' : 'Show'} raw request and response
               </button>
               {showRawDetails ? (
                 <>
                   <ValuePane label="request" value={rawInput} />
-                  <ValuePane label="response" value={rawOutput} bordered />
+                  <ValuePane label="response" value={rawOutput} stacked />
                 </>
               ) : null}
             </div>
@@ -998,7 +1004,7 @@ export function FunctionTriggerCard({
             ) : hasCustomTerminal ? (
               <div className="border-t border-rule-2">{customTerminal}</div>
             ) : (
-              <ValuePane label="response" value={rawOutput} bordered />
+              <ValuePane label="response" value={rawOutput} stacked />
             )
           ) : null}
           {!pending && !running && !displayCustomTerminal ? (
@@ -1015,13 +1021,13 @@ export function FunctionTriggerCard({
                 <TabsContent value="terminal">{customTerminal}</TabsContent>
                 <TabsContent value="json">
                   <ValuePane label="request" value={rawInput} />
-                  <ValuePane label="response" value={rawOutput} bordered />
+                  <ValuePane label="response" value={rawOutput} stacked />
                 </TabsContent>
               </Tabs>
             ) : (
               <>
                 <ValuePane label="request" value={rawInput} />
-                <ValuePane label="response" value={rawOutput} bordered />
+                <ValuePane label="response" value={rawOutput} stacked />
               </>
             )
           ) : null}
@@ -1105,15 +1111,86 @@ export function FunctionTriggerCard({
 interface ValuePaneProps {
   label: string
   value: unknown
-  bordered?: boolean
+  /** A pane that follows another in the same column: no top margin, so the
+      two sit one pane-gap apart instead of two. */
+  stacked?: boolean
 }
 
-const TEXT_PRE_CLS =
-  'bg-bg overflow-x-auto px-3 py-2 font-mono text-[12.5px] leading-[1.55] text-ink whitespace-pre-wrap break-words'
+/* Pane chrome — the same recipe as the traces page's payload panes: Inter
+   labels on a hairline-framed card, the body on the editor code theme
+   (`.code-theme-editor`, index.css: Geist Mono at 13px, loose leading, the
+   Vesper / min-light token palette). Machine values (line counts, ids) stay
+   in Geist Mono. */
+const PANE_LABEL_CLS = 'font-inter text-xs font-medium text-ink'
+const PANE_HINT_CLS = 'font-inter text-[11px] font-normal text-ink-faint'
+const PANE_FRAME_CLS =
+  'code-theme-editor min-w-0 overflow-hidden rounded-lg border border-edge bg-(--code-surface) mx-4 mb-4 sm:mx-3 sm:mb-3'
+const PANE_FRAME_TOP_CLS = 'mt-4 sm:mt-3'
+const PANE_HEADER_CLS =
+  'flex h-8 items-center gap-2 border-b border-edge bg-paper-2 pr-1 pl-3'
+const PANE_BODY_PAD_CLS = 'px-4 py-3'
+
+/** `request` → `Request` for display; the data attribute keeps the raw id. */
+function titleCase(label: string): string {
+  return label.charAt(0).toUpperCase() + label.slice(1)
+}
+
+/* Copy → copied is an infrequent state swap: both icons stay in one grid
+   cell and cross-fade (scale 0.25→1, blur 4→0, 300ms on the standard
+   curve); reduced motion leaves only the opacity fade. */
+const COPY_ICON_LAYER_CLS =
+  '[grid-area:1/1] transition-[opacity,filter,scale] duration-300 ease-[cubic-bezier(0.2,0,0,1)] motion-reduce:scale-100 motion-reduce:blur-[0px]'
+const COPY_ICON_SHOWN_CLS = 'scale-100 opacity-100 blur-[0px]'
+const COPY_ICON_HIDDEN_CLS = 'scale-[0.25] opacity-0 blur-[4px]'
+
+function PaneCopyButton({ label, text }: { label: string; text: string }) {
+  const [copied, setCopied] = useState(false)
+  const copy = () => {
+    void copyTextToClipboard(text).then((ok) => {
+      if (!ok) return
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1200)
+    })
+  }
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-ink-ghost transition-[background-color,color] duration-[var(--motion-duration-fast)] hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+      aria-label={copied ? 'copied' : `copy ${label}`}
+      title={copied ? 'Copied' : 'Copy'}
+    >
+      <span className="grid place-items-center">
+        <span
+          className={cn(
+            COPY_ICON_LAYER_CLS,
+            copied ? COPY_ICON_SHOWN_CLS : COPY_ICON_HIDDEN_CLS,
+          )}
+        >
+          <Check className="size-4 text-ok" aria-hidden />
+        </span>
+        <span
+          className={cn(
+            COPY_ICON_LAYER_CLS,
+            copied ? COPY_ICON_HIDDEN_CLS : COPY_ICON_SHOWN_CLS,
+          )}
+        >
+          <Copy className="size-4" aria-hidden />
+        </span>
+      </span>
+    </button>
+  )
+}
+
+const TEXT_PRE_CLS = cn(
+  PANE_BODY_PAD_CLS,
+  'overflow-x-auto whitespace-pre-wrap break-words',
+)
 
 /** Rendered lines above which a pane collapses behind a "show all" footer. */
 const CLAMP_LINES = 24
-/** Collapsed body height — ~16 code lines, enough to identify the payload. */
+/** Collapsed body height — ~12 code lines at the editor theme's leading,
+    enough to identify the payload. */
 const CLAMP_MAX_H = 'max-h-[21rem]'
 
 function countLines(s: string): number {
@@ -1133,59 +1210,38 @@ function PaneShell({
   hints,
   copyText,
   lineCount,
-  bordered,
+  stacked,
   children,
 }: {
   label: string
   hints?: string[]
   copyText: string
   lineCount: number
-  bordered?: boolean
+  stacked?: boolean
   children: React.ReactNode
 }) {
   const clampable = lineCount > CLAMP_LINES
   const [expanded, setExpanded] = useState(false)
-  const [copied, setCopied] = useState(false)
-
-  const copy = () => {
-    void copyTextToClipboard(copyText).then((ok) => {
-      if (!ok) return
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1200)
-    })
-  }
 
   return (
     <div
-      className={cn(bordered && 'border-t border-rule-2')}
+      className={cn(PANE_FRAME_CLS, !stacked && PANE_FRAME_TOP_CLS)}
       data-function-pane={label}
     >
-      <div className="flex items-center gap-2 bg-paper-2 px-3 py-1.5 border-b border-rule-2 iii-ui-eyebrow">
-        <span className="min-w-0 flex-1 truncate">
-          {label}
+      <div className={PANE_HEADER_CLS}>
+        <span className={cn('min-w-0 flex-1 truncate', PANE_LABEL_CLS)}>
+          {titleCase(label)}
           {(hints ?? []).map((hint) => (
-            <span
-              key={hint}
-              className="text-ink-ghost normal-case tracking-normal"
-            >
-              {' '}
-              · {hint}
+            <span key={hint} className={cn('ml-2', PANE_HINT_CLS)}>
+              {hint}
             </span>
           ))}
         </span>
-        <button
-          type="button"
-          onClick={copy}
-          className="shrink-0 cursor-pointer text-ink-ghost hover:text-ink transition-colors"
-          aria-label={copied ? 'copied' : `copy ${label}`}
-          title={copied ? 'copied' : 'copy'}
-        >
-          {copied ? (
-            <Check size={16} aria-hidden />
-          ) : (
-            <Copy size={16} aria-hidden />
-          )}
-        </button>
+        <span className="shrink-0 font-geist-mono text-[11px] text-ink-faint tabular-nums">
+          {lineCount.toLocaleString('en-US')}{' '}
+          {lineCount === 1 ? 'line' : 'lines'}
+        </span>
+        <PaneCopyButton label={label} text={copyText} />
       </div>
       <div
         className={cn(
@@ -1199,9 +1255,12 @@ function PaneShell({
           type="button"
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded}
-          className="w-full border-t border-rule-2 bg-paper-2 px-3 py-1 text-center font-mono text-[11px] text-ink-faint hover:text-ink transition-colors"
+          className={cn(
+            PANE_HINT_CLS,
+            'w-full cursor-pointer border-t border-edge bg-paper-2 px-3 py-1.5 text-center text-xs transition-colors hover:text-ink',
+          )}
         >
-          {expanded ? '▴ Collapse' : `▾ Show all · ${lineCount} lines`}
+          {expanded ? 'Collapse' : `Show all · ${lineCount} lines`}
         </button>
       ) : null}
     </div>
@@ -1215,16 +1274,23 @@ function PaneShell({
  */
 function StreamingArgsPane({ text }: { text: string }) {
   return (
-    <div data-function-pane="request">
-      <div className="bg-paper-2 px-3 py-1.5 iii-ui-eyebrow">
-        request
-        <span className="text-ink-ghost normal-case tracking-normal">
-          {' '}
-          · streaming…
+    <div
+      className={cn(PANE_FRAME_CLS, PANE_FRAME_TOP_CLS)}
+      data-function-pane="request"
+    >
+      <div className={PANE_HEADER_CLS}>
+        <span className={PANE_LABEL_CLS}>
+          Request
+          <span className={cn('ml-2', PANE_HINT_CLS)}>streaming…</span>
         </span>
       </div>
-      <div className="max-h-48 overflow-y-auto flex flex-col-reverse">
-        <pre className="px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-all text-ink-faint">
+      <div className="flex max-h-56 flex-col-reverse overflow-y-auto">
+        <pre
+          className={cn(
+            PANE_BODY_PAD_CLS,
+            'whitespace-pre-wrap break-all text-(--syntax-comment)',
+          )}
+        >
           {text}
         </pre>
       </div>
@@ -1283,21 +1349,20 @@ export function paneCopyText(value: unknown): string {
   return resultEnvelope(value) ? formatJson(value) : plainPane(value).body
 }
 
-function ValuePane({ label, value, bordered }: ValuePaneProps) {
+function ValuePane({ label, value, stacked }: ValuePaneProps) {
   const empty = isEmptyValue(value)
   const envelope = empty ? null : resultEnvelope(value)
 
   if (empty) {
     return (
       <div
-        className={cn(bordered && 'border-t border-rule-2')}
+        className={cn(PANE_FRAME_CLS, !stacked && PANE_FRAME_TOP_CLS)}
         data-function-pane={label}
       >
-        <div className="bg-paper-2 px-3 py-1.5 iii-ui-eyebrow">
-          {label}
-          <span className="text-ink-ghost normal-case tracking-normal">
-            {' '}
-            · empty
+        <div className={cn(PANE_HEADER_CLS, 'border-b-0')}>
+          <span className={PANE_LABEL_CLS}>
+            {titleCase(label)}
+            <span className={cn('ml-2', PANE_HINT_CLS)}>empty</span>
           </span>
         </div>
       </div>
@@ -1328,11 +1393,15 @@ function ValuePane({ label, value, bordered }: ValuePaneProps) {
         label={label}
         copyText={paneCopyText(value)}
         lineCount={lineCount}
-        bordered={bordered}
+        stacked={stacked}
       >
         {blocks.map((b) =>
           b.parsed !== undefined ? (
-            <JsonHighlight key={b.raw} code={formatJson(b.parsed)} />
+            <JsonHighlight
+              key={b.raw}
+              code={formatJson(b.parsed)}
+              className={PANE_BODY_PAD_CLS}
+            />
           ) : (
             <pre key={b.raw} className={TEXT_PRE_CLS}>
               <code>{b.raw}</code>
@@ -1341,10 +1410,10 @@ function ValuePane({ label, value, bordered }: ValuePaneProps) {
         )}
         {detailsJson ? (
           <>
-            <div className="bg-paper-2 px-3 py-1.5 border-y border-rule-2 iii-ui-eyebrow">
-              details
+            <div className={cn(PANE_HEADER_CLS, 'border-t')}>
+              <span className={PANE_LABEL_CLS}>Details</span>
             </div>
-            <JsonHighlight code={detailsJson} />
+            <JsonHighlight code={detailsJson} className={PANE_BODY_PAD_CLS} />
           </>
         ) : null}
       </PaneShell>
@@ -1359,10 +1428,10 @@ function ValuePane({ label, value, bordered }: ValuePaneProps) {
       hints={hints}
       copyText={paneCopyText(value)}
       lineCount={countLines(body)}
-      bordered={bordered}
+      stacked={stacked}
     >
       {json ? (
-        <JsonHighlight code={body} />
+        <JsonHighlight code={body} className={PANE_BODY_PAD_CLS} />
       ) : (
         <pre className={TEXT_PRE_CLS}>
           <code>{body}</code>

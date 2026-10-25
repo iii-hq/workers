@@ -155,9 +155,13 @@ function DropdownMenuCheckboxItem({
   children,
   checked,
   inset,
+  indicator,
   ...props
 }: MenuPrimitive.CheckboxItem.Props & {
   inset?: boolean
+  /** The checked mark; defaults to a check icon. A menu whose "checked"
+   *  means something else (hidden, muted) swaps in the glyph that says so. */
+  indicator?: React.ReactNode
 }) {
   return (
     <MenuPrimitive.CheckboxItem
@@ -175,7 +179,7 @@ function DropdownMenuCheckboxItem({
         data-slot="dropdown-menu-checkbox-item-indicator"
       >
         <MenuPrimitive.CheckboxItemIndicator>
-          <CheckIcon />
+          {indicator ?? <CheckIcon />}
         </MenuPrimitive.CheckboxItemIndicator>
       </span>
       {children}

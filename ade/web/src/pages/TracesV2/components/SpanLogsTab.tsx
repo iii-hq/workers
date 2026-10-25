@@ -1,5 +1,6 @@
 import { Clock } from 'lucide-react'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 import { formatPossibleJson } from '../lib/formatPossibleJson'
 import { redactAttributeEntries } from '../lib/redactAttributes'
@@ -38,7 +39,7 @@ export function SpanLogsTab({ span, redact }: SpanLogsTabProps) {
   const firstEventMs = toMs(sortedEvents[0].timestamp_unix_nano)
 
   return (
-    <div className="p-5 space-y-2">
+    <div className="flex flex-col gap-2 p-4 font-inter">
       {sortedEvents.map((event, index) => {
         const eventMs = toMs(event.timestamp_unix_nano)
         const offsetMs = eventMs - firstEventMs
@@ -51,41 +52,42 @@ export function SpanLogsTab({ span, redact }: SpanLogsTabProps) {
             key={`${event.name}-${event.timestamp_unix_nano}`}
             data-span-event-name={event.name}
             className={cn(
-              'rounded-sm',
-              isException ? 'bg-alert-muted' : 'bg-bg',
+              'overflow-hidden rounded-lg border',
+              isException
+                ? 'border-alert/30 bg-alert-muted'
+                : 'border-border bg-card',
             )}
           >
-            <div className="px-4 py-3">
+            <div className="px-3 py-2">
               <div className="flex items-start justify-between gap-3">
-                <div className="flex-1 min-w-0">
+                <div className="min-w-0 flex-1">
                   <div
-                    className={`font-mono text-[13px] font-semibold mb-0.5 ${
-                      isException ? 'text-alert' : 'text-ink'
-                    }`}
+                    className={cn(
+                      'font-mono text-xs font-semibold',
+                      isException ? 'text-alert-strong' : 'text-foreground',
+                    )}
                   >
                     {event.name}
                   </div>
-                  <div className="flex items-center gap-2 font-mono text-[11px] text-ink-faint tabular-nums">
+                  <div className="flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground tabular-nums">
                     <span>{formatTimestamp(eventMs)}</span>
                     {index > 0 && (
                       <>
-                        <span className="text-ink-ghost">&middot;</span>
-                        <span className="text-ink-faint">
-                          {formatRelative(offsetMs)}
-                        </span>
+                        <span aria-hidden>&middot;</span>
+                        <span>{formatRelative(offsetMs)}</span>
                       </>
                     )}
                   </div>
                 </div>
-                <span className="font-mono text-[11px] text-ink-faint flex-shrink-0 px-1.5 py-0.5 rounded-xs bg-surface tabular-nums">
+                <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground tabular-nums">
                   #{index + 1}
                 </span>
               </div>
             </div>
 
             {attrEntries.length > 0 && (
-              <div className="border-t border-rule px-4 py-2.5">
-                <div className="space-y-1.5">
+              <div className="border-t border-border px-3 py-2">
+                <div className="flex flex-col gap-1.5">
                   {attrEntries.map(([key, value]) => (
                     <EventAttributeRow key={key} attrKey={key} value={value} />
                   ))}
@@ -96,7 +98,7 @@ export function SpanLogsTab({ span, redact }: SpanLogsTabProps) {
         )
       })}
 
-      <div className="font-mono text-[11px] text-ink-ghost text-center pt-2 tabular-nums">
+      <div className="pt-1 text-center font-mono text-[11px] text-muted-foreground tabular-nums">
         {sortedEvents.length} event{sortedEvents.length !== 1 ? 's' : ''}
       </div>
     </div>
@@ -126,10 +128,10 @@ function EventAttributeRow({
         className="flex flex-col gap-1 text-[11px]"
         data-span-event-attribute={attrKey}
       >
-        <span className="iii-ui-eyebrow">{attrKey}</span>
-        <pre className="rounded-sm bg-bg px-3 py-2 font-mono text-[12.5px] leading-[1.55] text-ink overflow-x-auto whitespace-pre">
-          {formatted}
-        </pre>
+        <span className="font-mono text-muted-foreground">{attrKey}</span>
+        <div className="code-theme-editor max-h-80 overflow-auto overscroll-contain rounded-md border border-border">
+          <JsonHighlight code={formatted} className="px-3 py-2" />
+        </div>
       </div>
     )
   }
@@ -138,8 +140,10 @@ function EventAttributeRow({
       className="flex items-start gap-2 text-[11px]"
       data-span-event-attribute={attrKey}
     >
-      <span className="iii-ui-eyebrow flex-shrink-0">{attrKey}</span>
-      <span className="font-mono text-ink break-all tabular-nums">
+      <span className="shrink-0 font-mono text-muted-foreground">
+        {attrKey}
+      </span>
+      <span className="font-mono break-all text-foreground tabular-nums">
         {typeof value === 'object' ? JSON.stringify(value) : String(value)}
       </span>
     </div>

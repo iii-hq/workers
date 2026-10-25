@@ -27,6 +27,7 @@ import {
   GitBranch,
   MessageSquare,
   RefreshCw,
+  Search,
   X,
 } from 'lucide-react'
 import {
@@ -37,7 +38,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import { Button } from '@/components/ui/Button'
+import { Button } from '@/components/shadcn/button'
 import { Cell } from '@/components/ui/Cell'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
@@ -807,7 +808,7 @@ export function TracesV2({
           keywords: ['filter', 'find'],
           run: () =>
             rootRef.current
-              ?.querySelector<HTMLElement>('[placeholder="search traces..."]')
+              ?.querySelector<HTMLElement>('[aria-label="search traces"]')
               ?.focus(),
         },
         {
@@ -848,9 +849,12 @@ export function TracesV2({
   // row (or pinned at the top of the scroll area when that row isn't in the
   // current page — timeline-strip clicks, deep links). The left accent
   // border continues the selected row's marker.
+  const viewSwitcher = (
+    <ViewSwitcher currentView={activeView} onViewChange={setActiveView} />
+  )
   const traceDetail =
     selectedTraceId !== null ? (
-      <div className="mx-2 my-2 overflow-hidden rounded-xl bg-panel-raised ring-1 ring-neutral-200 dark:ring-neutral-800">
+      <div className="mx-2 my-1.5 overflow-hidden rounded-lg border border-border bg-card">
         {isLoadingSpans && (
           <TraceDetailSkeleton
             onClose={() => selectTrace(null)}
@@ -859,28 +863,30 @@ export function TracesV2({
           />
         )}
         {!isLoadingSpans && spansError && (
-          <div className="p-4 flex flex-col gap-3">
+          <div className="flex flex-col gap-3 p-4">
             <StatusPanel
               variant="alert"
-              icon={<AlertCircle className="w-full h-full" />}
+              icon={<AlertCircle className="h-full w-full" />}
               headline="failed to load trace"
               detail={spansError}
             />
             <div className="flex items-center gap-2">
               <Button
-                variant="ghost"
+                type="button"
+                variant="outline"
                 size="sm"
                 onClick={() => loadTraceSpans(selectedTraceId)}
               >
-                <RefreshCw className="size-4" />
-                retry
+                <RefreshCw data-icon="inline-start" />
+                Retry
               </Button>
               <Button
+                type="button"
                 variant="ghost"
                 size="sm"
                 onClick={() => selectTrace(null)}
               >
-                close
+                Close
               </Button>
             </div>
           </div>
@@ -896,14 +902,10 @@ export function TracesV2({
               onOpenMessage={handleOpenMessage}
               loadingSpans={seedProgress}
             />
-            <div className="px-4 py-1">
-              <ViewSwitcher
-                currentView={activeView}
-                onViewChange={setActiveView}
-              />
-            </div>
             {/* the timeline sizes itself to its packed lines (fitContent);
-                the waterfall is virtualized and needs a bounded scrollport */}
+                the waterfall is virtualized and needs a bounded scrollport.
+                Both draw the same toolbar row, with the view switcher at
+                its start, so switching views never moves the controls. */}
             {activeView === 'timeline' && (
               <TraceTimeline
                 data={waterfallData}
@@ -911,21 +913,23 @@ export function TracesV2({
                 selectedSpanId={selectedSpan?.span_id}
                 spanGroupKey={traceSpanGroupKey}
                 spanFilter={spanFilter}
+                toolbarStart={viewSwitcher}
                 fitContent
               />
             )}
             {activeView === 'waterfall' && (
-              <div className="h-[420px]">
+              <div className="h-[440px]">
                 <WaterfallChart
                   data={waterfallData}
                   onSpanClick={setSelectedSpan}
                   selectedSpanId={selectedSpan?.span_id}
                   spanGroupKey={traceSpanGroupKey}
                   spanFilter={spanFilter}
+                  toolbarStart={viewSwitcher}
                 />
               </div>
             )}
-            <div className="border-t border-rule-2">
+            <div className="border-t border-border">
               <WorkerBreakdown data={waterfallData} />
             </div>
           </>
@@ -940,24 +944,43 @@ export function TracesV2({
   // again (until another conversation is selected).
   const sessionScopeChip = sessionScope ? (
     <span
-      className="flex items-center gap-1 rounded-xs bg-surface py-0.5 pr-0.5 pl-2 font-mono text-[11px] text-ink-faint"
+      className="inline-flex h-7 max-w-[14rem] items-center gap-1.5 rounded-md bg-secondary pl-2 text-xs text-foreground"
       title="the list follows the active chat — showing only this session's traces"
+      data-session-scope-chip
     >
-      <MessageSquare className="size-4 flex-shrink-0" />
-      <span className="max-w-[140px] truncate">
+      <MessageSquare
+        className="size-4 shrink-0 text-muted-foreground"
+        aria-hidden
+      />
+      <span className="truncate">
         {activeConversation?.title ?? sessionScope}
       </span>
       <button
         type="button"
         onClick={() => setScopeDismissedFor(sessionScope)}
         aria-label="show all sessions"
-        title="show all sessions"
-        className="p-0.5 transition-colors hover:text-ink"
+        title="Show all sessions"
+        className="mr-1 flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
       >
-        <X className="size-4" />
+        <X className="size-4" aria-hidden />
       </button>
     </span>
   ) : null
+
+  const hasActiveFilters =
+    !!filterState.status ||
+    !!filterState.workerName ||
+    !!filterState.operationName ||
+    !!filterState.minDurationMs ||
+    !!filterState.maxDurationMs ||
+    (!!filterState.startTime && !!filterState.endTime) ||
+    (filterState.attributes?.length ?? 0) > 0 ||
+    (filterState.hiddenFunctions?.length ?? 0) > 0
+  const narrowed = debouncedSearch.trim() !== '' || hasActiveFilters
+  const clearNarrowing = () => {
+    handleSearchChange('')
+    resetFilters()
+  }
 
   return (
     /* onboarding-traces: tour anchor (workers/onboarding) — a selector,
@@ -984,7 +1007,7 @@ export function TracesV2({
         onToggleFollowTurns={conversationsCtx ? toggleFollowTurns : undefined}
       />
 
-      <div className="px-3 py-2.5">
+      <div className="border-b border-border px-3 py-2">
         <ErrorBoundary>
           <TraceFilters
             filters={filterState}
@@ -1073,7 +1096,12 @@ export function TracesV2({
             ) : (
               <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
                 {isQueryLoading && visibleTraceGroups.length === 0 ? (
-                  <div className="flex flex-col">
+                  <div
+                    role="status"
+                    aria-busy="true"
+                    aria-label="loading traces"
+                    className="flex flex-col gap-px px-2 py-1"
+                  >
                     {(
                       [
                         'tr-sk-0',
@@ -1081,47 +1109,74 @@ export function TracesV2({
                         'tr-sk-2',
                         'tr-sk-3',
                         'tr-sk-4',
+                        'tr-sk-5',
+                        'tr-sk-6',
                       ] as const
-                    ).map((sk) => (
+                    ).map((sk, i) => (
                       <div
                         key={sk}
-                        className="px-3 py-3 border-b border-rule-2"
+                        className="flex h-9 items-center gap-3 px-2"
+                        style={{ opacity: 1 - i * 0.1 }}
                       >
-                        <div className="flex items-center gap-2 mb-2">
-                          <Skeleton className="w-1.5 h-1.5 rounded-full" />
-                          <Skeleton className="h-3.5 w-48" />
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <Skeleton className="h-3 w-16" />
-                          <Skeleton className="h-3 w-12" />
-                          <Skeleton className="h-3 w-20" />
-                        </div>
+                        <Skeleton className="size-4 rounded-sm" />
+                        <Skeleton className="size-1.5 rounded-full" />
+                        <Skeleton
+                          className="h-3.5"
+                          style={{ width: `${34 - (i % 3) * 8}%` }}
+                        />
+                        <Skeleton className="ml-auto h-3 w-12" />
+                        <Skeleton className="h-3 w-14" />
                       </div>
                     ))}
                   </div>
                 ) : visibleTraceGroups.length === 0 ? (
-                  <div className="p-9">
-                    <EmptyState
-                      icon={GitBranch}
-                      title={
-                        sessionScope
-                          ? 'no stored traces for this session'
-                          : 'no traces recorded'
-                      }
-                      description={
-                        sessionScope
-                          ? // The client cannot tell "never ran" from "already
-                            // expired", so the copy owns both honestly.
-                            'the list follows the active chat, and nothing is stored for this conversation — no work recorded yet, or its traces already expired. new activity appears here as it runs, or clear the session chip above to see every trace.'
-                          : 'traces appear here when functions execute. fire a request to your engine and refresh.'
-                      }
-                    />
+                  <div className="p-6">
+                    {narrowed ? (
+                      <EmptyState
+                        icon={Search}
+                        title="no traces match"
+                        description={
+                          debouncedSearch.trim()
+                            ? `nothing on this engine matches “${debouncedSearch.trim()}” with the current filters. try a shorter query, or clear the filters.`
+                            : 'nothing on this engine matches the current filters.'
+                        }
+                        action={{
+                          label: 'clear search and filters',
+                          onClick: clearNarrowing,
+                        }}
+                      />
+                    ) : (
+                      <EmptyState
+                        icon={GitBranch}
+                        title={
+                          sessionScope
+                            ? 'no stored traces for this session'
+                            : 'no traces recorded'
+                        }
+                        description={
+                          sessionScope
+                            ? // The client cannot tell "never ran" from "already
+                              // expired", so the copy owns both honestly.
+                              'the list follows the active chat, and nothing is stored for this conversation — no work recorded yet, or its traces already expired. new activity appears here as it runs, or clear the session chip above to see every trace.'
+                            : 'traces appear here when functions execute. fire a request to your engine and refresh.'
+                        }
+                        action={
+                          sessionScope
+                            ? {
+                                label: 'show every session',
+                                onClick: () =>
+                                  setScopeDismissedFor(sessionScope),
+                              }
+                            : undefined
+                        }
+                      />
+                    )}
                   </div>
                 ) : (
                   <div className="flex-1 flex flex-col overflow-hidden">
                     {/* biome-ignore lint/a11y/noStaticElementInteractions: hover detection for pause/resume of live updates */}
                     <div
-                      className="flex-1 overflow-y-auto"
+                      className="flex-1 overflow-y-auto px-2 py-1"
                       ref={listScrollRef}
                       onScroll={handleListScroll}
                       onMouseEnter={() => {
@@ -1167,7 +1222,7 @@ export function TracesV2({
                         )
                       })}
                     </div>
-                    <div className="flex-shrink-0 px-3 py-2">
+                    <div className="shrink-0 border-t border-border px-2 py-1">
                       <TracesPagination
                         currentPage={filterState.page}
                         totalPages={totalPages}
@@ -1199,12 +1254,12 @@ export function TracesV2({
                   aria-label="resize span panel"
                   onMouseDown={spanPanel.startResize}
                   onDoubleClick={spanPanel.reset}
-                  className="w-[3px] flex-shrink-0 cursor-col-resize bg-transparent hover:bg-accent/60 active:bg-accent"
+                  className="w-[3px] shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-muted-foreground/40 focus-visible:bg-muted-foreground/40 focus-visible:outline-none active:bg-muted-foreground/70"
                 />
                 <div
                   style={{ width: spanPanel.width }}
                   className={cn(
-                    'bg-panel-raised border-l border-rule-2 flex-shrink-0 h-full overflow-hidden',
+                    'h-full shrink-0 overflow-hidden border-l border-border bg-card',
                     spanPanel.isResizing && 'pointer-events-none select-none',
                   )}
                 >

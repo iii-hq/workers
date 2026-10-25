@@ -23,8 +23,8 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from '@/components/ui/DropdownMenu'
+import { Hint } from '@/components/ui/Hint'
 import { IconButton } from '@/components/ui/IconButton'
-import { hoverTitle } from '@/lib/keybindings/registry'
 import { cn } from '@/lib/utils'
 import {
   CHAT_SCREEN,
@@ -650,31 +650,33 @@ export function TabStrip({
                   <span className={TAB_LABEL}>{label}</span>
                 )}
                 {tabs.length > 1 && renamingId !== tab.id ? (
-                  <button
-                    type="button"
-                    tabIndex={-1}
-                    aria-label={`Close ${label}`}
-                    title={
-                      tab.id === activeTabId
-                        ? hoverTitle(`Close ${label}`, 'workspace.close')
-                        : `Close ${label}`
+                  <Hint
+                    label="Close workspace"
+                    shortcut={
+                      tab.id === activeTabId ? 'workspace.close' : undefined
                     }
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      closeTab(tab.id)
-                    }}
-                    className={cn(
-                      'relative flex size-10 items-center justify-center rounded-lg text-neutral-400 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-300/60 hover:text-neutral-900 sm:size-6 dark:text-neutral-500 dark:hover:bg-neutral-700 dark:hover:text-neutral-50',
-                      !active &&
-                        'opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover/tab:opacity-100 pointer-fine:group-focus-within/tab:opacity-100',
-                    )}
                   >
-                    <span
-                      className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-                      aria-hidden="true"
-                    />
-                    <X className="size-4 shrink-0" aria-hidden />
-                  </button>
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      aria-label={`Close ${label}`}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        closeTab(tab.id)
+                      }}
+                      className={cn(
+                        'relative flex size-10 items-center justify-center rounded-lg text-neutral-400 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-300/60 hover:text-neutral-900 sm:size-6 dark:text-neutral-500 dark:hover:bg-neutral-700 dark:hover:text-neutral-50',
+                        !active &&
+                          'opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover/tab:opacity-100 pointer-fine:group-focus-within/tab:opacity-100',
+                      )}
+                    >
+                      <span
+                        className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+                        aria-hidden="true"
+                      />
+                      <X className="size-4 shrink-0" aria-hidden />
+                    </button>
+                  </Hint>
                 ) : null}
               </div>
             </Fragment>
@@ -682,25 +684,36 @@ export function TabStrip({
         })}
       </div>
 
-      <button
-        type="button"
-        aria-label="New workspace"
-        aria-disabled={createDisabled || undefined}
-        disabled={createDisabled}
-        title={
+      <Hint
+        label={
           createDisabled
             ? (createDisabledTitle ?? 'Tab limit reached')
-            : hoverTitle('New workspace', 'workspace.create')
+            : 'New workspace'
         }
-        onClick={onCreate}
-        className="relative flex size-12 shrink-0 items-center justify-center self-center rounded-lg text-neutral-500 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-300/60 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 disabled:pointer-events-none disabled:opacity-40 sm:size-8 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400"
+        shortcut={createDisabled ? undefined : 'workspace.create'}
       >
-        <span
-          className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-          aria-hidden="true"
-        />
-        <Plus className="size-4 shrink-0" aria-hidden />
-      </button>
+        <button
+          type="button"
+          aria-label="New workspace"
+          aria-disabled={createDisabled || undefined}
+          disabled={createDisabled}
+          // A disabled control takes no pointer events, so the tooltip cannot
+          // say why; the native title still can.
+          title={
+            createDisabled
+              ? (createDisabledTitle ?? 'Tab limit reached')
+              : undefined
+          }
+          onClick={onCreate}
+          className="relative flex size-12 shrink-0 items-center justify-center self-center rounded-lg text-neutral-500 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-300/60 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 disabled:pointer-events-none disabled:opacity-40 sm:size-8 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400"
+        >
+          <span
+            className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+            aria-hidden="true"
+          />
+          <Plus className="size-4 shrink-0" aria-hidden />
+        </button>
+      </Hint>
 
       {overflow.overflowing ? (
         <OverflowMenu
@@ -774,7 +787,7 @@ function OverflowMenu({
               {tabLabel(tab, extPageTitles)}
             </span>
             {index < 9 ? (
-              <span className="ml-4 font-mono text-[11px] text-ink-ghost">
+              <span className="ml-4 font-mono text-xs text-ink-faint">
                 {index + 1}
               </span>
             ) : null}
@@ -864,7 +877,7 @@ function TabContextMenu({
   }, [onDismiss])
 
   const itemCls =
-    'flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left font-inter text-[13px] text-neutral-700 transition-colors hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800 dark:hover:text-neutral-50'
+    'flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left font-inter text-sm text-neutral-700 transition-colors hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800 dark:hover:text-neutral-50'
 
   return createPortal(
     <div

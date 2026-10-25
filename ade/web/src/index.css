@@ -127,6 +127,47 @@
 
   --color-ring: color-mix(in oklab, var(--foreground) 5%, transparent);
 
+  /* ── Worker identity ───────────────────────────────────────────────
+     Eight dusty mid-tones, hand-picked (the traces redesign reference):
+     periwinkle, sand, sky, salmon, mint, lilac, clay, graphite — ordered
+     so neighbouring slots sit far apart in hue. Identical in both themes:
+     every fill is mid-lightness, so it reads on cream and on near-black
+     alike. `worker-N-ink` is the near-black type drawn ON the fill;
+     `worker-N-border` is the same hue one step darker, the bar's edge.
+     `worker-ink` remains the near-black for a legacy hex override.
+     Identity only: a worker colour is never a hover, a selection or body
+     text. */
+  --color-worker-1: #838bd5; /* periwinkle */
+  --color-worker-1-border: #6a72bf;
+  --color-worker-1-ink: #0b0b0d;
+  --color-worker-2: #cfab6d; /* sand */
+  --color-worker-2-border: #b8935a;
+  --color-worker-2-ink: #0b0b0d;
+  --color-worker-3: #70aece; /* sky */
+  --color-worker-3-border: #5894b4;
+  --color-worker-3-ink: #0b0b0d;
+  --color-worker-4: #d18882; /* salmon */
+  --color-worker-4-border: #b8716b;
+  --color-worker-4-ink: #0b0b0d;
+  --color-worker-5: #8fc1a9; /* mint */
+  --color-worker-5-border: #75a890;
+  --color-worker-5-ink: #0b0b0d;
+  --color-worker-6: #ae91c4; /* lilac */
+  --color-worker-6-border: #9478ab;
+  --color-worker-6-ink: #0b0b0d;
+  --color-worker-7: #dd8f67; /* clay */
+  --color-worker-7-border: #c47753;
+  --color-worker-7-ink: #0b0b0d;
+  --color-worker-8: #979fab; /* graphite */
+  --color-worker-8-border: #7d8591;
+  --color-worker-8-ink: #0b0b0d;
+  --color-worker-ink: #0a0a0a;
+  /* The trace charts' error fill: a saturated red with white type, kept
+     apart from `--color-alert` (whose dark coral sits too close to the
+     salmon worker) so a failed span is unmistakable beside any worker. */
+  --color-trace-error: #d4232a;
+  --color-trace-error-ink: #ffffff;
+
   /* ── Radii ────────────────────────────────────────────────────────────
      Compact chrome uses 6px; larger controls and cards use 8px (lg),
      while panels and dialogs use 12px (xl). `none` keeps frame edges
@@ -280,12 +321,53 @@
   --color-glyph-green: #22c55e;
   --color-glyph-amber: #eab308;
   --color-glyph-rose: #f43f5e;
+  /* Worker ramp on near-black: the same eight dusty mid-tones as light
+     (the :root block documents the ramp) — mid-lightness fills carry the
+     near-black type in both themes. */
+  --color-worker-1: #838bd5;
+  --color-worker-1-border: #6a72bf;
+  --color-worker-1-ink: #0b0b0d;
+  --color-worker-2: #cfab6d;
+  --color-worker-2-border: #b8935a;
+  --color-worker-2-ink: #0b0b0d;
+  --color-worker-3: #70aece;
+  --color-worker-3-border: #5894b4;
+  --color-worker-3-ink: #0b0b0d;
+  --color-worker-4: #d18882;
+  --color-worker-4-border: #b8716b;
+  --color-worker-4-ink: #0b0b0d;
+  --color-worker-5: #8fc1a9;
+  --color-worker-5-border: #75a890;
+  --color-worker-5-ink: #0b0b0d;
+  --color-worker-6: #ae91c4;
+  --color-worker-6-border: #9478ab;
+  --color-worker-6-ink: #0b0b0d;
+  --color-worker-7: #dd8f67;
+  --color-worker-7-border: #c47753;
+  --color-worker-7-ink: #0b0b0d;
+  --color-worker-8: #979fab;
+  --color-worker-8-border: #7d8591;
+  --color-worker-8-ink: #0b0b0d;
+  --color-worker-ink: #0a0a0a;
+  --color-trace-error: #e5393e;
+  --color-trace-error-ink: #ffffff;
 }
 
 @layer base {
   :root {
     --foreground: var(--color-ink);
     --tw-ring-color: color-mix(in oklab, var(--foreground) 5%, transparent);
+
+    /* Syntax token palette (lib/syntax.tsx). The default is the console's
+       monochrome blueprint; a surface repoints these to wear another theme
+       (see `.code-theme-editor` below). */
+    --syntax-plain: var(--color-ink);
+    --syntax-key: var(--color-ink);
+    --syntax-string: var(--color-ink-faint);
+    --syntax-literal: var(--color-accent);
+    --syntax-literal-style: italic;
+    --syntax-punctuation: var(--color-ink-ghost);
+    --syntax-comment: var(--color-ink-ghost);
   }
 
   html,
@@ -369,11 +451,162 @@
   code {
     font-family: var(--font-code);
   }
+
+  /* Prism literals: the slant comes from the syntax palette (see :root
+     and `.code-theme-editor`), because PrismTheme cannot carry a variable. */
+  .token.number,
+  .token.boolean,
+  .token.null,
+  .token.keyword {
+    font-style: var(--syntax-literal-style);
+  }
+}
+
+/* ── Editor code surface ───────────────────────────────────────────────
+   The trace panes' code theme, one editor theme per appearance: Rauno
+   Freiberg's min-light on the light side (white ground, #24292e keys,
+   green strings, blue literals, red keywords) and his Vesper on the dark
+   side (#101010 ground, white keys, mint strings, peach literals, grey
+   punctuation). Set in Geist Mono at 13px with loose leading and wide
+   tracking so a payload reads as prose rather than a wall. Every token
+   measures ≥ 4.5:1 on its ground (min-light strings 4.6, literals 4.6;
+   Vesper comment 5.6, the rest ≥ 7). Scope it on the pane; nothing
+   outside inherits. */
+.code-theme-editor {
+  --syntax-plain: #24292e;
+  --syntax-key: #24292e;
+  --syntax-string: #22863a;
+  --syntax-literal: #1976d2;
+  --syntax-literal-style: normal;
+  --syntax-punctuation: #6e7781;
+  --syntax-comment: #8b949e;
+  --code-surface: #ffffff;
+}
+
+[data-theme="dark"] .code-theme-editor {
+  --syntax-plain: #ffffff;
+  --syntax-key: #ffffff;
+  --syntax-string: #99ffe4;
+  --syntax-literal: #ffc799;
+  --syntax-punctuation: #a0a0a0;
+  --syntax-comment: #8b8b8b;
+  --code-surface: #101010;
+}
+
+.code-theme-editor pre,
+.code-theme-editor code {
+  font-family: var(--font-geist-mono);
+  font-size: 13px;
+  line-height: 2;
+  letter-spacing: 0.03em;
+  font-variant-ligatures: none;
+  tab-size: 2;
+}
+
+.code-theme-editor pre {
+  background: var(--code-surface);
+  color: var(--syntax-plain);
 }
 
 /* Configuration uses Inter for UI chrome; Monaco only on code surfaces. */
 .configuration-surface {
-  font-family: var(--font-sans);
+  font-family: var(--font-inter);
+}
+
+/* Injected worker forms keep the shared settings recipes; inside the
+   settings page those recipes read on the redesign's scale — Inter, 16px
+   medium section titles, 14px everything else — and its neutral group. */
+.configuration-surface .iii-ui-settings-section__title {
+  font-family: var(--font-inter);
+  font-size: 1rem;
+  font-weight: 500;
+  line-height: 1.5rem;
+}
+
+.configuration-surface .iii-ui-settings-section__description,
+.configuration-surface .iii-ui-settings-row__label,
+.configuration-surface .iii-ui-settings-row__description,
+.configuration-surface .iii-ui-settings-row__meta,
+.configuration-surface .iii-ui-settings-row__control,
+.configuration-surface .iii-ui-segmented__item {
+  font-family: var(--font-inter);
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+}
+
+.configuration-surface .iii-ui-settings-section {
+  gap: 0.75rem;
+}
+
+.configuration-surface .iii-ui-settings-list {
+  border-width: 1px 0;
+  border-color: var(--color-neutral-200);
+  border-radius: 0;
+  background: transparent;
+}
+
+.configuration-surface .iii-ui-settings-row + .iii-ui-settings-row {
+  border-top-color: var(--color-neutral-200);
+}
+
+.configuration-surface .iii-ui-settings-row__inner {
+  min-height: 4.5rem;
+  padding: 1.25rem 0;
+}
+
+.configuration-surface .iii-ui-settings-row__label {
+  font-size: 1rem;
+  line-height: 1.5rem;
+}
+
+.configuration-surface .iii-ui-segmented {
+  border-radius: var(--radius-lg);
+  padding: 2px;
+  background: var(--color-neutral-100);
+}
+
+.configuration-surface .iii-ui-segmented__item {
+  border-radius: 6px;
+  padding: 0.25rem 0.875rem;
+}
+
+.configuration-surface
+  .iii-ui-segmented__item:is(
+    [data-selected="true"],
+    [aria-selected="true"],
+    [aria-checked="true"]
+  ) {
+  background: var(--color-white);
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 0.08),
+    0 0 0 1px rgb(0 0 0 / 0.04);
+}
+
+[data-theme="dark"] .configuration-surface .iii-ui-settings-list {
+  border-color: var(--color-neutral-800);
+  background: transparent;
+}
+
+[data-theme="dark"]
+  .configuration-surface
+  .iii-ui-settings-row
+  + .iii-ui-settings-row {
+  border-top-color: var(--color-neutral-800);
+}
+
+[data-theme="dark"] .configuration-surface .iii-ui-segmented {
+  background: var(--color-neutral-800);
+}
+
+[data-theme="dark"]
+  .configuration-surface
+  .iii-ui-segmented__item:is(
+    [data-selected="true"],
+    [aria-selected="true"],
+    [aria-checked="true"]
+  ) {
+  background: var(--color-neutral-700);
+  box-shadow: none;
 }
 
 .configuration-surface .font-mono {
@@ -392,13 +625,300 @@
   font-family: var(--font-mono);
 }
 
+/* The observability worker's injected form (an external bundle) paints its
+   own cards, tabs and fields from `--obs-*` variables it derives from the
+   console tokens. Inside the settings page those variables and its sizes
+   are retuned to the page's idiom: the canvas shows through, hairlines are
+   neutral, the accent is ink, and no text sits under 14px. */
+.configuration-surface .iii-observability-ui {
+  --obs-bg: transparent;
+  --obs-card: transparent;
+  --obs-surface: var(--color-neutral-100);
+  --obs-surface-strong: var(--color-neutral-200);
+  --obs-border: var(--color-neutral-200);
+  --obs-border-soft: var(--color-neutral-200);
+  --obs-border-strong: var(--color-neutral-300);
+  --obs-accent: var(--color-neutral-900);
+  --obs-accent-muted: var(--color-neutral-100);
+  --obs-accent-border: var(--color-neutral-300);
+  --obs-mono: var(--font-geist-mono);
+  max-width: calc(1120px + 2 * 20px);
+  padding: 0 20px 48px;
+  border: 0;
+  border-radius: 0;
+  font-family: var(--font-inter);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+/* The settings column widens its gutter with the pane (`@3xl:px-14`); the
+   form follows so its cards line up under the page title. */
+@container (min-width: 48rem) {
+  .configuration-surface .iii-observability-ui {
+    max-width: calc(1120px + 2 * 56px);
+    padding: 0 56px 48px;
+  }
+}
+
+.configuration-surface .iii-observability-ui .obs-toolbar {
+  margin-bottom: 24px;
+}
+
+.configuration-surface .iii-observability-ui .obs-kicker {
+  margin-bottom: 8px;
+  color: var(--color-ink-faint);
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.25rem;
+  text-transform: none;
+}
+
+.configuration-surface .iii-observability-ui .obs-status-pill,
+.configuration-surface .iii-observability-ui .obs-status-pill--good,
+.configuration-surface .iii-observability-ui .obs-status-pill--warn,
+.configuration-surface .iii-observability-ui .obs-status-pill--bad {
+  padding: 6px 12px;
+  border-color: var(--obs-border);
+  background: transparent;
+  color: var(--color-ink-faint);
+  font-family: var(--font-inter);
+  font-size: 0.875rem;
+  font-weight: 400;
+}
+
+.configuration-surface .iii-observability-ui .obs-tabs {
+  padding: 2px;
+  border-radius: var(--radius-lg);
+}
+
+.configuration-surface .iii-observability-ui .obs-tabs button {
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+}
+
+.configuration-surface .iii-observability-ui .obs-tabs button:hover {
+  background: transparent;
+  box-shadow: none;
+}
+
+.configuration-surface .iii-observability-ui .obs-tabs button.is-active {
+  background: var(--color-white);
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 0.08),
+    0 0 0 1px rgb(0 0 0 / 0.04);
+}
+
+.configuration-surface .iii-observability-ui .obs-card {
+  padding: 24px;
+  border-radius: var(--radius-lg);
+}
+
+.configuration-surface .iii-observability-ui .obs-card h3 {
+  font-size: 1rem;
+  line-height: 1.5rem;
+}
+
+.configuration-surface .iii-observability-ui .obs-card__description,
+.configuration-surface .iii-observability-ui .obs-field__description,
+.configuration-surface .iii-observability-ui .obs-field__error,
+.configuration-surface .iii-observability-ui .obs-field__default,
+.configuration-surface .iii-observability-ui .obs-meter__caption,
+.configuration-surface .iii-observability-ui .obs-number-field__suffix,
+.configuration-surface .iii-observability-ui .obs-empty,
+.configuration-surface .iii-observability-ui .obs-error-summary,
+.configuration-surface .iii-observability-ui .obs-error-summary strong,
+.configuration-surface .iii-observability-ui .obs-banner--warn strong,
+.configuration-surface .iii-observability-ui .obs-banner--warn span,
+.configuration-surface
+  .iii-observability-ui
+  .obs-subsection__header
+  > div
+  > span,
+.configuration-surface
+  .iii-observability-ui
+  .obs-signal-panel__header
+  > div
+  > span,
+.configuration-surface .iii-observability-ui .obs-rule__index {
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+}
+
+.configuration-surface .iii-observability-ui .obs-field__label,
+.configuration-surface .iii-observability-ui .obs-meter__label,
+.configuration-surface .iii-observability-ui .obs-toggle {
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+}
+
+.configuration-surface .iii-observability-ui .obs-meter__label {
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.configuration-surface .iii-observability-ui .obs-meter__value {
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.configuration-surface .iii-observability-ui .obs-meter {
+  padding: 14px 16px;
+  border-radius: var(--radius-lg);
+}
+
+.configuration-surface
+  .iii-observability-ui
+  .obs-subsection__header
+  > div
+  > strong,
+.configuration-surface
+  .iii-observability-ui
+  .obs-signal-panel__header
+  > div
+  > strong {
+  font-size: 0.9375rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+}
+
+.configuration-surface .iii-observability-ui .obs-field input,
+.configuration-surface .iii-observability-ui .obs-field select,
+.configuration-surface .iii-observability-ui .obs-field textarea,
+.configuration-surface .iii-observability-ui .obs-rule input,
+.configuration-surface .iii-observability-ui .obs-signal-panel input,
+.configuration-surface .iii-observability-ui .obs-signal-panel select,
+.configuration-surface .iii-observability-ui .obs-unit-field select {
+  border-color: var(--obs-border);
+  border-radius: var(--radius-lg);
+  font-size: 0.875rem;
+  font-weight: 400;
+}
+
+.configuration-surface .iii-observability-ui .obs-field input:focus,
+.configuration-surface .iii-observability-ui .obs-field select:focus,
+.configuration-surface .iii-observability-ui .obs-field textarea:focus,
+.configuration-surface .iii-observability-ui .obs-rule input:focus {
+  border-color: var(--color-neutral-500);
+  box-shadow: 0 0 0 3px
+    color-mix(in oklab, var(--color-neutral-500) 25%, transparent);
+}
+
+.configuration-surface .iii-observability-ui .obs-toggle__track {
+  width: 40px;
+  height: 24px;
+  background: var(--color-neutral-300);
+}
+
+.configuration-surface .iii-observability-ui .obs-toggle__thumb {
+  width: 20px;
+  height: 20px;
+  background: var(--color-white);
+}
+
+.configuration-surface
+  .iii-observability-ui
+  .obs-toggle.is-on
+  .obs-toggle__track {
+  background: var(--color-neutral-900);
+}
+
+.configuration-surface
+  .iii-observability-ui
+  .obs-toggle.is-on
+  .obs-toggle__thumb {
+  background: var(--color-white);
+  transform: translateX(16px);
+}
+
+.configuration-surface .iii-observability-ui .obs-button {
+  border-radius: var(--radius-lg);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.configuration-surface .iii-observability-ui .obs-button--secondary {
+  border-color: var(--obs-border-strong);
+  background: transparent;
+  color: var(--color-ink);
+}
+
+.configuration-surface .iii-observability-ui .obs-button:hover {
+  background: var(--obs-surface);
+  filter: none;
+}
+
+.configuration-surface .iii-observability-ui .obs-card__icon {
+  border-radius: var(--radius-lg);
+}
+
+.configuration-surface .iii-observability-ui .obs-signal-panel,
+.configuration-surface .iii-observability-ui .obs-empty,
+.configuration-surface .iii-observability-ui .obs-banner {
+  border-radius: var(--radius-lg);
+}
+
+[data-theme="dark"] .configuration-surface .iii-observability-ui {
+  --obs-surface: var(--color-neutral-900);
+  --obs-surface-strong: var(--color-neutral-800);
+  --obs-border: var(--color-neutral-800);
+  --obs-border-soft: var(--color-neutral-800);
+  --obs-border-strong: var(--color-neutral-700);
+  --obs-accent: var(--color-neutral-100);
+  --obs-accent-muted: var(--color-neutral-900);
+  --obs-accent-border: var(--color-neutral-700);
+}
+
+[data-theme="dark"]
+  .configuration-surface
+  .iii-observability-ui
+  .obs-tabs
+  button.is-active {
+  background: var(--color-neutral-700);
+  box-shadow: none;
+}
+
+[data-theme="dark"]
+  .configuration-surface
+  .iii-observability-ui
+  .obs-toggle__track {
+  background: var(--color-neutral-800);
+}
+
+[data-theme="dark"]
+  .configuration-surface
+  .iii-observability-ui
+  .obs-toggle__thumb {
+  background: var(--color-neutral-400);
+}
+
+[data-theme="dark"]
+  .configuration-surface
+  .iii-observability-ui
+  .obs-toggle.is-on
+  .obs-toggle__track {
+  background: var(--color-neutral-300);
+}
+
+[data-theme="dark"]
+  .configuration-surface
+  .iii-observability-ui
+  .obs-toggle.is-on
+  .obs-toggle__thumb {
+  background: var(--color-neutral-800);
+}
+
 /* Chat uses Inter for UI chrome; Monaco only on semantic code surfaces. */
 .chat-surface {
-  font-family: var(--font-sans);
+  font-family: var(--font-inter);
 }
 
 .chat-surface .font-mono {
-  font-family: var(--font-sans);
+  font-family: var(--font-inter);
 }
 
 .chat-surface pre,
@@ -413,14 +933,15 @@
   font-family: var(--font-mono);
 }
 
-/* Function-trigger chrome uses Geist Mono; request/response code uses Monaco. */
+/* Tool descriptions use the chat typeface; code inside a tool card is set
+   like the traces page's payload panes — Geist Mono (the raw request and
+   response panes wear `.code-theme-editor` for the size, leading and token
+   palette). */
 .function-trigger-surface,
 .function-trigger-surface .font-mono,
 .chat-surface .function-trigger-surface,
-.chat-surface .function-trigger-surface .font-mono,
-.chat-surface .function-trigger-surface [data-keep-mono],
-.chat-surface .function-trigger-surface [data-keep-mono] .font-mono {
-  font-family: var(--font-geist-mono);
+.chat-surface .function-trigger-surface .font-mono {
+  font-family: var(--font-inter);
 }
 
 .function-trigger-surface pre,
@@ -431,7 +952,35 @@
 .chat-surface .function-trigger-surface pre.font-mono,
 .chat-surface .function-trigger-surface code,
 .chat-surface .function-trigger-surface code.font-mono {
-  font-family: var(--font-code);
+  font-family: var(--font-geist-mono);
+}
+
+/* ⌘K. Flat by design: a hairline border and a light scrim carry the
+   layering, no shadow. It opens with a short scale-and-fade from just above
+   its resting place; it closes instantly, because the thing you chose is
+   what should be moving then. */
+.command-palette-card {
+  animation: command-palette-enter var(--motion-duration-panel)
+    var(--motion-ease-enter) both;
+  transform-origin: 50% 0;
+}
+
+.command-palette-scrim {
+  animation: command-palette-scrim var(--motion-duration-control)
+    var(--motion-ease-standard) both;
+}
+
+@keyframes command-palette-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
+}
+
+@keyframes command-palette-scrim {
+  from {
+    opacity: 0;
+  }
 }
 
 @keyframes pulse-dot {
@@ -466,6 +1015,48 @@
   }
 
   .pulse-dot {
+    animation: none;
+  }
+}
+
+/* The Activity strip's bars: the worker hue at full strength on dark; on
+   light, mixed toward the page so eight saturated hues at 5px read as one
+   calm set rather than confetti. (The detail timeline's bars are the hue
+   itself in both themes, with `worker-ink` on top — see spanVisuals.) */
+:root {
+  --strip-bar-mix: 74%;
+}
+[data-theme="dark"] {
+  --strip-bar-mix: 100%;
+}
+
+/* The live dot: a soft ring breathing outward, slower and softer than
+   pulse-dot, for the traces page's "still running" marks (LiveBadge, a
+   pending trace row). The ring takes `--live-dot-color` (the traces page
+   sets it to the warn amber: running is amber, finished is ok). */
+@keyframes live-dot {
+  0% {
+    box-shadow: 0 0 0 0
+      color-mix(
+        in oklab,
+        var(--live-dot-color, var(--color-ok)) 45%,
+        transparent
+      );
+  }
+  70% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+
+@utility live-dot {
+  animation: live-dot 2s var(--motion-ease-exit) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-dot {
     animation: none;
   }
 }
@@ -510,6 +1101,47 @@
 @media (prefers-reduced-motion: reduce) {
   .blink {
     animation: none;
+  }
+}
+
+/* The streaming caret. Text is already arriving block by block, so the
+   caret does not need to shout: it breathes (opacity only, ease-in-out,
+   constant motion) instead of hard-blinking at 1Hz, and it enters with the
+   first token rather than popping in. Reduced motion holds it at a steady
+   mid tone — the caret itself remains the "still generating" cue. */
+@keyframes stream-caret-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.28;
+  }
+}
+
+@keyframes stream-caret-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@utility stream-caret {
+  animation:
+    stream-caret-enter var(--motion-duration-control) var(--motion-ease-enter)
+    both,
+    stream-caret-breathe 1.1s var(--ease-in-out) var(--motion-duration-control)
+    infinite;
+  transform-origin: center;
+
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+    opacity: 0.7;
+    transform: none;
   }
 }
 
@@ -916,17 +1548,63 @@
 @keyframes timeline-enter {
   0% {
     opacity: 0;
-    transform: translateY(3px) scale(0.96);
+    filter: blur(4px);
+    transform: translateY(12px);
   }
   100% {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    filter: blur(0);
+    transform: translateY(0);
   }
 }
 
+/* A new bar rises into place — opacity, a 4px blur and a 12px lift over
+   300ms on ease-out — the way a row lands in a Linear list: present at
+   once, finished a breath later. */
 @utility timeline-enter {
-  animation: timeline-enter var(--motion-duration-panel) var(--motion-ease-exit)
-    both;
+  transform-origin: left center;
+  animation: timeline-enter 300ms ease-out both;
+}
+
+/* A span that is still running: its right edge fades to nothing (the
+   now-edge is not a wall) and a slow amber sweep crosses the bar, so the
+   eye finds the frontier of a live trace without reading a label. The
+   `quiet` variant keeps the fade and drops the sweep — for the 4px lines
+   of the Activity strip, where a sweep is noise. */
+@keyframes trace-running-sweep {
+  from {
+    background-position: -140px 0;
+  }
+  to {
+    background-position: calc(100% + 140px) 0;
+  }
+}
+
+@utility trace-running {
+  -webkit-mask: linear-gradient(90deg, #000 calc(100% - 22px), transparent);
+  mask: linear-gradient(90deg, #000 calc(100% - 22px), transparent);
+  background-image: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in oklab, var(--color-warn) 32%, transparent),
+    transparent
+  );
+  background-size: 140px 100%;
+  background-repeat: no-repeat;
+  animation: trace-running-sweep 1.5s linear infinite;
+}
+
+@utility trace-running-quiet {
+  -webkit-mask: linear-gradient(90deg, #000 calc(100% - 10px), transparent);
+  mask: linear-gradient(90deg, #000 calc(100% - 10px), transparent);
+}
+
+/* The now-line of a live trace: a 1px amber hairline with a soft glow,
+   riding the right edge of the longest running span. */
+@utility trace-playhead {
+  background: var(--color-warn);
+  box-shadow: 0 0 10px color-mix(in oklab, var(--color-warn) 55%, transparent);
+  opacity: 0.75;
 }
 
 /* live-timeline re-packs — geometry changes glide instead of teleporting.
@@ -943,11 +1621,26 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  /* Reduced motion: the entrance becomes an opacity cross-fade, never an
+     instant pop; the running sweep goes, the edge fade stays. */
   .timeline-enter {
-    animation: none;
+    animation: timeline-fade 300ms ease-out both;
   }
   .timeline-glide {
     transition: none;
+  }
+  .trace-running {
+    animation: none;
+    background-image: none;
+  }
+}
+
+@keyframes timeline-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
   }
 }
 
@@ -1084,7 +1777,7 @@
   user-select: none;
 }
 
-/* The project trigger reads as a strip tucked behind the composer card. On
+/* The project chip stays inside the composer. During a conversation on
    mobile the blurred composer is a one-line field, like a text input: the
    toolbar folds away with the extra lines, and focusing it grows the
    writing surface (and its buttons) back. */
@@ -1094,13 +1787,14 @@
      padding, so the next line never peeks in. The measured content height
      stays in the inline custom property, so focus animates straight back
      to it; the measuring pass keeps `height: auto`. */
-  .composer-shell:not(:focus-within) .composer-editor {
+  .composer-shell:not(:focus-within):not([data-composer-welcome])
+  .composer-editor {
     min-height: 36px;
     padding-bottom: 0;
     overflow-y: hidden;
   }
 
-  .composer-shell:not(:focus-within)
+  .composer-shell:not(:focus-within):not([data-composer-welcome])
     .composer-editor[data-composer-height-ready]:not(
       [data-composer-height-measuring]
     ) {
@@ -1113,12 +1807,16 @@
 
   /* Blurred: no toolbar, and the slot takes over the editor's bottom
      padding so the single line sits centred in the card. */
-  .composer-shell:not(:focus-within):not([data-composer-streaming])
+  .composer-shell:not(:focus-within):not([data-composer-welcome]):not(
+    [data-composer-streaming]
+  )
   .composer-mobile-toolbar {
     display: none;
   }
 
-  .composer-shell:not(:focus-within):not([data-composer-streaming])
+  .composer-shell:not(:focus-within):not([data-composer-welcome]):not(
+      [data-composer-streaming]
+    )
     .composer-editor-slot {
     padding-bottom: 12px;
   }
@@ -1142,12 +1840,16 @@
 
   /* While a turn runs the send/stop button is the only way to stop it on
      a phone, so it alone survives the blur, parked at the card's edge. */
-  .composer-shell:not(:focus-within)[data-composer-streaming]
+  .composer-shell:not(:focus-within):not(
+    [data-composer-welcome]
+  )[data-composer-streaming]
   .composer-mobile-toolbar {
     justify-content: flex-end;
   }
 
-  .composer-shell:not(:focus-within)[data-composer-streaming]
+  .composer-shell:not(:focus-within):not(
+      [data-composer-welcome]
+    )[data-composer-streaming]
     .composer-mobile-toolbar
     > :not(.composer-action) {
     display: none;
@@ -1160,15 +1862,37 @@
   }
 }
 
-/* viewport: phone chrome — 16px editor text on phones, 14px on desktop */
+/* viewport: phone chrome — 16px editor text on phones, 15px on desktop,
+   matching the conversation prose */
 @media (min-width: 640px) {
   .composer-editor,
   .composer-placeholder {
-    font-size: 14px;
+    font-size: 15px;
   }
 
   .composer-editor {
     min-height: 56px;
+  }
+
+  .composer-shell .composer-editor,
+  .composer-shell .composer-placeholder {
+    padding: 14px 17px 10px;
+    font-size: 15px;
+    line-height: 1.7;
+  }
+
+  .composer-shell .composer-editor {
+    min-height: 76px;
+  }
+
+  .chat-message-action {
+    width: 28px;
+    height: 28px;
+  }
+
+  .composer-shell .composer-action {
+    width: 34px;
+    height: 34px;
   }
 }
 
@@ -1221,8 +1945,17 @@
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
-  --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
+  /* No `--color-accent` remap: that name is the console's own accent (the
+     charcoal / soft-white fill for live state, gauges and primary actions)
+     and shadcn's `accent` is a hover tint. Menu items hover on `muted`.
+     The one thing that IS mapped is the pairing: a stock shadcn recipe
+     that still says `bg-accent text-accent-foreground` used to paint the
+     console's near-white (dark) / charcoal (light) accent fill under text
+     that stayed in the ink colour — white on white, black on charcoal —
+     because `accent-foreground` resolved to nothing. It now resolves to
+     the accent's own foreground, so the pair always contrasts; the hover
+     tint itself belongs on `muted` (see theme-hover-conformance.test.ts). */
+  --color-accent-foreground: var(--color-accent-fg);
   --color-destructive: var(--destructive);
   --color-border: var(--border);
   --color-input: var(--input);
@@ -1256,8 +1989,6 @@
   --secondary-foreground: var(--color-ink);
   --muted: var(--color-surface);
   --muted-foreground: var(--color-ink-faint);
-  --accent: var(--color-surface-hover);
-  --accent-foreground: var(--color-ink);
   --destructive: var(--color-alert);
   --border: var(--color-edge);
   --input: var(--color-surface);

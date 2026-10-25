@@ -190,7 +190,7 @@ mod tests {
         assert!(!default.hidden);
         assert_eq!(
             default.composer_placeholder.as_deref(),
-            Some("Example: Explain this project and help me decide what to work on next.")
+            Some("Explain how this project works…")
         );
         assert!(
             by_id("iii").hidden,

@@ -1,21 +1,21 @@
 /**
  * The `context` session chip — a live view of the session's context window
- * matching the console's ContextUsage aesthetic (`ctx` label, bar, `12.3k/200k`
- * counts). Hydrates from the stored snapshot (`state::get` on
+ * matching the console's ContextUsage meter (a ring gauge, `12.3k / 200k`
+ * counts, a caret). Hydrates from the stored snapshot (`state::get` on
  * `harness_context/<session id>`) on mount and per session change; stays live
  * over the state worker's own `state` trigger for that key (Message-path
  * binding, GC'd with the tab), which fires on every generate step. Click opens
- * the breakdown — a `Dialog` on desktop, a `BottomSheet` on phones — with the
- * window (stacked bar, legend, last step), the conversation's usage from
- * `harness::metrics` (plus a with-sub-agents column when it spawned any),
- * where that subtree's cost went (with a page listing every sub-agent), and
- * the session id with copy.
+ * the breakdown — a `Dialog` on desktop, a `BottomSheet` on phones — led by a
+ * hero gauge (share used, used / free / window), then what the window is made
+ * of (stacked bar, iconed legend, the last step as tiles), the conversation's
+ * usage from `harness::metrics` (plus a with-sub-agents column when it
+ * spawned any), where that subtree's cost went (with a page listing every
+ * sub-agent), and the session id with copy.
  *
  * The chip answers to the PANE, not the viewport: under a 30rem-wide chat
- * pane (a phone, or a narrow split) it drops to its counts — the bar and the
- * `ctx` eyebrow hide (styles.css, `@container`), `12.3k/200k` and the caret
- * stay. `data-has-counts` marks the states that have counts to fall back to;
- * the waiting state (`ctx —`) keeps its eyebrow.
+ * pane (a phone, or a narrow split) the caret hides (styles.css,
+ * `@container`); the ring and the counts stay, since they are the part you
+ * act on.
  */
 
 import {
@@ -49,7 +49,7 @@ import {
   TableViewport,
   uiClasses,
 } from '@iii-dev/console-ui'
-import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
+import { errorMessage, formatRelative, unwrapEnvelope } from '@iii-dev/console-ui/format'
 import { useCopyFlash } from '@iii-dev/console-ui/hooks'
 import {
   ArrowLeft,
@@ -65,7 +65,9 @@ import {
 import type { ReactNode } from 'react'
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { formatCost, formatTokens } from '../lib/format'
-import { COLOR_FREE, categories, type LegendEntry, legendRows, percentOf } from '../lib/legend'
+import { compactions, growth, type StepPoint, stepPoints } from '../lib/history'
+import { RingGauge } from './icons'
+import { categories, type LegendEntry, legendRows, percentOf } from '../lib/legend'
 import {
   type ContextSnapshot,
   type ConversationTree,
@@ -89,11 +91,14 @@ import {
   type UsageCounters,
   type UsageTotals,
 } from '../lib/metrics'
-import { TONE_COLOR, toneFor } from '../lib/tone'
+import { TONE_COLOR, type Tone, toneFor } from '../lib/tone'
 
 /** Per-tab handler id (host.iii.on namespaces it `::<browserId>`). */
 const STATE_FN = 'iii::harness-ui::ctx-state'
 const METRICS_FN = 'harness::metrics'
+const MESSAGES_FN = 'session::messages'
+/** One page of assistant steps; a long session pages. */
+const HISTORY_PAGE = 500
 /** `harness::metrics` re-reads every transcript of the tree: a 179-session
     tree took over 30 s. Past this the skeleton gives way to the error and its
     retry. */
@@ -215,114 +220,70 @@ function useConversationMetrics(
   return { state, retry: () => setAttempt((n) => n + 1) }
 }
 
-function LegendRow({ row, usable }: { row: LegendEntry; usable: number }) {
-  return (
-    <div
-      className="harness-ui-legend-row"
-      data-group={row.group ? '' : undefined}
-      data-sub={row.sub ? '' : undefined}
-    >
-      <span
-        className="harness-ui-swatch"
-        style={row.color ? { background: row.color } : { visibility: 'hidden' }}
-      />
-      <span className="harness-ui-legend-label">{row.label}</span>
-      {row.badge ? <Badge variant="warn">{row.badge}</Badge> : null}
-      <span className="harness-ui-legend-val">{formatTokens(row.tokens)}</span>
-      <span className="harness-ui-legend-pct">{percentOf(row.tokens, usable)}</span>
-    </div>
-  )
-}
+type HistoryState =
+  | { status: 'idle' }
+  | { status: 'loading'; points?: StepPoint[] }
+  | { status: 'ready'; points: StepPoint[]; key: string }
+  | { status: 'error'; points?: StepPoint[] }
 
-function SectionHead({ id, title, meta }: { id: string; title: string; meta?: ReactNode }) {
-  return (
-    <div className="harness-ui-section-head">
-      <h3 id={id} className="harness-ui-section-title">
-        {title}
-      </h3>
-      {meta ? <span className="harness-ui-section-meta">{meta}</span> : null}
-    </div>
-  )
-}
-
-/** The window: provenance, stacked bar, legend, and the last step's actuals. */
-function WindowSection({ snapshot }: { snapshot: ContextSnapshot }) {
-  const headingId = useId()
-  const usable = snapshot.usable
-  const cats = categories(snapshot)
-  const usage = snapshot.usage
-  const estimated = !snapshot.estimator || snapshot.estimator === 'heuristic'
-  const prompt = (usage?.input ?? 0) + (usage?.cache_read ?? 0) + (usage?.cache_write ?? 0)
-  const hasActuals = usage != null && (usage.input != null || usage.cache_read != null)
-  const hit =
-    usage && (usage.cache_read ?? 0) + (usage.cache_write ?? 0) > 0
-      ? cacheHitPct({
-          turns: 1,
-          function_calls: 0,
-          function_call_errors: 0,
-          input_tokens: usage.input ?? 0,
-          cache_read_tokens: usage.cache_read ?? 0,
-          cache_write_tokens: usage.cache_write,
-        })
-      : null
-  return (
-    <section className="harness-ui-section" aria-labelledby={headingId}>
-      <SectionHead
-        id={headingId}
-        title="Context window"
-        meta={
-          estimated
-            ? `estimate · ${snapshot.estimator ?? 'unknown'}`
-            : `exact · ${snapshot.estimator === 'provider' ? 'provider tokenizer' : snapshot.estimator}`
+/**
+ * The window over the conversation's steps, from the session's assistant
+ * messages (usage projection: no content, just what each step billed).
+ * Read when the breakdown opens on a turn it has no series for yet, and
+ * again when a new turn lands while it stays open. A read that fails keeps
+ * the last series; the chart is a convenience, never a blocker.
+ */
+function useContextHistory(host: Host, sessionId: string, open: boolean, turnId: string | undefined) {
+  const [state, setState] = useState<HistoryState>({ status: 'idle' })
+  const current = useRef(state)
+  current.current = state
+  const key = `${sessionId}\n${turnId ?? ''}`
+  useEffect(() => {
+    setState({ status: 'idle' })
+  }, [sessionId])
+  useEffect(() => {
+    if (!open) return
+    const known = current.current
+    if (known.status === 'ready' && known.key === key) return
+    let cancelled = false
+    setState((prev) => ({ status: 'loading', points: prev.status === 'idle' ? undefined : prev.points }))
+    const pages: unknown[] = []
+    const read = async () => {
+      let cursor: string | undefined
+      for (let page = 0; page < 40; page++) {
+        const payload: Record<string, unknown> = {
+          session_id: sessionId,
+          roles: ['assistant'],
+          content: 'usage',
+          include_custom: false,
+          limit: HISTORY_PAGE,
         }
-      />
-      <div className="harness-ui-stack">
-        {cats
-          .filter((segment) => segment.tokens > 0)
-          .map((segment) => (
-            <span
-              key={segment.key}
-              className="harness-ui-seg"
-              style={{
-                width: `${usable > 0 ? (segment.tokens / usable) * 100 : 0}%`,
-                background: segment.color,
-              }}
-            />
-          ))}
-      </div>
-      <div className="harness-ui-legend">
-        {legendRows(snapshot, cats).map((row) => (
-          <LegendRow key={row.key} row={row} usable={usable} />
-        ))}
-      </div>
-      {hasActuals ? (
-        <div className="harness-ui-step">
-          <span className="harness-ui-step-label">Last step</span>
-          {/* `prompt` is the whole prompt the provider read (fresh input plus
-              cache read and write), unlike Usage's uncached input. */}
-          <span className="harness-ui-step-val">
-            {formatTokens(prompt)} prompt · {formatTokens(usage?.output ?? 0)} out
-            {hit != null ? (
-              <>
-                {' · '}
-                <span
-                  className="harness-ui-step-hit"
-                  title={
-                    'cache read is billed at a fraction of fresh input; cache write ' +
-                    'carries a premium. This is the cached share of the prompt.'
-                  }
-                >
-                  {hit}% cached
-                </span>
-              </>
-            ) : null}
-            {usage?.cost_usd != null ? <> · {formatCost(usage.cost_usd)}</> : ' · no cost'}
-          </span>
-        </div>
-      ) : null}
-    </section>
-  )
+        if (cursor) payload.cursor = cursor
+        const value = await host.iii.trigger(MESSAGES_FN, payload, { timeoutMs: 30_000 })
+        pages.push(value)
+        const next = (unwrapEnvelope(value) as { next_cursor?: unknown } | null)?.next_cursor
+        if (typeof next !== 'string' || next === '' || next === cursor) break
+        cursor = next
+      }
+      return stepPoints(pages)
+    }
+    read()
+      .then((points) => {
+        if (!cancelled) setState({ status: 'ready', points, key })
+      })
+      .catch(() => {
+        if (!cancelled) setState((prev) => ({ status: 'error', points: prev.status === 'idle' ? undefined : prev.points }))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [host, sessionId, open, key])
+  return state
 }
+
+/** Hours and minutes, the user's locale; the day is not worth the width. */
+const clock = (ms: number) =>
+  ms > 0 ? new Date(ms).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : ''
 
 const tokensOrDash = (n: number | undefined) => (n == null ? '—' : formatTokens(n))
 const costOrDash = (n: number | undefined) => (n == null ? '—' : formatCost(n))
@@ -346,63 +307,6 @@ function Bound({ partial, children }: { partial: boolean; children: ReactNode })
     write premium every turn, which is worth a mark. */
 const hitTone = (pct: number) => (pct >= 70 ? 'ok' : pct < 30 ? 'warn' : undefined)
 
-interface UsageRowSpec {
-  key: string
-  label: string
-  /** The counters a row reads; any of them partial makes the value `≥`. */
-  reads: SummedKey[]
-  value: (usage: UsageCounters) => ReactNode
-  strong?: boolean
-}
-
-/** `turns` on the wire counts assistant messages — model steps, not the
-    user's turns — so the label says steps. */
-const USAGE_ROWS: UsageRowSpec[] = [
-  { key: 'cost', label: 'Cost', strong: true, reads: ['cost_usd'], value: (u) => costOrDash(u.cost_usd) },
-  { key: 'steps', label: 'Model steps', reads: [], value: (u) => num(u.turns) },
-  {
-    key: 'calls',
-    label: 'Function calls',
-    reads: [],
-    value: (u) =>
-      u.function_call_errors > 0
-        ? `${num(u.function_calls)} · ${num(u.function_call_errors)} failed`
-        : num(u.function_calls),
-  },
-  { key: 'in', label: 'Uncached input', reads: ['input_tokens'], value: (u) => tokensOrDash(u.input_tokens) },
-  { key: 'out', label: 'Output', reads: ['output_tokens'], value: (u) => tokensOrDash(u.output_tokens) },
-  {
-    key: 'cache',
-    label: 'Cache read · write',
-    reads: ['cache_read_tokens', 'cache_write_tokens'],
-    value: (u) =>
-      u.cache_read_tokens == null && u.cache_write_tokens == null
-        ? '—'
-        : `${tokensOrDash(u.cache_read_tokens)} · ${tokensOrDash(u.cache_write_tokens)}`,
-  },
-  {
-    key: 'hit',
-    label: 'Cache hit',
-    // A ratio, so never `≥`: a sum carries its own ratio over the sessions
-    // that reported both counts (see `UsageTotals.cacheHit`).
-    reads: [],
-    value: (u) => {
-      const pct = 'cacheHit' in u ? (u as UsageTotals).cacheHit : cacheHitPct(u)
-      return pct == null ? (
-        '—'
-      ) : (
-        <span className="harness-ui-hit" data-tone={hitTone(pct)}>
-          {pct}%
-        </span>
-      )
-    },
-  },
-]
-
-function usageCell(row: UsageRowSpec, usage: UsageCounters, partial: readonly SummedKey[] = []) {
-  return <Bound partial={row.reads.some((key) => partial.includes(key))}>{row.value(usage)}</Bound>
-}
-
 /** "a, b and 3 more" — a long list of ids would bury the sentence. */
 function idList(ids: string[], self: string, limit = 3) {
   const names = ids.map((id) => (id === self ? 'this conversation' : id))
@@ -410,23 +314,330 @@ function idList(ids: string[], self: string, limit = 3) {
   return names.length > limit ? `${shown} and ${names.length - limit} more` : shown
 }
 
+/** The headline: how much of the window is in use, and the share as a pill. */
+function Hero({ total, usable, estimated }: { total: number; usable: number; estimated: boolean }) {
+  const ratio = usable > 0 ? Math.min(1, total / usable) : 0
+  const pct = Math.round(ratio * 100)
+  return (
+    <div className="harness-ui-hero">
+      <div className="harness-ui-hero-main">
+        <span className="harness-ui-hero-num">{`${estimated ? '~' : ''}${formatTokens(total)}`}</span>
+        <span className="harness-ui-hero-of">of {formatTokens(usable)} tokens</span>
+      </div>
+      <span className="harness-ui-pill" data-tone={toneFor(ratio)}>
+        {`${pct}%`}
+      </span>
+    </div>
+  )
+}
+
 /**
- * This conversation's usage, and — only when it spawned sub-agents — the
- * same counters summed over its whole subtree in a second column.
+ * Before the first reply there is nothing to break down. Instead of a zero
+ * hero over an empty track, a quiet placeholder: a ghost of the bar to
+ * come (three faint segments, breathing while the first step runs) and
+ * one sentence saying what will fill it and when.
  */
-function UsageSection({
+function EmptyWindow({ contextWindow }: { contextWindow?: number }) {
+  const sized = contextWindow !== undefined && contextWindow > 0
+  return (
+    <section className="harness-ui-section" aria-label="Context window">
+      <div className="harness-ui-empty">
+        <div className={`harness-ui-empty-track ${uiClasses.pulse}`} aria-hidden>
+          <span style={{ flexBasis: '38%' }} />
+          <span style={{ flexBasis: '22%' }} />
+          <span style={{ flexBasis: '12%' }} />
+        </div>
+        <p className="harness-ui-empty-title">
+          {sized ? `${formatTokens(contextWindow)} token window` : 'Nothing counted yet'}
+        </p>
+        <p className="harness-ui-empty-text">
+          {sized
+            ? 'Nothing counted yet. The breakdown of what the window holds appears after the first reply.'
+            : 'The selected model did not report a context-window limit, so usage shows as a count without a share.'}
+        </p>
+      </div>
+    </section>
+  )
+}
+
+/** The window as a thin bar: one rounded segment per category, 2px apart. */
+function StackBar({ pct, children }: { pct: number; children?: ReactNode }) {
+  return (
+    <div
+      className="harness-ui-stack"
+      role="progressbar"
+      aria-label="context window usage"
+      aria-valuenow={pct}
+      aria-valuemin={0}
+      aria-valuemax={100}
+    >
+      {children}
+    </div>
+  )
+}
+
+/** One legend row: swatch, label, tokens, share. */
+function LegendRow({ row, usable }: { row: LegendEntry; usable: number }) {
+  return (
+    <div className="harness-ui-legend-row" data-group={row.group ? '' : undefined}>
+      <span
+        className="harness-ui-swatch"
+        style={row.color ? { background: row.color } : { visibility: 'hidden' }}
+      />
+      <span className="harness-ui-legend-text">{row.label}</span>
+      {row.badge ? <Badge variant="warn">{row.badge}</Badge> : null}
+      <span className="harness-ui-legend-val">{formatTokens(row.tokens)}</span>
+      <span className="harness-ui-legend-pct">{percentOf(row.tokens, usable)}</span>
+    </div>
+  )
+}
+
+/** How many recent steps the bars show. */
+const BARS = 24
+
+/**
+ * The window per model step, as bars for the recent steps: a drop is a
+ * compaction. The eyebrow's right side reads the pace and the steps left
+ * at that pace, or the hovered step. Nothing until two steps exist.
+ */
+function StepBars({
+  history,
+  usable,
+  current,
+}: {
+  history: HistoryState
+  usable: number
+  current: number
+}) {
+  const [hover, setHover] = useState<number | null>(null)
+  const points = history.status === 'idle' ? undefined : history.points
+  if (!points) {
+    return history.status === 'loading' ? (
+      <div className="harness-ui-steps">
+        <div className="harness-ui-steps-head">
+          <span className={uiClasses.eyebrow}>Per step</span>
+        </div>
+        <Skeleton className="harness-ui-bars-skeleton" />
+      </div>
+    ) : null
+  }
+  if (points.length < 2) return null
+  const drops = new Set(compactions(points))
+  const pace = growth(points, usable, current)
+  const first = Math.max(0, points.length - BARS)
+  const shown = points.slice(first)
+  const peak = Math.max(1, ...shown.map((p) => p.prompt))
+  const picked = hover != null ? points[hover] : undefined
+  let meta: ReactNode
+  if (picked) {
+    meta = (
+      <>
+        Step {num(picked.step)} · <span className="harness-ui-strong">{formatTokens(picked.prompt)}</span>
+        {picked.cost != null ? <> · {formatCost(picked.cost)}</> : null}
+        {drops.has(hover as number) ? ' · compacted' : null}
+        {picked.at ? <> · {clock(picked.at)}</> : null}
+      </>
+    )
+  } else if (pace && pace.perStep > 0) {
+    meta = (
+      <>
+        Avg <span className="harness-ui-strong">+{formatTokens(pace.perStep)}</span> / step
+        {pace.stepsLeft != null ? (
+          <> · {pace.stepsLeft === 0 ? 'full next step' : `~${num(pace.stepsLeft)} left`}</>
+        ) : null}
+      </>
+    )
+  } else {
+    meta = <>{plural(points.length, 'step')} · not growing</>
+  }
+  return (
+    <div className="harness-ui-steps">
+      <div className="harness-ui-steps-head">
+        <span className={uiClasses.eyebrow}>Per step</span>
+        <span className="harness-ui-steps-meta">{meta}</span>
+      </div>
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: a hover layer; the readout is text above */}
+      <div className="harness-ui-bars" onPointerLeave={() => setHover(null)}>
+        {shown.map((point, i) => {
+          const index = first + i
+          return (
+            <div
+              key={point.step}
+              className="harness-ui-bar"
+              data-hover={hover === index ? '' : undefined}
+              data-compacted={drops.has(index) ? '' : undefined}
+              title={`Step ${num(point.step)} · ${formatTokens(point.prompt)}`}
+              onPointerEnter={() => setHover(index)}
+            >
+              <span style={{ height: `${Math.max(6, (point.prompt / peak) * 100)}%` }} />
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+/** A labelled number with a thin bar under it; `dashed` for an uncapped one. */
+function Tile({
+  label,
+  value,
+  of,
+  ratio,
+  dashed = false,
+  tone,
+}: {
+  label: string
+  value: ReactNode
+  of?: ReactNode
+  ratio?: number
+  dashed?: boolean
+  tone?: 'ok' | 'warn'
+}) {
+  return (
+    <div className="harness-ui-tile">
+      <span className="harness-ui-tile-label">
+        {label}
+        {tone ? <span className="harness-ui-tile-dot" data-tone={tone} /> : null}
+      </span>
+      <span className="harness-ui-tile-val">
+        <span className="harness-ui-strong">{value}</span>
+        {of ? <span className="harness-ui-tile-of"> {of}</span> : null}
+      </span>
+      <span className="harness-ui-tile-bar" data-dashed={dashed ? '' : undefined}>
+        {ratio != null ? <span style={{ width: `${Math.round(Math.min(1, Math.max(0, ratio)) * 100)}%` }} /> : null}
+      </span>
+    </div>
+  )
+}
+
+/**
+ * The three numbers under the chart: what is left, how well the cache is
+ * working, and what the conversation has cost (with its subtree, when it
+ * spawned sub-agents). Cost comes from `harness::metrics`; until it answers
+ * the live snapshot's running cost stands in.
+ */
+function StatTiles({
+  snapshot,
+  state,
+  tree,
+  liveCost,
+}: {
+  snapshot: ContextSnapshot
+  state: MetricsState
+  tree: ConversationTree | null
+  liveCost: number | null | undefined
+}) {
+  const usable = snapshot.usable
+  const free = Math.max(0, snapshot.free)
+  const shown = tree ? treeTotals(tree, liveCost) : null
+  const self = shown?.self
+  const total = shown?.total ?? null
+  const hit: number | null =
+    self && self.cacheHit != null
+      ? self.cacheHit
+      : snapshot.usage && (snapshot.usage.cache_read ?? 0) + (snapshot.usage.cache_write ?? 0) > 0
+        ? cacheHitPct({
+            turns: 1,
+            function_calls: 0,
+            function_call_errors: 0,
+            input_tokens: snapshot.usage.input ?? 0,
+            cache_read_tokens: snapshot.usage.cache_read ?? 0,
+            cache_write_tokens: snapshot.usage.cache_write,
+          })
+        : null
+  const cost = self ? self.cost_usd : liveCost ?? undefined
+  const loading = !self && state.status === 'loading' && cost == null
+  return (
+    <div className="harness-ui-tiles">
+      <Tile label="Free" value={formatTokens(free)} of={`of ${formatTokens(usable)}`} ratio={usable > 0 ? free / usable : 0} />
+      <Tile
+        label="Cache hit"
+        value={hit == null ? '—' : `${hit}%`}
+        of={hit == null ? undefined : self ? 'of prompts' : 'last step'}
+        ratio={hit == null ? undefined : hit / 100}
+        tone={hit == null ? undefined : hitTone(hit)}
+      />
+      <Tile
+        label="Cost"
+        value={
+          loading ? (
+            <Skeleton className="harness-ui-skeleton" />
+          ) : (
+            <Bound partial={self?.partial.includes('cost_usd') ?? false}>{costOrDash(cost)}</Bound>
+          )
+        }
+        of={
+          total && total.cost_usd != null ? (
+            <>
+              <Bound partial={total.partial.includes('cost_usd')}>{formatCost(total.cost_usd)}</Bound> with sub-agents
+            </>
+          ) : undefined
+        }
+        dashed
+      />
+    </div>
+  )
+}
+
+/** The last line: what is left, how much work the conversation was, and
+    the session id to copy. */
+function Footer({
+  snapshot,
+  tree,
+  sessionId,
+}: {
+  snapshot: ContextSnapshot
+  tree: ConversationTree | null
+  sessionId: string
+}) {
+  const self = tree?.self
+  return (
+    <div className="harness-ui-pop-footer">
+      <span className="harness-ui-pop-footer-text">
+        <span>
+          <span className="harness-ui-strong">{formatTokens(Math.max(0, snapshot.free))}</span> tokens left
+        </span>
+        {self ? (
+          <span>
+            · {plural(self.turns, 'step')} · {plural(self.function_calls, 'call')}
+            {self.function_call_errors ? ` · ${num(self.function_call_errors)} failed` : ''}
+          </span>
+        ) : null}
+      </span>
+      <CopySessionId sessionId={sessionId} />
+    </div>
+  )
+}
+
+/**
+ * The window card: headline, bar, legend, the recent steps, three stats and
+ * the footer line — the whole picture in one glance, in the order you ask
+ * the questions: how full, of what, where it is going, what it cost.
+ */
+function WindowCard({
+  snapshot,
+  history,
   state,
   tree,
   liveCost,
   onRetry,
+  sessionId,
 }: {
+  snapshot: ContextSnapshot
+  history: HistoryState
   state: MetricsState
   tree: ConversationTree | null
   liveCost: number | null | undefined
   onRetry: () => void
+  sessionId: string
 }) {
-  const headingId = useId()
-  if (state.status === 'idle') return null
+  const usable = snapshot.usable
+  const cats = categories(snapshot)
+  const estimated = !snapshot.estimator || snapshot.estimator === 'heuristic'
+  const pct = Math.round(Math.min(1, snapshot.total / usable) * 100)
+  // One row per category: the conversation as a whole, not its parts.
+  const rows = legendRows(snapshot, cats).filter((row) => !row.sub)
   const failure =
     state.status === 'error' ? (
       <StatusPanel
@@ -442,96 +653,43 @@ function UsageSection({
         }
       />
     ) : null
-  const costOnly =
-    liveCost != null ? (
-      <div className="harness-ui-usage-cost">
-        <span>Cost</span>
-        <span className="harness-ui-num">{formatCost(liveCost)}</span>
-      </div>
-    ) : null
-  // No tree to show: still loading (the skeleton, below), failed, or the
-  // answer does not carry this session (deleted mid-flight). The live cost
-  // is all there is.
-  if (!tree && state.status !== 'loading') {
-    if (!failure && !costOnly) return null
-    return (
-      <section className="harness-ui-section" aria-labelledby={headingId}>
-        <SectionHead id={headingId} title="Usage" />
-        {costOnly}
-        {failure}
-      </section>
-    )
-  }
-  if (tree && tree.self.turns === 0 && tree.subAgents.length === 0) {
-    return costOnly ? (
-      <section className="harness-ui-section" aria-labelledby={headingId}>
-        <SectionHead id={headingId} title="Usage" />
-        {costOnly}
-      </section>
-    ) : null
-  }
-  const shown = tree ? treeTotals(tree, liveCost) : null
-  const self = shown?.self
-  const total = shown?.total ?? null
-  const subCount = tree?.subAgents.length ?? 0
+  const partial = tree ? treeTotals(tree, liveCost) : null
+  const unreported = partial?.total?.unreported.length ? partial.total : partial?.self.partial.length ? partial.self : null
   return (
-    <section className="harness-ui-section" aria-labelledby={headingId} aria-busy={!tree}>
-      <SectionHead id={headingId} title="Usage" />
-      <TableViewport>
-        <Table className="harness-ui-usage">
-          {total ? (
-            <TableHeader>
-              <TableRow>
-                <TableHead>
-                  <span className="harness-ui-sr-only">Metric</span>
-                </TableHead>
-                <TableHead className="harness-ui-num">This conversation</TableHead>
-                <TableHead className="harness-ui-num">
-                  With {subCount} sub-agent{subCount === 1 ? '' : 's'}
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-          ) : null}
-          <TableBody>
-            {USAGE_ROWS.map((row) => (
-              <TableRow key={row.key} data-strong={row.strong ? '' : undefined}>
-                <TableHead scope="row">{row.label}</TableHead>
-                <TableCell className="harness-ui-num">
-                  {self ? (
-                    usageCell(row, self, self.partial)
-                  ) : row.key === 'cost' && liveCost != null ? (
-                    formatCost(liveCost)
-                  ) : (
-                    <Skeleton className="harness-ui-skeleton" />
-                  )}
-                </TableCell>
-                {total ? (
-                  <TableCell className="harness-ui-num">{usageCell(row, total, total.partial)}</TableCell>
-                ) : null}
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </TableViewport>
-      {total && total.partial.length > 0 && tree ? (
+    <>
+      <Hero total={snapshot.total} usable={usable} estimated={estimated} />
+      <StackBar pct={pct}>
+        {cats
+          .filter((segment) => segment.tokens > 0)
+          .map((segment) => (
+            <span
+              key={segment.key}
+              className="harness-ui-seg"
+              style={{
+                width: `${usable > 0 ? (segment.tokens / usable) * 100 : 0}%`,
+                background: segment.color,
+              }}
+            />
+          ))}
+      </StackBar>
+      <div className="harness-ui-legend">
+        {rows.map((row) => (
+          <LegendRow key={row.key} row={row} usable={usable} />
+        ))}
+      </div>
+      <StepBars history={history} usable={usable} current={snapshot.total} />
+      <StatTiles snapshot={snapshot} state={state} tree={tree} liveCost={liveCost} />
+      {unreported && tree ? (
         <p className="harness-ui-note harness-ui-footnote">
           <Info size={16} aria-hidden />
-          <span>
-            ≥ leaves out what {total.unreported.length === 1 ? 'one session' : `${total.unreported.length} sessions`}{' '}
-            did not report: {idList(total.unreported, tree.self.session_id)}.
-          </span>
-        </p>
-      ) : self && self.partial.length > 0 && tree ? (
-        <p className="harness-ui-note harness-ui-footnote">
-          <Info size={16} aria-hidden />
-          <span>≥ leaves out what {idList(self.unreported, tree.self.session_id)} did not report.</span>
+          <span>≥ leaves out what {idList(unreported.unreported, tree.self.session_id)} did not report.</span>
         </p>
       ) : null}
       {failure}
-    </section>
+      <Footer snapshot={snapshot} tree={tree} sessionId={sessionId} />
+    </>
   )
 }
-
 /** The models a session or a group ran on, most steps first. */
 function modelsLine(rows: SessionUsage[]) {
   const names = modelTotals(rows).map(modelLabel)
@@ -701,7 +859,9 @@ function ModelsSection({
     ? modelTotals([tree.self, ...tree.subAgents.map((row) => row.usage)])
     : null
   const rows = subtree ?? own
-  if (rows.length === 0) return null
+  // One model is already named in the head; the table earns its place
+  // once there is a mix to tell apart.
+  if (rows.length < 2) return null
   const ownByKey = new Map(own.map((entry) => [entry.key, entry]))
   const subCount = tree.subAgents.length
   const inUse = (entry: ModelTotals) =>
@@ -711,9 +871,14 @@ function ModelsSection({
     (!current.provider || entry.provider === current.provider)
   return (
     <section className="harness-ui-section" aria-labelledby={headingId}>
-      <SectionHead id={headingId} title="Models" meta={plural(rows.length, 'model')} />
+      <div className="harness-ui-section-head">
+        <h3 id={headingId} className={uiClasses.eyebrow}>
+          Models
+        </h3>
+        <span className="harness-ui-section-meta">{plural(rows.length, 'model')}</span>
+      </div>
       <TableViewport>
-        <Table className="harness-ui-usage harness-ui-models">
+        <Table className="harness-ui-table harness-ui-models" density="compact">
           {subtree ? (
             <TableHeader>
               <TableRow>
@@ -793,11 +958,12 @@ function CostSection({
   const mixed = mixesModels(tree)
   return (
     <section className="harness-ui-section" aria-labelledby={headingId}>
-      <SectionHead
-        id={headingId}
-        title="Where the cost went"
-        meta={nested ? `${plural(count, 'sub-agent')} · ${num(groups.length)} direct` : plural(count, 'sub-agent')}
-      />
+      <div className="harness-ui-section-head">
+        <h3 id={headingId} className={uiClasses.eyebrow}>
+          Where the cost went
+        </h3>
+        <span className="harness-ui-section-meta">{nested ? `${plural(count, 'sub-agent')} · ${num(groups.length)} direct` : plural(count, 'sub-agent')}</span>
+      </div>
       <div className="harness-ui-cost-list">
         <CostRow
           label="This conversation"
@@ -1038,6 +1204,36 @@ function SubAgentsPage({
 
 const MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.userAgent)
 
+/** The session id's copy button, for the card's footer: the label names
+    the id, the flash says it copied, the live region says so aloud. */
+function CopySessionId({ sessionId }: { sessionId: string }) {
+  const { state, copy } = useCopyFlash(sessionId, 1400)
+  const [announcement, setAnnouncement] = useState<LiveAnnouncement | null>(null)
+  useEffect(() => {
+    if (state === 'idle') return
+    setAnnouncement((prev) => ({
+      seq: (prev?.seq ?? 0) + 1,
+      text: state === 'copied' ? 'Session id copied' : "Couldn't copy the session id",
+      urgency: state === 'copied' ? 'polite' : 'assertive',
+    }))
+  }, [state])
+  const copied = state === 'copied'
+  return (
+    <>
+      <IconButton
+        label={copied ? 'Copied' : `Copy session id ${sessionId}`}
+        tooltip={false}
+        onClick={copy}
+        data-copy={state}
+        className="harness-ui-copy"
+      >
+        {copied ? <Check size={16} aria-hidden /> : <Copy size={16} aria-hidden />}
+      </IconButton>
+      <LiveRegion announcement={announcement} />
+    </>
+  )
+}
+
 /**
  * The session id (the `state::get` / session-store key) in a read-only field
  * with a copy button. A failed copy — no clipboard access — selects the id so
@@ -1140,13 +1336,26 @@ function ParentRow({
   )
 }
 
-/** The dialog's title and one-line descriptor: model, then usage. */
-function PopoverHead({ model, usage }: { model: string; usage: string }) {
+/** The dialog's title and one-line descriptor: the model (and provider)
+    this conversation is running on. */
+function PopoverHead({
+  model,
+  provider,
+  estimated,
+}: {
+  model: string
+  provider?: string
+  estimated?: boolean
+}) {
   return (
     <div className="harness-ui-pop-head">
-      <DialogTitle>Context</DialogTitle>
-      <DialogDescription className="harness-ui-pop-usage">
-        {model} · {usage}
+      <DialogTitle>Context usage</DialogTitle>
+      <DialogDescription className="harness-ui-pop-model">
+        <span className="harness-ui-pop-model-id">{model}</span>
+        {provider ? <span className="harness-ui-pop-provider">· {provider}</span> : null}
+        {estimated != null ? (
+          <span className="harness-ui-pop-provider">· {estimated ? 'estimate' : 'exact'}</span>
+        ) : null}
       </DialogDescription>
     </div>
   )
@@ -1158,6 +1367,7 @@ interface ContextPopoverProps {
   contextWindow?: number
   sessionId: string
   metrics: MetricsState
+  history: HistoryState
   onRetry: () => void
   onOpenSession?: (sessionId: string) => void
 }
@@ -1173,6 +1383,7 @@ function ContextPopover({
   contextWindow,
   sessionId,
   metrics,
+  history,
   onRetry,
   onOpenSession,
 }: ContextPopoverProps) {
@@ -1215,40 +1426,26 @@ function ContextPopover({
     )
   }
   const parentId = tree?.self.parent_session_id
-  let usage: string
-  if (live) {
-    const pct = Math.round(Math.min(1, live.total / live.usable) * 100)
-    const approx = !live.estimator || live.estimator === 'heuristic' ? '~' : ''
-    usage = `${approx}${formatTokens(live.total)} of ${formatTokens(live.usable)} · ${pct}%`
-  } else {
-    usage = 'waiting for the first step'
-  }
   return (
     <div ref={root} className="harness-ui-pop">
-      <PopoverHead model={live?.model || modelId || 'model'} usage={usage} />
+      <PopoverHead
+        model={live?.model || modelId || 'model'}
+        provider={live?.provider}
+        estimated={live ? !live.estimator || live.estimator === 'heuristic' : undefined}
+      />
       {live ? (
-        <WindowSection snapshot={live} />
+        <WindowCard
+          snapshot={live}
+          history={history}
+          state={metrics}
+          tree={tree}
+          liveCost={liveCost}
+          onRetry={onRetry}
+          sessionId={sessionId}
+        />
       ) : (
-        <section className="harness-ui-section" aria-label="Context window">
-          {contextWindow && contextWindow > 0 ? (
-            <>
-              <div className="harness-ui-stack" />
-              <div className="harness-ui-legend">
-                <LegendRow
-                  row={{ key: 'free', label: 'Free', color: COLOR_FREE, tokens: contextWindow }}
-                  usable={contextWindow}
-                />
-              </div>
-            </>
-          ) : null}
-          <p className="harness-ui-note">
-            {contextWindow && contextWindow > 0
-              ? 'The breakdown appears after the first generation step.'
-              : 'The selected model did not report a context-window limit.'}
-          </p>
-        </section>
+        <EmptyWindow contextWindow={contextWindow} />
       )}
-      <UsageSection state={metrics} tree={tree} liveCost={liveCost} onRetry={onRetry} />
       {tree ? <ModelsSection tree={tree} current={live ?? undefined} /> : null}
       {tree ? (
         <CostSection
@@ -1259,10 +1456,12 @@ function ContextPopover({
           restoreFocus={view.page === 'overview' && view.returned === true}
         />
       ) : null}
-      <div className="harness-ui-pop-foot">
-        <SessionIdRow sessionId={sessionId} />
-        {parentId ? <ParentRow parentId={parentId} onOpenSession={onOpenSession} /> : null}
-      </div>
+      {!live || parentId ? (
+        <div className="harness-ui-pop-foot">
+          {!live ? <SessionIdRow sessionId={sessionId} /> : null}
+          {parentId ? <ParentRow parentId={parentId} onOpenSession={onOpenSession} /> : null}
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -1273,9 +1472,9 @@ interface ContextChipSurfaceProps {
   triggerLabel: string
   trigger: ReactNode
   popover: ReactNode
-  /** The trigger carries a `used/usable` count — what a narrow pane keeps
-      when it hides the bar and the eyebrow (see styles.css). */
-  hasCounts?: boolean
+  /** The usage tone, carried on the chip root so the stylesheet can colour
+      the counts and the hover without a second colour map. */
+  tone?: Tone
 }
 
 /**
@@ -1289,16 +1488,21 @@ function ContextChipSurface({
   triggerLabel,
   trigger,
   popover,
-  hasCounts = false,
+  tone,
 }: ContextChipSurfaceProps) {
   const phone = usePhone()
   const Root = phone ? BottomSheet : Dialog
   const Trigger = phone ? BottomSheetTrigger : DialogTrigger
   return (
-    <div className="harness-ui-chip" data-has-counts={hasCounts ? '' : undefined}>
+    <div className="harness-ui-chip" data-tone={tone}>
       <Root open={open} onOpenChange={onOpenChange}>
         <Trigger asChild>
-          <button type="button" className="harness-ui-chip-btn" aria-label={triggerLabel}>
+          <button
+            type="button"
+            className="harness-ui-chip-btn"
+            aria-label={triggerLabel}
+            data-open={open ? '' : undefined}
+          >
             {trigger}
           </button>
         </Trigger>
@@ -1321,6 +1525,7 @@ export function createContextChip(host: Host) {
     const [snapshot, setSnapshot] = useState<ContextSnapshot | null>(null)
     const [open, setOpen] = useState(false)
     const metrics = useConversationMetrics(host, sessionId, open, snapshot?.turn_id)
+    const history = useContextHistory(host, sessionId, open, snapshot?.turn_id)
     const selectConversation = host.chat?.selectConversation
     const onOpenSession = selectConversation
       ? (id: string) => {
@@ -1386,9 +1591,6 @@ export function createContextChip(host: Host) {
     }, [host, sessionId])
 
     const caret = <ChevronDown className="harness-ui-chip-caret" size={16} aria-hidden />
-    const label = (
-      <span className={`${uiClasses.eyebrow} harness-ui-chip-label`}>ctx</span>
-    )
     const popover = (
       <ContextPopover
         snapshot={snapshot}
@@ -1396,9 +1598,33 @@ export function createContextChip(host: Host) {
         contextWindow={contextWindow}
         sessionId={sessionId}
         metrics={metrics.state}
+        history={history}
         onRetry={metrics.retry}
         onOpenSession={onOpenSession}
       />
+    )
+
+    /* The ring carries proportion; the counts carry the number you act on;
+       the percentage keeps its job in the label, the tooltip and the
+       breakdown's hero. */
+    const ring = (ratio: number, pct: number, tone: Tone) => (
+      <span
+        className="harness-ui-chip-ring"
+        role="progressbar"
+        aria-label="context window usage"
+        aria-valuenow={pct}
+        aria-valuemin={0}
+        aria-valuemax={100}
+      >
+        <RingGauge ratio={ratio} size={16} stroke={2.5} color={TONE_COLOR[tone]} />
+      </span>
+    )
+    const counts = (used: string, window: string) => (
+      <span className="harness-ui-chip-counts">
+        {used}
+        <span className="harness-ui-chip-sep">/</span>
+        {window}
+      </span>
     )
 
     if (!snapshot || snapshot.usable <= 0) {
@@ -1408,23 +1634,10 @@ export function createContextChip(host: Host) {
             open={open}
             onOpenChange={setOpen}
             triggerLabel={`context: waiting for usage, ${contextWindow.toLocaleString()} token window — click for the breakdown`}
-            hasCounts
             trigger={
               <>
-                {label}
-                <span
-                  className="harness-ui-chip-bar"
-                  role="progressbar"
-                  aria-label="context window usage"
-                  aria-valuenow={0}
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                >
-                  <span className="harness-ui-chip-fill" style={{ width: 0 }} />
-                </span>
-                <span className="harness-ui-chip-counts">
-                  0/{formatTokens(contextWindow)}
-                </span>
+                {ring(0, 0, 'ok')}
+                {counts('0', formatTokens(contextWindow))}
                 {caret}
               </>
             }
@@ -1439,7 +1652,7 @@ export function createContextChip(host: Host) {
           triggerLabel="context: waiting for usage — click for the breakdown"
           trigger={
             <>
-              {label}
+              {ring(0, 0, 'ok')}
               <span className="harness-ui-chip-empty">—</span>
               {caret}
             </>
@@ -1457,34 +1670,12 @@ export function createContextChip(host: Host) {
       <ContextChipSurface
         open={open}
         onOpenChange={setOpen}
+        tone={tone}
         triggerLabel={`context: ${snapshot.total.toLocaleString()} of ${snapshot.usable.toLocaleString()} tokens (${pct}%) — click for the breakdown`}
-        hasCounts
         trigger={
           <>
-            {label}
-            <span
-              className="harness-ui-chip-bar"
-              role="progressbar"
-              aria-label="context window usage"
-              aria-valuenow={pct}
-              aria-valuemin={0}
-              aria-valuemax={100}
-            >
-              <span
-                className="harness-ui-chip-fill"
-                style={{ width: `${pct}%`, background: TONE_COLOR[tone] }}
-              />
-            </span>
-            {/* The bar, the percentage and the counts were three encodings of
-                one quantity. The bar carries proportion; the counts carry the
-                number you actually act on. The percentage keeps its job in the
-                tooltip and the popover, and hands its tone to the counts. */}
-            <span
-              className="harness-ui-chip-counts"
-              style={tone === 'ok' ? undefined : { color: TONE_COLOR[tone] }}
-            >
-              {formatTokens(snapshot.total)}/{formatTokens(snapshot.usable)}
-            </span>
+            {ring(ratio, pct, tone)}
+            {counts(formatTokens(snapshot.total), formatTokens(snapshot.usable))}
             {caret}
           </>
         }

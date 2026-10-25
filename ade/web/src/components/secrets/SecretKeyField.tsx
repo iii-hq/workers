@@ -235,8 +235,14 @@ export function SecretKeyField({
   const locked = disabled || busy !== null
 
   const actions = (
-    <span className="flex shrink-0 items-center gap-1">
-      <Button variant="ghost" size="sm" onClick={choose} disabled={locked}>
+    <span className="flex shrink-0 items-center gap-2">
+      <Button
+        variant="pill"
+        size="sm"
+        onClick={choose}
+        disabled={locked}
+        className="rounded-lg bg-panel ring-1 ring-inset ring-edge hover:bg-surface-hover"
+      >
         Replace
       </Button>
       <Button
@@ -244,6 +250,7 @@ export function SecretKeyField({
         size="sm"
         onClick={() => void remove()}
         disabled={locked}
+        className="rounded-lg"
       >
         {busy === 'remove' ? 'Removing…' : 'Remove'}
       </Button>
@@ -256,7 +263,7 @@ export function SecretKeyField({
   } else if (!secretsUp) {
     body = (
       <div className="flex flex-col gap-2">
-        <p className="font-sans text-[13px] leading-relaxed text-ink-faint">
+        <p className="text-[15px] leading-relaxed text-ink-faint">
           The <span className="font-mono">secrets</span> worker, which keeps API
           keys for llm-router, is not running.
         </p>
@@ -279,7 +286,7 @@ export function SecretKeyField({
           </span>
         </div>
         {note ? (
-          <p role="status" className="font-sans text-[12px] text-ink-faint">
+          <p role="status" className="text-[13px] text-ink-faint">
             {note}
           </p>
         ) : null}
@@ -290,7 +297,7 @@ export function SecretKeyField({
     body = (
       <div className="flex flex-col gap-2">
         {!value?.trim() && status?.source === 'env' ? (
-          <p className="font-sans text-[12px] text-ink-faint">
+          <p className="text-[13px] leading-relaxed text-ink-faint">
             In use now: <span className="font-mono">{name}</span> from the
             worker's environment. Choose where to keep it to manage it here.
           </p>
@@ -336,12 +343,15 @@ export function SecretKeyField({
     )
   } else if (refName) {
     body = (
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="flex min-w-0 flex-col">
-          <span className="truncate font-mono text-[12px] text-ink">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+        <span className="flex min-w-0 flex-col gap-0.5">
+          <span
+            data-keep-mono
+            className="truncate font-mono text-[14px] text-ink"
+          >
             {value?.trim()}
           </span>
-          <span className="font-sans text-[12px] text-ink-faint">
+          <span className="text-[13px] text-ink-faint">
             {meta === undefined
               ? 'Reading the secrets store…'
               : meta
@@ -360,12 +370,15 @@ export function SecretKeyField({
     )
   } else if (envName) {
     body = (
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="flex min-w-0 flex-col">
-          <span className="truncate font-mono text-[12px] text-ink">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+        <span className="flex min-w-0 flex-col gap-0.5">
+          <span
+            data-keep-mono
+            className="truncate font-mono text-[14px] text-ink"
+          >
             {value?.trim()}
           </span>
-          <span className="font-sans text-[12px] text-ink-faint">
+          <span className="text-[13px] text-ink-faint">
             {meta === undefined
               ? 'Reading the secrets worker…'
               : meta === null
@@ -381,8 +394,8 @@ export function SecretKeyField({
   } else {
     // A plain-text key or an engine variable: what it is, and the move.
     body = (
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="min-w-0 font-sans text-[12px] text-ink-faint">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+        <span className="min-w-0 text-[13px] leading-relaxed text-ink-faint">
           {literal ? (
             <>
               Saved as plain text in configuration, which is meant to be
@@ -419,28 +432,29 @@ export function SecretKeyField({
     <section
       aria-label={label}
       className={cn(
-        'flex flex-col gap-2.5 rounded-md bg-surface p-3',
+        'flex flex-col gap-4 rounded-xl bg-surface p-5 font-inter text-[15px] text-ink ring-1 ring-inset ring-edge',
         className,
       )}
     >
-      <header className="flex items-center justify-between gap-2">
-        <span className="flex min-w-0 items-center gap-2">
+      <header className="flex items-center justify-between gap-3">
+        <span className="flex min-w-0 items-center gap-2.5">
           <KeyRound className="size-4 shrink-0 text-ink-faint" aria-hidden />
-          <span className="font-sans text-[13px] font-medium text-ink">
-            {label}
-          </span>
+          <span className="text-[15px] font-medium text-ink">{label}</span>
         </span>
         {chip ? <Chip tone={tone}>{chip}</Chip> : null}
       </header>
       {body}
       {status?.error && !status.checking ? (
-        <p className="flex items-start gap-1.5 font-sans text-[12px] text-warn-strong">
-          <CircleAlert className="mt-px size-4 shrink-0" aria-hidden />
+        <p className="flex items-start gap-2 text-[13px] leading-relaxed text-warn-strong">
+          <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
           <span>{status.error}</span>
         </p>
       ) : null}
       {error ? (
-        <p role="alert" className="font-sans text-[12px] text-alert-strong">
+        <p
+          role="alert"
+          className="text-[13px] leading-relaxed text-alert-strong"
+        >
           {error}
         </p>
       ) : null}

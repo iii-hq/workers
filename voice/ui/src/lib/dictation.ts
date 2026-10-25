@@ -85,9 +85,29 @@ interface StartAttempt {
   cancel: () => void
 }
 
+/**
+ * How loud the last ~100 ms of microphone audio was, 0 (silence) to 1, on a
+ * decibel scale so ordinary speech lands mid-range: -50 dBFS and below is 0,
+ * 0 dBFS is 1. Drives the mic's glow; nothing is sent anywhere.
+ */
+export function levelFromPcm16(pcm16: Int16Array): number {
+  if (pcm16.length === 0) return 0
+  let sum = 0
+  for (let i = 0; i < pcm16.length; i++) {
+    const sample = pcm16[i] / 0x8000
+    sum += sample * sample
+  }
+  const rms = Math.sqrt(sum / pcm16.length)
+  if (rms <= 0) return 0
+  const db = 20 * Math.log10(rms)
+  return Math.min(1, Math.max(0, (db + 50) / 50))
+}
+
 export class DictationController {
   private state: DictationReduceState = initialDictationReduceState
   private readonly listeners = new Set<() => void>()
+  private level = 0
+  private readonly levelListeners = new Set<() => void>()
   private sessionId: string | null = null
   private capture: CaptureHandle | null = null
   private releaseScreenWakeLock: (() => void) | null = null
@@ -119,6 +139,25 @@ export class DictationController {
     return this.state.status === 'listening' || this.state.status === 'starting'
   }
 
+  /** The microphone level, on its own channel so ten updates a second never re-render the transcript. */
+  getLevel = (): number => this.level
+
+  /** The live microphone's analyser while listening, for the waveform; null before the mic opens and after it closes. */
+  getAnalyser = (): AnalyserNode | null => this.capture?.analyser ?? null
+
+  subscribeLevel = (listener: () => void): (() => void) => {
+    this.levelListeners.add(listener)
+    return () => {
+      this.levelListeners.delete(listener)
+    }
+  }
+
+  private setLevel(next: number): void {
+    if (next === this.level) return
+    this.level = next
+    for (const listener of this.levelListeners) listener()
+  }
+
   private set(next: DictationReduceState | ((s: DictationReduceState) => DictationReduceState)): void {
     this.state = typeof next === 'function' ? next(this.state) : next
     const active = ['starting', 'listening', 'stopping'].includes(this.state.status)
@@ -128,6 +167,7 @@ export class DictationController {
       this.releaseScreenWakeLock?.()
       this.releaseScreenWakeLock = null
     }
+    if (this.state.status !== 'listening') this.setLevel(0)
     for (const listener of this.listeners) listener()
   }
 
@@ -262,6 +302,7 @@ export class DictationController {
           const seq = this.seq++
           this.queue.push({ seq, pcm16Base64: base64FromInt16(pcm16) })
           this.drainQueue()
+          if (this.state.status === 'listening') this.setLevel(levelFromPcm16(pcm16))
         },
       })
       if (obsolete() || this.sessionId !== res.session_id) {
@@ -345,6 +386,11 @@ export interface UseDictationResult {
   start: () => Promise<void>
   stop: () => Promise<string>
   cancel: () => Promise<void>
+}
+
+/** The live microphone level for one component, 0 to 1. */
+export function useDictationLevel(controller: DictationController): number {
+  return useSyncExternalStore(controller.subscribeLevel, controller.getLevel, () => 0)
 }
 
 /** Subscribe a component to the shared controller. */

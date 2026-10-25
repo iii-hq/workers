@@ -1,14 +1,14 @@
-import { ChevronRight, Clock, Layers, LocateFixed, X } from 'lucide-react'
-import { Button } from '@/components/ui/Button'
+import { ChevronRight, LocateFixed, X } from 'lucide-react'
+import { Button } from '@/components/shadcn/button'
 import { Skeleton } from '@/components/ui/Skeleton'
 import type { TraceChatLink } from '../lib/traceChatLink'
 
 /**
  * Loading placeholder for the trace detail — mirrors the real composition
- * (TraceHeader → view switcher → lane timeline → collapsed WorkerBreakdown)
- * block-for-block with the same paddings, borders, and row heights, so the
- * loaded detail resolves in place without a layout jump. Static chrome
- * (icons, section labels, chip frames) renders for real; only the
+ * (TraceHeader → stats strip → view toolbar → lane timeline → collapsed
+ * WorkerBreakdown) block-for-block with the same paddings, borders, and
+ * row heights, so the loaded detail resolves in place without a layout
+ * jump. Static chrome (icons, section labels) renders for real; only the
  * data-dependent values pulse.
  */
 
@@ -23,6 +23,8 @@ const TIMELINE_BARS: ReadonlyArray<readonly [number, number]> = [
   [63, 7],
   [74, 22],
 ]
+
+const STAT_CELLS = ['sk-0', 'sk-1', 'sk-2', 'sk-3', 'sk-4', 'sk-5'] as const
 
 interface TraceDetailSkeletonProps {
   /** wired to the real close affordance so a slow load can be backed out of */
@@ -39,110 +41,63 @@ export function TraceDetailSkeleton({
   onOpenMessage,
 }: TraceDetailSkeletonProps) {
   return (
-    <div className="flex flex-col overflow-hidden">
-      {/* ── TraceHeader ── */}
-      <div className="border-b border-rule-2 flex-shrink-0">
-        <div className="flex items-center gap-2 px-4 pt-3 pb-1.5">
-          <span className="px-1.5 py-0.5 flex-shrink-0 rounded-xs bg-surface">
-            <Skeleton className="h-3 w-16" />
-          </span>
-          <span className="flex-1 min-w-0">
-            {/* bg-surface-active where the skeleton sits directly on the panel —
-                the default bg-panel tone vanishes there */}
-            <Skeleton className="h-3.5 w-44 max-w-full bg-surface-active" />
-          </span>
+    <div
+      role="status"
+      aria-busy="true"
+      aria-label="loading trace"
+      className="@container flex flex-col overflow-hidden font-inter"
+    >
+      {/* ── TraceHeader: title row ── */}
+      <div className="flex h-11 items-center gap-2 pr-2 pl-3">
+        <Skeleton className="size-2 rounded-full" />
+        <Skeleton className="h-3.5 w-44 max-w-full" />
+        <span className="flex-1" />
+        <Skeleton className="h-6 w-20 rounded-md" />
+        {chatLink?.turnId && onOpenMessage ? (
           <Button
-            variant="icon"
-            size="icon"
-            onClick={onClose}
-            aria-label="close trace detail"
-            title="close (esc)"
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => onOpenMessage(chatLink)}
+            aria-label="go to message"
+            title="Open the chat at this trace's message"
           >
-            <X className="size-4" />
+            <LocateFixed />
           </Button>
-        </div>
-
-        <div className="flex items-center gap-2 px-4 pb-2.5 flex-wrap">
-          <Skeleton className="h-3 w-[72px] bg-surface-active" />
-          <span aria-hidden className="w-px h-3 bg-surface-active-2" />
-          <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
-            <Clock className="size-4 text-ink-faint" />
-            <Skeleton className="h-3 w-12" />
-          </span>
-          <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
-            <Layers className="size-4 text-ink-faint" />
-            <Skeleton className="h-3 w-14" />
-          </span>
-          <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
-            <Skeleton className="h-3 w-16" />
-          </span>
-
-          {chatLink?.turnId && onOpenMessage ? (
-            <>
-              <span aria-hidden className="w-px h-3 bg-edge" />
-              <button
-                type="button"
-                onClick={() => onOpenMessage(chatLink)}
-                aria-label="go to message"
-                title="open the chat at this trace's message"
-                className="flex items-center px-1.5 py-0.5 rounded-xs bg-surface text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors"
-              >
-                <LocateFixed className="size-4" />
-              </button>
-            </>
-          ) : null}
-        </div>
-
-        {/* worker share bar + names */}
-        <div className="px-4 pb-2.5">
-          <div className="flex h-1.5 rounded-full bg-surface overflow-hidden">
-            <Skeleton className="h-full w-[52%]" />
-            <span aria-hidden className="w-px h-full bg-surface-active-2" />
-            <Skeleton className="h-full w-[31%]" />
-            <span aria-hidden className="w-px h-full bg-surface-active-2" />
-            <Skeleton className="h-full flex-1" />
-          </div>
-          <div className="flex items-center gap-3 mt-1.5">
-            {(['wk-0', 'wk-1', 'wk-2'] as const).map((k) => (
-              <span key={k} className="flex items-center gap-1">
-                <Skeleton className="w-1.5 h-1.5 flex-shrink-0 bg-surface-active" />
-                <Skeleton className="h-2.5 w-16 bg-surface-active" />
-              </span>
-            ))}
-          </div>
-        </div>
-
-        {/* critical-path breadcrumb */}
-        <div className="flex items-center gap-1 px-4 pb-2.5">
-          {(['cp-0', 'cp-1', 'cp-2', 'cp-3'] as const).map((k, i) => (
-            <span key={k} className="flex items-center gap-1">
-              {i > 0 && (
-                <ChevronRight className="size-4 text-ink-ghost flex-shrink-0" />
-              )}
-              <span className="px-1 py-0.5">
-                <Skeleton className="h-3 w-20 bg-surface-active" />
-              </span>
-            </span>
-          ))}
-        </div>
+        ) : null}
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          onClick={onClose}
+          aria-label="close trace detail"
+          title="Close (Esc)"
+        >
+          <X />
+        </Button>
       </div>
 
-      {/* ── view switcher ── */}
-      <div className="border-b border-rule-2 px-4 py-2.5">
-        <span className="inline-flex rounded-sm bg-surface p-[2px]">
-          <span className="px-3 py-1 flex items-center">
-            <Skeleton className="h-3.5 w-14" />
-          </span>
-          <span className="px-3 py-1 flex items-center">
-            <Skeleton className="h-3.5 w-16" />
-          </span>
-        </span>
+      {/* ── stats strip ── */}
+      <div className="mx-3 mb-2 grid grid-cols-3 divide-x divide-border overflow-hidden rounded-lg border border-border bg-muted/30 @2xl:grid-cols-6">
+        {STAT_CELLS.map((k) => (
+          <div key={k} className="flex flex-col gap-1.5 px-3 py-2">
+            <Skeleton className="h-2.5 w-12" />
+            <Skeleton className="h-4 w-14" />
+          </div>
+        ))}
+      </div>
+
+      {/* ── view toolbar ── */}
+      <div className="flex h-9 items-center gap-2 border-b border-border px-3">
+        <Skeleton className="h-7 w-44 rounded-md" />
+        <span className="flex-1" />
+        <Skeleton className="h-3 w-16" />
       </div>
 
       {/* ── lane timeline (ruler + hierarchical bar cascade) — content-sized,
           like the real canvas (fitContent) ── */}
       <div className="overflow-hidden">
-        <div className="relative h-5 mx-4 border-b border-rule-2">
+        <div className="relative mx-4 h-5 border-b border-border">
           {([0, 25, 50, 75] as const).map((pct) => (
             <Skeleton
               key={pct}
@@ -159,7 +114,7 @@ export function TraceDetailSkeleton({
           {TIMELINE_BARS.map(([left, width], line) => (
             <Skeleton
               key={`${left}-${width}`}
-              className="absolute h-4"
+              className="absolute h-4 rounded-[4px]"
               style={{
                 left: `${left}%`,
                 width: `${width}%`,
@@ -171,18 +126,16 @@ export function TraceDetailSkeleton({
       </div>
 
       {/* ── collapsed workers footer ── */}
-      <div className="border-t border-rule-2 flex-shrink-0">
-        <div className="flex items-center gap-2 px-4 py-2.5">
-          <ChevronRight className="size-4 text-ink-faint" />
-          <span className="iii-ui-eyebrow">workers</span>
-          <span className="flex items-center gap-3 ml-auto font-mono text-[11px] text-ink-faint">
-            {(['p50', 'p95', 'p99'] as const).map((p) => (
-              <span key={p} className="flex items-center gap-1">
-                {p} <Skeleton className="h-3 w-12 bg-surface-active" />
-              </span>
-            ))}
-          </span>
-        </div>
+      <div className="flex h-9 items-center gap-2 border-t border-border px-3">
+        <ChevronRight className="size-4 text-muted-foreground" aria-hidden />
+        <span className="text-xs font-semibold text-foreground">Workers</span>
+        <span className="ml-auto flex items-center gap-3 text-[11px] text-muted-foreground">
+          {(['p50', 'p95', 'p99'] as const).map((p) => (
+            <span key={p} className="flex items-center gap-1">
+              {p} <Skeleton className="h-3 w-12" />
+            </span>
+          ))}
+        </span>
       </div>
     </div>
   )

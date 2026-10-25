@@ -1,4 +1,4 @@
-import { SquarePen } from 'lucide-react'
+import { PanelLeft, PanelRight, SquarePen } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AddProjectDialog } from '@/components/chat/AddProjectDialog'
 import {
@@ -441,7 +441,12 @@ export function ChatPanel({
         {showList ? (
           <PageSidebar
             // onboarding-conversations: tour anchor (workers/onboarding). Do not remove.
-            className="onboarding-conversations bg-white dark:bg-neutral-950"
+            className={cn(
+              'onboarding-conversations bg-white dark:bg-neutral-950',
+              /* Dark: a neutral-900 edge where the list meets the chat. */
+              'dark:border-neutral-900',
+              panelSide === 'right' ? 'dark:border-l' : 'dark:border-r',
+            )}
             label="Conversations"
             side={panelSide}
             storageKey="console:chat:conversations"
@@ -454,6 +459,13 @@ export function ChatPanel({
             /* The toggle leads the top row from the outer edge; New chat,
                search and import are navigation rows inside the sidebar. */
             togglePlacement="outer"
+            /* The shadcn sidebar trigger: one panel glyph for both states,
+               on the edge the pane hugs, at the nav rows' 16px stroke. */
+            toggleIcons={
+              panelSide === 'right'
+                ? { expanded: PanelRight, collapsed: PanelRight }
+                : { expanded: PanelLeft, collapsed: PanelLeft }
+            }
             header={<span className="sr-only">Conversations</span>}
             collapsedActions={
               <IconButton

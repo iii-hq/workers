@@ -96,7 +96,7 @@ describe('SplitPreview', () => {
     expect(markup).toContain('aria-label="Split right"')
     expect(markup).toContain('bg-panel-raised')
     expect(markup).toContain('shadow-floating')
-    expect(markup).toContain('font-sans')
+    expect(markup).toContain('font-inter')
     expect(markup).toContain('split-preview-enter-right')
     expect(markup).not.toContain('border-dashed')
     expect(markup).not.toContain('backdrop-blur')

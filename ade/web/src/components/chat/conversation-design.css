@@ -1,0 +1,342 @@
+/* Conversation-specific materials and type. Code keeps its own font stack. */
+.conversation-surface,
+.conversation-transcript,
+.composer-shell {
+  --font-sans: var(--font-inter);
+  font-family: var(--font-inter);
+}
+
+.conversation-surface {
+  --color-panel: #fcfcfc;
+  --color-panel-raised: #ffffff;
+  --color-ink: #242424;
+  --color-ink-faint: #686868;
+  --color-ink-ghost: #737373;
+  --color-muted-foreground: #686868;
+  --color-rule-focus: #858585;
+  --color-surface: #f0f0f0;
+  --color-surface-hover: #e9e9e9;
+  background: var(--color-panel);
+}
+
+/* Dark chat sits on the application's black canvas; the header, composer
+   and tool cards lift off it on the app's raised step. */
+[data-theme="dark"] .conversation-surface {
+  --color-panel: #0a0a0a;
+  --color-panel-raised: #171717;
+  --color-ink: #e8e8e8;
+  --color-ink-faint: #adadad;
+  --color-ink-ghost: #979797;
+  --color-muted-foreground: #adadad;
+  --color-rule-focus: #8c8c8c;
+  --color-surface: #1c1c1c;
+  --color-surface-hover: #262626;
+}
+
+.chat-message,
+.chat-message .font-mono {
+  font-family: var(--font-inter);
+}
+
+.chat-message :is(pre, code) {
+  font-family: var(--font-code);
+}
+
+.chat-message-stack {
+  width: 100%;
+  max-width: 760px;
+}
+
+.chat-message {
+  min-width: 0;
+  gap: 12px;
+}
+
+.chat-user-header {
+  padding-right: 4px;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+
+.chat-user-bubble {
+  max-width: 86%;
+  padding: 14px 20px;
+  border-radius: 22px 22px 6px 22px;
+  background: var(--color-surface);
+}
+
+.chat-agent-header {
+  display: flex;
+  min-width: 0;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.chat-agent-name {
+  font-weight: 600;
+  color: var(--color-ink);
+}
+
+.chat-agent-model {
+  min-width: 0;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--color-ink-faint);
+}
+
+.chat-prose :is(p, ul, ol) {
+  font-family: var(--font-inter);
+  line-height: 1.8;
+  letter-spacing: -0.006em;
+}
+
+/* Conversation type reads at 15px. Narrow panes (and phones) step back up
+   to the 16px floor below, alongside the other narrow-container rules. */
+.chat-prose :is(p, ul, ol) {
+  font-size: 15px;
+}
+
+.chat-prose li {
+  margin-block: 7px;
+  padding-left: 3px;
+}
+
+.chat-prose :not(pre) > code {
+  padding: 2px 5px;
+  border-radius: 5px;
+  background: var(--color-surface);
+  font-size: 0.9em;
+  overflow-wrap: anywhere;
+}
+
+.chat-message-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-ink-faint);
+}
+
+/* With a pointer, a reply's copy / quote actions wait until the reader
+   hovers or tabs into the message (the user bubble already does this), so
+   a long transcript is prose, not a column of icons. Touch keeps them. */
+@media (hover: hover) and (pointer: fine) {
+  .chat-message[data-message-role="assistant"] .chat-message-actions {
+    opacity: 0;
+    transition: opacity 160ms ease-out;
+  }
+
+  .chat-message[data-message-role="assistant"]:hover .chat-message-actions,
+  .chat-message[data-message-role="assistant"]:focus-within
+    .chat-message-actions {
+    opacity: 1;
+  }
+}
+
+.chat-message-action {
+  border-radius: 7px;
+  transition:
+    color 150ms ease-out,
+    background-color 150ms ease-out;
+}
+
+@media (hover: hover) {
+  .chat-message-action:hover {
+    background: var(--color-surface-hover);
+  }
+}
+
+.conversation-transcript [data-history-edge] {
+  gap: 12px;
+  font-family: var(--font-inter);
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+}
+
+.conversation-transcript [data-history-edge="beginning"]::before,
+.conversation-transcript [data-history-edge="beginning"]::after {
+  content: "";
+  height: 1px;
+  width: 32px;
+  background: var(--color-edge);
+}
+
+.chat-activity-toggle {
+  min-height: 32px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  background: var(--color-surface);
+  font-family: var(--font-inter);
+  font-size: 12px;
+  transition: background-color 160ms ease-out;
+}
+
+.chat-activity-toggle:hover {
+  background: var(--color-surface-hover);
+}
+
+.conversation-transcript [data-function-trigger-group-calls] {
+  margin-top: 6px;
+  padding-left: 12px;
+  border-left: 1px solid var(--color-edge);
+}
+
+.conversation-transcript .function-trigger-surface {
+  font-family: var(--font-inter);
+}
+
+.conversation-transcript [data-message-action="toggle"] {
+  border-radius: 6px;
+  min-height: 32px;
+}
+
+.conversation-transcript .function-trigger-display-slot {
+  padding-top: 8px;
+  padding-bottom: 6px;
+}
+
+/* Worker-owned file cards inherit the chat materials without changing data or actions. */
+.conversation-transcript [data-iii-ui] .shui-file-changes {
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--color-panel-raised);
+  box-shadow: inset 0 0 0 1px var(--color-edge);
+}
+
+.conversation-transcript [data-iii-ui] .shui-file-changes-head {
+  padding: 12px 14px;
+  background: var(--color-surface);
+}
+
+.conversation-transcript [data-iii-ui] .shui-file-changes-title {
+  font-family: var(--font-inter);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.conversation-transcript [data-iii-ui] .shui-file-change-row {
+  padding: 11px 14px;
+  background: transparent;
+}
+
+.conversation-transcript [data-iii-ui] .shui-file-change-path {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.composer-shell .composer-card {
+  border-radius: 20px;
+  background: var(--color-panel-raised);
+  box-shadow:
+    inset 0 0 0 1px var(--color-edge),
+    0 4px 20px -8px rgb(0 0 0 / 12%);
+  transition: box-shadow 180ms ease-out;
+}
+
+.composer-shell .composer-card:focus-within {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--color-ink-faint) 50%, transparent),
+    0 5px 24px -8px rgb(0 0 0 / 16%);
+}
+
+.composer-shell .composer-desktop-toolbar {
+  position: relative;
+  padding: 0 10px 10px;
+}
+
+/* The voice worker's recording bar takes over the toolbar row while you
+   dictate; the toolbar is its containing block, inset by its padding. */
+.composer-shell .composer-mobile-toolbar {
+  position: relative;
+}
+
+.composer-shell .composer-desktop-toolbar [data-iii-ui='voice'] .voice-recording-bar {
+  inset: 0 10px 10px;
+}
+
+.composer-shell .composer-mobile-toolbar [data-iii-ui='voice'] .voice-recording-bar {
+  inset: 0 8px 8px;
+}
+
+@container (max-width: 480px) {
+  .chat-user-bubble {
+    max-width: 94%;
+    padding: 12px 15px;
+  }
+
+  .chat-prose :is(p, ul, ol) {
+    font-size: 16px;
+  }
+
+  .chat-agent-model {
+    max-width: 50%;
+  }
+
+  .conversation-transcript [data-function-trigger-group-calls] {
+    padding-left: 8px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-message-action,
+  .chat-message-actions,
+  .chat-activity-toggle,
+  .composer-shell .composer-card {
+    transition: none;
+  }
+}
+
+/* The same mounted composer moves into the reading flow after the first turn. */
+.chat-conversation-body[data-welcome] {
+  justify-content: safe center;
+  overflow-y: auto;
+  padding-block: 24px 64px;
+}
+
+.chat-conversation-body[data-welcome] .chat-welcome-heading {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+.chat-conversation-body > footer {
+  flex-shrink: 0;
+}
+
+.composer-agent-trigger {
+  min-height: 32px;
+  font-size: 13px;
+}
+
+@container (max-width: 480px) {
+  .chat-conversation-body[data-welcome] {
+    justify-content: flex-start;
+    padding-block: 16px;
+  }
+
+  .composer-shell .composer-desktop-toolbar {
+    row-gap: 8px;
+  }
+
+  .composer-shell .composer-desktop-toolbar > :last-child {
+    margin-inline-start: auto;
+    max-width: 100%;
+  }
+
+  .composer-suggestions {
+    justify-content: flex-start;
+  }
+}
+
+@media (pointer: coarse) {
+  .composer-agent-trigger {
+    min-height: 44px;
+  }
+}
+
+.composer-shell[data-composer-welcome] .composer-editor {
+  min-height: 88px;
+}

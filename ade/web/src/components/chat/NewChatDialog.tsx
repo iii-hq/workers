@@ -94,15 +94,17 @@ export function NewChatDialog({
       >
         <DialogTitle className="sr-only">New chat</DialogTitle>
 
-        {/* Where: the project the chat works in. */}
-        <div className="flex h-12 items-center gap-2 border-b border-neutral-200 pr-14 pl-3 dark:border-neutral-800">
+        {/* Where: the project the chat works in, as a dropdown chip in the
+            corner. The caret and the tooltip say it can be changed; the
+            path lives in the tooltip so the chip stays one word wide. */}
+        <div className="flex h-12 items-center gap-2 border-b border-neutral-200 pr-14 pl-2 dark:border-neutral-800">
           <DirectoryPicker
             value={workingDir}
             onChange={setWorkingDir}
-            triggerAppearance="inline"
+            triggerAppearance="chip"
             emptyLabel="Choose project"
             popoverAlign="start"
-            className="max-w-[min(20rem,60vw)] text-[13px] font-medium"
+            className="max-w-[min(20rem,60vw)]"
           />
         </div>
 

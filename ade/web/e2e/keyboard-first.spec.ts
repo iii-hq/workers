@@ -40,11 +40,11 @@ test('the keyboard reaches the chat, the panes and every page command through âŒ
   await palette.getByRole('textbox').fill('>latest')
   await expect(
     palette
-      .getByRole('button', { name: /Chat: Jump to the latest message/ })
+      .getByRole('button', { name: /Scroll to latest message/ })
       .locator('kbd'),
   ).toHaveText('End')
-  await palette.getByRole('textbox').fill('>focus the composer')
-  const row = palette.getByRole('button', { name: /Chat: Focus the composer/ })
+  await palette.getByRole('textbox').fill('>focus message box')
+  const row = palette.getByRole('button', { name: /Focus message box/ })
   await expect(row).toBeVisible()
   await expect(row.locator('kbd')).toHaveCount(0)
   await row.click()
@@ -61,17 +61,17 @@ test('the keyboard reaches the chat, the panes and every page command through âŒ
   await page.keyboard.press('ControlOrMeta+k')
   await palette.getByRole('textbox').fill('>stop')
   await expect(
-    palette.getByRole('button', { name: /Chat: Stop the turn/ }),
+    palette.getByRole('button', { name: /Stop generating/ }),
   ).toHaveCount(0)
   await palette.getByRole('textbox').fill('>model')
   await expect(
-    palette.getByRole('button', { name: /Chat: Switch model/ }),
+    palette.getByRole('button', { name: /Change model/ }),
   ).toBeVisible()
   await expect(palette.getByRole('button', { name: /^workers/ })).toHaveCount(0)
   await palette.getByRole('textbox').fill('')
   await expect(palette.getByText('Recent', { exact: true })).toBeVisible()
   await expect(
-    palette.getByRole('button', { name: /Chat: Focus the composer/ }).first(),
+    palette.getByRole('button', { name: /Focus message box/ }).first(),
   ).toBeVisible()
   await page.keyboard.press('Escape')
 

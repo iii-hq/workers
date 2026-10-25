@@ -20,6 +20,7 @@ function PopoverContent({
   anchor,
   collisionPadding,
   sticky,
+  keepMounted,
   ...props
 }: PopoverPrimitive.Popup.Props &
   Pick<
@@ -31,9 +32,10 @@ function PopoverContent({
     | 'anchor'
     | 'collisionPadding'
     | 'sticky'
-  >) {
+  > &
+  Pick<PopoverPrimitive.Portal.Props, 'keepMounted'>) {
   return (
-    <PopoverPrimitive.Portal>
+    <PopoverPrimitive.Portal keepMounted={keepMounted}>
       <PopoverPrimitive.Positioner
         align={align}
         alignOffset={alignOffset}

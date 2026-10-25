@@ -1,4 +1,5 @@
 import {
+  type LucideIcon,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
@@ -47,6 +48,12 @@ export interface PageSidebarProps
    * so the toggle leads the row and the header content follows it.
    */
   togglePlacement?: 'inner' | 'outer'
+  /**
+   * The toggle's glyphs, when the panel is something more specific than a
+   * panel (the chat history's toggle wears a history mark). Defaults to the
+   * panel-open / panel-close pair for the sidebar's side.
+   */
+  toggleIcons?: { expanded: LucideIcon; collapsed: LucideIcon }
 
   /** Controlled expanded width. Existing fixed-width usages remain supported. */
   width?: number
@@ -172,6 +179,7 @@ export function PageSidebar({
   header,
   collapsedActions,
   togglePlacement = 'inner',
+  toggleIcons,
   width: controlledWidth,
   defaultWidth = controlledWidth ?? DEFAULT_WIDTH,
   minWidth = DEFAULT_MIN_WIDTH,
@@ -562,8 +570,11 @@ export function PageSidebar({
   const toggleAtLeft =
     togglePlacement === 'outer' ? side === 'left' : side === 'right'
   const enterFrom = side === 'left' ? '-translate-x-1' : 'translate-x-1'
-  const ExpandedIcon = side === 'left' ? PanelLeftClose : PanelRightClose
-  const CollapsedIcon = side === 'left' ? PanelLeftOpen : PanelRightOpen
+  const ExpandedIcon =
+    toggleIcons?.expanded ??
+    (side === 'left' ? PanelLeftClose : PanelRightClose)
+  const CollapsedIcon =
+    toggleIcons?.collapsed ?? (side === 'left' ? PanelLeftOpen : PanelRightOpen)
 
   return (
     <aside

@@ -297,6 +297,7 @@ export function waterfallToTimelineSpans(
   const lookupById = (id: string) => byId.get(id)
   const spans: TimelineSpan[] = data.spans.map((span) => {
     const start = (span.start_percent / 100) * total
+    const worker = getWorkerName(span)
     return {
       id: span.span_id,
       startTime: start,
@@ -306,7 +307,8 @@ export function waterfallToTimelineSpans(
       endTime: start + span.duration_ms,
       status: span.pending && span.status !== 'error' ? 'pending' : span.status,
       kind: kindForOtelSpan(span),
-      color: getWorkerColor(getWorkerName(span)),
+      color: getWorkerColor(worker),
+      workerKey: worker,
       // Verb prefixes (`execute `, `call `, ...) are stripped for display —
       // the bar/hover label reads as the function, not the SDK span name —
       // unless a producer set an `iii.tag.display_name` override (applied
@@ -315,7 +317,7 @@ export function waterfallToTimelineSpans(
         span,
         inheritedTags(span.parent_span_id, lookupById).displayName,
       ),
-      meta: getWorkerName(span),
+      meta: worker,
     }
   })
   return { spans, totalDurationMs: total, byId }

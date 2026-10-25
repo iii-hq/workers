@@ -3,9 +3,9 @@ import {
   type ReactNode,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
-  useEffect,
 } from 'react'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
 import type { Message } from '@/types/chat'
@@ -17,7 +17,8 @@ import { getExtPage } from './ui-slots'
 let latestFileIntent = 0
 
 export const FileNavigationContext = createContext<
-  ((ref: FileMentionRef, messageId?: string) => void | Promise<void>) | undefined
+  | ((ref: FileMentionRef, messageId?: string) => void | Promise<void>)
+  | undefined
 >(undefined)
 export const FileMessageContext = createContext<string | undefined>(undefined)
 
@@ -47,7 +48,11 @@ export function messageFileDirectories(
       : { path: currentDir, recorded: historyComplete && !compacted }
   const result = new Map<string, FileDirectory>()
   for (const message of messages) {
-    if (message.role === 'system' && message.kind === 'working-dir' && message.scope) {
+    if (
+      message.role === 'system' &&
+      message.kind === 'working-dir' &&
+      message.scope
+    ) {
       directory = { path: message.scope.path, recorded: true }
     }
     result.set(message.id, directory)
@@ -56,26 +61,40 @@ export function messageFileDirectories(
 }
 
 /** Validate a local path and its coordinates without bypassing worker-side authorization. */
-export function resolveChatFile(ref: FileMentionRef, workingDir: string | null): string {
+export function resolveChatFile(
+  ref: FileMentionRef,
+  workingDir: string | null,
+): string {
   if (
     !ref.path ||
     ref.path.endsWith('/') ||
     ref.path.includes('\\') ||
     ref.path.startsWith('//') ||
     /^[a-z][a-z\d+.-]*:/i.test(ref.path) ||
-    Array.from(ref.path).some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)
+    Array.from(ref.path).some(
+      (char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127,
+    )
   ) {
-    throw new Error('This is not a supported local file path. Use an absolute Unix path or a workspace-relative file.')
+    throw new Error(
+      'This is not a supported local file path. Use an absolute Unix path or a workspace-relative file.',
+    )
   }
   if (
-    (ref.range && (!Number.isSafeInteger(ref.range.from) || !Number.isSafeInteger(ref.range.to) || ref.range.from < 1 || ref.range.to < ref.range.from)) ||
-    (ref.column !== undefined && (!Number.isSafeInteger(ref.column) || ref.column < 1))
+    (ref.range &&
+      (!Number.isSafeInteger(ref.range.from) ||
+        !Number.isSafeInteger(ref.range.to) ||
+        ref.range.from < 1 ||
+        ref.range.to < ref.range.from)) ||
+    (ref.column !== undefined &&
+      (!Number.isSafeInteger(ref.column) || ref.column < 1))
   ) {
     throw new Error('The file reference has an invalid line range or column.')
   }
   if (ref.path.startsWith('/')) return ref.path
   if (!workingDir?.startsWith('/')) {
-    throw new Error('The original folder for this reference is unavailable. Use an absolute file path or select the correct conversation folder and try again.')
+    throw new Error(
+      'The original folder for this reference is unavailable. Use an absolute file path or select the correct conversation folder and try again.',
+    )
   }
   // Do not collapse .. client-side: symlink traversal belongs to the worker,
   // which canonicalizes and enforces its existing filesystem permissions.
@@ -117,7 +136,9 @@ export function ChatFileNavigation({
   // biome-ignore lint/correctness/useExhaustiveDependencies: a changed scope cancels the old confirmation
   useEffect(() => {
     requestSeq.current += 1
-    return () => { requestSeq.current += 1 }
+    return () => {
+      requestSeq.current += 1
+    }
   }, [workingDir, enabled])
   const directories = useMemo(
     () => messageFileDirectories(messages ?? [], workingDir, historyComplete),
@@ -127,13 +148,17 @@ export function ChatFileNavigation({
     async (ref: FileMentionRef, messageId?: string) => {
       const sequence = ++requestSeq.current
       const intent = ++latestFileIntent
-      if (!enabled) throw new Error('File navigation is disabled for this conversation.')
+      if (!enabled)
+        throw new Error('File navigation is disabled for this conversation.')
       if (!getExtPage('ide')) {
-        throw new Error('The IDE is not available. Enable or reconnect its worker, then click this reference again.')
+        throw new Error(
+          'The IDE is not available. Enable or reconnect its worker, then click this reference again.',
+        )
       }
-      const directory = messageId && messages
-        ? directories.get(messageId) ?? { path: null, recorded: true }
-        : { path: workingDir, recorded: messages === undefined }
+      const directory =
+        messageId && messages
+          ? (directories.get(messageId) ?? { path: null, recorded: true })
+          : { path: workingDir, recorded: messages === undefined }
       const path = resolveChatFile(ref, directory.path)
       if (!ref.path.startsWith('/') && !directory.recorded) {
         const accepted = await confirm({
@@ -141,8 +166,16 @@ export function ChatFileNavigation({
           description: `This message has no recorded working folder. Open ${path} using the conversation's current folder? The file is the current disk version, not a historical snapshot.`,
           confirmLabel: 'Open file',
         })
-        if (!accepted || sequence !== requestSeq.current || intent !== latestFileIntent) return
-        if (!getExtPage('ide')) throw new Error('The IDE disconnected. Reconnect its worker and try again.')
+        if (
+          !accepted ||
+          sequence !== requestSeq.current ||
+          intent !== latestFileIntent
+        )
+          return
+        if (!getExtPage('ide'))
+          throw new Error(
+            'The IDE disconnected. Reconnect its worker and try again.',
+          )
       }
       openChatFile(ref, directory.path)
     },

@@ -35,6 +35,7 @@ export type KeybindingScope = 'global' | 'palette'
 export type KeybindingActionId =
   | 'palette.toggle'
   | 'app.settings'
+  | 'app.shortcuts'
   | 'chat.new'
   | 'project.add'
   | 'page.chat'
@@ -52,6 +53,7 @@ export type KeybindingActionId =
   | 'palette.next'
   | 'palette.previous'
   | 'palette.cycleFilter'
+  | 'palette.pick'
   | 'palette.choose'
   | 'palette.close'
 
@@ -113,7 +115,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
   // Ctrl+T/W are the browser's own on Windows and Linux).
   {
     id: 'workspace.selectByIndex',
-    title: 'Select workspace 1 to 9',
+    title: 'Go to workspace 1–9',
     group: 'Workspace',
     scope: 'global',
     bindings: { mac: ['Ctrl+1'], other: ['Alt+1'] },
@@ -134,7 +136,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
   // key keeps its value under any modifier on any layout.
   {
     id: 'workspace.next',
-    title: 'Next workspace',
+    title: 'Go to next workspace',
     group: 'Workspace',
     scope: 'global',
     bindings: {
@@ -145,7 +147,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
   },
   {
     id: 'workspace.previous',
-    title: 'Previous workspace',
+    title: 'Go to previous workspace',
     group: 'Workspace',
     scope: 'global',
     bindings: {
@@ -156,7 +158,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
   },
   {
     id: 'workspace.close',
-    title: 'Close the workspace',
+    title: 'Close workspace',
     group: 'Workspace',
     scope: 'global',
     bindings: { mac: ['Ctrl+W'], other: ['Alt+W'] },
@@ -169,7 +171,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
   // between panels the way the brackets create them.
   {
     id: 'panel.split',
-    title: 'Split right',
+    title: 'Split panel right',
     group: 'Workspace',
     scope: 'global',
     bindings: { mac: ['Ctrl+]'], other: ['Alt+]'] },
@@ -177,21 +179,25 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
   },
   {
     id: 'panel.splitLeft',
-    title: 'Split left',
+    title: 'Split panel left',
     group: 'Workspace',
     scope: 'global',
     bindings: { mac: ['Ctrl+['], other: ['Alt+['] },
     keywords: ['panel', 'pane', 'column', 'split', 'left'],
   },
-  // Go-to chords: a prefix key, then a letter for the place. The prefix never
-  // does anything on its own, so the letters stay free for single-key actions
-  // and a new place costs one more letter, not one more reserved key.
+  // Go-to chords: one press, ⌃⌘ plus the place's initial. The rule is the
+  // Command key first: ⌘C is Copy, ⌘W and ⌘T are the browser's, and the
+  // ⇧⌘ row is taken too (⇧⌘C inspects, ⇧⌘W closes the window, ⇧⌘T reopens
+  // a tab), so ⌃ joins ⌘ and the initial stays. No ⌥: Option turns a
+  // letter into another character and is the hardest modifier to read.
+  // Elsewhere Alt already carries the workspace keys (Alt+T, Alt+W), so the
+  // pages add Shift. They stand down while you type.
   {
     id: 'page.chat',
     title: 'Go to chat',
     group: 'Go to',
     scope: 'global',
-    bindings: { mac: ['Ctrl+G C'], other: ['Alt+G C'] },
+    bindings: { mac: ['Ctrl+Cmd+C'], other: ['Alt+Shift+C'] },
     keywords: ['chat', 'conversation', 'go', 'page'],
   },
   {
@@ -199,7 +205,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     title: 'Go to workers',
     group: 'Go to',
     scope: 'global',
-    bindings: { mac: ['Ctrl+G W'], other: ['Alt+G W'] },
+    bindings: { mac: ['Ctrl+Cmd+W'], other: ['Alt+Shift+W'] },
     keywords: ['workers', 'functions', 'go', 'page'],
   },
   {
@@ -207,12 +213,12 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     title: 'Go to traces',
     group: 'Go to',
     scope: 'global',
-    bindings: { mac: ['Ctrl+G T'], other: ['Alt+G T'] },
+    bindings: { mac: ['Ctrl+Cmd+T'], other: ['Alt+Shift+T'] },
     keywords: ['traces', 'spans', 'go', 'page'],
   },
   {
     id: 'panel.next',
-    title: 'Focus the next panel',
+    title: 'Go to next panel',
     group: 'Workspace',
     scope: 'global',
     bindings: { mac: ['Ctrl+}'], other: ['Alt+}'] },
@@ -220,7 +226,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
   },
   {
     id: 'panel.previous',
-    title: 'Focus the previous panel',
+    title: 'Go to previous panel',
     group: 'Workspace',
     scope: 'global',
     bindings: { mac: ['Ctrl+{'], other: ['Alt+{'] },
@@ -233,6 +239,18 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     scope: 'global',
     bindings: { mac: ['Ctrl+,'], other: ['Alt+,'] },
     keywords: ['configuration', 'preferences'],
+  },
+  // ⌘/ is the chord help menus answer to (Slack, Linear, Notion all open
+  // their shortcut sheets on it) and no browser claims it. It fires while
+  // typing for the same reason ⌘K does: it is how you ask what the keys are.
+  {
+    id: 'app.shortcuts',
+    title: 'Show keyboard shortcuts',
+    group: 'ADE',
+    scope: 'global',
+    bindings: ['Mod+/'],
+    firesWhileTyping: true,
+    keywords: ['keys', 'help', 'shortcut', 'reference', 'keyboard'],
   },
   // The chat pair is on the Mod tier: ⌘O opens a folder as a project, and
   // ⇧⌘O opens a new chat. Mod+N would be the obvious chord for a new chat,
@@ -254,6 +272,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     title: 'New chat',
     group: 'Chat',
     scope: 'global',
+    // One chord, beside its sibling: ⌘O adds a project, ⇧⌘O starts a chat.
     bindings: ['Mod+Shift+O'],
     firesWhileTyping: true,
     keywords: ['conversation', 'session', 'create', 'start'],
@@ -274,21 +293,32 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
   },
   {
     id: 'palette.cycleFilter',
-    title: 'Cycle the filter',
+    title: 'Change filter',
     group: 'Search',
     scope: 'palette',
     bindings: ['Tab', 'Shift+Tab'],
   },
+  // ⌃ on a Mac, because ⌘1–9 is the browser's and ⌥ is not used anywhere
+  // in the console; Alt elsewhere, where Ctrl+1–9 is the browser's. Inside
+  // the palette it opens the Nth row outright.
+  {
+    id: 'palette.pick',
+    title: 'Open result 1–9',
+    group: 'Search',
+    scope: 'palette',
+    bindings: { mac: ['Ctrl+1'], other: ['Alt+1'] },
+    digitIndex: true,
+  },
   {
     id: 'palette.choose',
-    title: 'Open the selected row',
+    title: 'Open selected result',
     group: 'Search',
     scope: 'palette',
     bindings: ['Enter'],
   },
   {
     id: 'palette.close',
-    title: 'Close the palette',
+    title: 'Close search',
     group: 'Search',
     scope: 'palette',
     bindings: ['Escape'],

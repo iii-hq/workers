@@ -467,10 +467,25 @@ export interface ComposerActionProps {
  * An icon-sized action rendered in the composer's toolbar, beside the
  * attach button. Duplicate `id`: last registration wins.
  */
+/**
+ * The keyboard and palette face of a composer action: the console lists it
+ * as `Chat: Title` and fires it while focus is in the chat pane, the same
+ * way a page's own commands work. `run` must not need the rendered
+ * component: it runs from the palette too, with nothing hovered or pressed.
+ * Ignored by consoles before this field existed; feature-detect nothing,
+ * the action still renders.
+ */
+export type ComposerActionCommand = Pick<
+  PageCommand,
+  'title' | 'detail' | 'keywords' | 'shortcut' | 'firesWhileTyping' | 'enabled' | 'run'
+>
+
 export interface ComposerActionRegistration {
   /** kebab-case; convention `<worker>-<name>`. */
   id: string
   render: React.ComponentType<ComposerActionProps>
+  /** Optional palette row and shortcut for the same action. */
+  command?: ComposerActionCommand
 }
 
 /**

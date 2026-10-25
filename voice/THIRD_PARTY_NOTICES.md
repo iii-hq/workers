@@ -69,6 +69,12 @@ The importer pins SHA-256 for every file, using LFS metadata for weights and
 Git-blob-verified downloads for small metadata. Review the individual card and
 dataset terms before redistribution or use.
 
+## Console UI code
+
+The dictation waveform (`ui/src/lib/live-waveform.tsx`) is adapted from the `LiveWaveform` component of ElevenLabs UI, https://github.com/elevenlabs/ui, under the MIT License, Copyright (c) 2025 Eleven Labs Inc. It keeps the scrolling bars, edge fade and finishing wave, and drops the component's own microphone in favour of the dictation capture's analyser. The MIT terms require this notice to stay with the code:
+
+> Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 ## Markdown speech preparation
 
 The worker uses `pulldown-cmark` 0.13 (MIT) to extract spoken prose from

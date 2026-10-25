@@ -1,5 +1,9 @@
 import { ArrowUpRight } from 'lucide-react'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
+import {
+  factLabelClassName,
+  factValueClassName,
+} from '@/components/ui/FactCard'
 import { useMentionProviders } from '@/lib/mentions/providers'
 import type { MentionProvider, MentionView } from '@/lib/mentions/types'
 import { useMentionView } from '@/lib/mentions/views'
@@ -20,7 +24,7 @@ interface MentionPreviewCardProps {
 }
 
 const cardShell =
-  'mention-card min-w-0 rounded-sm bg-panel-raised px-3 py-2.5 shadow-raised'
+  'mention-card min-w-0 rounded-lg bg-panel-raised px-3 py-2.5 font-inter text-sm shadow-raised ring-1 ring-foreground/10'
 
 /**
  * The preview of one mention, shown when its pill is hovered: the worker's
@@ -53,10 +57,7 @@ export function MentionPreviewCard({ name, id }: MentionPreviewCardProps) {
           ? `No installed worker provides @${name} mentions`
           : `Could not load @${name}: ${state.message}`
     return (
-      <div
-        className={cn(cardShell, 'font-sans text-[12px] text-ink-faint')}
-        data-color="neutral"
-      >
+      <div className={cn(cardShell, 'text-ink-faint')} data-color="neutral">
         {message}
       </div>
     )
@@ -109,7 +110,7 @@ export function GenericMentionCard({
   const fields = (view.fields ?? []).slice(0, CARD_FIELDS)
   return (
     <div className={cardShell} data-color={color} data-mention-card={name}>
-      <div className="flex min-w-0 items-center gap-1.5 font-sans text-[12px] text-ink-faint">
+      <div className="flex min-w-0 items-center gap-1.5 text-xs text-ink-faint">
         <span
           className="mention-chip flex size-6 shrink-0 items-center justify-center rounded-xs"
           data-color={color}
@@ -118,7 +119,7 @@ export function GenericMentionCard({
         </span>
         <span className="truncate">{provider?.label ?? name}</span>
         {view.hint ? (
-          <span className="shrink-0 font-mono text-[11px] text-ink-ghost">
+          <span className="shrink-0 font-mono text-xs text-ink-faint">
             {view.hint}
           </span>
         ) : null}
@@ -126,7 +127,7 @@ export function GenericMentionCard({
           <button
             type="button"
             onClick={onOpen}
-            className="ml-auto inline-flex shrink-0 items-center gap-0.5 rounded-xs px-1 text-[11px] text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+            className="ml-auto inline-flex shrink-0 items-center gap-0.5 rounded-xs px-1 text-xs text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
           >
             open
             <ArrowUpRight aria-hidden className="size-4" />
@@ -137,17 +138,17 @@ export function GenericMentionCard({
         <button
           type="button"
           onClick={onOpen}
-          className="mt-1 block max-w-full truncate text-left font-sans text-[14px] font-semibold text-ink hover:underline focus-visible:outline-none focus-visible:underline"
+          className="mt-1 block max-w-full truncate text-left text-sm font-medium text-ink hover:underline focus-visible:outline-none focus-visible:underline"
         >
           {view.label}
         </button>
       ) : (
-        <div className="mt-1 truncate font-sans text-[14px] font-semibold text-ink">
+        <div className="mt-1 truncate text-sm font-medium text-ink">
           {view.label}
         </div>
       )}
       {view.description ? (
-        <div className="mt-0.5 line-clamp-2 font-sans text-[12px] text-ink-faint">
+        <div className="mt-0.5 line-clamp-2 text-xs text-ink-faint">
           {view.description}
         </div>
       ) : null}
@@ -155,12 +156,13 @@ export function GenericMentionCard({
         <dl className="mt-2 grid grid-cols-[repeat(auto-fill,minmax(7.5rem,1fr))] gap-x-3 gap-y-1.5">
           {fields.map((field) => (
             <div key={field.label} className="min-w-0">
-              <dt className="truncate font-sans text-[11px] text-ink-ghost">
+              <dt className={cn(factLabelClassName, 'truncate text-xs')}>
                 {field.label}
               </dt>
               <dd
                 className={cn(
-                  'truncate font-sans text-[12px]',
+                  factValueClassName,
+                  'truncate',
                   mentionToneClass(field.tone),
                 )}
               >

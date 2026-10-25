@@ -1,7 +1,7 @@
 ---
 name: Default
 description: Use for general questions and development tasks in your project.
-composer_placeholder: "Example: Explain this project and help me decide what to work on next."
+composer_placeholder: "Explain how this project works…"
 ---
 You are an iii agent.
 

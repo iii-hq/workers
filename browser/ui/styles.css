@@ -1010,6 +1010,9 @@
 
 /* ── configuration workbench ───────────────────────────────────────── */
 
+/* The settings page's idiom: a plain text rail on the left, a titled column
+   of hairline-divided rows on the right, the page's own canvas showing
+   through. 15px rail links, 16px section titles, 14px copy. */
 [data-iii-ui="browser"] .br-cfg {
   display: flex;
   flex: 1 1 auto;
@@ -1020,7 +1023,7 @@
   min-height: 0;
   overflow: hidden;
   color: var(--color-ink);
-  font-family: var(--font-sans);
+  font-family: inherit;
 }
 [data-iii-ui="browser"] .br-cfg-workbench {
   display: flex;
@@ -1030,120 +1033,83 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: var(--color-panel);
+  background: transparent;
 }
 [data-iii-ui="browser"] .br-cfg-nav {
   display: flex;
-  flex: 0 0 220px;
+  flex: 0 0 208px;
   flex-direction: column;
   min-width: 0;
-  background: var(--color-sidebar);
+  padding-top: 8px;
+  border-right: 1px solid var(--color-edge);
+  background: transparent;
 }
 [data-iii-ui="browser"] .br-cfg-nav-head {
-  padding: 15px 14px 13px;
-}
-[data-iii-ui="browser"] .br-cfg-nav-head p {
-  margin: 0;
-  padding-top: 5px;
+  padding: 8px 20px 4px;
   color: var(--color-ink-faint);
-  font-size: 11px;
-  line-height: 1.5;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
 }
 [data-iii-ui="browser"] .br-cfg-nav-list {
   flex: 1;
   min-height: 0;
   margin: 0;
-  padding: 8px;
+  padding: 2px 10px;
   overflow-y: auto;
   list-style: none;
 }
 [data-iii-ui="browser"] .br-cfg-nav-row {
   position: relative;
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
+  align-items: center;
   width: 100%;
   min-width: 0;
-  min-height: 62px;
-  padding: 9px 8px 9px 10px;
+  min-height: 36px;
+  padding: 0 10px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--color-ink-faint);
   font: inherit;
+  font-size: 15px;
+  line-height: 20px;
   text-align: left;
   cursor: pointer;
+  transition:
+    background-color var(--motion-duration-fast) var(--motion-ease-standard),
+    color var(--motion-duration-fast) var(--motion-ease-standard);
 }
 [data-iii-ui="browser"] .br-cfg-nav-row:hover {
   background: var(--color-surface-hover);
   color: var(--color-ink);
 }
-/* the selected section: neutral wash plus the edge rail, never accent */
+/* the selected section: the neutral selection wash, never accent */
 [data-iii-ui="browser"] .br-cfg-nav-row.active {
   background: var(--color-surface-selected);
   color: var(--color-ink);
-}
-[data-iii-ui="browser"] .br-cfg-nav-row.active::before {
-  position: absolute;
-  inset: 7px auto 7px -8px;
-  width: 2px;
-  background: var(--color-edge);
-  content: "";
 }
 [data-iii-ui="browser"] .br-cfg-nav-row:focus-visible,
 [data-iii-ui="browser"] .br-cfg-editor:focus-visible {
   outline: 2px solid var(--color-rule-focus);
   outline-offset: -2px;
 }
-[data-iii-ui="browser"] .br-cfg-nav-copy {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-}
-[data-iii-ui="browser"] .br-cfg-nav-name,
-[data-iii-ui="browser"] .br-cfg-nav-description,
-[data-iii-ui="browser"] .br-cfg-nav-meta {
+[data-iii-ui="browser"] .br-cfg-nav-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-[data-iii-ui="browser"] .br-cfg-nav-name {
-  color: inherit;
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 17px;
-}
-[data-iii-ui="browser"] .br-cfg-nav-description {
-  color: var(--color-ink-faint);
-  font-size: 11px;
-  line-height: 15px;
-}
-[data-iii-ui="browser"] .br-cfg-nav-meta {
-  padding-top: 2px;
-  color: var(--color-ink-ghost);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  line-height: 14px;
-}
-[data-iii-ui="browser"] .br-cfg-nav-chevron {
-  align-self: center;
-  flex-shrink: 0;
-  color: var(--color-ink-ghost);
-}
 [data-iii-ui="browser"] .br-cfg-nav-foot {
   display: flex;
   align-items: flex-start;
-  gap: 7px;
-  padding: 11px 14px;
+  gap: 8px;
+  padding: 12px 20px 16px;
   color: var(--color-ink-faint);
-  font-size: 11px;
-  line-height: 1.45;
+  font-size: 14px;
+  line-height: 20px;
 }
 [data-iii-ui="browser"] .br-cfg-nav-foot > :first-child {
-  margin-top: 4px;
+  margin-top: 6px;
 }
 [data-iii-ui="browser"] .br-cfg-editor {
   display: flex;
@@ -1152,26 +1118,17 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: var(--color-panel);
+  background: transparent;
 }
 [data-iii-ui="browser"] .br-cfg-editor:focus {
   outline: none;
 }
 [data-iii-ui="browser"] .br-cfg-editor-head {
-  position: sticky;
-  top: 0;
-  z-index: 2;
   display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  min-height: 62px;
-  padding: 12px 14px;
-  background: var(--color-panel-raised);
-}
-[data-iii-ui="browser"] .br-cfg-editor-icon {
   flex-shrink: 0;
-  margin-top: 3px;
-  color: var(--color-accent);
+  align-items: flex-start;
+  gap: 8px;
+  padding: 24px 32px 0;
 }
 [data-iii-ui="browser"] .br-cfg-editor-title {
   flex: 1;
@@ -1179,33 +1136,34 @@
 }
 [data-iii-ui="browser"] .br-cfg-editor-title h3,
 [data-iii-ui="browser"] .br-cfg-editor-title p {
-  overflow: hidden;
   margin: 0;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 [data-iii-ui="browser"] .br-cfg-editor-title h3 {
   color: var(--color-ink);
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 600;
+  line-height: 24px;
 }
 [data-iii-ui="browser"] .br-cfg-editor-title p {
-  padding-top: 3px;
+  padding-top: 2px;
   color: var(--color-ink-faint);
-  font-size: 11px;
+  font-size: 14px;
+  line-height: 20px;
 }
 [data-iii-ui="browser"] .br-cfg-back {
   flex: 0 0 auto;
-  margin: 1px 0 0 -5px;
+  margin: 0 0 0 -8px;
 }
 [data-iii-ui="browser"] .br-cfg-editor-scroll {
   flex: 1;
   min-width: 0;
   min-height: 0;
+  padding-bottom: 32px;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 [data-iii-ui="browser"] .br-cfg-section {
-  padding: 20px;
+  padding: 24px 32px 8px;
 }
 [data-iii-ui="browser"] .br-cfg-section-list,
 [data-iii-ui="browser"] .br-cfg-field-row,
@@ -1214,7 +1172,7 @@
   min-width: 0;
 }
 [data-iii-ui="browser"] .br-cfg-row-control {
-  width: min(360px, 42cqw);
+  width: min(400px, 42cqw);
   max-width: 100%;
 }
 [data-iii-ui="browser"] .br-cfg-input,
@@ -1224,18 +1182,23 @@
 }
 [data-iii-ui="browser"] .br-cfg-input,
 [data-iii-ui="browser"] .br-cfg-template-input {
+  height: 36px;
   font-family: var(--font-mono);
+  font-size: 14px;
 }
-/* the one native control: styled like the shared Input */
+/* the one native control: a bordered field like the page's selects */
 [data-iii-ui="browser"] .br-cfg-select {
-  height: 34px;
-  padding: 0 9px;
-  border: 0;
-  border-radius: 6px;
-  background: var(--color-surface);
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-md);
+  background: transparent;
   color: var(--color-ink);
-  font-family: var(--font-sans);
-  font-size: 12px;
+  font-family: inherit;
+  font-size: 15px;
+}
+[data-iii-ui="browser"] .br-cfg-select:hover {
+  background: var(--color-surface);
 }
 [data-iii-ui="browser"] .br-cfg-select:focus {
   outline: 2px solid var(--color-rule-focus);
@@ -1245,7 +1208,7 @@
   display: grid;
   grid-template-columns: minmax(150px, 1fr) auto;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   min-width: 0;
 }
 [data-iii-ui="browser"] .br-cfg-template-kind {
@@ -1262,8 +1225,8 @@
 [data-iii-ui="browser"] .br-cfg-hint,
 [data-iii-ui="browser"] .br-cfg-error {
   margin: 0;
-  font-size: 11px;
-  line-height: 1.5;
+  font-size: 14px;
+  line-height: 20px;
 }
 [data-iii-ui="browser"] .br-cfg-hint {
   color: var(--color-ink-faint);
@@ -1274,9 +1237,9 @@
 [data-iii-ui="browser"] .br-cfg-policy-card {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
   min-width: 0;
-  padding: 14px;
+  padding: 20px;
 }
 [data-iii-ui="browser"] .br-cfg-policy-card:focus,
 [data-iii-ui="browser"] .br-cfg-origin-policies:focus,
@@ -1305,36 +1268,38 @@
 }
 [data-iii-ui="browser"] .br-cfg-policy-head h5 {
   color: var(--color-ink);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 20px;
 }
 [data-iii-ui="browser"] .br-cfg-policy-head p {
   max-width: 68ch;
-  padding-top: 3px;
+  padding-top: 2px;
   color: var(--color-ink-faint);
-  font-size: 11px;
-  line-height: 1.5;
+  font-size: 14px;
+  line-height: 20px;
 }
 [data-iii-ui="browser"] .br-cfg-policy-grid {
-  background: var(--color-panel);
+  background: transparent;
 }
 [data-iii-ui="browser"] .br-cfg-origin-policies,
 [data-iii-ui="browser"] .br-cfg-origin-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   min-width: 0;
 }
 [data-iii-ui="browser"] .br-cfg-origin-name {
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 5px;
+  gap: 6px;
   min-width: 0;
 }
 [data-iii-ui="browser"] .br-cfg-origin-name label {
   color: var(--color-ink-faint);
-  font-size: 11px;
+  font-size: 14px;
+  line-height: 20px;
 }
 [data-iii-ui="browser"] .br-cfg-policy-add {
   align-self: flex-start;
@@ -1342,10 +1307,11 @@
 [data-iii-ui="browser"] .br-cfg-preview {
   display: flex;
   align-items: flex-end;
-  gap: 14px;
-  padding: 12px;
-  border-radius: 6px;
-  background: var(--color-surface);
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-lg);
+  background: transparent;
 }
 [data-iii-ui="browser"] .br-cfg-preview-frame {
   display: flex;
@@ -1354,24 +1320,24 @@
   width: min(220px, 42%);
   min-width: 128px;
   max-height: 136px;
-  border-radius: 6px;
-  background: var(--color-panel);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
   color: var(--color-ink-faint);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 14px;
   font-variant-numeric: tabular-nums;
 }
 [data-iii-ui="browser"] .br-cfg-preview p {
   margin: 0;
   color: var(--color-ink-faint);
-  font-size: 11px;
-  line-height: 1.5;
+  font-size: 14px;
+  line-height: 20px;
 }
 [data-iii-ui="browser"] .br-cfg-status {
-  margin-top: 14px;
+  margin: 16px 32px 0;
 }
 [data-iii-ui="browser"] .br-cfg-danger-action {
-  margin-top: 8px;
+  margin-top: 10px;
 }
 
 /* narrow: one pane at a time, touch-sized controls */
@@ -1384,19 +1350,17 @@
   width: 100%;
   height: 100%;
   min-height: 0;
+  border-right: 0;
 }
 [data-iii-ui="browser"] .br-cfg.narrow .br-cfg-nav-row {
-  min-height: 72px;
-  padding-top: 10px;
-  padding-bottom: 10px;
+  min-height: 44px;
 }
 [data-iii-ui="browser"] .br-cfg.narrow .br-cfg-editor-head {
   align-items: center;
-  min-height: 64px;
-  padding: 10px 12px;
+  padding: 16px 20px 0;
 }
 [data-iii-ui="browser"] .br-cfg.narrow .br-cfg-section {
-  padding: 17px 14px;
+  padding: 20px 20px 8px;
 }
 [data-iii-ui="browser"] .br-cfg.narrow .br-cfg-row-control {
   width: 100%;

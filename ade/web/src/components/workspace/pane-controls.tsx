@@ -297,7 +297,7 @@ export function SplitPreview({
         'group/preview absolute top-0 bottom-1.5 flex w-[7.25rem] flex-col items-center justify-center gap-2.5 px-3 text-center',
         // Overlay grammar: one surface step up and the floating shadow — no
         // frame. It sits over the neighbouring pane, not beside it.
-        'rounded-sm bg-panel-raised font-sans shadow-floating select-none',
+        'rounded-sm bg-panel-raised font-inter shadow-floating select-none',
         'focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent',
         side === 'left' ? 'left-1.5' : 'right-1.5',
         closing

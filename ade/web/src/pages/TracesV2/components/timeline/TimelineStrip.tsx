@@ -57,6 +57,7 @@
 import { Crosshair, Pause } from 'lucide-react'
 import {
   type CSSProperties,
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -65,12 +66,12 @@ import {
   useState,
 } from 'react'
 import { Toggle } from '@/components/shadcn/toggle'
-import { Badge } from '@/components/ui/Badge'
 import { cn } from '@/lib/utils'
 import type { StoredSpan } from '../../api/traces'
 import type { SpanFilterControls } from '../../lib/spanFilters'
 import { storedSpansToTimelineSpans } from '../../lib/timelineSpans'
 import { formatDuration } from '../../lib/traceUtils'
+import { LiveBadge } from '../LiveBadge'
 import { computeTicks, effectiveEnd, type TimelineSpan } from './layout'
 import { SpanFilterMenu } from './SpanFilterMenu'
 import { SpanHoverCard } from './SpanHoverCard'
@@ -107,18 +108,19 @@ const LIVENESS_TICK_MS = 500
 /* hierarchical layout (TraceTimeline's model on the live span feed)    */
 /* ------------------------------------------------------------------ */
 
-/** the experiment's line geometry: 3px bars on an 8px rhythm */
-const BAR_HEIGHT = 3
-const ROW_PITCH = 8
-const CONTENT_PAD_Y = 4
+/** the line geometry: 5px bars on an 11px rhythm, tall enough to read as
+    bars rather than dots and to take a 1px hover ring without filling in */
+const BAR_HEIGHT = 5
+const ROW_PITCH = 11
+const CONTENT_PAD_Y = 6
 /** minimum left inset of a child bar from its parent's — the hierarchy padding */
-const DEPTH_INDENT = 10
+const DEPTH_INDENT = 12
 /** breathing room between sequential bars sharing a line */
-const SIBLING_GAP = 2
+const SIBLING_GAP = 3
 /** the connector rail drops from just inside the parent bar's left edge */
-const RAIL_INSET = 2
+const RAIL_INSET = 3
 /** no icon square to preserve — just enough pixels to hover */
-const MIN_BAR_WIDTH = 6
+const MIN_BAR_WIDTH = 8
 
 const EDGE_FADE_PX = 48
 /** how far past the last span's end the view parks when everything is done */
@@ -335,10 +337,99 @@ interface LiveBarEntry {
   left: number
 }
 
-interface HoverState {
+/** Lines and pixels kept rendered beyond the viewport while culling. */
+const OVERSCAN_LINES = 6
+const OVERSCAN_PX = 160
+
+interface StripBarProps {
   id: string
-  x: number
-  y: number
+  ariaLabel: string
+  top: number
+  left: number
+  width: number
+  color: string
+  live: boolean
+  hovered: boolean
+  enter: boolean
+  clickable: boolean
+  onEnter: (id: string) => void
+  onLeave: (id: string) => void
+  onClick: (id: string) => void
+  registerLive: (id: string, left: number, el: HTMLElement | null) => void
+}
+
+/** One line, memoised so a hover or a structural tick re-renders only the
+ *  bars whose props changed. The fill is the worker hue mixed toward the
+ *  page by `--strip-bar-mix` (full strength on dark, softened on light,
+ *  where the saturated ramp at this size reads as confetti). A re-pack
+ *  glides the bar to its new line instead of teleporting it; width is left
+ *  alone so a live bar's per-frame growth stays crisp. */
+const StripBar = memo(function StripBar({
+  id,
+  ariaLabel,
+  top,
+  left,
+  width,
+  color,
+  live,
+  hovered,
+  enter,
+  clickable,
+  onEnter,
+  onLeave,
+  onClick,
+  registerLive,
+}: StripBarProps) {
+  return (
+    <button
+      type="button"
+      ref={live ? (el) => registerLive(id, left, el) : undefined}
+      aria-label={ariaLabel}
+      onMouseEnter={() => onEnter(id)}
+      onMouseLeave={() => onLeave(id)}
+      onClick={clickable ? () => onClick(id) : undefined}
+      className={cn(
+        'absolute rounded-[2.5px] transition-[top,left] duration-[var(--motion-duration-panel)] ease-[var(--motion-ease-standard)]',
+        enter && 'timeline-enter',
+        live && 'trace-running-quiet',
+        'focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring',
+        clickable ? 'cursor-pointer' : 'cursor-default',
+      )}
+      style={{
+        top,
+        height: BAR_HEIGHT,
+        left,
+        width,
+        backgroundColor: `color-mix(in oklab, ${color} var(--strip-bar-mix, 100%), var(--color-bg))`,
+        boxShadow: hovered ? '0 0 0 1px var(--color-ink)' : undefined,
+        zIndex: hovered ? 5 : undefined,
+      }}
+    />
+  )
+})
+
+/** The hover card at the pointer; owns the pointer position itself so the
+ *  strip's React state only changes when the hovered bar changes. */
+function StripHoverCard({
+  span,
+  now,
+  viewportRef,
+  pointerRef,
+}: {
+  span: TimelineSpan
+  now: number
+  viewportRef: React.RefObject<HTMLDivElement | null>
+  pointerRef: React.RefObject<{ x: number; y: number }>
+}) {
+  const [pos, setPos] = useState(() => pointerRef.current)
+  useEffect(() => {
+    const el = viewportRef.current
+    if (!el) return
+    const onMove = (e: PointerEvent) => setPos({ x: e.clientX, y: e.clientY })
+    el.addEventListener('pointermove', onMove, { passive: true })
+    return () => el.removeEventListener('pointermove', onMove)
+  }, [viewportRef])
+  return <SpanHoverCard span={span} now={now} x={pos.x} y={pos.y} />
 }
 
 function formatTick(t: number): string {
@@ -391,7 +482,25 @@ function Timeline({
   // virtual clock makes a long jump so pixel offsets never grow huge.
   const [timeBase, setTimeBase] = useState(() => Date.now())
   const [structureNow, setStructureNow] = useState(timeBase)
-  const [hover, setHover] = useState<HoverState | null>(null)
+  const [hoverId, setHoverId] = useState<string | null>(null)
+  const pointerRef = useRef({ x: 0, y: 0 })
+  const [scrollTop, setScrollTop] = useState(0)
+  const scrollFrameRef = useRef(0)
+  const onScroll = useCallback(() => {
+    if (scrollFrameRef.current) return
+    scrollFrameRef.current = requestAnimationFrame(() => {
+      scrollFrameRef.current = 0
+      const el = viewportRef.current
+      if (!el) return
+      setScrollTop((prev) =>
+        Math.abs(prev - el.scrollTop) < (OVERSCAN_LINES * ROW_PITCH) / 2
+          ? prev
+          : el.scrollTop,
+      )
+    })
+  }, [])
+  useEffect(() => () => cancelAnimationFrame(scrollFrameRef.current), [])
+  const [viewportHeight, setViewportHeight] = useState(0)
 
   const pxPerMs = width > 0 ? width / windowMs : 0
 
@@ -533,9 +642,11 @@ function Timeline({
     if (!el) return
     const observer = new ResizeObserver((entries) => {
       setWidth(entries[0].contentRect.width)
+      setViewportHeight(entries[0].contentRect.height)
     })
     observer.observe(el)
     setWidth(el.clientWidth)
+    setViewportHeight(el.clientHeight)
     return () => observer.disconnect()
   }, [])
 
@@ -568,27 +679,76 @@ function Timeline({
     return () => clearInterval(interval)
   }, [])
 
-  const registerLiveBar = (
-    id: string,
-    left: number,
-    el: HTMLElement | null,
-  ) => {
-    if (el) liveBarsRef.current.set(id, { el, left })
-    else liveBarsRef.current.delete(id)
-  }
+  const registerLiveBar = useCallback(
+    (id: string, left: number, el: HTMLElement | null) => {
+      if (el) liveBarsRef.current.set(id, { el, left })
+      else liveBarsRef.current.delete(id)
+    },
+    [],
+  )
 
-  const trackHover = (id: string) => (e: React.MouseEvent) => {
-    setHover({ id, x: e.clientX, y: e.clientY })
-  }
-  const clearHover = (id: string) => () => {
-    setHover((h) => (h?.id === id ? null : h))
-  }
+  const hoverEnter = useCallback((id: string) => setHoverId(id), [])
+  const hoverLeave = useCallback(
+    (id: string) => setHoverId((h) => (h === id ? null : h)),
+    [],
+  )
+  const onSpanClickRef = useRef(onSpanClick)
+  onSpanClickRef.current = onSpanClick
+  const spanById = useMemo(() => new Map(spans.map((s) => [s.id, s])), [spans])
+  const clickSpan = useCallback(
+    (id: string) => {
+      const span = spanById.get(id)
+      if (span && onSpanClickRef.current) onSpanClickRef.current(span)
+    },
+    [spanById],
+  )
 
   // Resolve the hovered span from the live list — if it was pruned the card
   // simply disappears; if its status/end updated the card reflects it.
-  const hoveredSpan = hover
-    ? (spans.find((s) => s.id === hover.id) ?? null)
-    : null
+  const hoveredSpan = hoverId ? (spanById.get(hoverId) ?? null) : null
+
+  // Culling: the track slides under a fixed viewport, so a bar is on
+  // screen when its track-space x plus the current shift lands inside the
+  // strip's width. The shift is read off the structural clock (250ms
+  // cadence) with overscan to cover the per-frame drift between ticks,
+  // and lines outside the vertical scroll window are skipped too.
+  const visible = useMemo(() => {
+    const out: number[] = []
+    if (width <= 0) return out
+    const shift = width - (structureNow - timeBase) * pxPerMs
+    const xMin = -shift - OVERSCAN_PX
+    const xMax = width - shift + OVERSCAN_PX
+    const topLine =
+      Math.floor((scrollTop - CONTENT_PAD_Y) / ROW_PITCH) - OVERSCAN_LINES
+    const bottomLine =
+      Math.ceil(
+        (scrollTop + Math.max(viewportHeight, 1) - CONTENT_PAD_Y) / ROW_PITCH,
+      ) + OVERSCAN_LINES
+    for (let i = 0; i < layout.placed.length; i++) {
+      const p = layout.placed[i]
+      const r = rects[i]
+      const live = p.span.endTime == null
+      if (
+        p.line >= topLine &&
+        p.line <= bottomLine &&
+        r.left <= xMax &&
+        (live || r.left + r.width >= xMin)
+      ) {
+        out.push(i)
+      }
+    }
+    return out
+  }, [
+    layout,
+    rects,
+    width,
+    structureNow,
+    timeBase,
+    pxPerMs,
+    scrollTop,
+    viewportHeight,
+  ])
+  const enteredRef = useRef(new Set<string>())
 
   const x = (t: number) => (t - timeBase) * pxPerMs
 
@@ -601,7 +761,7 @@ function Timeline({
     <div className={cn('flex h-full w-full flex-col', className)}>
       {/* time ruler: an in-flow row on top of the lines — the timestamps
           slide with the track but never overlap the bars */}
-      <div className="relative h-4 shrink-0 overflow-hidden" style={maskStyle}>
+      <div className="relative h-5 shrink-0 overflow-hidden" style={maskStyle}>
         {width > 0 && (
           <div
             ref={rulerTrackRef}
@@ -610,8 +770,7 @@ function Timeline({
             {ticks.map((t) => (
               <div
                 key={t}
-                /* diagram micro: ruler tick labels */
-                className="absolute top-1/2 -translate-y-1/2 font-mono text-[10px] text-ink-ghost tabular-nums whitespace-nowrap"
+                className="absolute top-1/2 -translate-y-1/2 font-mono text-[11px] text-muted-foreground tabular-nums whitespace-nowrap"
                 style={{ left: x(t) + 4 }}
               >
                 {formatTick(t)}
@@ -627,6 +786,10 @@ function Timeline({
         ref={viewportRef}
         className="relative min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
         style={maskStyle}
+        onScroll={onScroll}
+        onPointerMove={(e) => {
+          pointerRef.current = { x: e.clientX, y: e.clientY }
+        }}
       >
         {width > 0 && (
           <div
@@ -638,7 +801,7 @@ function Timeline({
             {ticks.map((t) => (
               <div
                 key={t}
-                className="absolute inset-y-0 w-px bg-ink/8"
+                className="absolute inset-y-0 w-px bg-border"
                 style={{ left: x(t) }}
               />
             ))}
@@ -669,42 +832,31 @@ function Timeline({
               />
             ))}
 
-            {/* the 3px lines: parents above what they triggered */}
-            {layout.placed.map((p, i) => {
+            {/* the 3px lines: parents above what they triggered — only
+                the ones inside the strip's window */}
+            {visible.map((i) => {
+              const p = layout.placed[i]
               const span = p.span
               const rect = rects[i]
-              const live = span.endTime == null
-              const hovered = hover?.id === span.id
+              const enter = !enteredRef.current.has(span.id)
+              if (enter) enteredRef.current.add(span.id)
               return (
-                <button
+                <StripBar
                   key={span.id}
-                  type="button"
-                  ref={
-                    live
-                      ? (el) => registerLiveBar(span.id, rect.left, el)
-                      : undefined
-                  }
-                  aria-label={spanAriaLabel(span, structureNow)}
-                  onMouseEnter={trackHover(span.id)}
-                  onMouseMove={trackHover(span.id)}
-                  onMouseLeave={clearHover(span.id)}
-                  onClick={onSpanClick ? () => onSpanClick(span) : undefined}
-                  className={cn(
-                    'timeline-enter absolute rounded-[1.5px]',
-                    'focus-visible:outline-1 focus-visible:outline-accent',
-                    onSpanClick ? 'cursor-pointer' : 'cursor-default',
-                  )}
-                  style={{
-                    top: rowTop(p.line),
-                    height: BAR_HEIGHT,
-                    left: rect.left,
-                    width: rect.width,
-                    backgroundColor: resolveColor(span),
-                    boxShadow: hovered
-                      ? '0 0 0 1px var(--color-ink)'
-                      : undefined,
-                    zIndex: hovered ? 5 : undefined,
-                  }}
+                  id={span.id}
+                  ariaLabel={spanAriaLabel(span, structureNow)}
+                  top={rowTop(p.line)}
+                  left={rect.left}
+                  width={rect.width}
+                  color={resolveColor(span)}
+                  live={span.endTime == null}
+                  hovered={hoverId === span.id}
+                  enter={enter}
+                  clickable={!!onSpanClick}
+                  onEnter={hoverEnter}
+                  onLeave={hoverLeave}
+                  onClick={clickSpan}
+                  registerLive={registerLiveBar}
                 />
               )
             })}
@@ -712,12 +864,12 @@ function Timeline({
         )}
       </div>
 
-      {hoveredSpan && hover && (
-        <SpanHoverCard
+      {hoveredSpan && (
+        <StripHoverCard
           span={hoveredSpan}
           now={structureNow}
-          x={hover.x}
-          y={hover.y}
+          viewportRef={viewportRef}
+          pointerRef={pointerRef}
         />
       )}
     </div>
@@ -806,31 +958,25 @@ export function TimelineStrip({
   return (
     <div
       className={cn(
-        'flex h-36 flex-shrink-0 flex-col border-b border-rule-2 overflow-hidden',
+        'flex h-44 flex-shrink-0 flex-col overflow-hidden border-b border-border font-inter',
         className,
       )}
     >
-      <div className="flex shrink-0 items-center justify-between bg-bg">
-        <div className="flex items-center gap-3 px-3 py-2">
-          <span className="text-[13px] font-semibold text-ink">Activity</span>
-          {isPaused ? (
-            <Badge variant="warn">
-              <Pause className="size-4" />
-              paused
-            </Badge>
-          ) : (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-500/10 px-2 py-0.5 text-[11px] font-medium text-sky-600 dark:text-sky-400">
-              <span
-                aria-hidden
-                className="inline-block size-1.5 rounded-full bg-sky-500 pulse-dot"
-              />
-              Live
-            </span>
-          )}
+      <div className="flex h-9 shrink-0 items-center justify-between bg-background">
+        <div className="flex items-center gap-2.5 px-3">
+          <span className="text-[13px] font-semibold text-foreground">
+            Activity
+          </span>
+          <LiveBadge
+            live={!isPaused}
+            restLabel="Paused"
+            restIcon={Pause}
+            restTone="warn"
+          />
         </div>
 
         {(spanFilter || onToggleFollowTurns) && (
-          <div className="flex items-center gap-1 px-2 py-1">
+          <div className="flex items-center gap-1 px-2">
             {onToggleFollowTurns && (
               <Toggle
                 pressed={!!followTurns}
@@ -846,7 +992,7 @@ export function TimelineStrip({
                     ? 'following your turns — traces auto-open as you chat'
                     : 'follow your turns: auto-open the trace when you send a message'
                 }
-                className="rounded-xl"
+                className="h-7 min-w-7 rounded-md px-1.5 text-muted-foreground aria-pressed:text-foreground"
               >
                 <Crosshair className="size-4" />
               </Toggle>

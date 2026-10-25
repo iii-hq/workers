@@ -147,6 +147,9 @@ async function openModelPicker(page: import('@playwright/test').Page) {
     await page.locator('[aria-labelledby="chat-settings-model"] button').click()
   } else {
     await page.locator('button[aria-label^="model"]:visible').first().click()
+    // The desktop menu shows the favorites; the provider catalog (and its
+    // Configure links) lives in the library dialog behind All models.
+    await page.getByRole('button', { name: 'All models' }).click()
   }
 }
 

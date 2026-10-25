@@ -108,7 +108,7 @@ describe('WorkerConfigurationPanel', () => {
     await act(async () => setInput(input as HTMLInputElement, 'jev-2'))
     expect(onDirtyChange).toHaveBeenLastCalledWith(true)
     const save = [...container.querySelectorAll('button')].find(
-      (button) => button.textContent === 'save',
+      (button) => button.textContent === 'Save changes',
     )
     await act(async () => save?.click())
     expect(harness.mutate.mock.calls[0]?.[0]).toEqual({

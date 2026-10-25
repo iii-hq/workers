@@ -125,6 +125,26 @@ describe('bindingMatchesEvent', () => {
     ).toBe(false)
   })
 
+  it('reads the physical key when ⌥ turns a letter into another character', () => {
+    const optionC = press('ç', { altKey: true, code: 'KeyC' })
+    expect(bindingMatchesEvent('Alt+C', optionC, 'mac')).toBe(true)
+    // ⌥N is a dead key on a US Mac layout.
+    const optionN = press('Dead', { altKey: true, code: 'KeyN' })
+    expect(bindingMatchesEvent('Alt+N', optionN, 'mac')).toBe(true)
+    expect(bindingMatchesEvent('Alt+W', optionC, 'mac')).toBe(false)
+    // Without Alt in the binding the fallback never applies.
+    expect(bindingMatchesEvent('C', press('ç', { code: 'KeyC' }), 'mac')).toBe(
+      false,
+    )
+  })
+
+  it('keeps the typed letter over the position when the layout gives one', () => {
+    // AZERTY: the key in QWERTY's Q slot types `a`.
+    const azertyA = press('a', { altKey: true, code: 'KeyQ' })
+    expect(bindingMatchesEvent('Alt+A', azertyA, 'mac')).toBe(true)
+    expect(bindingMatchesEvent('Alt+Q', azertyA, 'mac')).toBe(false)
+  })
+
   it('reaches punctuation through its physical key when the layout moved it', () => {
     // Brazilian-Pro reports the backquote key as Dead; ABNT2 puts `'` there.
     expect(

@@ -442,6 +442,9 @@ a.iii-ui-tree-item {
   border-radius: var(--radius-md);
   background: var(--color-panel-raised);
   color: var(--color-ink);
+  /* Every card and panel reads like a popover: Inter at 14px. */
+  font-family: var(--font-inter);
+  font-size: 0.875rem;
 }
 
 .iii-ui-card {
@@ -720,9 +723,9 @@ a.iii-ui-tree-item {
   padding: 0.625rem 0.75rem;
   background: var(--color-surface);
   color: var(--color-ink);
-  font-family: var(--font-sans);
-  font-size: 0.8125rem;
-  font-weight: 600;
+  font-family: var(--font-inter);
+  font-size: 0.875rem;
+  font-weight: 500;
 }
 
 .iii-ui-card__header > svg,

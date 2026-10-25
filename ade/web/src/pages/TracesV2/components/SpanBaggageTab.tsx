@@ -1,7 +1,6 @@
-import { Copy, Package } from 'lucide-react'
+import { Check, Copy, Package } from 'lucide-react'
 import { useMemo } from 'react'
 import { EmptyState } from '@/components/ui/EmptyState'
-import { Eyebrow } from '@/components/ui/Eyebrow'
 import type { VisualizationSpan } from '../lib/traceTransform'
 import { useCopyToClipboard } from '../lib/traceUtils'
 
@@ -49,13 +48,18 @@ export function SpanBaggageTab({ span }: SpanBaggageTabProps) {
   }
 
   return (
-    <div className="p-5 space-y-3">
-      <div className="flex items-center gap-2 px-1">
-        <Package className="size-4 text-accent" />
-        <span className="iii-ui-eyebrow">w3c baggage context</span>
+    <div className="flex flex-col gap-2 p-4 font-inter">
+      <div className="flex h-6 items-center gap-1.5">
+        <Package className="size-4 text-muted-foreground" aria-hidden />
+        <span className="text-xs font-semibold text-foreground">
+          W3C baggage
+        </span>
+        <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
+          {baggageEntries.length}
+        </span>
       </div>
 
-      <div className="rounded-md bg-surface divide-y divide-rule-2">
+      <div className="divide-y divide-border overflow-hidden rounded-lg border border-border">
         {baggageEntries.map(([key, value]) => {
           const formatted =
             typeof value === 'object'
@@ -68,31 +72,32 @@ export function SpanBaggageTab({ span }: SpanBaggageTabProps) {
               type="button"
               onClick={() => copy(key, `${key}: ${formatted}`)}
               aria-label={`copy ${key} to clipboard`}
-              className="w-full px-4 py-2.5 hover:bg-surface-hover transition-colors text-left group"
+              className="group/bag w-full px-3 py-1.5 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50"
             >
               <div className="flex items-start justify-between gap-3">
-                <div className="flex-1 min-w-0">
-                  <div className="iii-ui-eyebrow mb-0.5">{key}</div>
-                  <div className="font-mono text-[12px] text-ink break-all">
+                <div className="min-w-0 flex-1">
+                  <div className="mb-0.5 font-mono text-[11px] text-muted-foreground">
+                    {key}
+                  </div>
+                  <div className="font-mono text-xs break-all text-foreground">
                     {formatted}
                   </div>
                 </div>
                 {isCopied ? (
-                  <Eyebrow className="text-accent flex-shrink-0 mt-0.5">
-                    copied
-                  </Eyebrow>
+                  <Check
+                    className="mt-0.5 size-4 shrink-0 text-ok"
+                    aria-hidden
+                  />
                 ) : (
-                  <Copy className="size-4 text-ink-ghost opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-0.5" />
+                  <Copy
+                    className="mt-0.5 size-4 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover/bag:opacity-100 group-focus-visible/bag:opacity-100"
+                    aria-hidden
+                  />
                 )}
               </div>
             </button>
           )
         })}
-      </div>
-
-      <div className="font-mono text-[11px] text-ink-ghost text-center pt-2 tabular-nums">
-        {baggageEntries.length} baggage item
-        {baggageEntries.length !== 1 ? 's' : ''}
       </div>
     </div>
   )

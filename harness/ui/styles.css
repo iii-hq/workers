@@ -4,88 +4,100 @@
    every injected render (the dialog portal keeps the scope). */
 
 /* --- session chip (context) ------------------------------------------ */
+/* Sans, like the header it sits in: the chip is a control with a number,
+   not a machine read-out. The ring carries proportion, the counts the
+   number you act on, the caret the promise of more. */
 [data-iii-ui="harness"] .harness-ui-chip {
   display: flex;
   align-items: center;
   align-self: stretch;
-  gap: 6px;
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-sans);
+  font-size: 12px;
   color: var(--color-ink-faint);
   min-height: 24px;
 }
-[data-iii-ui="harness"] .harness-ui-chip-empty {
-  color: var(--color-ink-ghost);
-}
 /* `align-self: stretch` so the hit box is the header group's full height,
-   not the 11px glyph run (WCAG 2.2 SC 2.5.8 asks for 24px). */
+   not the 12px glyph run (WCAG 2.2 SC 2.5.8 asks for 24px). */
 [data-iii-ui="harness"] .harness-ui-chip-btn {
   display: flex;
   align-items: center;
   align-self: stretch;
   gap: 6px;
+  padding: 0 2px;
   background: transparent;
   border: 0;
-  padding: 0;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  font-family: inherit;
-  font-size: inherit;
+  font: inherit;
   color: inherit;
+  transition: color var(--motion-duration-control) var(--motion-ease-standard);
+}
+[data-iii-ui="harness"] .harness-ui-chip-btn:hover,
+[data-iii-ui="harness"] .harness-ui-chip-btn[data-open] {
+  color: var(--color-ink);
 }
 /* Match the console's focus ring — an injected control that invents its own
    makes one tab pass across the header look like three different widgets. */
 [data-iii-ui="harness"] .harness-ui-chip-btn:focus-visible {
   outline: 2px solid var(--color-rule-focus);
   outline-offset: 2px;
-  border-radius: var(--radius-sm);
 }
-/* `surface-active` reads against the header group's own `surface` fill;
-   plain `surface` would vanish into it. */
-[data-iii-ui="harness"] .harness-ui-chip-bar {
-  position: relative;
-  display: block;
-  width: 56px;
-  height: 6px;
-  background: var(--color-surface-active);
-  overflow: hidden;
+[data-iii-ui="harness"] .harness-ui-chip-ring {
+  display: flex;
+  flex: none;
 }
-[data-iii-ui="harness"] .harness-ui-chip-fill {
+[data-iii-ui="harness"] .harness-ui-chip-ring > svg {
   display: block;
-  height: 100%;
-  transition:
-    width var(--motion-duration-panel) var(--motion-ease-standard),
-    background-color var(--motion-duration-panel) var(--motion-ease-standard);
 }
 /* `ink-faint` (5.1:1 on panel-raised), not `ink-ghost` (2.4:1 — under the
-   4.5:1 AA floor). These are the numbers you read before compacting. */
+   4.5:1 AA floor). These are the numbers you read before compacting. The
+   `-strong` status pair holds AA at 12px where the base tone would not. */
 [data-iii-ui="harness"] .harness-ui-chip-counts {
-  color: var(--color-ink-faint);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+[data-iii-ui="harness"] .harness-ui-chip-sep {
+  margin: 0 3px;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="harness"] .harness-ui-chip[data-tone="warn"] .harness-ui-chip-counts {
+  color: var(--color-warn-strong);
+}
+[data-iii-ui="harness"] .harness-ui-chip[data-tone="alert"] .harness-ui-chip-counts {
+  color: var(--color-alert-strong);
+}
+[data-iii-ui="harness"] .harness-ui-chip-empty {
+  color: var(--color-ink-ghost);
 }
 [data-iii-ui="harness"] .harness-ui-chip-caret {
   flex: none;
   color: var(--color-ink-ghost);
+  transition: transform var(--motion-duration-control) var(--motion-ease-standard);
+}
+[data-iii-ui="harness"] .harness-ui-chip-btn[data-open] .harness-ui-chip-caret {
+  transform: rotate(180deg);
 }
 /* Pane width, not viewport: the chat root (`ChatView`'s `@container`
    section) is the nearest container — the `data-iii-ui` wrapper is
    `display: contents`, so it is not one. Under 30rem, the design system's
    narrow-container threshold (a phone, or a narrow split), the chip keeps
-   what you act on: the counts and the caret. The bar and the `ctx` eyebrow
-   go; the button's aria-label still says all of it. Only the states that
-   carry counts (`data-has-counts`) compact — the waiting `ctx —` keeps its
-   eyebrow, since a bare dash says nothing. */
+   what you act on — the ring and the counts — and drops the caret; the
+   button's aria-label still says all of it. */
 @container (max-width: 30rem) {
-  [data-iii-ui="harness"] .harness-ui-chip[data-has-counts] .harness-ui-chip-label,
-  [data-iii-ui="harness"] .harness-ui-chip[data-has-counts] .harness-ui-chip-bar {
+  [data-iii-ui="harness"] .harness-ui-chip-caret {
     display: none;
   }
 }
 
 /* --- context breakdown (dialog on desktop, sheet on phones) ----------- */
-/* Wide enough for the usage table's two value columns. The dialog itself
-   (DialogContent) already caps the height at 85vh and scrolls. */
+/* One card: headline, thin bar, legend, the recent steps as bars, three
+   stats and a footer line. Sans throughout, numbers tabular; the only mono
+   is the model id and the session id. Half the viewport tall at most. */
 [data-iii-ui="harness"] .harness-ui-dialog {
-  max-width: 30rem;
+  max-width: 26rem;
+  /* Tall enough for the whole card on a laptop; it scrolls below that. */
+  max-height: min(85vh, 36rem);
+  padding: 20px;
 }
 [data-iii-ui="harness"] .harness-ui-sheet .harness-ui-pop {
   min-height: 0;
@@ -96,16 +108,40 @@
 [data-iii-ui="harness"] .harness-ui-pop {
   display: flex;
   flex-direction: column;
-  gap: 20px;
-  font-size: 12px;
+  gap: 14px;
+  font-family: var(--font-sans);
+  font-size: 13px;
   color: var(--color-ink);
 }
+[data-iii-ui="harness"] .harness-ui-strong {
+  font-weight: 500;
+  color: var(--color-ink);
+  font-variant-numeric: tabular-nums;
+}
+/* Title over the model line; room after it for the dialog's own close. */
 [data-iii-ui="harness"] .harness-ui-pop-head {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  /* Room for the dialog's own close affordance. */
   padding-right: 32px;
+}
+[data-iii-ui="harness"] .harness-ui-pop-model {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="harness"] .harness-ui-pop-model-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+[data-iii-ui="harness"] .harness-ui-pop-provider {
+  flex: none;
 }
 [data-iii-ui="harness"] .harness-ui-pop-usage {
   font-family: var(--font-mono);
@@ -119,32 +155,74 @@
 }
 [data-iii-ui="harness"] .harness-ui-section-head {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 8px;
-  min-height: 20px;
+  min-height: 16px;
 }
-[data-iii-ui="harness"] .harness-ui-section-title {
+[data-iii-ui="harness"] .harness-ui-section-head > h3 {
   flex: 1;
   margin: 0;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--color-ink-faint);
 }
 [data-iii-ui="harness"] .harness-ui-section-meta {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--color-ink-faint);
   font-variant-numeric: tabular-nums;
 }
 [data-iii-ui="harness"] .harness-ui-note {
   margin: 0;
+  font-size: 12px;
   color: var(--color-ink-faint);
 }
-/* The empty part of the bar is the Free row's swatch colour. */
+/* The headline number and its share. */
+[data-iii-ui="harness"] .harness-ui-hero {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 2px;
+}
+[data-iii-ui="harness"] .harness-ui-hero-main {
+  display: flex;
+  flex: 1;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+[data-iii-ui="harness"] .harness-ui-hero-num {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 26px;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="harness"] .harness-ui-hero-of {
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="harness"] .harness-ui-pill {
+  flex: none;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink);
+}
+[data-iii-ui="harness"] .harness-ui-pill[data-tone="warn"] {
+  background: var(--color-warn-muted);
+  color: var(--color-warn-strong);
+}
+[data-iii-ui="harness"] .harness-ui-pill[data-tone="alert"] {
+  background: var(--color-alert-muted);
+  color: var(--color-alert-strong);
+}
+/* The bar: 4px, one rounded segment per category with a 2px gap; the empty
+   track is the Free row's swatch colour. */
 [data-iii-ui="harness"] .harness-ui-stack {
   display: flex;
-  column-gap: 1px;
+  column-gap: 2px;
   width: 100%;
-  height: 8px;
+  height: 4px;
   border-radius: var(--radius-full);
   background: var(--color-surface-active);
   overflow: hidden;
@@ -154,7 +232,60 @@
   display: block;
   height: 100%;
   flex: none;
+  border-radius: var(--radius-full);
 }
+/* Before the first reply: a dashed card holding a ghost of the stack bar
+   and one line of copy. The ghost breathes on the shared pulse recipe so
+   the card reads as waiting, not broken. */
+[data-iii-ui="harness"] .harness-ui-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 14px 12px;
+  border: 1px dashed color-mix(in srgb, var(--color-ink) 18%, transparent);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+[data-iii-ui="harness"] .harness-ui-empty-track {
+  display: flex;
+  column-gap: 2px;
+  width: 100%;
+  height: 4px;
+  margin-bottom: 6px;
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+[data-iii-ui="harness"] .harness-ui-empty-track > span {
+  display: block;
+  flex: 0 0 auto;
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--color-ink) 22%, transparent);
+}
+/* Each segment a shade fainter than the last, so the ghost reads as the
+   stacked bar it stands in for rather than one grey rule. */
+[data-iii-ui="harness"] .harness-ui-empty-track > span:nth-child(2) {
+  opacity: 0.7;
+}
+[data-iii-ui="harness"] .harness-ui-empty-track > span:nth-child(3) {
+  opacity: 0.45;
+}
+[data-iii-ui="harness"] .harness-ui-empty-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 18px;
+  color: var(--color-ink);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="harness"] .harness-ui-empty-text {
+  margin: 0;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--color-ink-faint);
+  text-wrap: pretty;
+}
+/* Legend: 28px rows, no rules. Swatch, label, tokens, share. */
 [data-iii-ui="harness"] .harness-ui-legend {
   display: flex;
   flex-direction: column;
@@ -162,145 +293,178 @@
 [data-iii-ui="harness"] .harness-ui-legend-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-height: 22px;
-  font-size: 12px;
-}
-[data-iii-ui="harness"] .harness-ui-legend-row[data-sub] {
-  padding-left: 16px;
+  gap: 10px;
+  min-height: 26px;
 }
 [data-iii-ui="harness"] .harness-ui-swatch {
   flex: none;
   width: 8px;
   height: 8px;
+  border-radius: 0;
 }
-[data-iii-ui="harness"] .harness-ui-legend-label {
+[data-iii-ui="harness"] .harness-ui-legend-text {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--color-ink-faint);
-}
-[data-iii-ui="harness"] .harness-ui-legend-row[data-group] .harness-ui-legend-label {
   color: var(--color-ink);
-  font-weight: 500;
-}
-[data-iii-ui="harness"] .harness-ui-legend-val,
-[data-iii-ui="harness"] .harness-ui-legend-pct {
-  flex: none;
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-  text-align: right;
 }
 [data-iii-ui="harness"] .harness-ui-legend-val {
-  width: 64px;
-}
-[data-iii-ui="harness"] .harness-ui-legend-row[data-sub] .harness-ui-legend-val {
-  color: var(--color-ink-faint);
+  flex: none;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
 }
 [data-iii-ui="harness"] .harness-ui-legend-pct {
-  width: 40px;
-  color: var(--color-ink-faint);
-}
-/* The last generation step: what the provider actually billed. */
-[data-iii-ui="harness"] .harness-ui-step {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  column-gap: 12px;
-  min-height: 32px;
-  padding: 6px 10px;
-  box-sizing: border-box;
-  border-radius: var(--radius-md);
-  background: var(--color-surface);
-}
-[data-iii-ui="harness"] .harness-ui-step-label {
-  color: var(--color-ink-faint);
-}
-[data-iii-ui="harness"] .harness-ui-step-val {
-  flex: 1;
+  flex: none;
+  width: 2.5rem;
   text-align: right;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  color: var(--color-ink-faint);
-}
-[data-iii-ui="harness"] .harness-ui-step-hit {
-  color: var(--color-ink);
-}
-/* Usage: one metric per row, this conversation, then (for a parent) the
-   same counter summed over its sub-agents. */
-[data-iii-ui="harness"] .harness-ui-usage {
   font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink-ghost);
 }
-/* The recipe's cells are 22px text + 24px padding; a metric list wants
-   26px rows. */
-[data-iii-ui="harness"] .harness-ui-usage th,
-[data-iii-ui="harness"] .harness-ui-usage td {
+/* Per step: an eyebrow with the pace (or the hovered step) on the right,
+   then one bar per recent step; a compacted step is drawn hollow. */
+[data-iii-ui="harness"] .harness-ui-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   padding-top: 4px;
-  padding-bottom: 4px;
-  line-height: 18px;
-  vertical-align: middle;
 }
-[data-iii-ui="harness"] .harness-ui-usage .harness-ui-num {
-  width: 9rem;
+[data-iii-ui="harness"] .harness-ui-steps-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 16px;
+}
+[data-iii-ui="harness"] .harness-ui-steps-meta {
+  font-size: 12px;
+  color: var(--color-ink-faint);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-[data-iii-ui="harness"] .harness-ui-usage td.harness-ui-num {
-  font-family: var(--font-mono);
+[data-iii-ui="harness"] .harness-ui-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 36px;
+}
+[data-iii-ui="harness"] .harness-ui-bars-skeleton {
+  display: block;
+  width: 100%;
+  height: 36px;
+}
+[data-iii-ui="harness"] .harness-ui-bar {
+  display: flex;
+  flex: 1;
+  align-items: flex-end;
+  align-self: stretch;
+  min-width: 0;
+}
+[data-iii-ui="harness"] .harness-ui-bar > span {
+  display: block;
+  width: 100%;
+  background: color-mix(in srgb, var(--color-ink) 22%, transparent);
+  transition: background-color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+[data-iii-ui="harness"] .harness-ui-bar[data-compacted] > span {
+  background: color-mix(in srgb, var(--color-ink) 10%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--color-ink) 30%, transparent);
+  outline-offset: -1px;
+}
+[data-iii-ui="harness"] .harness-ui-bar[data-hover] > span {
+  background: color-mix(in srgb, var(--color-ink) 60%, transparent);
+}
+/* Three stats, each a label, a number and a thin bar; a dashed track for
+   an uncapped one. */
+[data-iii-ui="harness"] .harness-ui-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-edge);
+}
+[data-iii-ui="harness"] .harness-ui-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+[data-iii-ui="harness"] .harness-ui-tile-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="harness"] .harness-ui-tile-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+}
+[data-iii-ui="harness"] .harness-ui-tile-dot[data-tone="ok"] {
+  background: var(--color-ok);
+}
+[data-iii-ui="harness"] .harness-ui-tile-dot[data-tone="warn"] {
+  background: var(--color-warn);
+}
+[data-iii-ui="harness"] .harness-ui-tile-val {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
-[data-iii-ui="harness"] .harness-ui-usage thead th {
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--color-ink-faint);
-  white-space: normal;
-}
-[data-iii-ui="harness"] .harness-ui-usage tbody th {
+[data-iii-ui="harness"] .harness-ui-tile-of {
   font-size: 12px;
-  font-weight: 400;
   color: var(--color-ink-faint);
-  white-space: nowrap;
 }
-[data-iii-ui="harness"] .harness-ui-usage tr[data-strong] th,
-[data-iii-ui="harness"] .harness-ui-usage tr[data-strong] td {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--color-ink);
+[data-iii-ui="harness"] .harness-ui-tile-bar {
+  display: flex;
+  height: 3px;
+  margin-top: 4px;
+  border-radius: var(--radius-full);
+  background: var(--color-surface-active);
+  overflow: hidden;
+}
+[data-iii-ui="harness"] .harness-ui-tile-bar > span {
+  display: block;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--color-ink) 70%, transparent);
+}
+[data-iii-ui="harness"] .harness-ui-tile-bar[data-dashed] {
+  background: repeating-linear-gradient(
+    to right,
+    var(--color-surface-active) 0 4px,
+    transparent 4px 7px
+  );
+}
+/* The footer line, flush with the card's edges: what is left and how much
+   work it was, and the session id's copy button. */
+[data-iii-ui="harness"] .harness-ui-pop-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 2px -20px -8px;
+  padding: 8px 14px 0 20px;
+  border-top: 1px solid var(--color-edge);
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="harness"] .harness-ui-pop-footer-text {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
 }
 [data-iii-ui="harness"] .harness-ui-skeleton {
   display: inline-block;
   width: 40px;
   height: 12px;
   vertical-align: middle;
-}
-[data-iii-ui="harness"] .harness-ui-hit[data-tone]::before {
-  content: "";
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  margin-right: 6px;
-  border-radius: var(--radius-full);
-  vertical-align: 1px;
-}
-[data-iii-ui="harness"] .harness-ui-hit[data-tone="ok"]::before {
-  background: var(--color-ok);
-}
-[data-iii-ui="harness"] .harness-ui-hit[data-tone="warn"]::before {
-  background: var(--color-warn);
-}
-[data-iii-ui="harness"] .harness-ui-usage-cost {
-  display: flex;
-  justify-content: space-between;
-  min-height: 30px;
-  align-items: center;
-  font-size: 13px;
-  font-weight: 500;
-}
-[data-iii-ui="harness"] .harness-ui-usage-cost .harness-ui-num {
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
 }
 [data-iii-ui="harness"] .harness-ui-sr-only {
   position: absolute;
@@ -310,17 +474,41 @@
   clip-path: inset(50%);
   white-space: nowrap;
 }
-/* Models: one row per model in Usage's columns; each cell stacks its cost
-   over its steps. */
+/* Models (only when the conversation mixed more than one): the shared
+   table, each cell stacking its cost over its steps. */
+[data-iii-ui="harness"] .harness-ui-table {
+  font-size: 12px;
+}
+[data-iii-ui="harness"] .harness-ui-table th,
+[data-iii-ui="harness"] .harness-ui-table td {
+  padding: 5px 0;
+  line-height: 18px;
+}
+[data-iii-ui="harness"] .harness-ui-table th + *,
+[data-iii-ui="harness"] .harness-ui-table td + * {
+  padding-left: 12px;
+}
+[data-iii-ui="harness"] .harness-ui-table thead th {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-ink-ghost);
+  white-space: nowrap;
+}
+[data-iii-ui="harness"] .harness-ui-table .harness-ui-num {
+  width: 1%;
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
 [data-iii-ui="harness"] .harness-ui-models tbody th,
 [data-iii-ui="harness"] .harness-ui-models tbody td {
-  padding-top: 6px;
-  padding-bottom: 6px;
   vertical-align: top;
 }
 /* The name takes what the value columns leave, and truncates there. */
 [data-iii-ui="harness"] .harness-ui-models tbody th {
   max-width: 0;
+  font-weight: 400;
+  text-align: left;
   color: var(--color-ink);
 }
 [data-iii-ui="harness"] .harness-ui-model,
@@ -331,7 +519,6 @@
 [data-iii-ui="harness"] .harness-ui-model-cell {
   align-items: flex-end;
 }
-/* Usage's column widths hold: a long count line wraps between its counts. */
 [data-iii-ui="harness"] .harness-ui-models td.harness-ui-num {
   white-space: normal;
 }
@@ -619,15 +806,11 @@
 }
 /* Phones get the sheet (the dialog never renders there): 16px in the field
    so focusing it never zooms the page. */
-/* Two value columns of 9rem overflow a 390px sheet: let them size to the
-   numbers, with tighter gaps. */
-[data-iii-ui="harness"] .harness-ui-sheet .harness-ui-usage .harness-ui-num {
-  width: auto;
-}
-[data-iii-ui="harness"] .harness-ui-sheet .harness-ui-usage th,
-[data-iii-ui="harness"] .harness-ui-sheet .harness-ui-usage td {
-  padding-left: 6px;
-  padding-right: 6px;
+[data-iii-ui="harness"] .harness-ui-sheet .harness-ui-pop-footer {
+  margin-left: -16px;
+  margin-right: -16px;
+  padding-left: 16px;
+  padding-right: 16px;
 }
 [data-iii-ui="harness"] .harness-ui-sheet .harness-ui-field {
   height: 44px;
@@ -637,15 +820,6 @@
 }
 [data-iii-ui="harness"] .harness-ui-sheet .harness-ui-cost-row {
   min-height: 48px;
-}
-/* Too narrow for label and value on one line: stack them. */
-[data-iii-ui="harness"] .harness-ui-sheet .harness-ui-step {
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-}
-[data-iii-ui="harness"] .harness-ui-sheet .harness-ui-step-val {
-  text-align: left;
 }
 
 /* --- function-trigger message (chat / traces card) ------------------- */

@@ -17,6 +17,7 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "test:e2e:workers": "playwright test --config e2e/workers-harness/playwright.config.ts",
+    "test:stress": "playwright test --config e2e/stress/playwright.config.ts",
     "test:e2e:install": "playwright install chromium",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build",

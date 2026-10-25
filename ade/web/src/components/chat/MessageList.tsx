@@ -1,4 +1,5 @@
-import { ArrowDown, ChevronRight } from 'lucide-react'
+import { ArrowDown } from 'lucide-react'
+import { motion } from 'motion/react'
 import {
   type CSSProperties,
   forwardRef,
@@ -59,10 +60,6 @@ import { functionTriggerGroups } from './function-trigger-groups'
 import { imageZoomTarget } from './image-zoom-target'
 import { Message, type SpawnTaskContext } from './Message'
 import { ModelWaitingIndicator } from './ModelWaitingIndicator'
-import {
-  DEFAULT_SYSTEM_PROMPT_STATE,
-  type SystemPromptState,
-} from './system-prompt-selection'
 import { THOUGHT_SETTLE_DURATION_MS } from './ThoughtMessage'
 import {
   nextTailScrollTop,
@@ -1203,7 +1200,7 @@ export function MessageList({
         className={cn(
           // Scroll anchoring is off: the prepend restoration above is the one
           // adjustment, and it must not add to the browser's own.
-          'min-h-0 min-w-0 flex-1 overflow-y-auto [overflow-anchor:none] focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-accent',
+          'conversation-transcript min-h-0 min-w-0 flex-1 overflow-y-auto [overflow-anchor:none] focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-accent',
           // Opacity, not display or visibility: the veiled list keeps its
           // layout so the tail jump and the settle happen for real behind it,
           // and opacity composites the whole subtree, whereas `visibility:
@@ -1736,25 +1733,37 @@ function FunctionTriggerGroup({
             <button
               type="button"
               aria-expanded={expanded}
+              aria-label={`Agent triggered ${row.items.length} functions · ${expanded ? 'show latest' : 'show all'}`}
               aria-controls={contentId}
               onClick={toggleExpanded}
               tabIndex={canCollapse ? undefined : -1}
-              className="group relative flex w-fit cursor-pointer items-center gap-2 font-mono text-base text-ink-faint hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:text-[0.8125rem]"
+              className="chat-activity-toggle group relative flex w-fit cursor-pointer items-center gap-2 text-ink-faint hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             >
               <span
                 className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
                 aria-hidden="true"
               />
-              <ChevronRight
+              <motion.svg
                 aria-hidden="true"
-                className={cn(
-                  'chat-trigger-disclosure-chevron size-5 shrink-0 sm:size-4',
-                  expanded && 'rotate-90',
-                )}
-              />
-              <span className="tabular-nums">
-                Agent triggered {row.items.length} functions
-              </span>
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                initial={false}
+                animate={{ rotate: expanded ? 90 : 0 }}
+                transition={{
+                  duration: reducedMotion ? 0 : 0.18,
+                  ease: [0.2, 0.8, 0.3, 1],
+                }}
+                className="shrink-0"
+              >
+                <path d="m9 5 7 7-7 7" />
+              </motion.svg>
+              <span className="tabular-nums">{row.items.length} actions</span>
               <span className="text-ink-ghost">·</span>
               <span className="chat-trigger-disclosure-label">
                 <span data-active={!expanded} aria-hidden={expanded}>
@@ -1858,7 +1867,7 @@ function resolveEmptyState(
 ): EmptyStateProps {
   if (!ctx) return { variant: 'ready', density, ...directory }
 
-  const { harnessStatus, modelOptions, catalogLoading, active } = ctx
+  const { harnessStatus, modelOptions, catalogLoading } = ctx
   const base: EmptyStateProps = {
     variant: 'ready',
     density,
@@ -1867,17 +1876,6 @@ function resolveEmptyState(
     onInstallHarness: harnessStatus.install,
     onRetryInstall: harnessStatus.retry,
     onConfigureProvider,
-    systemPrompt: active?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT_STATE,
-    onSystemPromptChange: active
-      ? (next: SystemPromptState) => ctx.setSystemPrompt(active.id, next)
-      : undefined,
-    agentProfile: active?.agentProfile,
-    // Only a chat created here (still a local draft) starts on Default; a
-    // session another surface created is shown as its creator left it.
-    preselectDefaultAgent: active?.draft === true,
-    onAgentProfileChange: active
-      ? (next, options) => ctx.setAgentProfile(active.id, next, options)
-      : undefined,
     ...directory,
   }
 

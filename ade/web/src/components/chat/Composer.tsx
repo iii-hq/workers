@@ -1,13 +1,15 @@
-import type { LexicalEditor } from 'lexical'
+import { $getNodeByKey, $getRoot, type LexicalEditor } from 'lexical'
 import {
-  ArrowUp,
+  BookOpen,
   ChevronDown,
   ChevronUp,
+  ClipboardCheck,
   Loader2,
   MoreHorizontal,
   Plus,
   Square,
 } from 'lucide-react'
+import { motion, useReducedMotion } from 'motion/react'
 import {
   type ReactNode,
   useCallback,
@@ -19,6 +21,7 @@ import {
   useSyncExternalStore,
 } from 'react'
 import { PermissionModePicker } from '@/components/permissions/PermissionModePicker'
+import { Hint } from '@/components/ui/Hint'
 import { MOBILE_LAYOUT_QUERY, useMediaQuery } from '@/hooks/use-media-query'
 import {
   type DraftAttachmentChange,
@@ -35,7 +38,11 @@ import {
 import type { FileMentionRef } from '@/lib/file-mention-token'
 import type { FileSearchFn } from '@/lib/file-search'
 import type { FunctionEntry } from '@/lib/functions'
-import { formatBinding, shortcutPlatform } from '@/lib/keybindings/bindings'
+import {
+  bindingMatchesEvent,
+  formatBinding,
+  shortcutPlatform,
+} from '@/lib/keybindings/bindings'
 import type { MentionSearchContext } from '@/lib/mentions/types'
 import { cn } from '@/lib/utils'
 import type {
@@ -49,15 +56,23 @@ import type {
   ComposerControlRegistration,
 } from '@/types/injectable-ui'
 import { AttachmentButton } from './AttachmentButton'
-import { AttachmentChip } from './AttachmentChip'
 import { GENERIC_COMPOSER_PLACEHOLDER } from './agent-defaults'
 import { BankPicker } from './BankPicker'
+import { SendGlyph } from './ChatGlyphs'
 import { ChatSettingsSheet } from './ChatSettingsSheet'
+import './conversation-design.css'
 import { composerCardClass, toolbarIconButtonClass } from './composer-chrome'
 import { DirectoryPicker, type WorktreePickerOptions } from './DirectoryPicker'
 import { LexicalShell, SEND_BINDING } from './LexicalShell'
+import {
+  $insertAttachmentNodes,
+  AttachmentNode,
+  attachmentIdOf,
+} from './lexical/AttachmentNode'
+import { ComposerAttachmentsContext } from './lexical/attachment-context'
 import { $fillComposerMarkdown } from './lexical/composer-markdown'
-import { ModelPicker } from './ModelPicker'
+import { effortOptionsFor, ModelPicker } from './ModelPicker'
+import { CYCLE_EFFORT_BINDING } from './PinnedModelMenu'
 import { nextHistoryTarget } from './queue-history'
 import { useFileDrop } from './use-file-drop'
 
@@ -66,6 +81,24 @@ import { useFileDrop } from './use-file-drop'
 // not pane layout; see viewport-breakpoint-conformance.test.ts.
 
 const WIDE_TOOLBAR_QUERY = '(min-width: 640px)'
+
+const STARTER_PROMPTS = [
+  {
+    label: 'Explain this project',
+    prompt: "Explain this project's architecture and where I should start.",
+    icon: BookOpen,
+  },
+  {
+    label: 'Review my changes',
+    prompt: 'Review my current changes and identify issues I should fix.',
+    icon: ClipboardCheck,
+  },
+  {
+    label: 'Build a feature',
+    prompt: 'Help me plan and build a new feature: ',
+    icon: Plus,
+  },
+]
 
 /** The send key spelled for this keyboard: ↵ (Shift+↵ breaks the line). */
 function sendShortcutLabel(): string {
@@ -137,21 +170,36 @@ export interface ComposerSubmitPayload {
 /** Round icon action button (send / queue / stop) at the composer's edge. */
 const actionButtonClass = cn(
   'composer-action inline-flex size-11 shrink-0 items-center justify-center rounded-full sm:size-10',
+  // Idle → armed eases the fill in; the press itself is the spring below.
+  'transition-[background-color,color,box-shadow] duration-200 ease-out',
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus',
   'disabled:pointer-events-none disabled:opacity-40',
 )
 
-/** Send/stop is armed: inverted ink fill (light chip in dark mode). */
-const actionReadyClass = 'bg-ink text-bg hover:bg-ink/90'
+/** Send/stop is armed: inverted ink fill (light chip in dark mode), lifted. */
+const actionReadyClass =
+  'bg-ink text-bg shadow-[0_1px_2px_rgb(0_0_0/0.16),0_2px_8px_-2px_rgb(0_0_0/0.24)] hover:bg-ink/90'
 
-/** Composer is empty: the action recedes into the surface. */
+/** Composer is empty: a quiet outlined chip that recedes into the surface. */
 const actionIdleClass =
-  'bg-surface text-ink-faint hover:bg-surface-hover hover:text-ink'
+  'bg-transparent text-ink-faint ring-1 ring-edge ring-inset hover:bg-surface-hover/60 hover:text-ink'
 
-/** The chevron at the project strip's edge that folds the card away (phone only). */
+/** The action's press: a quick spring, a touch of give on hover. */
+const actionPressVariants = {
+  rest: { scale: 1 },
+  hover: { scale: 1.06 },
+  pressed: { scale: 0.9 },
+}
+const actionPressSpring = {
+  type: 'spring',
+  stiffness: 520,
+  damping: 26,
+  mass: 0.6,
+} as const
+
+/** The project row chevron folds the editor away on phones. */
 const stripToggleClass = cn(
-  // Offset by the strip's 1px transparent border, so it sits where it did.
-  'absolute -top-px right-[3px] flex size-8 items-center justify-center rounded-full text-ink-faint sm:hidden',
+  'ml-auto flex size-10 shrink-0 items-center justify-center rounded-full text-ink-faint sm:hidden',
   'hover:bg-surface-hover hover:text-ink',
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus',
 )
@@ -293,6 +341,9 @@ interface ComposerProps {
    * `host.chat.registerComposerAction` slot), already built by the host.
    */
   composerActions?: ReactNode
+  agentPicker?: ReactNode
+  /** Starter prompts fill this composer without sending. */
+  showSuggestions?: boolean
   /**
    * Injected per-session settings rendered beside the model picker (the
    * `host.chat.registerComposerControl` slot), already built by the host.
@@ -384,6 +435,8 @@ export function Composer({
   onAttachmentsChange,
   syncedAttachments,
   composerActions,
+  agentPicker,
+  showSuggestions = false,
   composerControls,
   projectControls,
   functionEntries,
@@ -421,6 +474,7 @@ export function Composer({
   const hasProjectStrip = Boolean(showWorkingDir && onWorkingDirChange)
   const cardHidden = collapsed && mobileLayout && hasProjectStrip
   const cardId = useId()
+  const lexicalEditorRef = useRef<LexicalEditor | null>(null)
   const textRef = useRef(initialContent ? '' : (initialText ?? ''))
   /* Boolean mirror of "the editor holds text": the action button swaps on
      the empty↔non-empty transition, and state updates for an unchanged
@@ -433,12 +487,21 @@ export function Composer({
   // Runs inside Lexical's initial-state update, so $-functions apply directly.
   // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only initializer, matching LexicalShell's one-shot initialConfig semantics.
   const resolvedInitialContent = useMemo(() => {
-    if (initialContent) return initialContent
-    const text = initialText
-    if (!text) return undefined
-    // The draft was saved as composer markdown, so its lists and code
-    // blocks come back as the blocks they were.
-    return () => $fillComposerMarkdown(text)
+    const chips = initialAttachments ?? []
+    const seedText = initialContent
+      ? initialContent
+      : initialText
+        ? // The draft was saved as composer markdown, so its lists and code
+          // blocks come back as the blocks they were.
+          () => $fillComposerMarkdown(initialText)
+        : undefined
+    if (chips.length === 0) return seedText
+    // Restored chips lead the draft: where they sat in the text is not
+    // kept, and the head is where the eye looks for them.
+    return (editor: LexicalEditor) => {
+      seedText?.(editor)
+      $insertAttachmentNodes(chips, 'start')
+    }
   }, [])
 
   // ↑/↓ browse the queued messages for editing. `browseId` is the message the
@@ -481,6 +544,16 @@ export function Composer({
       setAttachments(result.target.attachments)
       textRef.current = result.target.text
       setHasText(result.target.text.trim().length > 0)
+      // The shell loads the text when this returns; the chips go in after
+      // it, at the head of the loaded message.
+      const chips = result.target.attachments
+      if (chips.length > 0) {
+        queueMicrotask(() => {
+          lexicalEditorRef.current?.update(() => {
+            $insertAttachmentNodes(chips, 'start')
+          })
+        })
+      }
       return result.target.text
     },
     [queuedForEdit, browseId, setBrowse, setAttachments],
@@ -553,21 +626,87 @@ export function Composer({
       updateAttachments([...attachmentsRef.current, ...next], {
         reason: 'attach',
       })
+      // The chips go into the draft where the caret is (the toolbar's
+      // pointerdown is cancelled, so it is still there), or at its end.
+      lexicalEditorRef.current?.update(() => {
+        $insertAttachmentNodes(next, 'caret')
+      })
       // Chips land in the card; a fold would hide what was just added.
       if (collapsedRef.current) setFolded(false)
     },
     [setFolded, updateAttachments],
   )
 
-  const handleRemoveAttachment = useCallback(
-    (id: string) => {
-      updateAttachments(
-        attachmentsRef.current.filter((a) => a.id !== id),
-        { reason: 'remove' },
-      )
-    },
-    [updateAttachments],
-  )
+  // The chips in the editor and the list here are one thing seen twice.
+  // A chip the editor loses (Backspace on it, its X, a cut) leaves the list;
+  // one it gets back (undo, paste) returns from the graveyard with its
+  // bytes; a chip pasted in from somewhere else, which the list never knew,
+  // is a stray and goes. Clearing on send destroys nodes for chips already
+  // reported as sent, which the list no longer holds, so nothing fires.
+  const graveyardRef = useRef(new Map<string, Attachment>())
+  const updateAttachmentsRef = useRef(updateAttachments)
+  updateAttachmentsRef.current = updateAttachments
+  useEffect(() => {
+    const editor = lexicalEditorRef.current
+    if (!editor) return
+    return editor.registerMutationListener(
+      AttachmentNode,
+      (mutations, { prevEditorState }) => {
+        const removed: string[] = []
+        const created: Array<{ key: string; id: string }> = []
+        const state = editor.getEditorState()
+        for (const [key, kind] of mutations) {
+          if (kind === 'destroyed') {
+            const id = attachmentIdOf(prevEditorState, key)
+            if (id) removed.push(id)
+          } else if (kind === 'created') {
+            const id = attachmentIdOf(state, key)
+            if (id) created.push({ key, id })
+          }
+        }
+        const createdIds = new Set(created.map((entry) => entry.id))
+        let next = attachmentsRef.current
+        let dropped = false
+        for (const id of removed) {
+          if (createdIds.has(id)) continue
+          const chip = next.find((a) => a.id === id)
+          if (!chip) continue
+          graveyardRef.current.set(id, chip)
+          next = next.filter((a) => a.id !== id)
+          dropped = true
+        }
+        if (dropped) updateAttachmentsRef.current(next, { reason: 'remove' })
+        const restored: Attachment[] = []
+        const strays: string[] = []
+        for (const { key, id } of created) {
+          if (
+            next.some((a) => a.id === id) ||
+            restored.some((a) => a.id === id)
+          ) {
+            continue
+          }
+          const chip = graveyardRef.current.get(id)
+          if (chip) {
+            graveyardRef.current.delete(id)
+            restored.push(chip)
+          } else {
+            strays.push(key)
+          }
+        }
+        if (restored.length > 0) {
+          updateAttachmentsRef.current([...next, ...restored], {
+            reason: 'attach',
+          })
+        }
+        if (strays.length > 0) {
+          editor.update(() => {
+            for (const key of strays) $getNodeByKey(key)?.remove()
+          })
+        }
+      },
+      { skipInitialization: true },
+    )
+  }, [])
 
   // Ids and bytes learned about chips after they were attached (see the
   // prop). Merging by id keeps the composer's list authoritative: a chip the
@@ -641,76 +780,139 @@ export function Composer({
     onFiles: (files) => void attachFiles(files),
   })
 
+  const attachmentsContext = useMemo(
+    () => ({ byId: new Map(attachments.map((a) => [a.id, a])) }),
+    [attachments],
+  )
+
+  // ⌘⇧/ steps the effort to the next level the model offers, wrapping; the
+  // menu's footer names the chord and does the same on click.
+  const selectedOption = modelOptions.find((option) => option.id === model)
+  const cycleEffort = useCallback(() => {
+    if (optionsDisabled || modelLocked) return
+    const levels = effortOptionsFor(selectedOption).filter(
+      (option) => !option.disabled,
+    )
+    if (levels.length < 2) return
+    const at = levels.findIndex((option) => option.effort === thinkingLevel)
+    const next = levels[(at + 1) % levels.length]
+    if (next) onThinkingLevelChange(next.effort)
+  }, [
+    optionsDisabled,
+    modelLocked,
+    selectedOption,
+    thinkingLevel,
+    onThinkingLevelChange,
+  ])
+
+  // Listened for on the shell, so the chord works from the editor and from
+  // any picker inside the card alike.
+  const cycleEffortRef = useRef(cycleEffort)
+  cycleEffortRef.current = cycleEffort
+  useEffect(() => {
+    const node = shell.current
+    if (!node) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!bindingMatchesEvent(CYCLE_EFFORT_BINDING, event)) return
+      event.preventDefault()
+      cycleEffortRef.current()
+    }
+    node.addEventListener('keydown', onKeyDown)
+    return () => node.removeEventListener('keydown', onKeyDown)
+  }, [])
+
+  const reduceMotion = useReducedMotion()
   const renderActionButton = () =>
     isStreaming &&
     !(queueWhileStreaming && (hasText || attachments.length > 0)) ? (
-      <button
-        type="button"
-        onClick={onStop}
-        disabled={stopping}
-        aria-label={stopping ? 'stopping' : 'stop generating'}
-        className={cn(actionButtonClass, actionReadyClass)}
-      >
-        {stopping ? (
-          <Loader2 aria-hidden className="size-4 shrink-0 animate-spin" />
-        ) : (
-          <Square aria-hidden className="size-4 shrink-0 fill-current" />
-        )}
-      </button>
+      <Hint label={stopping ? 'Stopping' : 'Stop generating'} side="top">
+        <motion.button
+          initial="rest"
+          animate="rest"
+          whileHover={reduceMotion ? undefined : 'hover'}
+          whileTap={reduceMotion ? undefined : 'pressed'}
+          variants={actionPressVariants}
+          transition={actionPressSpring}
+          type="button"
+          onClick={onStop}
+          disabled={stopping}
+          aria-label={stopping ? 'stopping' : 'stop generating'}
+          className={cn(actionButtonClass, actionReadyClass)}
+        >
+          {stopping ? (
+            <Loader2 aria-hidden className="size-4 shrink-0 animate-spin" />
+          ) : (
+            <Square aria-hidden className="size-4 shrink-0 fill-current" />
+          )}
+        </motion.button>
+      </Hint>
     ) : (
-      <button
-        type="button"
-        onClick={handleSubmit}
-        disabled={submitDisabled}
-        aria-label={isStreaming ? 'queue message' : 'send message'}
-        title={`${isStreaming ? 'queue message' : 'send message'} (${sendShortcutLabel()})`}
-        className={cn(
-          actionButtonClass,
-          hasText || attachments.length > 0
-            ? actionReadyClass
-            : actionIdleClass,
-        )}
+      <Hint
+        label={`${isStreaming ? 'Queue message' : 'Send message'} · ${sendShortcutLabel()}`}
+        side="top"
       >
-        <ArrowUp aria-hidden className="size-[22px] shrink-0" />
-      </button>
+        <motion.button
+          initial="rest"
+          animate="rest"
+          whileHover={reduceMotion ? undefined : 'hover'}
+          whileTap={reduceMotion ? undefined : 'pressed'}
+          variants={actionPressVariants}
+          transition={actionPressSpring}
+          type="button"
+          onClick={handleSubmit}
+          disabled={submitDisabled}
+          aria-label={isStreaming ? 'queue message' : 'send message'}
+          className={cn(
+            actionButtonClass,
+            hasText || attachments.length > 0
+              ? actionReadyClass
+              : actionIdleClass,
+          )}
+        >
+          <SendGlyph />
+        </motion.button>
+      </Hint>
     )
 
   const editor = (
-    <LexicalShell
-      onChange={(text) => {
-        textRef.current = text
-        setHasText(text.trim().length > 0)
-        if (browseIdRef.current === null) onTextChange?.(text)
-        // The editor has the inserted text now, so a send that came in
-        // with it can go. Out of band: `handleSubmit` clears the editor,
-        // which must not run inside its own change.
-        if (pendingSubmitRef.current && text.trim().length > 0) {
-          pendingSubmitRef.current = false
-          queueMicrotask(handleSubmit)
+    <ComposerAttachmentsContext.Provider value={attachmentsContext}>
+      <LexicalShell
+        lexicalEditorRef={lexicalEditorRef}
+        onChange={(text) => {
+          textRef.current = text
+          setHasText(text.trim().length > 0)
+          if (browseIdRef.current === null) onTextChange?.(text)
+          // The editor has the inserted text now, so a send that came in
+          // with it can go. Out of band: `handleSubmit` clears the editor,
+          // which must not run inside its own change.
+          if (pendingSubmitRef.current && text.trim().length > 0) {
+            pendingSubmitRef.current = false
+            queueMicrotask(handleSubmit)
+          }
+        }}
+        onSubmit={handleSubmit}
+        clearToken={clearToken}
+        placeholder={
+          blocked
+            ? blockedPlaceholder
+            : isStreaming
+              ? queueWhileStreaming
+                ? 'Queue a message…'
+                : 'Generating a response…'
+              : idlePlaceholder
         }
-      }}
-      onSubmit={handleSubmit}
-      clearToken={clearToken}
-      placeholder={
-        blocked
-          ? blockedPlaceholder
-          : isStreaming
-            ? queueWhileStreaming
-              ? 'queue a message…'
-              : 'streaming response…'
-            : idlePlaceholder
-      }
-      disabled={inputDisabled}
-      autoFocus={autoFocus}
-      externalInput={externalInput}
-      initialContent={resolvedInitialContent}
-      functionEntries={functionEntries}
-      searchFiles={searchFiles}
-      mentionContext={mentionContext}
-      onOpenFileMention={onOpenFileMention}
-      menuFrameRef={card}
-      onHistoryNav={onEditQueued ? handleHistoryNav : undefined}
-    />
+        disabled={inputDisabled}
+        autoFocus={autoFocus}
+        externalInput={externalInput}
+        initialContent={resolvedInitialContent}
+        functionEntries={functionEntries}
+        searchFiles={searchFiles}
+        mentionContext={mentionContext}
+        onOpenFileMention={onOpenFileMention}
+        menuFrameRef={card}
+        onHistoryNav={onEditQueued ? handleHistoryNav : undefined}
+      />
+    </ComposerAttachmentsContext.Provider>
   )
   const compactRow = compact && mobileLayout
   const attachInputRef = useRef<HTMLInputElement>(null)
@@ -720,164 +922,161 @@ export function Composer({
       ref={shell}
       data-composer-streaming={isStreaming ? 'true' : undefined}
       data-composer-compact={compactRow ? 'true' : undefined}
-      className={cn(
-        // onboarding-composer: tour anchor (workers/onboarding). Do not remove.
-        'onboarding-composer composer-shell relative',
-        hasProjectStrip ? 'pt-8' : 'pt-0',
-      )}
+      className="onboarding-composer composer-shell relative"
+      data-composer-welcome={showSuggestions || undefined}
     >
-      {showWorkingDir && onWorkingDirChange ? (
-        /* The project strip: a bar inset 8px from the card's edges and
-           tucked behind its top edge. It is taller than what shows (its
-           bottom padding hides under the card), so the folder and the
-           project controls after it sit centred in what shows; folded, the
-           card is gone and the strip rounds off on its own. Fill and ink are
-           both nudged a few percent toward each other so the strip reads as
-           a step behind the card in either theme, and its type and ink carry
-           into the controls. The folder is a pill as wide as its name that
-           only nudges the fill further on hover or while its picker is open
-           — no outline. */
-        <div
-          className={cn(
-            'composer-project-tab absolute inset-x-2 top-0 z-0 flex items-center gap-1 border border-transparent pr-12 pl-[7px] text-xs font-medium text-[color-mix(in_oklab,var(--color-ink)_80%,var(--color-panel-raised))]',
-            cardHidden
-              ? 'h-8 rounded-xl shadow-lift'
-              : 'h-11 rounded-t-xl pb-3',
-            // While options are locked the fill fades with the folder, as
-            // the one-button strip did; controls that stay usable (the fold
-            // toggle, a project control) keep their full ink.
-            optionsDisabled
-              ? 'bg-[color-mix(in_oklab,var(--color-panel-raised)_96%,var(--color-ink))]/50'
-              : 'bg-[color-mix(in_oklab,var(--color-panel-raised)_96%,var(--color-ink))]',
-          )}
-        >
-          <DirectoryPicker
-            value={workingDir ?? null}
-            onChange={onWorkingDirChange}
-            locked={workingDirLocked}
-            disabled={optionsDisabled}
-            externalError={workingDirError}
-            defaultDir={defaultWorkingDir}
-            worktrees={worktreePicker}
-            popoverAlign="start"
-            // A finger gets a bigger target around the pill, reaching down
-            // under the strip rather than up over what sits above it.
-            className="[&>button]:relative [&>button]:h-7 [&>button]:rounded-full [&>button]:px-2 [&>button]:text-xs [&>button]:text-inherit [&>button:hover]:bg-[color-mix(in_oklab,var(--color-panel-raised)_90%,var(--color-ink))] [&>button[aria-expanded=true]]:bg-[color-mix(in_oklab,var(--color-panel-raised)_90%,var(--color-ink))] pointer-coarse:[&>button]:after:absolute pointer-coarse:[&>button]:after:-inset-x-1 pointer-coarse:[&>button]:after:-top-0.5 pointer-coarse:[&>button]:after:-bottom-2.5 pointer-coarse:[&>button]:after:content-['']"
-          />
-          {projectControls}
-          <button
-            type="button"
-            onClick={() => setFolded(!collapsedRef.current)}
-            aria-label={collapsed ? 'expand composer' : 'collapse composer'}
-            aria-expanded={!collapsed}
-            aria-controls={cardId}
-            className={stripToggleClass}
-          >
-            <span
-              className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-              aria-hidden="true"
-            />
-            {collapsed ? (
-              <ChevronUp className="size-4 shrink-0" aria-hidden />
-            ) : (
-              <ChevronDown className="size-4 shrink-0" aria-hidden />
-            )}
-          </button>
-        </div>
-      ) : null}
-
       <div
-        id={cardId}
         ref={card}
-        hidden={cardHidden}
         className={cn(
-          'composer-card relative z-10 transition-shadow',
+          'composer-card relative transition-shadow',
           composerCardClass,
           dragging && 'ring-2 ring-rule-focus',
         )}
       >
-        {dragging ? (
-          <div className="flex items-center justify-center border-b border-rule-2 px-3 py-2 font-mono text-[12px] text-ink-faint">
-            drop to attach
-          </div>
-        ) : null}
-
-        {header}
-
-        {attachments.length > 0 ? (
-          <div className="flex flex-wrap gap-2 border-b border-rule-2 p-3">
-            {attachments.map((a) => (
-              <AttachmentChip
-                key={a.id}
-                attachment={a}
-                onRemove={handleRemoveAttachment}
-              />
-            ))}
-          </div>
-        ) : null}
-
-        {compactRow ? (
-          <div className="flex items-end gap-1 p-1">
-            <button
-              type="button"
-              onPointerDown={(event) => event.preventDefault()}
-              onClick={() => setMobileSettingsOpen(true)}
-              aria-label="attach files, model and settings"
-              className="relative flex size-11 shrink-0 items-center justify-center rounded-full text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
-            >
-              <Plus className="size-5 shrink-0" aria-hidden />
-            </button>
-            <div className="composer-editor-slot min-w-0 flex-1">{editor}</div>
-            <div onPointerDown={(event) => event.preventDefault()}>
-              {renderActionButton()}
-            </div>
-            <input
-              ref={attachInputRef}
-              type="file"
-              multiple
-              hidden
-              onChange={async (event) => {
-                const files = Array.from(event.target.files ?? [])
-                event.target.value = ''
-                if (files.length > 0) {
-                  handleAttach(await attachmentsFromFiles(files))
-                }
-              }}
+        {showWorkingDir && onWorkingDirChange ? (
+          <div className="composer-project-context flex min-w-0 flex-wrap items-center gap-1.5 px-3 pt-3 pb-1 font-inter text-xs text-ink-faint">
+            <DirectoryPicker
+              value={workingDir ?? null}
+              onChange={onWorkingDirChange}
+              locked={workingDirLocked}
+              disabled={optionsDisabled}
+              externalError={workingDirError}
+              defaultDir={defaultWorkingDir}
+              worktrees={worktreePicker}
+              triggerAppearance="chip"
+              popoverAlign="start"
+              className="min-w-0 max-w-full [&>button]:min-h-8 [&>button]:rounded-lg [&>button]:bg-surface [&>button]:px-2.5 [&>button]:text-xs [&>button]:text-ink-faint [&>button:hover]:bg-surface-hover"
             />
-          </div>
-        ) : (
-          <>
-            <div className="composer-editor-slot px-1 pt-1">{editor}</div>
-
-            {/* Tapping a toolbar button must not take the caret: on a phone the
-              blur folds the card to one line and drops the keyboard, so the
-              tap would land on a surface that just moved. The pickers open on
-              click, which a cancelled pointerdown leaves alone. */}
-            <div
-              className="composer-mobile-toolbar flex min-w-0 items-center gap-1 px-2 pb-2 sm:hidden"
-              onPointerDown={(event) => event.preventDefault()}
+            {projectControls}
+            <Hint
+              label={collapsed ? 'Expand composer' : 'Collapse composer'}
+              side="top"
             >
-              <AttachmentButton
-                onAttach={handleAttach}
-                disabled={inputDisabled}
-                className={toolbarIconButtonClass}
-              />
-              <ComposerActionsSlot layout="narrow">
-                {composerActions}
-              </ComposerActionsSlot>
               <button
                 type="button"
-                onClick={() => setMobileSettingsOpen(true)}
-                aria-label="chat settings"
-                className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+                onClick={() => setFolded(!collapsedRef.current)}
+                aria-label={collapsed ? 'expand composer' : 'collapse composer'}
+                aria-expanded={!collapsed}
+                aria-controls={cardId}
+                className={stripToggleClass}
               >
                 <span
                   className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
                   aria-hidden="true"
                 />
-                <MoreHorizontal className="size-5 shrink-0" aria-hidden />
+                {collapsed ? (
+                  <ChevronUp className="size-4 shrink-0" aria-hidden />
+                ) : (
+                  <ChevronDown className="size-4 shrink-0" aria-hidden />
+                )}
               </button>
-              {composerControls}
+            </Hint>
+          </div>
+        ) : null}
+
+        <div id={cardId} hidden={cardHidden}>
+          {dragging ? (
+            <div className="flex items-center justify-center border-b border-rule-2 px-3 py-2 font-mono text-[12px] text-ink-faint">
+              drop to attach
+            </div>
+          ) : null}
+
+          {header}
+
+          {/* The attachments are chips in the draft itself (see
+              `lexical/AttachmentNode`): there is no strip above it. */}
+
+          {compactRow ? (
+            <div className="flex items-end gap-1 p-1">
+              <button
+                type="button"
+                onPointerDown={(event) => event.preventDefault()}
+                onClick={() => setMobileSettingsOpen(true)}
+                aria-label="attach files, model and settings"
+                className="relative flex size-11 shrink-0 items-center justify-center rounded-full text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+              >
+                <Plus className="size-5 shrink-0" aria-hidden />
+              </button>
+              <div className="composer-editor-slot min-w-0 flex-1">
+                {editor}
+              </div>
+              <div onPointerDown={(event) => event.preventDefault()}>
+                {renderActionButton()}
+              </div>
+              <input
+                ref={attachInputRef}
+                type="file"
+                multiple
+                hidden
+                onChange={async (event) => {
+                  const files = Array.from(event.target.files ?? [])
+                  event.target.value = ''
+                  if (files.length > 0) {
+                    handleAttach(await attachmentsFromFiles(files))
+                  }
+                }}
+              />
+            </div>
+          ) : (
+            <>
+              <div className="composer-editor-slot px-1 pt-1">{editor}</div>
+
+              {/* Tapping a toolbar button must not take the caret: on a phone the
+              blur folds the card to one line and drops the keyboard, so the
+              tap would land on a surface that just moved. The pickers open on
+              click, which a cancelled pointerdown leaves alone. */}
+              <div
+                className="composer-mobile-toolbar flex min-w-0 flex-wrap items-center gap-1 px-2 pb-2 sm:hidden"
+                onPointerDown={(event) => event.preventDefault()}
+              >
+                <AttachmentButton
+                  onAttach={handleAttach}
+                  disabled={inputDisabled}
+                  className={toolbarIconButtonClass}
+                />
+                <ComposerActionsSlot layout="narrow">
+                  {agentPicker}
+                  {composerActions}
+                </ComposerActionsSlot>
+                <button
+                  type="button"
+                  onClick={() => setMobileSettingsOpen(true)}
+                  aria-label="chat settings"
+                  className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+                >
+                  <span
+                    className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+                    aria-hidden="true"
+                  />
+                  <MoreHorizontal className="size-5 shrink-0" aria-hidden />
+                </button>
+                {composerControls}
+                <ModelPicker
+                  value={model}
+                  options={modelOptions}
+                  openRequest={modelPickerOpenRequest}
+                  thinkingLevel={thinkingLevel}
+                  onChange={onModelChange}
+                  onThinkingLevelChange={onThinkingLevelChange}
+                  disabled={optionsDisabled || modelLocked}
+                  loading={catalogLoading}
+                  showRefresh={false}
+                  triggerAppearance="subtle"
+                  className="ml-auto min-w-0"
+                />
+                {renderActionButton()}
+              </div>
+            </>
+          )}
+
+          {/* Desktop toolbar: what the message goes out as on the left —
+            the model (with its provider), then the agent, memory and
+            permission pickers; what you do with it on the right — injected
+            actions, attach, and send, where the eye lands after typing. */}
+          {/* In a narrow pane (a side panel, a split) the left group wraps
+            and the send button stays in view. */}
+          <div className="composer-desktop-toolbar hidden min-w-0 flex-wrap items-center gap-1 px-2 pb-2 sm:flex">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
               <ModelPicker
                 value={model}
                 options={modelOptions}
@@ -889,68 +1088,82 @@ export function Composer({
                 loading={catalogLoading}
                 showRefresh={false}
                 triggerAppearance="subtle"
-                className="ml-auto min-w-0"
+                className="min-w-0 max-w-[24rem]"
               />
-              {renderActionButton()}
+              <ComposerActionsSlot layout="wide">
+                {agentPicker}
+              </ComposerActionsSlot>
+              {composerControls}
+              {showMemoryBank && onMemoryBankChange ? (
+                <BankPicker
+                  value={memoryBank ?? null}
+                  onChange={onMemoryBankChange}
+                  disabled={optionsDisabled}
+                />
+              ) : null}
+              {showPermissionMode ? (
+                <PermissionModePicker
+                  value={permissionMode}
+                  onChange={onPermissionModeChange}
+                  disabled={optionsDisabled || !!permissionModeLoading}
+                />
+              ) : null}
             </div>
-          </>
-        )}
 
-        {/* Desktop toolbar: attach (and the optional memory / permission
-            pickers) on the left; the quiet model label and the send button
-            on the right, where the eye lands after typing. */}
-        {/* In a narrow pane (a side panel, a split) the model label gives
-            way: the left group keeps its width and the send button stays
-            in view. */}
-        <div className="hidden min-w-0 items-center gap-1 px-2 pb-2 sm:flex">
-          <div className="flex flex-1 items-center gap-1">
-            <AttachmentButton
-              onAttach={handleAttach}
-              disabled={inputDisabled}
-              className={toolbarIconButtonClass}
-            />
-            <ComposerActionsSlot layout="wide">
-              {composerActions}
-            </ComposerActionsSlot>
-            {showMemoryBank && onMemoryBankChange ? (
-              <BankPicker
-                value={memoryBank ?? null}
-                onChange={onMemoryBankChange}
-                disabled={optionsDisabled}
+            <div className="flex min-w-0 items-center gap-1">
+              <ComposerActionsSlot layout="wide">
+                {composerActions}
+              </ComposerActionsSlot>
+              <AttachmentButton
+                onAttach={handleAttach}
+                disabled={inputDisabled}
+                className={toolbarIconButtonClass}
               />
-            ) : null}
-            {showPermissionMode ? (
-              <PermissionModePicker
-                value={permissionMode}
-                onChange={onPermissionModeChange}
-                disabled={optionsDisabled || !!permissionModeLoading}
-              />
-            ) : null}
-          </div>
-
-          <div className="flex min-w-0 items-center gap-1.5">
-            {composerControls}
-            <ModelPicker
-              value={model}
-              options={modelOptions}
-              openRequest={modelPickerOpenRequest}
-              thinkingLevel={thinkingLevel}
-              onChange={onModelChange}
-              onThinkingLevelChange={onThinkingLevelChange}
-              disabled={optionsDisabled || modelLocked}
-              loading={catalogLoading}
-              showRefresh={false}
-              triggerAppearance="subtle"
-              className="min-w-0 max-w-[16rem]"
-            />
-            {/* ONE action button. Mid-stream the slot shows Stop, but the moment
+              {/* ONE action button. Mid-stream the slot shows Stop, but the moment
                 the composer holds queueable content (text or attachments) it
                 flips to send — the editor advertises "queue a message…", and the
                 click must queue it, not kill the turn. */}
-            {renderActionButton()}
+              {renderActionButton()}
+            </div>
           </div>
         </div>
       </div>
+      {showSuggestions &&
+      !hasText &&
+      attachments.length === 0 &&
+      !inputDisabled &&
+      !isStreaming &&
+      !cardHidden ? (
+        <section
+          className="composer-suggestions mt-4 flex flex-wrap justify-center gap-2"
+          aria-label="Suggested prompts"
+        >
+          {STARTER_PROMPTS.map(({ label, prompt, icon: Icon }) => (
+            <button
+              key={label}
+              type="button"
+              className="inline-flex items-center gap-2 rounded-lg bg-surface/50 px-3 py-2.5 font-inter text-xs text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-rule-focus"
+              onClick={() => {
+                if (textRef.current.trim()) return
+                const target = lexicalEditorRef.current
+                // Commit the content before focus adds a history-merge tag,
+                // which the editor's draft-change listener deliberately skips.
+                target?.update(
+                  () => {
+                    $fillComposerMarkdown(prompt)
+                    $getRoot().getLastChild()?.selectEnd()
+                  },
+                  { discrete: true },
+                )
+                target?.focus()
+              }}
+            >
+              <Icon aria-hidden className="size-4" />
+              {label}
+            </button>
+          ))}
+        </section>
+      ) : null}
 
       <ChatSettingsSheet
         open={mobileSettingsOpen}

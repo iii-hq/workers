@@ -129,6 +129,52 @@ border, text or a selection/status state; `neutral` means the glyph keeps `ink-g
 
 Ligatures are off on every mono/code surface (`liga clig calt dlig 0`). Do not add a family.
 
+The conversation transcript and composer use Inter explicitly, including tool descriptions;
+file paths and semantic code retain their mono stacks. The reading surface is a local
+exception to compact chrome: 14px prose at 1.8 line height (16px on phones), 13px agent
+identity, 11–12px metadata, a 760px reading width, 22px user bubbles and a 20px composer.
+Its neutral material ramp is scoped by `.conversation-surface`; other workspace panels
+keep their existing tokens.
+
+An empty conversation groups a small wordmark, heading and composer into one centered
+composition. The composer contains the project chip and a compact agent selector; profile
+configuration and worker-provided settings live inside that selector. Starter prompts below
+it insert editable drafts and never send immediately. The same composer stays mounted when
+the first message moves it to the bottom. Attached files are chips in the draft text itself
+(`lexical/AttachmentNode`, 32px: a glyph tile, a hairline, the name, remove), inserted at the
+caret, selectable and deletable like the mention pills; a picture's chip shows a 150px
+thumbnail card on hover. The desktop toolbar reads left to right as what the message goes out
+as, then what you do with it: the model trigger (the provider's mark, the model, then the
+provider's own `display_name` and the effort in `ink-faint`, so an API key and a subscription
+for the same family tell apart), the agent, memory and permission pickers; then injected
+actions, the `+` attach button and send on the right. The model menu (`PinnedModelMenu`) is a
+360px shadcn-canon popover sized to its rows: a search over the whole catalog, the favorites
+(up to five starred models, `lib/pinned-models`; motion `Reorder` on the grip, so the list
+slides as a row is dragged; the current one checked; each with the effort it was last used
+at; the first is what a new chat starts on), the reasoning-effort slider for the current
+model (`ReasoningEffortSlider`, stacked: label and value above a full-width track, the
+model's own levels named under it, the current one in ink — a model with one level shows
+"Fixed for this model"), and a footer with All models and Add provider. All models opens the
+library dialog (`ModelLibraryDialog`): five slots across the top (the first is badged Default
+and is what a new chat starts on; the row is sticky, so it stays in view while the long
+catalog columns scroll under it and a drag always ends on screen), the providers' catalogs in
+columns below with drag-and-drop or click to pin, and a dashed Configure card for a provider that still needs
+setup. Typing a filter turns the list into the matching models grouped under the provider's
+mark and `display_name`, with a Configure link per provider. Every row carries a star
+(`Star`, filled for a favorite, hollow and revealed on hover otherwise) as its own button
+beside the select button, so starring never selects and selecting never stars; a sixth star
+does not swap a favorite out — it shows a `role="status"` notice naming the five-of-five
+limit. Add provider and Configure push the picker's provider pages into the same popover
+(the sheet does the same); the effort chord `⌘⇧/` still cycles levels from the composer. Provider marks take a brand tint from `lib/provider-brand` (Anthropic
+terracotta, Codex purple, Copilot blue); brands whose mark is black keep the ink. Do not pair
+`ring-edge` with `ring-dashed`: tailwind-merge drops the colour and the ring turns ink —
+a dashed edge is `border border-dashed border-edge`. On phones, the empty-state toolbar remains visible;
+the existing compact blur/collapse behavior applies once a conversation has started.
+ Message actions sit below assistant replies. Motion for React
+animates send feedback, disclosure chevrons and success strokes; the agent mark moves only
+while generating. Reduced motion keeps these states static.
+
+
 ### Radii, shadows, motion, spacing
 
 | Token | Value |
@@ -171,7 +217,8 @@ Two families plus the code font (above). The scale is whatever the shared compon
 | --- | --- | --- |
 | Page title | 14px / 500 sans, ink | `PageHeader` `title`; `description` 12px ink-ghost |
 | Cell title | 16px / 600 sans, `-0.01em` | `EmptyState` heading |
-| Card / panel header | 13px / 600 sans on `surface`, 40px tall | `CardHeader`, `PanelHeader` |
+| Card / panel header | 14px / 500 Inter on `surface`, 40px tall | `CardHeader`, `PanelHeader` |
+| Popover, menu, select, card body | 14px / 400 Inter, ink; trailing values and secondary copy ink-faint at the same 14px; section labels 12px / 500 ink-faint; row descriptions 12px ink-faint; machine values (ids, durations, paths) Geist Mono 13px tabular, which sits on the same optical size | `PopoverContent`, `DropdownMenuContent`, `SelectContent`, `Selector`, `Card`, `StatusPanel`. Never Geist, 11–13px or ink-ghost inside one of these |
 | Settings section title | 14px / 600 desktop, 16px phone | `SettingsSection` |
 | Body | 13px sans (`body` element: 14px/20px) | list titles, tree rows (500), tabs (600), buttons |
 | Description | 12px ink-faint | list/settings descriptions, `StatusPanel` detail, tooltip |
@@ -282,7 +329,7 @@ ones in `index.d.ts`. State is expressed with `data-*` attributes (`data-selecte
 | --- | --- | --- |
 | `Button` | `variant` primary/ghost/pill/icon/terminal/wiggle; `size` sm 32 / md 36 / lg 44 / icon 30 | One `primary` per view |
 | `IconButton` | `Button` size icon + required `label`, `tooltip` (false hides), `tooltipSide` | Never icon-only without a label |
-| `Tooltip` | `label` shorthand, or `TooltipTrigger` + `TooltipContent` (`side`, default bottom) | Don't tooltip a bare ✕ |
+| `Tooltip` | `label` shorthand, or `TooltipTrigger` + `TooltipContent` (`side`, default bottom); ink pill with page-colour text, and inside it the `ink*`, `surface*`, `edge`, panel and shadcn `foreground` tokens are inverted (`INVERSE_INK` in `lib/neutral-surface`), so content written for the page — a worker's `color: var(--color-ink)` help copy — reads on the pill in both themes | Don't tooltip a bare ✕; don't set colours on tooltip content to fight the pill |
 | `DropdownMenu` + `Trigger`/`Content`/`Group`/`Item`/`Label`/`Separator`, `CheckboxItem` (toggle, `onSelect` + `preventDefault` keeps it open), `RadioGroup`/`RadioItem` (one choice), `Sub`/`SubTrigger`/`SubContent` (a setting row that pushes into a submenu) | Radix menu on `panel-raised`, `shadow-floating`; check in the left gutter, tree caret on a sub-trigger | Destructive last; no Menubar — one trigger per menu |
 
 ### Feedback
@@ -307,6 +354,7 @@ ones in `index.d.ts`. State is expressed with `data-*` attributes (`data-selecte
 | --- | --- | --- |
 | `Dialog` + `Trigger`/`Content`/`Title`/`Description`/`Close` | Radix dialog on `panel-raised`, `shadow-floating` | Always a title |
 | `ConfirmDialog` + `useConfirm` | `title`, `description`, `details[]`, `tone` danger; cancel owns focus | Never `window.confirm` |
+| `FactCard` + `FactCardHeader` (icon chip tinted by `accent`, the name, mono for machine names) / `FactCardStatus` (semantic dot + word + meta) / `FactList` + `Fact` (`mono`, `muted`, `align`) / `FactMeter` | The one "a thing and its numbers" card: span hover card, context usage, technical details, trigger subscription, error metadata, mention fields, span info rows | `accent` is the subject colour (worker hue, tone token) and the only colour the card adds; status stays on the semantic palette |
 | `BottomSheet` + `Content`/`Title`/`Description`/`Trigger`/`Close` | Phone sheet, `heading`, in-sheet pages, safe area | Desktop: popover |
 | `ImageViewer` / `ImageThumbnailButton` | Full-screen viewer with zoom/pan; thumbnail opens it | Any content image |
 | `AnnotationLayer` / `AnnotationList` | Pin/rect/arrow annotations over an image | Screenshot markup |

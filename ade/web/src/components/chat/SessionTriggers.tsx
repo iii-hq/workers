@@ -8,6 +8,7 @@ import {
   DialogDescription,
   DialogTitle,
 } from '@/components/ui/Dialog'
+import { Fact, FactList } from '@/components/ui/FactCard'
 import { TriggerIcon } from '@/components/ui/TriggerIcon'
 import type { SessionTriggerInfo } from '@/lib/backend/triggers'
 import { copyTextToClipboard } from '@/lib/clipboard'
@@ -317,41 +318,35 @@ export function TriggerDetailDialog({
           trigger subscription registered by this conversation's agent.
         </DialogDescription>
         {trigger ? (
-          <div className="mt-4 space-y-4 font-mono text-[12px]">
-            <dl className="grid grid-cols-[max-content_1fr] items-baseline gap-x-4 gap-y-1.5">
-              <dt className="text-ink-ghost">Fires on</dt>
-              <dd className="text-ink">{trigger.triggerType}</dd>
-              <dt className="text-ink-ghost">Delivers</dt>
-              <dd className="text-ink">{deliveryLabel(trigger)}</dd>
-              <dt className="text-ink-ghost">Lifetime</dt>
-              <dd className="text-ink">
+          <div className="mt-4 space-y-4">
+            <FactList className="gap-y-1.5">
+              <Fact label="Fires on" mono>
+                {trigger.triggerType}
+              </Fact>
+              <Fact label="Delivers" mono>
+                {deliveryLabel(trigger)}
+              </Fact>
+              <Fact label="Lifetime" mono>
                 {trigger.fired
                   ? (lifecycleNote(trigger) ?? 'retired')
                   : trigger.once
                     ? 'once — retires after first fire'
                     : (lifecycleNote(trigger) ?? 'until unregistered')}
-              </dd>
+              </Fact>
               {trigger.createdAt !== undefined ? (
-                <>
-                  <dt className="text-ink-ghost">Registered</dt>
-                  <dd className="text-ink-faint">
-                    {new Date(trigger.createdAt).toLocaleString()}
-                  </dd>
-                </>
+                <Fact label="Registered" mono muted>
+                  {new Date(trigger.createdAt).toLocaleString()}
+                </Fact>
               ) : null}
-              <dt className="text-ink-ghost">Subscription</dt>
-              <dd className="text-ink-faint">
+              <Fact label="Subscription" mono muted>
                 <CopyableId value={trigger.id} />
-              </dd>
+              </Fact>
               {trigger.triggerId ? (
-                <>
-                  <dt className="text-ink-ghost">Trigger ID</dt>
-                  <dd className="text-ink-faint">
-                    <CopyableId value={trigger.triggerId} />
-                  </dd>
-                </>
+                <Fact label="Trigger ID" mono muted>
+                  <CopyableId value={trigger.triggerId} />
+                </Fact>
               ) : null}
-            </dl>
+            </FactList>
             {isEmptyConfig(trigger.config) ? null : (
               <JsonSection label="config" value={trigger.config} />
             )}

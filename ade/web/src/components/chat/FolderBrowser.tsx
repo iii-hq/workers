@@ -1,15 +1,17 @@
 import {
   AlertCircle,
   ArrowLeft,
-  Check,
+  ChevronRight,
   ChevronUp,
   CornerDownLeft,
   Folder,
   FolderOpen,
+  HardDrive,
   Search,
 } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useRef, useState } from 'react'
-import { Breadcrumb } from '@/components/ui/Breadcrumb'
+import { Button } from '@/components/shadcn/button'
+import { Hint } from '@/components/ui/Hint'
 import { KeyCombo } from '@/components/ui/KeyCombo'
 import { getIiiClient } from '@/lib/iii-client'
 import { cn } from '@/lib/utils'
@@ -28,6 +30,9 @@ import {
  * ← goes up, Cmd/Ctrl+↵ uses the highlighted folder (or the current one when
  * nothing is highlighted). Typing filters the current folder and highlights
  * the first match; an absolute path jumps there on ↵ or is used on Cmd/Ctrl+↵.
+ *
+ * Styled on the shadcn tokens (`muted`, `border`, `foreground`), so it reads
+ * the same inside the neutral dialog and the picker's own sheet.
  */
 
 interface DirEntry {
@@ -79,6 +84,10 @@ async function listDirs(dir: string): Promise<DirEntry[]> {
     .sort((a, b) => a.name.localeCompare(b.name))
 }
 
+/** The footer's key caps: hairline boxes, no fill, so they read as labels. */
+const CAP =
+  'h-5 min-w-5 rounded-[5px] border border-border bg-transparent px-1 font-inter text-[11px] font-medium text-muted-foreground shadow-none'
+
 export function FolderBrowser({
   wide,
   keyboard,
@@ -86,6 +95,7 @@ export function FolderBrowser({
   error,
   onUse,
   onBack,
+  onCancel,
 }: {
   /** Desktop dialog: parent columns and compact rows. */
   wide: boolean
@@ -98,6 +108,8 @@ export function FolderBrowser({
   onUse: (dir: string) => void
   /** Back to the project list (the sheet has no dialog close). */
   onBack?: () => void
+  /** Dismiss without choosing; shown as a Cancel button beside Use. */
+  onCancel?: () => void
 }) {
   const [roots, setRoots] = useState<string[] | null>(null)
   const [rootsError, setRootsError] = useState<string | null>(null)
@@ -250,50 +262,71 @@ export function FolderBrowser({
     }
   }
 
-  const rowClass = wide
-    ? 'flex min-h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left font-sans text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus'
-    : 'flex min-h-14 w-full min-w-0 items-center gap-3 rounded-md px-3 py-2.5 text-left font-sans text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus'
+  /* One row recipe for every column: a rounded wash on hover, a filled
+     wash when open or highlighted, the glyph in the muted ink. */
+  const rowClass = cn(
+    'group/row flex w-full min-w-0 items-center gap-2 rounded-md text-left font-inter transition-colors duration-[var(--motion-duration-control)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+    wide ? 'min-h-8 px-2 py-1 text-[13px]' : 'min-h-12 px-3 py-2 text-base',
+  )
   const noteClass = cn(
-    'rounded-md px-3 py-4 font-sans text-ink-faint',
-    wide ? 'text-[11px]' : 'text-base',
+    'px-3 py-8 text-center font-inter text-muted-foreground',
+    wide ? 'text-[13px]' : 'text-base',
   )
   const iconButton = cn(
-    'flex shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus',
-    wide ? 'size-7' : 'size-12',
+    'flex shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors duration-[var(--motion-duration-control)] hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+    wide ? 'size-9' : 'size-12',
   )
   const banner = error ?? rootsError
+  const crumbs =
+    path && root ? trailOf(path, root, wide ? Number.POSITIVE_INFINITY : 3) : []
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: key routing for the search box and Cmd/Ctrl+Enter anywhere inside
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col" onKeyDown={onKeyDown}>
-      <div className="mx-4 mb-2 flex shrink-0 items-center gap-1">
+    <div
+      className="flex min-h-0 min-w-0 flex-1 flex-col font-inter"
+      onKeyDown={onKeyDown}
+    >
+      {/* The search box: a bordered field, the only input on the surface. */}
+      <div
+        className={cn(
+          'flex shrink-0 items-center gap-1.5 px-4',
+          wide ? 'pt-4 pb-3' : 'pt-3 pb-2',
+        )}
+      >
         {onBack ? (
-          <button
-            type="button"
-            aria-label="back to projects"
-            onClick={onBack}
-            className={iconButton}
-          >
-            <ArrowLeft className="size-4" aria-hidden />
-          </button>
+          <Hint label="Back to projects" disabled={!keyboard}>
+            <button
+              type="button"
+              aria-label="back to projects"
+              onClick={onBack}
+              className={iconButton}
+            >
+              <ArrowLeft className="size-4" aria-hidden />
+            </button>
+          </Hint>
         ) : null}
         {!wide && path !== null ? (
-          <button
-            type="button"
-            aria-label="up one level"
-            onClick={goUp}
-            className={iconButton}
-          >
-            <ChevronUp className="size-4" aria-hidden />
-          </button>
+          <Hint label="Up one level" disabled={!keyboard}>
+            <button
+              type="button"
+              aria-label="up one level"
+              onClick={goUp}
+              className={iconButton}
+            >
+              <ChevronUp className="size-4" aria-hidden />
+            </button>
+          </Hint>
         ) : null}
         <div
           className={cn(
-            'flex min-w-0 flex-1 items-center gap-2 rounded-md bg-surface px-3 focus-within:ring-2 focus-within:ring-rule-focus',
-            wide ? 'min-h-9' : 'min-h-12',
+            'flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-border bg-background px-3 transition-[border-color,box-shadow] duration-[var(--motion-duration-control)] focus-within:border-foreground/40 focus-within:ring-3 focus-within:ring-foreground/10',
+            wide ? 'h-9' : 'min-h-12',
           )}
         >
-          <Search className="size-4 shrink-0 text-ink-ghost" aria-hidden />
+          <Search
+            className="size-4 shrink-0 text-muted-foreground"
+            aria-hidden
+          />
           <input
             ref={inputRef}
             value={query}
@@ -313,35 +346,66 @@ export function FolderBrowser({
             autoComplete="off"
             spellCheck={false}
             className={cn(
-              'min-w-0 flex-1 bg-transparent text-ink placeholder:text-ink-ghost focus:outline-none',
-              wide ? 'text-[12px]' : 'text-base',
+              'min-w-0 flex-1 bg-transparent text-foreground placeholder:text-muted-foreground focus:outline-none',
+              wide ? 'text-[13px]' : 'text-base',
             )}
           />
         </div>
       </div>
 
-      <div className="mx-4 mb-2 flex min-w-0 shrink-0">
-        {path && root ? (
-          <Breadcrumb
-            // a `/` separator after a `/` root reads as `/ / Users`
-            separator="›"
-            // the phone's crumbs are its parent columns: two levels up
-            items={trailOf(path, root, wide ? Number.POSITIVE_INFINITY : 3).map(
-              (p, i, all) => ({
-                key: p,
-                label: p === root ? p : basename(p),
-                onClick:
-                  i < all.length - 1
-                    ? () => {
-                        enter(p)
-                        focusSearch()
-                      }
-                    : undefined,
-              }),
-            )}
-          />
+      {/* Where you are: the path as crumbs, each ancestor a button. */}
+      <div className="flex min-w-0 shrink-0 items-center px-4 pb-3">
+        {crumbs.length > 0 ? (
+          <nav
+            aria-label="Breadcrumb"
+            className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          >
+            <ol className="flex items-center gap-0.5">
+              {crumbs.map((p, index, all) => {
+                const last = index === all.length - 1
+                const label = p === root ? p : basename(p)
+                return (
+                  <li key={p} className="flex min-w-0 items-center gap-0.5">
+                    {index > 0 ? (
+                      <ChevronRight
+                        aria-hidden
+                        className="size-4 shrink-0 text-muted-foreground/60"
+                      />
+                    ) : null}
+                    {last ? (
+                      <span
+                        aria-current="page"
+                        className={cn(
+                          'inline-flex h-6 max-w-[20rem] items-center truncate rounded-md px-1.5 font-medium text-foreground',
+                          wide ? 'text-xs' : 'text-sm',
+                          p === root && 'font-mono',
+                        )}
+                      >
+                        {label}
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          enter(p)
+                          focusSearch()
+                        }}
+                        className={cn(
+                          'inline-flex h-6 max-w-[14rem] items-center truncate rounded-md px-1.5 text-muted-foreground transition-colors duration-[var(--motion-duration-control)] hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                          wide ? 'text-xs' : 'text-sm',
+                          p === root && 'font-mono',
+                        )}
+                      >
+                        {label}
+                      </button>
+                    )}
+                  </li>
+                )
+              })}
+            </ol>
+          </nav>
         ) : (
-          <span className="font-sans text-[11px] text-ink-ghost">
+          <span className="inline-flex h-6 items-center px-1.5 text-xs font-medium text-muted-foreground">
             Workspace roots
           </span>
         )}
@@ -349,12 +413,13 @@ export function FolderBrowser({
 
       {banner ? (
         <div
+          role="alert"
           className={cn(
-            'mx-4 mb-2 flex shrink-0 items-start gap-2 rounded-md bg-warn-muted px-3 py-2 font-sans text-warn',
-            wide ? 'text-[11px]' : 'text-base',
+            'mx-4 mb-3 flex shrink-0 items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive',
+            wide ? 'text-xs' : 'text-sm',
           )}
         >
-          <AlertCircle className="size-4 shrink-0" aria-hidden />
+          <AlertCircle className="mt-px size-4 shrink-0" aria-hidden />
           <span className="min-w-0 [overflow-wrap:anywhere]">{banner}</span>
         </div>
       ) : null}
@@ -363,7 +428,7 @@ export function FolderBrowser({
         ref={bodyRef}
         className={cn(
           'flex min-h-0 min-w-0 flex-1',
-          wide && 'border-y border-rule-2',
+          wide ? 'border-t border-border' : 'border-t border-border',
         )}
       >
         {trail.slice(0, -1).map((dir, index) => {
@@ -371,7 +436,7 @@ export function FolderBrowser({
           return (
             <div
               key={dir}
-              className="w-52 shrink-0 space-y-px overflow-y-auto overscroll-contain border-r border-rule-2 p-1"
+              className="w-56 shrink-0 space-y-px overflow-y-auto overscroll-contain border-r border-border p-1.5"
             >
               {(listings[dir]?.dirs ?? []).map((e) => (
                 <button
@@ -387,8 +452,8 @@ export function FolderBrowser({
                   className={cn(
                     rowClass,
                     e.path === open
-                      ? 'bg-surface-selected text-ink'
-                      : 'text-ink-faint hover:bg-surface-hover hover:text-ink',
+                      ? 'bg-muted text-foreground'
+                      : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
                   )}
                 >
                   {e.path === open ? (
@@ -396,7 +461,13 @@ export function FolderBrowser({
                   ) : (
                     <Folder className="size-4 shrink-0" aria-hidden />
                   )}
-                  <span className="truncate">{e.name}</span>
+                  <span className="min-w-0 flex-1 truncate">{e.name}</span>
+                  {e.path === open ? (
+                    <ChevronRight
+                      className="size-4 shrink-0 text-muted-foreground"
+                      aria-hidden
+                    />
+                  ) : null}
                 </button>
               ))}
             </div>
@@ -406,7 +477,7 @@ export function FolderBrowser({
         <div
           className={cn(
             'min-w-0 flex-1 space-y-px overflow-y-auto overscroll-contain',
-            wide ? 'p-1' : 'px-4 pb-2',
+            wide ? 'p-1.5' : 'px-3 pb-2',
           )}
         >
           {isAbsPath(query) ? (
@@ -416,10 +487,16 @@ export function FolderBrowser({
                 jumpTo(query)
                 focusSearch()
               }}
-              className={cn(rowClass, 'bg-surface-selected text-ink')}
+              className={cn(rowClass, 'bg-muted text-foreground')}
             >
-              <CornerDownLeft className="size-4 shrink-0" aria-hidden />
-              <span className="truncate font-mono">Go to {query.trim()}</span>
+              <CornerDownLeft
+                className="size-4 shrink-0 text-muted-foreground"
+                aria-hidden
+              />
+              <span className="truncate">
+                Go to{' '}
+                <span className="font-mono text-[0.95em]">{query.trim()}</span>
+              </span>
             </button>
           ) : null}
 
@@ -429,10 +506,10 @@ export function FolderBrowser({
             <div
               className={cn(
                 noteClass,
-                'flex items-start gap-2 bg-warn-muted text-warn',
+                'flex items-start gap-2 text-left text-destructive',
               )}
             >
-              <AlertCircle className="size-4 shrink-0" aria-hidden />
+              <AlertCircle className="mt-px size-4 shrink-0" aria-hidden />
               <span className="min-w-0 [overflow-wrap:anywhere]">
                 {current.error}
               </span>
@@ -450,26 +527,33 @@ export function FolderBrowser({
                 title={e.path}
                 className={cn(
                   rowClass,
-                  'text-ink',
-                  index === activeIndex
-                    ? 'bg-surface-selected'
-                    : 'hover:bg-surface-hover',
+                  'text-foreground',
+                  index === activeIndex ? 'bg-muted' : 'hover:bg-muted/60',
                 )}
               >
                 {path === null ? (
-                  <FolderOpen
-                    className="size-4 shrink-0 text-ink-faint"
+                  <HardDrive
+                    className="size-4 shrink-0 text-muted-foreground"
                     aria-hidden
                   />
                 ) : (
                   <Folder
-                    className="size-4 shrink-0 text-ink-faint"
+                    className="size-4 shrink-0 text-muted-foreground"
                     aria-hidden
                   />
                 )}
-                <span className={cn('truncate', path === null && 'font-mono')}>
+                <span
+                  className={cn(
+                    'min-w-0 flex-1 truncate',
+                    path === null && 'font-mono text-[0.95em]',
+                  )}
+                >
                   {e.name}
                 </span>
+                <ChevronRight
+                  className="size-4 shrink-0 text-muted-foreground opacity-0 transition-opacity duration-[var(--motion-duration-control)] group-hover/row:opacity-100"
+                  aria-hidden
+                />
               </button>
             ))
           ) : isAbsPath(query) ? null : (
@@ -482,28 +566,32 @@ export function FolderBrowser({
         </div>
       </div>
 
+      {/* The footer: how the keys work on the left, the decision on the
+          right. The same bar the shadcn dialog footer draws. */}
       <div
         className={cn(
-          'flex shrink-0 items-center gap-3 font-sans text-[11px] text-ink-ghost',
+          'flex shrink-0 items-center gap-3 border-t border-border bg-muted/50',
           wide
-            ? 'px-4 py-2.5'
-            : 'px-4 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]',
+            ? 'px-4 py-3'
+            : 'px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]',
         )}
       >
         {keyboard ? (
-          <span className="flex min-w-0 items-center gap-3">
+          <span className="flex min-w-0 items-center gap-3 text-xs text-muted-foreground">
             <span className="flex items-center gap-1.5">
-              <KeyCombo binding="ArrowUp" />
-              <KeyCombo binding="ArrowDown" />
-              move
+              <span className="flex items-center gap-0.5">
+                <KeyCombo binding="ArrowUp" capClassName={CAP} />
+                <KeyCombo binding="ArrowDown" capClassName={CAP} />
+              </span>
+              Move
             </span>
             <span className="flex items-center gap-1.5">
-              <KeyCombo binding="Enter" />
-              open
+              <KeyCombo binding="Enter" capClassName={CAP} />
+              Open
             </span>
             <span className="flex items-center gap-1.5">
-              <KeyCombo binding="ArrowLeft" />
-              up
+              <KeyCombo binding="ArrowLeft" capClassName={CAP} />
+              Up
             </span>
           </span>
         ) : null}
@@ -513,23 +601,38 @@ export function FolderBrowser({
             !wide && 'flex-1',
           )}
         >
-          {keyboard && target ? <KeyCombo binding="Mod+Enter" /> : null}
+          {onCancel && wide ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onCancel}
+            >
+              Cancel
+            </Button>
+          ) : null}
           <button
             type="button"
             disabled={busy || !target}
             onClick={() => use(target)}
             title={target ?? undefined}
             className={cn(
-              'inline-flex min-w-0 items-center justify-center gap-1.5 rounded-sm bg-accent pr-3 pl-2 font-sans font-medium whitespace-nowrap text-accent-fg hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rule-focus disabled:opacity-50',
+              'inline-flex min-w-0 items-center justify-center gap-2 rounded-lg bg-primary font-inter font-medium whitespace-nowrap text-primary-foreground transition-colors duration-[var(--motion-duration-control)] hover:bg-primary/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50',
               wide
-                ? 'min-h-7 py-1 text-[11px]'
-                : 'min-h-12 flex-1 py-2 text-base',
+                ? 'h-8 pr-1.5 pl-3 text-[13px]'
+                : 'min-h-12 flex-1 px-4 text-base',
             )}
           >
-            <Check className="size-4 shrink-0" aria-hidden />
             <span className="truncate">
               {target ? `Use ${basename(target)}` : 'Use folder'}
             </span>
+            {keyboard && target ? (
+              <KeyCombo
+                binding="Mod+Enter"
+                className="gap-0.5"
+                capClassName="h-5 min-w-5 rounded-[5px] bg-primary-foreground/15 px-1 font-inter text-[11px] font-medium text-primary-foreground shadow-none"
+              />
+            ) : null}
           </button>
         </span>
       </div>

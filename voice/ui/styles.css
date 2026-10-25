@@ -460,8 +460,7 @@
   gap: 0.375rem;
 }
 
-[data-iii-ui='voice'] .voice-chip-btn.listening,
-[data-iii-ui='voice'] .voice-composer-btn.listening {
+[data-iii-ui='voice'] .voice-chip-btn.listening {
   color: var(--color-accent);
 }
 
@@ -554,14 +553,297 @@
 
 /* ── composer toolbar action (src/composer) ─────────────────────────── */
 
+/* The mic is a sibling of the console's attach button: the same 32 px
+   circle, the same quiet tone at rest. Recording is a state, so it earns a
+   colour, and the console's blue glyph tone gives it one: a blue disc that
+   deepens toward indigo, with a soft blue halo. Nothing else in the composer
+   is coloured, so the live mic is unmistakable without shouting. Two
+   layers animate, both transform and opacity only: a glow that follows the
+   microphone level (`--voice-level`, 0 to 1, set by the button) and a slow
+   ring that says "on" even in silence. Starting shows a faint pulse while
+   the mic opens; finishing spins a thin arc while the second pass and the
+   clean-up run. While it listens the recording bar below covers the
+   toolbar; the text lands in the composer when you stop. */
+
 [data-iii-ui='voice'] .voice-composer-action {
   display: inline-flex;
   align-items: center;
+  min-width: 0;
 }
 
 [data-iii-ui='voice'] .voice-composer-btn {
+  position: relative;
+  isolation: isolate;
   width: 2.25rem;
   height: 2.25rem;
+  border-radius: 9999px;
+  transition:
+    color var(--motion-duration-control) var(--motion-ease-standard),
+    background-color var(--motion-duration-control) var(--motion-ease-standard),
+    border-color var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+@media (pointer: fine) {
+  [data-iii-ui='voice'] .voice-composer-btn {
+    width: 2rem;
+    height: 2rem;
+  }
+}
+
+[data-iii-ui='voice'] .voice-composer-btn > svg {
+  position: relative;
+  z-index: 1;
+  transition: transform var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+[data-iii-ui='voice'] .voice-composer-btn::before,
+[data-iii-ui='voice'] .voice-composer-btn::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+}
+
+/* starting: the mic is being opened */
+[data-iii-ui='voice'] .voice-composer-btn.is-starting {
+  color: var(--color-glyph-blue);
+  background: color-mix(in srgb, var(--color-glyph-blue) 12%, transparent);
+}
+
+[data-iii-ui='voice'] .voice-composer-btn.is-starting::after {
+  border: 1px solid color-mix(in srgb, var(--color-glyph-blue) 50%, transparent);
+  animation: voice-rec-wait calc(var(--motion-duration-panel) * 5) ease-in-out infinite;
+}
+
+/* listening: a white glyph on a blue disc that deepens toward indigo, lighter
+   at the top, with a soft blue halo that swells with the voice. The glyph is
+   white in both themes: the disc is the same saturated blue in each, so the
+   theme's accent foreground (near-black in dark) would sink into it. */
+[data-iii-ui='voice'] .voice-composer-btn.is-listening {
+  color: white;
+  background: linear-gradient(
+    160deg,
+    color-mix(in oklab, var(--color-glyph-blue) 78%, white) 0%,
+    var(--color-glyph-blue) 48%,
+    color-mix(in oklab, var(--color-glyph-blue) 62%, var(--color-glyph-purple)) 100%
+  );
+  border-color: transparent;
+}
+
+[data-iii-ui='voice'] .voice-composer-btn.is-listening:hover {
+  color: white;
+  background: linear-gradient(
+    160deg,
+    color-mix(in oklab, var(--color-glyph-blue) 70%, white) 0%,
+    color-mix(in oklab, var(--color-glyph-blue) 92%, white) 48%,
+    color-mix(in oklab, var(--color-glyph-blue) 70%, var(--color-glyph-purple)) 100%
+  );
+}
+
+[data-iii-ui='voice'] .voice-composer-btn.is-listening > svg {
+  transform: scale(1.06);
+}
+
+[data-iii-ui='voice'] .voice-composer-btn.is-listening::before {
+  z-index: -1;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--color-glyph-blue) 42%, transparent) 0%,
+    color-mix(in srgb, var(--color-glyph-blue) 14%, transparent) 50%,
+    transparent 70%
+  );
+  opacity: calc(0.35 + var(--voice-level, 0) * 0.65);
+  transform: scale(calc(1.15 + var(--voice-level, 0) * 0.85));
+  transition:
+    transform var(--motion-duration-fast) var(--motion-ease-standard),
+    opacity var(--motion-duration-fast) var(--motion-ease-standard);
+}
+
+[data-iii-ui='voice'] .voice-composer-btn.is-listening::after {
+  border: 1px solid color-mix(in srgb, var(--color-glyph-blue) 55%, transparent);
+  animation: voice-rec-ring calc(var(--motion-duration-panel) * 8) var(--motion-ease-exit) infinite;
+}
+
+/* stopping: the second pass and the clean-up are running */
+[data-iii-ui='voice'] .voice-composer-btn.is-stopping {
+  color: var(--color-ink-faint);
+  background: var(--color-surface-hover);
+}
+
+[data-iii-ui='voice'] .voice-composer-btn.is-stopping::after {
+  opacity: 1;
+  border: 1.5px solid transparent;
+  border-top-color: var(--color-glyph-blue);
+  border-right-color: color-mix(in srgb, var(--color-glyph-blue) 40%, transparent);
+  animation-name: iii-ui-spin;
+  animation-duration: calc(var(--motion-duration-panel) * 4);
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+/* ── recording bar ─────────────────────────────────────────────────── */
+/* While dictating, the composer toolbar becomes one row: the waveform
+   scrolling across, the clock, discard, and done. The console makes the
+   toolbar the bar's containing block and sets the inset to its padding. */
+
+[data-iii-ui='voice'] .voice-recording-bar {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding-inline-start: 0.25rem;
+  background: var(--color-panel-raised);
+  animation: voice-bar-in var(--motion-duration-control) var(--motion-ease-enter);
+}
+
+/* the mic stays under the bar (a held press must end on it) but out of
+   sight, glow and all: the bar is the recording now */
+[data-iii-ui='voice'] .voice-composer-action[data-recording] .voice-composer-btn {
+  opacity: 0;
+}
+
+/* push-to-talk: the finger is on the mic underneath, so its release must reach it */
+[data-iii-ui='voice'] .voice-recording-bar[data-holding] {
+  pointer-events: none;
+}
+
+[data-iii-ui='voice'] .voice-recording-wave {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 1.5rem;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='voice'] .voice-recording-wave > canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+[data-iii-ui='voice'] .voice-recording-time {
+  flex: none;
+  min-width: 2.75rem;
+  padding-inline: 0.5rem 0.25rem;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='voice'] .voice-recording-cancel,
+[data-iii-ui='voice'] .voice-recording-done {
+  flex: none;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 9999px;
+}
+
+[data-iii-ui='voice'] .voice-recording-done {
+  position: relative;
+  color: var(--color-ink);
+  background: var(--color-surface-active);
+}
+
+[data-iii-ui='voice'] .voice-recording-done:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-selected);
+}
+
+/* finishing: a thin arc runs round the check while the text is cleaned up */
+[data-iii-ui='voice'] .voice-recording-done.is-stopping {
+  color: var(--color-ink-faint);
+  cursor: progress;
+}
+
+[data-iii-ui='voice'] .voice-recording-done.is-stopping::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 1.5px solid transparent;
+  border-top-color: var(--color-ink-faint);
+  pointer-events: none;
+  animation: iii-ui-spin calc(var(--motion-duration-panel) * 4) linear infinite;
+}
+
+@keyframes voice-bar-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@media (pointer: coarse) {
+  [data-iii-ui='voice'] .voice-recording-cancel,
+  [data-iii-ui='voice'] .voice-recording-done {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+}
+
+@keyframes voice-rec-ring {
+  0% {
+    opacity: 0.6;
+    transform: scale(1);
+  }
+
+  100% {
+    opacity: 0;
+    transform: scale(1.6);
+  }
+}
+
+@keyframes voice-rec-wait {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 0.9;
+    transform: scale(1.12);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui='voice'] .voice-composer-btn,
+  [data-iii-ui='voice'] .voice-composer-btn > svg {
+    transition: none;
+  }
+
+  [data-iii-ui='voice'] .voice-composer-btn.is-listening::before {
+    transform: scale(1.3);
+    opacity: 0.4;
+    transition: none;
+  }
+
+  [data-iii-ui='voice'] .voice-composer-btn::after {
+    animation: none;
+  }
+
+  [data-iii-ui='voice'] .voice-recording-bar {
+    animation: none;
+  }
+
+  [data-iii-ui='voice'] .voice-recording-done.is-stopping::after {
+    animation: none;
+    border-color: var(--color-ink-faint);
+    opacity: 0.5;
+  }
+
+  [data-iii-ui='voice'] .voice-composer-btn.is-stopping::after {
+    border-top-color: var(--color-ink-faint);
+    border-right-color: var(--color-ink-faint);
+  }
 }
 
 /* ── touch ───────────────────────────────────────────────────────────── */

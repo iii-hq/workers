@@ -15,7 +15,10 @@ export function createVoiceLiveSummary(_host: Host, controller: DictationControl
   function VoiceLiveSummary(_props: SessionTurnSummaryProps) {
     const { state } = useDictation(controller)
     const listening = state.status === 'listening' || state.status === 'starting'
-    if (!listening) return null
+    // Stop is not instant: the last sentence's second pass and the clean-up
+    // model run before the text lands, so the row stays with a label.
+    const finishing = state.status === 'stopping'
+    if (!listening && !finishing) return null
     const settled = state.committed.slice(-2).join(' ')
     const room = Math.max(0, PARTIAL_MAX_CHARS - state.partial.length)
     const settledShown = settled.length > room ? `…${settled.slice(settled.length - room)}` : settled
@@ -24,7 +27,9 @@ export function createVoiceLiveSummary(_host: Host, controller: DictationControl
       <output className="voice-live" aria-live="polite">
         <StatusDot tone="accent" pulse />
         <span className="voice-live-text">
-          {settledShown || state.partial ? (
+          {finishing ? (
+            <span className="voice-live-partial">cleaning up…</span>
+          ) : settledShown || state.partial ? (
             <>
               {settledShown}
               {settledShown && state.partial ? ' ' : ''}

@@ -10,7 +10,6 @@ import {
   Card,
   type ConfigFormProps,
   ConfirmDialog,
-  Eyebrow,
   type ExtensionIii,
   IconButton,
   Input,
@@ -24,7 +23,7 @@ import {
 } from '@iii-dev/console-ui'
 import { formatBytes, formatDuration } from '@iii-dev/console-ui/format'
 import { useContainerNarrow } from '@iii-dev/console-ui/hooks'
-import { ChevronLeft, ChevronRight, Globe } from 'lucide-react'
+import { ChevronLeft } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { clearAllBrowserData, errorMessage } from '../lib/browser'
 import {
@@ -871,10 +870,7 @@ function ConfigNav({
 
   return (
     <nav className="br-cfg-nav" aria-label="Browser configuration sections">
-      <div className="br-cfg-nav-head">
-        <Eyebrow as="div">Browser settings</Eyebrow>
-        <p>Settings are grouped by when and where they apply.</p>
-      </div>
+      <div className="br-cfg-nav-head">Browser settings</div>
       <ul className="br-cfg-nav-list">
         {sections.map((section) => {
           const active = section.id === selection
@@ -885,14 +881,10 @@ function ConfigNav({
                 className={`br-cfg-nav-row${active ? ' active' : ''}`}
                 data-config-section={section.id}
                 aria-current={active ? 'page' : undefined}
+                title={`${section.description} · ${section.summary}`}
                 onClick={() => onSelect(section.id)}
               >
-                <span className="br-cfg-nav-copy">
-                  <span className="br-cfg-nav-name">{section.label}</span>
-                  <span className="br-cfg-nav-description">{section.description}</span>
-                  <span className="br-cfg-nav-meta">{section.summary}</span>
-                </span>
-                <ChevronRight size={16} aria-hidden className="br-cfg-nav-chevron" />
+                <span className="br-cfg-nav-name">{section.label}</span>
               </button>
             </li>
           )
@@ -926,7 +918,6 @@ function EditorHeader({
           <ChevronLeft size={16} aria-hidden />
         </IconButton>
       ) : null}
-      <Globe size={16} aria-hidden className="br-cfg-editor-icon" />
       <div className="br-cfg-editor-title">
         <h3 id={titleId}>{title}</h3>
         <p>{description}</p>

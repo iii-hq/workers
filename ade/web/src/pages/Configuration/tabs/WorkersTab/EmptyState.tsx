@@ -1,6 +1,4 @@
-import { SlidersHorizontal } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { wt } from './typography'
 
 interface EmptyStateProps {
   title: string
@@ -9,10 +7,10 @@ interface EmptyStateProps {
 }
 
 /**
- * Local empty state, styled like the directory worker's workspace hero:
- * a quiet glyph over a titled explanation that teaches the next action.
- * Not reusing `components/ui/EmptyState` because that one wraps a heavier
- * `<Cell>` and is designed for inline placement in the traces panel.
+ * Local empty state: a titled explanation that teaches the next action, set
+ * in the page column like any other settings copy. Not reusing
+ * `components/ui/EmptyState` because that one wraps a heavier `<Cell>` and
+ * is designed for inline placement in the traces panel.
  */
 export function EditorEmptyState({
   title,
@@ -22,13 +20,12 @@ export function EditorEmptyState({
   return (
     <div
       className={cn(
-        'flex-1 flex flex-col items-center justify-center gap-2 px-6 py-12 text-center bg-panel',
+        'flex flex-1 flex-col items-center justify-center gap-1 px-6 py-16 text-center',
         className,
       )}
     >
-      <SlidersHorizontal className="size-7 text-ink-ghost mb-2" aria-hidden />
-      <p className={cn(wt.bodyLg, 'font-semibold text-ink')}>{title}</p>
-      <p className={cn(wt.bodySm, 'text-ink-faint max-w-md leading-relaxed')}>
+      <p className="text-base font-medium leading-6 text-foreground">{title}</p>
+      <p className="max-w-md text-pretty text-sm leading-5 text-muted-foreground">
         {description}
       </p>
     </div>

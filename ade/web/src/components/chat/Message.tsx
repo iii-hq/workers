@@ -4,7 +4,6 @@ import { FunctionTriggerCard } from '@/components/function-trigger/FunctionTrigg
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import type { TriggerRegistration } from '@/components/trigger-activity/model'
 import { TriggerActivityCard } from '@/components/trigger-activity/TriggerActivityCard'
-import { Caret } from '@/components/ui/Caret'
 import { Chip } from '@/components/ui/Chip'
 import { Prompt } from '@/components/ui/Prompt'
 import { Card, CardBody, CardHeader } from '@/components/ui/Surface'
@@ -31,6 +30,7 @@ import { MemoryChip } from './MemoryChip'
 import { SystemNotice } from './SystemNotice'
 import { ThoughtMessage } from './ThoughtMessage'
 import './streaming-message.css'
+import './conversation-design.css'
 import { Eyebrow, eyebrowClassName } from '@/components/ui/Eyebrow'
 import { cn } from '@/lib/utils'
 
@@ -426,10 +426,10 @@ function UserMessage({
   const prose = quoted ? quoted.rest : message.content
   return (
     <article
-      className="group flex flex-col items-end gap-2"
+      className="chat-message group flex flex-col items-end gap-2"
       data-message-role="user"
     >
-      <header className="flex items-center gap-2 font-sans text-base font-medium text-ink-faint sm:text-sm">
+      <header className="chat-user-header flex items-center gap-2 font-sans font-medium">
         {message.content ? (
           <CopyMessageButton
             text={message.content}
@@ -455,7 +455,7 @@ function UserMessage({
         </button>
       ) : null}
       {prose.trim() ? (
-        <div className="max-w-[92%] break-words rounded-sm bg-surface px-3.5 py-2.5 @2xl:max-w-[80%]">
+        <div className="chat-user-bubble chat-prose break-words">
           <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
             {prose}
           </Markdown>
@@ -481,7 +481,7 @@ function AssistantMessage({
   copyText?: string | (() => string)
   agentName?: string
 }) {
-  const showCaret = !!message.streaming
+  const generating = !!message.streaming
   const sideChat = useContext(AskInSideChatContext)
   // A tool-only turn has no prose but still carries a copy payload (its
   // function calls) via copyText; direct renders without a list-provided
@@ -489,34 +489,21 @@ function AssistantMessage({
   const copySource = copyText ?? (message.content || undefined)
   return (
     <article
-      className="group flex flex-col gap-2"
+      className="chat-message group flex flex-col gap-2"
       data-message-role="assistant"
     >
-      <header className="flex flex-wrap items-center gap-2 font-sans text-base text-ink-ghost sm:text-sm">
+      <header className="chat-agent-header flex flex-wrap items-center font-sans">
         {/* An agent worker names itself on the message; the harness's own
             turns do not. Fall back to the session's configured profile name,
             then to the literal "Agent" — a model id is not a name, since two
             agents can run the same model. */}
-        <span className="font-medium text-ink-faint">
+        <span className="chat-agent-name">
           {message.agent || agentName || 'Agent'}
         </span>
-        {/* The message's actions, revealed on hover where there is one. */}
-        {!message.streaming ? (
-          <span className="flex items-center gap-2 opacity-100 sm:order-last sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
-            {copySource !== undefined ? (
-              <CopyMessageButton text={copySource} />
-            ) : null}
-            {message.content ? (
-              <AskInSideChatButton
-                text={message.content}
-                messageId={message.id}
-                agent={message.agent || agentName}
-              />
-            ) : null}
-          </span>
-        ) : null}
         {message.model ? (
-          <span className="text-ink-ghost">· {message.model}</span>
+          <span className="chat-agent-model" title={message.model}>
+            · {message.model}
+          </span>
         ) : null}
         {message.memory ? <MemoryChip memory={message.memory} /> : null}
         {sideChat?.quotedIds.has(message.id) ? (
@@ -529,19 +516,29 @@ function AssistantMessage({
           </span>
         ) : null}
       </header>
-      <div className="pr-1">
+      <div className="chat-prose min-w-0 pr-1">
         {message.content ? (
-          <StreamingMarkdown
-            content={message.content}
-            streaming={!!message.streaming}
-          />
+          <StreamingMarkdown content={message.content} streaming={generating} />
         ) : (
-          <div className="font-mono text-[13px] italic thinking-shimmer">
+          <div className="font-sans text-[13px] text-ink-faint thinking-shimmer">
             thinking…
           </div>
         )}
-        {showCaret ? <Caret className="ml-0.5" /> : null}
       </div>
+      {!message.streaming ? (
+        <footer className="chat-message-actions">
+          {copySource !== undefined ? (
+            <CopyMessageButton text={copySource} />
+          ) : null}
+          {message.content ? (
+            <AskInSideChatButton
+              text={message.content}
+              messageId={message.id}
+              agent={message.agent || agentName}
+            />
+          ) : null}
+        </footer>
+      ) : null}
     </article>
   )
 }
@@ -658,6 +655,7 @@ function StreamingMarkdown({
           : undefined
       }
       data-assistant-stream-surface=""
+      data-streaming={streaming || undefined}
     >
       <Markdown
         streaming={streaming}

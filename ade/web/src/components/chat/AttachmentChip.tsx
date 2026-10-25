@@ -46,6 +46,13 @@ interface AttachmentChipProps {
    * composer's chips (not yet sent, bytes still local) leave it unset.
    */
   sessionId?: string
+  /**
+   * `composer` is the chip in the draft: a glyph tile, a hairline, the
+   * name, and the remove button — no size, so a row of them reads like
+   * words in the message. `default` is the transcript chip with its
+   * thumbnail, size and download.
+   */
+  appearance?: 'default' | 'composer'
   className?: string
 }
 
@@ -80,6 +87,7 @@ export function AttachmentChip({
   attachment,
   onRemove,
   sessionId,
+  appearance = 'default',
   className,
 }: AttachmentChipProps) {
   const lazy = isLazyImage(attachment, sessionId)
@@ -104,6 +112,60 @@ export function AttachmentChip({
     stored.state.phase === 'failed'
       ? `could not load ${attachment.name} — ${stored.state.reason}${stored.state.retryable ? '; click to retry' : ''}`
       : attachment.name
+  if (appearance === 'composer') {
+    const image = attachment.type.startsWith('image/')
+    const glyph = image ? (
+      <ImageIcon size={16} aria-hidden className="text-ok" />
+    ) : (
+      <Icon size={16} aria-hidden className="text-ink-faint" />
+    )
+    return (
+      <div
+        data-attachment-chip="composer"
+        className={cn(
+          'inline-flex h-8 max-w-[28rem] items-center overflow-hidden rounded-lg bg-surface font-inter text-sm text-ink ring-1 ring-inset ring-edge',
+          className,
+        )}
+      >
+        {viewable ? (
+          <>
+            <ImageThumbnailButton
+              title={thumbnailTitle}
+              onClick={onThumbnailClick}
+              className="flex size-8 shrink-0 items-center justify-center rounded-none border-r border-edge"
+            >
+              {glyph}
+            </ImageThumbnailButton>
+            <ImageViewer
+              open={viewer.open}
+              onOpenChange={viewer.setOpen}
+              src={src}
+              alt={attachment.name}
+              title={attachment.name}
+              description={`${attachment.type.replace('image/', '')} · ${formatSize(attachment.size)}`}
+            />
+          </>
+        ) : (
+          <span className="flex size-8 shrink-0 items-center justify-center border-r border-edge">
+            {glyph}
+          </span>
+        )}
+        <span className="min-w-0 truncate px-2.5" title={attachment.name}>
+          {chipName(attachment)}
+        </span>
+        {onRemove ? (
+          <button
+            type="button"
+            onClick={() => onRemove(attachment.id)}
+            className="flex h-8 w-7 shrink-0 items-center justify-center text-ink-faint transition-colors hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-rule-focus"
+            aria-label={`remove ${attachment.name}`}
+          >
+            <X size={16} aria-hidden />
+          </button>
+        ) : null}
+      </div>
+    )
+  }
   return (
     <div
       ref={lazy ? stored.ref : undefined}

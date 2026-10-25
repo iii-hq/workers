@@ -165,7 +165,9 @@ describe('xAI discovery feedback in the existing picker', () => {
     if (!retry) throw new Error('Missing retry')
     await act(async () => retry.click())
     expect(container.textContent).toContain('Credits or spending limit')
-    expect(container.textContent).toContain('The last diagnostic has been kept.')
+    expect(container.textContent).toContain(
+      'The last diagnostic has been kept.',
+    )
     expect(container.textContent).not.toContain('PRIVATE')
     expect(retry.disabled).toBe(false)
   })

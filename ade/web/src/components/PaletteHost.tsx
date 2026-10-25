@@ -7,6 +7,24 @@
  * shortcut that opens it.
  */
 
+import {
+  ArrowLeftToLine,
+  ArrowRightToLine,
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  Keyboard,
+  type LucideIcon,
+  Moon,
+  PanelLeft,
+  PanelRight,
+  Plus,
+  Settings,
+  Sparkles,
+  SquarePen,
+  Sun,
+  X,
+} from 'lucide-react'
 import { useCallback, useEffect, useMemo } from 'react'
 import { CommandPalette } from '@/components/CommandPalette'
 import { useScreenOptions } from '@/components/workspace/use-screen-options'
@@ -53,18 +71,42 @@ type WorkspaceActionId = Extract<
 const WORKSPACE_ACTIONS: ReadonlyArray<{
   id: WorkspaceActionId
   detail: string
+  /** The glyph the same control wears elsewhere: the tab strip's plus and
+   *  close, the panel edges, the arrows that step between them. */
+  icon: LucideIcon
 }> = [
-  { id: 'workspace.create', detail: 'Open an empty workspace' },
-  { id: 'panel.split', detail: 'Add an empty panel on the right' },
-  { id: 'panel.splitLeft', detail: 'Add an empty panel on the left' },
-  { id: 'panel.next', detail: 'Move the keyboard to the panel on the right' },
+  { id: 'workspace.create', detail: 'Open an empty workspace', icon: Plus },
+  {
+    id: 'panel.split',
+    detail: 'Add an empty panel on the right',
+    icon: PanelRight,
+  },
+  {
+    id: 'panel.splitLeft',
+    detail: 'Add an empty panel on the left',
+    icon: PanelLeft,
+  },
+  {
+    id: 'panel.next',
+    detail: 'Move focus to the panel on the right',
+    icon: ArrowRightToLine,
+  },
   {
     id: 'panel.previous',
-    detail: 'Move the keyboard to the panel on the left',
+    detail: 'Move focus to the panel on the left',
+    icon: ArrowLeftToLine,
   },
-  { id: 'workspace.next', detail: 'Switch to the workspace on the right' },
-  { id: 'workspace.previous', detail: 'Switch to the workspace on the left' },
-  { id: 'workspace.close', detail: 'Close the current workspace' },
+  {
+    id: 'workspace.next',
+    detail: 'Switch to the workspace on the right',
+    icon: ChevronRight,
+  },
+  {
+    id: 'workspace.previous',
+    detail: 'Switch to the workspace on the left',
+    icon: ChevronLeft,
+  },
+  { id: 'workspace.close', detail: 'Close the current workspace', icon: X },
 ]
 
 /** First-party pages with a go-to chord; injected pages have no stable letter. */
@@ -158,7 +200,7 @@ export function PaletteHost({
       return {
         id: `page:${option.value}`,
         kind: 'page',
-        title: option.label,
+        title: capitalised(option.label),
         detail: option.description,
         keywords: [
           ...(option.keywords ?? []),
@@ -195,9 +237,7 @@ export function PaletteHost({
         id: `workspace:${tab.id}`,
         kind: 'workspace',
         title: tabLabel(tab, extPageTitles),
-        detail: current
-          ? 'The current workspace'
-          : `Switch to this workspace · ${panels} ${panels === 1 ? 'panel' : 'panels'}`,
+        detail: `${current ? 'Current · ' : ''}${panels} ${panels === 1 ? 'panel' : 'panels'}`,
         keywords: ['workspace', 'tab', 'switch'],
         shortcut: digit && index < 9 ? String(index + 1) : undefined,
         run: () => workspace.activate(tab.id),
@@ -227,7 +267,7 @@ export function PaletteHost({
     }
     const workspaceActions: PaletteEntry[] = WORKSPACE_ACTIONS.filter(
       ({ id }) => offered(id),
-    ).map(({ id, detail }): PaletteEntry => {
+    ).map(({ id, detail, icon }): PaletteEntry => {
       const definition = keybinding(id)
       return {
         id: `action:${id}`,
@@ -236,6 +276,7 @@ export function PaletteHost({
         detail,
         keywords: [...(definition.keywords ?? [])],
         shortcut: bindingsFor(id, platform)[0],
+        icon,
         run: workspaceRun[id],
       }
     })
@@ -257,9 +298,10 @@ export function PaletteHost({
       pageCommandRows.push({
         id: `command:${entry.key}`,
         kind: 'command',
-        title: `${pageTitle}: ${entry.command.title}`,
+        title: entry.command.title,
         detail: entry.command.detail,
-        keywords: [...(entry.command.keywords ?? []), entry.pageId],
+        meta: pageTitle,
+        keywords: [...(entry.command.keywords ?? []), entry.pageId, pageTitle],
         shortcut: entry.bindings[0],
         run: entry.command.run,
       })
@@ -273,6 +315,7 @@ export function PaletteHost({
         title: 'New chat',
         detail: 'Start a conversation',
         keywords: ['conversation', 'session'],
+        icon: SquarePen,
         run: () => {
           createNew()
           openScreen('chat')
@@ -282,17 +325,19 @@ export function PaletteHost({
         id: 'action:settings',
         kind: 'action',
         title: 'Open settings',
-        detail: 'ADE and worker configuration',
-        keywords: ['configuration', 'preferences'],
+        detail: 'ADE and worker settings',
+        keywords: ['configuration', 'preferences', 'options'],
         shortcut: bindingsFor('app.settings', platform)[0],
+        icon: Settings,
         run: onOpenSettings,
       },
       {
         id: 'action:setup',
         kind: 'action',
-        title: 'Set up the harness',
-        detail: 'Connect models, store keys safely, and set up Judge',
+        title: 'Set up models and keys',
+        detail: 'Connect a provider, store API keys and set up Judge',
         keywords: [
+          'harness',
           'onboarding',
           'provider',
           'model',
@@ -301,6 +346,7 @@ export function PaletteHost({
           'wizard',
           'welcome',
         ],
+        icon: Sparkles,
         run: () => requestOnboardingWizard(),
       },
       ...(chromiumMissing
@@ -308,8 +354,8 @@ export function PaletteHost({
             {
               id: 'action:install-chromium',
               kind: 'action',
-              title: 'Install Chromium for the browser worker',
-              detail: 'Agents need it to open and check the pages they build',
+              title: 'Install Chromium',
+              detail: 'Lets agents open and check the pages they build',
               keywords: [
                 'browser',
                 'chromium',
@@ -318,6 +364,7 @@ export function PaletteHost({
                 'install',
                 'setup',
               ],
+              icon: Download,
               run: () => requestOnboardingWizard('browser'),
             } satisfies PaletteEntry,
           ]
@@ -325,23 +372,34 @@ export function PaletteHost({
       {
         id: 'action:shortcuts',
         kind: 'action',
-        title: 'Keyboard shortcuts',
-        detail: 'Every key the ADE listens for, in one list',
+        title: 'Show keyboard shortcuts',
+        detail: 'Every shortcut in the ADE',
         keywords: ['keys', 'help', 'shortcut', 'reference'],
+        shortcut: bindingsFor('app.shortcuts', platform)[0],
+        icon: Keyboard,
         run: onOpenShortcuts,
       },
       {
         id: 'action:theme',
         kind: 'action',
-        title:
+        // Named for the intent ("change theme"); the detail says which way.
+        title: 'Change theme',
+        detail:
           theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme',
-        detail: 'Toggle the ADE theme',
-        keywords: ['dark', 'light', 'appearance'],
+        keywords: ['dark', 'light', 'appearance', 'mode', 'color'],
+        icon: theme === 'dark' ? Sun : Moon,
         run: () => onThemeChange(theme === 'dark' ? 'light' : 'dark'),
       },
     ]
 
-    return [...actions, ...pageCommandRows, ...workspaces, ...pages, ...chats]
+    const actionTitles = new Set(
+      actions.map((action) => action.title.toLowerCase()),
+    )
+    const commands = pageCommandRows.filter(
+      (row) => !actionTitles.has(row.title.toLowerCase()),
+    )
+
+    return [...actions, ...commands, ...workspaces, ...pages, ...chats]
   }, [
     screenOptions,
     extPageTitles,

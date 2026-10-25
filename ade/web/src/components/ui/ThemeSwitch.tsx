@@ -1,5 +1,6 @@
 import { type LucideIcon, Monitor, Moon, Sun } from 'lucide-react'
 import type { KeyboardEvent } from 'react'
+import { Hint } from '@/components/ui/Hint'
 import type { ThemePreference } from '@/hooks/use-theme'
 import { cn } from '@/lib/utils'
 
@@ -70,25 +71,26 @@ export function ThemeSwitch({ value, onChange, className }: ThemeSwitchProps) {
       {OPTIONS.map(({ value: option, label, Icon }) => {
         const checked = option === value
         return (
-          <button
-            key={option}
-            type="button"
-            role="radio"
-            aria-checked={checked}
-            aria-label={label}
-            title={label}
-            data-value={option}
-            tabIndex={checked ? 0 : -1}
-            onClick={() => onChange(option)}
-            className={cn(
-              'relative z-10 flex size-7 items-center justify-center rounded-full transition-colors duration-[var(--motion-duration-control)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 dark:focus-visible:ring-neutral-400',
-              checked
-                ? 'text-neutral-900 dark:text-neutral-50'
-                : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200',
-            )}
-          >
-            <Icon className="size-4" strokeWidth={1.75} aria-hidden />
-          </button>
+          <Hint key={option} label={label}>
+            {/* biome-ignore lint/a11y/useSemanticElements: a native radio cannot carry the glyph, the sliding disc or the roving tabindex this pill uses */}
+            <button
+              type="button"
+              role="radio"
+              aria-checked={checked}
+              aria-label={label}
+              data-value={option}
+              tabIndex={checked ? 0 : -1}
+              onClick={() => onChange(option)}
+              className={cn(
+                'relative z-10 flex size-7 items-center justify-center rounded-full transition-colors duration-[var(--motion-duration-control)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 dark:focus-visible:ring-neutral-400',
+                checked
+                  ? 'text-neutral-900 dark:text-neutral-50'
+                  : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200',
+              )}
+            >
+              <Icon className="size-4" strokeWidth={1.75} aria-hidden />
+            </button>
+          </Hint>
         )
       })}
     </div>

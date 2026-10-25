@@ -30,6 +30,8 @@ import type {
 } from './types'
 
 const TRANSCRIBE_TIMEOUT_MS = 10 * 60 * 1000
+/** Stop waits for the last sentence's second pass and the clean-up model. */
+const DICTATION_STOP_TIMEOUT_MS = 60_000
 const DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1000
 
 export function dictationStart(iii: ExtensionIii, req: DictationStartRequest): Promise<DictationStartResponse> {
@@ -41,7 +43,7 @@ export function dictationPush(iii: ExtensionIii, req: DictationPushRequest): Pro
 }
 
 export function dictationStop(iii: ExtensionIii, req: DictationStopRequest): Promise<DictationStopResponse> {
-  return iii.trigger<DictationStopResponse>('voice::dictation::stop', req)
+  return iii.trigger<DictationStopResponse>('voice::dictation::stop', req, { timeoutMs: DICTATION_STOP_TIMEOUT_MS })
 }
 
 export function dictationList(iii: ExtensionIii): Promise<DictationListResponse> {

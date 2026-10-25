@@ -24,7 +24,7 @@ describe('Markdown code highlighting', () => {
       expect(container.querySelector('.token.keyword')?.textContent).toBe('let')
       expect(
         container.querySelector<HTMLElement>('.token.keyword')?.style.color,
-      ).toBe('var(--color-accent)')
+      ).toBe('var(--syntax-literal)')
       expect(container.querySelector('.token.comment')?.textContent).toBe(
         '// keep this comment',
       )

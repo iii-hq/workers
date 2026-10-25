@@ -33,11 +33,29 @@
  *
  * Hovering a bar shows the shared SpanHoverCard (with % of trace);
  * clicking selects the underlying `VisualizationSpan` (opens the span
- * panel). Selection = 2px accent ring, hover = 1px ink ring.
+ * panel). Selection = 2px ink ring, hover = 1px half-ink ring (the recipe
+ * in `spanVisuals.ts`, shared with the waterfall). A bar is a solid block
+ * of its worker's hue (alert on error) — a `*-900` dark badge with a
+ * `*-800` inset edge, the same colour the masthead strip and the legend
+ * use for that worker — with the label on it in the hue's own `*-50` ink. A
+ * kind glyph in the same ink sits before the label only on the bars that
+ * are NOT plain function invocations (an inbound root, an outbound client
+ * call, a queue hop): the ordinary `lambda` bar is the common case, and a
+ * glyph on every one of them said nothing. Lines sit on a 32px rhythm
+ * (24px bar, 8px gap) so a dense trace stays a diagram instead of a wall.
+ *
+ * A toolbar row sits above the canvas: the caller's view switcher on the
+ * left (`toolbarStart`), the span filter and the visible-span count on the
+ * right — the same row the waterfall draws, so switching views never moves
+ * the controls. Under it, the worker legend (`WorkerLegend`): one chip per
+ * worker, swatch and name, each toggling that worker's spans.
  */
 
 import {
   Fragment,
+  memo,
+  type ReactNode,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -48,9 +66,15 @@ import { cn } from '@/lib/utils'
 import type { SpanFilterControls } from '../../lib/spanFilters'
 import { internalFamilyOf } from '../../lib/spanLabel'
 import { waterfallToTimelineSpans } from '../../lib/timelineSpans'
+import { borderOnFill, inkOnFill } from '../../lib/traceColors'
 import type { VisualizationSpan, WaterfallData } from '../../lib/traceTransform'
 import { formatDuration } from '../../lib/traceUtils'
-import { BAR_HEIGHT, MIN_BAR_WIDTH, type TimelineSpan } from './layout'
+import {
+  BAR_HEIGHT,
+  MIN_BAR_WIDTH,
+  type TimelineSpan,
+  type TimelineSpanKind,
+} from './layout'
 import { SpanFilterMenu } from './SpanFilterMenu'
 import { SpanHoverCard } from './SpanHoverCard'
 import {
@@ -61,11 +85,12 @@ import {
 } from './spanVisibility'
 import {
   BarLabel,
-  iconColorFor,
   KIND_ICONS,
   resolveColor,
   ringFor,
+  showsKindGlyph,
 } from './spanVisuals'
+import { WorkerLegend } from './WorkerLegend'
 
 export interface TraceTimelineProps {
   data: WaterfallData
@@ -95,6 +120,8 @@ export interface TraceTimelineProps {
    * sticky ruler rather than becoming a screens-tall block.
    */
   fitContent?: boolean
+  /** Rendered at the start of the toolbar row (the detail's view switcher). */
+  toolbarStart?: ReactNode
 }
 
 const PADDING_X = 16
@@ -107,24 +134,26 @@ const SETTLE_MS = 3_000
 
 /** height of the sticky time ruler row inside the scrollport (h-5) */
 const RULER_H = 20
-/** vertical rhythm of the stacked lines */
-const ROW_PITCH = 22
-const CONTENT_PAD_Y = 8
+/** vertical rhythm of the stacked lines: a 24px bar and an 8px gap */
+const ROW_PITCH = 32
+const CONTENT_PAD_Y = 10
 /** minimum left inset of a child bar from its parent's — the hierarchy padding */
-const DEPTH_INDENT = 12
+const DEPTH_INDENT = 14
 /** breathing room between sequential bars sharing a line */
-const SIBLING_GAP = 2
-/** the connector rail drops from just inside the parent bar's left edge */
-const RAIL_INSET = 5
+const SIBLING_GAP = 4
+/** the connector rail drops from under the parent bar's coloured edge */
+const RAIL_INSET = 1
 /** movement (px) before a press turns into a pan instead of a click */
 const DRAG_THRESHOLD_PX = 4
-/** mono 10px glyph advance — for estimating whether a label fits its bar */
-const LABEL_CHAR_PX = 6.02
-/** icon + gap + bar padding around the in-bar label */
-const BAR_LABEL_OVERHEAD_PX = 26
+/** mono 12px semibold glyph advance — for estimating whether a label fits its bar */
+const LABEL_CHAR_PX = 7.25
+/** the bar's padding on both sides of the label */
+const BAR_LABEL_OVERHEAD_PX = 16
+/** a kind glyph (16px) and the gap before the label, when a bar shows one */
+const BAR_GLYPH_PX = 22
 const MIN_SPILL_LABEL_PX = 40
-/** below this a truncated in-bar label is pure noise — go icon-only */
-const MIN_INBAR_LABEL_PX = BAR_LABEL_OVERHEAD_PX + 4 * LABEL_CHAR_PX
+/** below this a truncated in-bar label is pure noise — leave the bar blank */
+const MIN_INBAR_LABEL_CHARS = 4
 
 interface PlacedSpan {
   span: TimelineSpan
@@ -157,11 +186,10 @@ interface BarRect {
   width: number
 }
 
-interface HoverState {
-  id: string
-  x: number
-  y: number
-}
+/** Lines and pixels kept rendered beyond the viewport, so a pan never
+ *  shows a bar popping in at the edge. */
+const OVERSCAN_LINES = 4
+const OVERSCAN_PX = 240
 
 interface DragState {
   pointerId: number
@@ -174,6 +202,189 @@ interface DragState {
 
 function rowTop(line: number): number {
   return CONTENT_PAD_Y + line * ROW_PITCH
+}
+
+interface BarProps {
+  id: string
+  label: string
+  sourceName: string | undefined
+  ariaLabel: string
+  top: number
+  left: number
+  width: number
+  color: string
+  /** the ink that reads on `color` — the label and the glyph wear it */
+  ink: string
+  /** the hue's one-step-lighter edge, drawn as an inset hairline */
+  border: string
+  kind: TimelineSpanKind
+  selected: boolean
+  hovered: boolean
+  inBarLabel: boolean
+  /** still running: the right edge fades out and an amber sweep crosses it */
+  running: boolean
+  /** play the entrance animation (first appearance only) */
+  enter: boolean
+  clickable: boolean
+  onEnter: (id: string) => void
+  onLeave: (id: string) => void
+  onClick: (id: string) => void
+}
+
+/**
+ * One bar. Memoised on its own props, so a hover or a selection re-renders
+ * the two bars it touches and nothing else, and a streaming re-pack only
+ * re-renders the bars whose geometry moved.
+ */
+const TimelineBar = memo(function TimelineBar({
+  id,
+  label,
+  sourceName,
+  ariaLabel,
+  top,
+  left,
+  width,
+  color,
+  ink,
+  border,
+  kind,
+  selected,
+  hovered,
+  inBarLabel,
+  running,
+  enter,
+  clickable,
+  onEnter,
+  onLeave,
+  onClick,
+}: BarProps) {
+  const Icon = showsKindGlyph(kind) ? KIND_ICONS[kind] : null
+  return (
+    <button
+      type="button"
+      aria-label={ariaLabel}
+      data-trace-span-id={id}
+      data-trace-span-name={sourceName}
+      onMouseEnter={() => onEnter(id)}
+      onMouseLeave={() => onLeave(id)}
+      onClick={clickable ? () => onClick(id) : undefined}
+      aria-pressed={selected}
+      className={cn(
+        'timeline-glide absolute flex items-center gap-1.5 overflow-hidden rounded-md px-2 transition-[box-shadow] duration-[var(--motion-duration-fast)] ease-[var(--motion-ease-standard)]',
+        'focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring',
+        enter && 'timeline-enter',
+        running && 'trace-running',
+        clickable ? 'cursor-pointer' : 'cursor-default',
+      )}
+      style={{
+        top,
+        height: BAR_HEIGHT,
+        left,
+        width,
+        backgroundColor: color,
+        color: ink,
+        // The hue's own edge first, then the state ring on top of it.
+        boxShadow: [`inset 0 0 0 1px ${border}`, ringFor(selected, hovered)]
+          .filter(Boolean)
+          .join(', '),
+        zIndex: selected || hovered ? 5 : undefined,
+      }}
+    >
+      {/* The kind glyph, only on the bars with a kind worth telling apart
+          (root, client call, queue hop); it and the label inherit the
+          bar's ink. */}
+      {Icon ? (
+        <Icon
+          aria-hidden
+          data-span-kind={kind}
+          className="size-4 shrink-0"
+          strokeWidth={2.25}
+        />
+      ) : null}
+      {inBarLabel && <BarLabel text={label} />}
+    </button>
+  )
+})
+
+interface Rail {
+  id: string
+  left: number
+  top: number
+  height: number
+}
+interface Stub {
+  id: string
+  left: number
+  top: number
+  width: number
+}
+
+/** The elbow connectors in view. Memoised: a hover elsewhere on the canvas
+ *  must not re-reconcile a thousand hairlines. */
+const ConnectorLayer = memo(function ConnectorLayer({
+  rails,
+  stubs,
+}: {
+  rails: readonly Rail[]
+  stubs: readonly Stub[]
+}) {
+  return (
+    <>
+      {rails.map((rail) => (
+        <div
+          key={rail.id}
+          aria-hidden
+          className="timeline-glide absolute w-px bg-ink/15"
+          style={{ left: rail.left, top: rail.top, height: rail.height }}
+        />
+      ))}
+      {stubs.map((stub) => (
+        <div
+          key={stub.id}
+          aria-hidden
+          className="timeline-glide absolute h-px bg-ink/15"
+          style={{ left: stub.left, top: stub.top, width: stub.width }}
+        />
+      ))}
+    </>
+  )
+})
+
+/**
+ * The hover card, positioned at the pointer. It owns the pointer position
+ * itself (a native listener on the viewport), so the per-pixel mouse
+ * movement never reaches the timeline's React state — only entering or
+ * leaving a bar does.
+ */
+function HoverCardLayer({
+  span,
+  total,
+  viewportRef,
+  pointerRef,
+}: {
+  span: TimelineSpan
+  total: number
+  viewportRef: React.RefObject<HTMLDivElement | null>
+  pointerRef: React.RefObject<{ x: number; y: number }>
+}) {
+  const [pos, setPos] = useState(() => pointerRef.current)
+  useEffect(() => {
+    const el = viewportRef.current
+    if (!el) return
+    const onMove = (e: PointerEvent) => setPos({ x: e.clientX, y: e.clientY })
+    el.addEventListener('pointermove', onMove, { passive: true })
+    return () => el.removeEventListener('pointermove', onMove)
+  }, [viewportRef])
+  return (
+    <SpanHoverCard
+      span={span}
+      now={total}
+      x={pos.x}
+      y={pos.y}
+      relativeStart
+      tracePercent={(((span.endTime ?? total) - span.startTime) / total) * 100}
+    />
+  )
 }
 
 /**
@@ -379,14 +590,37 @@ export function TraceTimeline({
   spanGroupKey,
   spanFilter,
   fitContent,
+  toolbarStart,
 }: TraceTimelineProps) {
   const stageRef = useRef<HTMLDivElement>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<DragState | null>(null)
   const suppressClickRef = useRef(false)
   const [stage, setStage] = useState({ width: 0, height: 0 })
-  const [hover, setHover] = useState<HoverState | null>(null)
+  // Only the hovered bar's identity is React state; the pointer position
+  // lives in a ref and the hover card tracks it on its own.
+  const [hoverId, setHoverId] = useState<string | null>(null)
+  const pointerRef = useRef({ x: 0, y: 0 })
   const [dragging, setDragging] = useState(false)
+  // The viewport's scroll offset, for culling: updated at most once per
+  // frame, and only once it moved far enough to change what's visible.
+  const [scroll, setScroll] = useState({ left: 0, top: 0 })
+  const scrollFrameRef = useRef(0)
+  const onScroll = useCallback(() => {
+    if (scrollFrameRef.current) return
+    scrollFrameRef.current = requestAnimationFrame(() => {
+      scrollFrameRef.current = 0
+      const el = viewportRef.current
+      if (!el) return
+      setScroll((prev) =>
+        Math.abs(prev.left - el.scrollLeft) < OVERSCAN_PX / 2 &&
+        Math.abs(prev.top - el.scrollTop) < (OVERSCAN_LINES * ROW_PITCH) / 2
+          ? prev
+          : { left: el.scrollLeft, top: el.scrollTop },
+      )
+    })
+  }, [])
+  useEffect(() => () => cancelAnimationFrame(scrollFrameRef.current), [])
 
   // The hidden-group/worker selection lives with the CALLER (`spanFilter`)
   // so the timeline and waterfall share one selection and it persists in
@@ -428,6 +662,18 @@ export function TraceTimeline({
         ? deriveSpanGroups(data.spans, (s) => internalFamilyOf(s.attributes))
         : [],
     [data.spans, filterEnabled],
+  )
+
+  // The legend lists the trace's workers whether or not the filter is
+  // wired (read-only then), busiest first like the funnel's section.
+  const legendWorkers = useMemo(
+    () =>
+      filterEnabled
+        ? workerGroups
+        : deriveSpanGroups(data.spans, (s) =>
+            internalFamilyOf(s.attributes) ? null : workerGroupKey(s),
+          ),
+    [data.spans, filterEnabled, workerGroups],
   )
 
   const visibleData = useMemo(
@@ -590,17 +836,121 @@ export function TraceTimeline({
     return grown
   }, [settled, fitHeight])
 
-  const trackHover = (id: string) => (e: React.MouseEvent) => {
+  const hoverEnter = useCallback((id: string) => {
     if (dragRef.current?.active) return
-    setHover({ id, x: e.clientX, y: e.clientY })
-  }
-  const clearHover = (id: string) => () => {
-    setHover((h) => (h?.id === id ? null : h))
-  }
-  const handleClick = (span: TimelineSpan) => {
-    const source = detail.byId.get(span.id)
-    if (source && onSpanClick) onSpanClick(source)
-  }
+    setHoverId(id)
+  }, [])
+  const hoverLeave = useCallback((id: string) => {
+    setHoverId((h) => (h === id ? null : h))
+  }, [])
+  const onSpanClickRef = useRef(onSpanClick)
+  onSpanClickRef.current = onSpanClick
+  const detailRef = useRef(detail)
+  detailRef.current = detail
+  const clickSpan = useCallback((id: string) => {
+    const source = detailRef.current.byId.get(id)
+    if (source && onSpanClickRef.current) onSpanClickRef.current(source)
+  }, [])
+
+  // Which bars exist in the DOM: those whose line and x-extent intersect
+  // the viewport (plus overscan), and always the selected and hovered ones.
+  // The DOM stays bounded by the stage, not by the trace.
+  const visible = useMemo(() => {
+    const out: number[] = []
+    if (stage.width <= 0) return out
+    const topLine =
+      Math.floor((scroll.top - CONTENT_PAD_Y) / ROW_PITCH) - OVERSCAN_LINES
+    const bottomLine =
+      Math.ceil((scroll.top + stage.height - CONTENT_PAD_Y) / ROW_PITCH) +
+      OVERSCAN_LINES
+    const xMin = scroll.left - OVERSCAN_PX
+    const xMax = scroll.left + stage.width + OVERSCAN_PX
+    for (let i = 0; i < layout.placed.length; i++) {
+      const p = layout.placed[i]
+      const r = rects[i]
+      if (
+        p.line >= topLine &&
+        p.line <= bottomLine &&
+        r.left <= xMax &&
+        r.left + r.width >= xMin
+      ) {
+        out.push(i)
+      }
+    }
+    return out
+  }, [layout, rects, scroll, stage])
+  const visibleRails = useMemo(() => {
+    const xMin = scroll.left - OVERSCAN_PX
+    const xMax = scroll.left + stage.width + OVERSCAN_PX
+    const yMin = scroll.top - OVERSCAN_LINES * ROW_PITCH
+    const yMax = scroll.top + stage.height + OVERSCAN_LINES * ROW_PITCH
+    return {
+      rails: connectors.rails.filter(
+        (r) =>
+          r.left >= xMin &&
+          r.left <= xMax &&
+          r.top <= yMax &&
+          r.top + r.height >= yMin,
+      ),
+      stubs: connectors.stubs.filter(
+        (st) =>
+          st.top >= yMin &&
+          st.top <= yMax &&
+          st.left <= xMax &&
+          st.left + st.width >= xMin,
+      ),
+    }
+  }, [connectors, scroll, stage])
+  // A bar plays its entrance once, the first time it is rendered — not
+  // again every time a pan scrolls it back into the viewport.
+  const enteredRef = useRef(new Set<string>())
+
+  // Everything a bar needs that follows from the layout alone — label fit,
+  // spill geometry, colour, aria text — computed once per re-pack, so a
+  // hover re-render only maps the visible indices onto ready-made props.
+  const barModels = useMemo(() => {
+    return layout.placed.map((p, i) => {
+      const span = p.span
+      const rect = rects[i]
+      const color = resolveColor(span)
+      const kind = span.kind ?? 'zap'
+      const overhead =
+        BAR_LABEL_OVERHEAD_PX + (showsKindGlyph(kind) ? BAR_GLYPH_PX : 0)
+      const label = span.label ?? span.id
+      const fitsInBar = rect.width >= label.length * LABEL_CHAR_PX + overhead
+      const spillLeft = rect.left + rect.width + 6
+      const nextIdx = nextOnLine[i]
+      const spillBound =
+        nextIdx != null ? rects[nextIdx].left - 4 : contentWidth - PADDING_X
+      const spillWidth = spillBound - spillLeft
+      const spillLabel = !fitsInBar && spillWidth >= MIN_SPILL_LABEL_PX
+      // Tight bar and no room to spill: keep the truncated in-bar label
+      // only while it can show a few glyphs — else the bar stays blank
+      // (the hover card has the name).
+      const inBarLabel =
+        !spillLabel &&
+        (fitsInBar ||
+          rect.width >= overhead + MIN_INBAR_LABEL_CHARS * LABEL_CHAR_PX)
+      return {
+        id: span.id,
+        kind,
+        running: span.status === 'pending',
+        ink: inkOnFill(color),
+        border: borderOnFill(color),
+        label,
+        sourceName: detail.byId.get(span.id)?.name,
+        ariaLabel: `${label} · ${formatDuration((span.endTime ?? total) - span.startTime)}`,
+        top: rowTop(p.line),
+        left: rect.left,
+        width: rect.width,
+        color,
+        inBarLabel,
+        spillLabel,
+        spillLeft,
+        spillWidth,
+      }
+    })
+  }, [layout, rects, nextOnLine, contentWidth, detail.byId, total])
 
   // Drag-to-pan: a press only becomes a pan after DRAG_THRESHOLD_PX of
   // movement on either axis (so bar clicks stay clicks); from then on
@@ -619,6 +969,7 @@ export function TraceTimeline({
     }
   }
   const onPointerMove = (e: React.PointerEvent) => {
+    pointerRef.current = { x: e.clientX, y: e.clientY }
     const drag = dragRef.current
     const viewport = viewportRef.current
     if (!drag || !viewport || e.pointerId !== drag.pointerId) return
@@ -630,7 +981,7 @@ export function TraceTimeline({
       suppressClickRef.current = true
       viewport.setPointerCapture(drag.pointerId)
       setDragging(true)
-      setHover(null)
+      setHoverId(null)
     }
     viewport.scrollLeft = drag.startScrollLeft - dx
     viewport.scrollTop = drag.startScrollTop - dy
@@ -654,18 +1005,63 @@ export function TraceTimeline({
     e.stopPropagation()
   }
 
-  const hoveredSpan = hover
-    ? (detail.spans.find((s) => s.id === hover.id) ?? null)
-    : null
+  const spanById = useMemo(
+    () => new Map(detail.spans.map((s) => [s.id, s])),
+    [detail.spans],
+  )
+  const hoveredSpan = hoverId ? (spanById.get(hoverId) ?? null) : null
+
+  const hiddenCount = data.spans.length - visibleData.spans.length
 
   return (
     <div
       className={cn(
-        'flex w-full flex-col',
+        'flex w-full flex-col font-inter',
         !fitContent && 'h-full min-h-[120px]',
         className,
       )}
     >
+      {/* toolbar: the view switcher, then the span filter and the count */}
+      {(toolbarStart || spanFilter) && (
+        <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3">
+          {toolbarStart}
+          <span className="ml-auto flex items-center gap-2">
+            {spanFilter && (
+              <SpanFilterMenu
+                groups={spanGroups}
+                workerGroups={workerGroups}
+                internalGroups={internalGroups}
+                hiddenKeys={spanFilter.hiddenGroups}
+                hiddenWorkerKeys={spanFilter.hiddenWorkers}
+                shownInternalKeys={spanFilter.shownInternal}
+                hiddenSpanCount={hiddenCount}
+                onToggle={spanFilter.toggleGroup}
+                onToggleWorker={spanFilter.toggleWorker}
+                onToggleInternal={spanFilter.toggleInternal}
+                onClear={() =>
+                  spanFilter.clear(internalGroups.map((g) => g.key))
+                }
+              />
+            )}
+            <span className="text-[11px] text-muted-foreground tabular-nums">
+              {hiddenCount > 0
+                ? `${visibleData.spans.length} of ${data.spans.length} spans`
+                : `${data.spans.length} spans`}
+            </span>
+          </span>
+        </div>
+      )}
+
+      {/* the legend: which hue is which worker, and a toggle per worker */}
+      {legendWorkers.length > 0 && (
+        <WorkerLegend
+          workers={legendWorkers}
+          hidden={spanFilter?.hiddenWorkers}
+          onToggle={spanFilter?.toggleWorker}
+          className="shrink-0 border-b border-border"
+        />
+      )}
+
       {/* fitContent: the stage takes exactly the ruler + packed lines
           (capped) — the explicit height is what the absolute viewport and
           the ResizeObserver measure, so panning only engages past the cap */}
@@ -677,27 +1073,6 @@ export function TraceTimeline({
         )}
         style={fitContent ? { height: stageHeight } : undefined}
       >
-        {/* filter menu, floating over the canvas below the ruler row:
-            funnel expands on hover into the workers + span-group lists
-            (busiest first). */}
-        {spanFilter && (
-          <div className="absolute right-2 z-10" style={{ top: RULER_H + 6 }}>
-            <SpanFilterMenu
-              groups={spanGroups}
-              workerGroups={workerGroups}
-              internalGroups={internalGroups}
-              hiddenKeys={spanFilter.hiddenGroups}
-              hiddenWorkerKeys={spanFilter.hiddenWorkers}
-              shownInternalKeys={spanFilter.shownInternal}
-              hiddenSpanCount={data.spans.length - visibleData.spans.length}
-              onToggle={spanFilter.toggleGroup}
-              onToggleWorker={spanFilter.toggleWorker}
-              onToggleInternal={spanFilter.toggleInternal}
-              onClear={() => spanFilter.clear(internalGroups.map((g) => g.key))}
-            />
-          </div>
-        )}
-
         <div
           ref={viewportRef}
           key={data.spans[0]?.trace_id ?? 'trace'}
@@ -710,11 +1085,12 @@ export function TraceTimeline({
           onPointerUp={onPointerEnd}
           onPointerCancel={onPointerEnd}
           onClickCapture={onClickCapture}
+          onScroll={onScroll}
         >
           {/* proportional time ruler — sticky: pinned while panning down,
               gliding with the bars while panning right */}
           <div
-            className="sticky top-0 z-[6] bg-panel-raised"
+            className="sticky top-0 z-[6] bg-card shadow-[inset_0_-1px_0_var(--color-border)]"
             style={{ height: RULER_H, width: contentWidth }}
           >
             {stage.width > 0 &&
@@ -723,7 +1099,7 @@ export function TraceTimeline({
                   key={f}
                   /* diagram micro: ruler tick labels */
                   className={cn(
-                    'absolute bottom-0.5 font-mono text-[10px] text-ink-ghost tabular-nums whitespace-nowrap',
+                    'absolute bottom-0.5 font-mono text-[10px] text-muted-foreground tabular-nums whitespace-nowrap',
                     f === 1 ? '-translate-x-full pr-1' : 'pl-1',
                   )}
                   style={{ left: x(total * f) }}
@@ -743,120 +1119,75 @@ export function TraceTimeline({
                 <div
                   key={f}
                   aria-hidden
-                  className="absolute inset-y-0 w-px bg-ink/8"
+                  className="absolute inset-y-0 w-px bg-border"
                   style={{ left: x(total * f) }}
                 />
               ))}
 
+            {/* the now-line: while the trace is live, an amber hairline
+                rides its growing end and glides with the one-second
+                re-pack; it fades once the trace settles */}
+            {stage.width > 0 && (
+              <div
+                aria-hidden
+                data-trace-playhead
+                className={cn(
+                  'timeline-glide trace-playhead pointer-events-none absolute inset-y-0 z-[4] w-px transition-opacity duration-[var(--motion-duration-panel)]',
+                  !live && 'opacity-0',
+                )}
+                style={{ left: x(total) }}
+              />
+            )}
+
             {stage.width > 0 && (
               <>
                 {/* parent → child elbow connectors */}
-                {connectors.rails.map((rail) => (
-                  <div
-                    key={rail.id}
-                    aria-hidden
-                    className="timeline-glide absolute w-px bg-ink/15"
-                    style={{
-                      left: rail.left,
-                      top: rail.top,
-                      height: rail.height,
-                    }}
-                  />
-                ))}
-                {connectors.stubs.map((stub) => (
-                  <div
-                    key={stub.id}
-                    aria-hidden
-                    className="timeline-glide absolute h-px bg-ink/15"
-                    style={{
-                      left: stub.left,
-                      top: stub.top,
-                      width: stub.width,
-                    }}
-                  />
-                ))}
+                <ConnectorLayer
+                  rails={visibleRails.rails}
+                  stubs={visibleRails.stubs}
+                />
 
                 {/* bars: parents above what they started, sequential
-                    siblings sharing a line */}
-                {layout.placed.map((p, i) => {
-                  const span = p.span
-                  const rect = rects[i]
-                  const color = resolveColor(span)
-                  const Icon = KIND_ICONS[span.kind ?? 'zap']
-                  const selected = selectedSpanId === span.id
-                  const hovered = hover?.id === span.id
-                  const top = rowTop(p.line)
-                  const label = span.label ?? span.id
-                  const sourceName = detail.byId.get(span.id)?.name
-                  const fitsInBar =
-                    rect.width >=
-                    label.length * LABEL_CHAR_PX + BAR_LABEL_OVERHEAD_PX
-                  const spillLeft = rect.left + rect.width + 6
-                  const nextIdx = nextOnLine[i]
-                  const spillBound =
-                    nextIdx != null
-                      ? rects[nextIdx].left - 4
-                      : contentWidth - PADDING_X
-                  const spillWidth = spillBound - spillLeft
-                  const spillLabel =
-                    !fitsInBar && spillWidth >= MIN_SPILL_LABEL_PX
-                  // Tight bar and no room to spill: keep the truncated in-bar
-                  // label only while it can show a few glyphs — else icon-only.
-                  const inBarLabel =
-                    !spillLabel &&
-                    (fitsInBar || rect.width >= MIN_INBAR_LABEL_PX)
+                    siblings sharing a line — only the ones in view */}
+                {visible.map((i) => {
+                  const m = barModels[i]
+                  const enter = !enteredRef.current.has(m.id)
+                  if (enter) enteredRef.current.add(m.id)
                   return (
-                    <Fragment key={span.id}>
-                      <button
-                        type="button"
-                        aria-label={`${label} · ${formatDuration((span.endTime ?? total) - span.startTime)}`}
-                        data-trace-span-id={span.id}
-                        data-trace-span-name={sourceName}
-                        onMouseEnter={trackHover(span.id)}
-                        onMouseMove={trackHover(span.id)}
-                        onMouseLeave={clearHover(span.id)}
-                        onClick={
-                          onSpanClick ? () => handleClick(span) : undefined
-                        }
-                        className={cn(
-                          'timeline-enter timeline-glide absolute flex items-center gap-1 overflow-hidden rounded-md px-[3px]',
-                          'focus-visible:outline-1 focus-visible:outline-accent',
-                          onSpanClick ? 'cursor-pointer' : 'cursor-default',
-                        )}
-                        style={{
-                          top,
-                          height: BAR_HEIGHT,
-                          left: rect.left,
-                          width: rect.width,
-                          backgroundColor: color,
-                          boxShadow: ringFor(selected, hovered),
-                          border: selected
-                            ? '1px solid var(--color-bg)'
-                            : '1px solid transparent',
-                          zIndex: selected || hovered ? 5 : undefined,
-                        }}
-                      >
-                        <Icon
-                          className="size-4 shrink-0"
-                          strokeWidth={2.5}
-                          style={{ color: iconColorFor(color) }}
-                        />
-                        {inBarLabel && (
-                          <BarLabel text={label} color={iconColorFor(color)} />
-                        )}
-                      </button>
-                      {spillLabel && (
+                    <Fragment key={m.id}>
+                      <TimelineBar
+                        id={m.id}
+                        label={m.label}
+                        sourceName={m.sourceName}
+                        ariaLabel={m.ariaLabel}
+                        top={m.top}
+                        left={m.left}
+                        width={m.width}
+                        color={m.color}
+                        ink={m.ink}
+                        border={m.border}
+                        kind={m.kind}
+                        selected={selectedSpanId === m.id}
+                        hovered={hoverId === m.id}
+                        inBarLabel={m.inBarLabel}
+                        running={m.running}
+                        enter={enter}
+                        clickable={!!onSpanClick}
+                        onEnter={hoverEnter}
+                        onLeave={hoverLeave}
+                        onClick={clickSpan}
+                      />
+                      {m.spillLabel && (
                         <span
                           aria-hidden
-                          /* diagram micro: bar spill label */
-                          className="timeline-glide pointer-events-none absolute overflow-hidden font-mono text-[10px] leading-none whitespace-nowrap text-ellipsis text-ink-faint"
+                          className="timeline-glide pointer-events-none absolute overflow-hidden font-mono text-xs leading-none whitespace-nowrap text-ellipsis text-foreground/80"
                           style={{
-                            left: spillLeft,
-                            top: top + BAR_HEIGHT / 2 - 5,
-                            maxWidth: spillWidth,
+                            left: m.spillLeft,
+                            top: m.top + BAR_HEIGHT / 2 - 6,
+                            maxWidth: m.spillWidth,
                           }}
                         >
-                          {label}
+                          {m.label}
                         </span>
                       )}
                     </Fragment>
@@ -868,17 +1199,12 @@ export function TraceTimeline({
         </div>
       </div>
 
-      {hoveredSpan && hover && (
-        <SpanHoverCard
+      {hoveredSpan && (
+        <HoverCardLayer
           span={hoveredSpan}
-          now={total}
-          x={hover.x}
-          y={hover.y}
-          relativeStart
-          tracePercent={
-            (((hoveredSpan.endTime ?? total) - hoveredSpan.startTime) / total) *
-            100
-          }
+          total={total}
+          viewportRef={viewportRef}
+          pointerRef={pointerRef}
         />
       )}
     </div>

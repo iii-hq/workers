@@ -4,11 +4,11 @@ import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MessageList } from '@/components/chat/MessageList'
+import type { Message } from '@/types/chat'
 import { ChatFileNavigation, openChatFile } from './file-navigation'
 import { Markdown } from './markdown'
 import { resetPanelContextForTests, subscribePanelOpen } from './panel-context'
 import { registerExtPage } from './ui-slots'
-import type { Message } from '@/types/chat'
 
 let container: HTMLDivElement
 let root: Root
@@ -19,7 +19,13 @@ beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
   resetPanelContextForTests()
   opened.mockReset()
-  removePage = registerExtPage({ id: 'ide', title: 'IDE', scope: 'ide', path: 'ide/page.js', render: () => null })
+  removePage = registerExtPage({
+    id: 'ide',
+    title: 'IDE',
+    scope: 'ide',
+    path: 'ide/page.js',
+    render: () => null,
+  })
   subscribePanelOpen(opened)
   container = document.createElement('div')
   document.body.append(container)
@@ -43,7 +49,9 @@ async function render(children: ReactNode) {
 async function click(selector = 'button') {
   const button = container.querySelector<HTMLButtonElement>(selector)
   expect(button).not.toBeNull()
-  await act(async () => { button?.click() })
+  await act(async () => {
+    button?.click()
+  })
 }
 
 /** Assert that the last IDE request contains the intended absolute file and coordinates. */
@@ -182,7 +190,9 @@ describe('chat file navigation', () => {
       )
       expect(container.querySelector('a')).toBeNull()
       await click()
-      expect(container.querySelector('[role="alert"]')?.textContent).toContain(enabled ? 'original folder' : 'disabled')
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        enabled ? 'original folder' : 'disabled',
+      )
       expect(opened).not.toHaveBeenCalled()
     },
   )
@@ -203,83 +213,202 @@ describe('chat file navigation', () => {
     expect(opened).toHaveBeenCalledTimes(2)
   })
   it('opens absolute links without a chat folder', async () => {
-    await render(<ChatFileNavigation workingDir={null} enabled><Markdown>{'[file](/repo/a.ts)'}</Markdown></ChatFileNavigation>)
+    await render(
+      <ChatFileNavigation workingDir={null} enabled>
+        <Markdown>{'[file](/repo/a.ts)'}</Markdown>
+      </ChatFileNavigation>,
+    )
     await click()
     expectFile('/repo/a.ts')
   })
 
   it('reports an absent IDE and succeeds after it reconnects', async () => {
     removePage()
-    await render(<ChatFileNavigation workingDir="/repo" enabled><Markdown>{'[file](a.ts)'}</Markdown></ChatFileNavigation>)
+    await render(
+      <ChatFileNavigation workingDir="/repo" enabled>
+        <Markdown>{'[file](a.ts)'}</Markdown>
+      </ChatFileNavigation>,
+    )
     await click()
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain('IDE is not available')
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      'IDE is not available',
+    )
     expect(opened).not.toHaveBeenCalled()
-    removePage = registerExtPage({ id: 'ide', title: 'IDE', scope: 'ide', path: 'ide/page.js', render: () => null })
+    removePage = registerExtPage({
+      id: 'ide',
+      title: 'IDE',
+      scope: 'ide',
+      path: 'ide/page.js',
+      render: () => null,
+    })
     await click()
     expectFile('/repo/a.ts')
     expect(container.querySelector('[role="alert"]')).toBeNull()
   })
 
   it('routes invalid references to an actionable error, never web navigation', async () => {
-    await render(<ChatFileNavigation workingDir="/repo" enabled><Markdown>{'[bad](src/a.ts#L0)'}</Markdown></ChatFileNavigation>)
+    await render(
+      <ChatFileNavigation workingDir="/repo" enabled>
+        <Markdown>{'[bad](src/a.ts#L0)'}</Markdown>
+      </ChatFileNavigation>,
+    )
     expect(container.querySelector('a')).toBeNull()
     await click()
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Invalid file reference')
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      'Invalid file reference',
+    )
     expect(opened).not.toHaveBeenCalled()
   })
 
   it('uses historical scope rather than the current chat folder', async () => {
     const messages: Message[] = [
       { id: 'old', role: 'assistant', createdAt: 0, content: '[old](a.ts)' },
-      { id: 'scope', role: 'system', kind: 'working-dir', createdAt: 1, content: '', scope: { path: '/new', previousPath: '/old', cause: 'selected' } },
+      {
+        id: 'scope',
+        role: 'system',
+        kind: 'working-dir',
+        createdAt: 1,
+        content: '',
+        scope: { path: '/new', previousPath: '/old', cause: 'selected' },
+      },
       { id: 'new', role: 'assistant', createdAt: 2, content: '[new](a.ts)' },
     ]
-    await render(<ChatFileNavigation workingDir="/unrelated" enabled messages={messages}><MessageList messages={messages} /></ChatFileNavigation>)
+    await render(
+      <ChatFileNavigation workingDir="/unrelated" enabled messages={messages}>
+        <MessageList messages={messages} />
+      </ChatFileNavigation>,
+    )
     await click('button[title^="open a.ts"]')
     expectFile('/old/a.ts')
-    await act(() => container.querySelectorAll<HTMLButtonElement>('button[title^="open a.ts"]')[1].click())
+    await act(() =>
+      container
+        .querySelectorAll<HTMLButtonElement>('button[title^="open a.ts"]')[1]
+        .click(),
+    )
     expectFile('/new/a.ts')
   })
 
   it('opens an unchanged conversation directly once its history is complete', async () => {
-    const messages: Message[] = [{ id: 'initial', role: 'assistant', createdAt: 0, content: '[file](a.ts)' }]
-    await render(<ChatFileNavigation workingDir="/repo" enabled messages={messages} historyComplete><MessageList messages={messages} /></ChatFileNavigation>)
+    const messages: Message[] = [
+      {
+        id: 'initial',
+        role: 'assistant',
+        createdAt: 0,
+        content: '[file](a.ts)',
+      },
+    ]
+    await render(
+      <ChatFileNavigation
+        workingDir="/repo"
+        enabled
+        messages={messages}
+        historyComplete
+      >
+        <MessageList messages={messages} />
+      </ChatFileNavigation>,
+    )
     await click('button[title^="open a.ts"]')
     expectFile('/repo/a.ts')
     expect(document.querySelector('[role="alertdialog"]')).toBeNull()
   })
 
-  it.each([false, true])('keeps confirmation for compacted history (complete=%s)', async (historyComplete) => {
-    const messages: Message[] = [
-      { id: 'compact', role: 'system', kind: 'compaction', content: 'summary', createdAt: 0 },
-      { id: 'unknown', role: 'assistant', createdAt: 1, content: '[file](a.ts)' },
-    ]
-    await render(<ChatFileNavigation workingDir="/repo" enabled messages={messages} historyComplete={historyComplete}><MessageList messages={messages} /></ChatFileNavigation>)
-    await click('button[title^="open a.ts"]')
-    expect(opened).not.toHaveBeenCalled()
-    expect(document.querySelector('[role="alertdialog"]')).not.toBeNull()
-  })
+  it.each([false, true])(
+    'keeps confirmation for compacted history (complete=%s)',
+    async (historyComplete) => {
+      const messages: Message[] = [
+        {
+          id: 'compact',
+          role: 'system',
+          kind: 'compaction',
+          content: 'summary',
+          createdAt: 0,
+        },
+        {
+          id: 'unknown',
+          role: 'assistant',
+          createdAt: 1,
+          content: '[file](a.ts)',
+        },
+      ]
+      await render(
+        <ChatFileNavigation
+          workingDir="/repo"
+          enabled
+          messages={messages}
+          historyComplete={historyComplete}
+        >
+          <MessageList messages={messages} />
+        </ChatFileNavigation>,
+      )
+      await click('button[title^="open a.ts"]')
+      expect(opened).not.toHaveBeenCalled()
+      expect(document.querySelector('[role="alertdialog"]')).not.toBeNull()
+    },
+  )
 
   it('asks before resolving legacy messages and allows cancelling', async () => {
-    const messages: Message[] = [{ id: 'legacy', role: 'assistant', createdAt: 0, content: '[file](a.ts)' }]
-    await render(<ChatFileNavigation workingDir="/repo" enabled messages={messages}><MessageList messages={messages} /></ChatFileNavigation>)
+    const messages: Message[] = [
+      {
+        id: 'legacy',
+        role: 'assistant',
+        createdAt: 0,
+        content: '[file](a.ts)',
+      },
+    ]
+    await render(
+      <ChatFileNavigation workingDir="/repo" enabled messages={messages}>
+        <MessageList messages={messages} />
+      </ChatFileNavigation>,
+    )
     await click('button[title^="open a.ts"]')
     expect(opened).not.toHaveBeenCalled()
-    expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain('/repo/a.ts')
-    const buttons = () => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button'))
-    await act(() => buttons().find((b) => b.textContent === 'Cancel')?.click())
+    expect(
+      document.querySelector('[role="alertdialog"]')?.textContent,
+    ).toContain('/repo/a.ts')
+    const buttons = () =>
+      Array.from(
+        document.querySelectorAll<HTMLButtonElement>(
+          '[role="alertdialog"] button',
+        ),
+      )
+    await act(() =>
+      buttons()
+        .find((b) => b.textContent === 'Cancel')
+        ?.click(),
+    )
     expect(opened).not.toHaveBeenCalled()
     await click('button[title^="open a.ts"]')
-    await act(() => buttons().find((b) => b.textContent === 'Open file')?.click())
+    await act(() =>
+      buttons()
+        .find((b) => b.textContent === 'Open file')
+        ?.click(),
+    )
     expectFile('/repo/a.ts')
   })
   it('does not apply an old confirmation after a newer absolute link', async () => {
-    const messages: Message[] = [{ id: 'legacy', role: 'assistant', createdAt: 0, content: '[old](a.ts) [new](/new/b.ts)' }]
-    await render(<ChatFileNavigation workingDir="/repo" enabled messages={messages}><MessageList messages={messages} /></ChatFileNavigation>)
+    const messages: Message[] = [
+      {
+        id: 'legacy',
+        role: 'assistant',
+        createdAt: 0,
+        content: '[old](a.ts) [new](/new/b.ts)',
+      },
+    ]
+    await render(
+      <ChatFileNavigation workingDir="/repo" enabled messages={messages}>
+        <MessageList messages={messages} />
+      </ChatFileNavigation>,
+    )
     await click('button[title^="open a.ts"]')
     await click('button[title^="open /new/b.ts"]')
-    const accept = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find((b) => b.textContent === 'Open file')
-    await act(async () => { accept?.click() })
+    const accept = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(
+        '[role="alertdialog"] button',
+      ),
+    ).find((b) => b.textContent === 'Open file')
+    await act(async () => {
+      accept?.click()
+    })
     expectFile('/new/b.ts')
     expect(opened).toHaveBeenCalledTimes(1)
   })

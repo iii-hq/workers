@@ -28,3 +28,12 @@ describe('voice configuration identity', () => {
     expect(trigger).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('booleanAt', () => {
+  it('reads a boolean and falls back for anything else', async () => {
+    const { booleanAt } = await import('./config')
+    expect(booleanAt({ tts: { chat_controls: true } }, ['tts', 'chat_controls'], false)).toBe(true)
+    expect(booleanAt({ tts: { chat_controls: 'yes' } }, ['tts', 'chat_controls'], false)).toBe(false)
+    expect(booleanAt(undefined, ['stt', 'cleanup', 'enabled'], true)).toBe(true)
+  })
+})

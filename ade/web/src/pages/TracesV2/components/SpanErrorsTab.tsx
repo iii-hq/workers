@@ -1,7 +1,6 @@
 import { AlertCircle, CheckCircle2, Copy } from 'lucide-react'
 import { useMemo } from 'react'
 import { EmptyState } from '@/components/ui/EmptyState'
-import { eyebrowClassName } from '@/components/ui/Eyebrow'
 import { cn } from '@/lib/utils'
 import { redactValue } from '../lib/redactAttributes'
 import type { VisualizationSpan } from '../lib/traceTransform'
@@ -81,26 +80,30 @@ export function SpanErrorsTab({ span, redact }: SpanErrorsTabProps) {
   }
 
   return (
-    <div className="p-5 space-y-4">
-      {/* Error cell with alert stripe */}
-      <div className="rounded-md bg-alert-muted p-4">
-        <div className="flex items-start gap-3">
-          <span className="size-[18px] shrink-0 flex items-center justify-center text-alert">
-            <AlertCircle className="w-4 h-4" />
-          </span>
-          <div className="flex-1 min-w-0">
+    <div className="flex flex-col gap-4 p-4 font-inter">
+      {/* The error itself */}
+      <div
+        role="alert"
+        className="rounded-lg border border-alert/30 bg-alert-muted px-3 py-2.5"
+      >
+        <div className="flex items-start gap-2.5">
+          <AlertCircle
+            className="mt-0.5 size-4 shrink-0 text-alert"
+            aria-hidden
+          />
+          <div className="min-w-0 flex-1">
             {displayType && (
-              <div className="font-mono text-[13px] font-semibold text-alert mb-1">
+              <div className="mb-0.5 font-mono text-xs font-semibold text-alert-strong">
                 {displayType}
               </div>
             )}
             {displayMessage && (
-              <div className="font-mono text-[13px] text-ink break-words leading-relaxed">
+              <div className="font-mono text-xs leading-relaxed break-words whitespace-pre-wrap text-foreground">
                 {displayMessage}
               </div>
             )}
             {!displayType && !displayMessage && (
-              <div className="font-mono text-[13px] text-ink-faint">
+              <div className="text-[13px] text-muted-foreground">
                 Error status with no additional details
               </div>
             )}
@@ -111,27 +114,28 @@ export function SpanErrorsTab({ span, redact }: SpanErrorsTabProps) {
       {/* Stack trace */}
       {displayStack && (
         <div>
-          <div className="flex items-center justify-between mb-2">
-            <span className="iii-ui-eyebrow">stack trace</span>
+          <div className="mb-1.5 flex h-6 items-center justify-between">
+            <span className="text-xs font-semibold text-foreground">
+              Stack trace
+            </span>
             <button
               type="button"
               onClick={copyStackTrace}
               className={cn(
-                eyebrowClassName,
-                'flex items-center gap-1.5 px-2 py-1 hover:text-ink hover:bg-surface-hover rounded-xs transition-colors',
+                'flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
               )}
             >
               {copiedKey === 'stackTrace' ? (
-                <span className="text-accent">Copied</span>
+                <span className="text-ok">Copied</span>
               ) : (
                 <>
-                  <Copy className="size-4" />
+                  <Copy className="size-4" aria-hidden />
                   <span>Copy</span>
                 </>
               )}
             </button>
           </div>
-          <pre className="rounded-sm bg-bg px-3 py-2 font-mono text-[12.5px] leading-[1.55] text-ink overflow-x-auto whitespace-pre-wrap break-words max-h-[400px] overflow-y-auto">
+          <pre className="max-h-[400px] overflow-auto overscroll-contain rounded-lg border border-border bg-background px-3 py-2 font-mono text-[12px] leading-[1.55] break-words whitespace-pre-wrap text-foreground">
             {stackLines.map(({ line, id }) => {
               const isFrameLine =
                 /^\s+at\s/.test(line) ||
@@ -143,9 +147,9 @@ export function SpanErrorsTab({ span, redact }: SpanErrorsTabProps) {
                   className={
                     isFrameLine
                       ? hasLineNumber
-                        ? 'text-ink hover:bg-surface-hover'
-                        : 'text-ink-faint'
-                      : 'text-alert font-medium'
+                        ? 'text-foreground'
+                        : 'text-muted-foreground'
+                      : 'font-medium text-alert-strong'
                   }
                 >
                   {line}
@@ -157,11 +161,11 @@ export function SpanErrorsTab({ span, redact }: SpanErrorsTabProps) {
       )}
 
       {!displayMessage && !displayType && !displayStack && (
-        <div className="rounded-md bg-surface p-4 text-center">
-          <p className="font-mono text-[13px] text-ink-faint">
+        <div className="rounded-lg border border-border p-4 text-center">
+          <p className="text-[13px] text-foreground">
             No additional error details
           </p>
-          <p className="font-mono text-[11px] text-ink-ghost mt-1">
+          <p className="mt-1 text-[11px] text-muted-foreground">
             The span is marked as error but no error attributes were recorded
           </p>
         </div>

@@ -1,14 +1,13 @@
-// Inline editor for span-attribute filters.
+// Inline editor for span-attribute filters, inside the Filters popover.
 //
-// The editor itself isn't collapsible — TraceFilters wraps the whole
-// affordance in a `<details className="iii-details">` so the open/close
-// chrome is handled at the parent. This keeps the editor focused on the
-// "draft + apply" loop. Pressing Enter from either input applies the
-// staged draft.
+// A draft list of `key = value` rows. Rows edit freely; "Apply" (or Enter)
+// commits the non-empty ones to the filter state. While the list is empty
+// the common OTel keys sit below as one-click chips.
 
-import { Check, Plus, Tag, X } from 'lucide-react'
+import { Check, Plus, X } from 'lucide-react'
 import { useState } from 'react'
-import { Button } from '@/components/ui/Button'
+import { Button } from '@/components/shadcn/button'
+import { Input } from '@/components/shadcn/input'
 
 interface AttributesFilterProps {
   value: [string, string][]
@@ -21,7 +20,6 @@ const COMMON_ATTRIBUTES = [
   'http.route',
   'url.path',
   'code.file.path',
-  'code.module.name',
   'thread.name',
 ]
 
@@ -50,8 +48,8 @@ export function AttributesFilter({ value, onChange }: AttributesFilterProps) {
     setIsDirty(true)
   }
 
-  const handleAdd = () => {
-    updateDraft([...draft, { id: ++_entryId, key: '', val: '' }])
+  const handleAdd = (key = '') => {
+    updateDraft([...draft, { id: ++_entryId, key, val: '' }])
   }
 
   const handleRemove = (id: number) => {
@@ -66,10 +64,6 @@ export function AttributesFilter({ value, onChange }: AttributesFilterProps) {
     updateDraft(draft.map((e) => (e.id === id ? { ...e, val } : e)))
   }
 
-  const handleSuggestionClick = (key: string) => {
-    updateDraft([...draft, { id: ++_entryId, key, val: '' }])
-  }
-
   const handleApply = () => {
     const filtered = draft.filter(({ key }) => key.trim() !== '')
     onChange(toValuePairs(filtered))
@@ -78,90 +72,94 @@ export function AttributesFilter({ value, onChange }: AttributesFilterProps) {
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && isDirty) {
+      e.preventDefault()
       handleApply()
     }
   }
 
   return (
-    <div className="space-y-2">
-      {draft.length === 0 ? (
-        <div className="text-[13px] text-ink-faint italic">
-          Filter by span attributes (e.g. http.request.method = post)
-        </div>
-      ) : (
-        <div className="space-y-2">
+    <div className="flex flex-col gap-2" data-attributes-filter>
+      {draft.length > 0 ? (
+        <div className="flex flex-col gap-1.5">
           {draft.map(({ id, key, val }) => (
-            <div
-              key={id}
-              className="group flex items-center gap-2 rounded-sm bg-surface border border-rule-2 p-2 hover:border-rule transition-colors"
-            >
-              <input
+            <div key={id} className="group flex items-center gap-1.5">
+              <Input
                 type="text"
                 placeholder="key"
                 value={key}
+                aria-label="attribute key"
                 onChange={(e) => handleKeyChange(id, e.target.value)}
                 onKeyDown={handleKeyDown}
-                className="flex-1 bg-transparent border-none font-mono text-[12px] text-ink placeholder:text-ink-faint focus:outline-none"
+                className="h-7 flex-1 rounded-md px-2 font-mono text-sm"
               />
-              <span className="text-ink-faint font-mono text-[12px]">=</span>
-              <input
+              <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                =
+              </span>
+              <Input
                 type="text"
                 placeholder="value"
                 value={val}
+                aria-label="attribute value"
                 onChange={(e) => handleValueChange(id, e.target.value)}
                 onKeyDown={handleKeyDown}
-                className="flex-1 bg-transparent border-none font-mono text-[12px] text-ink placeholder:text-ink-faint focus:outline-none"
+                className="h-7 flex-1 rounded-md px-2 font-mono text-sm"
               />
-              <button
+              <Button
                 type="button"
+                variant="ghost"
+                size="icon-xs"
                 onClick={() => handleRemove(id)}
-                className="p-1 text-ink-faint hover:text-alert hover:bg-surface-hover rounded-xs transition-all opacity-0 group-hover:opacity-100"
-                title="remove"
+                title="Remove"
                 aria-label="remove attribute"
+                className="text-muted-foreground"
               >
-                <X className="size-4" />
-              </button>
+                <X />
+              </Button>
             </div>
           ))}
         </div>
-      )}
+      ) : null}
 
-      <div className="flex items-center justify-between pt-1 flex-wrap gap-2">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Button
+          type="button"
+          variant="outline"
+          size="xs"
+          onClick={() => handleAdd()}
+          className="rounded-md"
+        >
+          <Plus data-icon="inline-start" />
+          Add attribute
+        </Button>
+        {isDirty ? (
           <Button
-            variant="ghost"
-            size="sm"
-            onClick={handleAdd}
-            className="text-accent"
+            type="button"
+            size="xs"
+            onClick={handleApply}
+            className="rounded-md"
           >
-            <Plus className="size-4" />
-            add
+            <Check data-icon="inline-start" />
+            Apply
           </Button>
-
-          {isDirty && (
-            <Button variant="pill" size="sm" onClick={handleApply}>
-              <Check className="size-4" />
-              apply
-            </Button>
-          )}
-        </div>
-
-        {draft.length === 0 && (
-          <div className="flex items-center gap-1 flex-wrap">
+        ) : null}
+        {draft.length === 0 ? (
+          <>
+            <span className="ml-1 text-[11px] text-muted-foreground">
+              Common:
+            </span>
             {COMMON_ATTRIBUTES.map((attr) => (
               <button
                 key={attr}
                 type="button"
-                onClick={() => handleSuggestionClick(attr)}
-                className="flex items-center gap-1 px-1.5 py-0.5 rounded-md text-xs text-ink-faint bg-surface hover:bg-surface-hover hover:text-ink transition-colors"
+                onClick={() => handleAdd(attr)}
+                className="h-6 rounded-md border border-border px-1.5 font-mono text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
                 title={`add ${attr}`}
               >
-                <Tag className="size-4" />
                 {attr}
               </button>
             ))}
-          </div>
-        )}
+          </>
+        ) : null}
       </div>
     </div>
   )

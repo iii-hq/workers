@@ -1,17 +1,18 @@
 /**
- * The trace detail views' filter: a funnel button that expands on hover
- * into a dropdown menu (also opens on click/keyboard — hover is sugar, not
- * the only path). Three sections: "workers" hides a worker's own spans,
- * "spans" hides one span group, and "internal" toggles the call-site-tagged
- * plumbing families (`iii.tag.hidden` — hidden by DEFAULT, so entries start
- * checked). All list entries most-populated first. Hiding removes ONLY the
- * matched spans — their children stay visible, re-attached to the hidden
- * span's parent (see `spanVisibility.ts`). Built on the design-system
- * `DropdownMenu` (the shadcn anatomy over Radix).
+ * The trace views' span filter: a funnel button that opens a menu (on
+ * hover as well as click/keyboard — hover is sugar, not the only path).
+ * Three sections: "Workers" hides a worker's own spans, "Spans" hides one
+ * span group, and "Internal" toggles the call-site-tagged plumbing families
+ * (`iii.tag.hidden` — hidden by DEFAULT, so entries start checked). All
+ * list entries most-populated first. Hiding removes ONLY the matched spans
+ * — their children stay visible, re-attached to the hidden span's parent
+ * (see `spanVisibility.ts`). Built on the shadcn dropdown-menu (Base UI),
+ * whose trigger opens on hover natively and whose checkbox items can stay
+ * open across toggles.
  */
 
 import { EyeOff, Funnel } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { Button } from '@/components/shadcn/button'
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -21,12 +22,9 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from '@/components/ui/DropdownMenu'
+} from '@/components/shadcn/dropdown-menu'
 import { cn } from '@/lib/utils'
 import type { SpanGroup } from './spanVisibility'
-
-/** Grace period so the pointer can travel from the trigger to the popup. */
-const HOVER_CLOSE_DELAY_MS = 150
 
 interface FilterSectionProps {
   label: string
@@ -47,28 +45,34 @@ function FilterSection({
   return (
     <DropdownMenuGroup>
       <DropdownMenuLabel>{label}</DropdownMenuLabel>
-      {groups.map((group) => (
-        <DropdownMenuCheckboxItem
-          key={group.key}
-          checked={hiddenKeys.has(group.key)}
-          onCheckedChange={() => onToggle(group.key)}
-          // Keep the menu open across toggles — filtering is multi-select.
-          onSelect={(e) => e.preventDefault()}
-          // Checked here means HIDDEN — the eye-off reads that state
-          // better than a checkmark would.
-          indicator={<EyeOff aria-hidden className="size-4" />}
-          title={
-            hiddenKeys.has(group.key)
-              ? `hidden — click to show ${group.key}`
-              : `hide ${group.key} spans (their children stay, re-attached to the parent)`
-          }
-        >
-          <span className="min-w-0 flex-1 truncate">{group.key}</span>
-          <span className="ml-2 shrink-0 text-ink-faint tabular-nums">
-            {group.count}
-          </span>
-        </DropdownMenuCheckboxItem>
-      ))}
+      {groups.map((group) => {
+        const hidden = hiddenKeys.has(group.key)
+        return (
+          <DropdownMenuCheckboxItem
+            key={group.key}
+            checked={hidden}
+            onCheckedChange={() => onToggle(group.key)}
+            // Keep the menu open across toggles — filtering is multi-select.
+            closeOnClick={false}
+            // Checked here means HIDDEN — the eye-off reads that state
+            // better than a checkmark would.
+            indicator={<EyeOff aria-hidden className="size-4" />}
+            title={
+              hidden
+                ? `hidden — click to show ${group.key}`
+                : `hide ${group.key} spans (their children stay, re-attached to the parent)`
+            }
+            className={cn(hidden && 'text-muted-foreground')}
+          >
+            <span className="min-w-0 flex-1 truncate font-mono">
+              {group.key}
+            </span>
+            <span className="ml-3 shrink-0 font-mono text-xs text-muted-foreground tabular-nums">
+              {group.count}
+            </span>
+          </DropdownMenuCheckboxItem>
+        )
+      })}
     </DropdownMenuGroup>
   )
 }
@@ -111,34 +115,6 @@ export function SpanFilterMenu({
   onClear,
   className,
 }: SpanFilterMenuProps) {
-  const [open, setOpen] = useState(false)
-  const closeTimer = useRef<number | null>(null)
-
-  const cancelClose = () => {
-    if (closeTimer.current != null) {
-      window.clearTimeout(closeTimer.current)
-      closeTimer.current = null
-    }
-  }
-  const openNow = () => {
-    cancelClose()
-    setOpen(true)
-  }
-  const scheduleClose = () => {
-    cancelClose()
-    closeTimer.current = window.setTimeout(
-      () => setOpen(false),
-      HOVER_CLOSE_DELAY_MS,
-    )
-  }
-  // Clear any pending hover-close when unmounting.
-  useEffect(
-    () => () => {
-      if (closeTimer.current != null) window.clearTimeout(closeTimer.current)
-    },
-    [],
-  )
-
   // Internal families are hidden unless explicitly shown — derive the
   // checked (hidden) set for the section.
   const hiddenInternalKeys = new Set(
@@ -161,33 +137,38 @@ export function SpanFilterMenu({
     return null
 
   return (
-    <DropdownMenu open={open} onOpenChange={setOpen} modal={false}>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          aria-label="filter spans"
-          onPointerEnter={openNow}
-          onPointerLeave={scheduleClose}
-          className={cn(
-            'flex items-center gap-1 rounded-sm px-1.5 py-1 font-mono text-[11px] backdrop-blur-sm transition-colors',
-            filtering
-              ? 'bg-surface-selected text-ink'
-              : 'bg-surface-active text-ink-faint hover:text-ink',
-            className,
-          )}
-        >
-          <Funnel className="size-4" />
-          {filtering && <span className="tabular-nums">{hiddenSpanCount}</span>}
-        </button>
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger
+        openOnHover
+        delay={120}
+        render={
+          <Button
+            type="button"
+            variant={filtering ? 'secondary' : 'ghost'}
+            size="xs"
+            aria-label={
+              filtering
+                ? `filter spans — ${hiddenSpanCount} hidden`
+                : 'filter spans'
+            }
+            title={
+              filtering
+                ? `${hiddenSpanCount} spans hidden by the filter`
+                : 'Hide workers or span groups'
+            }
+            className={cn('gap-1 px-1.5 font-mono tabular-nums', className)}
+          />
+        }
+      >
+        <Funnel className="size-4" aria-hidden />
+        {filtering ? <span>{hiddenSpanCount}</span> : null}
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="end"
-        onPointerEnter={cancelClose}
-        onPointerLeave={scheduleClose}
-        className="max-h-64 min-w-[14rem] overflow-y-auto"
+        className="max-h-72 w-64 overflow-y-auto overscroll-contain rounded-lg"
       >
         <FilterSection
-          label="workers"
+          label="Workers"
           groups={workerGroups}
           hiddenKeys={hiddenWorkerKeys}
           onToggle={onToggleWorker}
@@ -196,7 +177,7 @@ export function SpanFilterMenu({
           <DropdownMenuSeparator />
         )}
         <FilterSection
-          label="spans"
+          label="Spans"
           groups={groups}
           hiddenKeys={hiddenKeys}
           onToggle={onToggle}
@@ -208,7 +189,7 @@ export function SpanFilterMenu({
           )}
         {onToggleInternal && (
           <FilterSection
-            label="internal"
+            label="Internal"
             groups={internalGroups}
             hiddenKeys={hiddenInternalKeys}
             onToggle={onToggleInternal}
@@ -217,13 +198,8 @@ export function SpanFilterMenu({
         {anyHidden && (
           <>
             <DropdownMenuSeparator />
-            <DropdownMenuItem
-              onSelect={(e) => {
-                e.preventDefault()
-                onClear()
-              }}
-            >
-              show all
+            <DropdownMenuItem closeOnClick={false} onClick={onClear}>
+              Show all spans
             </DropdownMenuItem>
           </>
         )}

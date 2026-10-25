@@ -37,6 +37,7 @@ import {
 import { motion, useReducedMotion } from 'motion/react'
 import {
   memo,
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -44,6 +45,7 @@ import {
   useRef,
   useState,
 } from 'react'
+import { Button } from '@/components/shadcn/button'
 import {
   Tooltip,
   TooltipContent,
@@ -53,7 +55,7 @@ import { cn } from '@/lib/utils'
 import type { SpanFilterControls } from '../lib/spanFilters'
 import { formatSpanLabel, internalFamilyOf } from '../lib/spanLabel'
 import { buildSpanTree, type FlatSpanRow, flattenTree } from '../lib/spanTree'
-import { getWorkerColor } from '../lib/traceColors'
+import { borderOnFill, getWorkerColor, inkOnFill } from '../lib/traceColors'
 import type { VisualizationSpan, WaterfallData } from '../lib/traceTransform'
 import { formatDuration, getWorkerName } from '../lib/traceUtils'
 import type { TimelineSpan } from './timeline/layout'
@@ -89,16 +91,18 @@ interface WaterfallChartProps {
    * collapse taken mid-stream is undone by the next span to land.
    */
   showExpandControls?: boolean
+  /** Rendered at the start of the toolbar row (the detail's view switcher). */
+  toolbarStart?: ReactNode
 }
 
 const SPAN_COL_WIDTH_KEY = 'iii-span-col-width'
 const DEFAULT_SPAN_COL_WIDTH = 300
 const MIN_SPAN_COL_WIDTH = 180
 const MAX_SPAN_COL_WIDTH = 600
-const ROW_HEIGHT = 36
+const ROW_HEIGHT = 32
 const INDENT = 18
 /** Rows stagger their entrance by this much, up to a cap. */
-const STAGGER_MS = 18
+const STAGGER_MS = 14
 const STAGGER_CAP = 24
 const GRID_TICKS = [0, 25, 50, 75, 100] as const
 
@@ -152,6 +156,8 @@ const WaterfallRow = memo(function WaterfallRow({
   const delay = reduceMotion ? 0 : Math.min(index, STAGGER_CAP) * STAGGER_MS
   const left = Math.min(100, Math.max(0, span.start_percent))
   const width = Math.max(0.4, Math.min(100 - left, span.width_percent))
+  /** The bar ends too close to the axis' end for a label after it. */
+  const insideTail = left + width > 82
 
   return (
     // biome-ignore lint/a11y/useSemanticElements: the row hosts a nested disclosure <button>; a native <button> cannot contain it
@@ -160,10 +166,8 @@ const WaterfallRow = memo(function WaterfallRow({
       tabIndex={0}
       aria-pressed={isSelected}
       className={cn(
-        'group/row grid h-full w-full cursor-pointer grid-cols-[var(--span-col-width)_1fr] items-center text-left transition-colors duration-[var(--motion-duration-control)]',
-        isSelected
-          ? 'bg-neutral-200/60 dark:bg-neutral-800/70'
-          : 'hover:bg-neutral-200/40 dark:hover:bg-neutral-800/40',
+        'group/row grid h-full w-full cursor-pointer grid-cols-[var(--span-col-width)_1fr] items-center text-left transition-colors duration-[var(--motion-duration-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50',
+        isSelected ? 'bg-muted' : 'hover:bg-muted/50',
       )}
       onClick={() => onSpanClick(span)}
       onKeyDown={(e) => {
@@ -181,11 +185,11 @@ const WaterfallRow = memo(function WaterfallRow({
         initial={reduceMotion ? false : { opacity: 0, x: -4 }}
         animate={{ opacity: 1, x: 0 }}
         transition={{
-          duration: 0.22,
+          duration: 0.18,
           delay: delay / 1000,
           ease: [0.2, 0, 0, 1],
         }}
-        className="flex h-full min-w-0 items-center gap-2 pr-3 pl-3"
+        className="flex h-full min-w-0 items-center gap-1.5 pr-3 pl-3"
         style={{ paddingLeft: 12 + span.displayDepth * INDENT }}
       >
         {/* Indent rails: one hairline per ancestor level. */}
@@ -199,7 +203,7 @@ const WaterfallRow = memo(function WaterfallRow({
               <span
                 // biome-ignore lint/suspicious/noArrayIndexKey: rails are positional
                 key={level}
-                className="h-full border-l border-neutral-200 dark:border-neutral-800"
+                className="h-full border-l border-border"
                 style={{ width: INDENT }}
               />
             ))}
@@ -215,7 +219,7 @@ const WaterfallRow = memo(function WaterfallRow({
             }}
             aria-label={isExpanded ? 'collapse span' : 'expand span'}
             aria-expanded={isExpanded}
-            className="relative z-10 flex size-5 shrink-0 items-center justify-center rounded-md text-neutral-400 hover:bg-neutral-300/60 hover:text-neutral-900 dark:text-neutral-500 dark:hover:bg-neutral-700 dark:hover:text-neutral-50"
+            className="relative z-10 flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted-foreground/15 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
           >
             <ChevronRight
               className={cn(
@@ -229,16 +233,18 @@ const WaterfallRow = memo(function WaterfallRow({
           <span className="size-5 shrink-0" aria-hidden />
         )}
 
-        {/* The glyph tile, tinted in the worker's colour. */}
+        {/* The glyph tile: the worker's dark badge — `*-900` fill, `*-800`
+            edge, the hue's `*-50` ink on it. */}
         <span
           aria-hidden
           title={kindLabel}
-          className="relative z-10 flex size-6 shrink-0 items-center justify-center rounded-md"
+          className="relative z-10 flex size-5 shrink-0 items-center justify-center rounded-md"
           style={{
-            backgroundColor: isError
-              ? 'color-mix(in oklab, var(--color-red-500) 16%, transparent)'
-              : `color-mix(in oklab, ${color} 16%, transparent)`,
-            color: isError ? 'var(--color-red-500)' : color,
+            backgroundColor: isError ? 'var(--color-alert-muted)' : color,
+            color: isError ? 'var(--color-trace-error)' : inkOnFill(color),
+            boxShadow: isError
+              ? undefined
+              : `inset 0 0 0 1px ${borderOnFill(color)}`,
           }}
         >
           <Icon className="size-4" />
@@ -246,28 +252,26 @@ const WaterfallRow = memo(function WaterfallRow({
 
         <span
           className={cn(
-            'relative z-10 min-w-0 truncate text-[13px] leading-5',
+            'relative z-10 min-w-0 truncate text-xs leading-5',
             hasChildren ? 'font-semibold' : 'font-medium',
-            isError
-              ? 'text-red-600 dark:text-red-400'
-              : 'text-neutral-900 dark:text-neutral-50',
+            isError ? 'text-alert-strong' : 'text-foreground',
           )}
           title={span.name}
         >
           {name}
         </span>
-        <span className="relative z-10 min-w-0 shrink truncate text-xs text-neutral-500 dark:text-neutral-400">
+        <span className="relative z-10 min-w-0 shrink truncate text-xs text-muted-foreground">
           {worker}
         </span>
         {span.pending ? (
           <Loader2
-            className="relative z-10 size-4 shrink-0 animate-spin text-neutral-400 motion-reduce:animate-none"
+            className="relative z-10 size-4 shrink-0 animate-spin text-warn-strong motion-reduce:animate-none"
             aria-label="running"
           />
         ) : null}
         {span.mergedRouting ? (
           <span
-            className="relative z-10 shrink-0 rounded-md bg-neutral-200/80 px-1 font-mono text-[11px] text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400"
+            className="relative z-10 shrink-0 rounded-md bg-muted px-1 font-mono text-[11px] text-muted-foreground"
             title="an engine routing span was folded into this one"
           >
             +1
@@ -282,46 +286,68 @@ const WaterfallRow = memo(function WaterfallRow({
             initial={reduceMotion ? false : { scaleX: 0 }}
             animate={{ scaleX: 1 }}
             transition={{
-              duration: 0.4,
+              duration: 0.3,
               delay: delay / 1000,
               ease: [0.2, 0, 0, 1],
             }}
+            // 20px tall in the 32px row: a label that flips inside the
+            // bar's tail sits inside it with room above and below, instead
+            // of straddling a thin line. Solid colour, the timeline's recipe.
             className={cn(
-              'absolute top-1/2 h-3.5 origin-left -translate-y-1/2 rounded-md',
-              hasChildren && !isError
-                ? 'ring-1 ring-inset ring-neutral-300 dark:ring-neutral-700'
-                : null,
-              isSelected && 'ring-2 ring-neutral-900 dark:ring-neutral-100',
-              span.pending && 'animate-pulse',
+              'absolute top-1/2 h-5 origin-left -translate-y-1/2 rounded-[5px] transition-[box-shadow] duration-[var(--motion-duration-fast)]',
+              hasChildren && !isError && 'ring-1 ring-inset ring-border',
+              isSelected &&
+                'ring-2 ring-foreground ring-offset-1 ring-offset-card',
+              !isSelected &&
+                'group-hover/row:ring-1 group-hover/row:ring-foreground/40',
+              span.pending && 'trace-running',
             )}
             style={{
               left: `${left}%`,
               width: `${width}%`,
-              background: isError
-                ? 'linear-gradient(90deg, color-mix(in oklab, var(--color-red-500) 70%, transparent), var(--color-red-500))'
+              backgroundColor: isError
+                ? 'var(--color-trace-error)'
                 : hasChildren
-                  ? 'color-mix(in oklab, var(--color-neutral-500) 14%, transparent)'
-                  : `linear-gradient(90deg, color-mix(in oklab, ${color} 55%, transparent), ${color})`,
+                  ? 'color-mix(in oklab, var(--color-ink) 8%, transparent)'
+                  : color,
+              // A leaf bar wears its hue's `*-800` edge; parents keep the
+              // ring-border class, errors stay a plain alert block. A real
+              // border (not box-shadow) so the ring utilities still paint.
+              border:
+                isError || hasChildren
+                  ? undefined
+                  : `1px solid ${borderOnFill(color)}`,
             }}
           />
           {/* Duration (and the slowest tag) just after the bar; past the
-              axis' end it flips to sit inside the bar's tail. */}
+              axis' end it flips to sit inside the bar's tail, inset 12px
+              from the end so it clears the selection ring, and in the ink
+              that reads on the fill — the page ink on a parent's wash, the
+              ramp's `worker-ink` on a solid hue. */}
           <span
             className={cn(
-              'absolute top-1/2 flex -translate-y-1/2 items-center gap-1.5 whitespace-nowrap text-xs tabular-nums',
-              left + width > 82 ? '-translate-x-full pr-2' : 'pl-2',
-              isError
-                ? 'text-red-600 dark:text-red-400'
-                : 'text-neutral-500 dark:text-neutral-400',
+              'absolute top-1/2 flex -translate-y-1/2 items-center gap-1.5 font-mono text-xs whitespace-nowrap tabular-nums',
+              insideTail ? '-translate-x-full pr-3' : 'pl-2',
+              insideTail
+                ? hasChildren && !isError && 'text-foreground'
+                : isError
+                  ? 'text-alert-strong'
+                  : span.pending
+                    ? 'text-warn-strong'
+                    : 'text-muted-foreground',
             )}
             style={{
-              left: left + width > 82 ? `${left + width}%` : `${left + width}%`,
+              left: `${left + width}%`,
+              color:
+                insideTail && (isError || !hasChildren)
+                  ? inkOnFill(isError ? 'var(--color-trace-error)' : color)
+                  : undefined,
             }}
           >
             {formatDuration(span.duration_ms)}
             {span.pending ? '…' : null}
             {isSlowest ? (
-              <span className="rounded-md bg-amber-500/15 px-1.5 py-px text-[11px] font-medium text-amber-600 dark:text-amber-400">
+              <span className="rounded-md bg-warn-muted px-1.5 py-px font-inter text-[11px] font-medium text-warn-strong">
                 Slowest
               </span>
             ) : null}
@@ -362,10 +388,8 @@ interface HoverState {
   y: number
 }
 
-const TOOL_BUTTON =
-  'inline-flex size-7 items-center justify-center rounded-lg text-neutral-500 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-200/70 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100'
-
 interface ToolbarProps {
+  toolbarStart?: ReactNode
   expandAll: () => void
   collapseAll: () => void
   showExpandControls: boolean
@@ -379,6 +403,7 @@ interface ToolbarProps {
 }
 
 function Toolbar({
+  toolbarStart,
   expandAll,
   collapseAll,
   showExpandControls,
@@ -397,42 +422,45 @@ function Toolbar({
       internalGroups.length > 0 ||
       hiddenSpanCount > 0)
   return (
-    <div className="flex h-10 items-center justify-between px-3">
-      <div className="flex items-center gap-1">
-        {showExpandControls ? (
-          <>
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <button
-                    type="button"
-                    onClick={expandAll}
-                    aria-label="expand all spans"
-                    className={TOOL_BUTTON}
-                  />
-                }
-              >
-                <ChevronsDown className="size-4" aria-hidden />
-              </TooltipTrigger>
-              <TooltipContent side="bottom">Expand all</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <button
-                    type="button"
-                    onClick={collapseAll}
-                    aria-label="collapse all spans"
-                    className={TOOL_BUTTON}
-                  />
-                }
-              >
-                <ChevronsUp className="size-4" aria-hidden />
-              </TooltipTrigger>
-              <TooltipContent side="bottom">Collapse all</TooltipContent>
-            </Tooltip>
-          </>
-        ) : null}
+    <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3">
+      {toolbarStart}
+      {showExpandControls ? (
+        <div className="flex items-center gap-0.5">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  onClick={expandAll}
+                  aria-label="expand all spans"
+                />
+              }
+            >
+              <ChevronsDown className="size-4" aria-hidden />
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Expand all</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  onClick={collapseAll}
+                  aria-label="collapse all spans"
+                />
+              }
+            >
+              <ChevronsUp className="size-4" aria-hidden />
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Collapse all</TooltipContent>
+          </Tooltip>
+        </div>
+      ) : null}
+      <span className="ml-auto flex items-center gap-2">
         {filterable && spanFilter ? (
           <SpanFilterMenu
             groups={spanGroups}
@@ -446,12 +474,13 @@ function Toolbar({
             onToggleWorker={spanFilter.toggleWorker}
             onToggleInternal={spanFilter.toggleInternal}
             onClear={() => spanFilter.clear(internalGroups.map((g) => g.key))}
-            className="ml-1 h-7"
           />
         ) : null}
-      </div>
-      <span className="text-xs text-neutral-500 tabular-nums dark:text-neutral-400">
-        {visibleCount} of {totalCount} spans
+        <span className="text-[11px] text-muted-foreground tabular-nums">
+          {visibleCount === totalCount
+            ? `${totalCount} spans`
+            : `${visibleCount} of ${totalCount} spans`}
+        </span>
       </span>
     </div>
   )
@@ -464,6 +493,7 @@ export function WaterfallChart({
   spanGroupKey,
   spanFilter,
   showExpandControls = true,
+  toolbarStart,
 }: WaterfallChartProps) {
   const reduceMotion = useReducedMotion() === true
   const [{ expandedIds }, dispatch] = useReducer(displayReducer, {
@@ -664,6 +694,7 @@ export function WaterfallChart({
   return (
     <div className="flex h-full flex-col font-inter" style={columnStyle}>
       <Toolbar
+        toolbarStart={toolbarStart}
         expandAll={() =>
           dispatch({
             type: 'SET_ALL_EXPANDED',
@@ -684,9 +715,9 @@ export function WaterfallChart({
       />
 
       {/* The axis: "Span" over the tree, the ticks over the bars. */}
-      <div className="grid h-8 shrink-0 grid-cols-[var(--span-col-width)_1fr] items-center border-b border-neutral-200 text-xs text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+      <div className="grid h-7 shrink-0 grid-cols-[var(--span-col-width)_1fr] items-center border-b border-border font-mono text-[11px] text-muted-foreground">
         <div className="relative flex h-full items-center pl-3">
-          <span className="font-medium">Span</span>
+          <span className="font-inter font-medium">Span</span>
           {/* biome-ignore lint/a11y/useSemanticElements: <hr> cannot host a drag handle */}
           <div
             // biome-ignore lint/a11y/useAriaPropsForRole: a resizable column divider, no keyboard contract
@@ -699,7 +730,7 @@ export function WaterfallChart({
             title="drag to resize, double-click to reset"
             className="group absolute top-0 -right-1 bottom-0 z-10 w-2 cursor-col-resize"
           >
-            <span className="absolute top-0 bottom-0 left-[3px] w-px bg-neutral-200 transition-colors group-hover:bg-neutral-500 dark:bg-neutral-800 dark:group-hover:bg-neutral-400" />
+            <span className="absolute top-0 bottom-0 left-[3px] w-px bg-border transition-colors group-hover:bg-muted-foreground" />
           </div>
         </div>
         <div className="relative h-full pr-4">
@@ -737,13 +768,13 @@ export function WaterfallChart({
             {GRID_TICKS.map((pct) => (
               <span
                 key={pct}
-                className="absolute inset-y-0 w-px bg-neutral-200/80 dark:bg-neutral-800/80"
+                className="absolute inset-y-0 w-px bg-border"
                 style={{ left: `${pct}%` }}
               />
             ))}
             {live ? (
-              <span className="absolute inset-y-0 right-0 w-px bg-sky-500">
-                <span className="absolute -top-0 -left-[3px] size-[7px] rounded-full bg-sky-500 ring-2 ring-sky-500/30" />
+              <span className="absolute inset-y-0 right-0 w-px bg-ok">
+                <span className="absolute -top-0 -left-[3px] size-[7px] rounded-full bg-ok live-dot" />
               </span>
             ) : null}
           </div>

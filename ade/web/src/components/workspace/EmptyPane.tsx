@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from 'react'
+import { Hint } from '@/components/ui/Hint'
 import { DESKTOP_POINTER_QUERY, useMediaQuery } from '@/hooks/use-media-query'
 import { cn } from '@/lib/utils'
 import type { TabScreen } from '@/lib/workspace-tabs'
@@ -106,19 +107,20 @@ export function EmptyPane({
   return (
     <div className="@container relative flex min-h-0 flex-1 overflow-hidden">
       {onRemove ? (
-        <button
-          type="button"
-          onClick={onRemove}
-          aria-label="remove this panel"
-          title="remove this panel"
-          className="absolute right-2 top-2 z-10 flex size-7 items-center justify-center rounded-sm stroke-ink-ghost hover:bg-surface-hover hover:stroke-ink focus-visible:outline-2 focus-visible:outline-accent"
-        >
-          <span
-            aria-hidden
-            className="pointer-events-none absolute left-1/2 top-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-          />
-          <X aria-hidden className="size-4 shrink-0" />
-        </button>
+        <Hint label="Remove this panel" side="left">
+          <button
+            type="button"
+            onClick={onRemove}
+            aria-label="remove this panel"
+            className="absolute right-2 top-2 z-10 flex size-7 items-center justify-center rounded-sm stroke-ink-ghost hover:bg-surface-hover hover:stroke-ink focus-visible:outline-2 focus-visible:outline-accent"
+          >
+            <span
+              aria-hidden
+              className="pointer-events-none absolute left-1/2 top-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+            />
+            <X aria-hidden className="size-4 shrink-0" />
+          </button>
+        </Hint>
       ) : null}
 
       <div className="flex min-h-0 w-full flex-1 flex-col items-center justify-center p-4 @md:p-6">

@@ -71,7 +71,7 @@ export function StatusPanel({
       <div className="min-w-0 flex flex-col gap-y-0.5">
         <div
           className={cn(
-            'font-sans text-[13px] font-semibold [overflow-wrap:anywhere]',
+            'font-inter text-sm font-medium [overflow-wrap:anywhere]',
             tone.headline,
           )}
         >
@@ -80,7 +80,7 @@ export function StatusPanel({
         {detail ? (
           <div
             className={cn(
-              'font-sans text-[12px] [overflow-wrap:anywhere]',
+              'font-inter text-xs [overflow-wrap:anywhere]',
               variant === 'success' ? 'text-ink' : 'text-ink-faint',
             )}
           >

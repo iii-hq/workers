@@ -1,11 +1,13 @@
-import { Check, Copy, MessageSquareQuote } from 'lucide-react'
+import { Copy, MessageSquareQuote } from 'lucide-react'
+import { motion, useReducedMotion } from 'motion/react'
 import { useContext, useRef, useState } from 'react'
 import { AskInSideChatContext } from '@/lib/chat-aside'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import { cn } from '@/lib/utils'
+import { DrawnCheck } from './ChatGlyphs'
 
 const actionClassName =
-  'relative flex size-12 shrink-0 cursor-pointer items-center justify-center text-ink-ghost hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:size-5'
+  'chat-message-action relative flex size-12 shrink-0 cursor-pointer items-center justify-center text-ink-ghost hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:size-5'
 
 // viewport: phone chrome — the sm and md utilities here are the console's
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
@@ -30,6 +32,7 @@ export function CopyMessageButton({
   className?: string
 }) {
   const [copied, setCopied] = useState(false)
+  const reduceMotion = useReducedMotion()
   const copy = () => {
     const value = typeof text === 'function' ? text() : text
     void copyTextToClipboard(value).then((ok) => {
@@ -39,7 +42,8 @@ export function CopyMessageButton({
     })
   }
   return (
-    <button
+    <motion.button
+      whileTap={reduceMotion ? undefined : { scale: 0.9 }}
       data-message-action="copy"
       type="button"
       onClick={copy}
@@ -52,11 +56,11 @@ export function CopyMessageButton({
         aria-hidden="true"
       />
       {copied ? (
-        <Check className="size-4 shrink-0" aria-hidden />
+        <DrawnCheck className="size-4 shrink-0 text-ok" drawOnMount />
       ) : (
         <Copy className="size-4 shrink-0" aria-hidden />
       )}
-    </button>
+    </motion.button>
   )
 }
 

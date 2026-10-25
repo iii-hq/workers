@@ -57,7 +57,13 @@ export function parseFileMentionInner(inner: string): FileMentionRef {
   }
   const from = Number.parseInt(match[1], 10)
   const to = match[2] !== undefined ? Number.parseInt(match[2], 10) : from
-  if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from < 1 || to < 1) return { path: trimmed }
+  if (
+    !Number.isSafeInteger(from) ||
+    !Number.isSafeInteger(to) ||
+    from < 1 ||
+    to < 1
+  )
+    return { path: trimmed }
   return {
     path: trimmed.slice(0, match.index),
     range: normalizeLineRange(from, to),

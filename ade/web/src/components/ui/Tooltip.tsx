@@ -1,5 +1,10 @@
 import * as TooltipPrimitive from '@radix-ui/react-tooltip'
 import * as React from 'react'
+import {
+  INVERSE_INK,
+  INVERSE_SURFACE_VARS,
+  NEUTRAL_SURFACE,
+} from '@/lib/neutral-surface'
 import { PortalScope } from '@/lib/ui-scope'
 import { cn } from '@/lib/utils'
 
@@ -34,6 +39,7 @@ export const TooltipContent = React.forwardRef<
       side = 'bottom',
       sideOffset = 6,
       collisionPadding = 8,
+      children,
       ...props
     },
     ref,
@@ -49,11 +55,25 @@ export const TooltipContent = React.forwardRef<
           sideOffset={sideOffset}
           collisionPadding={collisionPadding}
           className={cn(
-            'iii-ui-motion-overlay z-50 max-w-[min(24rem,calc(100vw-1rem))] rounded-sm bg-panel-raised px-2.5 py-1.5 font-sans text-[12px] wrap-break-word text-ink shadow-raised',
+            // The same recipe as the shadcn tooltip (components/shadcn/tooltip):
+            // ink on a foreground pill, 12px, so every tooltip in the console
+            // reads the same whichever primitive put it there.
+            NEUTRAL_SURFACE,
+            INVERSE_SURFACE_VARS,
+            'iii-ui-motion-overlay z-50 max-w-[min(24rem,calc(100vw-1rem))] rounded-md bg-foreground px-3 py-1.5 font-inter text-xs wrap-break-word text-background',
             className,
           )}
           {...props}
-        />
+        >
+          {/* The pill is inverse; its content inherits inverted tokens, so
+              a worker's help copy written in `--color-ink` reads on it. */}
+          <span
+            data-slot="tooltip-body"
+            className={cn('contents', INVERSE_INK)}
+          >
+            {children}
+          </span>
+        </TooltipPrimitive.Content>
       </PortalScope>
     </TooltipPrimitive.Portal>
   ),

@@ -27,7 +27,7 @@ const viewportAllowlist: Record<string, { max: number; reason: string }> = {
       'phone chrome: the workspace strip snaps one panel at a time on phones, dialog sized against the viewport',
   },
   'components/CommandPalette.tsx': {
-    max: 31,
+    max: 15,
     reason:
       'phone chrome: full-screen on phones vs a centred dialog, keyboard hints only where a keyboard is',
   },
@@ -54,7 +54,6 @@ const viewportAllowlist: Record<string, { max: number; reason: string }> = {
   'components/chat/MessageList.tsx': { max: 4, reason: TOUCH },
   'components/chat/ModelPicker.tsx': { max: 22, reason: SHEET },
   'components/chat/ModelWaitingIndicator.tsx': { max: 2, reason: TOUCH },
-  'components/chat/ProviderConfigurationPanel.tsx': { max: 2, reason: TOUCH },
   'components/chat/ProviderSettingsForm.tsx': { max: 15, reason: TOUCH },
   'components/chat/ReasoningEffortSlider.tsx': { max: 2, reason: TOUCH },
   'components/chat/SessionAddonsPicker.tsx': { max: 1, reason: TOUCH },
@@ -72,7 +71,6 @@ const viewportAllowlist: Record<string, { max: number; reason: string }> = {
     max: 8,
     reason: 'phone chrome: stacked 48px buttons in the phone dialog',
   },
-  'components/sidebar/ConversationRow.tsx': { max: 1, reason: TOUCH },
   'components/sidebar/ConversationSidebar.tsx': { max: 4, reason: TOUCH },
   'components/trigger-activity/TriggerActivityCard.tsx': {
     max: 18,
@@ -112,11 +110,6 @@ const viewportAllowlist: Record<string, { max: number; reason: string }> = {
   'components/workspace/pane-controls.tsx': {
     max: 5,
     reason: 'phone chrome: split handles and pane rails need a pointer',
-  },
-  'pages/Configuration/index.tsx': { max: 14, reason: TOUCH },
-  'pages/Configuration/tabs/WorkersTab/WorkerEditor.tsx': {
-    max: 1,
-    reason: TOUCH,
   },
 }
 

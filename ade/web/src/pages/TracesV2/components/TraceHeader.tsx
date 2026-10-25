@@ -5,11 +5,12 @@
  *
  * Everything shown is derived from the spans already loaded: duration,
  * span and worker counts, the longest span, how many are still running
- * (the Live badge pulses while any are) and how many failed.
+ * (the Live badge breathes while any are) and how many failed.
  */
 
-import { Check, Copy, LocateFixed, Sparkles, X } from 'lucide-react'
+import { Check, Copy, LocateFixed, X } from 'lucide-react'
 import { useMemo } from 'react'
+import { Button } from '@/components/shadcn/button'
 import { cn } from '@/lib/utils'
 import { formatSpanLabel } from '../lib/spanLabel'
 import type { TraceChatLink } from '../lib/traceChatLink'
@@ -20,6 +21,7 @@ import {
   getWorkerName,
   useCopyToClipboard,
 } from '../lib/traceUtils'
+import { LiveBadge } from './LiveBadge'
 
 interface TraceHeaderProps {
   data: WaterfallData
@@ -35,9 +37,6 @@ interface TraceHeaderProps {
   loadingSpans?: { loaded: number; total: number } | null
 }
 
-const GHOST_ACTION =
-  'inline-flex size-8 shrink-0 items-center justify-center rounded-xl text-neutral-500 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-200/70 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400'
-
 interface Stat {
   label: string
   value: string
@@ -49,16 +48,14 @@ interface Stat {
 function StatCell({ label, value, tone, title }: Stat) {
   const hot = tone === 'alert' && value !== '0'
   return (
-    <div className="flex min-w-0 flex-col gap-1 px-4 py-3" title={title}>
-      <span className="truncate text-xs font-medium text-neutral-500 dark:text-neutral-400">
+    <div className="flex min-w-0 flex-col gap-0.5 px-3 py-2" title={title}>
+      <span className="truncate text-[11px] text-muted-foreground">
         {label}
       </span>
       <span
         className={cn(
-          'truncate text-lg font-semibold leading-6 tracking-tight tabular-nums',
-          hot
-            ? 'text-red-600 dark:text-red-400'
-            : 'text-neutral-900 dark:text-neutral-50',
+          'truncate font-mono text-[15px] font-semibold leading-5 tabular-nums',
+          hot ? 'text-alert-strong' : 'text-foreground',
         )}
       >
         {value}
@@ -117,84 +114,65 @@ export function TraceHeader({
     <div className="@container shrink-0 font-inter">
       {/* Title row: the worker's colour as the mark, the root span as the
           name, the trace id to copy, and the run's state on the right. */}
-      <div className="flex h-12 items-center gap-2.5 px-4">
+      <div className="flex h-11 items-center gap-2 pr-2 pl-3">
         <span
           aria-hidden
-          className="flex size-6 shrink-0 items-center justify-center rounded-md"
-          style={{
-            backgroundColor: `color-mix(in oklab, ${getWorkerColor(rootWorker)} 18%, transparent)`,
-            color: getWorkerColor(rootWorker),
-          }}
-        >
-          <Sparkles className="size-4" />
-        </span>
-        <span className="shrink-0 text-sm font-semibold text-neutral-900 dark:text-neutral-50">
-          Trace
-        </span>
+          className="size-2 shrink-0 rounded-full"
+          style={{ backgroundColor: getWorkerColor(rootWorker) }}
+        />
         <h2
-          className="min-w-0 flex-1 truncate text-sm text-neutral-500 dark:text-neutral-400"
+          className="min-w-0 flex-1 truncate text-[13px] font-semibold text-foreground"
           title={rootSpan?.name ?? 'Trace details'}
         >
           {title}
+          <span className="ml-1.5 text-xs font-normal text-muted-foreground">
+            {rootWorker}
+          </span>
         </h2>
         <button
           type="button"
           onClick={() => copy('traceId', traceId)}
           title="copy trace id"
-          className="group hidden shrink-0 items-center gap-1 rounded-lg px-1.5 py-0.5 font-mono text-[11px] text-neutral-400 transition-colors hover:bg-neutral-200/70 hover:text-neutral-900 @lg:flex dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+          aria-label="copy trace id"
+          className="group hidden h-6 shrink-0 items-center gap-1 rounded-md px-1.5 font-mono text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 @lg:flex"
         >
           <span className="tabular-nums">{traceId.substring(0, 12)}</span>
           {copied ? (
-            <Check className="size-4 text-emerald-500" aria-hidden />
+            <Check className="size-4 text-ok" aria-hidden />
           ) : (
             <Copy
-              className="size-4 opacity-0 transition-opacity group-hover:opacity-100"
+              className="size-4 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
               aria-hidden
             />
           )}
         </button>
-        <span
-          role="status"
-          className={cn(
-            'inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium',
-            live
-              ? 'bg-sky-500/10 text-sky-600 dark:text-sky-400'
-              : 'bg-neutral-200/70 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300',
-          )}
-        >
-          <span
-            aria-hidden
-            className={cn(
-              'size-1.5 rounded-full',
-              live ? 'animate-pulse bg-sky-500' : 'bg-neutral-400',
-            )}
-          />
-          {live ? 'Live' : 'Complete'}
-        </span>
+        <LiveBadge live={live} />
         {chatLink?.turnId && onOpenMessage ? (
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="icon-sm"
             onClick={() => onOpenMessage(chatLink)}
             aria-label="go to message"
-            title="open the chat at this trace's message"
-            className={GHOST_ACTION}
+            title="Open the chat at this trace's message"
           >
-            <LocateFixed className="size-4" aria-hidden />
-          </button>
+            <LocateFixed />
+          </Button>
         ) : null}
-        <button
+        <Button
           type="button"
+          variant="ghost"
+          size="icon-sm"
           onClick={onClose}
           aria-label="close trace detail"
-          title="close (esc)"
-          className={GHOST_ACTION}
+          title="Close (Esc)"
         >
-          <X className="size-4" aria-hidden />
-        </button>
+          <X />
+        </Button>
       </div>
 
       {/* The stats strip: one quiet band, cells divided by hairlines. */}
-      <div className="mx-4 mb-3 grid grid-cols-3 divide-x divide-neutral-200/80 rounded-xl bg-neutral-100 @2xl:grid-cols-6 dark:divide-neutral-800 dark:bg-neutral-900">
+      <div className="mx-3 mb-2 grid grid-cols-3 divide-x divide-border overflow-hidden rounded-lg border border-border bg-muted/30 @2xl:grid-cols-6">
         {cells.map((cell) => (
           <StatCell key={cell.label} {...cell} />
         ))}

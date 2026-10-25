@@ -1,30 +1,11 @@
-import { Bot, Check, Settings2 } from 'lucide-react'
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { CopyCommandButton } from '@/components/chat/sandbox/terminal/CopyCommandButton'
 import { Terminal } from '@/components/chat/sandbox/terminal/Terminal'
 import { Button } from '@/components/ui/Button'
 import { Wordmark } from '@/components/ui/Wordmark'
 import type { InstallStage } from '@/hooks/use-harness-status'
-import { type AgentEntry, listAgents } from '@/lib/backend/directory-prompts'
-import { getIiiClient } from '@/lib/iii-client'
-import { requestPanelOpen } from '@/lib/panel-context'
 import { normalizeErrorMessage } from '@/lib/providers'
 import { cn } from '@/lib/utils'
-import type {
-  AgentProfileChangeOptions,
-  AgentProfileSnapshot,
-  SubagentColor,
-  SubagentIcon,
-} from '@/types/chat'
-import { SUBAGENT_ICON_COMPONENTS } from './ActiveSubagentChips'
-import { agentProfileFromEntry, agentToPreselect } from './agent-defaults'
-import { DirectoryPicker, type WorktreePickerOptions } from './DirectoryPicker'
-import {
-  agentIdFromSystemPrompt,
-  type SystemPromptState,
-  withAgentChoice,
-} from './system-prompt-selection'
-import './EmptyState.css'
+import type { WorktreePickerOptions } from './DirectoryPicker'
 
 // viewport: phone chrome — the sm and md utilities here are the console's
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
@@ -71,24 +52,6 @@ export interface EmptyStateProps {
   workingDirError?: string | null
   defaultWorkingDir?: string | null
   worktreePicker?: WorktreePickerOptions
-  /** Session instructions selected before the first message. */
-  systemPrompt?: SystemPromptState
-  onSystemPromptChange?: (next: SystemPromptState) => void
-  /** Optional deterministic catalog for stories/tests; omitted loads Directory. */
-  agentEntries?: AgentEntry[] | null
-  /** Frozen identity/configuration for the selected Directory agent. */
-  agentProfile?: AgentProfileSnapshot
-  /**
-   * Select the Directory `default` profile when nothing is chosen yet. Only
-   * for a conversation created here (a local draft): a session another
-   * surface created keeps its creator's setup, and its metadata is never
-   * written just because it was opened.
-   */
-  preselectDefaultAgent?: boolean
-  onAgentProfileChange?: (
-    next: AgentProfileSnapshot | undefined,
-    options?: AgentProfileChangeOptions,
-  ) => void
 }
 
 const HARNESS_INSTALL_COMMAND = 'iii trigger compose::add worker=harness'
@@ -105,17 +68,6 @@ export function EmptyState({
   onInstallHarness,
   onRetryInstall,
   onConfigureProvider,
-  workingDir,
-  onWorkingDirChange,
-  workingDirError,
-  defaultWorkingDir,
-  worktreePicker,
-  systemPrompt,
-  onSystemPromptChange,
-  agentEntries,
-  agentProfile,
-  onAgentProfileChange,
-  preselectDefaultAgent = false,
 }: EmptyStateProps) {
   const emptyPad =
     density === 'dock' ? 'px-3 @2xl:px-4' : 'px-3 @2xl:px-6 @5xl:px-9'
@@ -125,6 +77,7 @@ export function EmptyState({
     <div
       className={cn(
         'flex-1 min-h-0 overflow-y-auto flex justify-center',
+        variant === 'ready' && 'chat-welcome-heading',
         emptyPad,
       )}
     >
@@ -137,19 +90,7 @@ export function EmptyState({
         )}
       >
         {variant === 'ready' ? (
-          <ReadyBody
-            workingDir={workingDir}
-            onWorkingDirChange={onWorkingDirChange}
-            workingDirError={workingDirError}
-            defaultWorkingDir={defaultWorkingDir}
-            worktreePicker={worktreePicker}
-            systemPrompt={systemPrompt}
-            onSystemPromptChange={onSystemPromptChange}
-            agentEntries={agentEntries}
-            agentProfile={agentProfile}
-            onAgentProfileChange={onAgentProfileChange}
-            preselectDefaultAgent={preselectDefaultAgent}
-          />
+          <ReadyBody />
         ) : (
           <div className="font-sans text-base font-medium text-ink-faint sm:text-sm">
             {eyebrow}
@@ -176,309 +117,19 @@ export function EmptyState({
 
 /* ---------------- ready (welcome hero) ---------------- */
 
-function ReadyBody({
-  workingDir,
-  onWorkingDirChange,
-  workingDirError,
-  defaultWorkingDir,
-  worktreePicker,
-  systemPrompt,
-  onSystemPromptChange,
-  agentEntries,
-  agentProfile,
-  onAgentProfileChange,
-  preselectDefaultAgent,
-}: {
-  preselectDefaultAgent: boolean
-  workingDir?: string | null
-  onWorkingDirChange?: (next: string) => void
-  workingDirError?: string | null
-  defaultWorkingDir?: string | null
-  worktreePicker?: WorktreePickerOptions
-  systemPrompt?: SystemPromptState
-  onSystemPromptChange?: (next: SystemPromptState) => void
-  agentEntries?: AgentEntry[] | null
-  agentProfile?: AgentProfileSnapshot
-  onAgentProfileChange?: (
-    next: AgentProfileSnapshot | undefined,
-    options?: AgentProfileChangeOptions,
-  ) => void
-}) {
-  const projectName = workingDir
-    ? (workingDir.split('/').filter(Boolean).at(-1) ?? workingDir)
-    : 'a project'
-
+function ReadyBody() {
   return (
     <>
-      <Wordmark appearance="inset" />
-      <div className="flex w-full max-w-full flex-col items-center gap-2.5">
-        <div className="max-w-full font-inter text-xl font-medium text-ink-faint sm:text-lg">
-          What should we build in{' '}
-          {onWorkingDirChange ? (
-            <DirectoryPicker
-              value={workingDir ?? null}
-              onChange={onWorkingDirChange}
-              externalError={workingDirError}
-              defaultDir={defaultWorkingDir}
-              worktrees={worktreePicker}
-              triggerAppearance="inline"
-              emptyLabel="a project"
-              className="max-w-[min(18rem,70vw)] align-baseline"
-            />
-          ) : (
-            <span className="font-medium text-ink">{projectName}</span>
-          )}
-          {'?'}
-        </div>
-        {systemPrompt && onSystemPromptChange ? (
-          <SessionSetupControls
-            systemPrompt={systemPrompt}
-            onSystemPromptChange={onSystemPromptChange}
-            agentEntries={agentEntries}
-            agentProfile={agentProfile}
-            onAgentProfileChange={onAgentProfileChange}
-            preselectDefaultAgent={preselectDefaultAgent}
-          />
-        ) : null}
+      <Wordmark appearance="inset" className="size-10 fill-ink-faint/60" />
+      <div className="flex max-w-full flex-col items-center gap-3">
+        <h1 className="text-balance font-inter text-2xl font-medium tracking-tight text-ink @2xl:text-[28px]">
+          What would you like to build?
+        </h1>
+        <p className="max-w-md text-pretty font-inter text-sm leading-relaxed text-ink-faint">
+          Explore your project, fix an issue, or start something new.
+        </p>
       </div>
     </>
-  )
-}
-
-function SessionSetupControls({
-  systemPrompt,
-  onSystemPromptChange,
-  agentEntries,
-  agentProfile,
-  onAgentProfileChange,
-  preselectDefaultAgent,
-}: {
-  preselectDefaultAgent: boolean
-  systemPrompt: SystemPromptState
-  onSystemPromptChange: (next: SystemPromptState) => void
-  agentEntries?: AgentEntry[] | null
-  agentProfile?: AgentProfileSnapshot
-  onAgentProfileChange?: (
-    next: AgentProfileSnapshot | undefined,
-    options?: AgentProfileChangeOptions,
-  ) => void
-}) {
-  const selectedAgentId =
-    agentProfile?.id ?? agentIdFromSystemPrompt(systemPrompt)
-  const catalog = useAgentCatalog(agentEntries)
-  const agents = (catalog.entries ?? []).filter((entry) => !entry.hidden)
-
-  const select = (entry: AgentEntry, options?: AgentProfileChangeOptions) => {
-    if (onAgentProfileChange) {
-      onAgentProfileChange(agentProfileFromEntry(entry), options)
-    } else {
-      onSystemPromptChange(withAgentChoice(systemPrompt, entry.id))
-    }
-  }
-
-  // A conversation created here starts on the Default profile, visibly
-  // selected, so the card the gallery marks is the profile the first send
-  // runs. Only an untouched local draft is preselected (see `agentToPreselect`), and the
-  // user's reasoning-effort preference survives the automatic pick.
-  const preselect = preselectDefaultAgent
-    ? agentToPreselect(agents, selectedAgentId, systemPrompt)
-    : null
-  const selectRef = useRef(select)
-  selectRef.current = select
-  // A layout effect, not a passive one: the card is marked during render,
-  // so the session state must hold the same profile before the browser
-  // paints — otherwise a send in that window would omit `agent` and run a
-  // different identity than the one shown.
-  useLayoutEffect(() => {
-    if (preselect) selectRef.current(preselect, { keepThinkingLevel: true })
-  }, [preselect])
-
-  return (
-    <section aria-label="session setup" className="w-full max-w-[40rem]">
-      <AgentGallery
-        entries={agents}
-        loading={catalog.entries === null}
-        error={catalog.error}
-        selectedId={selectedAgentId ?? preselect?.id ?? null}
-        onSelect={(entry) => select(entry)}
-      />
-    </section>
-  )
-}
-
-function useAgentCatalog(provided: AgentEntry[] | null | undefined): {
-  entries: AgentEntry[] | null
-  error: boolean
-} {
-  const [entries, setEntries] = useState<AgentEntry[] | null>(null)
-  const [error, setError] = useState(false)
-
-  useEffect(() => {
-    if (provided !== undefined) return
-    let cancelled = false
-    setError(false)
-    void getIiiClient()
-      .then((client) => listAgents(client))
-      .then((next) => {
-        if (!cancelled) setEntries(next)
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setEntries([])
-          setError(true)
-        }
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [provided])
-
-  return provided === undefined
-    ? { entries, error }
-    : { entries: provided, error: false }
-}
-
-function AgentGallery({
-  entries,
-  loading,
-  error,
-  selectedId,
-  onSelect,
-}: {
-  entries: AgentEntry[]
-  loading: boolean
-  error: boolean
-  selectedId: string | null
-  onSelect: (entry: AgentEntry) => void
-}) {
-  return (
-    <div className="pb-3 text-left">
-      {loading ? (
-        <div
-          className="grid grid-cols-1 gap-3 p-1 @lg:grid-cols-2 @3xl:grid-cols-3"
-          aria-hidden
-        >
-          <div className="h-40 rounded-xl bg-panel-raised shadow-raised" />
-          <div className="h-40 rounded-xl bg-panel-raised shadow-raised" />
-          <div className="h-40 rounded-xl bg-panel-raised shadow-raised" />
-        </div>
-      ) : error ? (
-        <p className="rounded-md bg-panel-raised px-3 py-4 font-sans text-base text-ink-faint shadow-raised sm:text-sm">
-          Agent profiles are unavailable right now. Try again in a moment.
-        </p>
-      ) : (
-        <ul
-          // biome-ignore lint/a11y/noRedundantRoles: keep list semantics when CSS resets remove markers.
-          role="list"
-          className={cn(
-            'grid grid-cols-1 gap-3 p-1 @lg:grid-cols-2',
-            entries.length >= 2 && '@3xl:grid-cols-3',
-          )}
-        >
-          {entries.map((entry) => (
-            <li key={entry.id} className="min-w-0">
-              <AgentChoiceCard
-                entry={entry}
-                selected={selectedId === entry.id}
-                onSelect={() => onSelect(entry)}
-              />
-            </li>
-          ))}
-          <li className="min-w-0">
-            <CreateAgentCard />
-          </li>
-        </ul>
-      )}
-    </div>
-  )
-}
-
-/**
- * The manual path: opens the Directory's profile editor (a form), not a
- * conversation. Secondary on purpose — the assisted path is the
- * "Create a custom agent" profile card, which starts a chat.
- */
-function CreateAgentCard() {
-  return (
-    <button
-      type="button"
-      aria-label="Configure an agent manually in the profile editor"
-      onClick={() =>
-        requestPanelOpen({
-          pageId: 'directory',
-          context: { collection: 'agents', action: 'create' },
-        })
-      }
-      className="group/create flex h-full w-full cursor-pointer flex-col items-start justify-between gap-6 rounded-xl bg-surface/30 p-4 text-left hover:bg-surface-hover/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent @lg:min-h-40"
-    >
-      <div className="flex min-w-0 flex-col gap-1">
-        <div className="font-sans text-base font-medium text-ink-faint sm:text-sm">
-          Configure an agent manually
-        </div>
-        <p className="text-pretty font-sans text-base/6 text-ink-ghost sm:text-sm/5">
-          Opens a form to set instructions, a model, and skills yourself.
-        </p>
-      </div>
-      <div className="flex items-center gap-1.5 font-sans text-base font-medium text-ink-faint group-hover/create:text-ink sm:text-sm">
-        <Settings2 aria-hidden className="size-4 h-lh shrink-0" />
-        <span>Open profile editor</span>
-      </div>
-    </button>
-  )
-}
-
-function AgentChoiceCard({
-  entry,
-  selected,
-  onSelect,
-}: {
-  entry: AgentEntry
-  selected: boolean
-  onSelect: () => void
-}) {
-  const Icon =
-    (entry.icon && SUBAGENT_ICON_COMPONENTS[entry.icon as SubagentIcon]) || Bot
-  const title = entry.name.trim() || entry.id
-  const color = (entry.color ?? 'neutral') as SubagentColor
-
-  return (
-    <button
-      type="button"
-      aria-label={`Use ${title} agent profile`}
-      aria-pressed={selected}
-      onClick={onSelect}
-      className={cn(
-        'group/agent relative flex h-full w-full cursor-pointer flex-col rounded-xl bg-panel-raised p-4 text-left shadow-raised ring-1 ring-rule-2 transition-[transform,box-shadow] duration-[var(--motion-duration-control)] hover:-translate-y-px hover:shadow-floating focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rule-focus @lg:min-h-40',
-        selected && 'bg-surface-selected',
-      )}
-    >
-      {selected ? (
-        <span className="absolute right-3 top-3 flex size-5 items-center justify-center rounded-full bg-ink text-bg shadow-xs">
-          <Check aria-hidden className="size-4" strokeWidth={3} />
-        </span>
-      ) : null}
-      <div className="flex min-w-0 flex-1 flex-col gap-2 @lg:gap-3">
-        <div className="flex min-w-0 items-center gap-3 @lg:block">
-          <div
-            className="agent-choice-avatar active-subagent-chip flex size-12 shrink-0 items-center justify-center rounded-xl @lg:size-11"
-            data-color={color}
-          >
-            <Icon aria-hidden className="size-5" strokeWidth={2.25} />
-          </div>
-          <div className="min-w-0 font-sans text-base font-semibold text-ink @lg:hidden">
-            {title}
-          </div>
-        </div>
-        <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <div className="hidden font-sans text-sm font-semibold text-ink @lg:block">
-            {title}
-          </div>
-          <p className="line-clamp-3 text-pretty font-sans text-base leading-6 text-ink-faint sm:text-sm sm:leading-5">
-            {entry.description.trim() || 'No description provided.'}
-          </p>
-        </div>
-      </div>
-    </button>
   )
 }
 

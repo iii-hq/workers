@@ -22,7 +22,9 @@ pub const PUSH_DESC: &str = "Feed one chunk of 16 kHz mono 16-bit PCM (base64, a
 
 pub const STOP_ID: &str = "voice::dictation::stop";
 pub const STOP_DESC: &str = "Close a dictation session, flush the recognizer and return the whole \
-                             transcript. discard=true throws the text away instead.";
+                             transcript, cleaned up by the configured language model when \
+                             stt.cleanup is on (raw_text keeps the recognizer's words). \
+                             discard=true throws the text away instead.";
 
 pub const LIST_ID: &str = "voice::dictation::list";
 pub const LIST_DESC: &str =
@@ -106,6 +108,13 @@ pub struct StopResponse {
     pub text: String,
     pub segments: Vec<Segment>,
     pub duration_secs: f32,
+    /// The recognizer's text before the clean-up pass; absent when the pass
+    /// did not run or did not change anything.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_text: Option<String>,
+    /// The `provider::model` that cleaned the text up, when one did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cleanup_model: Option<String>,
 }
 
 pub async fn stop(state: &AppState, req: StopRequest) -> Result<StopResponse, String> {
@@ -114,11 +123,44 @@ pub async fn stop(state: &AppState, req: StopRequest) -> Result<StopResponse, St
         .sessions
         .stop(&req.session_id, req.discard, reason)
         .await?;
+    let cfg = state.cfg.read().await.clone();
+    let mut text = transcript.text;
+    let mut raw_text = None;
+    let mut cleanup_model = None;
+    if !req.discard && cfg.stt.cleanup.enabled && !text.trim().is_empty() {
+        let started = std::time::Instant::now();
+        match crate::cleanup::polish(&state.iii, &cfg, &text).await {
+            Ok(polished) => {
+                tracing::info!(
+                    session_id = %req.session_id,
+                    model = %polished.model,
+                    ms = started.elapsed().as_millis() as u64,
+                    raw_chars = text.len(),
+                    chars = polished.text.len(),
+                    "dictation cleaned up"
+                );
+                if polished.text != text {
+                    raw_text = Some(std::mem::replace(&mut text, polished.text));
+                }
+                cleanup_model = Some(polished.model);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %req.session_id,
+                    ms = started.elapsed().as_millis() as u64,
+                    %error,
+                    "dictation clean-up skipped; keeping the recognizer's text"
+                );
+            }
+        }
+    }
     Ok(StopResponse {
         session_id: req.session_id,
-        text: transcript.text,
+        text,
         segments: transcript.segments,
         duration_secs: transcript.duration_secs,
+        raw_text,
+        cleanup_model,
     })
 }
 

@@ -1,5 +1,6 @@
-import { Paperclip } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import { useRef } from 'react'
+import { Hint } from '@/components/ui/Hint'
 import { attachmentsFromFiles } from '@/lib/attachments/from-files'
 import { cn } from '@/lib/utils'
 import type { Attachment } from '@/types/chat'
@@ -27,19 +28,20 @@ export function AttachmentButton({
 
   return (
     <>
-      <button
-        type="button"
-        disabled={disabled}
-        aria-label="attach files"
-        title="attach files"
-        onClick={() => inputRef.current?.click()}
-        className={cn(
-          'inline-flex items-center justify-center p-1 text-ink-faint hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:pointer-events-none disabled:opacity-40',
-          className,
-        )}
-      >
-        <Paperclip className="size-4 shrink-0" aria-hidden />
-      </button>
+      <Hint label="Attach files" side="top">
+        <button
+          type="button"
+          disabled={disabled}
+          aria-label="attach files"
+          onClick={() => inputRef.current?.click()}
+          className={cn(
+            'inline-flex items-center justify-center p-1 text-ink-faint hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:pointer-events-none disabled:opacity-40',
+            className,
+          )}
+        >
+          <Plus className="size-5 shrink-0" aria-hidden />
+        </button>
+      </Hint>
       <input
         ref={inputRef}
         type="file"
