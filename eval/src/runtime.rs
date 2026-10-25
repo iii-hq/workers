@@ -1471,6 +1471,7 @@ pub(crate) fn analysis_of(
         unknowns,
         child_transcripts_complete: false,
         sentinel,
+        scenarios: evidence::scenario_context(&evidence.bundle),
         analyzed_at: ids::now_ms(),
     }
 }

@@ -66,7 +66,8 @@ fn run(run_id: &str, status: &str, tokens: f64, awards: &[Option<u8>], criteria:
         "status": status, "completion": "completed", "technical": "valid", "wall_time_ms": 1000,
         "cost": {"total_usd": 0.2}, "efficiency": {"total_tokens": tokens, "function_calls": 50},
         "criteria": criteria.iter().zip(awards).map(|(id, awarded)| json!({
-            "id": id, "possible": 10, "awarded": awarded, "gate": false, "reason": "r"}))
+            "id": id, "description": format!("Asks for {id}?"), "possible": 10,
+            "awarded": awarded, "gate": false, "reason": "r"}))
             .collect::<Vec<_>>(),
         "transcript": {"messages": []}})
 }
@@ -163,6 +164,7 @@ fn bundle(
         runs.into_iter()
             .map(|(scenario_id, runs)| {
                 let mut scenario = native_scenario(scenario_id);
+                scenario["summary"] = json!(format!("What {scenario_id} expects."));
                 scenario["runs"] = json!(runs);
                 json!({"scenario_id": scenario_id, "available": true, "report": {
                     "result_contract_sha256": "rc-1",
@@ -287,6 +289,8 @@ struct World {
     /// Harness sessions: `(turn_id, status, result)`.
     sessions: HashMap<String, (String, String, Value)>,
     judge_choice: &'static str,
+    /// `judge::evaluate` answers `http` this many times before it answers.
+    judge_failures: u32,
 }
 
 fn row(
@@ -335,6 +339,7 @@ impl World {
             boundary: "workspace",
             sessions: HashMap::new(),
             judge_choice: "relevant_opportunity",
+            judge_failures: 0,
         }
     }
 
@@ -417,13 +422,23 @@ impl World {
                 json!({"totals": {"cost_usd": 0.42, "input_tokens": 9000, "output_tokens": 700}})
             }
             "harness::stop" => json!({"stopped": true}),
-            "judge::evaluate" => json!({"status": "ok", "model": "jev-test",
-                "results": {"findings": {"answers": {"opportunity": {"type": "choice",
-                    "choice": self.judge_choice, "confidence": 0.9,
-                    "probabilities": {"relevant_opportunity": 0.9, "expected_behavior": 0.05,
-                        "insufficient_evidence": 0.05}}}}},
-                "stats": {"attempts": 1, "requests": 1, "questions": 1, "input_tokens": 10,
-                    "output_tokens": 2, "elapsed_ms": 5, "usage_complete": true}}),
+            "judge::evaluate" if self.judge_failures > 0 => {
+                self.judge_failures -= 1;
+                json!({"status": "error", "code": "http", "http_status": 402,
+                    "stats": {"attempts": 1, "requests": 1, "questions": 1, "input_tokens": 0,
+                        "output_tokens": 0, "elapsed_ms": 5, "usage_complete": false}})
+            }
+            "judge::evaluate" => {
+                let mut probabilities = json!({"relevant_opportunity": 0.05,
+                    "expected_behavior": 0.05, "insufficient_evidence": 0.05});
+                probabilities[self.judge_choice] = json!(0.9);
+                json!({"status": "ok", "model": "jev-test",
+                    "results": {"findings": {"answers": {"opportunity": {"type": "choice",
+                        "choice": self.judge_choice, "confidence": 0.9,
+                        "probabilities": probabilities}}}},
+                    "stats": {"attempts": 1, "requests": 1, "questions": 1, "input_tokens": 10,
+                        "output_tokens": 2, "elapsed_ms": 5, "usage_complete": true}})
+            }
             other => return Some(Err(format!("unexpected call to {other}"))),
         }))
     }
@@ -1818,6 +1833,17 @@ async fn a_passed_execution_with_a_lost_award_is_covered_then_judged_once_then_r
         triage.request_id.is_some() && triage.answer.is_some() && triage.evidence_digest.is_some()
     );
     assert_eq!(rig.world().calls_to("judge::evaluate").len(), 1);
+    // The judge reads what the scenario expects and what the lost criterion asks.
+    let asked = &rig.world().calls_to("judge::evaluate")[0]["evaluations"][0]["state"];
+    assert_eq!(
+        asked["scenarios"][0]["summary"],
+        format!("What {CONTEXT} expects.")
+    );
+    assert_eq!(asked["scenarios"][0]["runs"], 1);
+    assert_eq!(
+        asked["findings"][0]["criterion_asks"],
+        "Asks for needles_recovered?"
+    );
     let plan = record.plan.clone().expect("plan frozen");
     assert_eq!(plan.criterion.metric, CriterionMetricV1::CriterionScore);
     assert_eq!(
@@ -1846,6 +1872,59 @@ async fn a_passed_execution_with_a_lost_award_is_covered_then_judged_once_then_r
         1
     );
     assert_eq!(rig.world().calls_to("judge::evaluate").len(), 1);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_judge_that_does_not_answer_is_asked_again_on_the_next_sweep() {
+    let Some(rig) = Rig::start("jev-retry").await else {
+        return;
+    };
+    rig.configure(true).await;
+    rig.world().judge_failures = 1;
+    let parameters = json!({"model": "m", "provider": "p", "runs": RUNS,
+        "scenarios": [CONTEXT], "technical_retries": 0});
+    let base = rig.base();
+    rig.world().e2e.executions.insert(
+        "nightly".into(),
+        bundle(
+            "nightly",
+            "nightly",
+            "passed",
+            &parameters,
+            vec![(
+                CONTEXT,
+                vec![run(
+                    "r1",
+                    "passed",
+                    90_000.0,
+                    &[Some(10), Some(5), Some(10), Some(10)],
+                    &CONTEXT_CRITERIA,
+                )],
+            )],
+            &base,
+        ),
+    );
+    let cycle_id = rig.begin(json!({"execution_id": "nightly"})).await;
+    // Out of credits: the cycle waits in triage instead of ending.
+    let record = rig.cycle(&cycle_id).await;
+    assert_eq!(record.stage, CycleStageV1::Triage);
+    assert!(record.outcome.is_none());
+    let reason = record.triage.clone().expect("asked").reason;
+    assert!(reason.contains("did not answer (Http)"), "{reason}");
+    rig.tick().await;
+    let record = rig.cycle(&cycle_id).await;
+    let triage = record.triage.clone().expect("triaged");
+    assert_eq!(
+        triage.outcome,
+        TriageOutcomeV1::Proceed,
+        "{}",
+        triage.reason
+    );
+    assert_eq!(record.stage, CycleStageV1::AwaitingExecution);
+    let calls = rig.world().calls_to("judge::evaluate");
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0]["request_id"], calls[1]["request_id"]);
 }
 
 #[cfg(target_os = "linux")]

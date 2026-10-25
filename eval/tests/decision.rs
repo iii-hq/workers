@@ -1492,6 +1492,7 @@ fn canary_analysis() -> CycleAnalysisV1 {
         unknowns: Vec::new(),
         child_transcripts_complete: false,
         sentinel: None,
+        scenarios: Vec::new(),
         analyzed_at: NOW,
     }
 }

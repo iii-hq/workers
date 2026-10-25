@@ -136,7 +136,12 @@ false result.
 - `promotion`: `artifact_target` and an explicit activation `target`
   (`engine_url`, `namespace`, `compose_file`), with
   `release_build_estimate_usd`.
-- `judge`: `provider` and `estimated_usd`.
+- `judge`: `provider` and `estimated_usd`. Only ambiguous improvement
+  opportunities are asked, with what each scenario expects and what each
+  lost criterion asks. The cycle acts on the answer only when the choice
+  leads the next option by 0.2 or more; otherwise it ends `inconclusive`.
+  A judge that does not answer is asked again on the next sweep until the
+  cycle's time budget runs out.
 - `controls`: control scenarios, e.g. `minimal_path`.
 
 The release service origins and credentials come only from the

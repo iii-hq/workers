@@ -478,7 +478,23 @@ pub struct CycleAnalysisV1 {
     /// failures; absent when the reports recorded none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sentinel: Option<SentinelForwardV1>,
+    /// What each reported scenario expects and how many runs it had, for
+    /// the judge.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scenarios: Vec<ScenarioContextV1>,
     pub analyzed_at: i64,
+}
+
+/// One reported scenario as the E2E describes it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ScenarioContextV1 {
+    pub scenario_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    pub runs: u32,
 }
 
 /// The runs' recorded failures forwarded to the central Sentinel. Its
@@ -662,8 +678,8 @@ pub struct TriageV1 {
     pub outcome: TriageOutcomeV1,
     pub findings: Vec<String>,
     pub reason: String,
-    /// Set before `judge::evaluate` is called: a restart finds it and never
-    /// asks twice.
+    /// Set before `judge::evaluate` is called and sent again after a
+    /// restart or an unavailable judge: the question has no side effect.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1137,6 +1153,9 @@ pub struct FindingV1 {
     /// The detector rule or execution signal it comes from.
     pub signal: String,
     pub observation: String,
+    /// What the lost E2E criterion asks (its description), for the judge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asks: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

@@ -455,7 +455,22 @@ fn finding(
         class,
         signal: signal.into(),
         observation,
+        asks: None,
     }
+}
+
+/// What each reported scenario expects and how many runs it had.
+pub fn scenario_context(bundle: &Value) -> Vec<ScenarioContextV1> {
+    scenarios(bundle)
+        .map(|scenario| ScenarioContextV1 {
+            scenario_id: text_at(scenario, "/scenario_id").unwrap_or_default(),
+            title: text_at(scenario, "/title"),
+            summary: text_at(scenario, "/summary"),
+            runs: scenario["runs"]
+                .as_array()
+                .map_or(0, |runs| runs.len() as u32),
+        })
+        .collect()
 }
 
 /// The E2E's `FailureDomain`s (`runs[].failures[].domain`).
@@ -625,6 +640,7 @@ pub fn first_pass(evidence: &ExecutionEvidenceV1) -> (Vec<FindingV1>, Vec<String
                         class,
                         signal: diagnostic.rule_id,
                         observation: diagnostic.observation,
+                        asks: None,
                     });
                 }
             }
@@ -699,16 +715,19 @@ pub fn first_pass(evidence: &ExecutionEvidenceV1) -> (Vec<FindingV1>, Vec<String
             ) {
                 (Some(awarded), Some(possible)) if awarded < possible => {
                     fully_held = false;
-                    findings.push(finding(
-                        key,
-                        FindingClassV1::ImprovementOpportunity,
-                        "criterion",
-                        &format!("{subject}/{id}"),
-                        format!(
-                            "run {subject}: criterion {id} awarded {awarded} of {possible}: {}",
-                            text_at(criterion, "/reason").unwrap_or_default()
-                        ),
-                    ));
+                    findings.push(FindingV1 {
+                        asks: text_at(criterion, "/description"),
+                        ..finding(
+                            key,
+                            FindingClassV1::ImprovementOpportunity,
+                            "criterion",
+                            &format!("{subject}/{id}"),
+                            format!(
+                                "run {subject}: criterion {id} awarded {awarded} of {possible}: {}",
+                                text_at(criterion, "/reason").unwrap_or_default()
+                            ),
+                        )
+                    });
                 }
                 (Some(_), Some(_)) => {}
                 _ if measurable => {

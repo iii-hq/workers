@@ -714,6 +714,13 @@
           "role": {
             "$ref": "#/definitions/ExecutionRoleV1"
           },
+          "scenarios": {
+            "description": "What each reported scenario expects and how many runs it had, for the judge.",
+            "items": {
+              "$ref": "#/definitions/ScenarioContextV1"
+            },
+            "type": "array"
+          },
           "sentinel": {
             "anyOf": [
               {
@@ -1822,6 +1829,13 @@
       "FindingV1": {
         "additionalProperties": false,
         "properties": {
+          "asks": {
+            "description": "What the lost E2E criterion asks (its description), for the judge.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "class": {
             "$ref": "#/definitions/FindingClassV1"
           },
@@ -3101,6 +3115,37 @@
         ],
         "type": "object"
       },
+      "ScenarioContextV1": {
+        "additionalProperties": false,
+        "description": "One reported scenario as the E2E describes it.",
+        "properties": {
+          "runs": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "scenario_id": {
+            "type": "string"
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "runs",
+          "scenario_id"
+        ],
+        "type": "object"
+      },
       "ScenarioIdentityV1": {
         "additionalProperties": false,
         "description": "The executable identity of one reported scenario.",
@@ -3477,7 +3522,7 @@
             "type": "string"
           },
           "request_id": {
-            "description": "Set before `judge::evaluate` is called: a restart finds it and never asks twice.",
+            "description": "Set before `judge::evaluate` is called and sent again after a restart or an unavailable judge: the question has no side effect.",
             "type": [
               "string",
               "null"

@@ -32,7 +32,7 @@
 |---|---|---|
 | E2E execution | Display label `eval:<cycle_id>:<baseline\|candidate\|artifact\|canary>`, immutable `work_id` and route. | `work_id` is sent as `idempotency_key` and is the only reconciliation key. Duplicate or partial listings are refused. Declared lost after 10 minutes, never re-dispatched. |
 | Proposal / candidate actor | `proposal_identity` / `identity`: session and idempotency key. | `start` reads `harness::status` before any `harness::send`. |
-| Judge | Request id stored in `cycle.triage`. | A request found after a restart is never re-sent; that step is unknown. |
+| Judge | Request id stored in `cycle.triage`. | The question has no side effect: after a restart, or any error but `invalid_request` and `payload_too_large`, the sweep asks again under the same id until the cycle's time budget ends it. |
 | Candidate publication | Deterministic branch, non-forced push, 30 s bound. | A retry reconciles. |
 | GitHub merge | `fast_forward_main`: candidate parent equals the approved base, non-forced. | Proved by `read_merge`. |
 | Release Control | `rc_planned` / `finalize_planned` journaled before `confirm_plan`. | A repeated confirm returns the same operation. |

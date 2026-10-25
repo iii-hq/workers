@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use judge_contract::{EvaluateRequest, EvaluateResponse, Evaluation, Question};
+use judge_contract::{ErrorCode, EvaluateRequest, EvaluateResponse, Evaluation, Question};
 use serde_json::{json, Value};
 
 use crate::candidate::{
@@ -24,6 +24,9 @@ use crate::{cost, ids, state};
 const JUDGE_TIMEOUT_MS: u64 = 60_000;
 const TRIAGE_EVALUATION: &str = "findings";
 const TRIAGE_QUESTION: &str = "opportunity";
+/// The least the judge's choice must lead the next option by before the
+/// cycle acts on it: identical asks move JEV's probabilities by up to ~0.2.
+const MIN_MARGIN: f64 = 0.2;
 /// Native evidence entries handed to the proposal.
 const MAX_EVIDENCE: usize = 20;
 /// The longest a candidate push may take before its outcome is unknown.
@@ -99,11 +102,83 @@ fn triage_question() -> Question {
     }
 }
 
+/// What the cycle does with the judge's choice: it acts only on a clear lead.
+fn verdict(answer: &judge_contract::Answer) -> (TriageOutcomeV1, Option<OutcomeCodeV1>, String) {
+    let judge_contract::Answer::Choice {
+        choice,
+        probabilities,
+        ..
+    } = answer
+    else {
+        let reason = "the judge answered outside the question".into();
+        return (
+            TriageOutcomeV1::Unknown,
+            Some(OutcomeCodeV1::Inconclusive),
+            reason,
+        );
+    };
+    let chosen = probabilities.get(choice).copied().unwrap_or(0.0);
+    let next = probabilities
+        .iter()
+        .filter(|(key, _)| *key != choice)
+        .fold(0.0, |max, (_, p)| f64::max(max, *p));
+    let odds = format!("p {chosen:.2} against {next:.2}");
+    if chosen - next < MIN_MARGIN {
+        return (
+            TriageOutcomeV1::Unknown,
+            Some(OutcomeCodeV1::Inconclusive),
+            format!("the judge could not tell ({choice}, {odds})"),
+        );
+    }
+    match choice.as_str() {
+        "relevant_opportunity" => (
+            TriageOutcomeV1::Proceed,
+            None,
+            format!("the judge found a relevant opportunity ({odds})"),
+        ),
+        "expected_behavior" => (
+            TriageOutcomeV1::NoAction,
+            Some(OutcomeCodeV1::NoAction),
+            format!("the judge found expected behavior ({odds})"),
+        ),
+        _ => (
+            TriageOutcomeV1::Unknown,
+            Some(OutcomeCodeV1::Inconclusive),
+            format!("the judge found the evidence insufficient ({odds})"),
+        ),
+    }
+}
+
+/// The judge did not answer: say why and leave the cycle in triage. The
+/// question has no side effect, so the sweep asks again until the cycle's
+/// time budget ends it.
+// ponytail: re-asked every 15 s sweep; back off if a long outage floods the judge.
+async fn wait_for_judge(
+    deps: &Deps,
+    record: &CycleRecordV1,
+    mut triage: TriageV1,
+    why: String,
+) -> Result<Option<CycleRecordV1>, EvalError> {
+    triage.reason =
+        format!("the judge did not answer ({why}); it is asked again on the next sweep");
+    state::update_cycle(&deps.iii, &record.cycle_id, |stored| {
+        if stored.step != record.step || stored.status.is_terminal() {
+            return Ok((None, ()));
+        }
+        let mut next = stored.clone();
+        next.triage = Some(triage.clone());
+        Ok((Some(next), ()))
+    })
+    .await?;
+    Ok(None)
+}
+
 /// Decides whether a source execution's pertinent findings go on to
 /// candidate work. A clear deterministic defect needs no judgment; Sentinel's triage of the same occurrences is reused;
-/// only an ambiguous improvement opportunity is asked, once, of
-/// `judge::evaluate`. A request found from before a restart is never sent
-/// again: its semantic step is unknown.
+/// only an ambiguous improvement opportunity is asked of `judge::evaluate`,
+/// with what each scenario expects. The question has no side effect, so a
+/// restart or an unavailable judge asks it again until the cycle's time
+/// budget runs out.
 pub async fn triage_stage(
     deps: &Deps,
     record: &CycleRecordV1,
@@ -184,18 +259,6 @@ pub async fn triage_stage(
         ))
         .await;
     }
-    if let Some(previous) = record
-        .triage
-        .as_ref()
-        .filter(|triage| triage.request_id.is_some())
-    {
-        let mut unknown = previous.clone();
-        unknown.outcome = TriageOutcomeV1::Unknown;
-        unknown.reason =
-            "the judge was asked before a restart and its answer was lost; it is not asked twice"
-                .into();
-        return finish(unknown, OutcomeCodeV1::Inconclusive).await;
-    }
     let Some(judge) = record
         .config
         .as_ref()
@@ -218,14 +281,37 @@ pub async fn triage_stage(
         estimated_usd: judge.estimated_usd,
         candidate: false,
     };
-    if let cost::Reservation::OverLimit(detail) = reserve(deps, record, &work).await? {
-        return end(deps, record, OutcomeCodeV1::Budget, &detail).await;
+    match reserve(deps, record, &work).await? {
+        cost::Reservation::OverLimit(detail) => {
+            return end(deps, record, OutcomeCodeV1::Budget, &detail).await;
+        }
+        // Asked before (a restart, or a judge that did not answer): ask
+        // again until the cycle's time budget runs out.
+        cost::Reservation::Existing(_) => {
+            if let Some(detail) = state::get_ledger(&deps.iii, &record.cycle_id)
+                .await?
+                .and_then(|ledger| cost::exceeded(&ledger, ids::now_ms()))
+            {
+                let detail = format!("the judge never answered: {detail}");
+                return end(deps, record, OutcomeCodeV1::Budget, &detail).await;
+            }
+        }
+        cost::Reservation::Reserved(_) => {}
     }
+    // What each scenario expects and what each lost criterion asks: without
+    // them the judge calls infrastructure noise an opportunity.
+    let mut scenarios: Vec<&ScenarioContextV1> = record
+        .analyses
+        .iter()
+        .flat_map(|analysis| &analysis.scenarios)
+        .collect();
+    scenarios.dedup_by_key(|scenario| &scenario.scenario_id);
     let state_value = json!({
         "objective": "Does this group of findings show a relevant Harness improvement opportunity?",
+        "scenarios": scenarios,
         "findings": pertinent.iter().map(|(execution_id, finding)| json!({
             "execution_id": execution_id, "class": finding.class, "signal": finding.signal,
-            "observation": finding.observation})).collect::<Vec<_>>(),
+            "observation": finding.observation, "criterion_asks": finding.asks})).collect::<Vec<_>>(),
     });
     let question = triage_question();
     let request_id = format!("{}-triage", record.cycle_id);
@@ -237,7 +323,7 @@ pub async fn triage_stage(
     asked.request_id = Some(request_id.clone());
     asked.question = Some(serde_json::to_value(&question)?);
     asked.evidence_digest = Some(ids::sha256_json(&state_value));
-    // Persisted before the call: a restart never asks twice.
+    // Persisted before the call, so a restart asks again under the same id.
     let persisted = state::update_cycle(&deps.iii, &record.cycle_id, |stored| {
         if stored.step != record.step || stored.status.is_terminal() {
             return Ok((None, false));
@@ -273,7 +359,7 @@ pub async fn triage_stage(
     )
     .await;
     let mut triage = asked.clone();
-    let (code, cost_known) = match answered {
+    let code = match answered {
         Ok(EvaluateResponse::Ok {
             model,
             mut results,
@@ -288,46 +374,29 @@ pub async fn triage_stage(
             match answer {
                 Some(answer) => {
                     triage.answer = Some(serde_json::to_value(&answer)?);
-                    let choice = match &answer {
-                        judge_contract::Answer::Choice { choice, .. } => choice.clone(),
-                        _ => String::new(),
-                    };
-                    match choice.as_str() {
-                        "relevant_opportunity" => {
-                            triage.outcome = TriageOutcomeV1::Proceed;
-                            triage.reason = "the judge found a relevant opportunity".into();
-                            (None, stats.usage_complete)
-                        }
-                        "expected_behavior" => {
-                            triage.outcome = TriageOutcomeV1::NoAction;
-                            triage.reason = "the judge found expected behavior".into();
-                            (Some(OutcomeCodeV1::NoAction), stats.usage_complete)
-                        }
-                        _ => {
-                            triage.outcome = TriageOutcomeV1::Unknown;
-                            triage.reason = "the judge found the evidence insufficient".into();
-                            (Some(OutcomeCodeV1::Inconclusive), stats.usage_complete)
-                        }
-                    }
+                    let code;
+                    (triage.outcome, code, triage.reason) = verdict(&answer);
+                    code
                 }
                 None => {
                     triage.reason = "the judge answered outside the question".into();
-                    (Some(OutcomeCodeV1::Inconclusive), false)
+                    Some(OutcomeCodeV1::Inconclusive)
                 }
             }
         }
-        Ok(EvaluateResponse::Error { code, stats, .. }) => {
+        Ok(EvaluateResponse::Error { code, stats, .. })
+            if matches!(code, ErrorCode::InvalidRequest | ErrorCode::PayloadTooLarge) =>
+        {
             triage.usage = Some(serde_json::to_value(&stats)?);
-            triage.reason = format!("the judge is unavailable: {code:?}");
-            (Some(OutcomeCodeV1::Inconclusive), false)
+            triage.reason = format!("the judge refused the question: {code:?}");
+            Some(OutcomeCodeV1::Inconclusive)
         }
-        Err(error) => {
-            triage.reason = format!("the judge did not answer: {error}");
-            (Some(OutcomeCodeV1::Inconclusive), false)
+        Ok(EvaluateResponse::Error { code, .. }) => {
+            return wait_for_judge(deps, record, triage, format!("{code:?}")).await;
         }
+        Err(error) => return wait_for_judge(deps, record, triage, error.to_string()).await,
     };
     // Judge usage is in tokens; its dollar cost is not reported.
-    let _ = cost_known;
     settle(deps, &record.cycle_id, &work.work_id, None).await?;
     let current = state::get_cycle(&deps.iii, &record.cycle_id)
         .await?
@@ -948,5 +1017,47 @@ pub async fn stop_actors(deps: &Deps, record: &CycleRecordV1) {
         {
             tracing::warn!(%session_id, %error, "could not stop a cancelled cycle's actor");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn choice(
+        choice: &str,
+        relevant: f64,
+        expected: f64,
+        insufficient: f64,
+    ) -> judge_contract::Answer {
+        judge_contract::Answer::Choice {
+            choice: choice.into(),
+            probabilities: BTreeMap::from([
+                ("relevant_opportunity".into(), relevant),
+                ("expected_behavior".into(), expected),
+                ("insufficient_evidence".into(), insufficient),
+            ]),
+            confidence: 0.0,
+        }
+    }
+
+    // Probabilities JEV answered for real and control findings (24/10).
+    #[test]
+    fn the_cycle_acts_only_on_a_clear_lead() {
+        let (outcome, code, _) = verdict(&choice("relevant_opportunity", 0.86, 0.06, 0.08));
+        assert_eq!((outcome, code), (TriageOutcomeV1::Proceed, None));
+        let (outcome, code, reason) = verdict(&choice("relevant_opportunity", 0.45, 0.36, 0.19));
+        assert_eq!(
+            (outcome, code),
+            (TriageOutcomeV1::Unknown, Some(OutcomeCodeV1::Inconclusive))
+        );
+        assert!(reason.contains("could not tell"), "{reason}");
+        let (outcome, code, _) = verdict(&choice("expected_behavior", 0.1, 0.8, 0.1));
+        assert_eq!(
+            (outcome, code),
+            (TriageOutcomeV1::NoAction, Some(OutcomeCodeV1::NoAction))
+        );
+        let (_, code, _) = verdict(&choice("insufficient_evidence", 0.22, 0.14, 0.64));
+        assert_eq!(code, Some(OutcomeCodeV1::Inconclusive));
     }
 }
