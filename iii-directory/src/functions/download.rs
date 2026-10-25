@@ -484,16 +484,31 @@ pub fn has_completion_marker(skills_folder: &std::path::Path, worker: &str) -> b
 //                                    │
 //                              registry::download_typed
 //                                    │
-//                    ┌───────────────┼───────────────┐
-//                    ▼               ▼               ▼
-//               Ok(result)    NotFound(404)    Err(5xx/timeout)
-//                    │           (no-op)         (logged warn)
-//               write marker
-//               invalidate cache
+//                    ┌───────────────┼───────────────┬───────────────┐
+//                    ▼               ▼               ▼               ▼
+//               Ok(result)    NotFound(404)    Unavailable     Err(other)
+//                    │           (no-op)     (unreachable,   (logged warn)
+//               write marker                  5xx, 429: ask
+//               invalidate cache              again, backoff)
+
+/// How long `download_worker_skills` waits before each new try of a
+/// registry that could not answer (unreachable, 5xx, 429); after the last
+/// one the download fails.
+#[cfg(not(test))]
+const UNAVAILABLE_BACKOFF: [std::time::Duration; 5] = [
+    std::time::Duration::from_secs(2),
+    std::time::Duration::from_secs(4),
+    std::time::Duration::from_secs(8),
+    std::time::Duration::from_secs(16),
+    std::time::Duration::from_secs(32),
+];
+#[cfg(test)]
+const UNAVAILABLE_BACKOFF: [std::time::Duration; 5] = [std::time::Duration::from_millis(10); 5];
 
 /// Download skills for a single worker from the registry. Validates the
 /// name, calls `registry::download_typed`, writes the completion marker
-/// on success, and treats 404 as a benign no-op.
+/// on success, and treats 404 as a benign no-op. A registry that could not
+/// answer is asked again after each wait of [`UNAVAILABLE_BACKOFF`].
 ///
 /// Returns `true` if skills were successfully downloaded.
 pub async fn download_worker_skills(
@@ -511,32 +526,42 @@ pub async fn download_worker_skills(
         .map_err(|e| format!("create_dir_all {}: {e}", folder.display()))?;
 
     let kit_agents = kit_owned_agents();
-    match registry::download_typed(
-        cfg.registry_base(),
-        worker,
-        spec,
-        &folder,
-        &agents_folder,
-        cfg.download_timeout_ms,
-        &kit_agents,
-    )
-    .await?
-    {
-        registry::RegistryDownloadOutcome::Ok(result) => {
-            tracing::info!(
-                worker,
-                skills = result.skills_written.len(),
-                system_prompts = result.system_prompts_written.len(),
-                agents = result.agents_written.len(),
-                agents_skipped = ?result.agents_skipped,
-                "auto-downloaded worker skills"
-            );
-            write_completion_marker(&folder, worker, spec, &result)?;
-            Ok(true)
-        }
-        registry::RegistryDownloadOutcome::NotFound => {
-            tracing::debug!(worker, "registry 404 — no skills bundle; benign skip");
-            Ok(false)
+    let mut backoff = UNAVAILABLE_BACKOFF.iter();
+    loop {
+        match registry::download_typed(
+            cfg.registry_base(),
+            worker,
+            spec,
+            &folder,
+            &agents_folder,
+            cfg.download_timeout_ms,
+            &kit_agents,
+        )
+        .await?
+        {
+            registry::RegistryDownloadOutcome::Ok(result) => {
+                tracing::info!(
+                    worker,
+                    skills = result.skills_written.len(),
+                    system_prompts = result.system_prompts_written.len(),
+                    agents = result.agents_written.len(),
+                    agents_skipped = ?result.agents_skipped,
+                    "auto-downloaded worker skills"
+                );
+                write_completion_marker(&folder, worker, spec, &result)?;
+                return Ok(true);
+            }
+            registry::RegistryDownloadOutcome::NotFound => {
+                tracing::debug!(worker, "registry 404 — no skills bundle; benign skip");
+                return Ok(false);
+            }
+            registry::RegistryDownloadOutcome::Unavailable(error) => {
+                let Some(wait) = backoff.next() else {
+                    return Err(error);
+                };
+                tracing::debug!(worker, error, ?wait, "registry unavailable; asking again");
+                tokio::time::sleep(*wait).await;
+            }
         }
     }
 }
@@ -1061,6 +1086,73 @@ mod tests {
             !has_completion_marker(&cfg.resolved_skills_folder(), "missing"),
             "no marker should be written on 404"
         );
+    }
+
+    /// A registry that could not answer (503, 429) is asked again, at most
+    /// UNAVAILABLE_BACKOFF more times; a 404 and any other error are asked
+    /// once.
+    #[tokio::test]
+    async fn download_worker_skills_asks_an_unavailable_registry_again() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let answer = |worker: &str, status: u16| {
+            Mock::given(method("GET"))
+                .and(path(format!("/w/{worker}/skills")))
+                .respond_with(ResponseTemplate::new(status))
+        };
+        answer("flaky", 503).up_to_n_times(1).mount(&server).await;
+        answer("flaky", 429).up_to_n_times(1).mount(&server).await;
+        let body = serde_json::json!({
+            "name": "flaky",
+            "version": "1.0.0",
+            "skills": [{"path": "index.md", "content": "# flaky\n"}],
+            "prompts": []
+        });
+        Mock::given(method("GET"))
+            .and(path("/w/flaky/skills"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+            .mount(&server)
+            .await;
+        answer("down", 503).mount(&server).await;
+        answer("refused", 400).mount(&server).await;
+        answer("missing", 404).mount(&server).await;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = SkillsConfig {
+            skills_folder: tmp.path().to_string_lossy().into_owned(),
+            registry_url: server.uri(),
+            ..SkillsConfig::default()
+        };
+        let spec = VersionSpec::Tag("latest".into());
+        assert!(download_worker_skills(&cfg, "flaky", &spec).await.unwrap());
+        assert!(has_completion_marker(
+            &cfg.resolved_skills_folder(),
+            "flaky"
+        ));
+        let down = download_worker_skills(&cfg, "down", &spec).await;
+        assert!(down.unwrap_err().contains("HTTP 503"));
+        assert!(download_worker_skills(&cfg, "refused", &spec)
+            .await
+            .is_err());
+        assert!(!download_worker_skills(&cfg, "missing", &spec)
+            .await
+            .unwrap());
+
+        let requests = server.received_requests().await.unwrap();
+        let asked = |worker: &str| {
+            let path = format!("/w/{worker}/skills");
+            requests.iter().filter(|r| r.url.path() == path).count()
+        };
+        let tries = 1 + UNAVAILABLE_BACKOFF.len();
+        let counts = [
+            asked("flaky"),
+            asked("down"),
+            asked("refused"),
+            asked("missing"),
+        ];
+        assert_eq!(counts, [3, tries, 1, 1]);
     }
 
     #[tokio::test]
