@@ -3,7 +3,7 @@
 Build, inspect, and test the worker from source. For installation and first use, follow the [consumer README](../README.md).
 
 The dependency is pinned to
-`8b41cfe6d9c4` (`v0.0.0-20260929112325-8b41cfe6d9c4`). The iii Go SDK is pinned
+`1fbae988179a` (`v0.0.0-20261026125351-1fbae988179a`). The iii Go SDK is pinned
 to merged commit `a075c6e40389` (`v0.24.6-rc.1.0.20261002194513-a075c6e40389`),
 which includes the trigger schema API. A local SDK workspace is optional for SDK
 development.

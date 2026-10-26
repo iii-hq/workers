@@ -17,7 +17,7 @@ import (
 
 var version = "0.1.0"
 
-const whatsmeowRevision = "8b41cfe6d9c4"
+const whatsmeowRevision = "1fbae988179a"
 
 func main() {
 	// Pairing codes, tokens and message bodies must never become SDK telemetry.
