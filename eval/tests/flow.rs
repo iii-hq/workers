@@ -237,11 +237,20 @@ impl World {
                 let Some(class) = self.jev_class else {
                     return Some(Err("judge unavailable".into()));
                 };
+                // A timed-out shell call is what Jev cannot tell.
+                let class_of = |evaluation: &Value| {
+                    if evaluation["state"]["function_id"] == "shell::exec" {
+                        "unclear"
+                    } else {
+                        class
+                    }
+                };
                 let results: serde_json::Map<String, Value> = data["evaluations"]
                     .as_array()
                     .unwrap()
                     .iter()
                     .map(|evaluation| {
+                        let class = class_of(evaluation);
                         let probabilities: serde_json::Map<String, Value> =
                             ["harness", "model", "task", "unclear"]
                                 .iter()
@@ -1270,23 +1279,48 @@ async fn the_execution_picker_says_what_a_cycle_would_restore_or_which_cycle_has
 
 /// A run whose agent called `coder::update-file` and got an error back.
 fn failed_call(run_id: &str) -> Value {
+    failed(
+        run_id,
+        "coder::update-file",
+        "did not run: the arguments were truncated",
+    )
+}
+
+/// A run whose agent called `function` and got `error` back.
+fn failed(run_id: &str, function: &str, error: &str) -> Value {
+    failed_all(run_id, &[(function, error)])
+}
+
+/// A run whose agent made each call and got each error back, in order.
+fn failed_all(run_id: &str, calls: &[(&str, &str)]) -> Value {
     let mut run = run(run_id, "passed", "completed", 1000.0, &[Some(10); 4]);
-    run["transcript"]["messages"] = json!([
-        {"entry_id": "e1", "message": {"role": "assistant", "stop_reason": "function_call",
-            "model": "m", "provider": "p", "timestamp": 0,
-            "usage": {"output": 2000, "reasoning": 900},
-            "content": [{"type": "text", "text": "Rewriting the file."},
-                {"type": "function_call", "id": "c1", "function_id": "coder::update-file",
-                 "arguments": {"path": "src/reconcile.py"}}]}},
-        {"entry_id": "e2", "message": {"role": "function_result", "timestamp": 0,
-            "function_call_id": "c1", "function_id": "coder::update-file", "is_error": true,
-            "content": [{"type": "text", "text": "did not run: the arguments were truncated"}]}}
-    ]);
+    run["transcript"]["messages"] = calls
+        .iter()
+        .enumerate()
+        .flat_map(|(at, (function, error))| {
+            [
+                json!({"entry_id": format!("e{at}a"), "message": {"role": "assistant",
+                    "stop_reason": "function_call", "model": "m", "provider": "p", "timestamp": 0,
+                    "usage": {"output": 2000, "reasoning": 900},
+                    "content": [{"type": "text", "text": "Rewriting the file."},
+                        {"type": "function_call", "id": format!("c{at}"), "function_id": function,
+                         "arguments": {"path": "src/reconcile.py"}}]}}),
+                json!({"entry_id": format!("e{at}r"), "message": {"role": "function_result",
+                    "timestamp": 0, "function_call_id": format!("c{at}"), "function_id": function,
+                    "is_error": true, "content": [{"type": "text", "text": error}]}}),
+            ]
+        })
+        .collect();
     run
 }
 
 /// An error objective measured on one run with a failed call.
 async fn read_failed_call(world: World, judged: bool) -> CycleRecordV1 {
+    read_runs(world, judged, vec![failed_call("r1")]).await
+}
+
+/// An error objective whose baseline is `runs`.
+async fn read_runs(world: World, judged: bool, runs: Vec<Value>) -> CycleRecordV1 {
     let mut world = world;
     world
         .histories
@@ -1301,7 +1335,7 @@ async fn read_failed_call(world: World, judged: bool) -> CycleRecordV1 {
         .start_cycle(json!({"objective": "fewer function call errors"}))
         .await;
     h.drain().await;
-    h.finish("plan-1", "passed", vec![failed_call("r1")]);
+    h.finish("plan-1", "passed", runs);
     h.changed("plan-1").await;
     h.drain().await;
     h.cycle(&cycle_id).await
@@ -1383,4 +1417,39 @@ async fn without_jev_the_default_llm_reads_the_failed_calls() {
     );
     // Neither Jev nor the LLM: inconclusive, with both reasons.
     assert_eq!(first.outcome.unwrap().code, OutcomeCodeV1::Inconclusive);
+}
+
+#[tokio::test]
+async fn the_default_llm_reads_the_failed_calls_jev_left_unclear() {
+    let runs = || {
+        vec![failed_all(
+            "r1",
+            &[
+                (
+                    "coder::update-file",
+                    "did not run: the arguments were truncated",
+                ),
+                ("shell::exec", "shell::exec: invocation timed out"),
+            ],
+        )]
+    };
+    // Jev lays the edit on the model and cannot tell the timed-out shell call.
+    let probe = read_runs(World::new(), false, runs()).await;
+    let timed_out = probe.insight.unwrap().sites[1].site_id.clone();
+    let mut world = World::new();
+    world.jev_class = Some("model");
+    world.analyst_reply = Some(format!(
+        "{{\"points\": [{{\"function_id\": \"shell::exec\", \"summary\": \"The call timeout is shorter than a build.\", \"sites\": [\"{timed_out}\"]}}]}}"
+    ));
+    let record = read_runs(world, true, runs()).await;
+    let insight = record.insight.unwrap();
+    assert_eq!(insight.source, Some(InsightSourceV1::Jev));
+    assert!(
+        insight.reason.contains("1 the model's") && insight.reason.contains("read the 1 unclear"),
+        "{}",
+        insight.reason
+    );
+    assert_eq!(insight.points.len(), 1);
+    assert_eq!(insight.points[0].source, InsightSourceV1::Llm);
+    assert_eq!(insight.points[0].sites, std::slice::from_ref(&timed_out));
 }

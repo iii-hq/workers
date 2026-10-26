@@ -636,8 +636,17 @@ pub async fn insight_stage(
             }
         }
     }
-    // The default LLM, when Jev could not tell.
-    if let Some(why) = no_jev {
+    // The default LLM reads what Jev could not tell: every failed call when
+    // Jev did not answer or decided none, else the ones it left unclear.
+    let unread: Vec<ErrorSiteV1> = match &no_jev {
+        Some(_) => sites.clone(),
+        None => sites
+            .iter()
+            .filter(|site| site.class.is_none_or(|class| class == SiteClassV1::Unclear))
+            .cloned()
+            .collect(),
+    };
+    if !unread.is_empty() {
         let work = CycleWorkV1 {
             work_id: format!("{}:analyst", record.cycle_id),
             kind: CycleWorkKindV1::Investigation,
@@ -647,7 +656,7 @@ pub async fn insight_stage(
         if let cost::Reservation::OverLimit(detail) = reserve(deps, record, &work).await? {
             return end(deps, record, OutcomeCodeV1::Budget, &detail).await;
         }
-        let (system, user) = insight::analyst_prompt(&plan.objective, &sites);
+        let (system, user) = insight::analyst_prompt(&plan.objective, &unread);
         let answered: Result<Value, EvalError> = call(
             deps,
             "router::complete",
@@ -666,32 +675,48 @@ pub async fn insight_stage(
         let read = answered
             .map_err(|error| error.to_string())
             .and_then(|reply| {
-                found.model = Some(insight::ANALYST_MODEL.into());
-                found.usage = Some(reply["usage"].clone());
                 let text: String = reply["message"]["content"]
                     .as_array()
                     .into_iter()
                     .flatten()
                     .filter_map(|part| part["text"].as_str())
                     .collect();
-                insight::parse_points(&text, &sites)
+                insight::parse_points(&text, &unread)
             });
-        match read {
-            Ok(points) => {
+        let read_by = format!("the default LLM ({})", insight::ANALYST_MODEL);
+        match (read, &no_jev) {
+            (Ok(points), Some(why)) => {
                 found.source = Some(InsightSourceV1::Llm);
+                found.model = Some(insight::ANALYST_MODEL.into());
                 found.reason = format!(
-                    "{why}; the default LLM ({}) read the {} failed call(s) and found {} point(s)",
-                    insight::ANALYST_MODEL,
-                    sites.len(),
+                    "{why}; {read_by} read the {} failed call(s) and found {} point(s)",
+                    unread.len(),
                     points.len()
                 );
                 found.points = points;
             }
-            Err(error) => {
+            (Ok(points), None) => {
+                found.reason = format!(
+                    "{}; {read_by} read the {} unclear and found {} point(s)",
+                    found.reason,
+                    unread.len(),
+                    points.len()
+                );
+                found.points.extend(points);
+            }
+            (Err(error), Some(why)) => {
                 found.sites = sites;
                 found.reason =
                     format!("{why}, and the default LLM could not read the transcripts: {error}");
                 return close(found, Err(OutcomeCodeV1::Inconclusive)).await;
+            }
+            // Jev's verdicts stand; only the unclear stay unread.
+            (Err(error), None) => {
+                found.reason = format!(
+                    "{}; {read_by} could not read the {} unclear: {error}",
+                    found.reason,
+                    unread.len()
+                );
             }
         }
     }
