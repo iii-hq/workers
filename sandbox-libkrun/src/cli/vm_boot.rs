@@ -609,6 +609,11 @@ fn boot_vm(
                 .memory_mib(args.ram as usize)
                 .hyperthreading(hyperthreading)
                 .nested_virt(nested_virt)
+                // iii's guest kernel has no driver for msb_krun's private metrics device.
+                .msb_metrics(false)
+                // KVM's in-kernel IOAPIC gives x86_64 only 11 virtio IRQs, all of which a
+                // default overlay worker with net already uses; no effect on other arches.
+                .split_irqchip(true)
         })
         .kernel(|k| {
             let k = match resolve_krunfw_file_path() {
