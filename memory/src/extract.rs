@@ -1017,7 +1017,8 @@ const PASS_CALLS: usize = 4;
 /// The runs one pass reads: every entry after the cursor, unless that
 /// takes more than [`PASS_CALLS`] calls, which only a backlog does (passes
 /// the queue gave up on, a skipped turn whose end was never found).
-// shortcut: past PASS_CALLS, only the newest `window` entries are read, and
+// shortcut: past PASS_CALLS, only the newest `window` entries are read, then
+// only their newest PASS_CALLS runs (long pasted lines take a run each), and
 // the cursor moves past the rest unread, as before runs existed; drain the
 // backlog over later passes if facts are ever lost there.
 // shortcut: runs after the first are read without the turn's opening request;
@@ -1029,7 +1030,9 @@ fn pass_runs(entries: Vec<Entry>, window: usize) -> Vec<Vec<Entry>> {
     }
     let mut entries = runs.concat();
     keep_window(&mut entries, window);
-    chunks(entries, CALL_CHARS)
+    let mut runs = chunks(entries, CALL_CHARS);
+    runs.drain(..runs.len().saturating_sub(PASS_CALLS));
+    runs
 }
 
 /// One extraction call over `entries`, a run of the span ([`chunks`]), and
@@ -2819,6 +2822,26 @@ mod tests {
         let ids: Vec<&str> = runs.iter().flatten().map(|e| e.0.as_str()).collect();
         assert_eq!(ids.len(), 14, "{ids:?}");
         assert_eq!((ids[0], ids[1], ids[13]), ("u", "a89", "end"));
+    }
+
+    #[test]
+    fn long_pasted_messages_never_cost_more_than_one_pass() {
+        // Each user line keeps up to 12,000 chars, so two never share a run:
+        // ten inside the window are ten runs until the pass keeps its newest.
+        let mut span: Vec<Entry> = (1..=10)
+            .map(|i| {
+                said(
+                    &format!("p{i}"),
+                    "user",
+                    &format!("Paste {i}. {}", "x".repeat(12_000)),
+                )
+            })
+            .collect();
+        span.push(said("end", "assistant", ""));
+        let runs = pass_runs(span, 12);
+        assert!(runs.len() <= PASS_CALLS, "{} calls", runs.len());
+        let ids: Vec<&str> = runs.iter().flatten().map(|e| e.0.as_str()).collect();
+        assert_eq!((ids[0], *ids.last().unwrap()), ("p7", "end"), "{ids:?}");
     }
 
     #[test]

@@ -64,8 +64,9 @@ rule; point-in-time information belongs in memories.
   belongs to the `memory-consolidate` sibling worker.
 - Injection is bounded (`max_rule_chars`, `recall_budget_tokens`) — an
   over-budget rule is truncated visibly, never silently dropped.
-- Recalled memories are dated (last update); trust a newer memory over an
-  older one that contradicts it. Dated events are stored with absolute dates.
+- Recalled memories are dated by when their fact was last stated; trust a
+  newer memory over an older one that contradicts it. Dated events are stored
+  with absolute dates.
 
 ## Functions
 
