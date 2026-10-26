@@ -34,14 +34,14 @@ tracing = "0.1"
 # not move under us. Default features minus `cache`: the compiled-module cache
 # is never configured here, and wasmtime-internal-cache pins zstd 0.13
 # (RUSTSEC-2026-0391, -0398, -0403).
-wasmtime = { version = "=48.0.6", default-features = false, features = [
+wasmtime = { version = "=48.0.7", default-features = false, features = [
   "anyhow", "async", "backtrace", "gc", "gc-copying", "gc-drc", "gc-null", "wat",
   "profiling", "parallel-compilation", "cranelift", "pooling-allocator", "demangle",
   "addr2line", "coredump", "debug-builtins", "runtime", "component-model",
   "component-model-async", "threads", "stack-switching", "std", "debug",
   "compile-time-builtins", "wit-parser",
 ] }
-wasmtime-wasi = "=48.0.6"
+wasmtime-wasi = "=48.0.7"
 # `OutputStream::write` takes `bytes::Bytes` and wasmtime-wasi does not
 # re-export the crate, so the trait cannot be implemented without naming it.
 bytes = "1"
