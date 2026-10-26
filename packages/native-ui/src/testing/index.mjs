@@ -44,6 +44,18 @@ export const DEFAULT_ENV = Object.freeze({
 })
 
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error']
+
+/**
+ * What the catalogue's deadlines are multiplied by: `III_NATIVE_UI_BUDGET_SCALE`,
+ * else 1. The deadlines are wall time, like the device's, and a shared CI
+ * runner is several times slower and noisier than a phone or a workstation (a
+ * 42 ms step took over 250 ms there); CI sets 4. A deadline a test passes is
+ * never scaled.
+ */
+function budgetScale() {
+  const scale = Number(globalThis.process?.env?.III_NATIVE_UI_BUDGET_SCALE)
+  return Number.isFinite(scale) && scale > 0 ? scale : 1
+}
 const URL_SCHEMES = /^(https?|mailto):/i
 
 /** Creates a host, evaluates `bundle` and waits for its `ready`; `init` goes with the first action. */
@@ -66,8 +78,9 @@ class TestHost {
     this.uiAnswers = o.ui ?? {}
     this.strict = o.strict ?? true
     this.clock = o.now ?? 0
-    this.stepBudgetMs = o.stepBudgetMs ?? catalog.limits.stepBudgetMs
-    this.loadBudgetMs = o.loadBudgetMs ?? catalog.limits.loadBudgetMs
+    const scale = budgetScale()
+    this.stepBudgetMs = o.stepBudgetMs ?? catalog.limits.stepBudgetMs * scale
+    this.loadBudgetMs = o.loadBudgetMs ?? catalog.limits.loadBudgetMs * scale
     this.maxMessageBytes = o.maxMessageBytes ?? catalog.limits.maxMessageBytes
     this.logSink = o.log ?? null
 

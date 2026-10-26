@@ -317,6 +317,9 @@ Options, with their defaults: `bundle` (required), `ns` (`demo`), `appKey`
 counters), `strict` (true), `autoInit` (send `init` with the first action,
 true), `memoryLimit` (64 MiB), `stackSize` (1 MiB), `stepBudgetMs` (250),
 `loadBudgetMs` (2000), `maxMessageBytes` (8 MiB), `log` (every console line).
+The two deadlines are wall time, like the device's; without the options, the
+catalogue's values are multiplied by `III_NATIVE_UI_BUDGET_SCALE` (1 when unset;
+CI sets 4, since a shared runner is several times slower and noisier).
 A `call` whose function is not in `calls` answers `function_not_found`; a
 `calls` handler that throws answers its `code` (throw a `HostError(code,
 message)`), or `invocation_failed`. Like the device host, a call that has

@@ -44,6 +44,25 @@ describe('the VM sandbox', () => {
     expect(h.failed?.kind).toBe('watchdog')
   })
 
+  it('scales the catalogue deadlines by III_NATIVE_UI_BUDGET_SCALE, never one a test passes', async () => {
+    const before = process.env.III_NATIVE_UI_BUDGET_SCALE
+    const budgets = async (value: string | undefined, options = {}) => {
+      if (value === undefined) delete process.env.III_NATIVE_UI_BUDGET_SCALE
+      else process.env.III_NATIVE_UI_BUDGET_SCALE = value
+      const h = await mounted('sandbox', options)
+      return [h.stepBudgetMs, h.loadBudgetMs]
+    }
+    try {
+      expect(await budgets(undefined)).toEqual([250, 2000])
+      expect(await budgets('4')).toEqual([1000, 8000])
+      expect(await budgets('4', { stepBudgetMs: 50 })).toEqual([50, 8000])
+      for (const bad of ['', 'x', '0', '-2', 'Infinity']) expect(await budgets(bad)).toEqual([250, 2000])
+    } finally {
+      if (before === undefined) delete process.env.III_NATIVE_UI_BUDGET_SCALE
+      else process.env.III_NATIVE_UI_BUDGET_SCALE = before
+    }
+  })
+
   it('stops a script that passes the heap cap', async () => {
     // Near its cap this wasm build of QuickJS slows down; the roomy step
     // budget keeps the test about the memory stop, not the deadline.

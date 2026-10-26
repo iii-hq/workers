@@ -673,6 +673,10 @@ jobs:
     if: needs.discover.outputs.native_ui == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      # The test host's step and load deadlines are wall time (250 ms and 2 s,
+      # the device's); a shared runner took over 250 ms for a 42 ms step.
+      III_NATIVE_UI_BUDGET_SCALE: '4'
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:

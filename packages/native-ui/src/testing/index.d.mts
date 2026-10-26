@@ -133,6 +133,9 @@ export interface TestHost {
   readonly roots: Map<number, number>
   readonly droppedWrites: { node: number; text: string; count: number; hostCount: number; hostText: string }[]
   readonly failed: { kind: string; message: string } | null
+  /** The deadlines in force: the options', else the catalogue's times `III_NATIVE_UI_BUDGET_SCALE`. */
+  readonly stepBudgetMs: number
+  readonly loadBudgetMs: number
   readonly envState: Env
   clock: number
 
