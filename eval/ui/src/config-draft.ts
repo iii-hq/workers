@@ -196,7 +196,7 @@ export const EMPTY_DRAFT: ConfigDraft = {
   where: '',
   stackName: '',
   stackYaml: '',
-  runs_per_side: '',
+  runs_per_side: '3',
   technical_retries: '',
   max_scenarios: '',
   estimated_usd_per_run: '',

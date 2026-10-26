@@ -566,10 +566,10 @@ fn both_arms_drifting_together_from_the_frozen_coverage_are_inconclusive() {
 }
 
 #[test]
-fn a_lucky_single_pair_never_becomes_an_approval() {
+fn a_single_pair_is_accepted_only_as_unanimous_and_says_so() {
     let (baseline, candidate) = pair();
     // n=1 per side under a plan that samples one run: the mean moved far
-    // more than the minimum, but one pair has p = 0.5.
+    // more than the minimum; one pair has p = 0.5 but is unanimous.
     let mut single = plan();
     single.sampling.runs_per_side = 1;
     single.criterion.min_runs = 1;
@@ -587,22 +587,26 @@ fn a_lucky_single_pair_never_becomes_an_approval() {
         ),
     ];
     let decided = decision::decide(&single, &baseline, &candidate, &lucky, NOW);
-    assert_eq!(
-        decided.outcome,
-        DecisionOutcomeV1::Inconclusive,
-        "{}",
-        decided.reason
-    );
     assert!(
-        decided.reason.contains("1 of 1") && decided.reason.contains("p=0.50000"),
+        decided.reason.contains("1 of 1")
+            && decided.reason.contains("p=0.50000")
+            && decided.reason.contains("accepted as unanimous")
+            && decided.reason.contains("not shown beyond chance"),
         "{}",
         decided.reason
     );
-    let mut cycle = record();
-    decision::freeze(&mut cycle, single.clone()).unwrap();
-    let recorded =
-        decision::decide_cycle(&mut cycle, None, &baseline, &candidate, &lucky, NOW).unwrap();
-    assert_ne!(recorded.outcome, DecisionOutcomeV1::Accepted);
+    // A single pair short of the effect is no gain.
+    let short = vec![
+        evidence_for("s", "base", runs(1, 1, 0.50), "cand", runs(1, 1, 0.50)),
+        lucky[1].clone(),
+    ];
+    let decided = decision::decide(&single, &baseline, &candidate, &short, NOW);
+    assert_ne!(
+        decided.outcome,
+        DecisionOutcomeV1::Accepted,
+        "{}",
+        decided.reason
+    );
 
     // Five consistent pairs pass at p = 0.03125.
     let decided = decision::decide(&plan(), &baseline, &candidate, &cheaper_and_correct(), NOW);

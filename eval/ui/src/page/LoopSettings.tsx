@@ -369,7 +369,7 @@ export function LoopSettings({
                             {field(
                               'runs_per_side',
                               'Runs per side',
-                              'Paired runs on each side. A change needs at least 5 to be proved.',
+                              'Paired runs on each side, 3 by default. With fewer than 5 a change is accepted only when every pair improves.',
                             )}
                             {field(
                               'technical_retries',

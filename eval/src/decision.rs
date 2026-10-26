@@ -207,7 +207,7 @@ pub fn compare(
     // runs must show it in a consistent direction (see [`directional`]).
     if outcome == ValidationOutcomeV1::ValidatedImprovement && criterion.min_effect > 0.0 {
         match directional(evidence, criterion) {
-            Ok(test) if test.p <= SIGN_TEST_ALPHA + EFFECT_TOLERANCE => {
+            Ok(test) if test.passes() => {
                 reason = format!("{reason}; {}", test.describe(criterion));
             }
             Ok(test) => {
@@ -229,10 +229,12 @@ pub fn compare(
 
 /// The frozen directional rule (part of the rules `RULES_VERSION` names): a
 /// positive improvement with a minimum effect above 0 must also pass a
-/// one-sided exact sign test at this level.
+/// one-sided exact sign test at this level, or reach the effect on every
+/// pair. Unanimity is what a sample too small for the test (fewer than 5
+/// pairs never reach 0.05) can show; its reason states the p it has.
 pub const SIGN_TEST_ALPHA: f64 = 0.05;
 /// Its identifier, written into every reason that applies it.
-pub const SIGN_TEST_RULE: &str = "paired-sign-test/one-sided/alpha-0.05";
+pub const SIGN_TEST_RULE: &str = "paired-sign-test/one-sided/alpha-0.05-or-unanimous";
 
 /// The directional sign test on one criterion's paired runs.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -246,12 +248,27 @@ pub struct SignTest {
 }
 
 impl SignTest {
+    /// p at the level, or every pair reached the effect.
+    pub fn passes(&self) -> bool {
+        self.p <= SIGN_TEST_ALPHA + EFFECT_TOLERANCE
+            || (self.pairs > 0 && self.reached == self.pairs)
+    }
+
     fn describe(&self, criterion: &CriterionV1) -> String {
         let (unit, _) = effect_unit(criterion.metric);
+        let small = if self.p > SIGN_TEST_ALPHA + EFFECT_TOLERANCE && self.passes() {
+            format!(
+                "; accepted as unanimous: {} pair(s) are too few for p <= {SIGN_TEST_ALPHA}, so \
+                 the direction is not shown beyond chance",
+                self.pairs
+            )
+        } else {
+            String::new()
+        };
         format!(
             "{SIGN_TEST_RULE}: {} of {} same-case run pairs (native run order) reached the {} {unit} \
              effect, one-sided binomial p={:.5}; evidence of a consistent direction, not a \
-             confidence interval for the mean",
+             confidence interval for the mean{small}",
             self.reached,
             self.pairs,
             number(criterion.min_effect),
@@ -483,17 +500,23 @@ pub fn no_room(criterion: &CriterionV1, pairs: u32, baseline: &EvidenceSideV1) -
             DirectionV1::Increase => true,
         })
         .count() as u32;
-    let best = sign_test_p(room, pairs);
-    (best > SIGN_TEST_ALPHA + EFFECT_TOLERANCE).then(|| {
+    let best = SignTest {
+        reached: room,
+        pairs,
+        p: sign_test_p(room, pairs),
+    };
+    (!best.passes()).then(|| {
         format!(
             "only {room} of {pairs} baseline runs leave room for {} {unit} of {} {}: even if \
-             each of them improved, the sign test would give p={best:.5}, above {SIGN_TEST_ALPHA}",
+             each of them improved, the pairs would be neither unanimous nor at p <= \
+             {SIGN_TEST_ALPHA} (p={:.5})",
             number(criterion.min_effect),
             metric_label(criterion),
             match criterion.direction {
                 DirectionV1::Decrease => "less",
                 DirectionV1::Increase => "more",
-            }
+            },
+            best.p
         )
     })
 }
@@ -1286,13 +1309,19 @@ mod tests {
                 && reason.contains("not a confidence interval"),
             "{reason}"
         );
-        // The same mean effect on 3 pairs cannot reach p <= 0.05.
+        // The same effect on 3 pairs is below the test's reach, but unanimous:
+        // accepted, saying p is 0.125.
         let (found, reason, _) = outcome(signals(&[3; 3]), signals(&[0; 3]), &decrease);
-        assert_eq!(found, Inconclusive, "{reason}");
+        assert_eq!(found, ValidatedImprovement, "{reason}");
         assert!(
-            reason.contains("3 of 3") && reason.contains("p=0.12500"),
+            reason.contains("3 of 3")
+                && reason.contains("p=0.12500")
+                && reason.contains("accepted as unanimous"),
             "{reason}"
         );
+        // One pair of 3 short of the effect: neither unanimous nor significant.
+        let (found, reason, _) = outcome(signals(&[3; 3]), signals(&[0, 0, 3]), &decrease);
+        assert_eq!(found, Inconclusive, "{reason}");
         // Exactly the minimum counts; one fewer than that does not.
         assert_eq!(
             outcome(signals(&[3; 5]), signals(&[1; 5]), &decrease).0,
@@ -1433,8 +1462,15 @@ mod tests {
             ..criterion(Tokens, DirectionV1::Decrease)
         };
         assert!(no_room(&tokens, 5, &side(Tokens, &[9_000.0; 5])).is_none());
-        // One pair can never reach p <= 0.05.
-        assert!(no_room(&tokens, 1, &side(Tokens, &[9_000.0])).is_some());
+        // Too few pairs for p <= 0.05 can still be unanimous: room on each is
+        // enough; one without room is not.
+        assert!(no_room(&tokens, 1, &side(Tokens, &[9_000.0])).is_none());
+        assert!(no_room(&errors, 3, &side(FunctionCallErrors, &[2.0, 1.0, 3.0])).is_none());
+        let short = no_room(&errors, 3, &side(FunctionCallErrors, &[2.0, 0.0, 3.0])).unwrap();
+        assert!(
+            short.contains("only 2 of 3") && short.contains("neither unanimous"),
+            "{short}"
+        );
     }
 
     #[test]

@@ -17,7 +17,7 @@ use crate::pull_request::PullRequestV1;
 
 /// Identity of the detectors, first pass and coverage rules; part of every
 /// `policy_revision`.
-pub const RULES_VERSION: &str = "e2e-loop-rules/5";
+pub const RULES_VERSION: &str = "e2e-loop-rules/6";
 pub const CYCLE_SCHEMA_VERSION: u32 = 1;
 pub const DEFAULT_LIST_LIMIT: u32 = 50;
 pub const MAX_LIST_LIMIT: u32 = 200;
@@ -220,11 +220,6 @@ impl LoopConfigV1 {
             // Checked here, not first at the proposal after a paid baseline.
             crate::candidate::validate_config(candidate)
                 .map_err(|error| EvalError::InvalidRequest(error.to_string()))?;
-            // The sign test needs five same-direction pairs: with fewer,
-            // 0.5^n never reaches alpha 0.05 and no candidate can be accepted.
-            if self.runs_per_side < 5 {
-                return invalid("candidate work needs runs_per_side of at least 5");
-            }
         }
         if let Some(validation) = &self.validation {
             if self.candidate.is_none() {

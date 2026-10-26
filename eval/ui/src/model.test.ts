@@ -231,7 +231,8 @@ describe('loop config', () => {
     expect(validateConfig(CONFIG)).toBeNull()
   })
 
-  it('has no defaults: an empty draft saves nothing', () => {
+  it('an empty draft saves nothing; it starts at 3 runs per side', () => {
+    expect(EMPTY_DRAFT.runs_per_side).toBe('3')
     expect(configFromDraft(EMPTY_DRAFT)).toBeNull()
     const blank = configFromDraft({ ...EMPTY_DRAFT, where: 'harness' })
     expect(blank && validateConfig(blank)).toBe('subject.provider and subject.model must name a model')

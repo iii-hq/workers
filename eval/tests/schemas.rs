@@ -105,8 +105,7 @@ fn configure_accepts_engine_metadata_but_no_credentials_or_unknown_fields() {
         "repository": "/repo", "base_sha": "a".repeat(40), "worktrees_dir": "/repo/.worktrees",
         "model": "m", "provider": "p", "max_turns": 4, "max_output_tokens": 100,
         "max_total_tokens": 1000, "max_cost_usd": 1.0});
-    assert!(parse(&with_candidate).unwrap().config.validate().is_err());
-    with_candidate["runs_per_side"] = 5.into();
+    // No minimum of runs: fewer than 5 pairs are accepted only when unanimous.
     parse(&with_candidate).unwrap().config.validate().unwrap();
     with_candidate["candidate"]["base_sha"] = "main".into();
     assert!(parse(&with_candidate).unwrap().config.validate().is_err());
