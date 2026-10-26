@@ -995,11 +995,13 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
         return Ok(false);
     };
     // Read oldest first, one call per run ([`pass_runs`]); each run moves
-    // the cursor past itself, so a failed call retries from there, and the
-    // session's lock is held throughout: no other pass reads this turn's
-    // rest into its bank.
+    // the cursor past itself, so a failed call retries from there. The
+    // session's lock holds while the pass runs; after a failed run it is
+    // released, and a later turn's pass may read the rest before the retry does.
+    let runs = pass_runs(entries, cfg.extraction_window);
+    tracing::debug!(session_id, runs = runs.len(), "extraction pass");
     let mut asked = false;
-    for run in pass_runs(entries, cfg.extraction_window) {
+    for run in runs {
         asked |= read_run(deps, &cfg, session_id, &resolved, run).await?;
     }
     Ok(asked)
@@ -1018,6 +1020,8 @@ const PASS_CALLS: usize = 4;
 // shortcut: past PASS_CALLS, only the newest `window` entries are read, and
 // the cursor moves past the rest unread, as before runs existed; drain the
 // backlog over later passes if facts are ever lost there.
+// shortcut: runs after the first are read without the turn's opening request;
+// carry the request into later runs if facts are lost there.
 fn pass_runs(entries: Vec<Entry>, window: usize) -> Vec<Vec<Entry>> {
     let runs = chunks(entries, CALL_CHARS);
     if runs.len() <= PASS_CALLS {

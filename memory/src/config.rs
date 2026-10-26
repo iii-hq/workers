@@ -47,10 +47,12 @@ pub struct WorkerConfig {
     pub inject_memories: bool,
 
     /// Memories injected per turn on rank alone. A list question goes past
-    /// it: when every line told stands on the same two or more question words
-    /// ("which services use Postgres 16?"), or on the `user` of "what do you
-    /// remember about me?", each sibling comes too, among the best
-    /// 4 x `recall_limit` candidates, until `recall_budget_tokens`. Also
+    /// it only for "what do you remember about me?" (every user fact) or for
+    /// siblings: lines on the same two or more question words, each leading
+    /// with its own subject ("which services use Postgres 16?"); each sibling
+    /// comes, among the best 4 x `recall_limit` candidates, until
+    /// `recall_budget_tokens`. A newer note on a told line's subject joins
+    /// right after it, even with no word of the message. Also
     /// `memory::recall`'s default limit.
     #[serde(default = "default_recall_limit")]
     pub recall_limit: usize,
@@ -59,10 +61,13 @@ pub struct WorkerConfig {
     #[serde(default = "default_recall_budget_tokens")]
     pub recall_budget_tokens: u64,
 
-    /// Extract new memories after each completed turn (one
-    /// `router::complete` call, off the hot path). Disable to run memory as
-    /// a purely manual store: turns that finish while it is off are stepped
-    /// past, never read once it is back on.
+    /// Extract new memories after each completed turn (up to 4
+    /// `router::complete` calls, one per 24,000 chars of new messages, off
+    /// the hot path). Disable to run memory as a purely manual store: turns
+    /// that finish while it is off are stepped past, never read once it is
+    /// back on. Off, each finished turn still steps the extraction cursor
+    /// past itself (no model call; it pages the session's messages as a pass
+    /// does), so turning it back on never reads what was said meanwhile.
     #[serde(default = "default_true")]
     pub extraction_enabled: bool,
 

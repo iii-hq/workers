@@ -37,6 +37,9 @@ rule; point-in-time information belongs in memories.
   `memory::pin` to protect the corrected version.
 - The user wants a style or convention set enforced everywhere —
   `memory::rule::set { "bank": "...", "name": "style", "content": "..." }`.
+- The user asks you never to remember something — `memory::rule::set` a hand
+  rule saying not to keep it, and `memory::delete` what is already stored
+  (find it via `memory::recall` or `memory::list`).
 - Separate contexts deserve separate banks (`blog` vs `coding`): a session
   selects its bank via session metadata `memory_bank` (`session::set-meta`)
   or the console composer's bank picker; `memory::bank::create` makes one.
