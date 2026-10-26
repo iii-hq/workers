@@ -1876,6 +1876,18 @@ pub async fn poll_proposal(
                     blocking(move || Ok(check_proposal(&cfg, &id, &result))).await?
                 }
             };
+            // The actor read the base through this checkout; its turn ended and
+            // the citations were checked against the repository, so nothing
+            // reads it again. Best effort: a leftover only costs disk.
+            let (repo, worktree) = (cfg.repository.clone(), previous.identity.worktree.clone());
+            blocking(move || {
+                let _ = git(
+                    Path::new(&repo),
+                    &["worktree", "remove", "--force", &worktree],
+                );
+                Ok(())
+            })
+            .await?;
             next.status = match checked {
                 Ok(proposal) => {
                     next.hypothesis = Some(proposal.hypothesis);

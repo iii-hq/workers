@@ -300,8 +300,28 @@ pub fn observed_errors(history: &Value) -> Observed {
     observed
 }
 
+/// The workers a stack's YAML declares: each container's key and the
+/// registry name of its `package://` worker. Empty when the YAML has none.
+pub fn declared_workers(yaml: &str) -> std::collections::BTreeSet<String> {
+    let mut declared = std::collections::BTreeSet::new();
+    if let Ok(stack) = serde_yaml::from_str::<serde_yaml::Value>(yaml) {
+        for (key, container) in stack["containers"].as_mapping().into_iter().flatten() {
+            declared.extend(key.as_str().map(str::to_string));
+            declared.extend(
+                container["worker"]
+                    .as_str()
+                    .and_then(|worker| worker.strip_prefix("package://"))
+                    .map(str::to_string),
+            );
+        }
+    }
+    declared
+}
+
 /// Selects the tests covering `objective` from every `tests-list` row and
-/// the `scenarios-list` catalog, plus the configured controls. At most
+/// the `scenarios-list` catalog, plus the configured controls. A test whose
+/// catalog `workers` are not all the engine or in `provided` (the workers
+/// the plan's stack runs, when known) cannot run there and is left out. At most
 /// `max_scenarios` are kept: for an observed need, those whose recorded runs
 /// (`observed`, by test id) show the most per run; otherwise those with the
 /// most current runs.
@@ -314,6 +334,7 @@ pub fn select(
     max_scenarios: usize,
     controls: &[String],
     observed: &std::collections::BTreeMap<String, Observed>,
+    provided: Option<&std::collections::BTreeSet<String>>,
     now: i64,
 ) -> CoverageV1 {
     let mut coverage = empty(rows, tests_revision, catalog, now);
@@ -354,6 +375,22 @@ pub fn select(
             let why = format!("its spec puts {} in play", matched.join(" + "));
             (matched, why, 0.0)
         };
+        let missing: Vec<&str> = scenario["workers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .filter(|worker| {
+                *worker != "engine" && provided.is_some_and(|run| !run.contains(*worker))
+            })
+            .collect();
+        if !missing.is_empty() {
+            stale.push(format!(
+                "{test_id}: needs {}, which the plan's stack does not run; not selected",
+                missing.join(", ")
+            ));
+            continue;
+        }
         match current_test(row, scenario, matched, |criteria| {
             format!(
                 "{why}; measured by {:?} per run while every spec criterion ({}) is preserved",

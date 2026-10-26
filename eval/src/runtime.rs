@@ -769,8 +769,53 @@ async fn coverage_stage(
                     }
                 }
             }
+            // What the plan's stack runs: its containers and the workers the
+            // registry brings with each. Unknown: no test is left out for it.
+            let mut provided = None;
+            if let Some(validation) = stored
+                .as_ref()
+                .and_then(|stored| stored.config.validation.as_ref())
+            {
+                let declared = coverage::declared_workers(&validation.source_stack_template);
+                let mut run = declared.clone();
+                for worker in &declared {
+                    match call::<_, Value>(
+                        deps,
+                        "e2e::dashboard::worker-resolve",
+                        json!({"worker": worker}),
+                        BUS_TIMEOUT_MS,
+                    )
+                    .await
+                    {
+                        Ok(resolved) => run.extend(
+                            resolved["dependencies"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string),
+                        ),
+                        Err(error) => {
+                            unread.push(format!(
+                                "the stack's {worker} could not be resolved ({error}); tests were not checked against the stack"
+                            ));
+                            run.clear();
+                            break;
+                        }
+                    }
+                }
+                provided = (!run.is_empty()).then_some(run);
+            }
             let mut found = coverage::select(
-                objective, &rows, &revision, &catalog, max, &controls, &observed, now,
+                objective,
+                &rows,
+                &revision,
+                &catalog,
+                max,
+                &controls,
+                &observed,
+                provided.as_ref(),
+                now,
             );
             found.gaps.extend(unread);
             let goal = coverage::need_goal(&found)

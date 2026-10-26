@@ -1606,6 +1606,7 @@ fn a_current_native_context_test_is_coverage_before_its_first_run() {
         1,
         &[],
         &Default::default(),
+        None,
         NOW,
     );
     assert!(coverage.covered, "{:?}", coverage.gaps);
@@ -1629,6 +1630,7 @@ fn configured_controls_count_toward_the_scenario_limit() {
             2,
             &controls,
             &Default::default(),
+            None,
             NOW,
         );
         assert!(coverage.covered, "{:?}", coverage.gaps);
@@ -1644,6 +1646,7 @@ fn configured_controls_count_toward_the_scenario_limit() {
         1,
         &["minimal_path".into()],
         &Default::default(),
+        None,
         NOW,
     );
     assert!(!coverage.covered);
@@ -1691,6 +1694,44 @@ fn a_retried_slot_did_not_complete_and_its_attempts_failures_reach_sentinel() {
 }
 
 #[test]
+fn a_test_the_plans_stack_cannot_run_is_left_out_before_any_baseline() {
+    let mut fixture: Value =
+        serde_json::from_str(include_str!("fixtures/e2e/catalog-context-pressure.json")).unwrap();
+    let select = |fixture: &Value, provided: Option<&std::collections::BTreeSet<String>>| {
+        eval::coverage::select(
+            "reduce context consumption",
+            fixture["rows"].as_array().unwrap(),
+            fixture["revision"].as_str().unwrap(),
+            &fixture["catalog"],
+            1,
+            &[],
+            &Default::default(),
+            provided,
+            NOW,
+        )
+    };
+    let stack = eval::coverage::declared_workers(
+        "containers:\n  harness:\n    worker: package://harness\n    commit: \"{commit}\"\n  probe:\n    worker: path:///x\n",
+    );
+    assert_eq!(stack.iter().collect::<Vec<_>>(), ["harness", "probe"]);
+    // The engine is always there; a worker the stack runs is fine.
+    fixture["catalog"]["scenarios"][0]["workers"] = json!(["engine", "harness"]);
+    assert!(select(&fixture, Some(&stack)).covered);
+    // A worker it does not run leaves the test out, with the reason.
+    fixture["catalog"]["scenarios"][0]["workers"] = json!(["canvas", "engine"]);
+    let coverage = select(&fixture, Some(&stack));
+    assert!(!coverage.covered);
+    assert!(
+        coverage.gaps.iter().any(|gap| gap
+            == "context_pressure: needs canvas, which the plan's stack does not run; not selected"),
+        "{:?}",
+        coverage.gaps
+    );
+    // An unknown stack leaves nothing out.
+    assert!(select(&fixture, None).covered);
+}
+
+#[test]
 fn only_finite_non_negative_error_counts_are_observed() {
     let history = json!({"observations": [
         {"runs": [{"function_call_errors": 3.0}, {"function_call_errors": -2.0}, {}]},
@@ -1715,6 +1756,7 @@ fn need_words_only_in_a_prompts_code_or_paths_are_no_coverage() {
         2,
         &[],
         &Default::default(),
+        None,
         NOW,
     );
     let selected: Vec<&str> = coverage

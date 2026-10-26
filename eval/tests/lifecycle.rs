@@ -404,6 +404,9 @@ impl World {
                 json!({"message_id": "queued"})
             }
             "e2e::dashboard::tests-list" => self.tests_pages[0].clone(),
+            "e2e::dashboard::worker-resolve" => {
+                json!({"name": data["worker"], "dependencies": ["state"]})
+            }
             "e2e::scenarios-list" => self.catalog.clone(),
             "sentinel::reports::ingest" => {
                 json!({"recorded": 0, "deduped": 0, "skipped": 0, "results": []})
@@ -929,6 +932,9 @@ impl Rig {
             "{:?}",
             record.history
         );
+        // The ended proposal leaves no checkout behind.
+        let proposal = record.proposal.as_ref().unwrap().identity.worktree.clone();
+        assert!(!Path::new(&proposal).exists(), "{proposal} was left behind");
         // A restart while the actor runs reuses its identity: no second send.
         self.restart();
         self.tick().await;
