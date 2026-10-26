@@ -527,12 +527,13 @@ pub fn no_room(criterion: &CriterionV1, pairs: u32, baseline: &EvidenceSideV1) -
     })
 }
 
-/// The pair's evidence for every scenario the plan judges, read from the two
-/// stored bundles only.
+/// The pair's evidence for every scenario the plan judges, read from the
+/// stored bundles only: each side's executions in round order, their runs
+/// concatenated.
 pub fn pair_evidence(
     plan: &CyclePlanV1,
-    baseline: (&str, &serde_json::Value),
-    candidate: (&str, &serde_json::Value),
+    baseline: &[(String, serde_json::Value)],
+    candidate: &[(String, serde_json::Value)],
     now: i64,
 ) -> Vec<EvidenceV1> {
     let mut scenarios: Vec<&str> = criteria(plan)
@@ -544,9 +545,16 @@ pub fn pair_evidence(
     scenarios
         .into_iter()
         .map(|scenario_id| {
-            let side = |(execution_id, bundle): (&str, &serde_json::Value)| EvidenceSideV1 {
-                execution_id: execution_id.into(),
-                runs: crate::evidence::runs_of(bundle, scenario_id, &patterns),
+            let side = |executions: &[(String, serde_json::Value)]| EvidenceSideV1 {
+                execution_id: executions
+                    .iter()
+                    .map(|(execution_id, _)| execution_id.as_str())
+                    .collect::<Vec<_>>()
+                    .join("+"),
+                runs: executions
+                    .iter()
+                    .flat_map(|(_, bundle)| crate::evidence::runs_of(bundle, scenario_id, &patterns))
+                    .collect(),
                 n: 0,
                 mean: None,
             };
@@ -560,6 +568,48 @@ pub fn pair_evidence(
             }
         })
         .collect()
+}
+
+/// One side run as several executions, as one side: what they all recorded.
+/// A field they disagree on becomes unknown (an empty list, or absent), so
+/// its comparability check fails instead of one execution speaking for all.
+pub fn merge_sides(sides: &[DecisionSideV1]) -> Option<DecisionSideV1> {
+    fn agree(merged: &mut serde_json::Value, other: &serde_json::Value, skip: &[&str]) {
+        let (Some(merged), Some(other)) = (merged.as_object_mut(), other.as_object()) else {
+            return;
+        };
+        let keys: std::collections::BTreeSet<String> =
+            merged.keys().chain(other.keys()).cloned().collect();
+        for key in keys {
+            if skip.contains(&key.as_str()) || merged.get(&key) == other.get(&key) {
+                continue;
+            }
+            match merged.get(&key) {
+                Some(serde_json::Value::Array(_)) => {
+                    merged.insert(key, serde_json::Value::Array(Vec::new()));
+                }
+                _ => {
+                    merged.remove(&key);
+                }
+            }
+        }
+    }
+    let (first, rest) = sides.split_first()?;
+    let mut merged = serde_json::to_value(first).ok()?;
+    for other in rest {
+        let other = serde_json::to_value(other).ok()?;
+        agree(&mut merged, &other, &["execution_id", "identity"]);
+        if let (Some(identity), Some(theirs)) = (merged.get_mut("identity"), other.get("identity")) {
+            agree(identity, theirs, &[]);
+        }
+    }
+    merged["execution_id"] = sides
+        .iter()
+        .map(|side| side.execution_id.as_str())
+        .collect::<Vec<_>>()
+        .join("+")
+        .into();
+    serde_json::from_value(merged).ok()
 }
 
 // ---------------------------------------------------------------------------

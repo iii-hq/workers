@@ -38,9 +38,10 @@
 ## Budget
 
 - Reservation kinds: Investigation (proposal), Implementation (the actor,
-  `{cycle}:implementation`, `candidate: true`), Jev, E2e (`{cycle}:<role>`,
-  the candidate's validation run `{cycle}:candidate`). Opening the pull
-  request reserves nothing.
+  `{cycle}:implementation`, `candidate: true`), Jev, E2e (`{cycle}:<role>`;
+  the validation's rounds `{cycle}:candidate-<n>` and `{cycle}:control-<n>`,
+  each a share of the plan's estimate). Opening the pull request reserves
+  nothing.
 - Stage futures are boxed: their state machines exceed a worker thread's
   stack in unoptimized builds.
 

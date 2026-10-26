@@ -1017,20 +1017,67 @@ pub async fn validation_stage(
         )
         .await;
     };
+    let Some(base_sha) = record
+        .config
+        .as_ref()
+        .and_then(|stored| stored.config.candidate.as_ref())
+        .map(|candidate| candidate.base_sha.clone())
+    else {
+        return fail(deps, record, "a validation needs config.candidate.base_sha").await;
+    };
+    let runs = plan.sampling.runs_per_side;
+    let Some((role, name)) = proof_schedule(runs)
+        .into_iter()
+        .find(|(_, name)| !proof_imported(record, name))
+    else {
+        return fail(deps, record, "every proof round is imported but nothing decided").await;
+    };
     let parameters = ExecutionParametersV1 {
         where_: validation.where_,
-        stack: Some(validation.source_stack(&sha)),
+        stack: Some(validation.source_stack(if role == ExecutionRoleV1::Control {
+            &base_sha
+        } else {
+            &sha
+        })),
+        runs: 1,
         ..plan.parameters.clone()
     };
     dispatch(
         deps,
         record,
-        ExecutionRoleV1::Candidate,
-        "candidate",
+        role,
+        &name,
         &parameters,
-        plan.estimated_usd,
+        plan.estimated_usd / f64::from(runs.max(1)),
     )
     .await
+}
+
+/// The validation's executions in dispatch order, one round of every planned
+/// case each: the base commit (`control`) and the candidate alternate as
+/// ABBA (candidate first in odd rounds), so drift over time and a provider
+/// cache the first run of a round warms fall on both sides alike.
+pub fn proof_schedule(runs: u32) -> Vec<(ExecutionRoleV1, String)> {
+    (1..=runs)
+        .flat_map(|round| {
+            let candidate = (ExecutionRoleV1::Candidate, format!("candidate-{round}"));
+            let control = (ExecutionRoleV1::Control, format!("control-{round}"));
+            if round % 2 == 1 {
+                [candidate, control]
+            } else {
+                [control, candidate]
+            }
+        })
+        .collect()
+}
+
+/// Whether the proof execution `name` is imported.
+pub fn proof_imported(record: &CycleRecordV1, name: &str) -> bool {
+    let work_id = format!("{}:{name}", record.cycle_id);
+    record.executions.iter().any(|entry| {
+        entry.work_id.as_deref() == Some(work_id.as_str())
+            && entry.state == ExecutionStateV1::Imported
+    })
 }
 
 /// Stops the actors a cancelled cycle still runs (best effort).

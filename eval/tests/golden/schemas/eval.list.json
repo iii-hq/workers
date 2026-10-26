@@ -1676,9 +1676,16 @@
             "type": "string"
           },
           {
-            "description": "The candidate's source validation.",
+            "description": "One round of the candidate's source validation.",
             "enum": [
               "candidate"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "One round of the base commit, run beside the candidate's: the validation compares the candidate with these, never with the baseline the cycle measured before its proposal.",
+            "enum": [
+              "control"
             ],
             "type": "string"
           }

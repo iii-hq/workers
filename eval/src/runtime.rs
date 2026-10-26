@@ -1380,10 +1380,10 @@ async fn forward_to_sentinel(
     evidence: &ExecutionEvidenceV1,
     role: ExecutionRoleV1,
 ) -> Option<SentinelForwardV1> {
-    let side = if role == ExecutionRoleV1::Candidate {
-        "candidate"
-    } else {
-        "baseline"
+    let side = match role {
+        ExecutionRoleV1::Candidate => "candidate",
+        ExecutionRoleV1::Control => "control",
+        ExecutionRoleV1::Source | ExecutionRoleV1::Baseline => "baseline",
     };
     let identity = &evidence.identity;
     let revision = identity
@@ -1691,25 +1691,58 @@ async fn analysis_stage(
             }
             baseline = Some(measured);
         }
-        ExecutionRoleV1::Candidate => {
+        ExecutionRoleV1::Candidate | ExecutionRoleV1::Control => 'proof: {
             let plan = record
                 .plan
                 .clone()
                 .ok_or_else(|| EvalError::State("a comparison without a plan".into()))?;
-            let base = record
-                .executions
-                .iter()
-                .find(|entry| {
-                    entry.role == ExecutionRoleV1::Baseline
-                        && entry.state == ExecutionStateV1::Imported
-                })
-                .and_then(|entry| entry.admission_key.clone())
-                .ok_or_else(|| {
-                    EvalError::State("a comparison without an imported baseline".into())
-                })?;
-            let base = state::get_evidence(&deps.iii, &base)
-                .await?
-                .ok_or_else(|| EvalError::State("the baseline evidence is missing".into()))?;
+            // Every round of both sides, in round order; this import is not
+            // in `record` yet.
+            let schedule = crate::stages::proof_schedule(plan.sampling.runs_per_side);
+            let this = entry.work_id.clone();
+            let mut rounds: Vec<(ExecutionRoleV1, Option<ExecutionEvidenceV1>)> = Vec::new();
+            for (role, name) in &schedule {
+                let work_id = format!("{}:{name}", record.cycle_id);
+                let found = if this.as_deref() == Some(work_id.as_str()) {
+                    Some(evidence.clone())
+                } else {
+                    match record.executions.iter().find(|stored| {
+                        stored.work_id.as_deref() == Some(work_id.as_str())
+                            && stored.state == ExecutionStateV1::Imported
+                    }) {
+                        Some(stored) => {
+                            let key = stored.admission_key.clone().ok_or_else(|| {
+                                EvalError::State(format!("proof round {name} has no evidence key"))
+                            })?;
+                            Some(state::get_evidence(&deps.iii, &key).await?.ok_or_else(|| {
+                                EvalError::State(format!("the evidence of {name} is missing"))
+                            })?)
+                        }
+                        None => None,
+                    }
+                };
+                rounds.push((*role, found));
+            }
+            let imported = rounds.iter().filter(|(_, found)| found.is_some()).count();
+            if imported < rounds.len() {
+                next_stage = Some((
+                    CycleStageV1::Validation,
+                    format!(
+                        "{} imported; {imported} of {} proof executions in",
+                        entry.label.as_deref().unwrap_or("a proof round"),
+                        rounds.len()
+                    ),
+                ));
+                break 'proof;
+            }
+            let of = |wanted: ExecutionRoleV1| -> Vec<ExecutionEvidenceV1> {
+                rounds
+                    .iter()
+                    .filter(|(role, _)| *role == wanted)
+                    .filter_map(|(_, found)| found.clone())
+                    .collect()
+            };
+            let (controls, candidates) = (of(ExecutionRoleV1::Control), of(ExecutionRoleV1::Candidate));
             let validation = config.and_then(|config| config.validation.clone());
             let side = |evidence: &ExecutionEvidenceV1, expected_revision: Option<String>| {
                 // The recorded stack must be the frozen template with only
@@ -1730,23 +1763,34 @@ async fn analysis_stage(
                     observed_stack,
                 }
             };
-            // With a pinned stack the baseline must have run the base commit.
+            // With a pinned stack the control must have run the base commit.
             let base_revision = config
                 .and_then(|config| config.validation.as_ref().zip(config.candidate.as_ref()))
                 .map(|(_, candidate)| candidate.base_sha.clone());
-            let other = side(
-                &evidence,
-                Some(crate::stages::candidate_sha(record).ok_or_else(|| {
-                    EvalError::State("a candidate execution without a candidate commit".into())
-                })?),
-            );
+            let candidate_revision = crate::stages::candidate_sha(record).ok_or_else(|| {
+                EvalError::State("a candidate execution without a candidate commit".into())
+            })?;
+            let merged = |runs: &[ExecutionEvidenceV1], revision: Option<String>| {
+                let sides: Vec<DecisionSideV1> = runs
+                    .iter()
+                    .map(|evidence| side(evidence, revision.clone()))
+                    .collect();
+                decision::merge_sides(&sides)
+                    .ok_or_else(|| EvalError::State("a proof side has no execution".into()))
+            };
+            let other = merged(&candidates, Some(candidate_revision))?;
+            let bundles = |runs: &[ExecutionEvidenceV1]| -> Vec<(String, Value)> {
+                runs.iter()
+                    .map(|evidence| (evidence.execution_id.clone(), evidence.bundle.clone()))
+                    .collect()
+            };
             let pairs = decision::pair_evidence(
                 &plan,
-                (&base.execution_id, &base.bundle),
-                (&evidence.execution_id, &evidence.bundle),
+                &bundles(&controls),
+                &bundles(&candidates),
                 now,
             );
-            let base_side = side(&base, base_revision);
+            let base_side = merged(&controls, base_revision)?;
             let ledger = state::get_ledger(&deps.iii, &record.cycle_id).await?;
             judged = Some((base_side, other, pairs, ledger));
         }

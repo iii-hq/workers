@@ -1001,7 +1001,9 @@ impl Rig {
             commit.candidate_sha
         );
         let validation = self.world().e2e.dispatched[1].clone();
-        assert_eq!(validation.1, format!("eval:{cycle_id}:candidate"));
+        // The proof's first round runs the candidate; the base follows.
+        assert_eq!(validation.1, format!("eval:{cycle_id}:candidate-1"));
+        assert_eq!(validation.2["runs"], 1, "one round per execution");
         // The actor and the run validating its commit are two reservations.
         let ledger = state::get_ledger(&self.iii, &cycle_id)
             .await
@@ -1014,7 +1016,7 @@ impl Rig {
             CycleWorkKindV1::Implementation
         );
         assert_eq!(
-            ledger.reservations[&format!("{cycle_id}:candidate")]
+            ledger.reservations[&format!("{cycle_id}:candidate-1")]
                 .work
                 .kind,
             CycleWorkKindV1::E2e
@@ -1027,17 +1029,54 @@ impl Rig {
         (cycle_id, commit.candidate_sha)
     }
 
+    /// Finishes the validation's rounds in the order the cycle dispatches
+    /// them: a control round runs the base with `control`'s run of that
+    /// round, a candidate round runs `system` with `candidate`'s.
+    async fn prove(
+        &self,
+        control: Vec<(&str, Vec<Value>)>,
+        candidate: Vec<(&str, Vec<Value>)>,
+        system: &System,
+    ) {
+        let base = self.base();
+        loop {
+            let pending = {
+                let world = self.world();
+                world.e2e.dispatched.iter().find_map(|(id, label, _)| {
+                    let running = world.e2e.executions[id]["manifest"]["executions"][0]["status"]
+                        == "running";
+                    (running && (label.contains(":candidate-") || label.contains(":control-")))
+                        .then(|| (id.clone(), label.clone()))
+                })
+            };
+            let Some((id, label)) = pending else {
+                break;
+            };
+            let round: usize = label.rsplit('-').next().unwrap().parse().unwrap();
+            let (runs, ran) = if label.contains(":control-") {
+                (&control, &base)
+            } else {
+                (&candidate, system)
+            };
+            let one: Vec<(&str, Vec<Value>)> = runs
+                .iter()
+                .map(|(scenario, runs)| (*scenario, vec![runs[round - 1].clone()]))
+                .collect();
+            self.world().e2e.finish(&id, "passed", one, ran);
+            self.changed(&id).await;
+        }
+    }
+
     /// … then the validation ran the candidate commit and held every
     /// criterion: the source decision is accepted.
     async fn reach_accepted(&mut self, files: &[&str]) -> String {
         let (cycle_id, candidate_sha) = Box::pin(self.reach_validation_changing(files)).await;
-        self.world().e2e.finish(
-            "plan-2",
-            "passed",
+        self.prove(
+            side(TOKENS, LOST),
             side(TOKENS, FIXED),
             &candidate_system(candidate_sha),
-        );
-        self.changed("plan-2").await;
+        )
+        .await;
         let record = self.cycle(&cycle_id).await;
         assert_eq!(
             record.decision.as_ref().unwrap().outcome,
@@ -1226,13 +1265,12 @@ async fn a_cheaper_candidate_that_loses_a_criterion_is_rejected_and_never_propos
     };
     rig.configure().await;
     let (cycle_id, candidate_sha) = Box::pin(rig.reach_validation()).await;
-    rig.world().e2e.finish(
-        "plan-2",
-        "passed",
+    rig.prove(
+        side(TOKENS, LOST),
         side(1.0, [Some(0), Some(10), Some(10), Some(10)]),
         &candidate_system(candidate_sha),
-    );
-    rig.changed("plan-2").await;
+    )
+    .await;
     let record = rig.cycle(&cycle_id).await;
     assert_eq!(
         record.decision.as_ref().unwrap().outcome,
@@ -1256,10 +1294,7 @@ async fn a_validation_that_did_not_run_the_candidate_commit_is_inconclusive() {
     let (cycle_id, _) = Box::pin(rig.reach_validation()).await;
     // The E2E recorded the base again: what the actor committed is not proof.
     let base = rig.base();
-    rig.world()
-        .e2e
-        .finish("plan-2", "passed", side(TOKENS, FIXED), &base);
-    rig.changed("plan-2").await;
+    rig.prove(side(TOKENS, LOST), side(TOKENS, FIXED), &base).await;
     let decision = rig.cycle(&cycle_id).await.decision.unwrap();
     assert_eq!(
         decision.outcome,
@@ -1690,13 +1725,12 @@ async fn a_tampered_token_counter_without_the_criterion_fix_is_not_approved() {
     let (cycle_id, candidate_sha) = Box::pin(rig.reach_validation()).await;
     // The candidate reports almost no tokens but the needles criterion is
     // still lost: the self-reported counter decides nothing.
-    rig.world().e2e.finish(
-        "plan-2",
-        "passed",
+    rig.prove(
+        side(TOKENS, LOST),
         side(1.0, LOST),
         &candidate_system(candidate_sha),
-    );
-    rig.changed("plan-2").await;
+    )
+    .await;
     let record = rig.cycle(&cycle_id).await;
     let decision = record.decision.clone().unwrap();
     assert_ne!(
@@ -1707,4 +1741,69 @@ async fn a_tampered_token_counter_without_the_criterion_fix_is_not_approved() {
     );
     assert!(record.pull_request.is_none());
     assert!(rig.services.lock().unwrap().seen.is_empty());
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn the_candidate_is_compared_with_base_rounds_run_beside_it_not_the_earlier_baseline() {
+    let Some(mut rig) = Rig::start("control").await else {
+        return;
+    };
+    rig.configure().await;
+    let (cycle_id, candidate_sha) = Box::pin(rig.reach_validation()).await;
+    // The baseline lost needles points before the proposal; beside the
+    // candidate the base holds them too: the change shows no improvement.
+    rig.prove(
+        side(TOKENS, FIXED),
+        side(TOKENS, FIXED),
+        &candidate_system(candidate_sha.clone()),
+    )
+    .await;
+    let record = rig.cycle(&cycle_id).await;
+    let decision = record.decision.clone().unwrap();
+    assert_ne!(
+        decision.outcome,
+        DecisionOutcomeV1::Accepted,
+        "{}",
+        decision.reason
+    );
+    // ABBA: one round per execution, the order flipping every round, each
+    // side on its own commit.
+    let proof: Vec<(String, String)> = rig
+        .world()
+        .e2e
+        .dispatched
+        .iter()
+        .skip(1)
+        .map(|(_, label, parameters)| {
+            (
+                label.rsplit(':').next().unwrap().to_string(),
+                parameters["stack"]["yaml"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    let order: Vec<&str> = proof.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        order,
+        [
+            "candidate-1", "control-1", "control-2", "candidate-2", "candidate-3", "control-3",
+            "control-4", "candidate-4", "candidate-5", "control-5"
+        ]
+    );
+    for (name, yaml) in &proof {
+        let sha = if name.starts_with("control") {
+            &rig.base_sha
+        } else {
+            &candidate_sha
+        };
+        assert!(yaml.contains(sha.as_str()), "{name} runs {sha}");
+    }
+    assert_eq!(
+        record
+            .executions
+            .iter()
+            .filter(|entry| entry.role == ExecutionRoleV1::Control)
+            .count(),
+        5
+    );
 }

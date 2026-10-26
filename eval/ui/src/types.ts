@@ -111,7 +111,8 @@ export interface CycleEvent {
   detail: string
 }
 
-export type ExecutionRole = 'source' | 'baseline' | 'candidate'
+/** `control`: a round of the base run beside the candidate's, what the candidate is compared with. */
+export type ExecutionRole = 'source' | 'baseline' | 'candidate' | 'control'
 export type ExecutionState = 'dispatching' | 'running' | 'imported' | 'lost'
 
 export interface CycleExecution {

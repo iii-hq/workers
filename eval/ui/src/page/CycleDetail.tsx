@@ -600,16 +600,32 @@ function steps(cycle: CycleRecord, current: LoopConfig | null): Step[][] {
     : reached(1)
       ? [{ mark: active ? 'off' : 'stop', label: 'Candidate work', fact: 'Off in Loop settings' }]
       : []
+  // The base and the candidate alternate, one round per execution.
+  const rounds = cycle.executions?.filter((entry) => entry.role === 'candidate' || entry.role === 'control') ?? []
+  const planned = 2 * (cycle.plan?.sampling.runs_per_side ?? 0)
+  const proved = rounds.filter((entry) => entry.state === 'imported').length
   const prove: (Step | null)[] = [
-    executionStep('candidate', 'Candidate run'),
+    rounds.length
+      ? {
+          mark: rounds.some((entry) => entry.state === 'lost')
+            ? 'fail'
+            : proved === planned
+              ? 'done'
+              : active
+                ? 'now'
+                : 'stop',
+          label: 'Paired rounds',
+          fact: `${proved} of ${planned} in · base and candidate alternate`,
+        }
+      : null,
     cycle.decision
       ? {
           mark: OUTCOME_MARK[cycle.decision.outcome],
           label: 'Source decision',
           fact: decisionView(cycle.decision.outcome).label,
         }
-      : entry('candidate')
-        ? { mark: 'todo', label: 'Source decision', fact: 'In code, when the run ends' }
+      : rounds.length
+        ? { mark: 'todo', label: 'Source decision', fact: 'In code, when every round is in' }
         : null,
   ]
   const held = review(cycle)
@@ -755,9 +771,10 @@ function Rule({ cycle }: { cycle: CycleRecord }) {
           </p>
         </div>
         <p className="eval-ui-faint">
-          The same {plural(plan.sampling.runs_per_side, 'case')} run on both sides and are compared run by run. The
-          change is accepted only if the runs agree (one-sided sign test, p ≤ 0.05) and nothing below drops. Model,
-          provider, engine, stack, cases and policy must match on both sides.
+          The base runs again beside the candidate: {plural(plan.sampling.runs_per_side, 'round')} each, alternating one
+          round at a time, compared round by round. The change is accepted only if every round improves or the rounds
+          agree at p ≤ 0.05, and nothing below drops. Model, provider, engine, stack, cases and policy must match on
+          both sides.
         </p>
         {plan.preserved?.length ? (
           <div className="eval-ui-stack-sm">

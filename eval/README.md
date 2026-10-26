@@ -129,8 +129,9 @@ missing, the cycle stops `inconclusive` with the exact reason, never with a
 false result.
 
 - `candidate`: repository, `base_sha`, `worktrees_dir`, the actor's model and
-  provider, and its bounds. It is checked by `eval::configure`, and it needs
-  `runs_per_side` of at least 5: the sign test accepts nothing on fewer pairs.
+  provider, and its bounds. It is checked by `eval::configure`. With fewer
+  than 5 `runs_per_side` the sign test cannot reach p <= 0.05, so a change is
+  accepted only when every pair improves, and its reason says so.
 - `validation`: `where: docker|github`, `stack_name` and a stack template
   with `{commit}`. It declares each worker a candidate may change as a
   `package://<worker>` container with `commit: {commit}`, so both sides
@@ -159,7 +160,12 @@ cycle runs these steps:
    by a relative path (Cargo `path`, `#[path]`, `include_str!`, an import,
    a build script, a symlink) or a `workspace:` package. Its changed paths
    are recorded and it is published to its own branch.
-3. A source validation runs under the frozen plan.
+3. A source validation runs under the frozen plan: the base commit
+   (`control`) runs again beside the candidate, one round of every planned
+   case per execution, alternating ABBA (candidate first in odd rounds) so
+   drift over time and a warmed provider cache fall on both sides alike.
+   The candidate is compared round by round with these controls, never with
+   the baseline measured before the proposal, which was chosen for losing.
 4. The source decision is made.
 5. An accepted change becomes a pull request from its branch to `main`,
    ready for review, and the cycle ends `proposed`. The body carries the

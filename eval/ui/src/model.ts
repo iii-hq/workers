@@ -165,7 +165,7 @@ export function phaseOf(record: CycleRecord): number {
   const stopped = stoppedFor(record)
   if (review(record)) return 3
   if (record.decision || stage === 'validation' || stopped === 'prove') return 2
-  if (record.executions?.some((entry) => entry.role === 'candidate')) return 2
+  if (record.executions?.some((entry) => entry.role === 'candidate' || entry.role === 'control')) return 2
   if (record.proposal || record.candidate || stage === 'proposal' || stage === 'candidate' || stopped === 'improve') {
     return 1
   }
@@ -276,7 +276,8 @@ const DOING: Record<CycleStage, string> = {
 const RUNNING: Record<ExecutionRole, string> = {
   source: 'Waiting for the execution to finish',
   baseline: "Measuring today's Harness on the E2E",
-  candidate: 'Running the candidate on the E2E',
+  candidate: 'Running a candidate round on the E2E',
+  control: 'Running a base round beside the candidate',
 }
 
 /** The E2E execution the cycle waits on now, if any. */
