@@ -62,7 +62,7 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 futures = "0.3"
 bytes = "1"
 notify = "8.2.0"
-base64 = "0.22"
+base64 = "0.23"
 libc = "0.2"
 uuid = { version = "1", features = ["v4", "serde"] }
 thiserror = "2"

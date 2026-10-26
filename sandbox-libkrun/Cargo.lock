@@ -1349,7 +1349,7 @@ name = "iii-init"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
+ "base64 0.23.1",
  "iii-shell-proto",
  "iii-supervisor",
  "libc",
@@ -1445,7 +1445,7 @@ dependencies = [
 name = "iii-shell-client"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "iii-shell-proto",
  "libc",
  "tempfile",
@@ -1458,7 +1458,7 @@ dependencies = [
 name = "iii-shell-proto"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "schemars",
  "serde",
  "serde_json",
@@ -2792,7 +2792,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "clap",
  "colored",
