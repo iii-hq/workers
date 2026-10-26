@@ -19,19 +19,7 @@ ignore = [
   # webpki-roots 1 at 1.0.10 or later. Drop this entry with mysql_async's
   # move to webpki-roots 1.
   "RUSTSEC-2026-0381",
-  # zstd 0.13 / zstd-safe 7, kept by crates with no release on zstd 0.14:
-  # mysql_common (database: zstd::Decoder and copy_decode over binlog
-  # transaction payloads), wasmtime-internal-cache (python-core, code-runner:
-  # decode_all/encode_all of the local module cache, default features off) and
-  # msb_krun_vmm (sandbox-builtin: copy_decode of the bundled kernel image).
-  # None of them reaches the vulnerable code. Drop these three when all three
-  # move to zstd 0.14 / zstd-safe 8.
-  # - 0391: only the with_context constructors; all of them build a fresh
-  #   context per stream.
-  "RUSTSEC-2026-0391",
-  # - 0398: only the `seekable` feature, which none of them enables.
-  "RUSTSEC-2026-0398",
-  # - 0403: only zstd::stream::write::Decoder; the advisory states that
-  #   read::Decoder, decode_all and the bulk API are unaffected.
-  "RUSTSEC-2026-0403",
 ]
+# An advisory that only one lockfile may ignore goes in <dir>/.cargo/audit-ignore
+# instead (one id per line, with its justification); the audit workflow passes
+# those ids as --ignore for that lockfile alone.
