@@ -1,0 +1,18 @@
+# Advisories ignored for sandbox-libkrun/Cargo.lock only (see .github/workflows/rust-security-audit.yml).
+#
+# zstd 0.13 / zstd-safe 7 come from msb_krun_vmm, whose latest release (0.1.42)
+# still requires zstd ^0.13 (upstream fix: libkrun/libkrun#948); this crate
+# also pins msb_krun =0.1.16 for the musl build. It uses zstd only on x86_64,
+# to decompress the bundled kernel image (zstd::stream::copy_decode), which
+# reaches none of the vulnerable code. Drop all three when msb_krun moves to
+# zstd 0.14.
+#
+# Affects only raw::Encoder::with_context and raw::Decoder::with_context, which
+# borrow a context across streams. copy_decode builds its own context.
+RUSTSEC-2026-0391
+# Affects only Seekable::decompress (the `seekable` feature, not enabled).
+RUSTSEC-2026-0398
+# Affects only zstd::stream::write::Decoder. The advisory states that
+# read::Decoder, decode_all and the bulk API (copy_decode reads through
+# read::Decoder) are unaffected.
+RUSTSEC-2026-0403

@@ -210,7 +210,7 @@ def test_every_rust_worker_ships_windows_or_justifies_its_absence():
         "lsp",
         "quick-tunnel",  # New Unix-only worker; child lifecycle is not supported on Windows.
         "sandbox-code-runner",
-        "sandbox-builtin",  # microVMs need KVM or Hypervisor.framework; neither exists on Windows.
+        "sandbox-libkrun",  # microVMs need KVM or Hypervisor.framework; neither exists on Windows.
         "ide",
         "ios-simulator",  # Drives Xcode's iOS Simulators; macOS only.
         "tmux",  # Drives the host's tmux server; tmux has no Windows build.

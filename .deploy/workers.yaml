@@ -2086,16 +2086,16 @@ workers:
       - tsconfig.json
       - iii.worker.yaml
     publish: false
-  sandbox-builtin:
+  sandbox-libkrun:
     source:
-      path: sandbox-builtin
+      path: sandbox-libkrun
       package_manifest: Cargo.toml
     artifact:
       kind: rust-binary
       toolchain:
         name: rust
         version: 1.97.1
-      binary: sandbox-builtin
+      binary: sandbox-libkrun
       # Keep Intel macOS excluded: Hypervisor.framework microVMs are Apple Silicon only.
       targets:
       - aarch64-apple-darwin

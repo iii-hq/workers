@@ -1,0 +1,15 @@
+[package]
+name = "iii-supervisor"
+version = "0.1.0"
+edition = "2024"
+license = "Elastic-2.0"
+publish = false
+description = "Host-guest channel protocols of a sandbox-libkrun VM (worker env, shell exec, source sync), shared by iii-init and sandbox-libkrun."
+
+[lib]
+name = "iii_supervisor"
+path = "src/lib.rs"
+
+[dependencies]
+iii-shell-proto = { path = "../iii-shell-proto" }
+serde_json = "1"

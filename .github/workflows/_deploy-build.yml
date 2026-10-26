@@ -125,8 +125,8 @@ jobs:
               ;;
           esac
 
-      - name: Install libcap-ng (sandbox-builtin)
-        if: inputs.worker == 'sandbox-builtin' && runner.os == 'Linux'
+      - name: Install libcap-ng (sandbox-libkrun)
+        if: inputs.worker == 'sandbox-libkrun' && runner.os == 'Linux'
         timeout-minutes: 10
         env:
           BUILD_TARGET: ${{ inputs.target }}

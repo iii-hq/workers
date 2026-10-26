@@ -1,4 +1,4 @@
 # Goldens are compared byte for byte; Windows checkouts would otherwise turn
 # them into CRLF and fail every schema test.
 computer/tests/golden/** text eol=lf
-sandbox-builtin/firmware/** binary
+sandbox-libkrun/firmware/** binary
