@@ -1,5 +1,5 @@
 {
-  "catalogVersion": 1,
+  "catalogVersion": 2,
   "doc": "The canonical schema of the worker native UI (the iii app's catalogue and wire protocol). Tags, codes and enum indexes are append-only: never renumber, never reuse. The ide repo keeps a byte-identical copy at native/catalog/catalog.json, checked by a unit test. Design: ide/projects/worker-native-ui/design.md sections 5 and 6.",
   "encoding": {"current": "bin-v1", "reserved": [], "text": "json-v0", "doc": "The schema: every message is one array of entries, each entry an array whose first element is its integer code. VM to host: the SDK calls __host_send(entries) with the array itself; on a device the VM encodes it in C as bin-v1 (design §5.8: a generic tagged JSON-value encoding with a per-message string table, header byte 0xB1). json-v0 is the text form of the same schema (UTF-8 JSON, no BOM, no trailing newline): the test harness, the conformance files and debugging use it. Host to VM: json-v0 text through __vm_receive(string)."},
   "features": ["ops.json.v0", "list.splice.v1", "text.handshake.v1", "remote-screen.v1"],
@@ -19,7 +19,8 @@
     "heapBytesDefault": 67108864,
     "loadBudgetMs": 2000,
     "stepBudgetMs": 250,
-    "maxMessageBytes": 8388608
+    "maxMessageBytes": 8388608,
+    "maxMarkdownChars": 200000
   },
   "valueTypes": {
     "bool": "JSON true or false.",
@@ -56,7 +57,8 @@
     "chipTone": ["neutral", "accent", "success", "warning", "danger"],
     "imageFit": ["contain", "cover"],
     "remoteMode": ["interact", "view"],
-    "toastKind": ["info", "success", "error"]
+    "toastKind": ["info", "success", "error"],
+    "hue": ["none", "blue", "purple", "teal", "green", "amber", "rose"]
   },
   "events": [
     { "tag": 1, "name": "press", "args": [], "doc": "A tap (or click, or Enter on a focused control)." },
@@ -71,7 +73,9 @@
     { "tag": 10, "name": "frame", "args": ["width", "height", "modeChanged"], "doc": "RemoteScreen: after every resize it applies (modeChanged = the resize's mode_changed), for the first frame after an activation (false), and when the page size of the frames changes (false, at most every 250 ms). Never per frame." },
     { "tag": 11, "name": "error", "args": ["message"], "doc": "RemoteScreen: the live view could not start, or stopped with an error." },
     { "tag": 12, "name": "keyboard", "args": ["open"], "doc": "RemoteScreen: the keyboard bar opened or closed by the person." },
-    { "tag": 13, "name": "ready", "args": [], "doc": "RemoteScreen: the first frame of the current session is on screen." }
+    { "tag": 13, "name": "ready", "args": [], "doc": "RemoteScreen: the first frame of the current session is on screen." },
+    { "tag": 14, "name": "link", "args": ["href"], "doc": "Markdown: a link was tapped, with its destination as written (a bare URL the autolinker found, too). The host never opens it: the script decides (iii.openUrl, nav.push)." },
+    { "tag": 15, "name": "drop", "args": ["key", "index", "source"], "doc": "List with a dragGroup: an item was dropped on this List. key = the item's key field; index = where it goes among this List's items once it is out of its old place (0..count); source = the node id of the List it came from (this one for a reorder)." }
   ],
   "commonProps": [
     { "tag": 1, "name": "visible", "type": "bool", "default": true, "doc": "False: the node takes no space and is not drawn." },
@@ -162,7 +166,8 @@
       "props": [
         { "tag": 16, "name": "name", "type": "icon", "default": "" },
         { "tag": 17, "name": "size", "type": "dp", "default": 16 },
-        { "tag": 18, "name": "tone", "type": "enum", "enum": "tone", "default": 2 }
+        { "tag": 18, "name": "tone", "type": "enum", "enum": "tone", "default": 2 },
+        { "tag": 19, "name": "hue", "type": "enum", "enum": "hue", "default": 0, "doc": "Not none: this named color (the app's agent and project colors) instead of the tone." }
       ],
       "events": [],
       "slots": []
@@ -172,7 +177,8 @@
       "props": [
         { "tag": 16, "name": "text", "type": "string", "default": "" },
         { "tag": 17, "name": "variant", "type": "enum", "enum": "badgeVariant", "default": 0 },
-        { "tag": 18, "name": "icon", "type": "icon", "default": null }
+        { "tag": 18, "name": "icon", "type": "icon", "default": null },
+        { "tag": 19, "name": "hue", "type": "enum", "enum": "hue", "default": 0, "doc": "Not none: this named color (the app's agent and project colors) instead of the variant." }
       ],
       "events": [],
       "slots": []
@@ -182,7 +188,8 @@
       "props": [
         { "tag": 16, "name": "tone", "type": "enum", "enum": "dotTone", "default": 0 },
         { "tag": 17, "name": "pulse", "type": "bool", "default": false },
-        { "tag": 18, "name": "size", "type": "dp", "default": 8 }
+        { "tag": 18, "name": "size", "type": "dp", "default": 8 },
+        { "tag": 19, "name": "hue", "type": "enum", "enum": "hue", "default": 0, "doc": "Not none: this named color (the app's agent and project colors) instead of the tone." }
       ],
       "events": [],
       "slots": []
@@ -235,6 +242,16 @@
       ],
       "events": [],
       "slots": [{ "slot": 0, "name": "action", "many": true }]
+    },
+    {
+      "tag": 19, "name": "Markdown", "group": "content", "consoleUi": "Markdown",
+      "props": [
+        { "tag": 16, "name": "text", "type": "string", "default": "", "doc": "CommonMark with GFM tables, strikethrough and autolinks, drawn by the app's chat renderer. Past limits.maxMarkdownChars the host draws the start and a note. Images show as their alt text (the host fetches nothing); raw HTML shows as text." },
+        { "tag": 17, "name": "selectable", "type": "bool", "default": false },
+        { "tag": 18, "name": "dense", "type": "bool", "default": false, "doc": "The small type of a comment or a card; false = body." }
+      ],
+      "events": ["link"],
+      "slots": []
     },
     {
       "tag": 20, "name": "Button", "group": "input", "consoleUi": "Button",
@@ -313,7 +330,8 @@
         { "tag": 17, "name": "icon", "type": "icon", "default": null },
         { "tag": 18, "name": "selected", "type": "bool", "default": false },
         { "tag": 19, "name": "tone", "type": "enum", "enum": "chipTone", "default": 0 },
-        { "tag": 20, "name": "enabled", "type": "bool", "default": true }
+        { "tag": 20, "name": "enabled", "type": "bool", "default": true },
+        { "tag": 21, "name": "hue", "type": "enum", "enum": "hue", "default": 0, "doc": "Not none: this named color (the app's agent and project colors) instead of the tone." }
       ],
       "events": ["press", "longPress"],
       "slots": []
@@ -326,9 +344,10 @@
         { "tag": 18, "name": "gap", "type": "dp", "default": 0 },
         { "tag": 19, "name": "dividers", "type": "bool", "default": false },
         { "tag": 20, "name": "refreshing", "type": "bool", "default": false },
-        { "tag": 21, "name": "contentPadding", "type": "padding", "default": 0 }
+        { "tag": 21, "name": "contentPadding", "type": "padding", "default": 0 },
+        { "tag": 22, "name": "dragGroup", "type": "string", "default": null, "doc": "Not null: a long press lifts an item, and it can be dragged to any List with the same group (this one included: a reorder); releasing it fires drop on the List under it. A long press released without moving still fires the item's longPress. Inside Lanes, holding a dragged item over a tab (or near the side in columns) for 400 ms brings that lane; releasing it on a tab drops it at index 0 of the first List in that lane." }
       ],
-      "events": ["refresh", "endReached"],
+      "events": ["refresh", "endReached", "drop"],
       "slots": [
         { "slot": 0, "name": "header", "many": true },
         { "slot": 1, "name": "template0", "many": false, "template": true },
@@ -368,6 +387,17 @@
       "slots": [{ "slot": 0, "name": "children", "many": true }]
     },
     {
+      "tag": 33, "name": "Lanes", "group": "collection", "consoleUi": null,
+      "props": [
+        { "tag": 16, "name": "titles", "type": "strings", "default": [], "doc": "One per lane, in order." },
+        { "tag": 17, "name": "counts", "type": "strings", "default": null, "doc": "Per lane, a short text after the title (a count: 5, 99+); null or a missing entry = none." },
+        { "tag": 18, "name": "selected", "type": "int", "default": 0, "doc": "One lane per page: the lane in view. Columns: the lane the host scrolls into view when this changes." },
+        { "tag": 19, "name": "laneWidth", "type": "dp", "default": 300, "doc": "The width of a column. The host shows columns side by side when at least two fit its width (they share the width when all fit), else one lane per page under a tab strip." }
+      ],
+      "events": ["select"],
+      "slots": [{ "slot": 0, "name": "lanes", "many": true }]
+    },
+    {
       "tag": 40, "name": "Page", "group": "chrome", "consoleUi": "PageShell / PageHeader",
       "props": [
         { "tag": 16, "name": "title", "type": "string", "default": "" },
@@ -389,7 +419,8 @@
       "props": [
         { "tag": 16, "name": "listTitle", "type": "string", "default": "" },
         { "tag": 17, "name": "showDetail", "type": "bool", "default": false },
-        { "tag": 18, "name": "detailFullHeight", "type": "bool", "default": false }
+        { "tag": 18, "name": "detailFullHeight", "type": "bool", "default": false },
+        { "tag": 19, "name": "listFill", "type": "bool", "default": false, "doc": "Wide only: while showDetail is false the list takes the whole width (no detail column, no emptyDetail, no hide button); with showDetail the list has its usual width beside the detail." }
       ],
       "events": ["dismiss"],
       "slots": [

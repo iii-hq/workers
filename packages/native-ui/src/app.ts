@@ -6,7 +6,7 @@
 
 import { catchError, createComponent, createContext, createRenderEffect, createRoot, type JSX } from 'solid-js'
 import { CATALOG_VERSION, FEATURES, IN, OP, ROOT_PAGE } from './generated/catalog'
-import { clearPage, ElementNode, hasPageRoot, nodeById, setPageRoot, warnOnce } from './runtime/tree'
+import { appCatalog, clearPage, ElementNode, hasPageRoot, nodeById, setPageRoot, warnOnce } from './runtime/tree'
 import { isVmStop, onEntry, push, reportError, run } from './runtime/wire'
 import type { JsonObject } from './types'
 import { SDK_VERSION } from './version'
@@ -29,6 +29,14 @@ export interface PageOptions {
 }
 
 export interface AppDefinition {
+  /**
+   * The lowest catalogue version the app needs (default 1), sent in `ready`:
+   * an iii app with an older catalogue shows "Needs a newer iii app" instead
+   * of running it. Declare 2 to use `Markdown`, `Lanes`, `hue`, `dragGroup`
+   * or `listFill` (the SDK warns when a newer type or prop is used without
+   * it), and give the worker's descriptor the same (`NativeUi::catalog(2)`).
+   */
+  catalog?: number
   pages: Record<string, PageComponent | PageOptions>
 }
 
@@ -49,6 +57,10 @@ export const PageContext = createContext<PageRef>()
  */
 export function defineApp(app: AppDefinition): void {
   if (declaredPages.size) throw new Error('defineApp was already called')
+  const catalog = app?.catalog ?? 1
+  if (!Number.isInteger(catalog) || catalog < 1 || catalog > CATALOG_VERSION) {
+    throw new Error(`defineApp: catalog is a version from 1 to ${CATALOG_VERSION} (this SDK's), got ${catalog}`)
+  }
   const entries = Object.entries(app?.pages ?? {})
   if (!entries.some(([name]) => name === ROOT_PAGE)) throw new Error('defineApp: the pages need a "root" page')
   for (const [name, page] of entries) {
@@ -56,11 +68,12 @@ export function defineApp(app: AppDefinition): void {
     if (!name || typeof def?.component !== 'function') throw new Error(`defineApp: page "${name}" has no component`)
     declaredPages.set(name, { component: def.component, modal: !!def.modal, fullScreen: !!def.fullScreen })
   }
+  appCatalog.version = catalog
   push([
     OP.ready,
     {
       sdk: SDK_VERSION,
-      catalog: CATALOG_VERSION,
+      catalog,
       features: [...FEATURES],
       pages: [...declaredPages].map(([name, d]) => ({ name, modal: d.modal, fullScreen: d.fullScreen })),
     },

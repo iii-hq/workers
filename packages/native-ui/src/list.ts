@@ -6,13 +6,23 @@
  * List of any page.
  */
 
-import { createSignal, type JSX, onCleanup, untrack } from 'solid-js'
+import { createRenderEffect, createSignal, type JSX, onCleanup, untrack } from 'solid-js'
 import { applyProps, applySlots } from './components'
-import { LIMITS, OP } from './generated/catalog'
+import { ENUMS, type EnumName, LIMITS, OP } from './generated/catalog'
 import type { ListBaseProps } from './generated/props'
 import { insert } from './renderer'
-import { diffItems } from './runtime/diff'
-import { createNode, type ElementNode, setNamedProp, slotContainer, warnOnce } from './runtime/tree'
+import { diffItems, sameJson } from './runtime/diff'
+import {
+  createNode,
+  ELEMENT,
+  type ElementNode,
+  isBinding,
+  nodeById,
+  propSpecOf,
+  setNamedProp,
+  slotContainer,
+  warnOnce,
+} from './runtime/tree'
 import { push } from './runtime/wire'
 import type { Bound } from './types'
 
@@ -56,7 +66,7 @@ export function createList<T extends object>(options: {
     if (next.length > LIMITS.maxListItems) warnOnce(`a List has more than ${LIMITS.maxListItems} items`)
     items = next
     index = null
-    for (const node of views) if (node.live) push([OP.listSplice, node.id, start, deleteCount, added])
+    for (const node of views) if (node.live) push([OP.listSplice, node.id, start, deleteCount, wireItems(node, added)])
     return removed
   }
   const changed = () => bump((v) => v + 1)
@@ -97,7 +107,7 @@ export function createList<T extends object>(options: {
       const i = find(key)
       if (i < 0) return false
       const next = { ...items[i], ...patch }
-      if (JSON.stringify(next) !== JSON.stringify(items[i])) {
+      if (!sameJson(next, items[i])) {
         apply(i, 1, [next])
         changed()
       }
@@ -132,6 +142,16 @@ export interface ListProps<T extends object> extends Omit<ListBaseProps, 'childr
   templates: ReadonlyArray<(row: Bound<T>) => JSX.Element>
 }
 
+/**
+ * A handler with arguments inside a List template, typed: the host calls it
+ * with the item first, then the event's arguments, while the prop's type
+ * lists only the arguments. `onLink={itemHandler((c: Comment, href: string) => open(c, href))}`.
+ * (An argument-less handler needs none: `onPress={(item: Tab) => …}`.)
+ */
+export function itemHandler<T, A extends unknown[]>(handler: (item: T, ...args: A) => void): (...args: A) => void {
+  return handler as unknown as (...args: A) => void
+}
+
 /** A binding to `path` that also binds deeper paths (`row.a.b`). */
 function binding(path: string): unknown {
   return new Proxy(
@@ -159,7 +179,63 @@ function rowProxy<T>(): Bound<T> {
   ) as Bound<T>
 }
 
-const LIST_OWN = new Set(['source', 'templates'])
+/** The item fields the templates of `node` bind to an enum prop: path → the enum. */
+function enumFields(node: ElementNode): Map<string, EnumName> {
+  const fields = new Map<string, EnumName>()
+  const visit = (n: ElementNode) => {
+    for (const [tag, value] of n.props) {
+      if (!isBinding(value)) continue
+      const spec = propSpecOf(n, tag)
+      if (spec?.[1] !== 'enum') continue
+      const enumName = spec[2] as EnumName
+      const had = fields.get(value.$item)
+      if (had && had !== enumName) {
+        warnOnce(`List: the item field ${value.$item} is bound to a ${had} and a ${enumName} prop; it goes as a ${had}`)
+      } else fields.set(value.$item, enumName)
+    }
+    for (const c of n.children) if (c.kind === ELEMENT) visit(c)
+    for (const slot of n.slots) if (slot) for (const c of slot.children) if (c.kind === ELEMENT) visit(c)
+  }
+  for (const [, [slot, , template]] of Object.entries(node.spec.slots)) {
+    if (!template) continue
+    for (const c of node.slots[slot]?.children ?? []) if (c.kind === ELEMENT) visit(c)
+  }
+  return fields
+}
+
+/**
+ * The items as the host reads them. A field bound to an enum prop
+ * (`hue={row.hue}`) may hold the enum's name, like a plain prop: the host
+ * reads an index, so the name goes as its index (an unknown name as null,
+ * the prop's default). The script's items keep the names.
+ */
+function wireItems(node: ElementNode, items: readonly unknown[]): unknown[] {
+  const fields = enumFields(node)
+  if (!fields.size) return items.slice()
+  return items.map((item) => {
+    let out = item
+    for (const [path, enumName] of fields) out = withEnumIndex(out, path.split('.'), enumName, path)
+    return out
+  })
+}
+
+function withEnumIndex(value: unknown, keys: string[], enumName: EnumName, path: string): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
+  const [key, ...rest] = keys
+  const current = (value as Record<string, unknown>)[key]
+  let next: unknown
+  if (rest.length) next = withEnumIndex(current, rest, enumName, path)
+  else if (typeof current === 'string') {
+    const values = ENUMS[enumName] as readonly string[]
+    const index = values.indexOf(current)
+    if (index < 0)
+      warnOnce(`List: ${JSON.stringify(current)} in the item field ${path} is not one of ${values.join(', ')}`)
+    next = index < 0 ? null : index
+  } else return value
+  return next === current ? value : { ...(value as object), [key]: next }
+}
+
+const LIST_OWN = new Set(['source', 'templates', 'onDrop'])
 
 export function List<T extends object>(props: ListProps<T>): JSX.Element {
   const node = createNode('List')
@@ -171,10 +247,25 @@ export function List<T extends object>(props: ListProps<T>): JSX.Element {
   node.list = { snapshot: source[RAW], get: (key) => source.get(key), detach: () => source[VIEWS].delete(node) }
   node.onLive = () => {
     const items = source[RAW]()
-    if (items.length) push([OP.listSplice, node.id, 0, 0, items.slice()])
+    if (items.length) push([OP.listSplice, node.id, 0, 0, wireItems(node, items)])
   }
   source[VIEWS].add(node)
   onCleanup(() => source[VIEWS].delete(node))
+  const p = props as unknown as Record<string, unknown>
+  if ('onDrop' in p) {
+    // The wire's source is a node id; the handler gets that List's node, the
+    // object its `ref` gave (null when it is gone).
+    createRenderEffect(() => {
+      const onDrop = p.onDrop as ListBaseProps['onDrop']
+      setNamedProp(
+        node,
+        'onDrop',
+        typeof onDrop === 'function'
+          ? (key: string | number, index: number, from: unknown) => onDrop(key, index, nodeById(from) ?? null)
+          : undefined,
+      )
+    })
+  }
 
   const templates = untrack(() => props.templates) ?? []
   if (templates.length > 4) throw new Error('a List has at most 4 templates')

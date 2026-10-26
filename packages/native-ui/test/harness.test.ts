@@ -63,6 +63,47 @@ describe('the VM sandbox', () => {
     }
   })
 
+  it('stops a script that passes the deadline inside a promise job, as the device does', async () => {
+    // QuickJS turns the interrupt into a rejection there; the step still failed.
+    for (const button of ['spin-in-job', 'spin-in-await']) {
+      const h = await mounted('sandbox', { stepBudgetMs: 50 })
+      await expect(h.press(button)).rejects.toBeInstanceOf(VmFailure)
+      expect(h.failed).toEqual({ kind: 'watchdog', message: 'a script ran for more than 50 ms (jobs)' })
+    }
+  })
+
+  it('stops a timer that runs out of memory, instead of logging it', async () => {
+    const h = await mounted('sandbox', { memoryLimit: 8 * 1024 * 1024, stepBudgetMs: 20_000 })
+    await expect(h.press('hog-in-timer')).rejects.toBeInstanceOf(VmFailure)
+    expect(h.failed?.kind).toBe('memory')
+    expect(h.exceptions).toEqual([])
+  })
+
+  it('stops when a host message does not fit, and when parsing it runs out of memory', async () => {
+    const parse = await mounted('sandbox', { memoryLimit: 8 * 1024 * 1024, stepBudgetMs: 20_000 })
+    // About 4 MB of text, which fits; its array does not.
+    await expect(parse.env({ windowClass: 'wide', junk: new Array(2_000_000).fill(0) } as never)).rejects.toThrow(
+      /memory: the VM ran out of memory \(deliver\)/,
+    )
+    expect(parse.logs.filter((l) => l.level === 'error')).toEqual([])
+    const text = await mounted('sandbox', { memoryLimit: 8 * 1024 * 1024 })
+    await expect(text.env({ windowClass: 'wide', junk: 'x'.repeat(10_000_000) } as never)).rejects.toThrow(
+      /memory: the VM ran out of memory \(deliver\)/,
+    )
+  })
+
+  it('logs a host message that is not JSON and goes on', async () => {
+    const h = await mounted('sandbox')
+    ;(h as unknown as { queue: { text: string }[] }).queue.push({ text: '{not json' })
+    await h.settle()
+    expect(h.failed).toBeNull()
+    expect(h.logs.filter((l) => l.level === 'error').map((l) => l.message.split(' SyntaxError')[0])).toEqual([
+      'native-ui: the host sent invalid JSON',
+    ])
+    await h.press('timers')
+    expect(h.prop('ticks', 'text')).toBe('micro')
+  })
+
   it('stops a script that passes the heap cap', async () => {
     // Near its cap this wasm build of QuickJS slows down; the roomy step
     // budget keeps the test about the memory stop, not the deadline.

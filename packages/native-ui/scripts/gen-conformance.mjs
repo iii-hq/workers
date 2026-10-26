@@ -93,7 +93,11 @@ export const DESIGN_EXAMPLES = [
   { id: 'env.change', dir: 'toVm', message: '[[5,{"windowClass":"wide"}]]' },
 ]
 
-const DESIGN_HOST = { host: 'android 0.1.0', engine: 'quickjs-ng 0.17.0' }
+/** The host of the catalogue 2 flows: the app as it is now. */
+const HOST = { host: 'android 0.1.0', engine: 'quickjs-ng 0.17.0' }
+
+/** The host of the §5.7 strings: an app of catalogue 1, as the design writes its `init`. */
+const DESIGN_HOST = { ...HOST, catalog: 1 }
 
 /** The flows; each runs on a fresh host with the app built from conformance/apps/<app>.tsx. */
 export const FLOWS = [
@@ -233,6 +237,66 @@ export const FLOWS = [
       await h.press({ type: 'IconButton', label: 'More' })
     },
   },
+  {
+    name: 'markdown',
+    app: 'markdown',
+    description:
+      'Catalogue 2, Markdown (type 19): a dense, selectable Markdown with a heading, a list, a code block, a web link and an app link (kan:KAN-12), subscribed to link. The person taps the app link, then the web link: each arrives as link [href] (event 14), the host opens nothing, and the script shows the last href.',
+    host: { ns: 'demo', ...HOST },
+    async run(h) {
+      await h.mount('root')
+      await h.link('notes', 'kan:KAN-12')
+      await h.link('notes', 'https://example.com')
+    },
+  },
+  {
+    name: 'lanes-select',
+    app: 'board',
+    description:
+      'Catalogue 2, Lanes (type 33) in a ListDetail with listFill: titles Todo/Doing/Done with counts, one List per lane in slot 0 (dragGroup "cards", drop subscribed), cards with a Badge whose hue is bound to the item (the script\'s names travel as indexes). The person settles on lane 2, then on lane 1 (select [index], event 5): the host shows it at once, and the script sets selected to the same lane.',
+    host: { ns: 'demo', ...HOST },
+    async run(h) {
+      await h.mount('root')
+      await h.select('lanes', 2)
+      await h.select('lanes', 1)
+    },
+  },
+  {
+    name: 'list-drop',
+    app: 'board',
+    description:
+      'Catalogue 2, drag and drop (List.dragGroup, drop [key, index, source], event 15): KAN-1 is dropped at index 2 of its own lane (a reorder: the index counts the items without it), then KAN-2 from lane 0 to index 1 of lane 1, then KAN-4 from lane 1 to the empty lane 2. Each time the script splices both lists in the handler (one message with the listSplice ops and the new counts).',
+    host: { ns: 'demo', ...HOST },
+    async run(h) {
+      await h.mount('root')
+      await h.drop('lane-0', 'KAN-1', 2)
+      await h.drop('lane-1', 'KAN-2', 1, 'lane-0')
+      await h.drop('lane-2', 'KAN-4', 0, 'lane-1')
+    },
+  },
+  {
+    name: 'list-fill',
+    app: 'board',
+    description:
+      'Catalogue 2, ListDetail.listFill (prop 19): the board fills the width while no card is open. A tap on KAN-4 in lane 1 sets Lanes.selected to 1 and showDetail to true in the same message, with the detail page; dismiss closes it and the board fills the width again.',
+    host: { ns: 'demo', ...HOST },
+    async run(h) {
+      await h.mount('root')
+      await h.itemPress('lane-1', 'KAN-4')
+      await h.emit('board', 'dismiss')
+    },
+  },
+  {
+    name: 'hue',
+    app: 'hue',
+    description:
+      'Catalogue 2, named hues (enum hue: none, blue, purple, teal, green, amber, rose): an Icon (prop 19), a Badge (19) and a StatusDot (19) in each hue, by index on the wire (none, the default, does not travel); a Chip (21) in blue turns green on a press.',
+    host: { ns: 'demo', ...HOST },
+    async run(h) {
+      await h.mount('root')
+      await h.press('chip')
+    },
+  },
 ]
 
 /** JSON as biome formats it: objects expanded, arrays on one line when they fit in 120 columns. */
@@ -288,7 +352,7 @@ export async function runFlow(flow, bundle) {
     const out = {
       name: flow.name,
       description: flow.description,
-      catalog: 1,
+      catalog: host.ready.catalog,
       encoding: 'json-v0',
       app: `conformance/apps/${flow.app}.tsx`,
       ns: flow.host.ns,
