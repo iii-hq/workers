@@ -18,6 +18,12 @@ const GUTTER = 'px-5 @3xl:px-14'
 
 export const SETTINGS_COLUMN = 'w-full max-w-[1120px]'
 
+/* A settings search result lands on its row and tints it for a moment
+   (`data-search-flash`, set by the search); the tint runs past the row's
+   edges as a side-only shadow so the hairlines between rows stay put. */
+const SEARCH_FLASH =
+  'transition-[background-color,box-shadow] duration-500 ease-out [--search-flash:var(--color-neutral-100)] dark:[--search-flash:var(--color-neutral-900)]'
+
 interface SettingsPageHeaderProps {
   title: React.ReactNode
   /** Sits after the title on the same line: an id crumb, a dirty dot. */
@@ -107,12 +113,16 @@ export function SettingsSection({
     <section
       aria-labelledby={titleId}
       aria-describedby={hasDescription ? descriptionId : undefined}
-      className={cn('flex min-w-0 flex-col', className)}
+      className={cn('flex min-w-0 scroll-mt-6 flex-col', className)}
       {...props}
     >
       <h2
         id={titleId}
-        className="text-base font-medium leading-6 text-foreground"
+        className={cn(
+          'rounded-sm text-base font-medium leading-6 text-foreground',
+          SEARCH_FLASH,
+          '[[data-search-flash]>&]:bg-(--search-flash) [[data-search-flash]>&]:shadow-[-8px_0_0_var(--search-flash),8px_0_0_var(--search-flash)]',
+        )}
       >
         {title}
       </h2>
@@ -188,7 +198,12 @@ export function SettingsRow({
     <motion.li
       data-layout={layout}
       initial={initial}
-      className={cn('@container min-w-0', className)}
+      className={cn(
+        '@container min-w-0',
+        SEARCH_FLASH,
+        'data-search-flash:bg-(--search-flash) data-search-flash:shadow-[-12px_0_0_var(--search-flash),12px_0_0_var(--search-flash)]',
+        className,
+      )}
       {...props}
     >
       <div

@@ -21,8 +21,9 @@ export const TREE_THEME: React.CSSProperties = {
   backgroundColor: 'var(--shui-explorer-bg, var(--color-panel-raised))',
   color: 'var(--color-ink)',
   width: '100%',
-  '--shui-explorer-bg': 'var(--color-panel-raised)',
-  '--shui-tree-file-muted': 'color-mix(in srgb, var(--color-ink-faint) 80%, var(--color-panel-raised))',
+  // The sidebar's canvas: the tree sits on the same black as the pane around it.
+  '--shui-explorer-bg': 'var(--color-bg)',
+  '--shui-tree-file-muted': 'color-mix(in srgb, var(--color-ink-faint) 80%, var(--color-bg))',
 } as React.CSSProperties
 
 export const TREE_UNSAFE_CSS = `

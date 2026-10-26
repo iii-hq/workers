@@ -1,5 +1,5 @@
 import { type LucideIcon, Monitor, Moon, Sun } from 'lucide-react'
-import type { KeyboardEvent } from 'react'
+import { type KeyboardEvent, useState } from 'react'
 import { Hint } from '@/components/ui/Hint'
 import type { ThemePreference } from '@/hooks/use-theme'
 import { cn } from '@/lib/utils'
@@ -8,10 +8,27 @@ const OPTIONS: ReadonlyArray<{
   value: ThemePreference
   label: string
   Icon: LucideIcon
+  /** The glyph's hover gesture (`icon-motion.css`). */
+  motion: string
 }> = [
-  { value: 'light', label: 'Light theme', Icon: Sun },
-  { value: 'system', label: 'Follow the system theme', Icon: Monitor },
-  { value: 'dark', label: 'Dark theme', Icon: Moon },
+  {
+    value: 'light',
+    label: 'Light theme',
+    Icon: Sun,
+    motion: 'icon-motion--sun',
+  },
+  {
+    value: 'system',
+    label: 'Follow the system theme',
+    Icon: Monitor,
+    motion: 'icon-motion--monitor',
+  },
+  {
+    value: 'dark',
+    label: 'Dark theme',
+    Icon: Moon,
+    motion: 'icon-motion--moon',
+  },
 ]
 
 /** One segment, in pixels: the pill is 32px tall with a 2px inset. */
@@ -34,6 +51,13 @@ export function ThemeSwitch({ value, onChange, className }: ThemeSwitchProps) {
     0,
     OPTIONS.findIndex((option) => option.value === value),
   )
+  // The checked glyph pops once when the user changes the theme, not when
+  // the switch mounts with a theme already chosen.
+  const [touched, setTouched] = useState(false)
+  const choose = (next: ThemePreference) => {
+    if (next !== value) setTouched(true)
+    onChange(next)
+  }
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const step =
@@ -45,7 +69,7 @@ export function ThemeSwitch({ value, onChange, className }: ThemeSwitchProps) {
     if (step === 0) return
     event.preventDefault()
     const next = OPTIONS[(index + step + OPTIONS.length) % OPTIONS.length]
-    onChange(next.value)
+    choose(next.value)
     event.currentTarget
       .querySelector<HTMLButtonElement>(`[data-value="${next.value}"]`)
       ?.focus()
@@ -68,7 +92,7 @@ export function ThemeSwitch({ value, onChange, className }: ThemeSwitchProps) {
         className="absolute top-0.5 left-0.5 size-7 rounded-full bg-white shadow-sm transition-transform duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] dark:bg-neutral-600"
         style={{ transform: `translateX(${index * SEGMENT}px)` }}
       />
-      {OPTIONS.map(({ value: option, label, Icon }) => {
+      {OPTIONS.map(({ value: option, label, Icon, motion }) => {
         const checked = option === value
         return (
           <Hint key={option} label={label}>
@@ -79,16 +103,21 @@ export function ThemeSwitch({ value, onChange, className }: ThemeSwitchProps) {
               aria-checked={checked}
               aria-label={label}
               data-value={option}
+              data-pop={checked && touched ? '' : undefined}
               tabIndex={checked ? 0 : -1}
-              onClick={() => onChange(option)}
+              onClick={() => choose(option)}
               className={cn(
-                'relative z-10 flex size-7 items-center justify-center rounded-full transition-colors duration-[var(--motion-duration-control)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 dark:focus-visible:ring-neutral-400',
+                'icon-host relative z-10 flex size-7 items-center justify-center rounded-full transition-colors duration-[var(--motion-duration-control)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 dark:focus-visible:ring-neutral-400',
                 checked
                   ? 'text-neutral-900 dark:text-neutral-50'
                   : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200',
               )}
             >
-              <Icon className="size-4" strokeWidth={1.75} aria-hidden />
+              <Icon
+                className={cn('icon-motion size-4', motion)}
+                strokeWidth={1.75}
+                aria-hidden
+              />
             </button>
           </Hint>
         )

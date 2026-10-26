@@ -100,10 +100,20 @@ describe('neutral selection contract', () => {
       join(repoRoot, 'ade/web/src/lib/monaco.ts'),
       'utf8',
     )
-    expect(source).toContain("'editor.selectionBackground': surfaceSelected")
+    expect(source).toContain("'editor.selectionBackground': p.selection")
     expect(source).toContain(
-      "'editorSuggestWidget.selectedBackground': surfaceSelected",
+      "'editorSuggestWidget.selectedBackground': p.listSelected",
     )
-    expect(source).not.toMatch(/selectedBackground': `\$\{accent\}/)
+    // Every palette's selection colors are greys: equal r, g and b.
+    const values = [
+      ...source.matchAll(
+        /^\s*(?:selection|selectionInactive|listSelected): '#([0-9a-f]{6})/gm,
+      ),
+    ].map((match) => match[1])
+    expect(values.length).toBeGreaterThanOrEqual(6)
+    for (const hex of values) {
+      expect(hex.slice(0, 2), hex).toBe(hex.slice(2, 4))
+      expect(hex.slice(2, 4), hex).toBe(hex.slice(4, 6))
+    }
   })
 })

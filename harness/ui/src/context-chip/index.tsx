@@ -67,7 +67,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { formatCost, formatTokens } from '../lib/format'
 import { compactions, growth, type StepPoint, stepPoints } from '../lib/history'
 import { RingGauge } from './icons'
-import { categories, type LegendEntry, legendRows, percentOf } from '../lib/legend'
+import { categories, type LegendEntry, legendRows, PREVIEW_CATEGORIES, percentOf } from '../lib/legend'
 import {
   type ContextSnapshot,
   type ConversationTree,
@@ -332,30 +332,48 @@ function Hero({ total, usable, estimated }: { total: number; usable: number; est
 }
 
 /**
- * Before the first reply there is nothing to break down. Instead of a zero
- * hero over an empty track, a quiet placeholder: a ghost of the bar to
- * come (three faint segments, breathing while the first step runs) and
- * one sentence saying what will fill it and when.
+ * Before the first reply there is nothing to break down. The card keeps the
+ * live layout's shape so nothing jumps when the numbers land: the window
+ * size where the hero number will be, with a quiet "Waiting" badge where its
+ * share will be, a ghost of the stacked bar in the bar's own hues (breathing
+ * while the first step runs), and a legend of what will fill it.
  */
 function EmptyWindow({ contextWindow }: { contextWindow?: number }) {
   const sized = contextWindow !== undefined && contextWindow > 0
   return (
-    <section className="harness-ui-section" aria-label="Context window">
-      <div className="harness-ui-empty">
-        <div className={`harness-ui-empty-track ${uiClasses.pulse}`} aria-hidden>
-          <span style={{ flexBasis: '38%' }} />
-          <span style={{ flexBasis: '22%' }} />
-          <span style={{ flexBasis: '12%' }} />
+    <section className="harness-ui-section harness-ui-empty" aria-label="Context window">
+      <div className="harness-ui-hero">
+        <div className="harness-ui-hero-main">
+          <span className="harness-ui-hero-num">{sized ? formatTokens(contextWindow) : '0'}</span>
+          <span className="harness-ui-hero-of">{sized ? 'token window' : 'tokens counted'}</span>
         </div>
-        <p className="harness-ui-empty-title">
-          {sized ? `${formatTokens(contextWindow)} token window` : 'Nothing counted yet'}
-        </p>
-        <p className="harness-ui-empty-text">
-          {sized
-            ? 'Nothing counted yet. The breakdown of what the window holds appears after the first reply.'
-            : 'The selected model did not report a context-window limit, so usage shows as a count without a share.'}
-        </p>
+        <span className="harness-ui-empty-badge">
+          <span className={`harness-ui-empty-dot ${uiClasses.pulse}`} aria-hidden />
+          Waiting
+        </span>
       </div>
+      <div className="harness-ui-empty-track" aria-hidden>
+        {PREVIEW_CATEGORIES.map((category) => (
+          <span
+            key={category.key}
+            className={uiClasses.pulse}
+            style={{ flexBasis: `${category.share}%`, background: category.color }}
+          />
+        ))}
+      </div>
+      <ul className="harness-ui-empty-legend" aria-label="What the window will hold">
+        {PREVIEW_CATEGORIES.map((category) => (
+          <li key={category.key}>
+            <span className="harness-ui-swatch" style={{ background: category.color }} />
+            {category.label}
+          </li>
+        ))}
+      </ul>
+      <p className="harness-ui-empty-text">
+        {sized
+          ? 'Nothing counted yet. The breakdown fills in after the first reply.'
+          : 'The selected model did not report a context-window limit, so usage will show as a count without a share.'}
+      </p>
     </section>
   )
 }

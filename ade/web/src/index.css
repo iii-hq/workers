@@ -12,6 +12,7 @@
 @import "@fontsource/geist-mono/600.css";
 @import "tailwindcss";
 @import "./styles/ui-recipes.css";
+@import "./styles/icon-motion.css";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
@@ -397,6 +398,14 @@
   ::selection {
     background-color: var(--color-accent);
     color: var(--color-accent-fg);
+  }
+
+  /* Monaco draws its own selection. On macOS it also makes line text
+     natively selectable under the pointer (for Look Up), so a stray browser
+     selection would paint the line as a solid accent block on hover. */
+  .monaco-editor .view-lines ::selection {
+    background-color: transparent;
+    color: currentColor;
   }
 
   /* A passage the side chat holds a quote of (lib/chat-aside.ts). */

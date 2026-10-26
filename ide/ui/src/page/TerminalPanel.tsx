@@ -1,10 +1,11 @@
 import { Tooltip } from '@iii-dev/console-ui'
 import {
+  ChevronDown,
+  ChevronRight,
   PanelBottom,
   PanelRight,
   SquareTerminal,
   Trash2,
-  X,
 } from 'lucide-react'
 import { type Dispatch, memo, useRef } from 'react'
 import { DockPanel } from './DockPanel'
@@ -47,11 +48,22 @@ interface TerminalPanelProps extends TerminalPanelSharedProps {
   connectionCoordinators: Map<string, TerminalConnectionCoordinator>
 }
 
+/** The collapse control at the strip's start: a chevron pointing the way the panel folds. */
+function HideAction({ dock, onClose }: Pick<TerminalPanelSharedProps, 'dock' | 'onClose'>) {
+  const Icon = dock === 'right' ? ChevronRight : ChevronDown
+  return (
+    <Tooltip label="Hide terminal">
+      <button type="button" className="shui-terminal-action shui-terminal-hide" onClick={onClose} aria-label="Hide terminal">
+        <Icon aria-hidden />
+      </button>
+    </Tooltip>
+  )
+}
+
 function DockActions({
   dock,
   onDockChange,
-  onClose,
-}: Pick<TerminalPanelSharedProps, 'dock' | 'onDockChange' | 'onClose'>) {
+}: Pick<TerminalPanelSharedProps, 'dock' | 'onDockChange'>) {
   return (
     <>
       <span className="shui-terminal-dock-group">
@@ -89,16 +101,6 @@ function DockActions({
         </button>
       </Tooltip>
       </span>
-      <Tooltip label="Hide terminal">
-        <button
-          type="button"
-          className="shui-terminal-action"
-          onClick={onClose}
-          aria-label="Hide terminal"
-        >
-          <X aria-hidden />
-        </button>
-      </Tooltip>
     </>
   )
 }
@@ -112,6 +114,7 @@ function TerminalPanelView(props: TerminalPanelProps) {
     <DockPanel dock={dock} size={size} narrow={narrow} hidden={hidden} label="Terminal" noun="terminal" onSizeChange={onSizeChange}>
       <TerminalWorkspace
         ref={workspaceRef}
+        leading={<HideAction dock={dock} onClose={onClose} />}
         actions={
           <>
             <Tooltip label="Close disconnected terminals">
@@ -124,11 +127,7 @@ function TerminalPanelView(props: TerminalPanelProps) {
                 <Trash2 aria-hidden />
               </button>
             </Tooltip>
-            <DockActions
-              dock={dock}
-              onDockChange={onDockChange}
-              onClose={onClose}
-            />
+            <DockActions dock={dock} onDockChange={onDockChange} />
           </>
         }
         state={props.state}

@@ -10,6 +10,8 @@
   --shui-status-deleted: var(--color-alert);
   --shui-status-modified: var(--color-warn);
   --shui-status-renamed: var(--color-ok);
+  /* The launcher's entrance: each row lands this much after the previous one. */
+  --shui-launcher-stagger: 24ms;
 
   /* ── text tones ───────────────────────────────────────────────────── */
   .t-ink { color: var(--color-ink); }
@@ -30,7 +32,7 @@
     .shui-scm-branch svg, .shui-scm-folder svg, .shui-scm-row-main .file-icon, .shui-scm-row-actions .file-icon,
     .shui-view-actions > button svg, .shui-scm-row-actions > button svg, .shui-timeline-turn-main .chevron, .shui-agent-tag svg,
     .shui-editor-head > button svg, .shui-goto-btn svg, .shui-review-option .menu-icon svg,
-    .shui-launcher-recent-row .file-icon, .shui-quick-open-row .file-icon, .shui-browser-crumb-group svg,
+    .shui-launcher-recent-row .file-icon, .shui-launcher-icon, .shui-quick-open-row .file-icon, .shui-browser-crumb-group svg,
     .shui-chat-summary-pill .files-icon, .shui-chat-summary-pill .chevron, .shui-file-changes-more svg,
     .shui-terminal-tab-action svg, .shui-terminal-tab-new svg, .shui-terminal-action svg, .shui-terminal-status-action svg,
     .shui-terminal-jump svg) { width: 16px; height: 16px; flex: none; }
@@ -56,7 +58,7 @@
     .shui-search-match .text, .shui-scm-folder span, .shui-scm-row-main .name, .shui-timeline-turn-main .label,
     .shui-timeline-turn-main .meta, .shui-agent-tag, .shui-etab .open, .shui-etab .open .label, .shui-etab-chip, .shui-diff-chip,
     .shui-review-notice-title, .shui-review-notice-detail, .shui-pane-notice-path, .shui-launcher-path,
-    .shui-launcher-recent-row .dir, .shui-browser-entry, .shui-quick-open-row .name, .shui-quick-open-row .dir,
+    .shui-launcher-recent-row .dir, .shui-launcher-row-detail, .shui-browser-entry, .shui-quick-open-row .name, .shui-quick-open-row .dir,
     .shui-quick-open-foot .summary, .shui-chat-summary-file .path, .shui-file-change-path, .shui-terminal-tab-select,
     .shui-terminal-pane-cwd, .shui-terminal-error, .shui-file-changes-title-state) {
     overflow: hidden;
@@ -67,7 +69,7 @@
   /* Row-shaped buttons: the list rows, crumbs and cards that act on click. */
   :is(.shui-scm-folder, .shui-scm-row-main, .shui-timeline-turn-main, .shui-launcher-recent-row, .shui-quick-open-row,
     .shui-browser-entry, .shui-chat-summary-file, .shui-breadcrumbs .crumb, .shui-browser-crumb, .shui-file-changes-more,
-    button.shui-file-change-path, .shui-launcher-card, .shui-etab .open, .shui-terminal-tab-select) {
+    button.shui-file-change-path, .shui-launcher-row, .shui-etab .open, .shui-terminal-tab-select) {
     border: 0;
     background: transparent;
     font: inherit;
@@ -580,7 +582,8 @@
   .shui-workspace-frame.terminal-right { flex-direction: row; }
   .shui-workspace-frame > :first-child { flex: 1; min-height: 0; min-width: 0; }
   .shui-sidebar {
-    --shui-explorer-bg: var(--color-panel-raised);
+    /* The canvas layer, as the launcher: black in the dark theme. */
+    --shui-explorer-bg: var(--color-bg);
     --shui-tree-file-muted: color-mix(in srgb, var(--color-ink-faint) 80%, var(--shui-explorer-bg));
     position: relative;
     background: var(--shui-explorer-bg);
@@ -631,45 +634,41 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 2px;
-    width: 40px;
-    padding: 6px 0;
-    background: var(--color-panel);
+    gap: 4px;
+    width: 48px;
+    padding: 8px 0;
+    background: transparent;
   }
+  /* Each view is a small card: the active one raised one step with a
+     hairline, the others flat until hovered. */
   .shui-activity-item {
     position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 34px;
-    height: 34px;
+    width: 36px;
+    height: 36px;
     padding: 0;
-    border: 0;
-    border-radius: 6px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-lg);
     background: transparent;
     color: var(--color-ink-faint);
     cursor: pointer;
     transition:
       color var(--motion-duration-control) var(--motion-ease-standard),
-      background-color var(--motion-duration-control) var(--motion-ease-standard);
+      background-color var(--motion-duration-control) var(--motion-ease-standard),
+      border-color var(--motion-duration-control) var(--motion-ease-standard);
   }
   .shui-activity-item:hover { color: var(--color-ink); background: var(--color-surface-hover); }
-  .shui-activity-item.active { color: var(--color-ink); background: var(--color-surface-selected); }
-  .shui-activity-bar.side-left .shui-activity-item.active::before,
-  .shui-activity-bar.side-right .shui-activity-item.active::after {
-    content: '';
-    position: absolute;
-    top: 6px;
-    bottom: 6px;
-    width: 2px;
-    border-radius: 6px;
-    background: var(--color-ink);
+  .shui-activity-item.active {
+    color: var(--color-ink);
+    background: var(--color-panel-raised);
+    border-color: var(--color-edge);
+    box-shadow: var(--shadow-raised);
   }
-  .shui-activity-bar.side-left .shui-activity-item.active::before { left: -3px; }
-  .shui-activity-bar.side-right .shui-activity-item.active::after { right: -3px; }
   .shui-activity-item:focus-visible {
     outline: 1px solid var(--color-rule-focus);
-    outline-offset: -2px;
+    outline-offset: 1px;
   }
   .shui-activity-badge {
     position: absolute;
@@ -696,10 +695,10 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    height: 32px;
-    padding: 0 6px 0 12px;
-    font: 600 11.5px / 16px var(--font-sans);
-    letter-spacing: 0.02em;
+    height: 36px;
+    padding: 0 8px 0 12px;
+    font: 600 12px / 16px var(--font-sans);
+    letter-spacing: 0.01em;
     color: var(--color-ink);
   }
   .spacer { flex: 1; }
@@ -713,10 +712,10 @@
     flex: none;
   }
   .shui-view-actions > button {
-    width: 22px;
-    height: 22px;
-    min-width: 22px;
-    min-height: 22px;
+    width: 24px;
+    height: 24px;
+    min-width: 24px;
+    min-height: 24px;
     padding: 0;
     border-radius: 6px;
   }
@@ -746,7 +745,7 @@
     flex-direction: column;
     overflow: hidden;
   }
-  .shui-tree-filter { flex: none; padding: 2px 8px 4px; }
+  .shui-tree-filter { flex: none; padding: 2px 10px 8px; }
   .shui-tree-note {
     display: flex;
     align-items: flex-start;
@@ -770,7 +769,7 @@
     flex: 1;
     min-height: 0;
     display: flex;
-    padding: 3px 8px 0;
+    padding: 4px 10px 0 6px;
     overflow: hidden;
   }
   .shui-tree { flex: 1; min-width: 0; min-height: 0; }
@@ -2131,8 +2130,12 @@
     align-items: flex-start;
     justify-content: center;
     overflow-y: auto;
-    padding: clamp(20px, 7vh, 64px) 24px 28px;
-    font-family: var(--font-sans);
+    padding: clamp(24px, 8vh, 72px) 24px 32px;
+    background: var(--color-bg);
+    color: var(--color-ink);
+    /* Inter, as the workspace header and the chat set it; the console loads it
+       as the sans fallback. lint-allow font-family */
+    font-family: "Inter", var(--font-sans);
     font-size: 13px;
   }
   .shui-editor-head {
@@ -2458,108 +2461,124 @@
     margin: auto 0;
     display: flex;
     flex-direction: column;
-    align-items: center;
-    gap: 20px;
+    gap: 32px;
+    animation: shui-launcher-rise var(--motion-duration-panel) var(--motion-ease-enter) both;
   }
-  .shui-launcher-mark { width: 104px; height: 104px; margin-bottom: 4px; }
-  .shui-launcher-title {
-    margin: 0;
-    max-width: 100%;
-    text-align: center;
-    font-size: 20px;
-    font-weight: 500;
-    line-height: 1.45;
-    color: var(--color-ink-faint);
-  }
-  .shui-launcher-picker { max-width: min(18rem, 60vw); vertical-align: baseline; }
-  .shui-launcher-path {
-    margin: -12px 0 0;
-    max-width: 100%;
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--color-ink-ghost);
-  }
-  .shui-launcher-grid {
-    width: 100%;
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 10px;
-  }
-  .shui-launcher-card {
+  .shui-launcher-head {
     display: flex;
     flex-direction: column;
-    align-items: flex-start;
-    gap: 6px;
-    min-height: 104px;
-    padding: 12px 14px;
-    border-radius: 6px;
-    background: var(--color-panel-raised);
-    box-shadow: var(--shadow-raised);
-    color: var(--color-ink);
-    transition:
-      transform var(--motion-duration-fast) var(--motion-ease-standard),
-      box-shadow var(--motion-duration-fast) var(--motion-ease-standard);
-  }
-  .shui-launcher-card:hover { transform: translateY(-1px); box-shadow: var(--shadow-floating); }
-  .shui-launcher-card:focus-visible {
-    outline: 2px solid var(--color-rule-focus);
-    outline-offset: 2px;
-  }
-  .shui-launcher-card-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    width: 100%;
-    color: var(--color-ink-faint);
-  }
-  .shui-launcher-card:hover .shui-launcher-card-head { color: var(--color-ink); }
-  .shui-launcher-icon { width: 18px; height: 18px; }
-  .shui-launcher-card-title { font-size: 13px; font-weight: 500; }
-  .shui-launcher-card-detail {
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    overflow: hidden;
-    font-size: 11.5px;
-    line-height: 1.35;
-    color: var(--color-ink-faint);
-  }
-  .shui-launcher-recent { width: 100%; }
-  .shui-launcher-recent-title {
-    margin: 0 0 4px;
-    padding: 0 8px;
-    font-size: 11px;
-    font-weight: 500;
-    color: var(--color-ink-ghost);
-  }
-  .shui-launcher-recent-list { display: flex; flex-direction: column; gap: 1px; }
-  .shui-launcher-recent-row {
-    display: flex;
     align-items: center;
     gap: 8px;
-    width: 100%;
-    min-width: 0;
-    padding: 5px 8px;
-    border-radius: 6px;
+    text-align: center;
+  }
+  .shui-launcher-mark {
+    width: 32px;
+    height: 32px;
+    margin-bottom: 8px;
+    fill: var(--color-ink-ghost);
+  }
+  .shui-launcher-title {
+    margin: 0;
+    font-size: 26px;
+    font-weight: 500;
+    line-height: 32px;
+    letter-spacing: -0.01em;
     color: var(--color-ink);
   }
-  .shui-launcher-recent-row:hover { background: var(--color-surface-hover); }
-  .shui-launcher-recent-row:focus-visible {
+  /* The folder: the picker's own trigger (icon, name, the browse dialog)
+     and the full path beside it, one centered line that wraps on a narrow pane. */
+  .shui-launcher-folder {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 4px 8px;
+    max-width: 100%;
+    min-width: 0;
+  }
+  .shui-launcher-picker { max-width: min(18rem, 60vw); }
+  .shui-launcher-path {
+    max-width: 100%;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 20px;
+    color: var(--color-ink-ghost);
+  }
+
+  .shui-launcher-groups {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 28px 32px;
+  }
+  .shui-launcher-group { min-width: 0; }
+  .shui-launcher-group-label {
+    margin: 0 0 6px;
+    padding: 0 12px;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 20px;
+    color: var(--color-ink-faint);
+  }
+  /* Plain rows, as a welcome page's links: no frame, a fill only on hover. */
+  .shui-launcher-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .shui-launcher-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    width: 100%;
+    min-width: 0;
+    min-height: 52px;
+    padding: 8px 12px;
+    border-radius: var(--radius-lg);
+    color: var(--color-ink);
+    animation: shui-launcher-rise var(--motion-duration-panel) var(--motion-ease-enter) both;
+    animation-delay: calc(var(--shui-i) * var(--shui-launcher-stagger));
+    transition:
+      background-color var(--motion-duration-fast) var(--motion-ease-standard),
+      color var(--motion-duration-fast) var(--motion-ease-standard);
+  }
+  .shui-launcher-row:hover { background: var(--color-surface-hover); }
+  .shui-launcher-row:active { background: var(--color-surface-active); }
+  .shui-launcher-row:focus-visible {
     outline: 1px solid var(--color-rule-focus);
     outline-offset: -1px;
   }
-  .shui-launcher-recent-row .name { flex-shrink: 0; font-family: var(--font-mono); font-size: 12px; }
+  .shui-launcher-icon {
+    color: var(--color-ink-faint);
+    transition: color var(--motion-duration-fast) var(--motion-ease-standard);
+  }
+  .shui-launcher-row:hover .shui-launcher-icon { color: var(--color-ink); }
+  .shui-launcher-row-text {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+    gap: 2px;
+  }
+  .shui-launcher-row-title {
+    font-size: 16px;
+    font-weight: 500;
+    line-height: 20px;
+  }
+  .shui-launcher-row-detail {
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--color-ink-faint);
+  }
+  .shui-launcher-recent-row { min-height: 40px; padding: 6px 12px; }
+  .shui-launcher-recent-row .name {
+    flex-shrink: 0;
+    font-family: var(--font-mono);
+    font-size: 14px;
+  }
   .shui-launcher-recent-row .dir {
     min-width: 0;
     font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--color-ink-ghost);
-  }
-  .shui-launcher-hint {
-    margin: 0;
-    text-align: center;
-    font-size: 11px;
-    line-height: 1.8;
+    font-size: 13px;
     color: var(--color-ink-ghost);
   }
 
@@ -2804,51 +2823,69 @@
     min-width: 0;
     min-height: 0;
   }
-  .shui-terminal-tabs { padding-left: 0; }
+  /* The strip: one quiet row on the panel's own surface, a hairline under it,
+     the tabs marked by an underline rather than a filled block (the console's
+     line tabs), their close and rename shown on hover. Inter, as the launcher. */
+  .shui-terminal-tabs {
+    height: 40px;
+    padding: 0 8px 0 4px;
+    gap: 4px;
+    border-bottom: 1px solid var(--color-edge);
+    background: var(--color-bg);
+    /* lint-allow font-family */
+    font-family: "Inter", var(--font-sans);
+  }
+  .shui-terminal-hide { color: var(--color-ink-faint); }
   .shui-terminal-tab-strip {
     flex: 1 1 auto;
     align-self: stretch;
     display: flex;
     align-items: stretch;
+    gap: 2px;
     min-width: 0;
     overflow-x: auto;
-    scrollbar-width: thin;
+    scrollbar-width: none;
   }
   .shui-terminal-dock-group {
     display: inline-flex;
     align-items: center;
-    overflow: hidden;
-    border-radius: 6px;
-    background: var(--color-surface);
+    gap: 2px;
   }
-  .shui-terminal-dock-group .shui-terminal-action { width: 22px; height: 20px; border-radius: 0; }
   .shui-terminal-tab {
+    position: relative;
     flex: none;
     display: flex;
     align-items: center;
-    /* One rhythm across the row: the label, its actions and the tab's right
-       edge share the same gap, so the close button never looks pushed against
-       the divider. */
     gap: 2px;
-    padding-right: 4px;
+    padding: 0 6px 0 4px;
     min-width: 0;
     color: var(--color-ink-faint);
+    transition: color var(--motion-duration-fast) var(--motion-ease-standard);
   }
-  .shui-terminal-tab.active {
-    color: var(--color-ink);
-    background: var(--color-surface-active);
-    box-shadow: inset 0 -1px 0 var(--color-edge);
+  .shui-terminal-tab:hover { color: var(--color-ink); }
+  .shui-terminal-tab.active { color: var(--color-ink); }
+  /* The underline: 2px of ink along the strip's hairline, inset so it reads as part of the tab. */
+  .shui-terminal-tab.active::after {
+    content: "";
+    position: absolute;
+    right: 6px;
+    bottom: 0;
+    left: 4px;
+    height: 2px;
+    background: var(--color-ink);
   }
-  .shui-terminal-tab .shui-terminal-tab-action[aria-label^="Rename"] { opacity: 0; }
-  .shui-terminal-tab:hover .shui-terminal-tab-action[aria-label^="Rename"],
-  .shui-terminal-tab:focus-within .shui-terminal-tab-action[aria-label^="Rename"] { opacity: 1; }
+  .shui-terminal-tab .shui-terminal-tab-action { opacity: 0; }
+  .shui-terminal-tab:hover .shui-terminal-tab-action,
+  .shui-terminal-tab:focus-within .shui-terminal-tab-action,
+  .shui-terminal-tab.active .shui-terminal-tab-action[aria-label^="Close"] { opacity: 1; }
   .shui-terminal-tab-select {
-    max-width: 150px;
-    padding: 7px 2px 7px 10px;
+    max-width: 180px;
+    padding: 0 4px 0 8px;
     color: inherit;
-    font-family: var(--font-sans);
-    font-size: 11px;
+    font: inherit;
+    font-size: 13px;
     font-weight: 500;
+    line-height: 20px;
   }
   .shui-terminal-tab-action,
   .shui-terminal-tab-new {
@@ -2856,19 +2893,21 @@
        tab height and its icon stops sharing a centre line with the tab label.
        Fixing the box and centring it with auto margins keeps rename, close and
        new-tab optically aligned with the text beside them. */
-    width: 20px;
-    min-width: 20px;
-    height: 20px;
+    width: 22px;
+    min-width: 22px;
+    height: 22px;
     margin: auto 0;
     color: var(--color-ink-ghost);
+    transition: opacity var(--motion-duration-fast) var(--motion-ease-standard);
   }
+  .shui-terminal-tab-new { width: 28px; min-width: 28px; height: 28px; margin-left: 2px; color: var(--color-ink-faint); }
   .shui-terminal-tab-input {
-    width: 110px;
-    margin: 3px;
-    padding: 3px 5px;
+    width: 120px;
+    margin: auto 4px;
+    padding: 3px 6px;
     color: var(--color-ink);
-    font-family: var(--font-sans);
-    font-size: 11px;
+    font: inherit;
+    font-size: 13px;
     border: 1px solid var(--color-rule-focus);
     border-radius: 6px;
     background: var(--color-bg);
@@ -3047,8 +3086,8 @@
   }
   .shui-terminal-action {
     flex: none;
-    width: 24px;
-    height: 24px;
+    width: 28px;
+    height: 28px;
     transition: transform var(--motion-duration-fast) var(--motion-ease-enter);
   }
   .shui-terminal-action:hover,
@@ -3783,15 +3822,10 @@
       backdrop-filter: none;
       pointer-events: auto;
     }
-    .shui-main-empty { padding: 20px 16px 24px; }
-    .shui-launcher { gap: 16px; }
-    .shui-launcher-mark {
-      width: 72px;
-      height: 72px;
-    }
-    .shui-launcher-title { font-size: 17px; }
-    .shui-launcher-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .shui-launcher-hint { display: none; }
+    .shui-main-empty { padding: 24px 16px; }
+    .shui-launcher { gap: 24px; }
+    .shui-launcher-title { font-size: 22px; line-height: 28px; }
+    .shui-launcher-groups { grid-template-columns: minmax(0, 1fr); gap: 20px; }
     .shui-browser-list { grid-template-columns: 1fr; }
     .shui-compare-picker { flex-basis: 160px; }
     .shui-breadcrumbs .crumb:not(.file):not(.root),
@@ -3844,7 +3878,9 @@
     .shui-file-changes-more svg,
     .shui-chat-summary-pill .chevron,
     .shui-chat-summary-popover,
-    .shui-launcher-card,
+    .shui-launcher,
+    .shui-launcher-row,
+    .shui-launcher-recent-row,
     .shui-quick-open-list,
     .shui-quick-open-row
   ) {
@@ -3852,5 +3888,17 @@
     transition: none !important;
     filter: none !important;
     transform: none !important;
+  }
+}
+
+/* The launcher's entrance: the composition rises into place, each row a beat after the last. */
+@keyframes shui-launcher-rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }

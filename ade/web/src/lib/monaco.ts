@@ -7,12 +7,10 @@
  *
  * - the worker environment (Vite `?worker` bundles — no CDN, the embedded
  *   SPA must work fully offline), and
- * - the theme: one `iii-console` theme whose colors are resolved from the
- *   live design tokens (`--color-ink`, …) so Monaco follows
- *   `html[data-theme]` exactly like every token-styled surface. Monaco only
- *   accepts concrete hex colors, so tokens are normalized through a 1×1
- *   canvas (which also flattens `lab()`/`color-mix()` values) and the theme
- *   is re-defined on every theme flip by a module-level observer.
+ * - the theme: one `iii-console` theme — Vesper in dark, min-light in
+ *   light — re-defined on every `html[data-theme]` flip by a module-level
+ *   observer. Monaco themes are global, so every editor in the console
+ *   wears it.
  */
 
 import * as monaco from 'monaco-editor'
@@ -51,29 +49,6 @@ self.MonacoEnvironment = {
   },
 }
 
-/**
- * Normalize any CSS color (`lab()`, `color-mix()`, hex, …) to `#rrggbb`.
- * `base` is composited under translucent values (the border tokens are
- * white-alpha in dark mode) so the readback is the color as actually seen,
- * not the un-premultiplied channel values.
- */
-function toHex(css: string, fallback: string, base?: string): string {
-  const canvas = document.createElement('canvas')
-  canvas.width = 1
-  canvas.height = 1
-  const ctx = canvas.getContext('2d', { willReadFrequently: true })
-  if (!ctx) return fallback
-  if (base) {
-    ctx.fillStyle = base
-    ctx.fillRect(0, 0, 1, 1)
-  }
-  ctx.fillStyle = fallback
-  ctx.fillStyle = css // invalid values keep the fallback
-  ctx.fillRect(0, 0, 1, 1)
-  const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data
-  return `#${[r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')}`
-}
-
 export function codeFontFamily(): string {
   const raw = getComputedStyle(document.documentElement)
     .getPropertyValue('--font-code')
@@ -81,104 +56,220 @@ export function codeFontFamily(): string {
   return raw || FALLBACK_CODE
 }
 
+interface EditorPalette {
+  base: 'vs' | 'vs-dark'
+  bg: string
+  fg: string
+  muted: string
+  comment: string
+  string: string
+  literal: string
+  /** Types, tags, function-ish names: Vesper's peach, min-light's purple. */
+  entity: string
+  keyword: string
+  delimiter: string
+  operator: string
+  tag: string
+  attribute: string
+  cssProperty: string
+  cssValue: string
+  jsonKey: string
+  invalid: string
+  warning: string
+  /** Markdown bold. */
+  strong: string
+  lineNumber: string
+  lineNumberActive: string
+  lineBorder: string
+  /** Neutral on purpose: selection never takes a hue (selection-conformance). */
+  selection: string
+  selectionInactive: string
+  bracketMatch: string
+  bracketMatchBorder: string
+  widget: string
+  widgetBorder: string
+  listSelected: string
+  listHover: string
+  input: string
+  scrollbar: string
+  scrollbarHover: string
+}
+
+/* Ports of Rauno Freiberg's Vesper (dark) and miguelsolorio's min-light
+   (light), the same pair the static code panes wear (`.code-theme-editor`
+   in index.css). Monaco tokenizes with Monarch, not TextMate, so each
+   theme's scopes are mapped onto Monarch token names. Comments take the
+   panes' strengthened greys (≥ 4.5:1) rather than the originals' faint
+   ones. */
+const VESPER: EditorPalette = {
+  base: 'vs-dark',
+  bg: '#101010',
+  fg: '#ffffff',
+  muted: '#a0a0a0',
+  comment: '#8b8b8b',
+  string: '#99ffe4',
+  literal: '#ffc799',
+  entity: '#ffc799',
+  keyword: '#a0a0a0',
+  delimiter: '#a0a0a0',
+  operator: '#a0a0a0',
+  tag: '#ffc799',
+  attribute: '#ffc799',
+  cssProperty: '#ffffff',
+  cssValue: '#a0a0a0',
+  jsonKey: '#ffc799',
+  invalid: '#ff8080',
+  warning: '#ffc799',
+  strong: '#ffffff',
+  lineNumber: '#505050',
+  lineNumberActive: '#a0a0a0',
+  lineBorder: '#1c1c1c',
+  selection: '#ffffff25',
+  selectionInactive: '#ffffff12',
+  bracketMatch: '#ffffff1a',
+  bracketMatchBorder: '#00000000',
+  widget: '#161616',
+  widgetBorder: '#282828',
+  listSelected: '#232323',
+  listHover: '#282828',
+  input: '#1c1c1c',
+  scrollbar: '#34343480',
+  scrollbarHover: '#343434',
+}
+
+const MIN_LIGHT: EditorPalette = {
+  base: 'vs',
+  bg: '#ffffff',
+  fg: '#24292e',
+  muted: '#757575',
+  comment: '#8b949e',
+  string: '#22863a',
+  literal: '#1976d2',
+  entity: '#6f42c1',
+  keyword: '#d32f2f',
+  delimiter: '#24292e',
+  operator: '#d32f2f',
+  tag: '#22863a',
+  attribute: '#6f42c1',
+  cssProperty: '#1976d2',
+  cssValue: '#1976d2',
+  jsonKey: '#d32f2f',
+  invalid: '#cd3131',
+  warning: '#cd9731',
+  strong: '#6f42c1',
+  lineNumber: '#cccccc',
+  lineNumberActive: '#757575',
+  lineBorder: '#f2f2f2',
+  selection: '#e0e0e0',
+  selectionInactive: '#eeeeee',
+  bracketMatch: '#e7f3ff',
+  bracketMatchBorder: '#c8e1ff',
+  widget: '#f3f3f3',
+  widgetBorder: '#e9e9e9',
+  listSelected: '#e0e0e0',
+  listHover: '#eeeeee',
+  input: '#ffffff',
+  scrollbar: '#0000001a',
+  scrollbarHover: '#00000033',
+}
+
 /**
- * (Re)define + apply the token-derived theme for the CURRENT `data-theme`.
- * Monochrome ink with the single accent hit reserved for literals — keys
- * strongest, strings, comments, and structural punctuation in faint ink.
+ * (Re)define + apply the editor theme for the CURRENT `data-theme`:
+ * Vesper in dark, min-light in light.
  */
 function syncTheme(): void {
-  const root = document.documentElement
-  const style = getComputedStyle(root)
-  const dark = root.dataset.theme === 'dark'
-  const bg = toHex(
-    style.getPropertyValue('--color-bg').trim() ||
-      (dark ? '#0a0a0a' : '#f2f0ed'),
-    dark ? '#0a0a0a' : '#f2f0ed',
-  )
-  const token = (name: string, fallback: string) =>
-    toHex(style.getPropertyValue(name).trim() || fallback, fallback, bg)
-
-  const ink = token('--color-ink', dark ? '#ededed' : '#0a0a0a')
-  const inkFaint = token('--color-ink-faint', dark ? '#a6a6a6' : '#6b6865')
-  const inkGhost = token('--color-ink-ghost', dark ? '#6f6f6f' : '#a3a09c')
-  const accent = token('--color-accent', dark ? '#28a8f7' : '#b8420f')
-  const alertStrong = token(
-    '--color-alert-strong',
-    dark ? '#ff4d63' : '#c60021',
-  )
-  const panel = token('--color-panel', dark ? '#111111' : '#fafafa')
-  const surface = token(
-    '--color-surface',
-    dark ? 'rgba(255,255,255,0.055)' : 'rgba(20,16,8,0.055)',
-  )
-  const surfaceSelected = token(
-    '--color-surface-selected',
-    dark ? 'rgba(255,255,255,0.12)' : 'rgba(20,16,8,0.12)',
-  )
-  // rule is transparent in the no-lines system; composited over bg it
-  // resolves to the background, so Monaco widget "borders" disappear too.
-  const rule = token('--color-rule', dark ? '#0a0a0a' : '#f2f0ed')
-
+  const p =
+    document.documentElement.dataset.theme === 'dark' ? VESPER : MIN_LIGHT
   const t = (hex: string) => hex.slice(1)
   monaco.editor.defineTheme(CONSOLE_THEME, {
-    base: dark ? 'vs-dark' : 'vs',
+    base: p.base,
     inherit: false,
     rules: [
-      { token: '', foreground: t(ink) },
-      { token: 'comment', foreground: t(inkFaint), fontStyle: 'italic' },
-      { token: 'string', foreground: t(inkFaint) },
-      // JSON object keys carry the strongest ink, like Prism's `property`.
-      { token: 'string.key.json', foreground: t(ink) },
-      { token: 'string.value.json', foreground: t(inkFaint) },
-      { token: 'number', foreground: t(accent), fontStyle: 'italic' },
-      { token: 'keyword', foreground: t(accent), fontStyle: 'italic' },
-      { token: 'constant', foreground: t(accent), fontStyle: 'italic' },
-      { token: 'delimiter', foreground: t(inkFaint) },
-      { token: 'operator', foreground: t(inkFaint) },
-      { token: 'operators', foreground: t(inkFaint) },
-      { token: 'tag', foreground: t(ink) },
-      { token: 'attribute.name', foreground: t(inkFaint) },
-      { token: 'type', foreground: t(ink) },
-      { token: 'variable', foreground: t(ink) },
-      { token: 'identifier', foreground: t(ink) },
-      { token: 'strong', foreground: t(ink), fontStyle: 'bold' },
-      { token: 'emphasis', foreground: t(ink), fontStyle: 'italic' },
+      { token: '', foreground: t(p.fg) },
+      { token: 'comment', foreground: t(p.comment), fontStyle: 'italic' },
+      { token: 'string', foreground: t(p.string) },
+      { token: 'string.escape', foreground: t(p.muted) },
+      {
+        token: 'string.link',
+        foreground: t(p.literal),
+        fontStyle: 'underline',
+      },
+      { token: 'regexp', foreground: t(p.string) },
+      { token: 'number', foreground: t(p.literal) },
+      { token: 'constant', foreground: t(p.literal) },
+      { token: 'predefined', foreground: t(p.literal) },
+      { token: 'keyword', foreground: t(p.keyword) },
+      { token: 'type', foreground: t(p.entity) },
+      { token: 'annotation', foreground: t(p.entity) },
+      { token: 'identifier', foreground: t(p.fg) },
+      { token: 'variable', foreground: t(p.fg) },
+      { token: 'delimiter', foreground: t(p.delimiter) },
+      { token: 'operator', foreground: t(p.operator) },
+      { token: 'metatag', foreground: t(p.muted) },
+      { token: 'tag', foreground: t(p.tag) },
+      { token: 'attribute.name', foreground: t(p.attribute) },
+      { token: 'attribute.value', foreground: t(p.string) },
+      { token: 'invalid', foreground: t(p.invalid) },
+      // CSS: selectors read as tags, properties and values per theme.
+      { token: 'tag.css', foreground: t(p.tag) },
+      { token: 'attribute.name.css', foreground: t(p.cssProperty) },
+      { token: 'attribute.value.css', foreground: t(p.cssValue) },
+      { token: 'attribute.value.number.css', foreground: t(p.literal) },
+      { token: 'attribute.value.unit.css', foreground: t(p.literal) },
+      { token: 'attribute.value.hex.css', foreground: t(p.fg) },
+      { token: 'tag.scss', foreground: t(p.tag) },
+      { token: 'attribute.name.scss', foreground: t(p.cssProperty) },
+      { token: 'attribute.value.scss', foreground: t(p.cssValue) },
+      // JSON / YAML keys, and their literals.
+      { token: 'string.key.json', foreground: t(p.jsonKey) },
+      { token: 'string.value.json', foreground: t(p.string) },
+      { token: 'keyword.json', foreground: t(p.literal) },
+      { token: 'type.yaml', foreground: t(p.jsonKey) },
+      // Markdown.
+      { token: 'keyword.md', foreground: t(p.entity), fontStyle: 'bold' },
+      { token: 'strong', foreground: t(p.strong), fontStyle: 'bold' },
+      { token: 'emphasis', foreground: t(p.fg), fontStyle: 'italic' },
     ],
     colors: {
-      'editor.background': bg,
-      'editor.foreground': ink,
-      'editorCursor.foreground': ink,
-      'editor.selectionBackground': surfaceSelected,
-      'editor.inactiveSelectionBackground': surface,
+      'editor.background': p.bg,
+      'editor.foreground': p.fg,
+      'editorCursor.foreground': p.fg,
+      'editor.selectionBackground': p.selection,
+      'editor.inactiveSelectionBackground': p.selectionInactive,
+      'editor.selectionHighlightBackground': p.selectionInactive,
       'editor.lineHighlightBackground': '#00000000',
-      'editorLineNumber.foreground': inkFaint,
-      'editorLineNumber.activeForeground': ink,
-      'editorBracketHighlight.foreground1': inkFaint,
-      'editorBracketHighlight.foreground2': inkFaint,
-      'editorBracketHighlight.foreground3': inkFaint,
-      'editorBracketHighlight.foreground4': inkFaint,
-      'editorBracketHighlight.foreground5': inkFaint,
-      'editorBracketHighlight.foreground6': inkFaint,
-      'editorBracketHighlight.unexpectedBracket.foreground': alertStrong,
-      'editorBracketMatch.background': `${accent}26`,
-      'editorBracketMatch.border': `${accent}00`,
-      'editorWidget.background': panel,
-      'editorWidget.border': rule,
-      'editorWidget.foreground': ink,
-      'editorHoverWidget.background': panel,
-      'editorHoverWidget.border': rule,
-      'editorSuggestWidget.background': panel,
-      'editorSuggestWidget.border': rule,
-      'editorSuggestWidget.foreground': ink,
-      'editorSuggestWidget.selectedBackground': surfaceSelected,
-      'editorSuggestWidget.highlightForeground': accent,
-      'input.background': bg,
-      'input.foreground': ink,
-      'input.border': rule,
-      'scrollbarSlider.background': `${inkGhost}55`,
-      'scrollbarSlider.hoverBackground': `${inkGhost}77`,
-      'scrollbarSlider.activeBackground': `${inkGhost}99`,
-      'editor.placeholder.foreground': inkGhost,
+      'editor.lineHighlightBorder': p.lineBorder,
+      'editorLineNumber.foreground': p.lineNumber,
+      'editorLineNumber.activeForeground': p.lineNumberActive,
+      'editorBracketHighlight.foreground1': p.muted,
+      'editorBracketHighlight.foreground2': p.muted,
+      'editorBracketHighlight.foreground3': p.muted,
+      'editorBracketHighlight.foreground4': p.muted,
+      'editorBracketHighlight.foreground5': p.muted,
+      'editorBracketHighlight.foreground6': p.muted,
+      'editorBracketHighlight.unexpectedBracket.foreground': p.invalid,
+      'editorBracketMatch.background': p.bracketMatch,
+      'editorBracketMatch.border': p.bracketMatchBorder,
+      'editorError.foreground': p.invalid,
+      'editorWarning.foreground': p.warning,
+      'editorWidget.background': p.widget,
+      'editorWidget.border': p.widgetBorder,
+      'editorWidget.foreground': p.fg,
+      'editorHoverWidget.background': p.widget,
+      'editorHoverWidget.border': p.widgetBorder,
+      'editorSuggestWidget.background': p.widget,
+      'editorSuggestWidget.border': p.widgetBorder,
+      'editorSuggestWidget.foreground': p.fg,
+      'editorSuggestWidget.selectedBackground': p.listSelected,
+      'editorSuggestWidget.highlightForeground': p.literal,
+      'list.hoverBackground': p.listHover,
+      'input.background': p.input,
+      'input.foreground': p.fg,
+      'input.border': p.widgetBorder,
+      'scrollbarSlider.background': p.scrollbar,
+      'scrollbarSlider.hoverBackground': p.scrollbarHover,
+      'scrollbarSlider.activeBackground': p.scrollbarHover,
+      'editor.placeholder.foreground': p.comment,
       focusBorder: '#00000000',
     },
   })

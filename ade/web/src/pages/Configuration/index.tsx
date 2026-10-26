@@ -36,22 +36,33 @@ import {
   Workflow,
 } from 'lucide-react'
 import { MotionConfig } from 'motion/react'
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { useContainerNarrow } from '@/hooks/use-container-narrow'
 import { useWorkersConfigurationRoute } from '@/hooks/use-hash-route'
 import type { ThemePreference } from '@/hooks/use-theme'
 import { configurationFormFamily } from '@/lib/configuration-family'
+import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { NEUTRAL_SURFACE } from '@/lib/neutral-surface'
 import { useExtConfigForms, useUiAssetsStatus } from '@/lib/ui-slots'
 import { cn } from '@/lib/utils'
 import { SettingsPageTransition } from './components/motion'
 import { SettingsPageHeader } from './components/primitives'
 import {
+  GENERAL_SEARCH_ID,
   type SettingsNavEntry,
   SettingsNavigation,
 } from './components/SettingsNavigation'
 import { isOperatorConfiguration } from './lib/configuration-catalog'
+import { generalSearchFields } from './lib/general-settings-index'
+import {
+  buildSettingsSearchIndex,
+  type SettingsSearchDoc,
+  type SettingsSearchField,
+  schemaSearchFields,
+  sharedIdPrefixes,
+  stripIdPrefix,
+} from './lib/settings-search'
 import { ConsoleSettingsTab } from './tabs/ConsoleSettingsTab'
 import type { ConfigurationSchemaView } from './tabs/WorkersTab/api'
 import { EditorEmptyState } from './tabs/WorkersTab/EmptyState'
@@ -254,6 +265,66 @@ export function Configuration({
     [entries],
   )
 
+  // Settings search covers General's rows and every field in each worker's
+  // schema; Permissions only while the approval-gate worker is connected
+  // (outside the provider, as in Storybook, it counts as connected).
+  const conversations = useConversationsCtxOptional()
+  const approvalGateAvailable = conversations
+    ? conversations.approvalGateAvailable
+    : true
+  const searchIndex = useMemo(() => {
+    const prefixes = sharedIdPrefixes(entries.map((entry) => entry.id))
+    const docs: SettingsSearchDoc[] = [
+      {
+        id: GENERAL_SEARCH_ID,
+        name: 'General',
+        aliases: ['preferences'],
+        description:
+          'ADE appearance, permissions, providers, and filesystem access.',
+        fields: generalSearchFields(approvalGateAvailable),
+      },
+      ...entries.map((entry) => ({
+        id: entry.id,
+        name: configurationSearchName(entry),
+        aliases: [
+          configurationFormFamily(entry),
+          stripIdPrefix(entry.id, prefixes),
+        ],
+        description: entry.description,
+        fields: schemaSearchFields(entry.schema),
+      })),
+    ]
+    return buildSettingsSearchIndex(docs)
+  }, [entries, approvalGateAvailable])
+
+  const selectSearchResult = useCallback(
+    (docId: string, field?: SettingsSearchField) => {
+      if (docId === GENERAL_SEARCH_ID) {
+        const anchors = [field?.anchor, field?.fallbackAnchor].filter(
+          (anchor): anchor is string => Boolean(anchor),
+        )
+        if (!route.open) {
+          revealGeneralRow(anchors)
+          return
+        }
+        tryNavigate(() => {
+          window.location.hash = '#/configuration'
+          revealGeneralRow(anchors)
+        })
+        return
+      }
+      const path = field?.path ?? []
+      // The same editor stays mounted: only the linked field changes, so
+      // there is no draft to guard.
+      if (docId === route.configurationId) {
+        navigateWorker(docId, path)
+        return
+      }
+      tryNavigate(() => navigateWorker(docId, path))
+    },
+    [route.open, route.configurationId, tryNavigate, navigateWorker],
+  )
+
   const paneKey = !route.open
     ? 'general'
     : settingsLoading
@@ -281,6 +352,8 @@ export function Configuration({
             selectedId={route.configurationId}
             onSelectGeneral={selectGeneral}
             onSelectWorker={selectWorker}
+            searchIndex={searchIndex}
+            onSelectResult={selectSearchResult}
             isLoading={settingsLoading}
             isError={configurationsQuery.isError}
             errorMessage={(configurationsQuery.error as Error | null)?.message}
@@ -400,10 +473,49 @@ function ConfigurationUnavailable({
   )
 }
 
+/**
+ * Scroll a General row into view and flash it, once it is mounted (the page
+ * may still be transitioning in). The first id that exists wins, so a hidden
+ * row falls back to its neighbour.
+ */
+function revealGeneralRow(anchors: string[]) {
+  if (anchors.length === 0 || typeof window === 'undefined') return
+  const reduceMotion = window.matchMedia?.(
+    '(prefers-reduced-motion: reduce)',
+  ).matches
+  let frames = 0
+  const tick = () => {
+    const target = anchors
+      .map((anchor) => document.getElementById(anchor))
+      .find((element): element is HTMLElement => element !== null)
+    if (!target) {
+      if (++frames < 60) window.requestAnimationFrame(tick)
+      return
+    }
+    target.scrollIntoView({
+      block: 'center',
+      behavior: reduceMotion ? 'auto' : 'smooth',
+    })
+    target.setAttribute('data-search-flash', '')
+    window.setTimeout(() => target.removeAttribute('data-search-flash'), 1600)
+  }
+  window.requestAnimationFrame(tick)
+}
+
 function iconForConfiguration(
   entry: Pick<ConfigurationSchemaView, 'id' | 'metadata'>,
 ): LucideIcon {
   return CONFIGURATION_ICONS[configurationFormFamily(entry)] ?? Box
+}
+
+/** The name search matches: the stable name, without the instance id. */
+function configurationSearchName(
+  entry: Pick<ConfigurationSchemaView, 'id' | 'name' | 'metadata'>,
+): string {
+  return (
+    CONFIGURATION_NAMES[configurationFormFamily(entry)] ??
+    (entry.name || entry.id)
+  )
 }
 
 function configurationName(

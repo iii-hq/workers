@@ -183,7 +183,7 @@ const SIDEBAR_DEFAULT_WIDTH = 260
 const SIDEBAR_MIN_WIDTH = 200
 const SIDEBAR_MAX_WIDTH = 560
 const TERMINAL_BOTTOM_DEFAULT_SIZE = 280
-const TERMINAL_RIGHT_DEFAULT_SIZE = 420
+const TERMINAL_RIGHT_DEFAULT_SIZE = 480
 const LIVE_COALESCE_MS = 400
 const NO_RECENT: readonly string[] = []
 const NO_GLOBS: readonly string[] = []
@@ -300,7 +300,7 @@ export function ShellExplorerPage({
   if (gitOpen && !gitMounted) setGitMounted(true)
   const [gitTab, setGitTab] = useState<GitTab>('log')
   const gitToggleRef = useRef<HTMLButtonElement>(null)
-  const [terminalDock, setTerminalDock] = useState<TerminalDock>('bottom')
+  const [terminalDock, setTerminalDock] = useState<TerminalDock>('right')
   // One tool window in the docked panel at a time: a terminal opening there
   // takes it from Git (a terminal in an editor tab leaves Git be). Settled
   // during render, so opening one costs no second pass.

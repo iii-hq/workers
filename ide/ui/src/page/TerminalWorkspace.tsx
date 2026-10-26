@@ -67,6 +67,8 @@ export interface TerminalWorkspaceProps {
   storageKey: string
   connectionCoordinators: Map<string, TerminalConnectionCoordinator>
   actions?: ReactNode
+  /** What sits before the tabs: the panel's collapse control. */
+  leading?: ReactNode
 }
 
 export interface TerminalWorkspaceHandle {
@@ -465,6 +467,7 @@ export const TerminalWorkspace = forwardRef<
     storageKey,
     connectionCoordinators,
     actions,
+    leading,
   },
   ref,
 ) {
@@ -729,6 +732,7 @@ export const TerminalWorkspace = forwardRef<
     <div className="shui-terminal-workspace">
       {dialog}
       <Toolbar className="shui-terminal-tabs" aria-label="Terminals" end={actions}>
+        {leading}
         <div
           className="shui-terminal-tab-strip"
           role="tablist"

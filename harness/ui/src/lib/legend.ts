@@ -29,6 +29,18 @@ const TONE = {
 const tint = (tone: keyof typeof TONE, opacity = 100) =>
   opacity === 100 ? TONE[tone] : `color-mix(in srgb, ${TONE[tone]} ${opacity}%, transparent)`
 
+/**
+ * What the window will hold, for the empty state before the first reply:
+ * the bar's own hues in the bar's order, each with an illustrative share of
+ * the ghost bar (not a measurement; nothing has been counted yet).
+ */
+export const PREVIEW_CATEGORIES = [
+  { key: 'system', label: 'System prompt', color: tint('purple'), share: 9 },
+  { key: 'skills', label: 'Skills', color: tint('teal'), share: 5 },
+  { key: 'tools', label: 'Function schemas', color: tint('blue'), share: 15 },
+  { key: 'conversation', label: 'Conversation', color: tint('green'), share: 24 },
+] as const
+
 /** The bar's empty track (styles.css `.harness-ui-stack`). */
 export const COLOR_FREE = 'var(--color-surface-active)'
 

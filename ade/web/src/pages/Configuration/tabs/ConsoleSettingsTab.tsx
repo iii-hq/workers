@@ -45,6 +45,7 @@ import {
   SettingsRow,
   SettingsSection,
 } from '../components/primitives'
+import { GENERAL_ANCHOR } from '../lib/general-settings-index'
 
 // Provider credentials + settings live in the llm-router configuration entry.
 const HARNESS_CONFIG_HASH = hashForWorkersConfiguration('llm-router')
@@ -217,11 +218,13 @@ export function ConsoleSettingsTab({
   return (
     <SettingsPageBody>
       <SettingsSection
+        id={GENERAL_ANCHOR.appearance}
         title="Appearance"
         description="Choose how the ADE looks in this browser."
       >
         <SettingsList>
           <SettingsRow
+            id={GENERAL_ANCHOR.theme}
             label="Interface theme"
             description="Applied immediately and stored for this browser. System follows the OS as it changes."
             control={
@@ -252,11 +255,13 @@ export function ConsoleSettingsTab({
       </SettingsSection>
 
       <SettingsSection
+        id={GENERAL_ANCHOR.notifications}
         title="Notifications"
         description="Local sounds from this open Console. No notification permission is required."
       >
         <SettingsList>
           <SettingsRow
+            id={GENERAL_ANCHOR.completionBell}
             label="Completion bell"
             description="Play a gentle bell when a top-level conversation finishes. Failures use a distinct tone; stopped turns stay silent."
             layout="inline"
@@ -269,6 +274,7 @@ export function ConsoleSettingsTab({
             }
           />
           <SettingsRow
+            id={GENERAL_ANCHOR.soundCheck}
             label="Sound check"
             description="Play the success tone now. Your first tap also enables audio for later completions."
             action={
@@ -286,11 +292,13 @@ export function ConsoleSettingsTab({
 
       {approvalGateAvailable ? (
         <SettingsSection
+          id={GENERAL_ANCHOR.permissions}
           title="Permissions"
           description="Set the default behavior for new conversations. Existing conversations keep their current permissions."
         >
           <SettingsList>
             <SettingsRow
+              id={GENERAL_ANCHOR.defaultMode}
               label="Default mode"
               description="Manual asks before every function. Auto skips functions on the allowlist. Full skips all prompts."
               control={
@@ -322,6 +330,7 @@ export function ConsoleSettingsTab({
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 transition={settingsFade}
+                id={GENERAL_ANCHOR.allowlist}
                 label="Auto-mode allowlist"
                 description="Functions that new conversations can run without asking."
                 meta={
@@ -378,11 +387,13 @@ export function ConsoleSettingsTab({
       </Dialog>
 
       <SettingsSection
+        id={GENERAL_ANCHOR.workspace}
         title="Workspace"
         description="How many workspace tabs this ADE lets you open at once."
       >
         <SettingsList>
           <SettingsRow
+            id={GENERAL_ANCHOR.tabLimit}
             label="Tab limit"
             description="New-tab controls disable at the limit; tabs already open stay open."
             meta={`${tabLimit} ${tabLimit === 1 ? 'tab' : 'tabs'}`}
@@ -400,11 +411,13 @@ export function ConsoleSettingsTab({
       </SettingsSection>
 
       <SettingsSection
+        id={GENERAL_ANCHOR.providers}
         title="Providers"
         description="Manage model credentials, endpoints, and provider-specific settings."
       >
         <SettingsList>
           <SettingsRow
+            id={GENERAL_ANCHOR.modelProviders}
             label="Model providers"
             description="API keys are masked and remain in the llm-router configuration."
             action={
@@ -422,11 +435,13 @@ export function ConsoleSettingsTab({
       </SettingsSection>
 
       <SettingsSection
+        id={GENERAL_ANCHOR.filesystem}
         title="Filesystem access"
         description="A conversation can always use its workspace. Access outside it requires a temporary or permanent grant."
       >
         <SettingsList>
           <SettingsRow
+            id={GENERAL_ANCHOR.permanentRoots}
             label="Permanent roots"
             description="Folders available to every conversation. Workspace and session grants are managed from each chat."
             action={

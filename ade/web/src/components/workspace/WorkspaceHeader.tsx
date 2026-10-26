@@ -28,7 +28,7 @@ import {
  * every control in the chrome answers the pointer the same way.
  */
 const GHOST_CONTROL =
-  'inline-flex shrink-0 items-center justify-center rounded-xl text-neutral-500 transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-300/60 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 active:bg-neutral-300 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400 dark:active:bg-neutral-700'
+  'icon-host inline-flex shrink-0 items-center justify-center rounded-xl text-neutral-500 transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-300/60 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 active:bg-neutral-300 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400 dark:active:bg-neutral-700'
 
 export interface WorkspaceHeaderProps {
   workspace: UseWorkspaceTabsReturn
@@ -93,7 +93,10 @@ export function WorkspaceHeader({
             aria-label="open workspace menu"
             className={cn(GHOST_CONTROL, 'size-12')}
           >
-            <Menu className="size-5" aria-hidden />
+            <Menu
+              className="icon-motion icon-motion--menu size-5"
+              aria-hidden
+            />
           </button>
         </div>
 
@@ -140,7 +143,10 @@ export function WorkspaceHeader({
             aria-label="search the ADE"
             className={cn(GHOST_CONTROL, 'size-12')}
           >
-            <Search className="size-5" aria-hidden />
+            <Search
+              className="icon-motion icon-motion--search size-5"
+              aria-hidden
+            />
           </button>
           <button
             type="button"
@@ -164,9 +170,15 @@ export function WorkspaceHeader({
             )}
           >
             {mobileIsChat ? (
-              <SquarePen className="size-5" aria-hidden />
+              <SquarePen
+                className="icon-motion icon-motion--pen size-5"
+                aria-hidden
+              />
             ) : (
-              <Plus className="size-5" aria-hidden />
+              <Plus
+                className="icon-motion icon-motion--plus size-5"
+                aria-hidden
+              />
             )}
           </button>
         </div>
@@ -193,7 +205,7 @@ export function WorkspaceHeader({
         <div className="flex h-full min-w-0 items-end gap-1">
           <span className="flex size-8 shrink-0 items-center justify-center self-center">
             {/* 20% under the 24px mark it replaced: 19.2px. */}
-            <Wordmark className="mx-0 h-[1.2rem]" />
+            <Wordmark appearance="live" className="h-[1.2rem] w-auto" />
           </span>
           <TabStrip
             tabs={workspace.tabs}
@@ -221,9 +233,12 @@ export function WorkspaceHeader({
             aria-label={paletteTitle}
             title={paletteTitle}
             /* onboarding-palette: tour anchor (workers/onboarding). Do not remove. */
-            className="onboarding-palette inline-flex h-8 w-[16.2rem] max-w-full items-center gap-2 rounded-xl bg-white pr-1.5 pl-3 text-[13px] font-medium text-neutral-500 transition-[background-color,color,transform] duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-50 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 active:scale-[0.98] dark:bg-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400 gap-4"
+            className="onboarding-palette icon-host inline-flex h-8 w-[16.2rem] max-w-full items-center gap-2 rounded-xl bg-white pr-1.5 pl-3 text-[13px] font-medium text-neutral-500 transition-[background-color,color,transform] duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-50 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 active:scale-[0.98] dark:bg-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400 gap-4"
           >
-            <Search className="size-4 shrink-0" aria-hidden />
+            <Search
+              className="icon-motion icon-motion--search size-4 shrink-0"
+              aria-hidden
+            />
             <span className="min-w-0 flex-1 truncate text-left">Search</span>
             <KeyCombo
               binding={paletteBinding}

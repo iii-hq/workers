@@ -234,25 +234,48 @@
   flex: none;
   border-radius: var(--radius-full);
 }
-/* Before the first reply: a dashed card holding a ghost of the stack bar
-   and one line of copy. The ghost breathes on the shared pulse recipe so
-   the card reads as waiting, not broken. */
+/* Before the first reply: a raised card in the live layout's shape. The
+   hero number is the window size; the badge sits where the share pill will;
+   the ghost bar is the stacked bar's own hues at low strength over the free
+   track, breathing on the shared pulse recipe so it reads as waiting, not
+   broken; then a legend of what will fill it. */
 [data-iii-ui="harness"] .harness-ui-empty {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 14px 14px 12px;
-  border: 1px dashed color-mix(in srgb, var(--color-ink) 18%, transparent);
+  gap: 12px;
+  padding: 14px 16px 16px;
+  border: 1px solid var(--color-edge);
   border-radius: var(--radius-md);
   background: var(--color-surface);
+}
+[data-iii-ui="harness"] .harness-ui-empty .harness-ui-hero {
+  margin-top: 0;
+}
+[data-iii-ui="harness"] .harness-ui-empty-badge {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-full);
+  background: var(--color-panel-raised);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="harness"] .harness-ui-empty-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--color-ok);
 }
 [data-iii-ui="harness"] .harness-ui-empty-track {
   display: flex;
   column-gap: 2px;
   width: 100%;
-  height: 4px;
-  margin-bottom: 6px;
+  height: 6px;
   border-radius: var(--radius-full);
+  background: var(--color-surface-active);
   overflow: hidden;
 }
 [data-iii-ui="harness"] .harness-ui-empty-track > span {
@@ -260,26 +283,31 @@
   flex: 0 0 auto;
   height: 100%;
   border-radius: var(--radius-full);
-  background: color-mix(in srgb, var(--color-ink) 22%, transparent);
+  opacity: 0.4;
 }
-/* Each segment a shade fainter than the last, so the ghost reads as the
-   stacked bar it stands in for rather than one grey rule. */
-[data-iii-ui="harness"] .harness-ui-empty-track > span:nth-child(2) {
-  opacity: 0.7;
-}
-[data-iii-ui="harness"] .harness-ui-empty-track > span:nth-child(3) {
-  opacity: 0.45;
-}
-[data-iii-ui="harness"] .harness-ui-empty-title {
+/* Two columns of swatch + name: what each hue in the bar will stand for. */
+[data-iii-ui="harness"] .harness-ui-empty-legend {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 12px;
   margin: 0;
-  font-size: 13px;
-  font-weight: 500;
+  padding: 0;
+  list-style: none;
+}
+[data-iii-ui="harness"] .harness-ui-empty-legend > li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
   line-height: 18px;
-  color: var(--color-ink);
-  font-variant-numeric: tabular-nums;
+  color: var(--color-ink-faint);
+  white-space: nowrap;
 }
 [data-iii-ui="harness"] .harness-ui-empty-text {
   margin: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-edge);
   font-size: 12px;
   line-height: 17px;
   color: var(--color-ink-faint);

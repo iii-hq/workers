@@ -665,7 +665,7 @@ export function TabStrip({
                         closeTab(tab.id)
                       }}
                       className={cn(
-                        'relative flex size-10 items-center justify-center rounded-lg text-neutral-400 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-300/60 hover:text-neutral-900 sm:size-6 dark:text-neutral-500 dark:hover:bg-neutral-700 dark:hover:text-neutral-50',
+                        'icon-host relative flex size-10 items-center justify-center rounded-lg text-neutral-400 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-300/60 hover:text-neutral-900 sm:size-6 dark:text-neutral-500 dark:hover:bg-neutral-700 dark:hover:text-neutral-50',
                         !active &&
                           'opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover/tab:opacity-100 pointer-fine:group-focus-within/tab:opacity-100',
                       )}
@@ -674,7 +674,10 @@ export function TabStrip({
                         className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
                         aria-hidden="true"
                       />
-                      <X className="size-4 shrink-0" aria-hidden />
+                      <X
+                        className="icon-motion icon-motion--x size-4 shrink-0"
+                        aria-hidden
+                      />
                     </button>
                   </Hint>
                 ) : null}
@@ -705,13 +708,16 @@ export function TabStrip({
               : undefined
           }
           onClick={onCreate}
-          className="relative flex size-12 shrink-0 items-center justify-center self-center rounded-lg text-neutral-500 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-300/60 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 disabled:pointer-events-none disabled:opacity-40 sm:size-8 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400"
+          className="icon-host relative flex size-12 shrink-0 items-center justify-center self-center rounded-lg text-neutral-500 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-300/60 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 disabled:pointer-events-none disabled:opacity-40 sm:size-8 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400"
         >
           <span
             className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
             aria-hidden="true"
           />
-          <Plus className="size-4 shrink-0" aria-hidden />
+          <Plus
+            className="icon-motion icon-motion--plus size-4 shrink-0"
+            aria-hidden
+          />
         </button>
       </Hint>
 
@@ -764,9 +770,12 @@ function OverflowMenu({
         <IconButton
           label="All workspaces"
           tooltip={`All workspaces (${tabs.length})`}
-          className="shrink-0"
+          className="icon-host shrink-0"
         >
-          <ChevronDown className="size-4" aria-hidden />
+          <ChevronDown
+            className="icon-motion icon-motion--chevron size-4"
+            aria-hidden
+          />
         </IconButton>
       </DropdownMenuTrigger>
       <DropdownMenuContent
