@@ -576,6 +576,36 @@ async fn a_native_child_owned_by_a_plan_is_never_admitted_as_another_cycle() {
 }
 
 #[tokio::test]
+async fn a_baseline_that_never_ran_says_why_the_execution_failed() {
+    let h = Harness::start(World::new()).await;
+    h.configure(10.0).await;
+    let cycle_id = h.start_cycle(json!({"objective": OBJECTIVE})).await;
+    h.drain().await;
+    h.finish("plan-1", "incomplete", vec![]);
+    {
+        // As the E2E reports a preparation that failed: no slot ever ran.
+        let mut world = h.world();
+        let execution = world.executions.get_mut("plan-1").unwrap();
+        execution["manifest"]["executions"][0]["first_failure"] = json!({"kind": "execution",
+            "message": "Preparing the execution failed at `prepare resolve`"});
+        execution["detail"]["reports"][0] =
+            json!({"scenario_id": "context_pressure", "available": false, "report": null});
+    }
+    assert!(h.changed("plan-1").await.admitted);
+    h.drain().await;
+    let outcome = h.cycle(&cycle_id).await.outcome.unwrap();
+    assert_eq!(outcome.code, OutcomeCodeV1::Inconclusive);
+    assert!(
+        outcome.detail.starts_with("baseline unusable: ")
+            && outcome.detail.ends_with(
+                "; the execution failed: Preparing the execution failed at `prepare resolve`"
+            ),
+        "{}",
+        outcome.detail
+    );
+}
+
+#[tokio::test]
 async fn a_function_call_error_objective_measures_errors_on_a_test_that_names_them() {
     let h = Harness::start(World::new()).await;
     h.configure(10.0).await;

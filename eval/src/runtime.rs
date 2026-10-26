@@ -1516,9 +1516,14 @@ async fn analysis_stage(
                 .ok_or_else(|| EvalError::State("a baseline without a plan".into()))?;
             let measured = decision::baseline(plan, &evidence.execution_id, &evidence.bundle);
             if !measured.usable {
+                // The E2E's own failure says why no run was measured.
+                let failure = crate::evidence::summary(&evidence.bundle, &evidence.execution_id)
+                    .and_then(|summary| crate::evidence::text_at(summary, "/first_failure/message"))
+                    .map(|message| format!("; the execution failed: {message}"))
+                    .unwrap_or_default();
                 outcome = Some((
                     OutcomeCodeV1::Inconclusive,
-                    format!("baseline unusable: {}", measured.reason),
+                    format!("baseline unusable: {}{failure}", measured.reason),
                 ));
             } else if candidate_config.is_none() {
                 outcome = Some((
