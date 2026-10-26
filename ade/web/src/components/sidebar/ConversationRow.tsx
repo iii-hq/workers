@@ -1,5 +1,5 @@
 import uiClasses from '@iii-dev/console-ui/ui-classes'
-import { Bot, ChevronRight, MessageSquare, Pencil, X } from 'lucide-react'
+import { Bot, ChevronRight, Pencil, X } from 'lucide-react'
 import type { CSSProperties } from 'react'
 import { useRef, useState } from 'react'
 import { SUBAGENT_ICON_COMPONENTS } from '@/components/chat/ActiveSubagentChips'
@@ -57,7 +57,8 @@ function formatRelative(ts: number): string {
 }
 
 interface RowGlyph {
-  Icon: typeof Bot
+  /** The mark; absent, the row opens with a status dot instead. */
+  Icon?: typeof Bot
   /** Glyph tone; `neutral`/absent keeps the ghost ink. */
   color?: SubagentColor
   /** Native tooltip naming the session's origin or profile. */
@@ -70,8 +71,8 @@ interface RowGlyph {
  * back to the profile's icon when the spawn named none); otherwise a
  * selected agent profile owns the glyph at every depth; a spawned child
  * shows its origin (trigger bolt or the spawning agent's appearance); a
- * plain chat keeps a quiet message mark so every label starts on the same
- * column.
+ * plain chat opens with a dot that carries its status (see `RowDot`), so
+ * every label starts on the same column without a column of chat marks.
  */
 function resolveGlyph(conversation: Conversation, depth: number): RowGlyph {
   const profile = conversation.agentProfile
@@ -89,7 +90,7 @@ function resolveGlyph(conversation: Conversation, depth: number): RowGlyph {
     // mark: the robot fallback is for spawned agents, and a column of them
     // on the stock profile reads as noise, not identity.
     if (!chosen && depth === 0) {
-      return { Icon: MessageSquare, title: profile.name }
+      return { title: profile.name }
     }
     return {
       Icon: chosen || Bot,
@@ -108,7 +109,42 @@ function resolveGlyph(conversation: Conversation, depth: number): RowGlyph {
       title: appearance?.name ?? 'spawned by an agent',
     }
   }
-  return { Icon: MessageSquare }
+  return {}
+}
+
+/**
+ * A plain chat's bullet. Ghost while idle, ink on the open conversation,
+ * the accent pulsing while the session works and the alert tone on an
+ * error, so the list shows at a glance which chats need a look.
+ */
+function RowDot({
+  conversation,
+  active,
+  title,
+}: {
+  conversation: Conversation
+  active: boolean
+  title?: string
+}) {
+  if (conversation.status === 'working') {
+    return <StatusDot tone="accent" pulse className="size-2" title="working" />
+  }
+  if (conversation.status === 'error') {
+    return (
+      <StatusDot
+        tone="alert"
+        className="size-2"
+        title={conversation.statusReason ?? 'error'}
+      />
+    )
+  }
+  return (
+    <StatusDot
+      tone={active ? 'ink' : 'ghost'}
+      className="size-2"
+      title={title}
+    />
+  )
 }
 
 /** Conversation tree row with touch rename actions and explicit-exit focus recovery. */
@@ -163,7 +199,15 @@ export function ConversationRow({
         data-color={glyph.color}
         title={glyph.title}
       >
-        <glyph.Icon aria-hidden />
+        {glyph.Icon ? (
+          <glyph.Icon aria-hidden />
+        ) : (
+          <RowDot
+            conversation={conversation}
+            active={active}
+            title={glyph.title}
+          />
+        )}
       </span>
       {/* A long title fades at its right edge and slides into view while the
           row is hovered (MarqueeLabel), so the whole name is readable
@@ -172,7 +216,8 @@ export function ConversationRow({
         {conversation.title}
       </MarqueeLabel>
       <span className={uiClasses.treeItemTrailing}>
-        {conversation.status === 'working' ? (
+        {/* A row that opens with a dot already shows its status there. */}
+        {!glyph.Icon ? null : conversation.status === 'working' ? (
           <StatusDot tone="accent" pulse title="working" />
         ) : conversation.status === 'error' ? (
           <StatusDot

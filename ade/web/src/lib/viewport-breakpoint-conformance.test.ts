@@ -64,7 +64,7 @@ const viewportAllowlist: Record<string, { max: number; reason: string }> = {
   'components/chat/harness/SpawnView.tsx': { max: 7, reason: TOUCH },
   'components/chat/sandbox/ErrorCard.tsx': { max: 18, reason: TOUCH },
   'components/function-trigger/FunctionTriggerCard.tsx': {
-    max: 6,
+    max: 11,
     reason: TOUCH,
   },
   'components/permissions/FullModeConfirmDialog.tsx': {

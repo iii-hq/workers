@@ -36,7 +36,7 @@ const neutralSelectionRules: Array<[path: string, selector: string]> = [
   ['browser/ui/styles.css', '.br-ui-tab.is-active'],
   ['browser/ui/styles.css', '.br-ui-chrome-btn.is-on'],
   ['ade/web/src/styles/ui-recipes.css', '.iii-ui-tab[aria-selected="true"]'],
-  ['browser/ui/styles.css', '.br-cfg-nav-row.active::before'],
+  ['browser/ui/styles.css', '.br-cfg-nav-row.active'],
   ['github/ui/styles.css', '.gh-ui-node-selected'],
   ['github/ui/styles.css', '.gh-ui-graph-row.selected'],
   ['eval/ui/styles.css', '.eval-ui-history-row.active'],

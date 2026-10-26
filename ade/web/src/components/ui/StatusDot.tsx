@@ -1,7 +1,7 @@
 import type * as React from 'react'
 import { cn } from '@/lib/utils'
 
-type DotTone = 'accent' | 'alert' | 'warn' | 'ink' | 'ok'
+type DotTone = 'accent' | 'alert' | 'warn' | 'ink' | 'ok' | 'ghost'
 
 const dotTone: Record<DotTone, string> = {
   accent: 'bg-accent',
@@ -9,6 +9,8 @@ const dotTone: Record<DotTone, string> = {
   warn: 'bg-warn',
   ink: 'bg-ink',
   ok: 'bg-ok',
+  /** A quiet mark that only holds a place (an idle row's bullet). */
+  ghost: 'bg-ink-ghost',
 }
 
 interface StatusDotProps extends React.HTMLAttributes<HTMLSpanElement> {
