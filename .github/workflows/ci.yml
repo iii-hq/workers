@@ -265,7 +265,7 @@ jobs:
           find target -xtype l -print -delete 2>/dev/null || true
 
       - name: Run clippy
-        if: matrix.worker != 'browser' && matrix.worker != 'sandbox-builtin'
+        if: matrix.worker != 'browser' && matrix.worker != 'sandbox-libkrun'
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Run clippy (default features)
@@ -282,40 +282,40 @@ jobs:
           echo "III_REDIS_REQUIRE=1" >> "$GITHUB_ENV"
 
       - name: Run tests
-        if: matrix.worker != 'browser' && matrix.worker != 'sandbox-builtin'
+        if: matrix.worker != 'browser' && matrix.worker != 'sandbox-libkrun'
         run: cargo test --locked --all-features
 
       - name: Run tests (default features)
         if: matrix.worker == 'browser'
         run: cargo test --locked
 
-      # sandbox-builtin: --all-features would turn on embed-init and
+      # sandbox-libkrun: --all-features would turn on embed-init and
       # embed-libkrunfw without a built guest init, so it gets its own steps.
-      # integration-vm needs KVM and runs in sandbox-builtin-vm-linux.
-      - name: Install libcap-ng (sandbox-builtin)
-        if: matrix.worker == 'sandbox-builtin'
+      # integration-vm needs KVM and runs in sandbox-libkrun-vm-linux.
+      - name: Install libcap-ng (sandbox-libkrun)
+        if: matrix.worker == 'sandbox-libkrun'
         run: |
           sudo apt-get install -y libcap-ng-dev \
             || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
 
       # The only CI run of the fail-closed tests: the embed features compile
       # them out.
-      - name: Fail-closed tests without embedded artifacts (sandbox-builtin)
-        if: matrix.worker == 'sandbox-builtin'
+      - name: Fail-closed tests without embedded artifacts (sandbox-libkrun)
+        if: matrix.worker == 'sandbox-libkrun'
         run: cargo test --locked --lib fails_closed
 
       # embed-init embeds a real init, so build it first. rust-lld links musl:
       # no musl-tools needed.
-      - name: Build the guest init (sandbox-builtin)
-        if: matrix.worker == 'sandbox-builtin'
+      - name: Build the guest init (sandbox-libkrun)
+        if: matrix.worker == 'sandbox-libkrun'
         run: BUILD_TARGET=x86_64-unknown-linux-gnu scripts/build-init.sh
 
-      - name: Run clippy with embedded artifacts (sandbox-builtin)
-        if: matrix.worker == 'sandbox-builtin'
+      - name: Run clippy with embedded artifacts (sandbox-libkrun)
+        if: matrix.worker == 'sandbox-libkrun'
         run: cargo clippy --locked --workspace --all-targets --features embed-init,embed-libkrunfw -- -D warnings
 
-      - name: Run tests with embedded artifacts (sandbox-builtin)
-        if: matrix.worker == 'sandbox-builtin'
+      - name: Run tests with embedded artifacts (sandbox-libkrun)
+        if: matrix.worker == 'sandbox-libkrun'
         run: cargo test --locked --workspace --features embed-init,embed-libkrunfw
 
       # computer vendors xa11y-linux (AT-SPI only, patched; see
@@ -382,7 +382,7 @@ jobs:
         run: cargo test --locked --test minilm_target
 
   # ──────────────────────────────────────────────────────────────
-  # sandbox-builtin boots libkrun microVMs. The rust job above lints and
+  # sandbox-libkrun boots libkrun microVMs. The rust job above lints and
   # tests it with the guest init and firmware embedded; these two prove the
   # rest. macOS: the Apple Silicon build and the platform crates the ubuntu
   # gate never compiles. Linux: real VMs on KVM, the integration-vm suite and
@@ -390,17 +390,17 @@ jobs:
   # every release, so a 1.x whose fixtures drifted from the contract or whose
   # VMs do not boot cannot ship.
   # ──────────────────────────────────────────────────────────────
-  sandbox-builtin-macos:
-    name: "sandbox-builtin: lint + test (macos)"
+  sandbox-libkrun-macos:
+    name: "sandbox-libkrun: lint + test (macos)"
     needs: discover
-    if: contains(needs.discover.outputs.rust, '"sandbox-builtin"')
+    if: contains(needs.discover.outputs.rust, '"sandbox-libkrun"')
     permissions:
       contents: read
     runs-on: macos-latest
     timeout-minutes: 60
     defaults:
       run:
-        working-directory: sandbox-builtin
+        working-directory: sandbox-libkrun
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -416,9 +416,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          shared-key: worker-sandbox-builtin-macos
+          shared-key: worker-sandbox-libkrun-macos
           save-if: ${{ github.event_name == 'push' }}
-          workspaces: sandbox-builtin -> target
+          workspaces: sandbox-libkrun -> target
 
       - name: Build the guest init
         run: BUILD_TARGET=aarch64-apple-darwin scripts/build-init.sh
@@ -432,17 +432,17 @@ jobs:
       - name: Run iii-filesystem tests
         run: cargo test --locked -p iii-filesystem
 
-  sandbox-builtin-vm-linux:
-    name: "sandbox-builtin: KVM VM tests + isolation e2e (linux)"
+  sandbox-libkrun-vm-linux:
+    name: "sandbox-libkrun: KVM VM tests + isolation e2e (linux)"
     needs: discover
-    if: contains(needs.discover.outputs.rust, '"sandbox-builtin"')
+    if: contains(needs.discover.outputs.rust, '"sandbox-libkrun"')
     permissions:
       contents: read
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     defaults:
       run:
-        working-directory: sandbox-builtin
+        working-directory: sandbox-libkrun
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -456,9 +456,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          shared-key: worker-sandbox-builtin-vm-linux
+          shared-key: worker-sandbox-libkrun-vm-linux
           save-if: ${{ github.event_name == 'push' }}
-          workspaces: sandbox-builtin -> target
+          workspaces: sandbox-libkrun -> target
 
       - name: Enable KVM
         run: |
@@ -469,7 +469,7 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
 
-      - name: Install libcap-ng (sandbox-builtin)
+      - name: Install libcap-ng (sandbox-libkrun)
         run: |
           sudo apt-get install -y libcap-ng-dev \
             || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
@@ -505,7 +505,7 @@ jobs:
           # The script drives sandbox::*; the engine routes it to the adapter.
           SANDBOX_ID_PREFIX: sandbox
         run: |
-          III_BIN="$III_ENGINE_BIN" ADAPTER_BIN=target/debug/sandbox-builtin \
+          III_BIN="$III_ENGINE_BIN" ADAPTER_BIN=target/debug/sandbox-libkrun \
             WORK="$RUNNER_TEMP/sandbox-isolation" bash scripts/sandbox-isolation-e2e.sh
 
       # The copied fixtures pin this worker's wire shape to the contract's.
@@ -1236,8 +1236,8 @@ jobs:
           sudo apt-get update && sudo apt-get install -y cmake libvulkan-dev glslc spirv-headers
           find "${{ matrix.worker }}/target" -xtype l -print -delete 2>/dev/null || true
 
-      - name: Install libcap-ng (sandbox-builtin)
-        if: steps.optout.outputs.skip != 'true' && matrix.worker == 'sandbox-builtin'
+      - name: Install libcap-ng (sandbox-libkrun)
+        if: steps.optout.outputs.skip != 'true' && matrix.worker == 'sandbox-libkrun'
         run: |
           sudo apt-get install -y libcap-ng-dev \
             || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }

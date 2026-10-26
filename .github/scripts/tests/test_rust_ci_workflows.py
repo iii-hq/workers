@@ -329,18 +329,18 @@ def test_rust_security_audit_is_narrow_on_prs_and_complete_on_schedule() -> None
     assert "cargo audit --no-fetch" not in run
 
 
-def test_sandbox_builtin_vm_linux_is_a_required_shaped_kvm_job() -> None:
-    job = workflow("ci.yml")["jobs"]["sandbox-builtin-vm-linux"]
+def test_sandbox_libkrun_vm_linux_is_a_required_shaped_kvm_job() -> None:
+    job = workflow("ci.yml")["jobs"]["sandbox-libkrun-vm-linux"]
     assert "continue-on-error" not in job and job["runs-on"] == "ubuntu-24.04"
     body = str(job)
     for needle in ("/dev/kvm", "scripts/build-init.sh", "--features embed-init,embed-libkrunfw,integration-vm",
                    "scripts/sandbox-isolation-e2e.sh", "libcap-ng-dev",
                    "iii-sandbox-contract/tests/fixtures", "diff -u"):
         assert needle in body
-    assert "sandbox-builtin-macos" in workflow("ci.yml")["jobs"]
+    assert "sandbox-libkrun-macos" in workflow("ci.yml")["jobs"]
 
 
-def test_sandbox_builtin_rust_steps_build_init_first() -> None:
+def test_sandbox_libkrun_rust_steps_build_init_first() -> None:
     rust = str(workflow("ci.yml")["jobs"]["rust"]["steps"])
     assert "cargo test --locked --lib fails_closed" in rust
     assert rust.index("BUILD_TARGET=x86_64-unknown-linux-gnu scripts/build-init.sh") < rust.index(

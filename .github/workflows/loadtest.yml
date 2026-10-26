@@ -1,10 +1,10 @@
 name: Load Benchmarks
 
-# Capacity and resource benchmarks (sandbox-builtin/crates/iii-loadtest): the
+# Capacity and resource benchmarks (sandbox-libkrun/crates/iii-loadtest): the
 # iii engine alone in microVMs of fixed size, driven by real SDK workers. Every
 # iii release, and every Monday on iii main for the trend in between. The
 # engine is built from iii-hq/iii at the ref under test; the load test, the
-# guest init and the firmware come from this repository's sandbox-builtin.
+# guest init and the firmware come from this repository's sandbox-libkrun.
 # Results land on iii-hq/iii's gh-pages branch (loadtest/index.json +
 # loadtest/runs/<id>.json) and iii.dev/benchmarks is rebuilt from them.
 #
@@ -115,16 +115,16 @@ jobs:
           cache-on-failure: true
           workspaces: |
             iii -> target
-            sandbox-builtin -> target
+            sandbox-libkrun -> target
 
       - name: Build the engine
         working-directory: iii
         run: cargo build --locked --release -p iii
 
       - name: Build the guest init and the load test
-        working-directory: sandbox-builtin
+        working-directory: sandbox-libkrun
         run: |
-          # The microVM's PID 1, static (the same init sandbox-builtin's worker VMs boot).
+          # The microVM's PID 1, static (the same init sandbox-libkrun's worker VMs boot).
           BUILD_TARGET=x86_64-unknown-linux-gnu scripts/build-init.sh
           cargo build --locked --release -p iii-loadtest
 
@@ -140,13 +140,13 @@ jobs:
 
       - name: Run the suite
         run: |
-          sandbox-builtin/target/release/iii-loadtest suite \
+          sandbox-libkrun/target/release/iii-loadtest suite \
             --profiles "$PROFILES" \
             --scenarios "$SCENARIOS" \
             ${QUICK:+--quick} \
             --engine iii/target/release/iii \
-            --krunfw sandbox-builtin/firmware/libkrunfw-linux-x86_64.so \
-            --init sandbox-builtin/target/x86_64-unknown-linux-musl/release/iii-init \
+            --krunfw sandbox-libkrun/firmware/libkrunfw-linux-x86_64.so \
+            --init sandbox-libkrun/target/x86_64-unknown-linux-musl/release/iii-init \
             --out loadtest-results
 
       - name: Summarize
@@ -156,7 +156,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           test -f loadtest-results/results.json || exit 0
-          sandbox-builtin/target/release/iii-loadtest export loadtest-results \
+          sandbox-libkrun/target/release/iii-loadtest export loadtest-results \
             --version "$VERSION" \
             --machine "GitHub-hosted runner, $(nproc) vCPUs" \
             --url "$RUN_URL"
@@ -190,7 +190,7 @@ jobs:
         env:
           VERSION: ${{ steps.meta.outputs.version }}
         run: |
-          sandbox-builtin/target/release/iii-loadtest publish loadtest-results/summary.json --pages gh-pages
+          sandbox-libkrun/target/release/iii-loadtest publish loadtest-results/summary.json --pages gh-pages
           cd gh-pages
           git add loadtest
           git -c user.name="github-actions[bot]" \

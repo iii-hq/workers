@@ -272,11 +272,11 @@ def test_binary_catalog_restores_intel_macos_except_the_microvm_sandbox():
         descriptor = deployment_compiler.compile_worker(ROOT, worker, value, "a" * 40, "b" * 64)
         targets = descriptor["artifact"]["targets"]
         assert "aarch64-apple-darwin" in targets, worker
-        assert ("x86_64-apple-darwin" in targets) == (worker not in {"sandbox-code-runner", "sandbox-builtin"}), worker
+        assert ("x86_64-apple-darwin" in targets) == (worker not in {"sandbox-code-runner", "sandbox-libkrun"}), worker
         assert set(deployment_targets.normalize_targets(targets)) == set(targets), worker
         assert {unit["target"] for unit in descriptor["build_units"]} == set(targets), worker
         checked.add(worker)
-    assert {"state", "http", "queue", "pubsub", "cron", "ide", "code-runner", "sandbox-code-runner", "sandbox-builtin"} <= checked
+    assert {"state", "http", "queue", "pubsub", "cron", "ide", "code-runner", "sandbox-code-runner", "sandbox-libkrun"} <= checked
 
 
 def test_rust_companions_are_validated_and_reach_the_schema():
@@ -295,11 +295,11 @@ def test_rust_companions_are_validated_and_reach_the_schema():
             deployment_compiler.compile_worker(ROOT, "judge-semif", entry, "a" * 40, "b" * 64)
 
 
-def test_sandbox_builtin_build_extras_are_validated_and_reach_the_schema():
+def test_sandbox_libkrun_build_extras_are_validated_and_reach_the_schema():
     jsonschema = pytest.importorskip("jsonschema")
     schema = json.loads((ROOT / ".github" / "contracts" / "deployment-descriptor.schema.json").read_text(encoding="utf-8"))
     catalog = deployment_compiler.read_yaml(ROOT / ".deploy" / "workers.yaml")["workers"]
-    compiled = deployment_compiler.compile_worker(ROOT, "sandbox-builtin", catalog["sandbox-builtin"], "a" * 40, "b" * 64)
+    compiled = deployment_compiler.compile_worker(ROOT, "sandbox-libkrun", catalog["sandbox-libkrun"], "a" * 40, "b" * 64)
     art = compiled["artifact"]
     assert art["features"] == ["embed-init", "embed-libkrunfw"] and art["prebuild"] == ["scripts/build-init.sh"]
     assert art["macos_entitlements"] == "entitlements.plist"
@@ -307,6 +307,6 @@ def test_sandbox_builtin_build_extras_are_validated_and_reach_the_schema():
     jsonschema.Draft202012Validator(schema).validate(compiled)
     for field, broken in (("features", []), ("features", ["Bad Feature"]), ("prebuild", []),
                           ("prebuild", ["../escape.sh"]), ("macos_entitlements", "missing.plist")):
-        entry = json.loads(json.dumps(catalog["sandbox-builtin"])); entry["artifact"][field] = broken
+        entry = json.loads(json.dumps(catalog["sandbox-libkrun"])); entry["artifact"][field] = broken
         with pytest.raises(ValueError, match=field):
-            deployment_compiler.compile_worker(ROOT, "sandbox-builtin", entry, "a" * 40, "b" * 64)
+            deployment_compiler.compile_worker(ROOT, "sandbox-libkrun", entry, "a" * 40, "b" * 64)
