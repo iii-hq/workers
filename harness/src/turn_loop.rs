@@ -410,6 +410,12 @@ async fn sync_skills(
             }
             record.skill_ack = Some(ack);
         }
+        // A mid-turn correction would land between a function result and the
+        // model's next step; acknowledge it instead so the updated list goes
+        // out with the next user turn.
+        crate::skills::SyncPlan::Append { ack, .. } if record.turn_count > 0 => {
+            record.skill_ack = Some(ack);
+        }
         crate::skills::SyncPlan::Append { message, ack } => {
             persist_skill_correction(
                 session,
