@@ -29,7 +29,8 @@ use crate::error::MemoryError;
 pub const BANK_CREATE_ID: &str = "memory::bank::create";
 pub const BANK_CREATE_DESC: &str =
     "Create a named memory bank: an isolated scope of rules and memories, e.g. one per \
-     project or persona. Idempotent; sessions select it via metadata `memory_bank`.";
+     project or persona; its description tells extraction what the bank is for, narrowing \
+     what is kept. Idempotent; sessions select it via metadata `memory_bank`.";
 
 pub const BANK_LIST_ID: &str = "memory::bank::list";
 pub const BANK_LIST_DESC: &str = "List every memory bank with memory/rule/pin counts.";

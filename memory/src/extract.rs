@@ -395,11 +395,12 @@ async fn learned_lines(store: &Store, bank: &str, layer: Option<&str>) -> Vec<(S
 /// Names the bank's description among the user's instructions.
 const BANK_FOCUS: &str = "what this bank is for";
 
-/// The user's own instructions to `bank`: its description, then every
-/// hand-written rule the turn reads, `layers` included, in the turn's order
-/// ([`crate::hooks::turn_rules`]); never `learned`, which extraction writes
-/// and lists apart. Redacted and bounded by `max_rule_chars` as the turn's
-/// rules are; empty when there are none.
+/// The user's own instructions to `bank`: every hand-written rule the turn
+/// reads, `layers` included, in the turn's order
+/// ([`crate::hooks::turn_rules`]), then its description, so the budget
+/// reaches the rules first; never `learned`, which extraction writes and
+/// lists apart. Redacted and bounded by `max_rule_chars` as the turn's rules
+/// are; empty when there are none.
 async fn instructions(
     store: &Store,
     bank: &str,
@@ -427,9 +428,9 @@ async fn instructions(
             updated_at: 0,
         });
     let own = own.as_deref().map(hand).unwrap_or_default();
-    let rules: Vec<_> = focus
+    let rules: Vec<_> = crate::hooks::turn_rules(layered, own, own_first)
         .into_iter()
-        .chain(crate::hooks::turn_rules(layered, own, own_first))
+        .chain(focus)
         .collect();
     let (section, _) = crate::hooks::build_rules_section(&rules, max_rule_chars);
     let body = section.strip_prefix(crate::hooks::RULES_INTRO);
@@ -2452,7 +2453,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_instructions_listed_are_the_banks_focus_and_the_turns_hand_rules() {
+    async fn the_instructions_listed_are_the_turns_hand_rules_then_the_banks_focus() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().to_path_buf()).unwrap();
         let (repo, _) = store
@@ -2477,13 +2478,17 @@ mod tests {
         let layers = ["main".to_string()];
         assert_eq!(
             instructions(&store, "w-abc123", &layers, false, 6_000).await,
-            "## what this bank is for\nBuild and deploy facts.\n\n\
-             ## privacy (main)\nNever remember anything about my health.\n\n\
-             ## style\nNo em-dashes. CI token is [REDACTED:github_token]"
+            "## privacy (main)\nNever remember anything about my health.\n\n\
+             ## style\nNo em-dashes. CI token is [REDACTED:github_token]\n\n\
+             ## what this bank is for\nBuild and deploy facts."
         );
-        let bounded = instructions(&store, "w-abc123", &layers, false, 30).await;
-        assert!(!bounded.contains("health"), "{bounded}");
-        assert!(bounded.contains("## privacy (main) [omitted"), "{bounded}");
+        // The budget reaches the hand rules first: the description is cut, never a rule.
+        let bounded = instructions(&store, "w-abc123", &layers, false, 45).await;
+        assert!(bounded.contains("health"), "{bounded}");
+        assert!(
+            bounded.contains("## what this bank is for [omitted"),
+            "{bounded}"
+        );
         assert!(instructions(&store, "new-000000", &[], false, 6_000)
             .await
             .is_empty());
