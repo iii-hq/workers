@@ -197,6 +197,22 @@ test('harness declares the co-author switch, on by default like the Rust default
   assert.ok(harness.expectedFields.includes('co_author'))
 })
 
+test('harness picks its default context manager among the names the Rust config accepts, unset by default', async () => {
+  const manifest = await loadManifest()
+  const harness = manifest.workerConfigurationSpecs.get('harness')
+  const field = harness.sections
+    .flatMap((section) => section.fields)
+    .find((f) => f.path.join('.') === 'default_context_strategy')
+  assert.equal(field?.kind, 'select')
+  assert.equal(field.optional, true)
+  assert.deepEqual(
+    field.options.map((option) => option.value),
+    ['default', 'clm'],
+  )
+  for (const option of field.options) assert.match(option.value, /^[a-z0-9-]{1,64}$/)
+  assert.ok(harness.expectedFields.includes('default_context_strategy'))
+})
+
 test('a model field declares its thinking sibling as a second leaf, and only when it has one', async () => {
   const manifest = await loadManifest()
   const helpers = await loadSpecHelpers()

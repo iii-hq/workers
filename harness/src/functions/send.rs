@@ -19,8 +19,8 @@ use crate::types::message::{AgentMessage, UserMessage, UserRoleTag};
 use crate::types::model::{Model, ProviderDefaults, ThinkingLevel};
 use crate::types::output::OutputContract;
 use crate::types::turn::{
-    FunctionContractLedgerEntry, FunctionPolicy, IdemRecord, ParentLink, ResponseLanguage,
-    SkillContext, TurnOptions, TurnRecord, TurnStatus,
+    ContextStrategy, FunctionContractLedgerEntry, FunctionPolicy, IdemRecord, ParentLink,
+    ResponseLanguage, SkillContext, TurnOptions, TurnRecord, TurnStatus,
 };
 
 /// `message` is either a plain string (sugar for a user text message) or a
@@ -428,6 +428,15 @@ async fn start_with_delivery_lock(
         Some(session_id) => writable_session_metadata(&session, session_id).await?,
         None => None,
     };
+    // The session's own metadata: the stored object for an existing session,
+    // else what this send creates it with.
+    let session_metadata = existing_metadata.as_ref().or(req
+        .session
+        .as_ref()
+        .and_then(|init| init.metadata.as_ref())
+        .and_then(Value::as_object));
+    let context_strategy =
+        context_strategy_from_metadata(session_metadata, cfg.default_context_strategy.as_deref())?;
     let idempotent = match &req.idempotency_key {
         Some(key) => crate::state::get_idem(&deps.iii, key, cfg.session_timeout_ms).await?,
         None => None,
@@ -512,6 +521,7 @@ async fn start_with_delivery_lock(
         options.thinking_level = provider_default_thinking(deps, &options, provider_defaults).await;
     }
     options.functions = functions;
+    options.context_strategy = context_strategy.map(Box::new);
     if let (true, Some(prev)) = (inherits_prompt, prev.as_ref()) {
         inherit_prior_system_prompt(&mut options, &prev.options);
     }
@@ -566,14 +576,7 @@ async fn start_with_delivery_lock(
     let message = normalize_message(req.message)?;
     tag_send_span_with_message(&message);
     options.response_language = resolve_response_language(
-        existing_metadata
-            .as_ref()
-            .or(req
-                .session
-                .as_ref()
-                .and_then(|init| init.metadata.as_ref())
-                .and_then(Value::as_object))
-            .and_then(crate::language::from_metadata),
+        session_metadata.and_then(crate::language::from_metadata),
         prev.as_ref().map(|record| &record.options),
         &message,
     );
@@ -1357,6 +1360,8 @@ fn build_options(
         seeded_contracts: None,
         // Resolved in `start` once the message is normalised.
         response_language: None,
+        // Read from session metadata in `start`; settled in `seed_new`.
+        context_strategy: None,
     }
 }
 
@@ -1660,6 +1665,92 @@ fn apply_default_filesystem_root(
     }
 }
 
+/// The session's context strategy: its metadata's `context_strategy` (a name
+/// matching `^[a-z0-9-]{1,64}$`; `"default"` = context-manager), else the
+/// worker's `default_context_strategy` (unset = context-manager; never for a
+/// sub-agent's session, which carries `parent_session_id`), with the
+/// metadata's `context_budget_tokens` (a positive integer, read only with a
+/// strategy). A bad value fails the send before anything is written, never a
+/// silent fallback to the default.
+fn context_strategy_from_metadata(
+    metadata: Option<&serde_json::Map<String, Value>>,
+    config_default: Option<&str>,
+) -> Result<Option<ContextStrategy>, HarnessError> {
+    let field = |key: &str| metadata.and_then(|metadata| metadata.get(key));
+    let config_default = config_default.filter(|_| field("parent_session_id").is_none());
+    let name = match field("context_strategy") {
+        None | Some(Value::Null) => match config_default {
+            None | Some("default") => return Ok(None),
+            Some(name) if is_context_strategy_name(name) => name.to_owned(),
+            // The configuration schema refuses this before it is stored.
+            Some(name) => {
+                return Err(HarnessError::Internal(format!(
+                    "harness config `default_context_strategy` must be \"default\" or a name \
+                     matching ^[a-z0-9-]{{1,64}}$, got {name:?}"
+                )))
+            }
+        },
+        Some(Value::String(name)) if name == "default" => return Ok(None),
+        Some(Value::String(name)) if is_context_strategy_name(name) => name.clone(),
+        Some(other) => {
+            return Err(HarnessError::InvalidRequest(format!(
+                "session metadata `context_strategy` must be \"default\" or a name matching \
+                 ^[a-z0-9-]{{1,64}}$, got {other}"
+            )))
+        }
+    };
+    let budget_tokens = match field("context_budget_tokens") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(value.as_u64().filter(|tokens| *tokens > 0).ok_or_else(|| {
+            HarnessError::InvalidRequest(format!(
+                "session metadata `context_budget_tokens` must be a positive integer, got {value}"
+            ))
+        })?),
+    };
+    Ok(Some(ContextStrategy {
+        name,
+        budget_tokens,
+        // Settled per turn in `seed_new`, once the root and policy are final.
+        effective: false,
+        skipped_reason: None,
+    }))
+}
+
+fn is_context_strategy_name(name: &str) -> bool {
+    (1..=64).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// Decide once, as the turn is seeded, whether its context strategy runs:
+/// the strategy mirrors the context to a file under the turn's root and the
+/// model edits that file with `shell::exec`. Without an absolute root or
+/// without exec, the turn keeps the choice, visibly skipped
+/// (`harness::status`), and assembles with context-manager: a deterministic
+/// rule, not a runtime fallback.
+fn settle_context_strategy(options: &mut TurnOptions) {
+    if options.context_strategy.is_none() {
+        return;
+    }
+    let root = options.filesystem_root();
+    let skipped_reason = if root.is_none() {
+        Some("no filesystem root")
+    } else if !root.is_some_and(|root| std::path::Path::new(root).is_absolute()) {
+        // The send path never checks the root: a relative or `~` root would put
+        // the mirror under the strategy worker's cwd, where exec never looks.
+        Some("filesystem root is not absolute")
+    } else if !policy::CompiledPolicy::from(options.functions.as_ref()).allows("shell::exec") {
+        Some("shell::exec not allowed")
+    } else {
+        None
+    };
+    if let Some(strategy) = options.context_strategy.as_mut() {
+        strategy.effective = skipped_reason.is_none();
+        strategy.skipped_reason = skipped_reason.map(str::to_string);
+    }
+}
+
 /// The turn CAS + merge double-check (harness.md § Concurrency & steering).
 async fn seed_or_merge(
     deps: &Deps,
@@ -1836,6 +1927,7 @@ pub(crate) async fn seed_new(
             options.response_language = prior.options.response_language.clone();
         }
     }
+    settle_context_strategy(&mut options);
     let lineage = lineage.for_seed(prior);
     let turn_id = ids::new_turn_id();
     let now = AgentMessage::now_ms();
@@ -1871,6 +1963,8 @@ pub(crate) async fn seed_new(
         dispatch_only_functions: lineage.dispatch_only_functions.clone(),
         validation_retries: 0,
         transient_resumes: 0,
+        maintenance_steps: 0,
+        maintenance_step_at: None,
         ask_step: None,
         ask_seen_step: None,
         created_at: now,
@@ -2556,6 +2650,7 @@ mod tests {
             seeded_contracts: None,
             system_prompt_ref: None,
             response_language: None,
+            context_strategy: None,
         }
     }
 
@@ -2590,6 +2685,8 @@ mod tests {
             dispatch_only_functions: Vec::new(),
             validation_retries: 0,
             transient_resumes: 0,
+            maintenance_steps: 0,
+            maintenance_step_at: None,
             ask_step: None,
             ask_seen_step: None,
             created_at: 1,
@@ -3659,5 +3756,290 @@ mod tests {
         .expect("validation must run before profile RPC")
         .unwrap_err();
         assert_eq!(error.code(), "harness/invalid_request");
+    }
+
+    fn metadata(value: serde_json::Value) -> serde_json::Map<String, Value> {
+        value.as_object().cloned().unwrap()
+    }
+
+    #[test]
+    fn context_strategy_metadata_absent_or_default_means_context_manager() {
+        assert_eq!(context_strategy_from_metadata(None, None).unwrap(), None);
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({ "context_strategy": null }),
+            serde_json::json!({ "context_strategy": "default", "context_budget_tokens": 4096 }),
+            // A budget alone selects nothing and is not read without a strategy.
+            serde_json::json!({ "context_budget_tokens": "lots" }),
+        ] {
+            assert_eq!(
+                context_strategy_from_metadata(Some(&metadata(value.clone())), None).unwrap(),
+                None,
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn context_strategy_metadata_freezes_a_validated_name_and_budget() {
+        let strategy = context_strategy_from_metadata(
+            Some(&metadata(serde_json::json!({
+                "context_strategy": "clm",
+                "context_budget_tokens": 65536
+            }))),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            strategy,
+            Some(ContextStrategy {
+                name: "clm".into(),
+                budget_tokens: Some(65_536),
+                effective: false,
+                skipped_reason: None,
+            })
+        );
+        let unbudgeted = context_strategy_from_metadata(
+            Some(&metadata(serde_json::json!({ "context_strategy": "a-1" }))),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(unbudgeted.budget_tokens, None);
+        let longest = "a".repeat(64);
+        assert!(context_strategy_from_metadata(
+            Some(&metadata(
+                serde_json::json!({ "context_strategy": longest }),
+            )),
+            None
+        )
+        .unwrap()
+        .is_some());
+    }
+
+    #[test]
+    fn context_strategy_metadata_rejects_bad_names_and_budgets() {
+        for value in [
+            serde_json::json!({ "context_strategy": "" }),
+            serde_json::json!({ "context_strategy": "CLM" }),
+            serde_json::json!({ "context_strategy": "clm::assemble" }),
+            serde_json::json!({ "context_strategy": "../clm" }),
+            serde_json::json!({ "context_strategy": "a".repeat(65) }),
+            serde_json::json!({ "context_strategy": 7 }),
+            serde_json::json!({ "context_strategy": "clm", "context_budget_tokens": 0 }),
+            serde_json::json!({ "context_strategy": "clm", "context_budget_tokens": -5 }),
+            serde_json::json!({ "context_strategy": "clm", "context_budget_tokens": 1.5 }),
+            serde_json::json!({ "context_strategy": "clm", "context_budget_tokens": "65536" }),
+        ] {
+            let error =
+                context_strategy_from_metadata(Some(&metadata(value.clone())), None).unwrap_err();
+            assert_eq!(error.code(), "harness/invalid_request", "{value}: {error}");
+        }
+    }
+
+    #[test]
+    fn the_config_default_applies_only_where_the_metadata_names_no_strategy() {
+        let pick = |value: serde_json::Value, default: Option<&str>| {
+            context_strategy_from_metadata(Some(&metadata(value)), default)
+                .unwrap()
+                .map(|strategy| (strategy.name, strategy.budget_tokens))
+        };
+        // No key (or null) → the config default, with the metadata's budget.
+        assert_eq!(
+            pick(serde_json::json!({}), Some("clm")),
+            Some(("clm".into(), None))
+        );
+        assert_eq!(
+            context_strategy_from_metadata(None, Some("clm"))
+                .unwrap()
+                .map(|s| s.name),
+            Some("clm".into())
+        );
+        assert_eq!(
+            pick(
+                serde_json::json!({ "context_strategy": null, "context_budget_tokens": 4096 }),
+                Some("clm")
+            ),
+            Some(("clm".into(), Some(4096)))
+        );
+        // The metadata wins, and "default" there opts out of the config default.
+        assert_eq!(
+            pick(
+                serde_json::json!({ "context_strategy": "other" }),
+                Some("clm")
+            ),
+            Some(("other".into(), None))
+        );
+        assert_eq!(
+            pick(
+                serde_json::json!({ "context_strategy": "default" }),
+                Some("clm")
+            ),
+            None
+        );
+        // "default" or unset in the config is context-manager.
+        assert_eq!(pick(serde_json::json!({}), Some("default")), None);
+        assert_eq!(
+            pick(serde_json::json!({ "context_budget_tokens": 4096 }), None),
+            None
+        );
+        // A bad budget is read, and refused, once the config default applies.
+        let error = context_strategy_from_metadata(
+            Some(&metadata(
+                serde_json::json!({ "context_budget_tokens": "lots" }),
+            )),
+            Some("clm"),
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "harness/invalid_request");
+        // A bad stored default never silently falls back to context-manager.
+        let error = context_strategy_from_metadata(None, Some("CLM")).unwrap_err();
+        assert_eq!(error.code(), "harness/internal");
+        // A send into a sub-agent's session never takes the config default;
+        // its own metadata still picks one.
+        assert_eq!(
+            pick(
+                serde_json::json!({ "parent_session_id": "s_parent" }),
+                Some("clm")
+            ),
+            None
+        );
+        assert_eq!(
+            pick(
+                serde_json::json!({ "parent_session_id": "s_parent", "context_strategy": "clm" }),
+                Some("default")
+            ),
+            Some(("clm".into(), None))
+        );
+    }
+
+    #[test]
+    fn the_config_schema_restricts_the_default_context_strategy_name() {
+        let schema = serde_json::to_value(schemars::schema_for!(WorkerConfig)).unwrap();
+        let field = &schema["properties"]["default_context_strategy"];
+        assert_eq!(field["pattern"], "^[a-z0-9-]{1,64}$", "{field}");
+    }
+
+    #[tokio::test]
+    async fn a_send_with_a_bad_context_strategy_fails_before_any_rpc() {
+        // `start` reads the strategy straight off the new session's metadata,
+        // ahead of every state / session RPC: the disconnected bus never gets
+        // a chance to answer, so the typed rejection is the wiring's proof.
+        let deps = crate::functions::subscribe::tests::disconnected_deps();
+        let mut req = agent_send_request(SendOptions::default());
+        req.session = Some(SessionInit {
+            metadata: Some(serde_json::json!({ "context_strategy": "CLM" })),
+            ..Default::default()
+        });
+        let error = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            start_with_delivery_lock(&deps, req, false),
+        )
+        .await
+        .expect("strategy validation must run before any RPC")
+        .map(|_| ())
+        .unwrap_err();
+        assert_eq!(error.code(), "harness/invalid_request");
+        assert!(error.to_string().contains("context_strategy"), "{error}");
+    }
+
+    fn policy_of(allow: &[&str], deny: &[&str]) -> Option<FunctionPolicy> {
+        Some(FunctionPolicy {
+            allow: allow.iter().map(|id| id.to_string()).collect(),
+            deny: deny.iter().map(|id| id.to_string()).collect(),
+            expose: Default::default(),
+        })
+    }
+
+    fn with_clm(root: Option<&str>, functions: Option<FunctionPolicy>) -> TurnOptions {
+        let mut options = options_with(functions);
+        if let Some(root) = root {
+            options.set_filesystem_root(root);
+        }
+        options.context_strategy = Some(Box::new(ContextStrategy {
+            name: "clm".into(),
+            budget_tokens: None,
+            effective: false,
+            skipped_reason: None,
+        }));
+        options
+    }
+
+    #[test]
+    fn context_strategy_is_effective_only_with_a_root_and_shell_exec() {
+        let cases = [
+            (Some("/work"), policy_of(&["shell::*"], &[]), None),
+            (
+                None,
+                policy_of(&["shell::*"], &[]),
+                Some("no filesystem root"),
+            ),
+            (Some("/work"), None, Some("shell::exec not allowed")),
+            (
+                Some("/work"),
+                policy_of(&["*"], &["shell::exec"]),
+                Some("shell::exec not allowed"),
+            ),
+            (None, None, Some("no filesystem root")),
+            (
+                Some("work"),
+                policy_of(&["shell::*"], &[]),
+                Some("filesystem root is not absolute"),
+            ),
+        ];
+        for (root, functions, reason) in cases {
+            let mut options = with_clm(root, functions);
+            settle_context_strategy(&mut options);
+            let strategy = options.context_strategy.unwrap();
+            assert_eq!(strategy.effective, reason.is_none(), "{root:?} {reason:?}");
+            assert_eq!(strategy.skipped_reason.as_deref(), reason);
+        }
+    }
+
+    #[test]
+    fn context_strategy_never_runs_on_a_root_the_exec_cannot_see() {
+        // The mirror would land under the strategy worker's cwd, not the
+        // model's: every edit misses and the context only grows to the stop.
+        for root in ["~/work", "./work", "../work", "work/sub"] {
+            let mut options = with_clm(Some(root), policy_of(&["*"], &[]));
+            settle_context_strategy(&mut options);
+            let strategy = options.context_strategy.unwrap();
+            assert!(!strategy.effective, "{root}");
+            assert_eq!(
+                strategy.skipped_reason.as_deref(),
+                Some("filesystem root is not absolute"),
+                "{root}"
+            );
+        }
+        // The root is reported before the policy: fixing the policy alone
+        // would still not run the strategy.
+        let mut options = with_clm(Some("work"), None);
+        settle_context_strategy(&mut options);
+        assert_eq!(
+            options.context_strategy.unwrap().skipped_reason.as_deref(),
+            Some("filesystem root is not absolute")
+        );
+    }
+
+    #[test]
+    fn context_strategy_settling_is_recomputed_per_seed_and_leaves_none_alone() {
+        // A reseed carries the prior turn's options: a root that is gone by
+        // then turns the strategy off for the new turn.
+        let mut options = with_clm(Some("/work"), policy_of(&["*"], &[]));
+        settle_context_strategy(&mut options);
+        assert!(options.context_strategy.as_ref().unwrap().effective);
+        options.metadata = None;
+        settle_context_strategy(&mut options);
+        let strategy = options.context_strategy.unwrap();
+        assert!(!strategy.effective);
+        assert_eq!(
+            strategy.skipped_reason.as_deref(),
+            Some("no filesystem root")
+        );
+
+        let mut plain = options_with(policy_of(&["*"], &[]));
+        plain.set_filesystem_root("/work");
+        settle_context_strategy(&mut plain);
+        assert_eq!(plain.context_strategy, None);
     }
 }

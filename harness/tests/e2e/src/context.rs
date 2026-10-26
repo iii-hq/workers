@@ -467,6 +467,7 @@ mod tests {
             status,
             step: 0,
             turn_count: 1,
+            maintenance_steps: None,
             max_turns: Some(100),
             validation_retries: Some(0),
             max_validation_retries: Some(0),
@@ -481,6 +482,9 @@ mod tests {
             queued: None,
             result: None,
             result_error: None,
+            stop_reason: None,
+            context: None,
+            context_strategy: None,
         }
     }
 
