@@ -1376,10 +1376,11 @@ async fn extraction_eval() {
                 &model,
                 cfg.max_memories_per_turn,
                 120_000,
-                extraction_input(&agents, case.own, &known, &learned, &transcript),
+                extraction_input(&agents, case.own, "", &known, &learned, &transcript),
                 !agents.is_empty(),
                 case.id,
                 repository,
+                false,
             )
             .await
             .unwrap_or_else(|e| panic!("{tag}: {e}"));

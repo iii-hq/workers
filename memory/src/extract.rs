@@ -102,6 +102,18 @@ repository. Write it without the agent's name. Who the user is and how they want
 written (language, tone, length, formatting) stay \"user\"; this project's code, tools and \
 conventions stay \"project\". A one-off task for an agent is nothing to keep.";
 
+/// Appended to [`EXTRACT_SYSTEM`] when the input gives the user's own
+/// instructions for the bank ([`instructions`]), after every keep clause:
+/// what they say not to keep is their exception to all of them.
+// shortcut: only the model honours a do-not-keep rule; no term filter backs
+// it, since a rule names a category ("health") and a fact an instance (a
+// diagnosis); add a check on returned items if live runs show leaks.
+const EXTRACT_INSTRUCTIONS: &str = "\n- The input first gives the user's own instructions \
+for this bank: what it is for, then their rules. Where one says what to remember or not to \
+keep, it overrides every rule above: never return what one says not to keep, not even what a \
+scope above names (health, habits, …), and keep to what the bank is for. Instructions about \
+anything else (how to reply, style, tools) change nothing you return.";
+
 /// Added for a repository bank: the project's own knowledge is worth keeping
 /// there even when the assistant, not the user, found it out.
 const REPOSITORY_RULE: &str = "\n- This conversation works in a repository: also keep \
@@ -267,18 +279,24 @@ async fn listed(
     out
 }
 
-/// The extraction model's input: the agents an item may be for (`own`: the
-/// first is the assistant's own profile, the rest its sub-agents'), the
-/// numbered known memories, the learned lines numbered after them, then the
-/// excerpt.
+/// The extraction model's input: the user's own instructions for the bank
+/// ([`instructions`]), the agents an item may be for (`own`: the first is
+/// the assistant's own profile, the rest its sub-agents'), the numbered
+/// known memories, the learned lines numbered after them, then the excerpt.
 fn extraction_input(
     agents: &[String],
     own: bool,
+    instructions: &str,
     known: &[Memory],
     learned: &[(String, bool)],
     transcript: &str,
 ) -> String {
     let mut input = String::new();
+    if !instructions.is_empty() {
+        input.push_str("The user's instructions for this bank:\n");
+        input.push_str(instructions);
+        input.push_str("\n\n");
+    }
     if !agents.is_empty() {
         input.push_str("Agents in this conversation:\n");
         for (i, agent) in agents.iter().enumerate() {
@@ -355,6 +373,50 @@ async fn learned_lines(store: &Store, bank: &str, layer: Option<&str>) -> Vec<(S
         );
     }
     lines
+}
+
+/// Names the bank's description among the user's instructions.
+const BANK_FOCUS: &str = "what this bank is for";
+
+/// The user's own instructions to `bank`: its description, then every
+/// hand-written rule the turn reads, `layers` included, in the turn's order
+/// ([`crate::hooks::turn_rules`]); never `learned`, which extraction writes
+/// and lists apart. Redacted and bounded by `max_rule_chars` as the turn's
+/// rules are; empty when there are none.
+async fn instructions(
+    store: &Store,
+    bank: &str,
+    layers: &[String],
+    own_first: bool,
+    max_rule_chars: usize,
+) -> String {
+    let hand = |b: &Bank| -> Vec<crate::types::Rule> {
+        let rules = b.list_rules().unwrap_or_default().into_iter();
+        rules.filter(|r| r.name != LEARNED_RULE).collect()
+    };
+    let own = store.bank(bank).await.ok();
+    let mut layered = Vec::new();
+    for name in layers {
+        if let Ok(b) = store.bank(name).await {
+            layered.push((name.as_str(), hand(&b)));
+        }
+    }
+    let focus = own
+        .as_ref()
+        .filter(|b| !b.description.trim().is_empty())
+        .map(|b| crate::types::Rule {
+            name: BANK_FOCUS.into(),
+            content: b.description.clone(),
+            updated_at: 0,
+        });
+    let own = own.as_deref().map(hand).unwrap_or_default();
+    let rules: Vec<_> = focus
+        .into_iter()
+        .chain(crate::hooks::turn_rules(layered, own, own_first))
+        .collect();
+    let (section, _) = crate::hooks::build_rules_section(&rules, max_rule_chars);
+    let body = section.strip_prefix(crate::hooks::RULES_INTRO);
+    body.unwrap_or(&section).trim().to_string()
 }
 
 /// The `learned` rule of bank `name`, redacted as `Bank::set_rule` writes it
@@ -993,6 +1055,14 @@ async fn read_run(
     )
     .await;
     let learned = learned_lines(&*deps.store().await, bank_name, layer_name).await;
+    let instructions = instructions(
+        &*deps.store().await,
+        bank_name,
+        &resolved.layers(&cfg.default_bank),
+        bank_name == cfg.default_bank,
+        cfg.max_rule_chars,
+    )
+    .await;
 
     // The agents this pass may teach: the session's own profile, then its
     // sub-agents' (their turns are never extracted; what the user tells
@@ -1026,10 +1096,11 @@ async fn read_run(
         &model,
         cfg.max_memories_per_turn,
         cfg.extraction_timeout_ms,
-        extraction_input(&agents, own, &known, &learned, &transcript),
+        extraction_input(&agents, own, &instructions, &known, &learned, &transcript),
         !agents.is_empty(),
         session_id,
         layer_name.is_some(),
+        !instructions.is_empty(),
     )
     .await?;
     // An agent item naming no listed agent has no bank to go to: never the
@@ -1910,7 +1981,8 @@ fn listed_agents(reply: &Value, out: &mut Vec<String>) {
 
 /// One extraction call: the production prompt over `input` (with the agent
 /// scope when it lists `agents`), its items. `repository`: the pass writes
-/// into a repository bank ([`REPOSITORY_RULE`]).
+/// into a repository bank ([`REPOSITORY_RULE`]); `instructions`: `input`
+/// gives the user's own ([`EXTRACT_INSTRUCTIONS`]).
 #[allow(clippy::too_many_arguments)]
 async fn extract_items(
     iii: &IIIClient,
@@ -1921,18 +1993,14 @@ async fn extract_items(
     agents: bool,
     session_id: &str,
     repository: bool,
+    instructions: bool,
 ) -> Result<Vec<ExtractedItem>, String> {
-    let repository = if repository { REPOSITORY_RULE } else { "" };
-    let scopes = if agents { EXTRACT_AGENTS } else { "" };
     let reply = iii
         .trigger(TriggerRequest {
             function_id: "router::complete".into(),
             payload: json!({
                 "model": model,
-                "system_prompt": format!(
-                    "{EXTRACT_SYSTEM}{repository}{scopes}\n- Return at most {max_memories} memories and \
-            {MAX_RULES_PER_TURN} rules, the most durable first."
-                ),
+                "system_prompt": system_prompt(repository, agents, instructions, max_memories),
                 "messages": [{
                     "role": "user",
                     "content": [{ "type": "text", "text": input }],
@@ -1946,6 +2014,27 @@ async fn extract_items(
         .await
         .map_err(|e| format!("router::complete: {e}"))?;
     reply_items(&reply, session_id)
+}
+
+/// The extraction system prompt: [`EXTRACT_SYSTEM`], then the clauses the
+/// input calls for, the user's instructions last of the rules.
+fn system_prompt(
+    repository: bool,
+    agents: bool,
+    instructions: bool,
+    max_memories: usize,
+) -> String {
+    let repository = if repository { REPOSITORY_RULE } else { "" };
+    let scopes = if agents { EXTRACT_AGENTS } else { "" };
+    let binding = if instructions {
+        EXTRACT_INSTRUCTIONS
+    } else {
+        ""
+    };
+    format!(
+        "{EXTRACT_SYSTEM}{repository}{scopes}{binding}\n- Return at most {max_memories} memories \
+         and {MAX_RULES_PER_TURN} rules, the most durable first."
+    )
 }
 
 /// The items of a `router::complete` reply. A provider failure (rate limit,
@@ -2344,6 +2433,44 @@ mod tests {
         assert!(learned_lines(&store, "new-000000", None).await.is_empty());
     }
 
+    #[tokio::test]
+    async fn the_instructions_listed_are_the_banks_focus_and_the_turns_hand_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (repo, _) = store
+            .ensure_bank("w-abc123", Some("Build and deploy facts."))
+            .await
+            .unwrap();
+        let (main, _) = store
+            .ensure_bank("main", Some("Not this bank's focus."))
+            .await
+            .unwrap();
+        let header = LEARNED_HEADER;
+        repo.set_rule(LEARNED_RULE, &format!("{header}- Use pnpm.\n"))
+            .unwrap();
+        main.set_rule(LEARNED_RULE, &format!("{header}- Never use emoji.\n"))
+            .unwrap();
+        main.set_rule("privacy", "Never remember anything about my health.")
+            .unwrap();
+        // A hand edit never went through `set_rule`'s redaction.
+        let key = format!("ghp_{}", "a1B2c3D4e5".repeat(4).get(..36).unwrap());
+        let style = dir.path().join("w-abc123/rules/style.md");
+        std::fs::write(style, format!("No em-dashes. CI token is {key}")).unwrap();
+        let layers = ["main".to_string()];
+        assert_eq!(
+            instructions(&store, "w-abc123", &layers, false, 6_000).await,
+            "## what this bank is for\nBuild and deploy facts.\n\n\
+             ## privacy (main)\nNever remember anything about my health.\n\n\
+             ## style\nNo em-dashes. CI token is [REDACTED:github_token]"
+        );
+        let bounded = instructions(&store, "w-abc123", &layers, false, 30).await;
+        assert!(!bounded.contains("health"), "{bounded}");
+        assert!(bounded.contains("## privacy (main) [omitted"), "{bounded}");
+        assert!(instructions(&store, "new-000000", &[], false, 6_000)
+            .await
+            .is_empty());
+    }
+
     #[test]
     fn a_rule_is_learned_only_from_the_users_own_lines() {
         let line = |role: &str, text: &str| -> Entry { ("e".into(), role.into(), text.into(), 1) };
@@ -2735,31 +2862,80 @@ mod tests {
             known("ledger-sync uses pnpm."),
         ];
         assert_eq!(
-            extraction_input(&[], false, &ms, &[], "user [d]: hi"),
+            extraction_input(&[], false, "", &ms, &[], "user [d]: hi"),
             "Already remembered:\n[1] The user's name is Rafael Costa.\n[2] ledger-sync uses pnpm.\n\n\
              Conversation excerpt:\nuser [d]: hi"
         );
         assert_eq!(
-            extraction_input(&[], false, &[], &[], "user [d]: hi"),
+            extraction_input(&[], false, "", &[], &[], "user [d]: hi"),
             "Conversation excerpt:\nuser [d]: hi"
         );
         let learned = [("Never use emoji.".to_string(), true)];
         assert_eq!(
-            extraction_input(&[], false, &ms[..1], &learned, "user [d]: hi"),
+            extraction_input(&[], false, "", &ms[..1], &learned, "user [d]: hi"),
             "Already remembered:\n[1] The user's name is Rafael Costa.\n\n\
              Learned rules:\n[2] Never use emoji.\n\nConversation excerpt:\nuser [d]: hi"
         );
         let agents = ["tech-lead".to_string(), "reviewer".to_string()];
         assert_eq!(
-            extraction_input(&agents, true, &[], &[], "user [d]: hi"),
+            extraction_input(&agents, true, "", &[], &[], "user [d]: hi"),
             "Agents in this conversation:\n- tech-lead: the assistant\n\
              - reviewer: a sub-agent the assistant started\n\nConversation excerpt:\nuser [d]: hi"
         );
         assert!(
-            extraction_input(&agents[1..], false, &[], &[], "")
+            extraction_input(&agents[1..], false, "", &[], &[], "")
                 .starts_with("Agents in this conversation:\n- reviewer: a sub-agent"),
             "a session with no profile of its own lists only its sub-agents"
         );
+    }
+
+    #[test]
+    fn the_extraction_input_gives_the_users_instructions_first() {
+        let rules = "## privacy\nNever remember anything about my health.";
+        let agents = ["tech-lead".to_string()];
+        assert_eq!(
+            extraction_input(
+                &agents,
+                true,
+                rules,
+                &[known("ledger-sync uses pnpm.")],
+                &[],
+                "user [d]: hi"
+            ),
+            "The user's instructions for this bank:\n\
+             ## privacy\nNever remember anything about my health.\n\n\
+             Agents in this conversation:\n- tech-lead: the assistant\n\n\
+             Already remembered:\n[1] ledger-sync uses pnpm.\n\nConversation excerpt:\nuser [d]: hi"
+        );
+    }
+
+    #[test]
+    fn a_do_not_keep_instruction_outranks_the_prompts_keep_list() {
+        assert_eq!(
+            system_prompt(true, true, false, 8),
+            format!(
+                "{EXTRACT_SYSTEM}{REPOSITORY_RULE}{EXTRACT_AGENTS}\n- Return at most 8 memories \
+                 and 3 rules, the most durable first."
+            ),
+            "without instructions the prompt is unchanged"
+        );
+        let prompt = system_prompt(true, true, true, 8);
+        let binding = prompt
+            .find(EXTRACT_INSTRUCTIONS)
+            .expect("listed instructions bind extraction");
+        // After every keep clause, the user scope's health included: read
+        // as the user's exception to them, not the other way round.
+        for keep in ["health", REPOSITORY_RULE, EXTRACT_AGENTS] {
+            assert!(prompt.find(keep).unwrap() < binding, "{keep}");
+        }
+        for says in [
+            "overrides every rule above",
+            "not to keep",
+            "health",
+            "anything else",
+        ] {
+            assert!(EXTRACT_INSTRUCTIONS.contains(says), "{says}");
+        }
     }
 
     #[test]

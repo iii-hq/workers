@@ -486,7 +486,7 @@ pub(crate) async fn injection(
 /// order, labelled with its bank's name so two `learned` rules never read as
 /// one, then the bank's own; the bank's own first when it is `default_bank`,
 /// whose rules come before every layer's.
-fn turn_rules(
+pub(crate) fn turn_rules(
     layers: Vec<(&str, Vec<crate::types::Rule>)>,
     own: Vec<crate::types::Rule>,
     own_first: bool,
