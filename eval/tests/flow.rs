@@ -39,6 +39,8 @@ struct World {
     /// Starts refused because the runner holds another execution.
     busy_starts: usize,
     executions_next_cursor: Option<String>,
+    /// `test-history-get` answers by test id; an absent test has no runs.
+    histories: BTreeMap<String, Value>,
 }
 
 fn tests_row(
@@ -110,6 +112,7 @@ impl World {
             unanswered_start: false,
             busy_starts: 0,
             executions_next_cursor: None,
+            histories: BTreeMap::new(),
         }
     }
 
@@ -167,6 +170,14 @@ impl World {
                 self.tests_pages[page].clone()
             }
             "e2e::scenarios-list" => self.catalog.clone(),
+            "e2e::dashboard::test-history-get" => {
+                let test_id = data["test_id"].as_str().unwrap_or_default();
+                match self.histories.get(test_id) {
+                    Some(Value::Null) => return Some(Err(format!("unknown test '{test_id}'"))),
+                    Some(history) => history.clone(),
+                    None => json!({"observations": []}),
+                }
+            }
             "e2e::dashboard::execution-start" if self.busy_starts > 0 => {
                 self.busy_starts -= 1;
                 return Some(Err(
@@ -605,9 +616,28 @@ async fn a_baseline_that_never_ran_says_why_the_execution_failed() {
     );
 }
 
+/// A history of `model` runs of one test with these function-call errors.
+fn history(model: &str, errors: &[f64]) -> Value {
+    json!({"observations": [{"subject_model": model, "runs": errors.iter()
+        .map(|errors| json!({"function_call_errors": errors})).collect::<Vec<_>>()}]})
+}
+
 #[tokio::test]
-async fn a_function_call_error_objective_measures_errors_on_a_test_that_names_them() {
-    let h = Harness::start(World::new()).await;
+async fn a_function_call_error_objective_measures_the_test_whose_recorded_runs_show_them() {
+    let mut world = World::new();
+    // The spec that names errors is not where the subject makes them.
+    world.histories.insert(
+        "tool_contract_recovery".into(),
+        history("m", &[0.0, 0.0, 0.0]),
+    );
+    world
+        .histories
+        .insert("context_pressure".into(), history("m", &[4.0, 6.0]));
+    // A test whose history cannot be read is left out, the objective is not.
+    world
+        .histories
+        .insert("subagent_validation_failure".into(), Value::Null);
+    let h = Harness::start(world).await;
     h.configure(10.0).await;
     for objective in [
         "Diminuir a quantidade de errors nas chamadas de função iii",
@@ -618,7 +648,21 @@ async fn a_function_call_error_objective_measures_errors_on_a_test_that_names_th
         let record = h.cycle(&cycle_id).await;
         let coverage = record.coverage.unwrap();
         assert_eq!(coverage.need, "function_call_errors", "{objective}");
-        assert_eq!(coverage.selected[0].scenario_id, "tool_contract_recovery");
+        assert_eq!(coverage.selected.len(), 1, "{:?}", coverage.gaps);
+        assert_eq!(coverage.selected[0].scenario_id, "context_pressure");
+        assert!(
+            coverage.gaps.iter().any(|gap| gap
+                .starts_with("subagent_validation_failure: its recorded runs could not be read")),
+            "{:?}",
+            coverage.gaps
+        );
+        assert!(
+            coverage.selected[0]
+                .rationale
+                .contains("5.00 FunctionCallErrors per run (2 run(s)"),
+            "{}",
+            coverage.selected[0].rationale
+        );
         let criterion = record.plan.unwrap().criterion;
         assert_eq!(
             (criterion.metric, criterion.direction, criterion.min_effect),
@@ -629,6 +673,37 @@ async fn a_function_call_error_objective_measures_errors_on_a_test_that_names_th
             )
         );
     }
+    // The history asked for is the configured subject's.
+    let asked = h.world().calls_to("e2e::dashboard::test-history-get");
+    assert!(
+        asked.iter().all(|call| call["subject_model"] == "m"),
+        "{asked:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_error_objective_without_recorded_errors_has_no_coverage_and_spends_nothing() {
+    let mut world = World::new();
+    world
+        .histories
+        .insert("tool_contract_recovery".into(), history("m", &[0.0, 0.0]));
+    let h = Harness::start(world).await;
+    h.configure(10.0).await;
+    let cycle_id = h
+        .start_cycle(json!({"objective": "fewer function call errors"}))
+        .await;
+    h.drain().await;
+    let record = h.cycle(&cycle_id).await;
+    let outcome = record.outcome.unwrap();
+    assert_eq!(outcome.code, OutcomeCodeV1::NoCoverage);
+    assert!(
+        outcome
+            .detail
+            .contains("no recorded E2E run of the subject model"),
+        "{}",
+        outcome.detail
+    );
+    assert_eq!(h.world().starts, 0);
 }
 
 #[tokio::test]

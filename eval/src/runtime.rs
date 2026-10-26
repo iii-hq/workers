@@ -740,8 +740,39 @@ async fn coverage_stage(
     let now = ids::now_ms();
     let (found, goal) = match &record.input {
         CycleInputV1::Objective(objective) => {
-            let found =
-                coverage::select(objective, &rows, &revision, &catalog, max, &controls, now);
+            let model = stored
+                .as_ref()
+                .map(|stored| stored.config.subject.model.as_str());
+            let mut observed = std::collections::BTreeMap::new();
+            let mut unread = Vec::new();
+            if let (Some(true), Some(model)) = (
+                coverage::need_of(objective).map(|need| need.observed),
+                model,
+            ) {
+                for test_id in rows.iter().filter_map(|row| row["test_id"].as_str()) {
+                    // One unreadable history leaves that test out, not the objective.
+                    match call::<_, Value>(
+                        deps,
+                        "e2e::dashboard::test-history-get",
+                        json!({"test_id": test_id, "subject_model": model, "limit": 100}),
+                        BUS_TIMEOUT_MS,
+                    )
+                    .await
+                    {
+                        Ok(history) => {
+                            observed
+                                .insert(test_id.to_string(), coverage::observed_errors(&history));
+                        }
+                        Err(error) => unread.push(format!(
+                            "{test_id}: its recorded runs could not be read ({error}); not considered"
+                        )),
+                    }
+                }
+            }
+            let mut found = coverage::select(
+                objective, &rows, &revision, &catalog, max, &controls, &observed, now,
+            );
+            found.gaps.extend(unread);
             let goal = coverage::need_goal(&found)
                 .filter(|_| found.covered)
                 .map(|goal| (objective.clone(), goal));
@@ -1532,6 +1563,15 @@ async fn analysis_stage(
                         "baseline measured ({}); candidate work is not configured (config.candidate)",
                         measured.reason
                     ),
+                ));
+            } else if let Some(reason) = decision::no_room(
+                &plan.criterion,
+                plan.sampling.runs_per_side,
+                &measured.primary,
+            ) {
+                outcome = Some((
+                    OutcomeCodeV1::NoAction,
+                    format!("baseline measured; {reason}"),
                 ));
             } else {
                 next_stage = Some((

@@ -1605,6 +1605,7 @@ fn a_current_native_context_test_is_coverage_before_its_first_run() {
         &fixture["catalog"],
         1,
         &[],
+        &Default::default(),
         NOW,
     );
     assert!(coverage.covered, "{:?}", coverage.gaps);
@@ -1627,6 +1628,7 @@ fn configured_controls_count_toward_the_scenario_limit() {
             &fixture["catalog"],
             2,
             &controls,
+            &Default::default(),
             NOW,
         );
         assert!(coverage.covered, "{:?}", coverage.gaps);
@@ -1641,6 +1643,7 @@ fn configured_controls_count_toward_the_scenario_limit() {
         &fixture["catalog"],
         1,
         &["minimal_path".into()],
+        &Default::default(),
         NOW,
     );
     assert!(!coverage.covered);
@@ -1688,6 +1691,17 @@ fn a_retried_slot_did_not_complete_and_its_attempts_failures_reach_sentinel() {
 }
 
 #[test]
+fn only_finite_non_negative_error_counts_are_observed() {
+    let history = json!({"observations": [
+        {"runs": [{"function_call_errors": 3.0}, {"function_call_errors": -2.0}, {}]},
+        {"runs": [{"function_call_errors": "4"}, {"function_call_errors": 0.0}]},
+        {"runs": null}, {}]});
+    let observed = eval::coverage::observed_errors(&history);
+    assert_eq!((observed.runs, observed.total), (2, 3.0));
+    assert_eq!(eval::coverage::observed_errors(&json!({})).runs, 0);
+}
+
+#[test]
 fn need_words_only_in_a_prompts_code_or_paths_are_no_coverage() {
     let fixture: Value =
         serde_json::from_str(include_str!("fixtures/e2e/catalog-context-pressure.json")).unwrap();
@@ -1700,6 +1714,7 @@ fn need_words_only_in_a_prompts_code_or_paths_are_no_coverage() {
         &fixture["catalog"],
         2,
         &[],
+        &Default::default(),
         NOW,
     );
     let selected: Vec<&str> = coverage

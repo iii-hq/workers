@@ -21,6 +21,9 @@ pub struct Need {
     pub metric: CriterionMetricV1,
     pub direction: DirectionV1,
     gap: &'static str,
+    /// Selected by what the subject's recorded runs show, not by spec words:
+    /// a spec that names a failure says nothing of whether the subject makes it.
+    pub observed: bool,
 }
 
 /// Checked in order: the first whose every trigger group matches wins.
@@ -32,6 +35,7 @@ pub const NEEDS: [Need; 4] = [
         metric: CriterionMetricV1::PassRate,
         direction: DirectionV1::Increase,
         gap: "no E2E test spec exercises a provider/model fallback (fallback together with a provider or model in its criteria, summary or invariants); tool_contract_recovery covers a changed tool contract, not provider/model fallback",
+        observed: false,
     },
     Need {
         id: "skills",
@@ -40,6 +44,7 @@ pub const NEEDS: [Need; 4] = [
         metric: CriterionMetricV1::Tokens,
         direction: DirectionV1::Decrease,
         gap: "no E2E test spec measures skill effect, selection or cost (no skill in its criteria, summary or invariants)",
+        observed: false,
     },
     Need {
         id: "context_consumption",
@@ -48,6 +53,7 @@ pub const NEEDS: [Need; 4] = [
         metric: CriterionMetricV1::Tokens,
         direction: DirectionV1::Decrease,
         gap: "no E2E test spec puts the context under load (context together with distractor, recall, memory, pressure or load)",
+        observed: false,
     },
     Need {
         id: "function_call_errors",
@@ -55,10 +61,11 @@ pub const NEEDS: [Need; 4] = [
             &["error", "errors", "erro", "erros", "failure", "failures", "falha", "falhas"],
             &["function", "functions", "call", "calls", "tool", "tools", "função", "funções", "funcao", "funcoes", "chamada", "chamadas"],
         ],
-        evidence: &[&["function"], &["call", "calls"], &["error", "errors"]],
+        evidence: &[],
         metric: CriterionMetricV1::FunctionCallErrors,
         direction: DirectionV1::Decrease,
-        gap: "no E2E test spec puts function-call errors in play (function, call and error in its criteria, summary or invariants)",
+        gap: "no recorded E2E run of the subject model shows a function-call error",
+        observed: true,
     },
 ];
 
@@ -264,9 +271,41 @@ fn add_controls(
     }
 }
 
+/// What a test's recorded runs of the subject model show: runs with a value
+/// and the sum of their values.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Observed {
+    pub runs: u32,
+    pub total: f64,
+}
+
+/// The function-call errors `test-history-get` records for one test's runs
+/// of `model`, on any definition of the test.
+pub fn observed_errors(history: &Value) -> Observed {
+    let mut observed = Observed::default();
+    for run in history["observations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|observation| observation["runs"].as_array().into_iter().flatten())
+    {
+        if let Some(errors) = run["function_call_errors"]
+            .as_f64()
+            .filter(|errors| errors.is_finite() && *errors >= 0.0)
+        {
+            observed.runs += 1;
+            observed.total += errors;
+        }
+    }
+    observed
+}
+
 /// Selects the tests covering `objective` from every `tests-list` row and
 /// the `scenarios-list` catalog, plus the configured controls. At most
-/// `max_scenarios` are kept, those with the most current runs first.
+/// `max_scenarios` are kept: for an observed need, those whose recorded runs
+/// (`observed`, by test id) show the most per run; otherwise those with the
+/// most current runs.
+#[allow(clippy::too_many_arguments)]
 pub fn select(
     objective: &str,
     rows: &[Value],
@@ -274,6 +313,7 @@ pub fn select(
     catalog: &Value,
     max_scenarios: usize,
     controls: &[String],
+    observed: &std::collections::BTreeMap<String, Observed>,
     now: i64,
 ) -> CoverageV1 {
     let mut coverage = empty(rows, tests_revision, catalog, now);
@@ -285,31 +325,56 @@ pub fn select(
         return coverage;
     };
     coverage.need = need.id.into();
-    let mut candidates: Vec<(u64, SelectedTestV1)> = Vec::new();
+    // Ranked by (per-run observation, current runs), highest first.
+    let mut candidates: Vec<((f64, u64), SelectedTestV1)> = Vec::new();
     let mut stale = Vec::new();
     for row in rows {
-        let Some((row, scenario)) = row_of(rows, catalog, &text(&row["test_id"])) else {
+        let test_id = text(&row["test_id"]);
+        let Some((row, scenario)) = row_of(rows, catalog, &test_id) else {
             continue;
         };
-        let Some(matched) = matches(&words(&spec_text(row, scenario)), need.evidence) else {
-            continue;
+        let (matched, why, rank) = if need.observed {
+            let seen = observed.get(&test_id).copied().unwrap_or_default();
+            if seen.runs == 0 || seen.total <= 0.0 {
+                continue;
+            }
+            let mean = seen.total / f64::from(seen.runs);
+            (
+                Vec::new(),
+                format!(
+                    "its recorded runs of the subject show {mean:.2} {:?} per run ({} run(s), any definition of the test)",
+                    need.metric, seen.runs
+                ),
+                mean,
+            )
+        } else {
+            let Some(matched) = matches(&words(&spec_text(row, scenario)), need.evidence) else {
+                continue;
+            };
+            let why = format!("its spec puts {} in play", matched.join(" + "));
+            (matched, why, 0.0)
         };
-        let terms = matched.join(" + ");
         match current_test(row, scenario, matched, |criteria| {
             format!(
-                "its spec puts {terms} in play; measured by {:?} per run while every spec criterion ({}) is preserved",
+                "{why}; measured by {:?} per run while every spec criterion ({}) is preserved",
                 need.metric,
-                criteria.iter().map(|criterion| criterion.id.as_str()).collect::<Vec<_>>().join(", ")
+                criteria
+                    .iter()
+                    .map(|criterion| criterion.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )
         }) {
-            Ok(test) => candidates.push((row["runs_current"].as_u64().unwrap_or(0), test)),
+            Ok(test) => candidates.push(((rank, row["runs_current"].as_u64().unwrap_or(0)), test)),
             Err(reason) => stale.push(format!("{reason}; not selected")),
         }
     }
     candidates.sort_by(|left, right| {
         right
             .0
-            .cmp(&left.0)
+             .0
+            .total_cmp(&left.0 .0)
+            .then_with(|| right.0 .1.cmp(&left.0 .1))
             .then_with(|| left.1.scenario_id.cmp(&right.1.scenario_id))
     });
     let kept = candidates.len().min(max_scenarios.max(1));

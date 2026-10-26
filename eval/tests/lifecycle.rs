@@ -1478,6 +1478,40 @@ async fn a_judge_that_does_not_answer_is_asked_again_on_the_next_sweep() {
 
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
+async fn a_baseline_that_already_holds_the_lost_award_ends_before_any_paid_proposal() {
+    let Some(rig) = Rig::start("no-room").await else {
+        return;
+    };
+    rig.configure().await;
+    let cycle_id = rig.begin_source().await;
+    // The source lost needles points; its baseline does not: nothing to win.
+    let base = rig.base();
+    rig.world()
+        .e2e
+        .finish("plan-1", "passed", side(TOKENS, [Some(10); 4]), &base);
+    rig.changed("plan-1").await;
+    let record = rig.cycle(&cycle_id).await;
+    let outcome = record.outcome.clone().unwrap();
+    assert_eq!(
+        (record.status, outcome.code),
+        (CycleStatusV1::Completed, OutcomeCodeV1::NoAction),
+        "{} {:?}",
+        outcome.detail,
+        record.history
+    );
+    assert!(
+        outcome
+            .detail
+            .contains("only 0 of 5 baseline runs leave room"),
+        "{}",
+        outcome.detail
+    );
+    assert!(rig.world().calls_to("harness::send").is_empty());
+    assert_eq!(rig.world().e2e.dispatched.len(), 1, "the baseline alone");
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
 async fn an_uncovered_execution_spends_nothing() {
     let Some(rig) = Rig::start("uncovered").await else {
         return;

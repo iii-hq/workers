@@ -456,6 +456,48 @@ pub fn baseline(plan: &CyclePlanV1, execution_id: &str, bundle: &serde_json::Val
     }
 }
 
+/// Why no candidate could pass the sign test on this baseline, if none
+/// could: a pair reaches the effect only when its baseline run leaves room
+/// for it (a total cannot fall below 0, a rate or score cannot rise above
+/// 1), so too few runs with room cannot reach p <= alpha even if every one
+/// improved. Read before any paid proposal.
+pub fn no_room(criterion: &CriterionV1, pairs: u32, baseline: &EvidenceSideV1) -> Option<String> {
+    let (unit, scale) = effect_unit(criterion.metric);
+    let ceiling = matches!(
+        criterion.metric,
+        CriterionMetricV1::PassRate | CriterionMetricV1::CriterionScore
+    );
+    let room = baseline
+        .runs
+        .iter()
+        .filter_map(|run| {
+            run.measurable()
+                .then(|| metric_value(run, criterion))
+                .flatten()
+        })
+        .filter(|value| match criterion.direction {
+            DirectionV1::Decrease => value / scale + EFFECT_TOLERANCE >= criterion.min_effect,
+            DirectionV1::Increase if ceiling => {
+                (1.0 - value) / scale + EFFECT_TOLERANCE >= criterion.min_effect
+            }
+            DirectionV1::Increase => true,
+        })
+        .count() as u32;
+    let best = sign_test_p(room, pairs);
+    (best > SIGN_TEST_ALPHA + EFFECT_TOLERANCE).then(|| {
+        format!(
+            "only {room} of {pairs} baseline runs leave room for {} {unit} of {} {}: even if \
+             each of them improved, the sign test would give p={best:.5}, above {SIGN_TEST_ALPHA}",
+            number(criterion.min_effect),
+            metric_label(criterion),
+            match criterion.direction {
+                DirectionV1::Decrease => "less",
+                DirectionV1::Increase => "more",
+            }
+        )
+    })
+}
+
 /// The pair's evidence for every scenario the plan judges, read from the two
 /// stored bundles only.
 pub fn pair_evidence(
@@ -1328,6 +1370,71 @@ mod tests {
         let evidence = evidence_of(signals(&[3; 5]), signals(&[0; 6]));
         assert!(directional(&evidence, &decrease).is_err());
         assert!(sampling_gap(&evidence, 5).is_some_and(|gap| gap.contains("exactly 5")));
+    }
+
+    #[test]
+    fn a_baseline_without_room_for_enough_pairs_stops_before_any_candidate() {
+        use CriterionMetricV1::*;
+        let side = |metric: CriterionMetricV1, values: &[f64]| EvidenceSideV1 {
+            execution_id: "b".into(),
+            runs: values
+                .iter()
+                .map(|value| {
+                    let mut run = run(true, None, "passed");
+                    match metric {
+                        FunctionCallErrors => run.function_call_errors = Some(*value),
+                        Tokens => run.total_tokens = Some(*value),
+                        _ => run.criteria = BTreeMap::from([("c".to_string(), *value)]),
+                    }
+                    run
+                })
+                .collect(),
+            n: values.len() as u32,
+            mean: None,
+        };
+        let errors = CriterionV1 {
+            min_effect: 1.0,
+            ..criterion(FunctionCallErrors, DirectionV1::Decrease)
+        };
+        // Zero errors, or too few runs with one to lose: no candidate can pass.
+        let none = no_room(&errors, 5, &side(FunctionCallErrors, &[0.0; 5])).unwrap();
+        assert!(none.contains("only 0 of 5"), "{none}");
+        assert!(no_room(
+            &errors,
+            5,
+            &side(FunctionCallErrors, &[0.0, 0.5, 3.0, 4.0, 5.0])
+        )
+        .is_some());
+        // Every run has an error to lose: a candidate may still pass.
+        assert!(no_room(
+            &errors,
+            5,
+            &side(FunctionCallErrors, &[1.0, 2.0, 3.0, 4.0, 5.0])
+        )
+        .is_none());
+        // Seven of eight pairs can pass; six cannot.
+        let eight = |zeros: usize| {
+            let mut values = vec![2.0; 8];
+            values[..zeros].fill(0.0);
+            no_room(&errors, 8, &side(FunctionCallErrors, &values))
+        };
+        assert!(eight(1).is_none());
+        assert!(eight(2).is_some());
+        // A score already at its ceiling cannot rise; a total has no ceiling.
+        let score = CriterionV1 {
+            criterion_id: Some("c".into()),
+            min_effect: 10.0,
+            ..criterion(CriterionScore, DirectionV1::Increase)
+        };
+        assert!(no_room(&score, 5, &side(CriterionScore, &[1.0; 5])).is_some());
+        assert!(no_room(&score, 5, &side(CriterionScore, &[0.8; 5])).is_none());
+        let tokens = CriterionV1 {
+            min_effect: 1_000.0,
+            ..criterion(Tokens, DirectionV1::Decrease)
+        };
+        assert!(no_room(&tokens, 5, &side(Tokens, &[9_000.0; 5])).is_none());
+        // One pair can never reach p <= 0.05.
+        assert!(no_room(&tokens, 1, &side(Tokens, &[9_000.0])).is_some());
     }
 
     #[test]
