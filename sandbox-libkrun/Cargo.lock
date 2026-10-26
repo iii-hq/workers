@@ -2856,7 +2856,7 @@ dependencies = [
  "iii-supervisor",
  "libc",
  "msb_krun",
- "nix 0.30.1",
+ "nix 0.31.3",
  "notify",
  "oci-client",
  "oci-spec",
