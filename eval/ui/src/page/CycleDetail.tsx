@@ -389,7 +389,10 @@ function Cycle({
             {narrow && action ? <div className="eval-ui-wide">{action}</div> : null}
           </>
         )}
-        {cycle.insight ? <Transcripts insight={cycle.insight} /> : null}
+        {cycle.insight ? (
+          // The result above already says what an insight that ended the cycle read.
+          <Transcripts insight={cycle.insight} said={cycle.outcome?.detail === cycle.insight.reason} />
+        ) : null}
         {narrow ? <Budget usage={usage} /> : null}
         <Path cycle={cycle} current={current} narrow={narrow} />
         {/* The rule matters once a change can be judged; an ended cycle that never got one keeps it in the record. */}
@@ -494,7 +497,7 @@ const WHOSE: Record<SiteClass, { label: string; tone: Tone }> = {
 const clipText = (text: string, at: number) => (text.length > at ? `${text.slice(0, at)}…` : text)
 
 /** What the insight read in the measured runs' transcripts: the points a change starts from, and each failed call. */
-function Transcripts({ insight }: { insight: Insight }) {
+function Transcripts({ insight, said }: { insight: Insight; said: boolean }) {
   const points = insight.points ?? []
   const by = insight.source === 'llm' ? `the default LLM${insight.model ? ` (${insight.model})` : ''}` : 'Jev'
   return (
@@ -504,7 +507,7 @@ function Transcripts({ insight }: { insight: Insight }) {
         <Badge className="eval-ui-num">{insight.sites.length}</Badge>
       </PanelHeader>
       <PanelBody className="eval-ui-stack">
-        <p className="eval-ui-lead">{sentence(insight.reason)}.</p>
+        {said ? null : <p className="eval-ui-lead">{sentence(insight.reason)}.</p>}
         {points.length ? (
           <div className="eval-ui-stack-sm">
             <Eyebrow as="p">Improvement points · read by {by}</Eyebrow>
@@ -532,41 +535,29 @@ function Transcripts({ insight }: { insight: Insight }) {
               </span>
               <Caret />
             </summary>
-            <TableViewport>
-              <Table density="compact" inset>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Function</TableHead>
-                    <TableHead>Whose</TableHead>
-                    <TableHead>Error</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {insight.sites.map((site) => (
-                    <TableRow key={site.site_id}>
-                      <TableCell className="eval-ui-mono eval-ui-nowrap">{site.function_id}</TableCell>
-                      <TableCell>
-                        {site.class ? (
-                          <StatusChip
-                            tone={WHOSE[site.class].tone}
-                            label={`${WHOSE[site.class].label}${
-                              site.probability !== undefined ? ` ${Math.round(site.probability * 100)}%` : ''
-                            }`}
-                          />
-                        ) : (
-                          <span className="eval-ui-faint">not judged</span>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <span title={`${site.scenario_id} · run ${site.run_id}\nnext: ${site.after}`}>
-                          {clipText(site.error, 220)}
-                        </span>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableViewport>
+            {/* A list, not a table: an error reads whole at any width. */}
+            <ul className="eval-ui-lost eval-ui-sites">
+              {insight.sites.map((site) => (
+                <li key={site.site_id}>
+                  <p className="eval-ui-site-head">
+                    <span className="eval-ui-mono">{site.function_id}</span>
+                    {site.class ? (
+                      <StatusChip
+                        tone={WHOSE[site.class].tone}
+                        label={`${WHOSE[site.class].label}${
+                          site.probability !== undefined ? ` ${Math.round(site.probability * 100)}%` : ''
+                        }`}
+                      />
+                    ) : (
+                      <span className="eval-ui-faint">not judged</span>
+                    )}
+                  </p>
+                  <p className="eval-ui-faint" title={`${site.scenario_id} · run ${site.run_id}\nnext: ${site.after}`}>
+                    {clipText(site.error, 220)}
+                  </p>
+                </li>
+              ))}
+            </ul>
           </details>
         ) : null}
       </PanelBody>

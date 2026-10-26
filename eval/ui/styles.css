@@ -930,3 +930,14 @@
   text-decoration: underline;
   cursor: pointer;
 }
+
+[data-iii-ui="eval"] .eval-ui-sites {
+  padding-top: 8px;
+}
+
+[data-iii-ui="eval"] .eval-ui-site-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
