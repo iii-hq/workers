@@ -1367,6 +1367,28 @@ async fn analysis_stage(
             let Some(entry) = record.executions.iter().find(|entry| {
                 entry.role == ExecutionRoleV1::Source && entry.state == ExecutionStateV1::Running
             }) else {
+                // Woken with nothing new while its own work still runs: wait for it.
+                if record.executions.iter().any(|entry| {
+                    matches!(
+                        entry.state,
+                        ExecutionStateV1::Running | ExecutionStateV1::Dispatching
+                    )
+                }) {
+                    let detail = "nothing new to analyze; waiting for the cycle's executions";
+                    return transition(
+                        deps,
+                        &record.cycle_id,
+                        record.step,
+                        CycleStatusV1::Waiting,
+                        CycleStageV1::AwaitingExecution,
+                        detail,
+                        |next| {
+                            next.next = Some(awaiting(detail));
+                            Ok(())
+                        },
+                    )
+                    .await;
+                }
                 return fail(deps, record, "no imported execution is left to analyze").await;
             };
             let execution_id = entry.execution_id.clone().unwrap_or_default();
@@ -1811,7 +1833,15 @@ pub async fn admit_execution(
             })
         });
     if let Some(cycle) = started_from {
-        let woken = cycle.stage == CycleStageV1::AwaitingExecution
+        // Only a source still running wakes its cycle: one already imported
+        // was analyzed, and its repeated completion is not new work.
+        let running = cycle.executions.iter().any(|entry| {
+            entry.role == ExecutionRoleV1::Source
+                && entry.execution_id.as_deref() == Some(execution_id)
+                && entry.state == ExecutionStateV1::Running
+        });
+        let woken = running
+            && cycle.stage == CycleStageV1::AwaitingExecution
             && wake(
                 deps,
                 &cycle.cycle_id,

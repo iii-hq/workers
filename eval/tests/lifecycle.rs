@@ -1393,6 +1393,14 @@ async fn a_passed_execution_with_a_lost_award_is_covered_then_judged_once_then_r
         1
     );
     assert_eq!(rig.world().calls_to("judge::evaluate").len(), 1);
+    // ...nor wakes the cycle: it still waits for its baseline.
+    let record = rig.cycle(&cycle_id).await;
+    assert_eq!(
+        (record.stage, record.status),
+        (CycleStageV1::AwaitingExecution, CycleStatusV1::Waiting),
+        "{:?}",
+        record.history
+    );
 }
 
 #[cfg(target_os = "linux")]
