@@ -619,7 +619,7 @@ async fn a_baseline_that_never_ran_says_why_the_execution_failed() {
 /// A history of `model` runs of one test with these function-call errors.
 fn history(model: &str, errors: &[f64]) -> Value {
     json!({"observations": [{"subject_model": model, "runs": errors.iter()
-        .map(|errors| json!({"function_call_errors": errors})).collect::<Vec<_>>()}]})
+        .map(|errors| json!({"status": "passed", "function_call_errors": errors})).collect::<Vec<_>>()}]})
 }
 
 #[tokio::test]

@@ -279,8 +279,9 @@ pub struct Observed {
     pub total: f64,
 }
 
-/// The function-call errors `test-history-get` records for one test's runs
-/// of `model`, on any definition of the test.
+/// The function-call errors `test-history-get` records for one test's passed
+/// runs of `model`, on any definition of the test: the loop measures errors
+/// only on a passed run, so one that failed is no evidence of room.
 pub fn observed_errors(history: &Value) -> Observed {
     let mut observed = Observed::default();
     for run in history["observations"]
@@ -288,6 +289,7 @@ pub fn observed_errors(history: &Value) -> Observed {
         .into_iter()
         .flatten()
         .flat_map(|observation| observation["runs"].as_array().into_iter().flatten())
+        .filter(|run| run["status"] == "passed")
     {
         if let Some(errors) = run["function_call_errors"]
             .as_f64()

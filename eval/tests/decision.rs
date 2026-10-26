@@ -1733,9 +1733,12 @@ fn a_test_the_plans_stack_cannot_run_is_left_out_before_any_baseline() {
 
 #[test]
 fn only_finite_non_negative_error_counts_are_observed() {
+    let passed = |errors: Value| json!({"status": "passed", "function_call_errors": errors});
     let history = json!({"observations": [
-        {"runs": [{"function_call_errors": 3.0}, {"function_call_errors": -2.0}, {}]},
-        {"runs": [{"function_call_errors": "4"}, {"function_call_errors": 0.0}]},
+        {"runs": [passed(json!(3.0)), passed(json!(-2.0)), {"status": "passed"}]},
+        {"runs": [passed(json!("4")), passed(json!(0.0))]},
+        // A failed run's errors are no evidence: the loop never measures them.
+        {"runs": [{"status": "subject_error", "function_call_errors": 9.0}]},
         {"runs": null}, {}]});
     let observed = eval::coverage::observed_errors(&history);
     assert_eq!((observed.runs, observed.total), (2, 3.0));
