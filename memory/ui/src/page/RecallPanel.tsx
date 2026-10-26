@@ -20,7 +20,7 @@ import { type MemoryItem, preview, type TurnPreview } from './memory-data'
  * composes the ENTIRE memory payload a chat turn on this bank would get,
  * via `memory::preview`, which runs the same code as the pre-generate
  * hook: the system-prompt section with rules and budgets applied, the
- * memories after the ambient floor and token budget, and the appended
+ * memories past the relevance cut and token budget, and the appended
  * message verbatim.
  */
 
@@ -166,7 +166,7 @@ export function RecallPanel({ host, bank, memories, tags }: RecallPanelProps) {
           {result.memories.length === 0 ? (
             <EmptyState
               title="no memories would be appended"
-              description="nothing in this bank matches this question and nothing is strong enough for the ambient floor. the rules above still land."
+              description="nothing in this bank is relevant to this message; the rules above still land."
             />
           ) : (
             <div className="mem-ui-stack tight">
@@ -179,14 +179,14 @@ export function RecallPanel({ host, bank, memories, tags }: RecallPanelProps) {
                   <li key={memory.id} className="mem-ui-recall-item">
                     <div className="mem-ui-row">
                       <span
-                        className={`mem-ui-scorebar${score > 0 ? ' on' : ''}`}
+                        className="mem-ui-scorebar on"
                         style={{
                           width: `${Math.max(4, Math.round((score / maxScore) * 64))}px`,
                         }}
                         aria-hidden
                       />
                       <span className="mem-ui-score">
-                        {score > 0 ? score.toFixed(2) : 'ambient'}
+                        {score.toFixed(2)}
                       </span>
                       {memory.pinned ? (
                         <Badge variant="accent">Pinned</Badge>
@@ -197,10 +197,6 @@ export function RecallPanel({ host, bank, memories, tags }: RecallPanelProps) {
                   </li>
                 ))}
               </ul>
-              <p className="mem-ui-subhint">
-                "ambient" = didn't match the question, but strong enough that
-                every turn gets it (pinned and most-seen memories)
-              </p>
             </div>
           )}
         </div>

@@ -2,7 +2,7 @@
 //! ranks memories, preview composes the ENTIRE memory payload a turn on
 //! this bank would receive: the rules section exactly as it lands in the
 //! system prompt (same budget, same truncation markers, same on/off
-//! switches), the recalled memories AFTER the ambient floor and token
+//! switches), the recalled memories AFTER the relevance cut and token
 //! budget, and the appended `<memory>` message verbatim. Built by the
 //! pre-generate hook's own [`hooks::injection`] — it cannot drift.
 
@@ -29,7 +29,7 @@ pub struct PreviewRequest {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct PreviewMemory {
     pub memory: Memory,
-    /// Recall score; 0.0 for memories added by the ambient floor.
+    /// Recall score.
     pub score: f32,
     /// The bank holding it, when not `bank`: the default bank, read under
     /// a bank the session's directory chose, or its agent profile's bank.
@@ -46,7 +46,7 @@ pub struct PreviewResponse {
     /// Rules included, and whether any were cut by `max_rule_chars`.
     pub rules: usize,
     pub rules_truncated: bool,
-    /// Memories the turn would be handed, post ambient floor and token
+    /// Memories the turn would be handed, past the relevance cut and token
     /// budget, in injection order.
     pub memories: Vec<PreviewMemory>,
     /// The appended `<memory>` message body, verbatim; absent when no

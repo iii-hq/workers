@@ -1,4 +1,4 @@
-//! Live judge eval for the semantic consolidation tier (MOT-5384): the real
+//! Live judge eval for the semantic consolidation tier: the real
 //! `SEMANTIC_SYSTEM` prompt, batch builder, parser and validator over cases
 //! built from the memory worker's recall golden set
 //! (`../memory/tests/recall_quality/golden.json`):
@@ -9,8 +9,8 @@
 //! - keep: near-misses on one topic but distinct facets — no action.
 //!
 //! **Harmful** actions — retiring the current record, touching a keep case,
-//! retiring a distractor — must be 0 (Hindsight's "trap", applied to
-//! consolidation). Ignored: it needs a live engine with a router.
+//! retiring a distractor — must be 0 (the recall eval's "trap", applied
+//! to consolidation). Ignored: it needs a live engine with a router.
 //!
 //! ```text
 //! III_NAMESPACE=<ns> cargo test --test judge_golden -- --ignored --nocapture

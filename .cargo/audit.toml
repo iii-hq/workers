@@ -20,3 +20,6 @@ ignore = [
   # move to webpki-roots 1.
   "RUSTSEC-2026-0381",
 ]
+# An advisory that only one lockfile may ignore goes in <dir>/.cargo/audit-ignore
+# instead (one id per line, with its justification); the audit workflow passes
+# those ids as --ignore for that lockfile alone.

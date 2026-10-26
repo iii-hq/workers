@@ -12,7 +12,8 @@ pub struct ActInput {
     /// Mouse button for `click`: `left` (default), `right`, or `middle`.
     #[serde(default)]
     pub button: Option<String>,
-    /// Clicks in the gesture: 2 double-clicks (`click` only, default 1).
+    /// Clicks in the gesture: 2 double-clicks, 3 triple-clicks (`click`
+    /// only; default 1, held to 1..3).
     #[serde(default)]
     pub click_count: Option<u32>,
     /// Element ref from `browser::elements` (`n4`), `browser::snapshot`
@@ -40,8 +41,13 @@ pub struct ActInput {
     #[serde(default)]
     pub key: Option<String>,
     /// Scroll distance in pixels; positive scrolls down (`scroll`).
+    /// Default 600, or 0 when `delta_x` is given.
     #[serde(default)]
     pub delta_y: Option<f64>,
+    /// Horizontal scroll distance in pixels; positive scrolls right
+    /// (`scroll`). Default 0.
+    #[serde(default)]
+    pub delta_x: Option<f64>,
     /// Drag end x, in viewport pixels (`drag`). The start is `x`/`y` or a
     /// `ref`; the end is `x2`/`y2`.
     #[serde(default)]
@@ -49,6 +55,43 @@ pub struct ActInput {
     /// Drag end y, in viewport pixels (`drag`).
     #[serde(default)]
     pub y2: Option<f64>,
+    /// Draw the agent's ghost cursor where the action lands, for whoever
+    /// watches the live view. Default true; false for a person's own input
+    /// from a viewer, so the page shows no agent cursor.
+    #[serde(default)]
+    pub ghost_cursor: Option<bool>,
+}
+
+/// Most clicks one `click` makes (a triple-click selects a paragraph).
+pub const MAX_CLICK_COUNT: u32 = 3;
+/// Largest wheel delta one `scroll` sends, either way. Far past any page's
+/// height, and well inside what Chromium handles: a delta of 1e300 left the
+/// call waiting out CDP's 30 s timeout.
+pub const MAX_SCROLL_DELTA: f64 = 100_000.0;
+
+impl ActInput {
+    /// The clicks of a `click`, held to 1..`MAX_CLICK_COUNT`.
+    pub fn clicks(&self) -> i64 {
+        i64::from(self.click_count.unwrap_or(1).clamp(1, MAX_CLICK_COUNT))
+    }
+
+    /// The wheel deltas of a `scroll`: `(delta_x, delta_y)`, each held to
+    /// ±`MAX_SCROLL_DELTA`. A bare scroll pages down 600px; one that only
+    /// names `delta_x` moves sideways only.
+    pub fn scroll_deltas(&self) -> (f64, f64) {
+        let held = |delta: f64| {
+            if delta.is_finite() {
+                delta.clamp(-MAX_SCROLL_DELTA, MAX_SCROLL_DELTA)
+            } else {
+                0.0
+            }
+        };
+        let delta_x = self.delta_x.unwrap_or(0.0);
+        let delta_y = self
+            .delta_y
+            .unwrap_or(if self.delta_x.is_some() { 0.0 } else { 600.0 });
+        (held(delta_x), held(delta_y))
+    }
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -154,6 +197,41 @@ pub fn key_spec(name: &str) -> Option<KeySpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scroll_deltas_default_down_and_go_sideways_only_when_asked() {
+        let scroll = |delta_x, delta_y| ActInput {
+            action: "scroll".to_string(),
+            delta_x,
+            delta_y,
+            ..ActInput::default()
+        };
+        assert_eq!(scroll(None, None).scroll_deltas(), (0.0, 600.0));
+        assert_eq!(scroll(None, Some(-120.0)).scroll_deltas(), (0.0, -120.0));
+        assert_eq!(scroll(Some(240.0), None).scroll_deltas(), (240.0, 0.0));
+        assert_eq!(
+            scroll(Some(-40.0), Some(80.0)).scroll_deltas(),
+            (-40.0, 80.0)
+        );
+        assert_eq!(
+            scroll(Some(-1e300), Some(1e300)).scroll_deltas(),
+            (-MAX_SCROLL_DELTA, MAX_SCROLL_DELTA)
+        );
+        assert_eq!(scroll(Some(f64::NAN), None).scroll_deltas(), (0.0, 0.0));
+    }
+
+    #[test]
+    fn click_count_is_held_to_one_through_three() {
+        let click = |click_count| ActInput {
+            action: "click".to_string(),
+            click_count,
+            ..ActInput::default()
+        };
+        assert_eq!(click(None).clicks(), 1);
+        assert_eq!(click(Some(0)).clicks(), 1);
+        assert_eq!(click(Some(2)).clicks(), 2);
+        assert_eq!(click(Some(1_000_000)).clicks(), 3);
+    }
 
     #[test]
     fn known_keys_resolve_unknown_reject() {
