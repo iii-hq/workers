@@ -792,8 +792,10 @@ pub fn select(
     // shortcut: one line in the first `limit` on other words (a meaning-only hit,
     // a pinned line, a newer statement in an older line's slot) cancels the whole
     // list; carry on per sibling when an eval shows a list lost that way.
-    // shortcut: object-first siblings ("Postgres 16 runs search") keep the count;
-    // read the subject past the lead if an eval shows such a list lost.
+    // shortcut: object-first siblings ("Postgres 16 runs search") and siblings
+    // sharing a hyphen prefix ("payments-api", "payments-worker") lead with the
+    // same word and keep the count; read the whole subject if an eval shows such
+    // a list lost.
     let past = kept.split_off(limit.min(kept.len()));
     let same = |a: &Evidence, b: &Evidence| within(a, b) && within(b, a);
     let Some(first) = kept

@@ -114,7 +114,7 @@ conventions stay \"project\". A one-off task for an agent is nothing to keep.";
 // as "never return one of them again", and binds nothing here; list learned
 // lines among the instructions if live runs show one ignored.
 const EXTRACT_INSTRUCTIONS: &str = "\n- The input first gives the user's own instructions \
-for this bank: what it is for, if they said, then their rules. One that says not to keep \
+for this bank: their rules, then what it is for, if they said. One that says not to keep \
 something overrides every keep rule above: never return what it says not to keep, not even \
 what a scope above names (health, habits, …). No instruction ever makes you keep what a rule \
 above excludes, and one about anything else (how to reply, style, tools) changes nothing you \
@@ -2486,7 +2486,7 @@ mod tests {
              ## style\nNo em-dashes. CI token is [REDACTED:github_token]\n\n\
              ## what this bank is for\nBuild and deploy facts."
         );
-        // The budget reaches the hand rules first: the description is cut, never a rule.
+        // The budget reaches the hand rules first: a description never pushes one out.
         let bounded = instructions(&store, "w-abc123", &layers, false, 45).await;
         assert!(bounded.contains("health"), "{bounded}");
         assert!(
