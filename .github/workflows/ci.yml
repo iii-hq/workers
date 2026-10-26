@@ -1255,7 +1255,7 @@ jobs:
 
       - name: Run the ${{ matrix.suite }} suite on memory built from this PR
         id: e2e
-        uses: iii-hq/harness-e2e/.github/actions/verify-stack@d95436af033c1ccfcce39a88b2b3f57de10c6384
+        uses: iii-hq/harness-e2e/.github/actions/verify-stack@668eb372986dba1a44eec64f44dc5a5fa454e324
         with:
           token: ${{ steps.app.outputs.token }}
           comment-token: ${{ github.token }}
