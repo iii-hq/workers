@@ -556,8 +556,9 @@ fn two_subjects(a: &Memory, b: &Memory) -> bool {
 /// those with evidence ([`Evidence`], why each matched) that stand on their
 /// own, or with the turn's best in a turn anchored in the bank (a bank too
 /// small for a z-score anchors on any meaning match), one line per fact,
-/// `limit` of them, or more for a list (every line on the same question
-/// words, each on its own: all its siblings come); nothing when none has any.
+/// `limit` of them, or more for a list (every line on the same two or more
+/// question words, or on the `user` of a question about the user, each on its
+/// own: all its siblings come); nothing when none has any.
 /// An older statement of a changed fact is never told: when it stands,
 /// the current statement takes its place, whatever the newer's own rank or
 /// relevance. `seen` holds the memory lines the window shows: a rewording of
@@ -681,12 +682,18 @@ pub fn select(
     // stands on the same question words ("which services use Postgres 16?"
     // over seven services), so does each sibling past it, to the token budget.
     // A mixed list keeps the count: its tail shares a stray word, not the subject.
+    // One word is a list only as the `user` of "what do you remember about me?":
+    // "kotlin?" over many Kotlin lines keeps the count.
+    // shortcut: one line in the first `limit` on other words (a meaning-only hit,
+    // a pinned line, a newer statement in an older line's slot) cancels the whole
+    // list; carry on per sibling when an eval shows a list lost that way.
     let past = kept.split_off(limit.min(kept.len()));
     let same = |a: &Evidence, b: &Evidence| within(a, b) && within(b, a);
-    let list = kept
-        .first()
-        .map(|(m, _)| ev(m))
-        .filter(|first| on_words(first) && kept.iter().all(|(m, _)| same(ev(m), first)));
+    let list = kept.first().map(|(m, _)| ev(m)).filter(|first| {
+        on_words(first)
+            && (first.terms >= 2 || first.matched == ["user"])
+            && kept.iter().all(|(m, _)| same(ev(m), first))
+    });
     if let Some(first) = list {
         kept.extend(past.into_iter().filter(|(m, _)| same(ev(m), first)));
     }
@@ -1676,14 +1683,12 @@ Formal."
             .iter()
             .map(|(m, _, bank)| (m.id.clone(), bank.clone()))
             .collect();
-        // Every line holds the one word, a list: `fp-r2` carries on past the limit.
         assert_eq!(
             injected,
             vec![
                 ("fp-twin".into(), "agent-x".into()),
                 ("fp-r0".into(), "w-abc123".into()),
                 ("fp-r1".into(), "w-abc123".into()),
-                ("fp-r2".into(), "w-abc123".into()),
             ],
             "the layer's copy ranks inside the limit, so it is the one injected, and its bank holds it"
         );
@@ -1749,8 +1754,7 @@ Formal."
         )
         .await;
         let injected: Vec<String> = out.memories.iter().map(|(m, _, _)| m.id.clone()).collect();
-        // Every line holds the one word, a list: the rest carry on after the top.
-        assert!(injected.starts_with(&top), "{injected:?} vs {top:?}");
+        assert_eq!(injected, top);
         let banks: HashSet<&str> = out.memories.iter().map(|(_, _, b)| b.as_str()).collect();
         assert_eq!(banks.len(), 2, "both banks reach the top: {injected:?}");
     }
@@ -1964,6 +1968,76 @@ Formal."
         let dir = tempfile::tempdir().unwrap();
         let deps = postgres_services(dir.path(), cfg, &names).await;
         assert_eq!(told(&deps, &[], POSTGRES_QUESTION).await.len(), 7);
+    }
+
+    #[tokio::test]
+    async fn a_one_word_question_gets_recall_limit_lines() {
+        // Every line holds the question's one word: a shared word, no list.
+        let names = [
+            "billing", "ledger", "search", "mailer", "auth", "export", "report", "backup",
+            "upload", "signer",
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let deps = postgres_services(dir.path(), offline_cfg(6), &names).await;
+        assert_eq!(told(&deps, &[], "Postgres?").await.len(), 6);
+    }
+
+    #[tokio::test]
+    async fn what_you_remember_about_me_lists_every_user_fact() {
+        // The question's one term is the `user` its pronoun stands for: a list.
+        let dir = tempfile::tempdir().unwrap();
+        let deps = offline_deps(dir.path(), offline_cfg(6));
+        let (repo, _) = deps
+            .store()
+            .await
+            .ensure_bank("w-abc123", None)
+            .await
+            .unwrap();
+        let user = [
+            "The user's team nickname is nick-7f3a.",
+            "The user's cat is named Pixel.",
+            "The user grew up in Porto.",
+            "The user plays the cello in a quartet.",
+            "The user's favorite author is Ursula Le Guin.",
+            "The user is vegetarian.",
+            "The user's sister lives in Montreal.",
+            "The user speaks Portuguese and Italian.",
+            "The user was born in 1988.",
+            "The user keeps bees on a rooftop.",
+        ];
+        let workplace = [
+            "The office coffee machine is on the third floor.",
+            "The quarterly planning meeting happens in March.",
+            "The design team draws mockups in Figma.",
+            "The marketing site is built with Astro.",
+            "The legal team reviews every press release.",
+            "The analytics dashboards are hosted on Metabase.",
+            "Team lunches are on Fridays.",
+            "The support rotation changes every Monday.",
+        ];
+        for (n, text) in user.iter().enumerate() {
+            let m = Memory {
+                entities: vec!["user".into()],
+                ..memory(&format!("fp-u{n}"), text)
+            };
+            repo.commit(m).await.unwrap();
+        }
+        for (n, text) in workplace.iter().enumerate() {
+            repo.commit(memory(&format!("fp-w{n}"), text))
+                .await
+                .unwrap();
+        }
+        let mut ids: Vec<String> = told(&deps, &[], "What do you remember about me?")
+            .await
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        ids.sort();
+        let all: Vec<String> = (0..user.len()).map(|n| format!("fp-u{n}")).collect();
+        assert_eq!(
+            ids, all,
+            "every user fact past recall_limit, no workplace fact"
+        );
     }
 
     /// `select` over hits ranked in the order given: the ids it keeps.
