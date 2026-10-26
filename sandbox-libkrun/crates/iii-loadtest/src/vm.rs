@@ -164,6 +164,9 @@ pub fn boot(args: VmArgs) -> Result<Infallible> {
             m.vcpus(args.vcpus)
                 .memory_mib(ram as usize)
                 .enable_inet_hijack(args.tsi)
+                // Same as sandbox-libkrun's vm_boot: no guest driver, and room for >11 x86_64 IRQs.
+                .msb_metrics(false)
+                .split_irqchip(true)
         })
         .kernel(|k| k.krunfw_path(&krunfw).init_path("/init.krun"))
         .fs(|fs| fs.tag("/dev/root").custom(Box::new(root)));

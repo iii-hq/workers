@@ -33,7 +33,7 @@ fn host_arch() -> &'static str {
 }
 
 fn sha(b: &[u8]) -> String {
-    format!("sha256:{:x}", sha2::Sha256::digest(b))
+    format!("sha256:{}", hex::encode(sha2::Sha256::digest(b)))
 }
 
 #[derive(Clone)]

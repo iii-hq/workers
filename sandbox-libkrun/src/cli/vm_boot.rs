@@ -92,7 +92,8 @@ pub struct VmBootArgs {
     /// Enable nested virtualization. Default off — a microworker VM has
     /// no need to run its own hypervisor, and enabling nested-KVM is a
     /// measurable perf hit. Flip on only for CI/test scenarios that
-    /// explicitly boot a VM inside the worker.
+    /// explicitly boot a VM inside the worker. Ignored, with a warning,
+    /// on hosts that cannot provide it (Linux ARM64 always).
     #[arg(long, default_value = "false")]
     pub nested_virt: bool,
 
@@ -426,7 +427,7 @@ fn spawn_env_writer(
 }
 
 /// Budget for what iii adds to the kernel command line. msb_krun's limit is
-/// 16 KiB for the whole line, and it unwraps the insert (`TooLarge` panics).
+/// 16 KiB for the whole line; past it the boot fails (`TooLarge`).
 /// Its own part (default cmdline, root/init, KRUN_INIT, KRUN_RLIMITS,
 /// KRUN_BOOT_START_NS, the `--` epilog) is about 260 bytes; 1 KiB is left
 /// for it.
@@ -495,10 +496,10 @@ fn split_vm_env(
 }
 
 /// Checks everything iii puts on the kernel command line before msb_krun
-/// unwraps the insert. msb_krun writes each pair as ` KEY="VALUE"` and only
-/// accepts printable ASCII: anything else panics the boot (`InvalidAscii`,
-/// MOT-5493), and an embedded `"` silently splits the value. Names the key,
-/// never the value.
+/// builds it. msb_krun writes each pair as ` KEY="VALUE"` and only accepts
+/// printable ASCII without `"` (0.1.16 panicked the boot, MOT-5493; 0.1.42
+/// fails the build). Checking here first adds the size budget and an error
+/// that names the key, never the value.
 fn validate_cmdline_env(env: &[(String, String)]) -> Result<(), String> {
     let carriable = |s: &str| s.chars().all(|c| matches!(c, ' '..='~') && c != '"');
     for (key, value) in env {
@@ -602,13 +603,18 @@ fn boot_vm(
     let worker_cmd = build_worker_cmd(&args.exec, &args.arg);
 
     let hyperthreading = args.hyperthreading;
-    let nested_virt = args.nested_virt;
+    let nested_virt = nested_virt_or_warn(args.nested_virt, msb_krun::nested_virt_supported);
     let mut builder = VmBuilder::new()
         .machine(|m| {
             m.vcpus(args.vcpus as u8)
                 .memory_mib(args.ram as usize)
                 .hyperthreading(hyperthreading)
                 .nested_virt(nested_virt)
+                // iii's guest kernel has no driver for msb_krun's private metrics device.
+                .msb_metrics(false)
+                // KVM's in-kernel IOAPIC gives x86_64 only 11 virtio IRQs, all of which a
+                // default overlay worker with net already uses; no effect on other arches.
+                .split_irqchip(true)
         })
         .kernel(|k| {
             let k = match resolve_krunfw_file_path() {
@@ -819,7 +825,7 @@ fn boot_vm(
     }
     // Worker env and command transport (MOT-5493). The kernel command line
     // is readable in the guest's `/proc/cmdline`, only carries printable
-    // ASCII without quotes, and msb_krun panics on anything else. With an
+    // ASCII without quotes, and msb_krun refuses anything else. With an
     // embedded init, which is guaranteed to be this build's, both cross the
     // `iii.env` virtio-console port and iii-init exports them before
     // starting the worker. An on-disk init may predate the port, so that
@@ -1058,6 +1064,19 @@ fn boot_vm(
     vm.enter().map_err(|e| format!("VM enter failed: {}", e))
 }
 
+/// msb_krun refuses to boot a VM that asks for nested virtualization on a host
+/// without it (Linux ARM64 always), so drop the opt-in with a warning instead.
+fn nested_virt_or_warn(requested: bool, supported: impl FnOnce() -> std::io::Result<bool>) -> bool {
+    requested
+        && match supported() {
+            Ok(true) => true,
+            other => {
+                eprintln!("iii: --nested-virt ignored, the host cannot provide it ({other:?})");
+                false
+            }
+        }
+}
+
 /// The spawner is gone: shut the VM down, then say why. A worker
 /// VM's stderr is a pipe the dead spawner read, so `eprintln!` would panic on
 /// EPIPE and end this watcher before the trigger, leaving the VM running.
@@ -1071,6 +1090,18 @@ fn shut_down_vm(trigger: impl FnOnce(), why: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_virt_is_dropped_when_the_host_cannot_provide_it() {
+        assert!(nested_virt_or_warn(true, || Ok(true)));
+        assert!(!nested_virt_or_warn(true, || Ok(false)));
+        assert!(!nested_virt_or_warn(true, || Err(std::io::Error::other(
+            "no /dev/kvm"
+        ))));
+        assert!(!nested_virt_or_warn(false, || panic!(
+            "probed the host without a request"
+        )));
+    }
 
     #[test]
     fn test_vm_boot_args_parse() {

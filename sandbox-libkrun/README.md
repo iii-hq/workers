@@ -90,8 +90,7 @@ worker VM (sandboxes ignore them):
   the `com.apple.security.hypervisor` and
   `com.apple.security.cs.disable-library-validation` entitlements. An
   unsigned dev build signs itself in place on first run.
-- **Linux, glibc.** The Compose user needs read/write access to `/dev/kvm`,
-  and `libcap-ng0` must be installed.
+- **Linux, glibc.** The Compose user needs read/write access to `/dev/kvm`.
 - Any other host gets a clear `UnsupportedPlatform` error from Compose when a
   project needs the adapter.
 

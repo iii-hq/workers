@@ -25,7 +25,7 @@ pub fn check_firmware(file_name: &str, bytes: &[u8], sha256sums: &str) -> Result
         .find(|(_, name)| name.trim().trim_start_matches('*') == file_name)
         .map(|(sum, _)| sum)
         .ok_or_else(|| format!("{file_name}: no entry in SHA256SUMS"))?;
-    let actual = format!("{:x}", Sha256::digest(bytes));
+    let actual: String = Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect();
     if !actual.eq_ignore_ascii_case(expected) {
         return Err(format!(
             "{file_name}: sha256 {actual} does not match SHA256SUMS ({expected})"
