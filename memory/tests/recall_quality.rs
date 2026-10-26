@@ -1,17 +1,14 @@
-//! Recall-quality eval (MOT-5383): a synthetic golden bank and queries scored
+//! Recall-quality eval: a synthetic golden bank and queries scored
 //! through the production `Bank::recall`, in `lexical` (no query vector) and
 //! `hybrid` (cached embeddings) modes, sliced by category and language.
 //!
-//! Design follows Hindsight's retrieval eval
-//! (`hindsight-system-evals/hindsight_system_evals/retrieval_metrics.py`):
-//! trec_eval-style linear-gain nDCG, Recall over all relevant, MRR/Hit at
-//! cutoffs, macro averages, a retrieval-vs-ranking blame per query, and a
-//! trap count that is reported on its own, never averaged in. Two
-//! deliberate differences: vectors are CACHED (Hindsight re-embeds with a
-//! local model and its runs drift between two states) so this runs
-//! deterministically as a PR gate, and a trap is deterministic — a stale
-//! (superseded) memory ranking above the current one — where Hindsight
-//! LLM-judges answers.
+//! Design: trec_eval-style linear-gain nDCG, Recall over all relevant,
+//! MRR/Hit at cutoffs, macro averages, a retrieval-vs-ranking blame per
+//! query, and a trap count that is reported on its own, never averaged in.
+//! Vectors are CACHED (re-embedding with a local model drifts between
+//! runs), so this runs deterministically as a PR gate, and a trap is
+//! deterministic — a stale (superseded) memory ranking above the current
+//! one — not an LLM judge's call.
 //!
 //! - Report: `cargo test --test recall_quality -- --nocapture`
 //! - Re-baseline after an intended scorer change: `UPDATE_GOLDENS=1 cargo
@@ -255,7 +252,7 @@ impl Outcome {
         self.first_hit.map_or(0.0, |r| 1.0 / r as f64)
     }
 
-    /// Hindsight's blame: `retrieval` when a relevant key never came back,
+    /// The blame: `retrieval` when a relevant key never came back,
     /// `ranking` when all did but the best one is not first.
     fn blame(&self) -> &'static str {
         if self.recall < 1.0 {
@@ -289,8 +286,8 @@ fn score(ranked: &[&str], relevant: &[String], stale: &[String]) -> Outcome {
     let idcg: f64 = (0..relevant.len().min(DEPTH))
         .map(|i| 1.0 / ((i + 2) as f64).log2())
         .sum();
-    // Measured against the CURRENT answer (`expect[0]`), as Hindsight's
-    // stale-vs-current check: another relevant memory ranking first must
+    // Measured against the CURRENT answer (`expect[0]`), a stale-vs-current
+    // check: another relevant memory ranking first must
     // not mask a superseded fact sitting above the current one.
     let trap = match (rank_of(stale), rank_of(&relevant[..1])) {
         (Some(s), Some(c)) => s < c,

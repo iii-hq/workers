@@ -29,7 +29,7 @@ With the harness running there is nothing else to wire: chat normally and memory
 
 ## Configuration
 
-All fields hot-reload through the `configuration` worker and are editable in the worker's explicit form in the Console's global Settings modal; `data_dir` reopens the store on the fly. Fields: `data_dir`, `default_bank`, `inject_rules`, `inject_memories`, `recall_limit`, `recall_budget_tokens`, `extraction_enabled`, `extraction_model`, `extraction_window`, `extraction_timeout_ms`, `max_memories_per_turn`, `rule_learning_enabled`, `max_rule_chars`, `decay_half_life_days` (default 60; installs that predate MOT-5385 keep their stored 30 — set 60 in Settings to adopt the tuned recall curve), `embeddings_enabled`, `embedding_model`.
+All fields hot-reload through the `configuration` worker and are editable in the worker's explicit form in the Console's global Settings modal; `data_dir` reopens the store on the fly. Fields: `data_dir`, `default_bank`, `inject_rules`, `inject_memories`, `recall_limit`, `recall_budget_tokens`, `extraction_enabled`, `extraction_model`, `extraction_window`, `extraction_timeout_ms`, `max_memories_per_turn`, `rule_learning_enabled`, `max_rule_chars`, `decay_half_life_days` (default 60; older installs keep their stored 30 — set 60 in Settings to adopt the tuned recall curve), `embeddings_enabled`, `embedding_model`.
 
 ## Why this shape
 
@@ -120,7 +120,7 @@ process current directory for the same relative default.
 - `hybrid`, with cached `text-embedding-3-small` vectors;
 - `hybrid-consolidated`, which first replays the semantic consolidation tier's recorded decisions (`tests/recall_quality/consolidation.json`, from memory-consolidate's judge eval) and scores expectations carried to the survivors.
 
-It reports hit@1/3, MRR@10, nDCG@10 and recall@10 per category and language. It also counts **traps**, where a superseded memory outranks the current one, and **duplicate pollution**, a query whose top 10 holds both members of a `dup_of` pair. The committed snapshot `tests/golden/recall_quality.json` makes it a PR gate. The metric conventions follow Hindsight's retrieval eval.
+It reports hit@1/3, MRR@10, nDCG@10 and recall@10 per category and language. It also counts **traps**, where a superseded memory outranks the current one, and **duplicate pollution**, a query whose top 10 holds both members of a `dup_of` pair. The committed snapshot `tests/golden/recall_quality.json` makes it a PR gate. The metrics follow trec_eval conventions.
 
 `injection_quality`, in the same file, scores what the hook injects from that bank: every candidate with its evidence through `hooks::select`, nothing visible, in lexical and hybrid mode, against `tests/golden/injection_quality.json` (text-embedding-3-small) and `tests/golden/injection_quality-minilm.json` (MiniLM). Beside the 62 queries it sends 41 negatives that should inject nothing: 8 greetings, 8 first-person tasks and 8 follow-ups ("tell me more", "sounds good, do it"), none sharing a word with the bank, 9 questions sharing one incidental word with a memory ("Great, go ahead." among them), and 8 near-topic questions. Negatives carry their split (26 dev, 15 test); queries are split by a hash of their id (43 dev, 19 test). MiniLM's file has no negative vectors, so its hybrid negatives are unmeasured. Per slice it reports needed lines injected, lines recall ranks that the hook dropped, irrelevant lines, duplicates and stale lines. Beyond the snapshot, it fails when:
 

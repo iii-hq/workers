@@ -1,4 +1,4 @@
-//! Extraction eval (MOT-5451, MOT-5452): the production prompt and parser
+//! Extraction eval: the production prompt and parser
 //! ([`extract_items`]) over short EN excerpts, every case a repository
 //! session with `default_bank` layered under it. Scores two things:
 //! - capture: every expected item is captured, wrong (its kind, where it
@@ -12,7 +12,7 @@
 //!   trap hits the rule gate would still let into the bank.
 //! - placement ([`lands`]): what holds for the user wherever they work
 //!   must reach the default bank, and nothing project-only may; with agents
-//!   listed (MOT-5464), what the user tells one about its role's work must
+//!   listed, what the user tells one about its role's work must
 //!   reach that agent's bank, and nothing about the user or the project may.
 //!
 //! Live, so ignored: `III_URL=ws://127.0.0.1:<port> III_NAMESPACE=<ns>

@@ -201,8 +201,8 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 }
 
 /// English function words dropped from QUERIES before lexical scoring (the
-/// index keeps every token), as Hindsight's lexical arm gets from Postgres's
-/// `english` tsvector. Without it a natural-language question matches every
+/// index keeps every token), as Postgres's `english` tsvector drops them.
+/// Without it a natural-language question matches every
 /// memory through "the/do/my", and that BM25 noise outscores a paraphrase's
 /// semantic match. "us" is kept (US), as Snowball's English list does.
 // `pub` only so the recall_quality eval checks its data against this list.
@@ -999,8 +999,8 @@ impl Bank {
     /// The raw lexical arm: plain BM25 order (entity handles are part of
     /// the indexed text) with no recency, pin, or corroboration fusion — an
     /// old exact twin must not sink below fresh weak matches. Consolidation
-    /// interleaves this with [`Bank::semantic`], as Hindsight's consolidator
-    /// does, because a fused rank buries the twin.
+    /// interleaves this with [`Bank::semantic`], because a fused rank buries
+    /// the twin.
     pub async fn lexical(
         &self,
         query: &str,

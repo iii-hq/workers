@@ -19,7 +19,7 @@ const CORROBORATION_BOOST: f32 = 0.3;
 /// Relevance multiplier for pinned memories.
 const PINNED_BOOST: f32 = 0.25;
 /// How much recency can move a score: ±`RECENCY_WEIGHT / 2` around neutral
-/// (fresh ×1.2, very old ×0.8). Hindsight uses 0.2; 0.4 measured best on the
+/// (fresh ×1.2, very old ×0.8). 0.4 measured best on the
 /// recall eval (durable-old hit@1 0.5 -> 1.0) without adding traps.
 const RECENCY_WEIGHT: f32 = 0.4;
 
