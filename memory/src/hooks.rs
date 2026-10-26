@@ -417,7 +417,7 @@ pub(crate) async fn injection(
     // Per memory, its best-scored copy: the source and the score.
     let mut best: HashMap<String, (usize, f32)> = HashMap::new();
     let (mut evidence, mut names) = (HashMap::new(), Vec::new());
-    for (i, (name, b, layered)) in sources.into_iter().enumerate() {
+    for (i, &(name, b, layered)) in sources.iter().enumerate() {
         let keep = |m: &Memory| keeps(name, layered, m);
         // Every candidate: `select` cuts the merged ranking.
         let (found, found_evidence) = b
@@ -462,6 +462,18 @@ pub(crate) async fn injection(
         seen,
         cfg.recall_limit,
     );
+    // What each source holds on a told line's subject; a memory two hold is the earlier's.
+    let linked: HashSet<String> = hits.iter().flat_map(|(m, _)| subjects(m)).collect();
+    let mut tagged = Vec::new();
+    for &(name, b, layered) in &sources {
+        for m in b.tagged(&linked).await {
+            if keeps(name, layered, &m) {
+                held.entry(m.id.clone()).or_insert(name);
+                tagged.push(m);
+            }
+        }
+    }
+    let hits = with_updates(hits, &tagged, &query);
     let scores: HashMap<String, f32> = hits.iter().map(|(m, s)| (m.id.clone(), *s)).collect();
     // After `select`, so a slot this frees stays free.
     let memories = unseen(hits.into_iter().map(|(m, _)| m).collect(), seen);
@@ -532,18 +544,90 @@ const SEMANTIC_Z: f32 = 2.0;
 // (stale_alone > 0) or lists outgrow it.
 const POOL_PER_SLOT: usize = 4;
 
+/// What a memory is about: its entities but `user`, which every user fact
+/// carries and is no subject of its own.
+pub fn subjects(m: &Memory) -> HashSet<String> {
+    m.entities
+        .iter()
+        .filter(|e| *e != crate::scope::LAYER_ENTITY)
+        .cloned()
+        .collect()
+}
+
 /// Both tagged and sharing no entity: a change to one says nothing of the
-/// other. `user`, which every user fact carries, is no subject of its own.
+/// other.
 fn unrelated(a: &Memory, b: &Memory) -> bool {
-    let subjects = |m: &Memory| {
-        m.entities
-            .iter()
-            .filter(|e| *e != crate::scope::LAYER_ENTITY)
-            .cloned()
-            .collect::<HashSet<String>>()
-    };
     let (a, b) = (subjects(a), subjects(b));
     !a.is_empty() && !b.is_empty() && a.is_disjoint(&b)
+}
+
+/// Memories an entity may tag and still link a told line to its update: one
+/// more lines carry (a repo-wide service, a team) is a topic, not a subject.
+const LINK_MAX_TAGGED: usize = 5;
+
+/// `told` with, right after each line, the newest statement made later on its
+/// [`subjects`] alone: "dana left the company" after "dana is the on-call
+/// engineer for payments-api", though it shares no word with "whom do I page
+/// for payments-api?". Only a line on a subject the question names links, and
+/// through an entity at most [`LINK_MAX_TAGGED`] memories carry; one per line,
+/// at its score, never a line told already or a rewording of one. `tagged`: the
+/// live memories the turn reads carrying a told line's subject ([`Bank::tagged`]).
+// shortcut: a line told on other words ("who is on call?" over "dana is on
+// call") links nothing, and an update naming one more subject ("dana moved to
+// the ledger team") never joins: without both, the injection eval's stray-word
+// lines drag their subjects' updates in. Widen when an eval slice of linked
+// updates shows the misses.
+pub fn with_updates(
+    told: Vec<(Memory, f32)>,
+    tagged: &[Memory],
+    query: &str,
+) -> Vec<(Memory, f32)> {
+    let mut unique = HashSet::new();
+    let tagged: Vec<&Memory> = tagged.iter().filter(|m| unique.insert(&m.id)).collect();
+    let mut carry: HashMap<&str, usize> = HashMap::new();
+    for e in tagged.iter().flat_map(|m| &m.entities) {
+        *carry.entry(e).or_default() += 1;
+    }
+    let rare = |e: &String| carry.get(e.as_str()).is_some_and(|n| *n <= LINK_MAX_TAGGED);
+    let asked: HashSet<String> = crate::index::tokenize(query).into_iter().collect();
+    let named = |e: &String| {
+        let words = crate::index::tokenize(e);
+        !words.is_empty() && words.iter().all(|w| asked.contains(w))
+    };
+    let mut taken: HashSet<&str> = told.iter().map(|(m, _)| m.id.as_str()).collect();
+    let updates: Vec<Option<Memory>> = told
+        .iter()
+        .map(|(m, _)| {
+            let about = subjects(m);
+            if !about.iter().any(named) {
+                return None;
+            }
+            let update = tagged
+                .iter()
+                .filter(|u| {
+                    let on = subjects(u);
+                    !taken.contains(u.id.as_str())
+                        && u.last_stated() > m.last_stated()
+                        // On the line's subjects alone: one more ("Ledgerly caches
+                        // in Redis" after "Ledgerly runs on Postgres") is a new fact.
+                        && on.is_subset(&about)
+                        && on.iter().any(rare)
+                        && !told.iter().any(|(t, _)| extract::same_fact(&t.text, &u.text))
+                })
+                // The newest; a tie by id, as the bank's order is a map's.
+                .max_by(|a, b| {
+                    a.last_stated()
+                        .cmp(&b.last_stated())
+                        .then_with(|| b.id.cmp(&a.id))
+                })?;
+            taken.insert(&update.id);
+            Some((*update).clone())
+        })
+        .collect();
+    told.into_iter()
+        .zip(updates)
+        .flat_map(|((m, s), update)| std::iter::once((m, s)).chain(update.map(|u| (u, s))))
+        .collect()
 }
 
 /// Both tagged and neither's entities within the other's: two subjects.
@@ -2057,6 +2141,129 @@ Formal."
         assert_eq!(
             ids, all,
             "every user fact past recall_limit, no workplace fact"
+        );
+    }
+
+    /// A memory tagged with `entities`, last stated at `at`.
+    fn tagged(id: &str, text: &str, at: u64, entities: &[&str]) -> Memory {
+        Memory {
+            entities: entities.iter().map(|e| e.to_string()).collect(),
+            ..stated(id, text, at)
+        }
+    }
+
+    /// Ids `injection` tells a turn on `w-abc123`, a bank holding `memories`.
+    async fn told_ids(memories: Vec<Memory>, query: &str) -> Vec<String> {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = offline_deps(dir.path(), offline_cfg(6));
+        let (repo, _) = deps
+            .store()
+            .await
+            .ensure_bank("w-abc123", None)
+            .await
+            .unwrap();
+        for m in memories {
+            repo.commit(m).await.unwrap();
+        }
+        told(&deps, &[], query)
+            .await
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_newer_note_about_a_told_lines_subject_joins_right_after_it() {
+        // The departure shares no word with the question and no change word
+        // with the on-call line: only the entity both carry.
+        let mut memories = vec![
+            tagged(
+                "fp-hired",
+                "dana-7f3a joined our company in 2023.",
+                1,
+                &["dana"],
+            ),
+            tagged(
+                "fp-oncall",
+                "dana-7f3a is the primary on-call engineer for payments-api incidents.",
+                2,
+                &["dana", "payments-api"],
+            ),
+            tagged(
+                "fp-backup",
+                "Unanswered payments-api pages escalate to marco-1c2d after 15 minutes.",
+                3,
+                &["marco", "payments-api"],
+            ),
+            tagged(
+                "fp-left",
+                "dana-7f3a left our company last week and her accounts were deactivated.",
+                4,
+                &["dana"],
+            ),
+        ];
+        let question =
+            "Who should I page for a payments-api incident right now? Reply with the name only.";
+        let ids = told_ids(memories.clone(), question).await;
+        let at = |id: &str| ids.iter().position(|i| i == id);
+        assert_eq!(
+            at("fp-left"),
+            at("fp-oncall").map(|i| i + 1),
+            "the departure right after the line it updates: {ids:?}"
+        );
+        assert!(at("fp-backup").is_some(), "{ids:?}");
+        assert_eq!(ids.len(), 3, "one note per line, the newest: {ids:?}");
+        memories.pop();
+        let mut ids = told_ids(memories, question).await;
+        ids.sort();
+        assert_eq!(ids, ["fp-backup", "fp-oncall"], "an older note never joins");
+    }
+
+    #[tokio::test]
+    async fn a_popular_entity_links_nothing() {
+        // Each question names the told line's subject; later lines carry only
+        // its `user`, or a service many lines name.
+        let mut memories = vec![
+            tagged(
+                "fp-dog",
+                "The user's dog Biscuit is a beagle.",
+                1,
+                &["user", "biscuit"],
+            ),
+            tagged(
+                "fp-japanese",
+                "The user is learning Japanese.",
+                2,
+                &["user"],
+            ),
+            tagged(
+                "fp-schema",
+                "dana-7f3a reviews every payments-api schema change.",
+                1,
+                &["dana", "payments-api"],
+            ),
+        ];
+        for (n, text) in [
+            "Unanswered payments-api pages escalate after 15 minutes.",
+            "The payments-api deploy window is Tuesday morning.",
+            "payments-api keeps its secrets in Vault.",
+            "payments-api logs ship to Loki.",
+            "payments-api runs three replicas in production.",
+            "payments-api is written in Kotlin.",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = format!("fp-svc{n}");
+            memories.push(tagged(&id, text, 2 + n as u64, &["payments-api"]));
+        }
+        assert_eq!(
+            told_ids(memories.clone(), "How old is Biscuit?").await,
+            ["fp-dog"]
+        );
+        assert_eq!(
+            told_ids(memories, "What does dana-7f3a review?").await,
+            ["fp-schema"]
         );
     }
 

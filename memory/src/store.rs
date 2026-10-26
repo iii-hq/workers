@@ -17,7 +17,7 @@
 //! [`Store::commit`] is the single choke point through which every memory
 //! mutation flows: file, map, and index update together or not at all.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -752,6 +752,20 @@ impl Bank {
         let mut out: Vec<(String, usize)> = counts.into_iter().collect();
         out.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         out
+    }
+
+    /// Live memories tagged with any of `entities`, exactly.
+    pub async fn tagged(&self, entities: &HashSet<String>) -> Vec<Memory> {
+        if entities.is_empty() {
+            return Vec::new();
+        }
+        let inner = self.inner.read().await;
+        inner
+            .memories
+            .values()
+            .filter(|m| m.is_live() && m.entities.iter().any(|e| entities.contains(e)))
+            .cloned()
+            .collect()
     }
 
     pub async fn counts(&self) -> (usize, usize) {

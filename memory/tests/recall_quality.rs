@@ -892,7 +892,8 @@ async fn minilm_injection_quality_matches_baseline() {
 }
 
 /// Each message through the hook's path on one bank: every candidate with
-/// its evidence, then `hooks::select` with nothing visible. One bank's
+/// its evidence, then `hooks::select` with nothing visible and the updates
+/// `hooks::with_updates` links to what it keeps. One bank's
 /// shared BM25 max is its own best, as the hook's is with no layers.
 async fn injection_gate(vectors_file: &str, baseline_file: &str) {
     let golden = load_golden();
@@ -931,7 +932,13 @@ async fn injection_gate(vectors_file: &str, baseline_file: &str) {
             let key = |mem: &Memory| key_of_id[&mem.id].as_str();
             // `Bank::recall` at `recall_limit` is this ranking, cut.
             let ranked: Vec<&str> = hits.iter().take(limit).map(|(mem, _)| key(mem)).collect();
-            let injected = memory::hooks::select(hits, &evidence, &HashSet::new(), limit)
+            let told = memory::hooks::select(hits, &evidence, &HashSet::new(), limit);
+            let subjects = told
+                .iter()
+                .flat_map(|(mem, _)| memory::hooks::subjects(mem))
+                .collect();
+            let tagged = bank.tagged(&subjects).await;
+            let injected = memory::hooks::with_updates(told, &tagged, m.text)
                 .iter()
                 .map(|(mem, _)| key(mem))
                 .collect();
