@@ -10,7 +10,7 @@ description = "Userspace TCP/IP networking for iii worker VM sandboxes"
 path = "src/lib.rs"
 
 [dependencies]
-smoltcp = { version = "0.13", default-features = false, features = [
+smoltcp = { version = "0.14", default-features = false, features = [
     "medium-ethernet", "proto-ipv4", "socket-tcp", "socket-udp", "alloc"
 ] }
 crossbeam-queue = "0.3"
