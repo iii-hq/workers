@@ -9,10 +9,13 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+	"go.mau.fi/whatsmeow/proto/waCompanionReg"
+	"go.mau.fi/whatsmeow/store"
 )
 
 var version = "0.1.0"
@@ -90,6 +93,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	applyDeviceProps(config)
 	if *collect {
 		manager, err := newInterfaceManager(config)
 		if err != nil {
@@ -133,6 +137,15 @@ func run() error {
 	log.Print("WhatsApp Go worker registered; sessions start only on explicit request")
 	<-ctx.Done()
 	return nil
+}
+
+// whatsmeow sends these process-wide values only when a new device pairs, so
+// set them once before any session connects; an empty name keeps its defaults.
+func applyDeviceProps(cfg Config) {
+	if name := strings.TrimSpace(cfg.DeviceName); name != "" {
+		store.DeviceProps.Os = &name
+		store.DeviceProps.PlatformType = waCompanionReg.DeviceProps_PlatformType(waCompanionReg.DeviceProps_PlatformType_value[strings.ToUpper(cfg.DevicePlatform)]).Enum()
+	}
 }
 func printJSON(value any) error {
 	enc := json.NewEncoder(os.Stdout)

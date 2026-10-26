@@ -57,7 +57,9 @@ For isolated development without the configuration worker:
 Use `--config file.yaml` for a YAML seed. In normal mode, the central entry
 `whatsapp` is authoritative; `III_CONFIG_NAME` selects another entry for a
 second instance. `III_URL` supplies the engine address. Resource limits and
-timeouts apply live; `database`, `data_dir` and `max_events` require a worker restart.
+timeouts apply live; `database`, `data_dir`, `device_name`, `device_platform` and
+`max_events` require a worker restart; `device_name` and `device_platform` also
+reach WhatsApp only when a device pairs, so relink a device to rename it.
 [iii.worker.yaml](../iii.worker.yaml) contains defaults.
 Give each process its own `data_dir`; sharing live credential databases between
 worker processes is unsupported.
