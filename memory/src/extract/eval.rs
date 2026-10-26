@@ -1,4 +1,4 @@
-//! Extraction eval (MOT-5451, MOT-5452): the production prompt and parser
+//! Extraction eval: the production prompt and parser
 //! ([`extract_items`]) over short EN excerpts, every case a repository
 //! session with `default_bank` layered under it. Scores two things:
 //! - capture: every expected item is captured, wrong (its kind, where it
@@ -12,7 +12,7 @@
 //!   trap hits the rule gate would still let into the bank.
 //! - placement ([`lands`]): what holds for the user wherever they work
 //!   must reach the default bank, and nothing project-only may; with agents
-//!   listed (MOT-5464), what the user tells one about its role's work must
+//!   listed, what the user tells one about its role's work must
 //!   reach that agent's bank, and nothing about the user or the project may.
 //!
 //! Live, so ignored: `III_URL=ws://127.0.0.1:<port> III_NAMESPACE=<ns>
@@ -1338,7 +1338,7 @@ async fn extraction_eval() {
                     scope: None,
                     agent: None,
                 };
-                new_memory(item, case.id, None, TS)
+                new_memory(item, case.id, None, TS, TS)
             })
             .collect();
         let layered: HashSet<String> = known
@@ -1367,7 +1367,7 @@ async fn extraction_eval() {
                 && (!item.is_rule() || stated_by_user(&text, &said))
         };
         let strict = STRICT.contains(&case.category);
-        let (transcript, ..) = excerpt(entries, cfg.extraction_window);
+        let (transcript, ..) = excerpt(entries);
         let tally = by_category.entry(case.category).or_default();
         for repeat in 1..=REPEATS {
             let tag = format!("{}#{repeat}", case.id);
@@ -1376,10 +1376,11 @@ async fn extraction_eval() {
                 &model,
                 cfg.max_memories_per_turn,
                 120_000,
-                extraction_input(&agents, case.own, &known, &learned, &transcript),
+                extraction_input(&agents, case.own, "", &known, &learned, &transcript),
                 !agents.is_empty(),
                 case.id,
                 repository,
+                false,
             )
             .await
             .unwrap_or_else(|e| panic!("{tag}: {e}"));

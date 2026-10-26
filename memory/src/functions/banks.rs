@@ -11,7 +11,8 @@ use crate::types::BankInfo;
 pub struct BankCreateRequest {
     /// Bank name, `[a-z0-9][a-z0-9_-]{0,63}` (it becomes a folder name).
     pub name: String,
-    /// Human description shown in listings and the console.
+    /// Human description shown in listings and the console, and told to
+    /// extraction as what this bank is for: it narrows what is kept.
     #[serde(default)]
     pub description: Option<String>,
 }

@@ -424,7 +424,7 @@ fn clamp_reason(reason: Option<String>) -> Option<String> {
 /// reinforcing a non-pinned survivor, the survivor absorbing the loser's
 /// observations — `(s+1) + (r+1)` total, so corroboration `s + r + 1`,
 /// stamped with the LATEST of the two `updated_at` (a merge is not a fresh
-/// restatement; Hindsight keeps the latest source `mentioned_at`).
+/// restatement).
 pub(crate) fn supersede_transition(
     mut loser: Memory,
     mut winner: Memory,

@@ -1,18 +1,16 @@
-//! The semantic consolidation tier (MOT-5384): an LLM judge over each new
+//! The semantic consolidation tier: an LLM judge over each new
 //! memory and its nearest neighbours, deciding MERGES (the same fact
 //! restated) and SUPERSEDES (a state change replacing an outdated fact).
 //!
-//! Adapted from Hindsight's consolidator
-//! (`hindsight_api/engine/consolidation/{consolidator,prompts}.py`): pending
-//! records processed oldest-first in bounded batches; per record, candidates
-//! from the RAW lexical and semantic arms INTERLEAVED (a fused rank buries
-//! the twin); one LLM call per batch whose every action carries a reason;
-//! targets only from the record's own candidates; parse failures bisect the
-//! batch down to one record, and a record that still fails is skipped so it
-//! cannot wedge the tier. Our model has no observation layer — inputs and
-//! candidates are the same kind of record — so Hindsight's update-with-
-//! evidence becomes a merge (retire one, the survivor absorbs it) and its
-//! state-change update / delete+create becomes a supersede (old -> new).
+//! Pending records are processed oldest-first in bounded batches; per
+//! record, candidates from the RAW lexical and semantic arms INTERLEAVED (a
+//! fused rank buries the twin); one LLM call per batch whose every action
+//! carries a reason; targets only from the record's own candidates; parse
+//! failures bisect the batch down to one record, and a record that still
+//! fails is skipped so it cannot wedge the tier. Inputs and candidates are
+//! the same kind of record, so an update with new evidence becomes a merge
+//! (retire one, the survivor absorbs it) and a state change becomes a
+//! supersede (old -> new).
 //! No merged text is written: the judge picks the survivor among existing
 //! records, so ids, provenance, and fingerprints never drift.
 //!
@@ -29,8 +27,7 @@ use serde_json::{json, Value};
 use crate::consolidate::{call, BankReport, MemoryRow};
 
 /// Static system prompt (identical for every bank and batch, so providers
-/// can cache it). Rules adapted from Hindsight's consolidation prompt and
-/// its merge-or-keep dedup prompt.
+/// can cache it).
 pub const SEMANTIC_SYSTEM: &str = "You consolidate a user's long-term memory bank. Each NEW \
 memory comes with CANDIDATE memories already in the bank (its nearest lexical and semantic \
 neighbours). For each new memory, decide whether it duplicates or replaces one of ITS OWN \
@@ -97,7 +94,7 @@ pub fn pending<'a>(rows: &'a [MemoryRow], cursor: &Cursor, max: usize) -> Vec<&'
     out
 }
 
-/// Round-robin across the two arms (Hindsight's `interleave`): each arm's
+/// Round-robin across the two arms: each arm's
 /// top hit is guaranteed a slot, the record itself and repeats skipped.
 pub fn interleave<'a>(
     lexical: &'a [MemoryRow],
@@ -165,11 +162,12 @@ pub fn stamp(ms: u64) -> String {
 
 /// When the record's fact was last asserted: a re-observation (reinforce)
 /// counts, so a fact the user restated after its "replacement" stays
-/// current (Hindsight: the latest `mentioned_at` wins).
+/// current. Memory's own clock (`Memory::last_stated`): keep both alike.
 pub fn last_stated(row: &MemoryRow) -> u64 {
-    // `stated_at` ignores pin/tag edits; legacy records without it fall
-    // back to `updated_at`.
-    row.created_at.max(row.stated_at.unwrap_or(row.updated_at))
+    // `stated_at` ignores pin/tag edits and a late write (an extraction
+    // pass run after newer turns); legacy records without it fall back to
+    // `updated_at`.
+    row.stated_at.unwrap_or(row.updated_at)
 }
 
 /// One judge batch: aliased records, ownership, and the prompt.
@@ -417,7 +415,7 @@ pub fn validate(
                 .push((label, "a memory cannot replace itself"));
             continue;
         }
-        // Hindsight: an update target must come from THAT fact's own
+        // An update target must come from THAT fact's own
         // recall. One side must be a new memory listing the other.
         let owned = |owner: &str, other: &str| {
             batch
@@ -1119,6 +1117,24 @@ mod tests {
         // A was stated first and only TAG-edited later (updated_at 300,
         // stated_at 10): the move B (stated 200) still supersedes it.
         let mut a = row("a", "User lives in São Paulo.", 10, 300);
+        a.stated_at = Some(10);
+        let mut b = row("b", "User moved to Lisbon.", 200, 200);
+        b.stated_at = Some(200);
+        let batch = build_batch(&[(b, vec![a])]);
+        let v = validate(
+            &[action("supersede", "n1", "c1", "moved")],
+            &batch,
+            &HashSet::new(),
+            10,
+        );
+        assert_eq!(v.accepted.len(), 1, "{:?}", v.rejected);
+    }
+
+    #[test]
+    fn the_newer_statement_wins_by_when_it_was_said_not_written() {
+        // A was said first (10) but written last (300: a late extraction
+        // pass); the move B, said at 200, supersedes it.
+        let mut a = row("a", "User lives in São Paulo.", 300, 300);
         a.stated_at = Some(10);
         let mut b = row("b", "User moved to Lisbon.", 200, 200);
         b.stated_at = Some(200);

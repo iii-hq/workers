@@ -71,10 +71,11 @@ pub struct Memory {
     /// highest.
     #[serde(default)]
     pub revision: u64,
-    /// When the fact was last STATED (created, re-observed, text edited).
-    /// Unlike `updated_at`, pin/tag/entity edits never bump it, so
-    /// consolidation can order "which statement is current" by it. Legacy
-    /// records load as None.
+    /// When the fact was last STATED (said, re-observed, text edited): an
+    /// extracted memory takes its message's time, not the pass's. Unlike
+    /// `updated_at`, pin/tag/entity edits never bump it, so recency, the
+    /// shown date and "which statement is current" go by it. Legacy records
+    /// load as None.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stated_at: Option<u64>,
 }
@@ -82,6 +83,12 @@ pub struct Memory {
 impl Memory {
     pub fn is_live(&self) -> bool {
         self.invalid_at.is_none()
+    }
+
+    /// When the fact was last stated, even when its record was written later
+    /// (a late extraction pass); a legacy record goes by its last update.
+    pub fn last_stated(&self) -> u64 {
+        self.stated_at.unwrap_or(self.updated_at)
     }
 }
 
