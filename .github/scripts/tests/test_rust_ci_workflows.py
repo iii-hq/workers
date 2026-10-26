@@ -293,7 +293,8 @@ def test_ci_cargo_commands_use_committed_lockfiles() -> None:
 def test_rust_security_audit_is_narrow_on_prs_and_complete_on_schedule() -> None:
     audit = workflow("rust-security-audit.yml")
     assert "workflow_dispatch" not in audit["on"]
-    assert audit["on"]["pull_request"]["paths"] == ["**/Cargo.lock"]
+    # A changed per-lockfile ignore list re-audits its lockfile.
+    assert audit["on"]["pull_request"]["paths"] == ["**/Cargo.lock", "**/.cargo/audit-ignore"]
     assert audit["on"]["schedule"]
 
     steps = audit["jobs"]["audit"]["steps"]
@@ -306,6 +307,10 @@ def test_rust_security_audit_is_narrow_on_prs_and_complete_on_schedule() -> None
     assert "git diff --name-only -z" in run
     assert "find . -name Cargo.lock" in run
     assert "cargo audit --file" in run
+    # Ignores scoped to one lockfile come from <dir>/.cargo/audit-ignore, as
+    # --ignore flags for that lockfile only.
+    assert '/.cargo/audit-ignore"' in run
+    assert "--ignore" in run
     # Every iteration fetches: the yanked check resolves crates against the
     # index entries fetched by its own invocation, so a no-fetch pass only
     # sees whatever the first lockfile happened to warm — each additional
