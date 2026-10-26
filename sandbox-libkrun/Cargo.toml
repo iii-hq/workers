@@ -29,8 +29,8 @@ integration-oci = []
 [dependencies]
 iii-filesystem = { path = "crates/iii-filesystem" }
 iii-network = { path = "crates/iii-network" }
-iii-sdk = "=0.24.6"
-iii-helpers = "=0.24.6"
+iii-sdk = "=0.25.0"
+iii-helpers = "=0.25.0"
 iii-config-client = { path = "../crates/config-client" }
 iii-shell-client = { path = "crates/iii-shell-client" }
 iii-shell-proto = { path = "crates/iii-shell-proto" }
