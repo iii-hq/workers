@@ -1,0 +1,76 @@
+name: Memory E2E on release
+
+# Release Control creates one GitHub Release per version it publishes to the
+# Registry. A memory release runs harness-e2e's `memory` and `memory-learning`
+# suites on its stacks/memory.yaml with that published version, so every memory
+# version gets a measured verdict. It warns and never gates: the release is
+# already out. A manual dispatch measures any published version.
+#
+# A release event runs this file as it exists at the tagged commit, so a memory
+# release of a commit that predates this workflow does not trigger it; dispatch
+# it by hand for that version.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Published memory version to measure (e.g. 0.2.22)
+        required: true
+
+permissions: {}
+
+jobs:
+  memory-e2e:
+    name: memory e2e (${{ matrix.suite }})
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'memory/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [memory, memory-learning]
+    steps:
+      - name: Name the published version
+        id: version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          INPUT: ${{ inputs.version }}
+        run: |
+          version="${INPUT:-${TAG#memory/v}}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::not a memory version: ${version}"
+            exit 1
+          fi
+          echo "versions={\"memory\":\"${version}\"}" >> "$GITHUB_OUTPUT"
+
+      - name: Mint a token that can run iii-hq/harness-e2e
+        id: app
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.III_CI_APP_ID }}
+          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+          owner: iii-hq
+          repositories: harness-e2e
+          permission-actions: write
+
+      - name: Run the ${{ matrix.suite }} suite on the published memory
+        id: e2e
+        uses: iii-hq/harness-e2e/.github/actions/verify-stack@d95436af033c1ccfcce39a88b2b3f57de10c6384
+        with:
+          token: ${{ steps.app.outputs.token }}
+          versions: ${{ steps.version.outputs.versions }}
+          suite: ${{ matrix.suite }}
+          stack: memory
+
+      - name: Turn red when the suite did not pass
+        if: steps.e2e.outputs.status != 'passed'
+        env:
+          SUITE: ${{ matrix.suite }}
+          SUMMARY: ${{ steps.e2e.outputs.summary }}
+        run: |
+          echo "::warning::Memory E2E (${SUITE}): ${SUMMARY:-no verdict}"
+          exit 1

@@ -1218,6 +1218,63 @@ jobs:
           exit 1
 
   # ──────────────────────────────────────────────────────────────
+  # Memory E2E (non-required). A pull request from this repository that
+  # changes memory runs harness-e2e's `memory` and `memory-learning` suites on
+  # its stacks/memory.yaml, with memory built from the PR head and the rest
+  # released. Memory is outside the harness graph, so the pr suite above never
+  # builds it. Like that job it warns and never gates; each suite keeps its
+  # own PR comment.
+  # ──────────────────────────────────────────────────────────────
+  memory-e2e:
+    name: memory e2e (${{ matrix.suite }})
+    needs: discover
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && !startsWith(github.head_ref, 'eval/')
+      && contains(fromJSON(needs.discover.outputs.changed_workers), 'memory')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [memory, memory-learning]
+    steps:
+      - name: Mint a token that can run iii-hq/harness-e2e
+        id: app
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.III_CI_APP_ID }}
+          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+          owner: iii-hq
+          repositories: harness-e2e
+          permission-actions: write
+
+      - name: Run the ${{ matrix.suite }} suite on memory built from this PR
+        id: e2e
+        uses: iii-hq/harness-e2e/.github/actions/verify-stack@d95436af033c1ccfcce39a88b2b3f57de10c6384
+        with:
+          token: ${{ steps.app.outputs.token }}
+          comment-token: ${{ github.token }}
+          pins: '["memory"]'
+          commit: ${{ github.event.pull_request.head.sha }}
+          suite: ${{ matrix.suite }}
+          stack: memory
+          comment-pr: ${{ github.repository }}#${{ github.event.pull_request.number }}
+
+      - name: Turn red when the suite did not pass
+        if: steps.e2e.outputs.status != 'passed' && steps.e2e.outputs.status != 'skipped'
+        env:
+          SUITE: ${{ matrix.suite }}
+          SUMMARY: ${{ steps.e2e.outputs.summary }}
+        run: |
+          echo "::warning::Memory E2E (${SUITE}): ${SUMMARY:-no verdict}"
+          exit 1
+
+  # ──────────────────────────────────────────────────────────────
   # Go per-worker formatting, vet, tests, and the release build.
   # ──────────────────────────────────────────────────────────────
   go:
