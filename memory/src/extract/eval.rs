@@ -1367,7 +1367,7 @@ async fn extraction_eval() {
                 && (!item.is_rule() || stated_by_user(&text, &said))
         };
         let strict = STRICT.contains(&case.category);
-        let (transcript, ..) = excerpt(entries, cfg.extraction_window);
+        let (transcript, ..) = excerpt(entries);
         let tally = by_category.entry(case.category).or_default();
         for repeat in 1..=REPEATS {
             let tag = format!("{}#{repeat}", case.id);

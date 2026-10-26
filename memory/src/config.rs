@@ -70,8 +70,10 @@ pub struct WorkerConfig {
     #[serde(default)]
     pub extraction_model: String,
 
-    /// How many recent non-empty user/assistant messages the extraction
-    /// call reads, plus the turn's user message when they leave it out.
+    /// How many recent non-empty user/assistant messages a session's first
+    /// extraction pass reads (no cursor yet), plus the turn's user message
+    /// when they leave it out. Later passes read every message after the
+    /// cursor.
     #[serde(default = "default_extraction_window")]
     pub extraction_window: usize,
 
@@ -79,7 +81,8 @@ pub struct WorkerConfig {
     #[serde(default = "default_extraction_timeout_ms")]
     pub extraction_timeout_ms: u64,
 
-    /// Cap on memories accepted from a single extraction pass.
+    /// Cap on memories accepted from a single extraction call (a long span
+    /// is read in several).
     #[serde(default = "default_max_memories_per_turn")]
     pub max_memories_per_turn: usize,
 

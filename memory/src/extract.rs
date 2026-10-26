@@ -1,6 +1,6 @@
 //! Post-turn memory extraction: one `router::complete` call per completed
-//! turn, off the hot path (spawned from the `harness::turn-completed`
-//! handler, never inside a turn).
+//! turn (one per run of a long span, [`chunks`]), off the hot path (spawned
+//! from the `harness::turn-completed` handler, never inside a turn).
 //!
 //! Extraction adds; it never edits a memory in place or deletes one. The
 //! model sees what the bank already holds about the excerpt, so it returns
@@ -31,6 +31,7 @@ use iii_sdk::IIIClient;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::config::WorkerConfig;
 use crate::deps::Deps;
 use crate::events::ItemEvent;
 use crate::hooks::ExtractJobInput;
@@ -913,6 +914,34 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
         }
         return Ok(false);
     };
+    // Every entry after the cursor is read, oldest first, one call per
+    // run of at most CALL_CHARS; each run moves the cursor past itself, so
+    // a failed call retries from there, and the session's lock is held
+    // throughout: no other pass reads this turn's rest into its bank.
+    // shortcut: a backlog since the cursor (extraction off for a while, a
+    // job the queue gave up on) is read whole, one call per run; cap the
+    // calls per pass if that cost ever shows.
+    let mut asked = false;
+    for run in chunks(entries, CALL_CHARS) {
+        asked |= read_run(deps, &cfg, session_id, &resolved, run).await?;
+    }
+    Ok(asked)
+}
+
+/// The most excerpt one extraction call reads: what a window of 12 lines
+/// of 2,000 chars could always send.
+const CALL_CHARS: usize = 24_000;
+
+/// One extraction call over `entries`, a run of the span ([`chunks`]), and
+/// its writes; then the cursor moves past the run. `Ok(true)` once the
+/// model was asked for the run's items.
+async fn read_run(
+    deps: &Deps,
+    cfg: &WorkerConfig,
+    session_id: &str,
+    resolved: &crate::scope::Resolved,
+    entries: Vec<Entry>,
+) -> Result<bool, String> {
     let bank_name = resolved.bank.as_str();
     let layer_name = resolved.layer(&cfg.default_bank);
     let query = entries
@@ -921,22 +950,16 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
         .collect::<Vec<_>>()
         .join("\n");
     let user_words = user_words(&entries);
-    // What this pass learns was said when its span ended, not when the pass
-    // runs (a queue retry, a first pass over an old session run late), and
-    // never later than now: a message clock ahead of ours must not outrank
-    // later statements.
-    // shortcut: one date for the whole span, not the line that says each
-    // item; date per line if spans ever cover days.
-    let said = entries
-        .last()
-        .map_or_else(now_ms, |(.., ts)| *ts)
-        .min(now_ms());
-    let (transcript, newest_id, content_len) = excerpt(entries, cfg.extraction_window);
+    let said = said_at(&entries, now_ms());
+    let (transcript, newest_id, content_len) = excerpt(entries);
     // Measured on message text, not the dated transcript: the per-line
     // `role [date]: ` prefix alone would clear any threshold.
     if content_len < 20 {
         // Nothing new worth an LLM call; still advance past trivia so the
         // same span is never re-fetched.
+        // shortcut: the last run of a long span is judged alone, so a tail
+        // under 20 chars is skipped too; fold it into the run before if a
+        // fact is ever lost there.
         if let Some(id) = newest_id {
             cursor_set(&deps.iii, session_id, &id).await;
         }
@@ -1000,7 +1023,7 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
         .filter(|i| !i.is_agent() || i.agent_in(&agents).is_some())
         .collect();
     if items.is_empty() {
-        // Nothing to write: the span is done, advance past it.
+        // Nothing to write: the run is done, advance past it.
         if let Some(id) = newest_id {
             cursor_set(&deps.iii, session_id, &id).await;
         }
@@ -1253,7 +1276,7 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
                 .await;
         }
     }
-    // Every durable write landed: NOW the span is processed.
+    // Every durable write landed: NOW the run is processed.
     if let Some(id) = newest_id {
         cursor_set(&deps.iii, session_id, &id).await;
     }
@@ -1481,12 +1504,41 @@ async fn fetch_span(
     Ok(span.finish())
 }
 
-/// The dated excerpt of a span (its [`keep_window`]), the span's newest
-/// entry id, and the kept message text length (excluding the per-line date
-/// prefix).
-fn excerpt(mut entries: Vec<Entry>, window: usize) -> (String, Option<String>, usize) {
+/// When what `entries` hold was said: their newest message's time, not
+/// when the pass runs (a queue retry, a first pass over an old session run
+/// late), and never later than `now`: a message clock ahead of ours must
+/// not outrank later statements. Nothing said is `now`.
+// shortcut: one date for the whole run, not the line that says each item;
+// date per line if runs ever cover days.
+fn said_at(entries: &[Entry], now: u64) -> u64 {
+    entries.last().map_or(now, |(.., ts)| *ts).min(now)
+}
+
+/// A span cut into the runs one extraction call reads, oldest first: whole
+/// entries, at most `budget` chars of excerpt each, unless one line alone
+/// is longer, which is then a run of its own. Nothing is dropped.
+fn chunks(entries: Vec<Entry>, budget: usize) -> Vec<Vec<Entry>> {
+    let mut runs: Vec<Vec<Entry>> = Vec::new();
+    let mut used = 0;
+    for entry in entries {
+        // The excerpt joins lines with "\n": one char each.
+        let len = transcript_line(&entry.1, &entry.2, entry.3).map_or(0, |l| l.len() + 1);
+        match runs.last_mut() {
+            Some(run) if used + len <= budget => run.push(entry),
+            _ => {
+                used = 0;
+                runs.push(vec![entry]);
+            }
+        }
+        used += len;
+    }
+    runs
+}
+
+/// The dated excerpt of a span, the span's newest entry id, and the kept
+/// message text length (excluding the per-line date prefix).
+fn excerpt(entries: Vec<Entry>) -> (String, Option<String>, usize) {
     let newest_id = entries.last().map(|(id, ..)| id.clone());
-    keep_window(&mut entries, window);
     let mut content_len = 0;
     let lines: Vec<String> = entries
         .into_iter()
@@ -1712,11 +1764,14 @@ fn transcript_line(role: &str, text: &str, ts: u64) -> Option<String> {
     // Redact before the cut: a key crossing it would otherwise reach the
     // model half-visible.
     let mut excerpt = crate::redact::redact(trimmed).text;
-    // Over 2000 chars, keep the head and the tail: a pasted log usually
-    // ends with what to do about it.
-    if excerpt.len() > 2_000 {
-        let head = clamp_char_boundary(&excerpt, 1_000);
-        let tail = clamp_char_boundary(&excerpt, excerpt.len() - 1_000);
+    // A user's own message is read whole to 12,000 chars (about 3k tokens):
+    // their notes for a project hold facts all the way through. Past that,
+    // and past 2,000 for any other line, keep the head and the tail: a
+    // pasted log usually ends with what to do about it.
+    let max = if role == "user" { 12_000 } else { 2_000 };
+    if excerpt.len() > max {
+        let head = clamp_char_boundary(&excerpt, max / 2);
+        let tail = clamp_char_boundary(&excerpt, excerpt.len() - max / 2);
         excerpt.replace_range(head..tail, " … ");
     }
     Some(format!(
@@ -2431,7 +2486,7 @@ mod tests {
             entries.extend(turn.iter().cloned());
             let (span, until_seen) = walk_entries(entries, since, Some("end"), 12);
             assert!(until_seen);
-            let (transcript, newest_id, _) = excerpt(span, 12);
+            let (transcript, newest_id, _) = excerpt(span);
             assert_eq!(
                 newest_id.as_deref(),
                 Some("end"),
@@ -2447,7 +2502,8 @@ mod tests {
     fn a_woken_turn_keeps_the_wake_that_started_it() {
         let mut entries = vec![said("w", "notice", "[notification] digest: {}")];
         entries.extend((1..=13).map(|i| said(&format!("a{i}"), "assistant", "Step done.")));
-        let (transcript, ..) = excerpt(entries, 12);
+        let (span, _) = walk_entries(entries, None, None, 12);
+        let (transcript, ..) = excerpt(span);
         assert!(transcript.starts_with("notice ["), "{transcript}");
     }
 
@@ -2468,7 +2524,7 @@ mod tests {
         let ids: Vec<&str> = span.iter().map(|e| e.0.as_str()).collect();
         assert_eq!(ids.len(), 13, "the window plus the newest request: {ids:?}");
         assert_eq!((ids[0], ids[1], ids[12]), ("u", "a4", "a15"));
-        let (transcript, newest_id, _) = excerpt(span, 12);
+        let (transcript, newest_id, _) = excerpt(span);
         assert!(transcript.starts_with("user ["), "{transcript}");
         assert_eq!(transcript.lines().count(), 13);
         assert_eq!(newest_id.as_deref(), Some("a15"));
@@ -2477,7 +2533,8 @@ mod tests {
         let mut entries = vec![said("u0", "user", "An older request.")];
         entries.extend((1..=11).map(|i| said(&format!("a{i}"), "assistant", "Checking.")));
         entries.push(said("u", "user", "Now the signup test."));
-        let (transcript, ..) = excerpt(entries, 12);
+        let (span, _) = walk_entries(entries, None, None, 12);
+        let (transcript, ..) = excerpt(span);
         assert_eq!(transcript.lines().count(), 12);
         assert!(!transcript.contains("An older request."));
     }
@@ -2498,6 +2555,92 @@ mod tests {
             ),
             "a job without a turn end reads to the newest entry"
         );
+    }
+
+    #[test]
+    fn a_long_span_after_the_cursor_is_read_whole() {
+        // The cursor is found: every entry after it is read, not the newest
+        // window of them, or the cursor moves past entries never read.
+        let mut entries = vec![
+            said("c", "assistant", "An earlier reply."),
+            said("u", "user", "Map the repository for me."),
+        ];
+        entries.extend(
+            (1..=20).map(|i| said(&format!("a{i}"), "assistant", &format!("Found fact {i}."))),
+        );
+        let (span, until_seen) = walk_entries(entries, Some("c"), Some("a20"), 12);
+        assert!(until_seen);
+        assert_eq!(span.len(), 21);
+        let (transcript, newest_id, _) = excerpt(span);
+        assert_eq!(newest_id.as_deref(), Some("a20"));
+        assert!(transcript.contains("Map the repository"), "{transcript}");
+        for i in 1..=20 {
+            assert!(
+                transcript.contains(&format!("Found fact {i}.")),
+                "fact {i} unread: {transcript}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_span_over_the_budget_is_split_never_dropped() {
+        // 30 narrated steps of about 1,450 chars each: over one call's budget.
+        let mut span = vec![said("u", "user", "Map the repository for me.")];
+        span.extend((1..=30).map(|i| {
+            let text = format!("Found fact {i}. {}", "detail ".repeat(200));
+            said(&format!("a{i}"), "assistant", &text)
+        }));
+        span.push(said("end", "assistant", ""));
+        let parts = chunks(span, CALL_CHARS);
+        assert!(parts.len() > 1, "{} call(s)", parts.len());
+        let mut read = String::new();
+        for part in &parts {
+            let (transcript, ..) = excerpt(part.clone());
+            assert!(transcript.len() <= CALL_CHARS, "{}", transcript.len());
+            read.push_str(&transcript);
+        }
+        let ids: Vec<&str> = parts.iter().flatten().map(|e| e.0.as_str()).collect();
+        assert_eq!(ids.len(), 32, "every entry, in order: {ids:?}");
+        assert_eq!(
+            (ids[0], ids[31]),
+            ("u", "end"),
+            "the cursor ends on the span's end"
+        );
+        for i in 1..=30 {
+            assert_eq!(
+                read.matches(&format!("Found fact {i}.")).count(),
+                1,
+                "fact {i}"
+            );
+        }
+        // A line longer than the budget is a call of its own, never dropped.
+        let long = vec![
+            said("a", "user", "first line"),
+            said("b", "user", "second line"),
+        ];
+        assert_eq!(
+            chunks(long, 10).iter().map(Vec::len).collect::<Vec<_>>(),
+            [1, 1]
+        );
+        assert!(chunks(Vec::new(), CALL_CHARS).is_empty());
+    }
+
+    #[test]
+    fn a_span_is_said_when_its_newest_message_was() {
+        let now = 1_760_443_200_000;
+        let day = 86_400_000;
+        let at = |ts: u64| {
+            (
+                String::from("e"),
+                String::from("user"),
+                String::from("hi"),
+                ts,
+            )
+        };
+        assert_eq!(said_at(&[at(now - 3 * day), at(now - day)], now), now - day);
+        // A message clock ahead of ours never dates a fact in the future.
+        assert_eq!(said_at(&[at(now - day), at(now + day)], now), now);
+        assert_eq!(said_at(&[], now), now, "nothing said: now");
     }
 
     #[test]
@@ -3498,14 +3641,32 @@ mod tests {
         );
         // A key crossing the 2000-char cut is redacted, not half-sent.
         let long = format!("{} {key}", "x".repeat(1_990));
-        let cut = transcript_line("user", &long, day1).unwrap();
+        let cut = transcript_line("assistant", &long, day1).unwrap();
         assert!(!cut.contains("sk-ant-api03"), "{cut}");
         // A long paste keeps its head and its tail, where the ask usually is.
-        let paste = format!("{}Why does this fail?", "log line\n".repeat(400));
+        let paste = format!("{}Why does this fail?", "log line\n".repeat(1_400));
         let line = transcript_line("user", &paste, day1).unwrap();
         assert!(line.contains("]: log line\n") && line.contains(" … "));
-        assert!(line.ends_with("Why does this fail?") && line.len() < 2_100);
+        assert!(line.ends_with("Why does this fail?") && line.len() < 12_100);
         assert!(transcript_line("user", "   ", day1).is_none());
+    }
+
+    #[test]
+    fn a_users_long_message_reaches_extraction_whole() {
+        let day = 1_760_443_200_000;
+        // About 4,500 chars of the user's own notes, a fact in the middle.
+        let notes = format!(
+            "{}The staging database host is db-mid.internal.{}",
+            "Some notes for later, all of these hold here. ".repeat(48),
+            " Then we tidy the docs.".repeat(98)
+        );
+        let mid = notes.find("db-mid").unwrap();
+        assert!(notes.len() > 4_400 && mid > 2_000 && notes.len() - mid > 2_000);
+        let line = transcript_line("user", &notes, day).unwrap();
+        assert!(line.contains("db-mid.internal") && !line.contains(" … "));
+        // An assistant line keeps its cut.
+        let reply = transcript_line("assistant", &notes, day).unwrap();
+        assert!(!reply.contains("db-mid") && reply.contains(" … "));
     }
 
     #[test]
