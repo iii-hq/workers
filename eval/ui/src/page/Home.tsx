@@ -45,7 +45,7 @@ import type { Nav } from './index'
 
 const PHASE_HINT = [
   'Baseline on the E2E, then a first pass that calls no model',
-  'One change inside harness/, in its own worktree',
+  'One change anywhere in the repository, in its own worktree',
   'Paired runs on a pinned stack, decided in code',
   'A pull request for an accepted change; you review and merge',
 ]

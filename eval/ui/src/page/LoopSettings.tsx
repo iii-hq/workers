@@ -67,7 +67,7 @@ const STEPS: { id: Setup; section?: SectionId; eyebrow: string; needs?: SectionI
     section: 'candidate',
     eyebrow: '2 · Optional',
     intro:
-      'Lets the loop propose one change and write it inside harness/src or harness/tests, in its own worktree. The actor gets no shell, grants or credentials.',
+      'Lets the loop propose one change and commit it anywhere in the repository but eval/ and git metadata, in its own worktree. The actor gets no shell, grants or credentials.',
   },
   {
     id: 'prove',
