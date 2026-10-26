@@ -61,7 +61,8 @@ pub struct WorkerConfig {
 
     /// Extract new memories after each completed turn (one
     /// `router::complete` call, off the hot path). Disable to run memory as
-    /// a purely manual store.
+    /// a purely manual store: turns that finish while it is off are stepped
+    /// past, never read once it is back on.
     #[serde(default = "default_true")]
     pub extraction_enabled: bool,
 
@@ -73,7 +74,7 @@ pub struct WorkerConfig {
     /// How many recent non-empty user/assistant messages a session's first
     /// extraction pass reads (no cursor yet), plus the turn's user message
     /// when they leave it out. Later passes read every message after the
-    /// cursor.
+    /// cursor, unless a backlog takes more than 4 calls: then this window.
     #[serde(default = "default_extraction_window")]
     pub extraction_window: usize,
 

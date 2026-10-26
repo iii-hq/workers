@@ -871,7 +871,7 @@ pub async fn turn_completed(
         .turn_id
         .as_deref()
         .and_then(crate::scope::take_turn_bank);
-    if !cfg.extraction_enabled || input.session_id.is_empty() || is_sub_agent(&input) {
+    if input.session_id.is_empty() || is_sub_agent(&input) {
         return Ok(AckResponse { ok: true });
     }
     let (until, stamped) = match input.turn_id.as_deref() {
@@ -881,7 +881,7 @@ pub async fn turn_completed(
     // Not seen by this process (a restart): the bank the hook stamped on
     // the turn's reply.
     let bank = bank.or(stamped.map(Some));
-    let Some(job) = plan_extraction(&input, bank, until) else {
+    let Some(job) = plan_extraction(&input, bank, until, cfg.extraction_enabled) else {
         return Ok(AckResponse { ok: true });
     };
     let receipt = input
@@ -921,16 +921,19 @@ fn is_sub_agent(input: &TurnCompletedInput) -> bool {
 /// which the next turn's pass would otherwise sweep into ITS bank — is
 /// extracted into the bank it was injected with (`bank`: what the hook
 /// recorded, `None` when this process never saw the turn). A turn that ran
-/// without memory only steps the cursor past itself, which needs its end,
-/// or the skip could swallow the next turn too.
+/// without memory, or with extraction off (`enabled` false: turned back
+/// on, it never reads what was said meanwhile), only steps the cursor past
+/// itself, which needs its end, or the skip could swallow the next turn too.
 pub(crate) fn plan_extraction(
     input: &TurnCompletedInput,
     bank: Option<Option<crate::scope::Resolved>>,
     until: Option<String>,
+    enabled: bool,
 ) -> Option<ExtractJobInput> {
     if input.session_id.is_empty() || is_sub_agent(input) {
         return None;
     }
+    let bank = if enabled { bank } else { Some(None) };
     let skip = matches!(bank, Some(None));
     if skip && until.is_none() {
         return None;
@@ -1309,7 +1312,7 @@ mod tests {
         // Failed or cancelled included: the next turn's pass would otherwise
         // sweep it into that turn's bank.
         let blog = Some(Some(crate::scope::Resolved::named("blog")));
-        let job = plan_extraction(&finished(), blog, Some("e9".into())).unwrap();
+        let job = plan_extraction(&finished(), blog, Some("e9".into()), true).unwrap();
         assert_eq!(
             (
                 job.bank.as_deref(),
@@ -1325,23 +1328,40 @@ mod tests {
             derived: true,
             agent: Some("reviewer".into()),
         };
-        let job = plan_extraction(&finished(), Some(Some(repo)), None).unwrap();
+        let job = plan_extraction(&finished(), Some(Some(repo)), None, true).unwrap();
         assert_eq!(
             (job.bank.as_deref(), job.derived, job.agent.as_deref()),
             (Some("w-abc123"), true, Some("reviewer")),
             "and so does its agent profile"
         );
         // Not seen by this process (a restart): the job resolves it.
-        let job = plan_extraction(&finished(), None, None).unwrap();
+        let job = plan_extraction(&finished(), None, None, true).unwrap();
         assert_eq!((job.bank, job.skip), (None, false));
     }
 
     #[test]
     fn a_turn_without_memory_only_steps_the_cursor() {
-        let job = plan_extraction(&finished(), Some(None), Some("e9".into())).unwrap();
+        let job = plan_extraction(&finished(), Some(None), Some("e9".into()), true).unwrap();
         assert_eq!((job.skip, job.until.as_deref()), (true, Some("e9")));
         // Skipping without the turn's end could skip the next turn too.
-        assert!(plan_extraction(&finished(), Some(None), None).is_none());
+        assert!(plan_extraction(&finished(), Some(None), None, true).is_none());
+    }
+
+    #[test]
+    fn turned_back_on_extraction_never_reads_what_was_said_while_it_was_off() {
+        // Off: the turn only steps the cursor past its end, so the first
+        // pass after extraction is back on starts after it.
+        let blog = Some(Some(crate::scope::Resolved::named("blog")));
+        let off = plan_extraction(&finished(), blog.clone(), Some("e4".into()), false).unwrap();
+        assert_eq!(
+            (off.bank, off.skip, off.until.as_deref()),
+            (None, true, Some("e4"))
+        );
+        // Back on: the next turn goes to its bank as before.
+        let on = plan_extraction(&finished(), blog.clone(), Some("e6".into()), true).unwrap();
+        assert_eq!((on.bank.as_deref(), on.skip), (Some("blog"), false));
+        // Off with no end to step to: nothing, like a turn without memory.
+        assert!(plan_extraction(&finished(), blog, None, false).is_none());
     }
 
     #[test]
@@ -1351,12 +1371,12 @@ mod tests {
             ..finished()
         };
         let blog = Some(Some(crate::scope::Resolved::named("blog")));
-        assert!(plan_extraction(&child, blog, Some("e9".into())).is_none());
+        assert!(plan_extraction(&child, blog, Some("e9".into()), true).is_none());
         let detached = TurnCompletedInput {
             parent_session_id: Some("p".into()),
             ..finished()
         };
-        assert!(plan_extraction(&detached, None, Some("e9".into())).is_none());
+        assert!(plan_extraction(&detached, None, Some("e9".into()), true).is_none());
     }
 
     #[test]

@@ -914,15 +914,12 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
         }
         return Ok(false);
     };
-    // Every entry after the cursor is read, oldest first, one call per
-    // run of at most CALL_CHARS; each run moves the cursor past itself, so
-    // a failed call retries from there, and the session's lock is held
-    // throughout: no other pass reads this turn's rest into its bank.
-    // shortcut: a backlog since the cursor (extraction off for a while, a
-    // job the queue gave up on) is read whole, one call per run; cap the
-    // calls per pass if that cost ever shows.
+    // Read oldest first, one call per run ([`pass_runs`]); each run moves
+    // the cursor past itself, so a failed call retries from there, and the
+    // session's lock is held throughout: no other pass reads this turn's
+    // rest into its bank.
     let mut asked = false;
-    for run in chunks(entries, CALL_CHARS) {
+    for run in pass_runs(entries, cfg.extraction_window) {
         asked |= read_run(deps, &cfg, session_id, &resolved, run).await?;
     }
     Ok(asked)
@@ -931,6 +928,25 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
 /// The most excerpt one extraction call reads: what a window of 12 lines
 /// of 2,000 chars could always send.
 const CALL_CHARS: usize = 24_000;
+
+/// The most calls one pass makes: a long turn's span fits in them.
+const PASS_CALLS: usize = 4;
+
+/// The runs one pass reads: every entry after the cursor, unless that
+/// takes more than [`PASS_CALLS`] calls, which only a backlog does (passes
+/// the queue gave up on, a skipped turn whose end was never found).
+// shortcut: past PASS_CALLS, only the newest `window` entries are read, and
+// the cursor moves past the rest unread, as before runs existed; drain the
+// backlog over later passes if facts are ever lost there.
+fn pass_runs(entries: Vec<Entry>, window: usize) -> Vec<Vec<Entry>> {
+    let runs = chunks(entries, CALL_CHARS);
+    if runs.len() <= PASS_CALLS {
+        return runs;
+    }
+    let mut entries = runs.concat();
+    keep_window(&mut entries, window);
+    chunks(entries, CALL_CHARS)
+}
 
 /// One extraction call over `entries`, a run of the span ([`chunks`]), and
 /// its writes; then the cursor moves past the run. `Ok(true)` once the
@@ -2623,6 +2639,32 @@ mod tests {
             [1, 1]
         );
         assert!(chunks(Vec::new(), CALL_CHARS).is_empty());
+    }
+
+    #[test]
+    fn a_backlog_past_one_pass_is_cut_to_its_newest_window() {
+        let step = |i: usize| {
+            let text = format!("Found fact {i}. {}", "detail ".repeat(200));
+            said(&format!("a{i}"), "assistant", &text)
+        };
+        let span = |steps: usize| {
+            let mut span = vec![said("u", "user", "Map the repository for me.")];
+            span.extend((1..=steps).map(step));
+            span.push(said("end", "assistant", ""));
+            span
+        };
+        // A long turn within one pass's calls is read whole.
+        let runs = pass_runs(span(30), 12);
+        assert!(runs.len() > 1);
+        assert_eq!(runs.iter().map(Vec::len).sum::<usize>(), 32);
+        // A backlog (passes the queue gave up on) costs at most one pass's
+        // calls: its newest window, the request, and the end the cursor
+        // lands on.
+        let runs = pass_runs(span(100), 12);
+        assert!(runs.len() <= PASS_CALLS, "{} calls", runs.len());
+        let ids: Vec<&str> = runs.iter().flatten().map(|e| e.0.as_str()).collect();
+        assert_eq!(ids.len(), 14, "{ids:?}");
+        assert_eq!((ids[0], ids[1], ids[13]), ("u", "a89", "end"));
     }
 
     #[test]
