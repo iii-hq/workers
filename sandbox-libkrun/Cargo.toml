@@ -37,8 +37,8 @@ iii-shell-proto = { path = "crates/iii-shell-proto" }
 iii-supervisor = { path = "crates/iii-supervisor" }
 # Pinned: msb_krun_devices 0.1.39 uses libc::statx, which libc does not define for musl.
 msb_krun = { version = "=0.1.16", features = ["net", "blk"] }
-oci-client = "0.16"
-oci-spec = "0.9"
+oci-client = "0.18"
+oci-spec = "0.10"
 tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal", "time", "io-std"] }
 clap = { version = "4", features = ["derive", "env"] }
 colored = "3.0.0"
