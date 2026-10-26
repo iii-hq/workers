@@ -92,7 +92,8 @@ pub struct VmBootArgs {
     /// Enable nested virtualization. Default off — a microworker VM has
     /// no need to run its own hypervisor, and enabling nested-KVM is a
     /// measurable perf hit. Flip on only for CI/test scenarios that
-    /// explicitly boot a VM inside the worker.
+    /// explicitly boot a VM inside the worker. Ignored, with a warning,
+    /// on hosts that cannot provide it (Linux ARM64 always).
     #[arg(long, default_value = "false")]
     pub nested_virt: bool,
 
@@ -602,7 +603,7 @@ fn boot_vm(
     let worker_cmd = build_worker_cmd(&args.exec, &args.arg);
 
     let hyperthreading = args.hyperthreading;
-    let nested_virt = args.nested_virt;
+    let nested_virt = nested_virt_or_warn(args.nested_virt, msb_krun::nested_virt_supported);
     let mut builder = VmBuilder::new()
         .machine(|m| {
             m.vcpus(args.vcpus as u8)
@@ -1063,6 +1064,19 @@ fn boot_vm(
     vm.enter().map_err(|e| format!("VM enter failed: {}", e))
 }
 
+/// msb_krun refuses to boot a VM that asks for nested virtualization on a host
+/// without it (Linux ARM64 always), so drop the opt-in with a warning instead.
+fn nested_virt_or_warn(requested: bool, supported: impl FnOnce() -> std::io::Result<bool>) -> bool {
+    requested
+        && match supported() {
+            Ok(true) => true,
+            other => {
+                eprintln!("iii: --nested-virt ignored, the host cannot provide it ({other:?})");
+                false
+            }
+        }
+}
+
 /// The spawner is gone: shut the VM down, then say why. A worker
 /// VM's stderr is a pipe the dead spawner read, so `eprintln!` would panic on
 /// EPIPE and end this watcher before the trigger, leaving the VM running.
@@ -1076,6 +1090,18 @@ fn shut_down_vm(trigger: impl FnOnce(), why: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_virt_is_dropped_when_the_host_cannot_provide_it() {
+        assert!(nested_virt_or_warn(true, || Ok(true)));
+        assert!(!nested_virt_or_warn(true, || Ok(false)));
+        assert!(!nested_virt_or_warn(true, || Err(std::io::Error::other(
+            "no /dev/kvm"
+        ))));
+        assert!(!nested_virt_or_warn(false, || panic!(
+            "probed the host without a request"
+        )));
+    }
 
     #[test]
     fn test_vm_boot_args_parse() {
