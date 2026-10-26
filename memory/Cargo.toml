@@ -44,3 +44,16 @@ schemars = "0.8"
 
 [dev-dependencies]
 tempfile = "3"
+
+# Release binary size: strip drops the symbol table too (panic backtraces
+# become unresolved addresses); fat LTO + a single codegen unit let the
+# optimizer dead-strip and deduplicate across crate boundaries; opt-level "s"
+# sizes the code without slowing recall (the recall eval runs as fast as at
+# the default level, where "z" is 29% slower). Together: 14.3 -> 6.3 MiB on
+# x86_64-unknown-linux-gnu, at about half a minute more per release build. No
+# feature, dependency, or runtime behavior changes.
+[profile.release]
+opt-level = "s"
+strip = true
+lto = "fat"
+codegen-units = 1
