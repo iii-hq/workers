@@ -1,6 +1,6 @@
 {
   "function_id": "browser::screencast::start",
-  "description": "Internal: start the live viewport feed — frames arrive on the browser::frame-event trigger and browser::frame reads the newest. Console-UI plumbing; agents use browser::screenshot. Not an agent function.",
+  "description": "Internal: start the live viewport feed — frames arrive on the browser::frame-event trigger and browser::frame reads the newest. With a viewer_id the viewer holds a lease: repeat the start to renew it, or it lapses. Console-UI plumbing; agents use browser::screenshot. Not an agent function.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "ScreencastStartInput",
@@ -9,6 +9,16 @@
       "session_id"
     ],
     "properties": {
+      "lease_ms": {
+        "description": "How long the viewer stays without another start (ms, with `viewer_id`; default 20000, held to 5000..120000). Renew well inside it; a lapsed viewer is dropped within about two seconds.",
+        "default": null,
+        "type": [
+          "integer",
+          "null"
+        ],
+        "format": "uint64",
+        "minimum": 0.0
+      },
       "preview": {
         "description": "A corner thumbnail rather than a pane: streams frames but does not count as a viewer for `browser::resize` fit arbitration.",
         "default": null,
@@ -17,8 +27,25 @@
           "null"
         ]
       },
+      "scale": {
+        "description": "Frame pixels this viewer wants per CSS pixel (with `viewer_id`; 0.5..3, default 1). The stream runs at the largest scale among the named viewers, never above the `frame_density` setting; the frame's `width`/`height` stay the CSS viewport either way.",
+        "default": null,
+        "type": [
+          "number",
+          "null"
+        ],
+        "format": "double"
+      },
       "session_id": {
         "type": "string"
+      },
+      "viewer_id": {
+        "description": "Names this viewer (up to 128 characters) and makes the start idempotent: the first call with an id joins the screencast, every later one only renews its lease (and `scale`). Without it the start counts one more anonymous viewer, released by one stop.",
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
       }
     }
   },

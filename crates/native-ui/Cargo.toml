@@ -1,0 +1,26 @@
+[workspace]
+
+[package]
+name = "iii-native-ui"
+version = "0.1.0"
+edition = "2024"
+description = "Worker-side helper for a native app in the iii app: registers <ns>::native-ui with the native_ui descriptor in its metadata, serves the bundle, and hot-reloads it in development"
+license = "Apache-2.0"
+repository = "https://github.com/iii-hq/workers"
+# Deliberately unpublished and separate from iii-console-ui: workers link it
+# by path (iii-native-ui = { path = "../crates/native-ui" }), and only workers
+# with a native app take sha2 into their Cargo.lock.
+publish = false
+
+[dependencies]
+# Range, not an exact pin, like iii-console-ui: a worker's own SDK pin decides.
+iii-sdk = ">=0.24.5, <=0.24.6"
+tokio = { version = "1", features = ["rt", "sync", "time", "fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "0.8"
+sha2 = "0.10"
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
