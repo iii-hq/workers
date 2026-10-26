@@ -565,18 +565,22 @@ fn unrelated(a: &Memory, b: &Memory) -> bool {
 /// more lines carry (a repo-wide service, a team) is a topic, not a subject.
 const LINK_MAX_TAGGED: usize = 5;
 
-/// `told` with, right after each line, the newest statement made later on its
-/// [`subjects`] alone: "dana left the company" after "dana is the on-call
-/// engineer for payments-api", though it shares no word with "whom do I page
-/// for payments-api?". Only a line on a subject the question names links, and
-/// through an entity at most [`LINK_MAX_TAGGED`] memories carry; one per line,
-/// at its score, never a line told already or a rewording of one. `tagged`: the
-/// live memories the turn reads carrying a told line's subject ([`Bank::tagged`]).
+/// `told` with, right after each line, every newer statement made later on its
+/// [`subjects`] alone, oldest first: "dana left the company" after "dana is the
+/// on-call engineer for payments-api", though it shares no word with "whom do I
+/// page for payments-api?"; never one older than a told line on those subjects.
+/// Only a line on a subject the question names links, and through an entity at
+/// most [`LINK_MAX_TAGGED`] memories carry; each note once, at its line's score,
+/// never a line told already or a rewording of one. `tagged`: the live memories
+/// the turn reads carrying a told line's subject ([`Bank::tagged`]).
 // shortcut: a line told on other words ("who is on call?" over "dana is on
 // call") links nothing, and an update naming one more subject ("dana moved to
 // the ledger team") never joins: without both, the injection eval's stray-word
 // lines drag their subjects' updates in. Widen when an eval slice of linked
 // updates shows the misses.
+// shortcut: a trivial later note on the subject joins beside the update, and a
+// told later line on the subject hides an older real update. Narrow it when an
+// eval slice of linked updates shows noise.
 pub fn with_updates(
     told: Vec<(Memory, f32)>,
     tagged: &[Memory],
@@ -595,38 +599,51 @@ pub fn with_updates(
         !words.is_empty() && words.iter().all(|w| asked.contains(w))
     };
     let mut taken: HashSet<&str> = told.iter().map(|(m, _)| m.id.as_str()).collect();
-    let updates: Vec<Option<Memory>> = told
+    let updates: Vec<Vec<Memory>> = told
         .iter()
         .map(|(m, _)| {
             let about = subjects(m);
             if !about.iter().any(named) {
-                return None;
+                return Vec::new();
             }
-            let update = tagged
+            // The newest told statement on these subjects: a note before it is stale.
+            let since = told
                 .iter()
+                .map(|(t, _)| (t, subjects(t)))
+                .filter(|(_, on)| !on.is_empty() && on.is_subset(&about))
+                .map(|(t, _)| t.last_stated())
+                .fold(m.last_stated(), Ord::max);
+            let mut later: Vec<&Memory> = tagged
+                .iter()
+                .copied()
                 .filter(|u| {
                     let on = subjects(u);
                     !taken.contains(u.id.as_str())
-                        && u.last_stated() > m.last_stated()
+                        && u.last_stated() > since
                         // On the line's subjects alone: one more ("Ledgerly caches
                         // in Redis" after "Ledgerly runs on Postgres") is a new fact.
                         && on.is_subset(&about)
                         && on.iter().any(rare)
                         && !told.iter().any(|(t, _)| extract::same_fact(&t.text, &u.text))
                 })
-                // The newest; a tie by id, as the bank's order is a map's.
-                .max_by(|a, b| {
-                    a.last_stated()
-                        .cmp(&b.last_stated())
-                        .then_with(|| b.id.cmp(&a.id))
-                })?;
-            taken.insert(&update.id);
-            Some((*update).clone())
+                .collect();
+            // Oldest first, so the newest reads last; a tie by id, as the bank's order is a map's.
+            later.sort_by(|a, b| {
+                a.last_stated()
+                    .cmp(&b.last_stated())
+                    .then_with(|| a.id.cmp(&b.id))
+            });
+            for u in &later {
+                taken.insert(&u.id);
+            }
+            later.into_iter().cloned().collect()
         })
         .collect();
     told.into_iter()
         .zip(updates)
-        .flat_map(|((m, s), update)| std::iter::once((m, s)).chain(update.map(|u| (u, s))))
+        .flat_map(|((m, s), later)| {
+            std::iter::once((m, s)).chain(later.into_iter().map(move |u| (u, s)))
+        })
         .collect()
 }
 
@@ -2282,11 +2299,120 @@ Formal."
             "the departure right after the line it updates: {ids:?}"
         );
         assert!(at("fp-backup").is_some(), "{ids:?}");
-        assert_eq!(ids.len(), 3, "one note per line, the newest: {ids:?}");
+        assert_eq!(ids.len(), 3, "each later note once: {ids:?}");
         memories.pop();
         let mut ids = told_ids(memories, question).await;
         ids.sort();
         assert_eq!(ids, ["fp-backup", "fp-oncall"], "an older note never joins");
+    }
+
+    const PAGE: &str = "Who should I page for a payments-api incident right now?";
+
+    /// dana on call for payments-api, said at `at`.
+    fn on_call(at: u64) -> Memory {
+        tagged(
+            "fp-oncall",
+            "dana-7f3a is the primary on-call engineer for payments-api incidents.",
+            at,
+            &["dana", "payments-api"],
+        )
+    }
+
+    /// A note on dana alone, said at `at`.
+    fn on_dana(id: &str, text: &str, at: u64) -> Memory {
+        tagged(id, text, at, &["dana"])
+    }
+
+    /// The ids [`with_updates`] gives a turn told `told` asking `query`, the
+    /// bank's memories on their subjects being `told` and `notes`.
+    fn joined(told: Vec<Memory>, notes: Vec<Memory>, query: &str) -> Vec<String> {
+        let tagged: Vec<Memory> = told.iter().cloned().chain(notes).collect();
+        let told = told.into_iter().map(|m| (m, 1.0)).collect();
+        with_updates(told, &tagged, query)
+            .into_iter()
+            .map(|(m, _)| m.id)
+            .collect()
+    }
+
+    #[test]
+    fn a_stale_note_older_than_a_told_line_never_joins() {
+        let back = tagged(
+            "fp-back",
+            "dana-7f3a is back from leave and takes payments-api pages again.",
+            29,
+            &["dana", "payments-api"],
+        );
+        let leave = on_dana(
+            "fp-leave",
+            "dana-7f3a is on parental leave until March.",
+            20,
+        );
+        assert_eq!(
+            joined(vec![back, on_call(10)], vec![leave], PAGE),
+            ["fp-back", "fp-oncall"]
+        );
+    }
+
+    #[test]
+    fn a_trivial_later_note_does_not_push_the_update_out() {
+        let notes = || {
+            vec![
+                on_dana(
+                    "fp-left",
+                    "dana-7f3a left our company and her accounts were deactivated.",
+                    25,
+                ),
+                on_dana("fp-laptop", "dana-7f3a returned her laptop to IT.", 29),
+            ]
+        };
+        assert_eq!(
+            joined(vec![on_call(10)], notes(), PAGE),
+            ["fp-oncall", "fp-left", "fp-laptop"],
+            "every later note, oldest first"
+        );
+        // A newer told line on no subject is no statement on dana.
+        let runbook = stated(
+            "fp-runbook",
+            "The payments-api runbook lives in Notion.",
+            40,
+        );
+        assert_eq!(
+            joined(vec![on_call(10), runbook], notes(), PAGE),
+            ["fp-oncall", "fp-left", "fp-laptop", "fp-runbook"]
+        );
+    }
+
+    #[test]
+    fn a_note_joins_one_told_line_only() {
+        let schema = tagged(
+            "fp-schema",
+            "dana-7f3a reviews every payments-api schema change.",
+            10,
+            &["dana", "payments-api"],
+        );
+        let left = on_dana("fp-left", "dana-7f3a left our company last week.", 25);
+        let ids = joined(vec![on_call(10), schema], vec![left], PAGE);
+        assert_eq!(ids, ["fp-oncall", "fp-left", "fp-schema"]);
+    }
+
+    #[test]
+    fn an_update_naming_another_subject_never_joins() {
+        let moved = tagged(
+            "fp-moved",
+            "dana-7f3a moved to the ledger team.",
+            25,
+            &["dana", "ledger"],
+        );
+        assert_eq!(joined(vec![on_call(10)], vec![moved], PAGE), ["fp-oncall"]);
+    }
+
+    #[test]
+    fn a_line_whose_subject_the_question_never_names_links_nothing() {
+        let left = on_dana("fp-left", "dana-7f3a left our company last week.", 25);
+        assert_eq!(
+            joined(vec![on_call(10)], vec![left], "Who is on call this week?"),
+            ["fp-oncall"]
+        );
     }
 
     #[tokio::test]
