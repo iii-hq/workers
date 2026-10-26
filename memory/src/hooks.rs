@@ -527,8 +527,9 @@ const RELEVANCE_SHARE: f32 = 0.5;
 /// mean similarity stands out even behind a strong lexical best.
 const SEMANTIC_Z: f32 = 2.0;
 // shortcut: the pair passes are quadratic, so they see the best 4 x
-// recall_limit admitted hits; widen it if the eval shows a newer fact
-// ranked past it (stale_alone > 0).
+// recall_limit admitted hits, and a list question's siblings past them are
+// never told; widen it if the eval shows a newer fact ranked past it
+// (stale_alone > 0) or lists outgrow it.
 const POOL_PER_SLOT: usize = 4;
 
 /// Both tagged and sharing no entity: a change to one says nothing of the
@@ -554,8 +555,10 @@ fn two_subjects(a: &Memory, b: &Memory) -> bool {
 /// What a turn is told from its ranked hits (every candidate, best first):
 /// those with evidence ([`Evidence`], why each matched) that stand on their
 /// own, or with the turn's best in a turn anchored in the bank (a bank too
-/// small for a z-score anchors on any meaning match), one line per fact, at
-/// most `limit`; nothing when none has any. An older statement of a changed fact is never told: when it stands,
+/// small for a z-score anchors on any meaning match), one line per fact,
+/// `limit` of them, or more for a list (every line on the same question
+/// words, each on its own: all its siblings come); nothing when none has any.
+/// An older statement of a changed fact is never told: when it stands,
 /// the current statement takes its place, whatever the newer's own rank or
 /// relevance. `seen` holds the memory lines the window shows: a rewording of
 /// one is not sent again.
@@ -603,10 +606,12 @@ pub fn select(
         .filter(|(_, newer)| newer.is_none())
         .map(|((m, _), _)| ev(m).relevance)
         .fold(0.0, f32::max);
+    // Holds two of the question's words, or its one.
+    let on_words = |e: &Evidence| !e.matched.is_empty() && e.matched.len() >= e.terms.min(2);
     // Stands on its own evidence, whatever the turn's best.
     let alone = |e: &Evidence| {
         let words = e.matched.len();
-        (words > 0 && words >= e.terms.min(2))
+        on_words(e)
             || e.z.is_some_and(|z| z >= SEMANTIC_Z)
             // No vector to weigh it against meaning matches: judge its words, as in lexical mode.
             // shortcut: so without vectors the best hit anchors the turn on one word ("go
@@ -672,7 +677,19 @@ pub fn select(
             kept.push((m, s));
         }
     }
-    kept.truncate(limit);
+    // `limit` lines on rank. A list question carries on: when every line told
+    // stands on the same question words ("which services use Postgres 16?"
+    // over seven services), so does each sibling past it, to the token budget.
+    // A mixed list keeps the count: its tail shares a stray word, not the subject.
+    let past = kept.split_off(limit.min(kept.len()));
+    let same = |a: &Evidence, b: &Evidence| within(a, b) && within(b, a);
+    let list = kept
+        .first()
+        .map(|(m, _)| ev(m))
+        .filter(|first| on_words(first) && kept.iter().all(|(m, _)| same(ev(m), first)));
+    if let Some(first) = list {
+        kept.extend(past.into_iter().filter(|(m, _)| same(ev(m), first)));
+    }
     kept
 }
 
@@ -1659,12 +1676,14 @@ Formal."
             .iter()
             .map(|(m, _, bank)| (m.id.clone(), bank.clone()))
             .collect();
+        // Every line holds the one word, a list: `fp-r2` carries on past the limit.
         assert_eq!(
             injected,
             vec![
                 ("fp-twin".into(), "agent-x".into()),
                 ("fp-r0".into(), "w-abc123".into()),
                 ("fp-r1".into(), "w-abc123".into()),
+                ("fp-r2".into(), "w-abc123".into()),
             ],
             "the layer's copy ranks inside the limit, so it is the one injected, and its bank holds it"
         );
@@ -1730,7 +1749,8 @@ Formal."
         )
         .await;
         let injected: Vec<String> = out.memories.iter().map(|(m, _, _)| m.id.clone()).collect();
-        assert_eq!(injected, top);
+        // Every line holds the one word, a list: the rest carry on after the top.
+        assert!(injected.starts_with(&top), "{injected:?} vs {top:?}");
         let banks: HashSet<&str> = out.memories.iter().map(|(_, _, b)| b.as_str()).collect();
         assert_eq!(banks.len(), 2, "both banks reach the top: {injected:?}");
     }
@@ -1873,6 +1893,77 @@ Formal."
                 .is_empty(),
             "a task in the first person is not a question about the user"
         );
+    }
+
+    const POSTGRES_QUESTION: &str =
+        "Which of our services use Postgres 16? Reply with the service names.";
+
+    /// Deps over a `w-abc123` bank holding "The <name> service uses Postgres
+    /// 16." per name: sibling facts, each standing on the question's words.
+    /// Beside them, a near miss on one word of the question.
+    async fn postgres_services(dir: &std::path::Path, cfg: WorkerConfig, names: &[&str]) -> Deps {
+        let deps = offline_deps(dir, cfg);
+        let (repo, _) = deps
+            .store()
+            .await
+            .ensure_bank("w-abc123", None)
+            .await
+            .unwrap();
+        let near_miss = memory(
+            "fp-gateway",
+            "The gateway service caches sessions in Redis.",
+        );
+        let siblings = names.iter().map(|name| {
+            let text = format!("The {name} service uses Postgres 16.");
+            memory(&format!("fp-{name}"), &text)
+        });
+        for m in siblings.chain([near_miss]) {
+            repo.commit(m).await.unwrap();
+        }
+        deps
+    }
+
+    #[tokio::test]
+    async fn seven_relevant_siblings_all_reach_the_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let names = [
+            "billing", "ledger", "search", "mailer", "auth", "export", "report",
+        ];
+        let deps = postgres_services(dir.path(), offline_cfg(6), &names).await;
+        let mut ids: Vec<String> = told(&deps, &[], POSTGRES_QUESTION)
+            .await
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        ids.sort();
+        let mut all: Vec<String> = names.iter().map(|n| format!("fp-{n}")).collect();
+        all.sort();
+        assert_eq!(
+            ids, all,
+            "every sibling past recall_limit, not the near miss"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_token_budget_still_binds_the_siblings() {
+        // Nine siblings stand, with lines of one length; the budget holds seven.
+        let names = [
+            "ledger", "search", "mailer", "export", "report", "backup", "upload", "signer",
+            "ticket",
+        ];
+        let line = format!(
+            "- The ledger service uses Postgres 16. ({})",
+            local_date(1, "%Y-%m-%d")
+        );
+        let budget = (7 * line.len()).div_ceil(4);
+        assert!(8 * line.len() > 4 * budget, "fixture sized to seven lines");
+        let cfg = WorkerConfig {
+            recall_budget_tokens: budget as u64,
+            ..offline_cfg(6)
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let deps = postgres_services(dir.path(), cfg, &names).await;
+        assert_eq!(told(&deps, &[], POSTGRES_QUESTION).await.len(), 7);
     }
 
     /// `select` over hits ranked in the order given: the ids it keeps.
@@ -2195,6 +2286,31 @@ Formal."
     }
 
     #[test]
+    fn only_a_list_on_one_set_of_words_carries_on_past_the_limit() {
+        let two = || words(2, 3, 1.0);
+        let other = || Evidence {
+            matched: vec!["w0".into(), "w2".into()],
+            ..two()
+        };
+        let list = vec![
+            ("fp-a", two()),
+            ("fp-b", two()),
+            ("fp-c", two()),
+            ("fp-d", other()),
+        ];
+        assert_eq!(selected(list, 1), ["fp-a", "fp-b", "fp-c"]);
+        // A mixed list keeps the count, even for the last line's sibling.
+        let mixed = vec![("fp-a", other()), ("fp-b", two()), ("fp-c", two())];
+        assert_eq!(selected(mixed, 2), ["fp-a", "fp-b"]);
+        // One word of three is no list, however many lines hold it.
+        let one = || words(1, 3, 1.0);
+        assert_eq!(
+            selected(vec![("fp-a", one()), ("fp-b", one())], 1),
+            ["fp-a"]
+        );
+    }
+
+    #[test]
     fn differently_tagged_twins_both_stay() {
         // Two rewordings by text: their tags alone keep them apart.
         let tagged = |id: &str, text: &str, entities: &[&str]| Memory {
@@ -2307,10 +2423,15 @@ Formal."
     #[test]
     fn the_newer_takes_the_older_lines_slot_within_the_limit() {
         let e = || words(2, 3, 1.0);
+        // Other words: no sibling to carry on past the limit.
+        let other = Evidence {
+            matched: vec!["w0".into(), "w2".into()],
+            ..e()
+        };
         let hits = vec![
             (memory("fp-a", "fp-a"), e()),
             (stated("fp-old", BACKUP_OLD, 1), e()),
-            (memory("fp-b", "fp-b"), e()),
+            (memory("fp-b", "fp-b"), other),
             (stated("fp-new", BACKUP_NEW, 2), e()),
         ];
         assert_eq!(kept(hits, &HashSet::new(), 2), ["fp-a", "fp-new"]);

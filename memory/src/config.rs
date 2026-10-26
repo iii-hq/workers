@@ -46,7 +46,11 @@ pub struct WorkerConfig {
     #[serde(default = "default_true")]
     pub inject_memories: bool,
 
-    /// Maximum memories injected per turn.
+    /// Memories injected per turn on rank alone. A list question goes past
+    /// it: when every line told stands on the same question words ("which
+    /// services use Postgres 16?"), each sibling comes too, among the best
+    /// 4 x `recall_limit` candidates, until `recall_budget_tokens`. Also
+    /// `memory::recall`'s default limit.
     #[serde(default = "default_recall_limit")]
     pub recall_limit: usize,
 

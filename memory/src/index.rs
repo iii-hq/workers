@@ -184,8 +184,8 @@ pub fn fused_score(
     let age_days = (now_ms.saturating_sub(memory.last_stated())) as f32 / 86_400_000.0;
     let half_life = half_life_days.max(1) as f32;
     // Freshness in (0, 1], neutral (0.5) at the half-life, folded in as a
-    // MILD multiplier — Hindsight's `1 + alpha * (recency - 0.5)`. A full
-    // multiplier faded durable preferences to a third of their weight.
+    // MILD multiplier, `1 + alpha * (recency - 0.5)`. A full multiplier faded
+    // durable preferences to a third of their weight.
     let recency = 0.5_f32.powf(age_days / half_life);
     base * (1.0 + RECENCY_WEIGHT * (recency - 0.5))
 }
