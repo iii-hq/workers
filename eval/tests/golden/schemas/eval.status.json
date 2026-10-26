@@ -1120,6 +1120,17 @@
           "input": {
             "$ref": "#/definitions/CycleInputV1"
           },
+          "insight": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/InsightV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the measured runs' transcripts show, read before the proposal."
+          },
           "next": {
             "anyOf": [
               {
@@ -1245,6 +1256,13 @@
             "type": "string"
           },
           {
+            "description": "The measured runs' transcripts read for what a Harness change could improve: each errored call judged by Jev, or read by the default LLM when Jev cannot tell.",
+            "enum": [
+              "insight"
+            ],
+            "type": "string"
+          },
+          {
             "description": "The bounded read-only proposal turning evidence into a brief.",
             "enum": [
               "proposal"
@@ -1309,6 +1327,81 @@
           "increase"
         ],
         "type": "string"
+      },
+      "ErrorSiteV1": {
+        "additionalProperties": false,
+        "description": "One errored function call of a measured run.",
+        "properties": {
+          "after": {
+            "type": "string"
+          },
+          "arguments": {
+            "description": "The call's arguments and the error the Harness returned, clipped.",
+            "type": "string"
+          },
+          "before": {
+            "description": "What the agent said before the call, and what it did next.",
+            "type": "string"
+          },
+          "class": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/SiteClassV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "entry_id": {
+            "description": "The `function_result` entry.",
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "execution_id": {
+            "type": "string"
+          },
+          "function_id": {
+            "type": "string"
+          },
+          "probability": {
+            "description": "The judge's probability of `class`.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "scenario_id": {
+            "type": "string"
+          },
+          "site_id": {
+            "type": "string"
+          },
+          "step": {
+            "default": "",
+            "description": "How the step that made the call ended: its stop reason and output tokens, which tell a limit the Harness set from the model's own stop.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "after",
+          "arguments",
+          "before",
+          "entry_id",
+          "error",
+          "execution_id",
+          "function_id",
+          "run_id",
+          "scenario_id",
+          "site_id"
+        ],
+        "type": "object"
       },
       "EvidenceIdentityV1": {
         "additionalProperties": false,
@@ -1724,6 +1817,104 @@
           "fingerprint",
           "observation",
           "signal"
+        ],
+        "type": "object"
+      },
+      "ImprovementPointV1": {
+        "additionalProperties": false,
+        "description": "A Harness change worth trying, with the sites that show it.",
+        "properties": {
+          "function_id": {
+            "type": "string"
+          },
+          "sites": {
+            "description": "`ErrorSiteV1::site_id`s.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "source": {
+            "$ref": "#/definitions/InsightSourceV1"
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "function_id",
+          "sites",
+          "source",
+          "summary"
+        ],
+        "type": "object"
+      },
+      "InsightSourceV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "jev"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The default LLM, when Jev was not configured, did not answer or decided no site.",
+            "enum": [
+              "llm"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "InsightV1": {
+        "additionalProperties": false,
+        "description": "What the measured runs' transcripts show.",
+        "properties": {
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "points": {
+            "default": [],
+            "items": {
+              "$ref": "#/definitions/ImprovementPointV1"
+            },
+            "type": "array"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "request_id": {
+            "description": "Set before `judge::evaluate` is called, so a restart asks again under it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sites": {
+            "items": {
+              "$ref": "#/definitions/ErrorSiteV1"
+            },
+            "type": "array"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/InsightSourceV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who decided; absent before anyone did."
+          },
+          "usage": true
+        },
+        "required": [
+          "reason",
+          "sites"
         ],
         "type": "object"
       },
@@ -2366,6 +2557,39 @@
           "observations"
         ],
         "type": "object"
+      },
+      "SiteClassV1": {
+        "description": "Whose doing one errored function call is, as the insight judged it.",
+        "oneOf": [
+          {
+            "description": "What the Harness showed the model, or did with the call, could have prevented it.",
+            "enum": [
+              "harness"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The model's own slip, with what it needed in view.",
+            "enum": [
+              "model"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The task expects it: a probe, a negative test, a recovery it asks for.",
+            "enum": [
+              "task"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "No clear lead.",
+            "enum": [
+              "unclear"
+            ],
+            "type": "string"
+          }
+        ]
       },
       "StackV1": {
         "additionalProperties": false,

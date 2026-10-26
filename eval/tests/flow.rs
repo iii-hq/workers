@@ -41,6 +41,10 @@ struct World {
     executions_next_cursor: Option<String>,
     /// `test-history-get` answers by test id; an absent test has no runs.
     histories: BTreeMap<String, Value>,
+    /// What Jev answers of every failed call, or `None`: it does not answer.
+    jev_class: Option<&'static str>,
+    /// What the default LLM replies, or `None`: it does not answer.
+    analyst_reply: Option<String>,
 }
 
 fn tests_row(
@@ -113,6 +117,8 @@ impl World {
             busy_starts: 0,
             executions_next_cursor: None,
             histories: BTreeMap::new(),
+            jev_class: None,
+            analyst_reply: None,
         }
     }
 
@@ -227,6 +233,43 @@ impl World {
                     "next_cursor": self.executions_next_cursor})
             }
             "e2e::dashboard::execution-cancel" => json!({}),
+            "judge::evaluate" => {
+                let Some(class) = self.jev_class else {
+                    return Some(Err("judge unavailable".into()));
+                };
+                let results: serde_json::Map<String, Value> = data["evaluations"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|evaluation| {
+                        let probabilities: serde_json::Map<String, Value> =
+                            ["harness", "model", "task", "unclear"]
+                                .iter()
+                                .map(|choice| {
+                                    (
+                                        choice.to_string(),
+                                        json!(if *choice == class { 0.9 } else { 0.1 / 3.0 }),
+                                    )
+                                })
+                                .collect();
+                        (
+                            evaluation["id"].as_str().unwrap().to_string(),
+                            json!({"answers": {"whose": {"type": "choice", "choice": class,
+                                "confidence": 0.9, "probabilities": probabilities}}}),
+                        )
+                    })
+                    .collect();
+                json!({"status": "ok", "model": "jev-test", "results": results,
+                    "stats": {"attempts": 1, "elapsed_ms": 1, "input_tokens": 10, "output_tokens": 1,
+                        "questions": results.len(), "requests": 1, "usage_complete": true}})
+            }
+            "router::complete" => {
+                let Some(reply) = &self.analyst_reply else {
+                    return Some(Err("router unavailable".into()));
+                };
+                json!({"message": {"role": "assistant", "content": [{"type": "text", "text": reply}]},
+                    "usage": {"cost_usd": 0.02, "input": 100, "output": 50}})
+            }
             "sentinel::reports::ingest" => {
                 let observations = data["observations"].as_array().cloned().unwrap_or_default();
                 json!({"recorded": observations.len(), "deduped": 0, "skipped": 0,
@@ -361,6 +404,24 @@ impl Harness {
             "min_effect": {"tokens": 1000.0, "pass_rate_pp": 10.0},
             "budget": {"max_spend_usd": max_spend_usd, "max_duration_ms": 3_600_000,
                        "max_calls": 10, "max_candidates": 1}});
+        runtime::configure(
+            &self.deps,
+            serde_json::from_value(json!({"config": config})).unwrap(),
+        )
+        .await
+        .unwrap();
+    }
+
+    /// [`Self::configure`] with Jev as the judge.
+    async fn configure_judged(&self) {
+        let config = json!({
+            "subject": {"provider": "p", "model": "m"}, "where": "harness",
+            "runs_per_side": 1, "technical_retries": 0, "max_scenarios": 1,
+            "estimated_usd_per_run": 0.5,
+            "min_effect": {"tokens": 1000.0, "pass_rate_pp": 10.0},
+            "budget": {"max_spend_usd": 10.0, "max_duration_ms": 3_600_000,
+                       "max_calls": 10, "max_candidates": 1},
+            "judge": {"provider": "typesafe", "estimated_usd": 0.5}});
         runtime::configure(
             &self.deps,
             serde_json::from_value(json!({"config": config})).unwrap(),
@@ -1205,4 +1266,121 @@ async fn the_execution_picker_says_what_a_cycle_would_restore_or_which_cycle_has
         listed.usage[&objective].spend_usd > 0.0,
         "the reserved baseline"
     );
+}
+
+/// A run whose agent called `coder::update-file` and got an error back.
+fn failed_call(run_id: &str) -> Value {
+    let mut run = run(run_id, "passed", "completed", 1000.0, &[Some(10); 4]);
+    run["transcript"]["messages"] = json!([
+        {"entry_id": "e1", "message": {"role": "assistant", "stop_reason": "function_call",
+            "model": "m", "provider": "p", "timestamp": 0,
+            "usage": {"output": 2000, "reasoning": 900},
+            "content": [{"type": "text", "text": "Rewriting the file."},
+                {"type": "function_call", "id": "c1", "function_id": "coder::update-file",
+                 "arguments": {"path": "src/reconcile.py"}}]}},
+        {"entry_id": "e2", "message": {"role": "function_result", "timestamp": 0,
+            "function_call_id": "c1", "function_id": "coder::update-file", "is_error": true,
+            "content": [{"type": "text", "text": "did not run: the arguments were truncated"}]}}
+    ]);
+    run
+}
+
+/// An error objective measured on one run with a failed call.
+async fn read_failed_call(world: World, judged: bool) -> CycleRecordV1 {
+    let mut world = world;
+    world
+        .histories
+        .insert("context_pressure".into(), history("m", &[2.0]));
+    let h = Harness::start(world).await;
+    if judged {
+        h.configure_judged().await;
+    } else {
+        h.configure(10.0).await;
+    }
+    let cycle_id = h
+        .start_cycle(json!({"objective": "fewer function call errors"}))
+        .await;
+    h.drain().await;
+    h.finish("plan-1", "passed", vec![failed_call("r1")]);
+    h.changed("plan-1").await;
+    h.drain().await;
+    h.cycle(&cycle_id).await
+}
+
+#[tokio::test]
+async fn jev_reads_each_failed_call_and_the_harness_ones_become_improvement_points() {
+    let mut world = World::new();
+    world.jev_class = Some("harness");
+    let record = read_failed_call(world, true).await;
+    let insight = record.insight.clone().expect("the transcripts were read");
+    assert_eq!(
+        insight.source,
+        Some(InsightSourceV1::Jev),
+        "{}",
+        insight.reason
+    );
+    assert_eq!(insight.sites.len(), 1);
+    let site = &insight.sites[0];
+    assert_eq!(site.function_id, "coder::update-file");
+    assert_eq!(site.class, Some(SiteClassV1::Harness));
+    assert!(site.step.contains("output_tokens=2000"), "{}", site.step);
+    assert_eq!(insight.points.len(), 1);
+    assert_eq!(insight.points[0].sites, std::slice::from_ref(&site.site_id));
+    // Without candidate work the points are the result: nothing is tried.
+    let outcome = record.outcome.unwrap();
+    assert_eq!(outcome.code, OutcomeCodeV1::Inconclusive);
+    assert!(
+        outcome.detail.contains("1 the Harness's") && outcome.detail.contains("config.candidate"),
+        "{}",
+        outcome.detail
+    );
+}
+
+#[tokio::test]
+async fn failed_calls_jev_lays_on_the_model_end_the_cycle_before_any_proposal() {
+    let mut world = World::new();
+    world.jev_class = Some("model");
+    let record = read_failed_call(world, true).await;
+    let insight = record.insight.unwrap();
+    assert!(insight.points.is_empty());
+    let outcome = record.outcome.unwrap();
+    assert_eq!(outcome.code, OutcomeCodeV1::NoAction);
+    assert!(
+        outcome.detail.contains("1 the model's") && outcome.detail.contains("none is a failure"),
+        "{}",
+        outcome.detail
+    );
+}
+
+#[tokio::test]
+async fn without_jev_the_default_llm_reads_the_failed_calls() {
+    let mut world = World::new();
+    world.analyst_reply = Some("PLACEHOLDER".into());
+    // The site id is derived from the execution, run and entry: read it from a
+    // first pass, then answer with it.
+    let first = read_failed_call(World::new(), false).await;
+    let site_id = first.insight.unwrap().sites[0].site_id.clone();
+    world.analyst_reply = Some(format!(
+        "{{\"points\": [{{\"function_id\": \"coder::update-file\", \"summary\": \"Tell the model to split large edits.\", \"sites\": [\"{site_id}\"]}}]}}"
+    ));
+    let record = read_failed_call(world, false).await;
+    let insight = record.insight.unwrap();
+    assert_eq!(
+        insight.source,
+        Some(InsightSourceV1::Llm),
+        "{}",
+        insight.reason
+    );
+    assert!(
+        insight.reason.contains("no judge is configured"),
+        "{}",
+        insight.reason
+    );
+    assert_eq!(insight.points.len(), 1);
+    assert_eq!(
+        insight.points[0].summary,
+        "Tell the model to split large edits."
+    );
+    // Neither Jev nor the LLM: inconclusive, with both reasons.
+    assert_eq!(first.outcome.unwrap().code, OutcomeCodeV1::Inconclusive);
 }

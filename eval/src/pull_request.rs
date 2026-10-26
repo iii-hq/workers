@@ -305,9 +305,7 @@ pub fn body(
         .filter(|analysis| {
             matches!(
                 analysis.role,
-                ExecutionRoleV1::Baseline
-                    | ExecutionRoleV1::Candidate
-                    | ExecutionRoleV1::Control
+                ExecutionRoleV1::Baseline | ExecutionRoleV1::Candidate | ExecutionRoleV1::Control
             )
         })
         .map(|analysis| {

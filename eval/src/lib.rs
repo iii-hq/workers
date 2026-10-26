@@ -12,6 +12,7 @@ pub mod error;
 pub mod evidence;
 pub mod functions;
 pub mod ids;
+pub mod insight;
 pub mod locks;
 pub mod manifest;
 pub mod pull_request;

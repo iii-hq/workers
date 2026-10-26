@@ -254,6 +254,7 @@ fn new_cycle(
         candidate: None,
         pull_request: None,
         retry_of: None,
+        insight: None,
     }
 }
 
@@ -722,6 +723,7 @@ pub async fn step(deps: &Deps, request: StepRequestV1) -> Result<StepResponseV1,
         CycleStageV1::Baseline => Box::pin(baseline_stage(deps, &record)).await?,
         CycleStageV1::Analysis => Box::pin(analysis_stage(deps, &record)).await?,
         CycleStageV1::Triage => Box::pin(crate::stages::triage_stage(deps, &record)).await?,
+        CycleStageV1::Insight => Box::pin(crate::stages::insight_stage(deps, &record)).await?,
         CycleStageV1::Proposal => Box::pin(crate::stages::proposal_stage(deps, &record)).await?,
         CycleStageV1::Candidate => Box::pin(crate::stages::candidate_stage(deps, &record)).await?,
         CycleStageV1::Validation => {
@@ -1092,6 +1094,13 @@ async fn baseline_stage(
 /// again never dispatches twice: an entry already `dispatching` is
 /// reconciled by its idempotency key in the E2E listing. Answered, the cycle waits
 /// for the execution; unanswered, it waits at its current stage, polled.
+/// A plan on a Harness metric the insight reads in the transcripts: it runs
+/// before the room and candidate checks, since what the runs show is its own
+/// result.
+fn reads_transcripts(plan: &CyclePlanV1) -> bool {
+    plan.criterion.metric == CriterionMetricV1::FunctionCallErrors
+}
+
 pub(crate) async fn dispatch(
     deps: &Deps,
     record: &CycleRecordV1,
@@ -1666,6 +1675,14 @@ async fn analysis_stage(
                     OutcomeCodeV1::Inconclusive,
                     format!("baseline unusable: {}{failure}", measured.reason),
                 ));
+            } else if reads_transcripts(plan) {
+                // A Harness metric is read in the transcripts first, always:
+                // what the runs did is the result even when no change could
+                // be proven or tried (the insight checks both after).
+                next_stage = Some((
+                    CycleStageV1::Insight,
+                    format!("baseline measured; {} ({counts})", measured.reason),
+                ));
             } else if candidate_config.is_none() {
                 outcome = Some((
                     OutcomeCodeV1::Inconclusive,
@@ -1742,7 +1759,8 @@ async fn analysis_stage(
                     .filter_map(|(_, found)| found.clone())
                     .collect()
             };
-            let (controls, candidates) = (of(ExecutionRoleV1::Control), of(ExecutionRoleV1::Candidate));
+            let (controls, candidates) =
+                (of(ExecutionRoleV1::Control), of(ExecutionRoleV1::Candidate));
             let validation = config.and_then(|config| config.validation.clone());
             let side = |evidence: &ExecutionEvidenceV1, expected_revision: Option<String>| {
                 // The recorded stack must be the frozen template with only
@@ -1784,12 +1802,8 @@ async fn analysis_stage(
                     .map(|evidence| (evidence.execution_id.clone(), evidence.bundle.clone()))
                     .collect()
             };
-            let pairs = decision::pair_evidence(
-                &plan,
-                &bundles(&controls),
-                &bundles(&candidates),
-                now,
-            );
+            let pairs =
+                decision::pair_evidence(&plan, &bundles(&controls), &bundles(&candidates), now);
             let base_side = merged(&controls, base_revision)?;
             let ledger = state::get_ledger(&deps.iii, &record.cycle_id).await?;
             judged = Some((base_side, other, pairs, ledger));

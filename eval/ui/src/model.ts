@@ -63,6 +63,7 @@ const STAGE: Record<CycleStage, string> = {
   awaiting_execution: 'Awaiting execution',
   analysis: 'Analysis',
   triage: 'Triage',
+  insight: 'Insight',
   proposal: 'Proposal',
   candidate: 'Candidate',
   validation: 'Validation',
@@ -266,6 +267,7 @@ const DOING: Record<CycleStage, string> = {
   awaiting_execution: 'Waiting for the E2E execution',
   analysis: "Reading the execution's reports",
   triage: 'Deciding whether the findings are worth a change',
+  insight: 'Reading the transcripts for what the Harness could improve',
   proposal: 'Proposing one change',
   candidate: 'Writing the candidate change',
   validation: 'Running the candidate on the E2E',
@@ -764,6 +766,8 @@ export function resultHeadline(record: CycleRecord, lost: number): string {
   if (record.status === 'failed') return 'The cycle failed before it decided anything.'
   switch (record.outcome?.code) {
     case 'no_action':
+      if (record.insight)
+        return 'The transcripts show no failure a Harness change could prevent.'
       return lost
         ? 'The runs lost points, but the cycle stopped before proposing a change.'
         : 'Nothing in the runs was worth changing.'
@@ -772,6 +776,8 @@ export function resultHeadline(record: CycleRecord, lost: number): string {
     case 'budget':
       return 'The cycle reached its budget before it could decide.'
     case 'inconclusive':
+      if (record.insight?.points?.length)
+        return `The transcripts show ${plural(record.insight.points.length, 'improvement point')}; no change was tried.`
       return 'The cycle ended without a verdict.'
     case 'proposed':
       return 'The change was proven and a pull request was opened.'

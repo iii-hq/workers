@@ -313,6 +313,10 @@ pub enum CycleStageV1 {
     /// Ambiguous findings judged once (`judge::evaluate`), or the recorded
     /// reason no judgment is needed.
     Triage,
+    /// The measured runs' transcripts read for what a Harness change could
+    /// improve: each errored call judged by Jev, or read by the default LLM
+    /// when Jev cannot tell.
+    Insight,
     /// The bounded read-only proposal turning evidence into a brief.
     Proposal,
     /// The isolated candidate actor.
@@ -604,6 +608,92 @@ pub struct CycleRecordV1 {
     /// The ended cycle this one measures again, from its finding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_of: Option<String>,
+    /// What the measured runs' transcripts show, read before the proposal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub insight: Option<InsightV1>,
+}
+
+/// Whose doing one errored function call is, as the insight judged it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SiteClassV1 {
+    /// What the Harness showed the model, or did with the call, could have
+    /// prevented it.
+    Harness,
+    /// The model's own slip, with what it needed in view.
+    Model,
+    /// The task expects it: a probe, a negative test, a recovery it asks for.
+    Task,
+    /// No clear lead.
+    Unclear,
+}
+
+/// One errored function call of a measured run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ErrorSiteV1 {
+    pub site_id: String,
+    pub execution_id: String,
+    pub scenario_id: String,
+    pub run_id: String,
+    /// The `function_result` entry.
+    pub entry_id: String,
+    pub function_id: String,
+    /// The call's arguments and the error the Harness returned, clipped.
+    pub arguments: String,
+    pub error: String,
+    /// What the agent said before the call, and what it did next.
+    pub before: String,
+    pub after: String,
+    /// How the step that made the call ended: its stop reason and output
+    /// tokens, which tell a limit the Harness set from the model's own stop.
+    #[serde(default)]
+    pub step: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<SiteClassV1>,
+    /// The judge's probability of `class`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probability: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InsightSourceV1 {
+    Jev,
+    /// The default LLM, when Jev was not configured, did not answer or
+    /// decided no site.
+    Llm,
+}
+
+/// A Harness change worth trying, with the sites that show it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ImprovementPointV1 {
+    pub function_id: String,
+    pub summary: String,
+    /// `ErrorSiteV1::site_id`s.
+    pub sites: Vec<String>,
+    pub source: InsightSourceV1,
+}
+
+/// What the measured runs' transcripts show.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InsightV1 {
+    pub sites: Vec<ErrorSiteV1>,
+    #[serde(default)]
+    pub points: Vec<ImprovementPointV1>,
+    /// Who decided; absent before anyone did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<InsightSourceV1>,
+    pub reason: String,
+    /// Set before `judge::evaluate` is called, so a restart asks again under it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -19,9 +19,11 @@ use crate::error::EvalError;
 use crate::runtime::{
     call, dispatch, end, fail, reserve, settle, transition, Deps, BUS_TIMEOUT_MS,
 };
-use crate::{cost, ids, state};
+use crate::{cost, ids, insight, state};
 
 const JUDGE_TIMEOUT_MS: u64 = 60_000;
+/// The default LLM reads every site in one completion.
+const ANALYST_TIMEOUT_MS: u64 = 180_000;
 const TRIAGE_EVALUATION: &str = "findings";
 const TRIAGE_QUESTION: &str = "opportunity";
 /// The least the judge's choice must lead the next option by before the
@@ -470,6 +472,258 @@ fn criterion_text(criterion: &CriterionV1) -> String {
     }
 }
 
+/// Reads the measured runs' transcripts before any proposal: each errored
+/// call is a site Jev judges (whose doing it is); when Jev is not
+/// configured, does not answer or decides no site, the default LLM reads the
+/// sites. The Harness's sites become improvement points; none ends the cycle
+/// `no_action` before any paid proposal.
+pub async fn insight_stage(
+    deps: &Deps,
+    record: &CycleRecordV1,
+) -> Result<Option<CycleRecordV1>, EvalError> {
+    let Some(plan) = record.plan.clone() else {
+        return fail(deps, record, "an insight needs a frozen plan").await;
+    };
+    let key = record
+        .executions
+        .iter()
+        .find(|entry| {
+            entry.role == ExecutionRoleV1::Baseline && entry.state == ExecutionStateV1::Imported
+        })
+        .and_then(|entry| entry.admission_key.clone());
+    let Some(evidence) = (match key {
+        Some(key) => state::get_evidence(&deps.iii, &key).await?,
+        None => None,
+    }) else {
+        return fail(deps, record, "an insight needs the imported baseline").await;
+    };
+    let mut sites = insight::sites(
+        &evidence.execution_id,
+        &evidence.bundle,
+        &plan.parameters.scenarios,
+    );
+    let mut found = InsightV1 {
+        sites: Vec::new(),
+        points: Vec::new(),
+        source: None,
+        reason: String::new(),
+        request_id: None,
+        model: None,
+        usage: None,
+    };
+    let close = |found: InsightV1, next: Result<CycleStageV1, OutcomeCodeV1>| async move {
+        let detail = found.reason.clone();
+        let (status, stage) = match next {
+            Ok(stage) => (CycleStatusV1::Running, stage),
+            Err(_) => (CycleStatusV1::Completed, CycleStageV1::Done),
+        };
+        transition(
+            deps,
+            &record.cycle_id,
+            record.step,
+            status,
+            stage,
+            &detail,
+            |next_record| {
+                next_record.insight = Some(found.clone());
+                if let Err(code) = next {
+                    next_record.outcome = Some(CycleOutcomeV1 {
+                        code,
+                        detail: detail.clone(),
+                    });
+                }
+                Ok(())
+            },
+        )
+        .await
+    };
+    if sites.is_empty() {
+        found.reason = "the measured runs made no failed function call to read".into();
+        return close(found, Err(OutcomeCodeV1::NoAction)).await;
+    }
+    let summaries: BTreeMap<&str, &str> = record
+        .analyses
+        .iter()
+        .flat_map(|analysis| &analysis.scenarios)
+        .filter_map(|scenario| Some((scenario.scenario_id.as_str(), scenario.summary.as_deref()?)))
+        .collect();
+    // Jev first: one choice per site.
+    let mut no_jev = None;
+    match record
+        .config
+        .as_ref()
+        .and_then(|stored| stored.config.judge.clone())
+    {
+        None => no_jev = Some("no judge is configured (config.judge)".to_string()),
+        Some(judge) => {
+            let work = CycleWorkV1 {
+                work_id: format!("{}:insight", record.cycle_id),
+                kind: CycleWorkKindV1::Jev,
+                estimated_usd: judge.estimated_usd,
+                candidate: false,
+            };
+            if let cost::Reservation::OverLimit(detail) = reserve(deps, record, &work).await? {
+                return end(deps, record, OutcomeCodeV1::Budget, &detail).await;
+            }
+            let question = insight::question();
+            let request_id = format!("{}-insight", record.cycle_id);
+            found.request_id = Some(request_id.clone());
+            let request = EvaluateRequest {
+                options: Default::default(),
+                request_id: Some(request_id),
+                model: None,
+                timeout_ms: JUDGE_TIMEOUT_MS,
+                expires_at_unix_ms: None,
+                evaluations: sites
+                    .iter()
+                    .map(|site| Evaluation {
+                        id: site.site_id.clone(),
+                        state: insight::site_state(
+                            &plan.objective,
+                            summaries.get(site.scenario_id.as_str()).copied(),
+                            site,
+                        ),
+                        questions: BTreeMap::from([(insight::QUESTION.into(), question.clone())]),
+                    })
+                    .collect(),
+            };
+            let mut payload = serde_json::to_value(request)?;
+            payload["provider"] = json!(judge.provider);
+            let answered: Result<EvaluateResponse, EvalError> = call(
+                deps,
+                judge_contract::FUNCTION_ID,
+                payload,
+                JUDGE_TIMEOUT_MS + BUS_TIMEOUT_MS,
+            )
+            .await;
+            settle(deps, &record.cycle_id, &work.work_id, None).await?;
+            match answered {
+                Ok(EvaluateResponse::Ok {
+                    model,
+                    mut results,
+                    stats,
+                }) => {
+                    found.model = Some(model);
+                    found.usage = Some(serde_json::to_value(&stats)?);
+                    for site in &mut sites {
+                        let answer = results
+                            .remove(&site.site_id)
+                            .and_then(|mut result| result.answers.remove(insight::QUESTION))
+                            .filter(|answer| {
+                                judge_contract::validate_answer(&question, answer).is_ok()
+                            });
+                        if let Some(answer) = answer {
+                            let (class, probability) = insight::verdict(&answer);
+                            site.class = Some(class);
+                            site.probability = Some(probability);
+                        }
+                    }
+                    if sites.iter().any(|site| {
+                        site.class
+                            .is_some_and(|class| class != SiteClassV1::Unclear)
+                    }) {
+                        found.source = Some(InsightSourceV1::Jev);
+                        found.points = insight::points(&sites);
+                        found.reason = insight::tally(&sites);
+                    } else {
+                        no_jev = Some(format!("{}: no clear lead on any", insight::tally(&sites)));
+                    }
+                }
+                Ok(EvaluateResponse::Error { code, .. }) => {
+                    no_jev = Some(format!("Jev did not answer ({code:?})"));
+                }
+                Err(error) => no_jev = Some(format!("Jev did not answer ({error})")),
+            }
+        }
+    }
+    // The default LLM, when Jev could not tell.
+    if let Some(why) = no_jev {
+        let work = CycleWorkV1 {
+            work_id: format!("{}:analyst", record.cycle_id),
+            kind: CycleWorkKindV1::Investigation,
+            estimated_usd: insight::ANALYST_ESTIMATED_USD,
+            candidate: false,
+        };
+        if let cost::Reservation::OverLimit(detail) = reserve(deps, record, &work).await? {
+            return end(deps, record, OutcomeCodeV1::Budget, &detail).await;
+        }
+        let (system, user) = insight::analyst_prompt(&plan.objective, &sites);
+        let answered: Result<Value, EvalError> = call(
+            deps,
+            "router::complete",
+            json!({"model": insight::ANALYST_MODEL, "provider": insight::ANALYST_PROVIDER,
+                "system_prompt": system, "max_output_tokens": insight::ANALYST_MAX_OUTPUT,
+                "messages": [{"role": "user", "timestamp": ids::now_ms(),
+                    "content": [{"type": "text", "text": user}]}]}),
+            ANALYST_TIMEOUT_MS,
+        )
+        .await;
+        let cost = answered
+            .as_ref()
+            .ok()
+            .and_then(|reply| reply["usage"]["cost_usd"].as_f64());
+        settle(deps, &record.cycle_id, &work.work_id, cost).await?;
+        let read = answered
+            .map_err(|error| error.to_string())
+            .and_then(|reply| {
+                found.model = Some(insight::ANALYST_MODEL.into());
+                found.usage = Some(reply["usage"].clone());
+                let text: String = reply["message"]["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|part| part["text"].as_str())
+                    .collect();
+                insight::parse_points(&text, &sites)
+            });
+        match read {
+            Ok(points) => {
+                found.source = Some(InsightSourceV1::Llm);
+                found.reason = format!(
+                    "{why}; the default LLM ({}) read the {} failed call(s) and found {} point(s)",
+                    insight::ANALYST_MODEL,
+                    sites.len(),
+                    points.len()
+                );
+                found.points = points;
+            }
+            Err(error) => {
+                found.sites = sites;
+                found.reason =
+                    format!("{why}, and the default LLM could not read the transcripts: {error}");
+                return close(found, Err(OutcomeCodeV1::Inconclusive)).await;
+            }
+        }
+    }
+    found.sites = sites;
+    if found.points.is_empty() {
+        found.reason = format!(
+            "{}; none is a failure a Harness change could prevent",
+            found.reason
+        );
+        return close(found, Err(OutcomeCodeV1::NoAction)).await;
+    }
+    // The points stand; whether a change can be proven or tried is next.
+    if let Some(reason) = record.baseline.as_ref().and_then(|baseline| {
+        crate::decision::no_room(
+            &plan.criterion,
+            plan.sampling.runs_per_side,
+            &baseline.primary,
+        )
+    }) {
+        found.reason = format!("{}; {reason}", found.reason);
+        return close(found, Err(OutcomeCodeV1::NoAction)).await;
+    }
+    if candidate_config(record).is_none() {
+        found.reason = format!(
+            "{}; candidate work is not configured (config.candidate), so no change is tried",
+            found.reason
+        );
+        return close(found, Err(OutcomeCodeV1::Inconclusive)).await;
+    }
+    close(found, Ok(CycleStageV1::Proposal)).await
+}
+
 /// The proposal input, all of it supplied by the cycle: the frozen
 /// objective and criteria and the native evidence the analyses recorded,
 /// led by what the agent did in a baseline run that lost the goal
@@ -487,16 +741,45 @@ fn proposal_input(
             MAX_TRANSCRIPT,
         )
     });
-    let mut evidence: Vec<CandidateEvidenceV1> = transcript
-        .map(|(run_id, text)| CandidateEvidenceV1 {
-            source: format!(
-                "e2e baseline run {run_id} of {}: its transcript, one line per message",
-                plan.criterion.scenario_id
-            ),
-            excerpt: text,
+    // What the insight read in the transcripts leads: each point with the
+    // failed calls that show it.
+    let mut evidence: Vec<CandidateEvidenceV1> = record
+        .insight
+        .iter()
+        .flat_map(|insight| {
+            insight.points.iter().map(|point| CandidateEvidenceV1 {
+                source: format!(
+                    "improvement point ({:?}) on {}: {}",
+                    point.source, point.function_id, point.summary
+                ),
+                excerpt: insight
+                    .sites
+                    .iter()
+                    .filter(|site| point.sites.contains(&site.site_id))
+                    .map(|site| {
+                        format!(
+                            "run {} entry {}: called {} with {}\nerror: {}\nbefore: {}\nnext: {}",
+                            site.run_id,
+                            site.entry_id,
+                            site.function_id,
+                            site.arguments,
+                            site.error,
+                            site.before,
+                            site.after
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n\n"),
+            })
         })
-        .into_iter()
         .collect();
+    evidence.extend(transcript.map(|(run_id, text)| CandidateEvidenceV1 {
+        source: format!(
+            "e2e baseline run {run_id} of {}: its transcript, one line per message",
+            plan.criterion.scenario_id
+        ),
+        excerpt: text,
+    }));
     evidence.extend(
         findings_of(record, true)
             .into_iter()
@@ -1030,15 +1313,22 @@ pub async fn validation_stage(
         .into_iter()
         .find(|(_, name)| !proof_imported(record, name))
     else {
-        return fail(deps, record, "every proof round is imported but nothing decided").await;
+        return fail(
+            deps,
+            record,
+            "every proof round is imported but nothing decided",
+        )
+        .await;
     };
     let parameters = ExecutionParametersV1 {
         where_: validation.where_,
-        stack: Some(validation.source_stack(if role == ExecutionRoleV1::Control {
-            &base_sha
-        } else {
-            &sha
-        })),
+        stack: Some(
+            validation.source_stack(if role == ExecutionRoleV1::Control {
+                &base_sha
+            } else {
+                &sha
+            }),
+        ),
         runs: 1,
         ..plan.parameters.clone()
     };

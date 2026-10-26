@@ -1294,7 +1294,8 @@ async fn a_validation_that_did_not_run_the_candidate_commit_is_inconclusive() {
     let (cycle_id, _) = Box::pin(rig.reach_validation()).await;
     // The E2E recorded the base again: what the actor committed is not proof.
     let base = rig.base();
-    rig.prove(side(TOKENS, LOST), side(TOKENS, FIXED), &base).await;
+    rig.prove(side(TOKENS, LOST), side(TOKENS, FIXED), &base)
+        .await;
     let decision = rig.cycle(&cycle_id).await.decision.unwrap();
     assert_eq!(
         decision.outcome,
@@ -1556,9 +1557,17 @@ async fn a_baseline_that_already_holds_the_lost_award_ends_before_any_paid_propo
     let again = rig.cycle(&retry).await;
     assert_eq!(again.retry_of.as_deref(), Some(cycle_id.as_str()));
     assert_eq!(again.input, record.input);
-    assert_eq!(again.triage, record.triage, "the triage that proceeded is reused");
+    assert_eq!(
+        again.triage, record.triage,
+        "the triage that proceeded is reused"
+    );
     assert_eq!(rig.world().calls_to("judge::evaluate").len(), judged);
-    assert_eq!(again.stage, CycleStageV1::AwaitingExecution, "{:?}", again.history);
+    assert_eq!(
+        again.stage,
+        CycleStageV1::AwaitingExecution,
+        "{:?}",
+        again.history
+    );
     assert_eq!(rig.world().e2e.dispatched.len(), 2, "a new baseline");
     // This time the baseline loses the award: the cycle goes on to a proposal.
     rig.world()
@@ -1567,7 +1576,12 @@ async fn a_baseline_that_already_holds_the_lost_award_ends_before_any_paid_propo
     rig.changed("plan-2").await;
     let again = rig.cycle(&retry).await;
     assert!(again.outcome.is_none(), "{:?}", again.outcome);
-    assert_eq!(rig.world().calls_to("harness::send").len(), 1, "{:?}", again.history);
+    assert_eq!(
+        rig.world().calls_to("harness::send").len(),
+        1,
+        "{:?}",
+        again.history
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -1786,8 +1800,16 @@ async fn the_candidate_is_compared_with_base_rounds_run_beside_it_not_the_earlie
     assert_eq!(
         order,
         [
-            "candidate-1", "control-1", "control-2", "candidate-2", "candidate-3", "control-3",
-            "control-4", "candidate-4", "candidate-5", "control-5"
+            "candidate-1",
+            "control-1",
+            "control-2",
+            "candidate-2",
+            "candidate-3",
+            "control-3",
+            "control-4",
+            "candidate-4",
+            "candidate-5",
+            "control-5"
         ]
     );
     for (name, yaml) in &proof {

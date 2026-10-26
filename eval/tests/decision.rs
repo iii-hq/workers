@@ -121,6 +121,7 @@ fn record() -> CycleRecordV1 {
         candidate: None,
         pull_request: None,
         retry_of: None,
+        insight: None,
     }
 }
 

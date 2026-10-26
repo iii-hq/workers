@@ -95,6 +95,7 @@ export type CycleStage =
   | 'awaiting_execution'
   | 'analysis'
   | 'triage'
+  | 'insight'
   | 'proposal'
   | 'candidate'
   | 'validation'
@@ -400,6 +401,45 @@ export interface CycleRecord {
   pull_request?: PullRequest
   /** The ended cycle this one measures again, from its finding. */
   retry_of?: string
+  /** What the measured runs' transcripts show, read before the proposal. */
+  insight?: Insight
+}
+
+/** `SiteClassV1`: whose doing one failed call is. */
+export type SiteClass = 'harness' | 'model' | 'task' | 'unclear'
+
+/** `ErrorSiteV1`: one failed function call of a measured run. */
+export interface ErrorSite {
+  site_id: string
+  execution_id: string
+  scenario_id: string
+  run_id: string
+  entry_id: string
+  function_id: string
+  arguments: string
+  error: string
+  before: string
+  after: string
+  step?: string
+  class?: SiteClass
+  probability?: number
+}
+
+/** `ImprovementPointV1`: a Harness change worth trying, with the sites that show it. */
+export interface ImprovementPoint {
+  function_id: string
+  summary: string
+  sites: string[]
+  source: 'jev' | 'llm'
+}
+
+/** `InsightV1`. */
+export interface Insight {
+  sites: ErrorSite[]
+  points?: ImprovementPoint[]
+  source?: 'jev' | 'llm'
+  reason: string
+  model?: string
 }
 
 /** `PullRequestV1` (eval/src/pull_request.rs). `created`: opened by this cycle rather than found. */

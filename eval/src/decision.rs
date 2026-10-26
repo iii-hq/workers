@@ -553,7 +553,9 @@ pub fn pair_evidence(
                     .join("+"),
                 runs: executions
                     .iter()
-                    .flat_map(|(_, bundle)| crate::evidence::runs_of(bundle, scenario_id, &patterns))
+                    .flat_map(|(_, bundle)| {
+                        crate::evidence::runs_of(bundle, scenario_id, &patterns)
+                    })
                     .collect(),
                 n: 0,
                 mean: None,
@@ -599,7 +601,8 @@ pub fn merge_sides(sides: &[DecisionSideV1]) -> Option<DecisionSideV1> {
     for other in rest {
         let other = serde_json::to_value(other).ok()?;
         agree(&mut merged, &other, &["execution_id", "identity"]);
-        if let (Some(identity), Some(theirs)) = (merged.get_mut("identity"), other.get("identity")) {
+        if let (Some(identity), Some(theirs)) = (merged.get_mut("identity"), other.get("identity"))
+        {
             agree(identity, theirs, &[]);
         }
     }

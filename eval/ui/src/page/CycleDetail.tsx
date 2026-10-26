@@ -68,7 +68,9 @@ import type {
   CycleResultResponse,
   CycleUsage,
   Evidence,
+  Insight,
   LoopConfig,
+  SiteClass,
 } from '../types'
 import { ago, Caret, MarkIcon, PANEL, StatusChip, ToneIcon, usd } from './bits'
 import type { Nav } from './index'
@@ -387,6 +389,7 @@ function Cycle({
             {narrow && action ? <div className="eval-ui-wide">{action}</div> : null}
           </>
         )}
+        {cycle.insight ? <Transcripts insight={cycle.insight} /> : null}
         {narrow ? <Budget usage={usage} /> : null}
         <Path cycle={cycle} current={current} narrow={narrow} />
         {/* The rule matters once a change can be judged; an ended cycle that never got one keeps it in the record. */}
@@ -482,6 +485,95 @@ function Result({
   )
 }
 
+const WHOSE: Record<SiteClass, { label: string; tone: Tone }> = {
+  harness: { label: 'Harness', tone: 'warn' },
+  model: { label: 'Model', tone: 'neutral' },
+  task: { label: 'Task', tone: 'neutral' },
+  unclear: { label: 'Unclear', tone: 'neutral' },
+}
+const clipText = (text: string, at: number) => (text.length > at ? `${text.slice(0, at)}…` : text)
+
+/** What the insight read in the measured runs' transcripts: the points a change starts from, and each failed call. */
+function Transcripts({ insight }: { insight: Insight }) {
+  const points = insight.points ?? []
+  const by = insight.source === 'llm' ? `the default LLM${insight.model ? ` (${insight.model})` : ''}` : 'Jev'
+  return (
+    <Panel>
+      <PanelHeader className="eval-ui-panel-head">
+        <span>What the transcripts show</span>
+        <Badge className="eval-ui-num">{insight.sites.length}</Badge>
+      </PanelHeader>
+      <PanelBody className="eval-ui-stack">
+        <p className="eval-ui-lead">{sentence(insight.reason)}.</p>
+        {points.length ? (
+          <div className="eval-ui-stack-sm">
+            <Eyebrow as="p">Improvement points · read by {by}</Eyebrow>
+            <ul className="eval-ui-lost">
+              {points.map((point) => (
+                <li key={`${point.function_id}:${point.sites[0]}`}>
+                  <p>
+                    <span className="eval-ui-mono">{point.function_id}</span>
+                    <span className="eval-ui-num eval-ui-faint">
+                      {' · '}
+                      {plural(point.sites.length, 'failed call')}
+                    </span>
+                  </p>
+                  <p className="eval-ui-faint">{point.summary}</p>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        {insight.sites.length ? (
+          <details className="eval-ui-details">
+            <summary>
+              <span>
+                Failed calls · <span className="eval-ui-num">{insight.sites.length}</span>
+              </span>
+              <Caret />
+            </summary>
+            <TableViewport>
+              <Table density="compact" inset>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Function</TableHead>
+                    <TableHead>Whose</TableHead>
+                    <TableHead>Error</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {insight.sites.map((site) => (
+                    <TableRow key={site.site_id}>
+                      <TableCell className="eval-ui-mono eval-ui-nowrap">{site.function_id}</TableCell>
+                      <TableCell>
+                        {site.class ? (
+                          <StatusChip
+                            tone={WHOSE[site.class].tone}
+                            label={`${WHOSE[site.class].label}${
+                              site.probability !== undefined ? ` ${Math.round(site.probability * 100)}%` : ''
+                            }`}
+                          />
+                        ) : (
+                          <span className="eval-ui-faint">not judged</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <span title={`${site.scenario_id} · run ${site.run_id}\nnext: ${site.after}`}>
+                          {clipText(site.error, 220)}
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableViewport>
+          </details>
+        ) : null}
+      </PanelBody>
+    </Panel>
+  )
+}
+
 // ── where the cycle is ──────────────────────────────────────────────────
 
 interface Step {
@@ -562,6 +654,16 @@ function steps(cycle: CycleRecord, current: LoopConfig | null): Step[][] {
           ),
         }
       : executionStep('baseline', 'Baseline'),
+    cycle.insight
+      ? {
+          mark: cycle.insight.points?.length ? 'done' : 'stop',
+          label: 'Transcripts read',
+          fact: `${plural(cycle.insight.points?.length ?? 0, 'improvement point')} in ${plural(
+            cycle.insight.sites.length,
+            'failed call',
+          )} · ${cycle.insight.source === 'llm' ? 'default LLM' : 'Jev'}`,
+        }
+      : null,
   ]
   const proposal = cycle.proposal?.proposal
   const candidate = cycle.candidate?.candidate
