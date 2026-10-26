@@ -9,6 +9,7 @@ Outputs a JSON object to stdout AND (if $GITHUB_OUTPUT is set) writes keys:
     llm_router_integration        : bool, must the live llm-router suite run
     provider_contract            : providers whose hermetic contract must run
     crates                        : shared crates/<name> dirs with source changes
+    native_ui                     : bool, must the native-ui job (SDK + apps) run
     any                           : bool, any worker or crate change
 """
 from __future__ import annotations
@@ -124,6 +125,29 @@ CRATE_FIXTURE_PREFIXES = {
 # never source_changed).
 SHARED_TEST_SUPPORT = {
     "judge-typesafe/tests/support/": ("judge", "judge-openai"),
+}
+
+# Shared JS packages (packages/<dir>/) whose code ends up INSIDE a worker's
+# binary: the worker's build.rs builds a sub-project that bundles the package
+# (packages/native-ui → <worker>/native-ui/dist/native.js, embedded with
+# include_str!). A source change there fans out, like a crate's, to every
+# worker with a sub-project whose package.json depends on the package (found
+# by name, so a new native app needs no edit here). packages/console-ui is
+# deliberately absent: worker UIs keep it external (the console serves the
+# real module), so its changes do not change a worker's artifact.
+PACKAGES_DIR = "packages"
+BUNDLED_PACKAGES = ("native-ui",)
+
+# The native-ui job (ci.yml) runs the @iii-dev/native-ui SDK's suite and every
+# <worker>/native-ui app's suite. It runs when the SDK, an app, the crate that
+# serves the bundles, the root pnpm workspace or this CI changes.
+NATIVE_UI_PREFIXES = ("packages/native-ui/", "crates/native-ui/")
+NATIVE_UI_APP_DIR = "native-ui"
+NATIVE_UI_INFRA_PATHS = {
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    ".github/scripts/discover_changed_workers.py",
+    ".github/workflows/ci.yml",
 }
 
 # Docs-only files inside a crate dir. Everything else — including Cargo.toml
@@ -293,6 +317,41 @@ def crate_dependents(repo_root: pathlib.Path, crate: str, workers: set[str]) -> 
     return out
 
 
+def package_dependents(repo_root: pathlib.Path, package: str, workers: set[str]) -> list[str]:
+    """Workers with a package.json (the worker's own, or a direct sub-project's:
+    ui/, web/, native-ui/) that names packages/<package>'s npm name.
+
+    Textual match on the quoted name, loose like crate_dependents: a false
+    positive only adds a worker to the matrix.
+    """
+    try:
+        name = json.loads((repo_root / PACKAGES_DIR / package / "package.json").read_text())["name"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+    needle = f'"{name}"'
+    out = []
+    for w in sorted(workers):
+        manifests = [repo_root / w / "package.json", *sorted((repo_root / w).glob("*/package.json"))]
+        for manifest in manifests:
+            try:
+                text = manifest.read_text()
+            except OSError:
+                continue
+            if needle in text:
+                out.append(w)
+                break
+    return out
+
+
+def native_ui_changed(files: list[str]) -> bool:
+    return any(
+        f in NATIVE_UI_INFRA_PATHS
+        or f.startswith(NATIVE_UI_PREFIXES)
+        or f.split("/")[1:2] == [NATIVE_UI_APP_DIR]
+        for f in files
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--base", required=True, help="base git ref")
@@ -357,6 +416,10 @@ def main(argv: list[str] | None = None) -> int:
     for prefix, dependents in SHARED_TEST_SUPPORT.items():
         if any(f.startswith(prefix) for f in files):
             forced.update(set(dependents) & workers)
+    for package in BUNDLED_PACKAGES:
+        prefix = f"{PACKAGES_DIR}/{package}/"
+        if any(f.startswith(prefix) and not is_crate_metadata(f[len(prefix):]) for f in files):
+            forced.update(package_dependents(repo_root, package, workers))
     changed = sorted(set(touched) | forced | catalog_changed)
     source_changed = sorted(
         {
@@ -380,6 +443,7 @@ def main(argv: list[str] | None = None) -> int:
         (),
     )
     provider_contract = provider_contract_selection(files, workers)
+    native_ui = native_ui_changed(files)
     by_language: dict[str, list[str]] = {"rust": [], "go": [], "node": [], "python": []}
     for w in changed:
         lang = language_of(worker_specs[w])
@@ -396,6 +460,7 @@ def main(argv: list[str] | None = None) -> int:
         "llm_router_integration": llm_router_integration,
         "provider_contract": provider_contract,
         "crates": changed_crates,
+        "native_ui": native_ui,
     }
     print(json.dumps(payload))
 
@@ -417,6 +482,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             f.write(f"provider_contract={json.dumps(provider_contract)}\n")
             f.write(f"crates={json.dumps(changed_crates)}\n")
+            f.write(f"native_ui={'true' if native_ui else 'false'}\n")
             f.write(f"any={'true' if any_change else 'false'}\n")
 
     return 0

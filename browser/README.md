@@ -41,6 +41,31 @@ composer as an actionable ref:
   <img src="https://raw.githubusercontent.com/iii-hq/workers/main/browser/assets/pick.png" alt="pick mode highlighting an element and inserting it into the chat composer" width="100%" />
 </a>
 
+## In the iii app
+
+The worker also publishes a native app, `browser::native-ui`: a bundle
+built from [`native-ui/`](native-ui) by `build.rs` (next to the console UI),
+embedded in the binary and served by its hash. The iii IDE app shows it as
+the Browser app, on a phone, a tablet or the desktop: the tab list
+(incognito tabs under their own header), the live page with touch (a tap
+clicks, a drag scrolls, a long press is the page's menu) and the page's
+keyboard, the address bar with back, forward and find, and console and
+network cards that follow the page live. How a worker ships such an app is
+in [`docs/sops/native-ui.md`](../docs/sops/native-ui.md).
+
+The app drives the same tabs as the console, through what the worker gives
+a native viewer (details in
+[Live view for native viewers](#live-view-for-native-viewers)):
+
+- a named viewer with a lease (`viewer_id`, `lease_ms`), renewed while the
+  page is on screen, so a phone that goes away stops holding the tab;
+- `scale`, the screen's density, so frames are sharp up to `frame_density`
+  (default 2; the app asks for 1 on a metered network);
+- `browser::resize` with `mobile: true` and `fit: true` at the size of its
+  view: the page sees a phone (touch, an Android user agent) and fills it;
+- `browser::act` with `ghost_cursor: false`: a person's own taps draw no
+  agent cursor.
+
 ## Tabs, sleep, and incognito
 
 A session is a tab in the worker's browser. Tabs share one Chromium process
@@ -79,7 +104,9 @@ visited pages, back/forward stack) and come back after a worker restart.
 - **Live view.** Every tab renders in its own headless window (a window
   shows only its active tab, so tabs sharing one would freeze), and the
   console gets frames at up to 30 fps, latest frame first, whatever the bus
-  latency.
+  latency. Native viewers (the iii app) hold the view through a lease and
+  can ask for sharper frames and a real phone page; see
+  [Live view for native viewers](#live-view-for-native-viewers).
 
 ## Install
 
@@ -235,7 +262,7 @@ each click/type/select/scroll from the table, text comes from the caller's
 `browser::act` (click/hover/type/select/press/scroll by ref or coordinates,
 left/right/middle and double-click; ref targets are scrolled into view and
 refused when disabled, hidden or covered; typing into a field by ref replaces
-its value), `browser::evaluate`
+its value; `scroll` takes `delta_y` down and `delta_x` sideways), `browser::evaluate`
 (JS expression), `browser::screenshot` (viewable JPEG), `browser::history`
 (back/forward/reload, surviving sleep and restarts), `browser::history::list`
 (visited pages for a history panel), `browser::find-in-page` (find bar:
@@ -244,7 +271,8 @@ highlight matches, step next/previous), `browser::zoom` (page zoom
 / `browser::download` / `browser::download::remove` (files the tab
 downloaded), `browser::clear-data` (this site's cookies, storage, and the
 cache), `browser::clear-browser-data` (the whole profile), `browser::resize`
-(live viewport size / device presets), `browser::cookies::list` / `set` /
+(live viewport size / device presets; `mobile: true` emulates a phone),
+`browser::cookies::list` / `set` /
 `clear` (import a cookie file; clear is per site), `browser::network::read`
 (requests + failures), `browser::dom::read` (DOM tree with refs),
 `browser::styles::read` / `browser::styles::write` (computed styles + live
@@ -514,7 +542,8 @@ browser:
   default_timeout_ms: 30000 # navigation/act/evaluate default
   max_timeout_ms: 120000    # ceiling; caller timeout_ms clamped DOWN to this
   inactive_after_ms: 1800000 # unused, unwatched tabs sleep after this (incognito closes); 0 disables
-  screenshot_quality: 60    # JPEG quality 1-100
+  screenshot_quality: 60    # JPEG quality 1-100 (screenshots and live-view frames)
+  frame_density: 2          # 1-3: device pixels per CSS pixel the live view can stream; see below
   allowed_schemes: [http, https, file]  # `file` lets a local document be rendered; see below
   max_snapshot_nodes: 2000  # a11y outline size cap
   default_origin_policy:    # omitted fields default to allow
@@ -549,6 +578,24 @@ browser:
     adaptive_storage_path: data/scrapling/elements.db # relative to III_COMPOSE_DIR
     adaptive_max_bytes: 268435456 # safe only; compat preserves the unbounded wrapper behavior
 ```
+
+`frame_density` (default 2) launches Chromium with
+`--force-device-scale-factor`, so a native viewer on a dense screen can ask
+for frames at up to that many pixels per CSS pixel (see
+[Live view for native viewers](#live-view-for-native-viewers)). At 1 a
+phone's view gets about 41% of the pixels it shows, and text is blurry; at
+2, about 82%. Measured against 1, the tap-to-frame time (about 90 ms) and
+the frame rate (28-30) do not change; a viewer streaming at scale 2
+receives about 2.5x the bytes per frame, and only while the page changes (a
+412x915 text page at quality 60: about 45 KB per frame at 1x, 113 KB at 2x,
+plus a third more as base64 on the bus). The setting is the whole
+browser's, so every tab, watched or not and agent-only ones included,
+rasterizes at that density: about 10-15% more Chromium memory (some 48 MB
+for the first tab, 16-19 MB for each further one, 30-40 MB more for a
+watched one). On a small host running many agent tabs, set it to 1.
+Screenshots, PDFs, picks and `browser::act` coordinates stay in CSS pixels
+whatever the setting, since every tab keeps an explicit device scale factor
+of 1, and the console keeps getting CSS-sized frames.
 
 `file` is on the default scheme list so a local document can be opened and
 rendered, which is how `document::ocr` gets pixels out of a scanned PDF. It is
@@ -600,6 +647,69 @@ session bindings accept an optional `{ "session_id": "..." }` filter;
 and treat `browser::console::read` as the durable record. `browser::picked`
 elements carry a `ref` that `browser::act` accepts directly, so a human pick
 flows straight into agent action.
+
+## Live view for native viewers
+
+The console's live view is anonymous: each `browser::screencast::start`
+counts one more viewer and each `browser::screencast::stop` one fewer. A
+native app cannot promise that stop (the OS may kill it in the background),
+so it names itself instead and holds a lease:
+
+```json
+{ "session_id": "b1", "viewer_id": "android-7f3c-12-1", "lease_ms": 20000, "scale": 2.63 }
+```
+
+- `viewer_id` (up to 128 characters) makes `screencast::start` idempotent:
+  the first call joins (one screencast consumer, one pane viewer unless
+  `preview`), every later one only renews the lease and updates `scale`.
+  Renew well inside `lease_ms` (default 20000, held to 5000..120000; the
+  app renews every 6 s). `screencast::stop` with the same `viewer_id`
+  releases it; an unknown or lapsed id releases nothing.
+- A viewer whose lease lapsed is dropped within about two seconds (a reaper
+  runs every 2 s; the worker logs `screencast viewer lease expired`). The
+  screencast stops if nobody else watches, and the tab, unwatched again,
+  sleeps on its `inactive_after_ms` like any other. Leases live with the
+  page: a tab that sleeps or closes drops them, and the next renewal after
+  a wake joins afresh.
+- `scale` (0.5..3, default 1) is the frame pixels the viewer wants per CSS
+  pixel. The cast runs at the largest named viewer's scale, held to
+  `frame_density` (so at a `frame_density` of 1 only a scale below 1
+  changes anything: smaller frames, less to send) and to at least 1 while
+  the console also watches. A change restarts the cast. Frames keep reporting
+  `width`/`height` as the viewport in CSS pixels, the coordinate space of
+  `browser::act`, whatever the JPEG's own size.
+- Every restart of the cast (a viewer joining, a resize, a navigation, a
+  change of scale) brings a frame of the current viewport with a newer
+  `frame_seq`, even on a page that never repaints: Chromium does not always
+  send one there (the frame of a restart can come at the old size, which
+  is never published, or not at all), so when none has gone out 150 ms
+  after the restart the worker captures the visible viewport, sized like
+  the cast's frames, and publishes it.
+
+`browser::resize` with `mobile: true` makes the tab a phone the page can
+see: the mobile viewport, touch input (`navigator.maxTouchPoints` 5,
+`(pointer: coarse)`), and an Android Chrome user agent of the running
+Chromium's major version with matching client hints
+(`navigator.userAgentData.mobile`, platform `Android`). A left click from
+`browser::act` then arrives as a tap (`Input.dispatchTouchEvent`: touch
+events, then the click the page makes of them). `mobile: false` (or
+omitting it) restores the desktop page exactly as the tab opened it. The
+response carries `mobile` (the mode in force) and `mode_changed`: the user
+agent reaches the page on its next load, so reload once when it is true. A
+pane fit that is only grown because several viewers watch keeps the mode.
+The emulation lives with the page: a tab that slept wakes as a desktop at
+the configured viewport, so a viewer resizes again when it reattaches.
+
+`browser::act` `scroll` takes `delta_x` (positive scrolls right) next to
+`delta_y`; a scroll that names only `delta_x` moves sideways only, and one
+that names neither still pages down 600 px; each delta is held to
+±100 000 px, and `click_count` to 1–3. A viewer sends its person's
+taps and drags with `ghost_cursor: false`: the green arrow that marks an
+agent's actions for whoever watches is for agents only.
+
+Every tab opens on `about:blank` before its first page; `browser::history`
+never steps back (or forward) onto it, so Back from a tab's first page
+answers `moved: false` at once.
 
 ## Element picking
 

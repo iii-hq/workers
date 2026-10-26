@@ -48,7 +48,7 @@ Fail-soft: an unavailable router just skips the tier (named in the report's `not
 - **supersede**: a state change ("moved to", "switched to", a rescheduled date). The outdated record retires in favour of the current one, which is the one stated last.
 - **nothing**: distinct facts on one topic (two allergies, two projects). This is the normal answer.
 
-Every change goes through `memory::supersede` and carries the judge's one-sentence `reason` on memory's `item-changed` events. The design follows Hindsight's consolidator (`hindsight_api/engine/consolidation/`):
+Every change goes through `memory::supersede` and carries the judge's one-sentence `reason` on memory's `item-changed` events. How it works:
 
 - **Candidates.** Neighbours come from the raw lexical and raw semantic `memory::recall` arms, interleaved, because a fused rank buries the near-duplicate.
 - **Targets.** The judge may only pair a memory with one of its *own* candidates, through short per-batch aliases.

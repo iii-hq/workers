@@ -1,0 +1,503 @@
+{
+  "name": "design-examples",
+  "description": "The exact json-v0 strings of design §5.7 (the same as the host decoding tests), each with its decoded form (named ops; enum and event names under \"readable\") and the conformance flow that reproduces it byte for byte (an excerpt: as the prefix of a message).",
+  "catalog": 1,
+  "examples": [
+    {
+      "id": "counter.ready",
+      "dir": "fromVm",
+      "message": "[[23,{\"sdk\":\"0.1.0\",\"catalog\":1,\"features\":[\"ops.json.v0\",\"list.splice.v1\",\"text.handshake.v1\",\"remote-screen.v1\"],\"pages\":[{\"name\":\"root\",\"modal\":false,\"fullScreen\":false}]}]]",
+      "decoded": [
+        {
+          "op": "ready",
+          "info": {
+            "sdk": "0.1.0",
+            "catalog": 1,
+            "features": ["ops.json.v0", "list.splice.v1", "text.handshake.v1", "remote-screen.v1"],
+            "pages": [
+              {
+                "name": "root",
+                "modal": false,
+                "fullScreen": false
+              }
+            ]
+          }
+        }
+      ],
+      "flow": "counter.json"
+    },
+    {
+      "id": "counter.init",
+      "dir": "toVm",
+      "message": "[[1,{\"catalog\":1,\"features\":[\"ops.json.v0\",\"list.splice.v1\",\"text.handshake.v1\",\"remote-screen.v1\"],\"host\":\"android 0.1.0\",\"engine\":\"quickjs-ng 0.17.0\",\"app\":{\"key\":\"worker:demo\",\"ns\":\"demo\"},\"env\":{\"windowClass\":\"compact\",\"posture\":\"flat\",\"platform\":\"android\",\"visible\":true,\"theme\":\"dark\",\"locale\":\"en-US\",\"online\":true}}],[6,1,\"root\",{}]]",
+      "decoded": [
+        {
+          "op": "init",
+          "info": {
+            "catalog": 1,
+            "features": ["ops.json.v0", "list.splice.v1", "text.handshake.v1", "remote-screen.v1"],
+            "host": "android 0.1.0",
+            "engine": "quickjs-ng 0.17.0",
+            "app": {
+              "key": "worker:demo",
+              "ns": "demo"
+            },
+            "env": {
+              "windowClass": "compact",
+              "posture": "flat",
+              "platform": "android",
+              "visible": true,
+              "theme": "dark",
+              "locale": "en-US",
+              "online": true
+            }
+          }
+        },
+        {
+          "op": "mount",
+          "page": 1,
+          "name": "root",
+          "params": {}
+        }
+      ],
+      "flow": "counter.json"
+    },
+    {
+      "id": "counter.mount",
+      "dir": "fromVm",
+      "message": "[[1,1,40],[2,1,16,\"Demo\"],[1,2,1],[2,2,16,12],[2,2,8,16],[1,3,10],[2,3,16,\"Count 0\"],[2,3,17,7],[3,2,0,0,3],[1,4,20],[2,4,16,\"Add\"],[2,4,17,1],[2,4,2,2],[3,2,0,1,4],[3,1,0,0,2],[7,1,1]]",
+      "decoded": [
+        {
+          "op": "create",
+          "id": 1,
+          "type": "Page"
+        },
+        {
+          "op": "set",
+          "id": 1,
+          "prop": "title",
+          "value": "Demo"
+        },
+        {
+          "op": "create",
+          "id": 2,
+          "type": "Column"
+        },
+        {
+          "op": "set",
+          "id": 2,
+          "prop": "gap",
+          "value": 12
+        },
+        {
+          "op": "set",
+          "id": 2,
+          "prop": "padding",
+          "value": 16
+        },
+        {
+          "op": "create",
+          "id": 3,
+          "type": "Text"
+        },
+        {
+          "op": "set",
+          "id": 3,
+          "prop": "text",
+          "value": "Count 0"
+        },
+        {
+          "op": "set",
+          "id": 3,
+          "prop": "role",
+          "value": 7,
+          "readable": "title"
+        },
+        {
+          "op": "insert",
+          "parent": 2,
+          "slot": "children",
+          "index": 0,
+          "child": 3
+        },
+        {
+          "op": "create",
+          "id": 4,
+          "type": "Button"
+        },
+        {
+          "op": "set",
+          "id": 4,
+          "prop": "text",
+          "value": "Add"
+        },
+        {
+          "op": "set",
+          "id": 4,
+          "prop": "kind",
+          "value": 1,
+          "readable": "primary"
+        },
+        {
+          "op": "set",
+          "id": 4,
+          "prop": "events",
+          "value": 2,
+          "readable": ["press"]
+        },
+        {
+          "op": "insert",
+          "parent": 2,
+          "slot": "children",
+          "index": 1,
+          "child": 4
+        },
+        {
+          "op": "insert",
+          "parent": 1,
+          "slot": "body",
+          "index": 0,
+          "child": 2
+        },
+        {
+          "op": "root",
+          "page": 1,
+          "id": 1
+        }
+      ],
+      "flow": "counter.json"
+    },
+    {
+      "id": "counter.press",
+      "dir": "toVm",
+      "message": "[[2,4,1,[]]]",
+      "decoded": [
+        {
+          "op": "event",
+          "node": 4,
+          "event": "press",
+          "args": []
+        }
+      ],
+      "flow": "counter.json"
+    },
+    {
+      "id": "counter.update",
+      "dir": "fromVm",
+      "message": "[[2,3,16,\"Count 1\"]]",
+      "decoded": [
+        {
+          "op": "set",
+          "id": 3,
+          "prop": "text",
+          "value": "Count 1"
+        }
+      ],
+      "flow": "counter.json"
+    },
+    {
+      "id": "list.mount",
+      "dir": "fromVm",
+      "message": "[[1,10,30],[2,10,16,\"id\"],[1,11,31],[2,11,16,{\"$item\":\"title\"}],[2,11,17,{\"$item\":\"url\"}],[2,11,21,true],[2,11,2,6],[3,10,1,0,11],[8,10,0,0,[{\"id\":\"s1\",\"title\":\"Example Domain\",\"url\":\"example.com\"},{\"id\":\"s2\",\"title\":\"iii\",\"url\":\"iii.dev\"}]]]",
+      "excerpt": "The ops of the List; in a whole message the List is then attached (here [7,1,10], the root of page 1).",
+      "decoded": [
+        {
+          "op": "create",
+          "id": 10,
+          "type": "List"
+        },
+        {
+          "op": "set",
+          "id": 10,
+          "prop": "keyField",
+          "value": "id"
+        },
+        {
+          "op": "create",
+          "id": 11,
+          "type": "ListRow"
+        },
+        {
+          "op": "set",
+          "id": 11,
+          "prop": "title",
+          "value": {
+            "$item": "title"
+          }
+        },
+        {
+          "op": "set",
+          "id": 11,
+          "prop": "subtitle",
+          "value": {
+            "$item": "url"
+          }
+        },
+        {
+          "op": "set",
+          "id": 11,
+          "prop": "subtitleMono",
+          "value": true
+        },
+        {
+          "op": "set",
+          "id": 11,
+          "prop": "events",
+          "value": 6,
+          "readable": ["press", "longPress"]
+        },
+        {
+          "op": "insert",
+          "parent": 10,
+          "slot": "template0",
+          "index": 0,
+          "child": 11
+        },
+        {
+          "op": "listSplice",
+          "list": 10,
+          "start": 0,
+          "deleteCount": 0,
+          "items": [
+            {
+              "id": "s1",
+              "title": "Example Domain",
+              "url": "example.com"
+            },
+            {
+              "id": "s2",
+              "title": "iii",
+              "url": "iii.dev"
+            }
+          ]
+        }
+      ],
+      "flow": "list.json"
+    },
+    {
+      "id": "list.press",
+      "dir": "toVm",
+      "message": "[[3,10,\"s2\",11,1,[]]]",
+      "decoded": [
+        {
+          "op": "itemEvent",
+          "list": 10,
+          "key": "s2",
+          "node": 11,
+          "event": "press",
+          "args": []
+        }
+      ],
+      "flow": "list.json"
+    },
+    {
+      "id": "list.update",
+      "dir": "fromVm",
+      "message": "[[8,10,1,1,[{\"id\":\"s2\",\"title\":\"iii — More application.\",\"url\":\"iii.dev\"}]]]",
+      "decoded": [
+        {
+          "op": "listSplice",
+          "list": 10,
+          "start": 1,
+          "deleteCount": 1,
+          "items": [
+            {
+              "id": "s2",
+              "title": "iii — More application.",
+              "url": "iii.dev"
+            }
+          ]
+        }
+      ],
+      "flow": "list.json"
+    },
+    {
+      "id": "text.edit",
+      "dir": "toVm",
+      "message": "[[4,20,2,\"ab\"]]",
+      "context": {
+        "20": "TextField"
+      },
+      "decoded": [
+        {
+          "op": "text",
+          "node": 20,
+          "count": 2,
+          "text": "ab"
+        }
+      ],
+      "flow": "text.json"
+    },
+    {
+      "id": "text.write",
+      "dir": "fromVm",
+      "message": "[[2,20,16,[\"https://ab\",2]]]",
+      "context": {
+        "20": "TextField"
+      },
+      "decoded": [
+        {
+          "op": "set",
+          "id": 20,
+          "prop": "value",
+          "value": ["https://ab", 2]
+        }
+      ],
+      "flow": "text.json"
+    },
+    {
+      "id": "requests.send",
+      "dir": "fromVm",
+      "message": "[[20,7,1,{\"fn\":\"browser::sessions::list\",\"payload\":{}}],[20,8,2,{\"sub\":3,\"trigger\":\"browser::session-started\",\"config\":{}}]]",
+      "decoded": [
+        {
+          "op": "request",
+          "reqId": 7,
+          "method": "call",
+          "args": {
+            "fn": "browser::sessions::list",
+            "payload": {}
+          }
+        },
+        {
+          "op": "request",
+          "reqId": 8,
+          "method": "on",
+          "args": {
+            "sub": 3,
+            "trigger": "browser::session-started",
+            "config": {}
+          }
+        }
+      ],
+      "flow": "requests.json"
+    },
+    {
+      "id": "requests.responses",
+      "dir": "toVm",
+      "message": "[[8,8,1,null],[8,7,1,{\"sessions\":[]}]]",
+      "decoded": [
+        {
+          "op": "response",
+          "reqId": 8,
+          "ok": true,
+          "value": null
+        },
+        {
+          "op": "response",
+          "reqId": 7,
+          "ok": true,
+          "value": {
+            "sessions": []
+          }
+        }
+      ],
+      "flow": "requests.json"
+    },
+    {
+      "id": "requests.trigger",
+      "dir": "toVm",
+      "message": "[[9,3,{\"session_id\":\"s1\",\"url\":\"about:blank\",\"headless\":true,\"preview\":false,\"timestamp\":1761151200000}]]",
+      "decoded": [
+        {
+          "op": "trigger",
+          "sub": 3,
+          "payload": {
+            "session_id": "s1",
+            "url": "about:blank",
+            "headless": true,
+            "preview": false,
+            "timestamp": 1761151200000
+          }
+        }
+      ],
+      "flow": "requests.json"
+    },
+    {
+      "id": "requests.error",
+      "dir": "toVm",
+      "message": "[[8,9,0,{\"code\":\"forbidden\",\"message\":\"browser may only call browser::… functions\"}]]",
+      "decoded": [
+        {
+          "op": "response",
+          "reqId": 9,
+          "ok": false,
+          "value": {
+            "code": "forbidden",
+            "message": "browser may only call browser::… functions"
+          }
+        }
+      ],
+      "flow": "requests.json"
+    },
+    {
+      "id": "nav.push",
+      "dir": "fromVm",
+      "message": "[[20,12,10,{\"page\":\"console\",\"params\":{\"session\":\"s1\"}}]]",
+      "decoded": [
+        {
+          "op": "request",
+          "reqId": 12,
+          "method": "navPush",
+          "args": {
+            "page": "console",
+            "params": {
+              "session": "s1"
+            }
+          }
+        }
+      ],
+      "flow": "nav-back.json"
+    },
+    {
+      "id": "nav.mount",
+      "dir": "toVm",
+      "message": "[[6,2,\"console\",{\"session\":\"s1\"}]]",
+      "decoded": [
+        {
+          "op": "mount",
+          "page": 2,
+          "name": "console",
+          "params": {
+            "session": "s1"
+          }
+        }
+      ],
+      "flow": "nav-back.json"
+    },
+    {
+      "id": "nav.back",
+      "dir": "toVm",
+      "message": "[[7,2],[8,12,1,{\"result\":null}]]",
+      "decoded": [
+        {
+          "op": "unmount",
+          "page": 2
+        },
+        {
+          "op": "response",
+          "reqId": 12,
+          "ok": true,
+          "value": {
+            "result": null
+          }
+        }
+      ],
+      "flow": "nav-back.json"
+    },
+    {
+      "id": "env.change",
+      "dir": "toVm",
+      "message": "[[5,{\"windowClass\":\"wide\"}]]",
+      "decoded": [
+        {
+          "op": "env",
+          "changes": {
+            "windowClass": "wide"
+          }
+        }
+      ],
+      "flow": "env.json"
+    }
+  ]
+}

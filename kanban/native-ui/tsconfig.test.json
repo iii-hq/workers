@@ -1,0 +1,9 @@
+{
+  "extends": "@iii-dev/native-ui/tsconfig.app.json",
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "types": ["node"]
+  },
+  "include": ["test", "vitest.config.mjs"]
+}

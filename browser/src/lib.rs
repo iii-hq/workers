@@ -12,6 +12,7 @@ pub mod functions;
 pub mod judge;
 pub mod logging;
 pub mod manifest;
+pub mod native_ui;
 pub mod scrapling;
 pub mod session;
 pub mod snapshot;

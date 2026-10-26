@@ -1,0 +1,57 @@
+{
+  "name": "@iii-dev/native-ui",
+  "version": "0.1.0",
+  "description": "SDK for a worker's native app in the iii app: TSX on a solid-js/universal renderer that turns into the json-v0 ops the app draws as Jetpack Compose and SwiftUI, the capability object, the bundle build and a QuickJS test harness. Linked by workspace:*, never published.",
+  "type": "module",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./renderer": {
+      "types": "./src/renderer.ts",
+      "default": "./src/renderer.ts"
+    },
+    "./build": {
+      "types": "./src/build.d.mts",
+      "default": "./src/build.mjs"
+    },
+    "./testing": {
+      "types": "./src/testing/index.d.mts",
+      "default": "./src/testing/index.mjs"
+    },
+    "./catalog.json": "./catalog.json",
+    "./tsconfig.app.json": "./tsconfig.app.json",
+    "./tsconfig.test.json": "./tsconfig.test.json"
+  },
+  "files": [
+    "catalog.json",
+    "src",
+    "scripts",
+    "conformance",
+    "tsconfig.app.json",
+    "tsconfig.test.json",
+    "README.md"
+  ],
+  "scripts": {
+    "gen": "node scripts/gen-catalog.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
+    "build:example": "node examples/hello/build.mjs",
+    "build:catalog2": "node examples/catalog2/build.mjs"
+  },
+  "dependencies": {
+    "@babel/core": "catalog:",
+    "@babel/preset-typescript": "catalog:",
+    "babel-preset-solid": "catalog:",
+    "esbuild": "catalog:",
+    "quickjs-emscripten": "catalog:",
+    "solid-js": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "^25.8.0",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

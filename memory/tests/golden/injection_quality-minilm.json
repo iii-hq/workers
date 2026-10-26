@@ -1,0 +1,424 @@
+{
+  "embedding": {
+    "dims": 384,
+    "model": "sentence-transformers/all-MiniLM-L6-v2@c9745ed1d9f2",
+    "vectors_fingerprint": "fp3622fa56b6808799"
+  },
+  "half_life_days": 60,
+  "modes": {
+    "hybrid": {
+      "all": {
+        "negatives": {
+          "negative_clean_rate": null,
+          "negative_injected": 0,
+          "negatives": 41,
+          "unmeasured": 41
+        },
+        "positives": {
+          "duplicate_queries": 1,
+          "expected_injected": 0.7714,
+          "injection_loss": [],
+          "irrelevant_injected": 196,
+          "needed": 70,
+          "queries": 62,
+          "stale_alone": 0,
+          "stale_with_current": 6
+        }
+      },
+      "category:dated-event": {
+        "positives": {
+          "duplicate_queries": 1,
+          "expected_injected": 0.8571,
+          "injection_loss": [],
+          "irrelevant_injected": 22,
+          "needed": 7,
+          "queries": 6,
+          "stale_alone": 0,
+          "stale_with_current": 0
+        }
+      },
+      "category:durable-old": {
+        "positives": {
+          "duplicate_queries": 0,
+          "expected_injected": 1.0,
+          "injection_loss": [],
+          "irrelevant_injected": 16,
+          "needed": 6,
+          "queries": 6,
+          "stale_alone": 0,
+          "stale_with_current": 0
+        }
+      },
+      "category:identity": {
+        "positives": {
+          "duplicate_queries": 0,
+          "expected_injected": 0.5,
+          "injection_loss": [],
+          "irrelevant_injected": 41,
+          "needed": 16,
+          "queries": 12,
+          "stale_alone": 0,
+          "stale_with_current": 0
+        }
+      },
+      "category:lexical": {
+        "positives": {
+          "duplicate_queries": 0,
+          "expected_injected": 1.0,
+          "injection_loss": [],
+          "irrelevant_injected": 44,
+          "needed": 14,
+          "queries": 14,
+          "stale_alone": 0,
+          "stale_with_current": 0
+        }
+      },
+      "category:paraphrase": {
+        "positives": {
+          "duplicate_queries": 0,
+          "expected_injected": 0.625,
+          "injection_loss": [],
+          "irrelevant_injected": 51,
+          "needed": 16,
+          "queries": 14,
+          "stale_alone": 0,
+          "stale_with_current": 0
+        }
+      },
+      "category:temporal-update": {
+        "positives": {
+          "duplicate_queries": 0,
+          "expected_injected": 0.9091,
+          "injection_loss": [],
+          "irrelevant_injected": 22,
+          "needed": 11,
+          "queries": 10,
+          "stale_alone": 0,
+          "stale_with_current": 6
+        }
+      },
+      "kind:chatter": {
+        "negatives": {
+          "negative_clean_rate": null,
+          "negative_injected": 0,
+          "negatives": 8,
+          "unmeasured": 8
+        }
+      },
+      "kind:first-person": {
+        "negatives": {
+          "negative_clean_rate": null,
+          "negative_injected": 0,
+          "negatives": 8,
+          "unmeasured": 8
+        }
+      },
+      "kind:greeting": {
+        "negatives": {
+          "negative_clean_rate": null,
+          "negative_injected": 0,
+          "negatives": 8,
+          "unmeasured": 8
+        }
+      },
+      "kind:incidental-word": {
+        "negatives": {
+          "negative_clean_rate": null,
+          "negative_injected": 0,
+          "negatives": 9,
+          "unmeasured": 9
+        }
+      },
+      "kind:near-topic": {
+        "negatives": {
+          "negative_clean_rate": null,
+          "negative_injected": 0,
+          "negatives": 8,
+          "unmeasured": 8
+        }
+      },
+      "lang:en": {
+        "negatives": {
+          "negative_clean_rate": null,
+          "negative_injected": 0,
+          "negatives": 41,
+          "unmeasured": 41
+        },
+        "positives": {
+          "duplicate_queries": 1,
+          "expected_injected": 0.9167,
+          "injection_loss": [],
+          "irrelevant_injected": 48,
+          "needed": 36,
+          "queries": 31,
+          "stale_alone": 0,
+          "stale_with_current": 1
+        }
+      },
+      "lang:pt": {
+        "positives": {
+          "duplicate_queries": 0,
+          "expected_injected": 0.6176,
+          "injection_loss": [],
+          "irrelevant_injected": 148,
+          "needed": 34,
+          "queries": 31,
+          "stale_alone": 0,
+          "stale_with_current": 5
+        }
+      },
+      "split:dev": {
+        "negatives": {
+          "negative_clean_rate": null,
+          "negative_injected": 0,
+          "negatives": 26,
+          "unmeasured": 26
+        },
+        "positives": {
+          "duplicate_queries": 1,
+          "expected_injected": 0.76,
+          "injection_loss": [],
+          "irrelevant_injected": 127,
+          "needed": 50,
+          "queries": 43,
+          "stale_alone": 0,
+          "stale_with_current": 4
+        }
+      },
+      "split:test": {
+        "negatives": {
+          "negative_clean_rate": null,
+          "negative_injected": 0,
+          "negatives": 15,
+          "unmeasured": 15
+        },
+        "positives": {
+          "duplicate_queries": 0,
+          "expected_injected": 0.8,
+          "injection_loss": [],
+          "irrelevant_injected": 69,
+          "needed": 20,
+          "queries": 19,
+          "stale_alone": 0,
+          "stale_with_current": 2
+        }
+      }
+    },
+    "lexical": {
+      "all": {
+        "negatives": {
+          "negative_clean_rate": 0.7561,
+          "negative_injected": 11,
+          "negatives": 41,
+          "unmeasured": 0
+        },
+        "positives": {
+          "duplicate_queries": 1,
+          "expected_injected": 0.6143,
+          "injection_loss": [
+            "q-en-work-release-days: en-work-deploy-window",
+            "q-en-work-late-week-rollout: en-work-deploy-window",
+            "q-id-job-title: id-role"
+          ],
+          "irrelevant_injected": 140,
+          "needed": 70,
+          "queries": 62,
+          "stale_alone": 0,
+          "stale_with_current": 5
+        }
+      },
+      "category:dated-event": {
+        "positives": {
+          "duplicate_queries": 1,
+          "expected_injected": 0.8571,
+          "injection_loss": [],
+          "irrelevant_injected": 15,
+          "needed": 7,
+          "queries": 6,
+          "stale_alone": 0,
+          "stale_with_current": 0
+        }
+      },
+      "category:durable-old": {
+        "positives": {
+          "duplicate_queries": 0,
+          "expected_injected": 1.0,
+          "injection_loss": [],
+          "irrelevant_injected": 13,
+          "needed": 6,
+          "queries": 6,
+          "stale_alone": 0,
+          "stale_with_current": 0
+        }
+      },
+      "category:identity": {
+        "positives": {
+          "duplicate_queries": 0,
+          "expected_injected": 0.4375,
+          "injection_loss": [
+            "q-id-job-title: id-role"
+          ],
+          "irrelevant_injected": 31,
+          "needed": 16,
+          "queries": 12,
+          "stale_alone": 0,
+          "stale_with_current": 0
+        }
+      },
+      "category:lexical": {
+        "positives": {
+          "duplicate_queries": 0,
+          "expected_injected": 1.0,
+          "injection_loss": [],
+          "irrelevant_injected": 26,
+          "needed": 14,
+          "queries": 14,
+          "stale_alone": 0,
+          "stale_with_current": 0
+        }
+      },
+      "category:paraphrase": {
+        "positives": {
+          "duplicate_queries": 0,
+          "expected_injected": 0.0625,
+          "injection_loss": [
+            "q-en-work-release-days: en-work-deploy-window",
+            "q-en-work-late-week-rollout: en-work-deploy-window"
+          ],
+          "irrelevant_injected": 43,
+          "needed": 16,
+          "queries": 14,
+          "stale_alone": 0,
+          "stale_with_current": 0
+        }
+      },
+      "category:temporal-update": {
+        "positives": {
+          "duplicate_queries": 0,
+          "expected_injected": 0.8182,
+          "injection_loss": [],
+          "irrelevant_injected": 12,
+          "needed": 11,
+          "queries": 10,
+          "stale_alone": 0,
+          "stale_with_current": 5
+        }
+      },
+      "kind:chatter": {
+        "negatives": {
+          "negative_clean_rate": 1.0,
+          "negative_injected": 0,
+          "negatives": 8,
+          "unmeasured": 0
+        }
+      },
+      "kind:first-person": {
+        "negatives": {
+          "negative_clean_rate": 1.0,
+          "negative_injected": 0,
+          "negatives": 8,
+          "unmeasured": 0
+        }
+      },
+      "kind:greeting": {
+        "negatives": {
+          "negative_clean_rate": 1.0,
+          "negative_injected": 0,
+          "negatives": 8,
+          "unmeasured": 0
+        }
+      },
+      "kind:incidental-word": {
+        "negatives": {
+          "negative_clean_rate": 0.0,
+          "negative_injected": 9,
+          "negatives": 9,
+          "unmeasured": 0
+        }
+      },
+      "kind:near-topic": {
+        "negatives": {
+          "negative_clean_rate": 0.875,
+          "negative_injected": 2,
+          "negatives": 8,
+          "unmeasured": 0
+        }
+      },
+      "lang:en": {
+        "negatives": {
+          "negative_clean_rate": 0.7561,
+          "negative_injected": 11,
+          "negatives": 41,
+          "unmeasured": 0
+        },
+        "positives": {
+          "duplicate_queries": 1,
+          "expected_injected": 0.5833,
+          "injection_loss": [
+            "q-en-work-release-days: en-work-deploy-window",
+            "q-en-work-late-week-rollout: en-work-deploy-window",
+            "q-id-job-title: id-role"
+          ],
+          "irrelevant_injected": 19,
+          "needed": 36,
+          "queries": 31,
+          "stale_alone": 0,
+          "stale_with_current": 1
+        }
+      },
+      "lang:pt": {
+        "positives": {
+          "duplicate_queries": 0,
+          "expected_injected": 0.6471,
+          "injection_loss": [],
+          "irrelevant_injected": 121,
+          "needed": 34,
+          "queries": 31,
+          "stale_alone": 0,
+          "stale_with_current": 4
+        }
+      },
+      "split:dev": {
+        "negatives": {
+          "negative_clean_rate": 0.7308,
+          "negative_injected": 8,
+          "negatives": 26,
+          "unmeasured": 0
+        },
+        "positives": {
+          "duplicate_queries": 1,
+          "expected_injected": 0.52,
+          "injection_loss": [
+            "q-en-work-release-days: en-work-deploy-window",
+            "q-en-work-late-week-rollout: en-work-deploy-window",
+            "q-id-job-title: id-role"
+          ],
+          "irrelevant_injected": 89,
+          "needed": 50,
+          "queries": 43,
+          "stale_alone": 0,
+          "stale_with_current": 3
+        }
+      },
+      "split:test": {
+        "negatives": {
+          "negative_clean_rate": 0.8,
+          "negative_injected": 3,
+          "negatives": 15,
+          "unmeasured": 0
+        },
+        "positives": {
+          "duplicate_queries": 0,
+          "expected_injected": 0.85,
+          "injection_loss": [],
+          "irrelevant_injected": 51,
+          "needed": 20,
+          "queries": 19,
+          "stale_alone": 0,
+          "stale_with_current": 2
+        }
+      }
+    }
+  },
+  "recall_limit": 6
+}

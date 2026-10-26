@@ -452,3 +452,115 @@ async fn under_a_scoped_grant_an_instance_runs_its_own_enqueued_job() {
     trusted.shutdown_async().await;
     assert_eq!(handled, 1, "the instance runs its own job");
 }
+
+async fn retry_until_handled(
+    app: &Instance,
+    handled: &AtomicUsize,
+    deadline: Duration,
+    request: impl Fn() -> TriggerRequest,
+) -> bool {
+    let before = handled.load(Ordering::SeqCst);
+    let end = Instant::now() + deadline;
+    while Instant::now() < end {
+        // Fails or is dropped while the adapter is being rebuilt.
+        let _ = app.iii.trigger(request().namespace(&app.namespace)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        if handled.load(Ordering::SeqCst) > before {
+            return true;
+        }
+    }
+    false
+}
+
+/// A broker that drops every connection (a RabbitMQ restart, say) is noticed:
+/// the worker rebuilds its adapter and re-attaches the topic subscriber and
+/// the function queue consumer, so delivery resumes without restarting the
+/// worker. Each path counts its own deliveries, so one cannot pass for the
+/// other.
+#[tokio::test]
+#[serial]
+async fn delivery_resumes_after_the_broker_drops_every_connection() {
+    let Some(broker) = docker::start_rabbitmq().await else {
+        return;
+    };
+    let url = broker.amqp_url();
+    let suffix = Uuid::new_v4().simple().to_string();
+    let topic = format!("orders-{suffix}");
+    let queue = format!("mail-{suffix}");
+    let on_order = format!("app::on_order_{suffix}");
+    let send_mail = format!("app::send_mail_{suffix}");
+    let Some(app) = instance(
+        &format!("reconnect-{suffix}"),
+        config(&url, Some(&queue)),
+        Some(&on_order),
+    )
+    .await
+    else {
+        return;
+    };
+    let mails = Arc::new(AtomicUsize::new(0));
+    {
+        let mails = mails.clone();
+        app.iii.register_function(
+            send_mail.as_str(),
+            RegisterFunction::new_async(move |_payload: Value| {
+                let mails = mails.clone();
+                async move {
+                    mails.fetch_add(1, Ordering::SeqCst);
+                    Ok::<Value, Error>(json!({ "ok": true }))
+                }
+            }),
+        );
+    }
+    subscribe(&app, &on_order, &topic);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    publish(&app, &topic, "before").await;
+    enqueue(&app, &send_mail, &queue).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while (app.fires.load(Ordering::SeqCst) == 0 || mails.load(Ordering::SeqCst) == 0)
+        && Instant::now() < deadline
+    {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        app.fires.load(Ordering::SeqCst),
+        1,
+        "the topic path delivers before the drop"
+    );
+    assert_eq!(
+        mails.load(Ordering::SeqCst),
+        1,
+        "the queue path delivers before the drop"
+    );
+
+    broker.close_all_connections();
+
+    let fires = app.fires.clone();
+    let topic_resumed =
+        retry_until_handled(&app, &fires, Duration::from_secs(60), || TriggerRequest {
+            function_id: PUBLISH_FN_ID.to_string(),
+            payload: json!({ "topic": topic, "data": { "value": "after" } }),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await;
+    let queue_resumed =
+        retry_until_handled(&app, &mails, Duration::from_secs(60), || TriggerRequest {
+            function_id: send_mail.clone(),
+            payload: json!({ "to": "a@example.com" }),
+            action: Some(TriggerAction::Enqueue {
+                queue: queue.clone(),
+            }),
+            timeout_ms: Some(5_000),
+        })
+        .await;
+    app.stop().await;
+    assert!(
+        topic_resumed,
+        "the topic subscriber is re-attached after the drop"
+    );
+    assert!(
+        queue_resumed,
+        "the function queue consumer is re-attached after the drop"
+    );
+}

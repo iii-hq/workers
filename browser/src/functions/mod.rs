@@ -197,7 +197,8 @@ pub const STYLES_WRITE_DESC: &str =
 pub const SCREENCAST_START_ID: &str = "browser::screencast::start";
 pub const SCREENCAST_START_DESC: &str =
     "Internal: start the live viewport feed — frames arrive on the browser::frame-event \
-     trigger and browser::frame reads the newest. Console-UI plumbing; agents use \
+     trigger and browser::frame reads the newest. With a viewer_id the viewer holds a lease: \
+     repeat the start to renew it, or it lapses. Console-UI plumbing; agents use \
      browser::screenshot. Not an agent function.";
 pub const SCREENCAST_STOP_ID: &str = "browser::screencast::stop";
 pub const SCREENCAST_STOP_DESC: &str =
@@ -279,7 +280,8 @@ pub const RESIZE_ID: &str = "browser::resize";
 pub const RESIZE_DESC: &str =
     "Set the session's live viewport size (CSS pixels). The console calls this as its browser \
      pane resizes so the streamed frame fills the pane with no letterboxing and clicks map \
-     1:1; the device toolbar calls it with a preset. Clamped 200..4000.";
+     1:1; the device toolbar calls it with a preset. Clamped 200..4000. mobile=true emulates a \
+     phone (touch input, an Android Chrome user agent); reload once when mode_changed.";
 pub const COOKIES_LIST_ID: &str = "browser::cookies::list";
 pub const COOKIES_LIST_DESC: &str =
     "List the cookies on the session's current page (name, value, domain, path, flags).";
@@ -987,11 +989,18 @@ fn register_screenshot(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                         .quality(cfg.screenshot_quality as i64)
                 };
                 let params = params.build();
-                let bytes = session
-                    .page
-                    .screenshot(params)
-                    .await
-                    .map_err(|e| handler_err(format!("screenshot failed: {e}")))?;
+                let full_page = req.full_page.unwrap_or(false);
+                let emulation = session.emulation.lock().await;
+                let shot = session.page.screenshot(params).await;
+                // A full-page capture sizes the page to its content and then
+                // clears every device-metrics override: put back the tab's
+                // own (a phone stays a phone, a pane-fitted tab keeps its
+                // size).
+                if full_page && cfg.engine != crate::config::BrowserEngine::Lightpanda {
+                    let _ = session.page.execute(session.device_metrics()).await;
+                }
+                drop(emulation);
+                let bytes = shot.map_err(|e| handler_err(format!("screenshot failed: {e}")))?;
 
                 let url = session.page.url().await.ok().flatten().unwrap_or_default();
                 let size = bytes.len();
@@ -1291,6 +1300,59 @@ async fn dispatch_click(
     Ok(())
 }
 
+/// `Input.dispatchTouchEvent` lifting every finger. Sent by hand: Chromium
+/// requires `touchPoints` (empty) on a touch end, and the generated
+/// `DispatchTouchEventParams` drops an empty list, which Chromium refuses as
+/// invalid parameters.
+#[derive(Debug, Clone, serde::Serialize)]
+struct TouchRelease {
+    r#type: &'static str,
+    #[serde(rename = "touchPoints")]
+    touch_points: Vec<input::TouchPoint>,
+}
+
+impl chromiumoxide::types::Method for TouchRelease {
+    fn identifier(&self) -> chromiumoxide::types::MethodId {
+        input::DispatchTouchEventParams::IDENTIFIER.into()
+    }
+}
+
+impl chromiumoxide::types::Command for TouchRelease {
+    type Response = input::DispatchTouchEventReturns;
+}
+
+/// A finger tap at (x, y), `count` times: touch start, touch end, and the
+/// page makes the click of it the way a phone does. What a left click is
+/// while the tab emulates a phone: synthesized mouse events stay mouse
+/// events even under touch emulation, so a page listening for touch would
+/// never hear the press. Two taps in a row also give the page its
+/// `dblclick`.
+async fn dispatch_tap(session: &Session, x: f64, y: f64, count: i64) -> Result<(), Error> {
+    use input::{DispatchTouchEventParams, DispatchTouchEventType, TouchPoint};
+    for _ in 0..count.max(1) {
+        let start = DispatchTouchEventParams::builder()
+            .r#type(DispatchTouchEventType::TouchStart)
+            .touch_point(TouchPoint::new(x, y))
+            .build()
+            .map_err(handler_err)?;
+        session
+            .page
+            .execute(start)
+            .await
+            .map_err(|e| handler_err(format!("touch event failed: {e}")))?;
+        let end = TouchRelease {
+            r#type: "touchEnd",
+            touch_points: Vec::new(),
+        };
+        session
+            .page
+            .execute(end)
+            .await
+            .map_err(|e| handler_err(format!("touch event failed: {e}")))?;
+    }
+    Ok(())
+}
+
 async fn dispatch_hover(session: &Session, x: f64, y: f64) -> Result<(), Error> {
     use input::{DispatchMouseEventParams, DispatchMouseEventType};
     let moved = DispatchMouseEventParams::builder()
@@ -1309,8 +1371,14 @@ async fn dispatch_hover(session: &Session, x: f64, y: f64) -> Result<(), Error> 
 
 /// Press at (x1, y1), glide to (x2, y2) over a few steps, release. The
 /// interpolated moves make the drag read as a real gesture so listeners that
-/// track pointer movement (drawing surfaces, sliders) follow it.
-async fn dispatch_drag(session: &Session, x1: f64, y1: f64, x2: f64, y2: f64) -> Result<(), Error> {
+/// track pointer movement (drawing surfaces, sliders) follow it. `ghost`
+/// draws the agent's cursor along the way.
+async fn dispatch_drag(
+    session: &Session,
+    (x1, y1): (f64, f64),
+    (x2, y2): (f64, f64),
+    ghost: bool,
+) -> Result<(), Error> {
     use input::{DispatchMouseEventParams, DispatchMouseEventType, MouseButton};
     let send = |params| async {
         session
@@ -1336,7 +1404,9 @@ async fn dispatch_drag(session: &Session, x1: f64, y1: f64, x2: f64, y2: f64) ->
         .build()
         .map_err(handler_err)?;
     send(pressed).await?;
-    move_ghost_cursor(session, x1, y1, true).await;
+    if ghost {
+        move_ghost_cursor(session, x1, y1, true).await;
+    }
     const STEPS: i64 = 8;
     for step in 1..=STEPS {
         let t = step as f64 / STEPS as f64;
@@ -1351,7 +1421,9 @@ async fn dispatch_drag(session: &Session, x1: f64, y1: f64, x2: f64, y2: f64) ->
         send(step_move).await?;
         // Glide the ghost cursor with the drag so a viewer watching the
         // stream sees the gesture, not a jump to the end.
-        move_ghost_cursor(session, xi, yi, false).await;
+        if ghost {
+            move_ghost_cursor(session, xi, yi, false).await;
+        }
     }
     let released = DispatchMouseEventParams::builder()
         .r#type(DispatchMouseEventType::MouseReleased)
@@ -1430,20 +1502,37 @@ async fn press_key(session: &Session, name: &str) -> Result<(), Error> {
 }
 
 async fn perform_in(session: &Session, req: &act::ActInput, group: &str) -> Result<String, Error> {
+    // The agent's cursor marks an agent's action; a person's own tap from a
+    // viewer asks for none.
+    let ghost = req.ghost_cursor.unwrap_or(true);
     let detail = match req.action.as_str() {
         "click" => {
             let (x, y) = action_point(session, req, group).await?;
             let button = req.button.as_deref().unwrap_or("left");
-            let clicks = i64::from(req.click_count.unwrap_or(1));
-            dispatch_click(session, x, y, button, clicks).await?;
-            move_ghost_cursor(session, x, y, true).await;
+            let clicks = req.clicks();
+            // A phone has no mouse: its left click is a tap.
+            let tap = button == "left" && session.is_mobile();
+            if tap {
+                dispatch_tap(session, x, y, clicks).await?;
+            } else {
+                dispatch_click(session, x, y, button, clicks).await?;
+            }
+            if ghost {
+                move_ghost_cursor(session, x, y, true).await;
+            }
             settle(session, false).await;
-            format!("clicked {button} x{clicks} at ({x:.0}, {y:.0})")
+            if tap {
+                format!("tapped x{clicks} at ({x:.0}, {y:.0})")
+            } else {
+                format!("clicked {button} x{clicks} at ({x:.0}, {y:.0})")
+            }
         }
         "hover" => {
             let (x, y) = action_point(session, req, group).await?;
             dispatch_hover(session, x, y).await?;
-            move_ghost_cursor(session, x, y, false).await;
+            if ghost {
+                move_ghost_cursor(session, x, y, false).await;
+            }
             format!("hovering at ({x:.0}, {y:.0})")
         }
         "type" => {
@@ -1515,13 +1604,13 @@ async fn perform_in(session: &Session, req: &act::ActInput, group: &str) -> Resu
                     session.viewport().1 as f64 / 2.0,
                 )
             };
-            let delta_y = req.delta_y.unwrap_or(600.0);
+            let (delta_x, delta_y) = req.scroll_deltas();
             use input::{DispatchMouseEventParams, DispatchMouseEventType};
             let wheel = DispatchMouseEventParams::builder()
                 .r#type(DispatchMouseEventType::MouseWheel)
                 .x(x)
                 .y(y)
-                .delta_x(0.0)
+                .delta_x(delta_x)
                 .delta_y(delta_y)
                 .build()
                 .map_err(handler_err)?;
@@ -1530,7 +1619,11 @@ async fn perform_in(session: &Session, req: &act::ActInput, group: &str) -> Resu
                 .execute(wheel)
                 .await
                 .map_err(|e| handler_err(format!("scroll failed: {e}")))?;
-            format!("scrolled {delta_y:.0}px")
+            if delta_x == 0.0 {
+                format!("scrolled {delta_y:.0}px")
+            } else {
+                format!("scrolled {delta_x:.0}px across, {delta_y:.0}px down")
+            }
         }
         "drag" => {
             let (x1, y1) = action_point(session, req, group).await?;
@@ -1538,7 +1631,7 @@ async fn perform_in(session: &Session, req: &act::ActInput, group: &str) -> Resu
                 (Some(x), Some(y)) => (x, y),
                 _ => return Err(handler_err("drag needs x2 and y2")),
             };
-            dispatch_drag(session, x1, y1, x2, y2).await?;
+            dispatch_drag(session, (x1, y1), (x2, y2), ghost).await?;
             format!("dragged ({x1:.0}, {y1:.0}) to ({x2:.0}, {y2:.0})")
         }
         other => {
@@ -2774,12 +2867,14 @@ fn register_resize(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 session.touch();
                 let mut width = resize::clamp(req.width);
                 let mut height = resize::clamp(req.height);
+                let mut mobile = req.mobile.unwrap_or(false);
                 // A pane auto-fit with several pane viewers grows the shared
                 // viewport but never shrinks it: the largest pane wins and the
                 // smaller ones letterbox-scale, so one small viewer can't
-                // shrink a session another viewer needs bigger. A lone pane
-                // (corner previews and recordings don't count) or an explicit
-                // device resize sizes it freely.
+                // shrink a session another viewer needs bigger. Nor does it
+                // switch the tab between phone and desktop under the other
+                // viewers. A lone pane (corner previews and recordings don't
+                // count) or an explicit device resize sizes it freely.
                 if req.fit.unwrap_or(false)
                     && session
                         .pane_viewers
@@ -2789,20 +2884,30 @@ fn register_resize(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     let (cur_w, cur_h) = session.viewport();
                     width = width.max(cur_w);
                     height = height.max(cur_h);
+                    mobile = session.is_mobile();
                     if width == cur_w && height == cur_h {
                         return Ok::<_, Error>(resize::ResizeOutput {
                             ok: true,
                             width,
                             height,
+                            mobile,
+                            mode_changed: false,
                         });
                     }
                 }
+                // Not while a full-page screenshot or a frame capture has the
+                // page's emulation in hand: either would roll this back.
+                let emulation = session.emulation.lock().await;
+                let mode_changed = sx
+                    .emulate_mobile(&session, mobile)
+                    .await
+                    .map_err(handler_err)?;
                 let dpr = req.device_scale_factor.unwrap_or(1.0).clamp(0.5, 3.0);
                 let params = cdp_emulation::SetDeviceMetricsOverrideParams::builder()
                     .width(i64::from(width))
                     .height(i64::from(height))
                     .device_scale_factor(dpr)
-                    .mobile(req.mobile.unwrap_or(false))
+                    .mobile(mobile)
                     .build()
                     .map_err(handler_err)?;
                 session
@@ -2811,14 +2916,20 @@ fn register_resize(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     .await
                     .map_err(|e| handler_err(format!("resize failed: {e}")))?;
                 session.set_viewport(width, height);
+                session.set_device_scale_factor(dpr);
+                drop(emulation);
                 // The page content did not change, so the compositor may not
                 // push a screencast frame at the new size on its own; nudge
-                // one out through the counted screencast paths.
+                // one out through the counted screencast paths. The restart
+                // also sizes the frames to the new viewport, and a page that
+                // still sends none gets one captured for it.
                 sx.nudge_screencast(&session).await;
                 Ok::<_, Error>(resize::ResizeOutput {
                     ok: true,
                     width,
                     height,
+                    mobile,
+                    mode_changed,
                 })
             }
         })
@@ -3197,11 +3308,18 @@ fn register_history(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                             .execute(cdp_page::GetNavigationHistoryParams::default())
                             .await
                             .map_err(|e| handler_err(format!("history read failed: {e}")))?;
-                        let target = if back {
-                            history.current_index - 1
-                        } else {
-                            history.current_index + 1
-                        };
+                        // Every tab opens on `about:blank` before its first
+                        // page, so Chromium's list starts with it; like the
+                        // tab's own stack, a step never lands there.
+                        let step = if back { -1 } else { 1 };
+                        let mut target = history.current_index + step;
+                        while usize::try_from(target)
+                            .ok()
+                            .and_then(|i| history.entries.get(i))
+                            .is_some_and(|entry| entry.url == "about:blank")
+                        {
+                            target += step;
+                        }
                         // The tab's own stack moves with Chromium's so the
                         // two stay aligned; it is also what remains after the
                         // page slept or the worker restarted.
@@ -3649,17 +3767,29 @@ fn register_screencast_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: frame::ScreencastStartInput| {
             let sx = sx.clone();
             async move {
+                let lease = req.lease().map_err(handler_err)?;
                 let session = get_session(&sx, &req.session_id).await?;
                 session.touch();
-                // Register a console viewer as a screencast consumer; the CDP
+                let preview = req.preview.unwrap_or(false);
+                // Register the viewer as a screencast consumer; the CDP
                 // screencast starts on the first consumer (see
                 // Sessions::acquire_screencast, which uses every_nth_frame(1)
-                // and caps the push rate by time in the pump).
-                sx.acquire_screencast(&session).await.map_err(handler_err)?;
-                if !req.preview.unwrap_or(false) {
-                    session
-                        .pane_viewers
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                // and caps the push rate by time in the pump). A named
+                // viewer's repeat only renews its lease.
+                let joined = match &lease {
+                    Some(lease) => sx
+                        .join_viewer(&session, lease, preview)
+                        .await
+                        .map_err(handler_err)?,
+                    None => {
+                        sx.join_anonymous_viewer(&session, preview)
+                            .await
+                            .map_err(handler_err)?;
+                        true
+                    }
+                };
+                if !joined {
+                    return Ok::<_, Error>(pick::AckOutput { ok: true });
                 }
                 // A human is now watching: show the session-status badge.
                 let mode = if session.read_only {
@@ -3687,23 +3817,27 @@ fn register_screencast_stop(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sx = sx.clone();
             async move {
                 if let Some(session) = sx.get(&req.session_id) {
-                    // Release this console viewer; the CDP screencast stops
-                    // only if no other consumer (e.g. a recording) remains.
-                    sx.release_screencast(&session).await;
-                    if !req.preview.unwrap_or(false) {
-                        let _ = session.pane_viewers.fetch_update(
-                            std::sync::atomic::Ordering::Relaxed,
-                            std::sync::atomic::Ordering::Relaxed,
-                            |n| n.checked_sub(1),
-                        );
+                    // Release this viewer; the CDP screencast stops only if
+                    // no other consumer (e.g. a recording) remains.
+                    let released = match req.viewer_id.as_deref().map(str::trim) {
+                        Some(viewer_id) => sx.leave_viewer(&session, viewer_id).await,
+                        None => {
+                            sx.leave_anonymous_viewer(&session, req.preview.unwrap_or(false))
+                                .await
+                        }
+                    };
+                    if !released {
+                        return Ok::<_, Error>(pick::AckOutput { ok: true });
                     }
-                    // The viewer's overlays go regardless; they belong to the
-                    // watching human, not to a recording consumer.
-                    let _ = session.page.evaluate(overlays::remove_badge_script()).await;
-                    let _ = session
-                        .page
-                        .evaluate(overlays::remove_ghost_cursor_script())
-                        .await;
+                    // The overlays belong to the watching humans, not to a
+                    // recording consumer: they go with the last viewer.
+                    if !session.has_viewers().await {
+                        let _ = session.page.evaluate(overlays::remove_badge_script()).await;
+                        let _ = session
+                            .page
+                            .evaluate(overlays::remove_ghost_cursor_script())
+                            .await;
+                    }
                 }
                 Ok::<_, Error>(pick::AckOutput { ok: true })
             }

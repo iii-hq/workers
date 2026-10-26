@@ -284,6 +284,13 @@ pub trait QueueAdapter: Send + Sync + 'static {
     /// the engine builtin instead aborts consumer tasks in place.
     async fn shutdown(&self);
 
+    /// Resolves once this adapter's broker connection is gone for good, so
+    /// the worker must rebuild it (`boot::supervise_connection`). Adapters
+    /// without a long-lived connection never resolve.
+    async fn connection_lost(&self) {
+        std::future::pending::<()>().await
+    }
+
     // -- Function queue transport methods --
     //
     // The engine routes `TriggerAction::Enqueue` through the standalone

@@ -1,0 +1,155 @@
+{
+  "name": "list-splice",
+  "description": "A List with two templates chosen by kindField \"kind\" (rows and section headers), header, empty and footer slots, a trailing IconButton in the row template. A trigger replaces the items four times (first fill, an append plus a changed title, a removal in the middle, a reorder) and createList().set sends only the splices that changed; then a tap on a row and on the close button inside a row.",
+  "catalog": 1,
+  "encoding": "json-v0",
+  "app": "conformance/apps/list-splice.tsx",
+  "ns": "demo",
+  "toVm": [
+    "[[1,{\"catalog\":1,\"features\":[\"ops.json.v0\",\"list.splice.v1\",\"text.handshake.v1\",\"remote-screen.v1\"],\"host\":\"android 0.1.0\",\"engine\":\"quickjs-ng 0.17.0\",\"app\":{\"key\":\"worker:demo\",\"ns\":\"demo\"},\"env\":{\"windowClass\":\"compact\",\"posture\":\"flat\",\"platform\":\"android\",\"visible\":true,\"theme\":\"dark\",\"locale\":\"en-US\",\"online\":true}}],[6,1,\"root\",{}]]",
+    "[[8,1,1,null]]",
+    "[[9,1,{\"rows\":[{\"key\":\"h-tabs\",\"kind\":1,\"title\":\"TABS\"},{\"key\":\"a\",\"kind\":0,\"title\":\"Example Domain\",\"url\":\"example.com/\"},{\"key\":\"b\",\"kind\":0,\"title\":\"iii\",\"url\":\"iii.dev\"}]}]]",
+    "[[9,1,{\"rows\":[{\"key\":\"h-tabs\",\"kind\":1,\"title\":\"TABS\"},{\"key\":\"a\",\"kind\":0,\"title\":\"Example Domain\",\"url\":\"example.com/\"},{\"key\":\"b\",\"kind\":0,\"title\":\"iii — More application.\",\"url\":\"iii.dev\"},{\"key\":\"c\",\"kind\":0,\"title\":\"GitHub\",\"url\":\"github.com/login\"}]}]]",
+    "[[9,1,{\"rows\":[{\"key\":\"h-tabs\",\"kind\":1,\"title\":\"TABS\"},{\"key\":\"a\",\"kind\":0,\"title\":\"Example Domain\",\"url\":\"example.com/\"},{\"key\":\"c\",\"kind\":0,\"title\":\"GitHub\",\"url\":\"github.com/login\"}]}]]",
+    "[[9,1,{\"rows\":[{\"key\":\"h-tabs\",\"kind\":1,\"title\":\"TABS\"},{\"key\":\"c\",\"kind\":0,\"title\":\"GitHub\",\"url\":\"github.com/login\"},{\"key\":\"a\",\"kind\":0,\"title\":\"Example Domain\",\"url\":\"example.com/\"}]}]]",
+    "[[3,2,\"a\",3,1,[]]]",
+    "[[3,2,\"c\",4,1,[]]]"
+  ],
+  "fromVm": [
+    "[[23,{\"sdk\":\"0.1.0\",\"catalog\":1,\"features\":[\"ops.json.v0\",\"list.splice.v1\",\"text.handshake.v1\",\"remote-screen.v1\"],\"pages\":[{\"name\":\"root\",\"modal\":false,\"fullScreen\":false}]}]]",
+    "[[1,1,40],[2,1,16,\"Tabs\"],[1,2,30],[2,2,17,\"kind\"],[2,2,19,true],[2,2,3,\"tabs\"],[1,6,10],[2,6,16,\"All tabs\"],[2,6,17,5],[3,2,0,0,6],[1,3,31],[2,3,16,{\"$item\":\"title\"}],[2,3,17,{\"$item\":\"url\"}],[2,3,18,\"globe\"],[2,3,2,2],[1,4,21],[2,4,16,\"x\"],[2,4,17,\"Close tab\"],[2,4,2,2],[2,4,3,\"close\"],[3,3,2,0,4],[3,2,1,0,3],[1,5,10],[2,5,16,{\"$item\":\"title\"}],[2,5,17,5],[3,2,2,0,5],[1,7,16],[2,7,16,\"globe\"],[2,7,17,\"No tabs\"],[3,2,5,0,7],[1,8,10],[2,8,16,\"End of the list\"],[2,8,18,3],[3,2,6,0,8],[3,1,0,0,2],[7,1,1],[20,1,2,{\"sub\":1,\"trigger\":\"demo::tabs-changed\",\"config\":{}}]]",
+    "[[8,2,0,0,[{\"key\":\"h-tabs\",\"kind\":1,\"title\":\"TABS\"},{\"key\":\"a\",\"kind\":0,\"title\":\"Example Domain\",\"url\":\"example.com/\"},{\"key\":\"b\",\"kind\":0,\"title\":\"iii\",\"url\":\"iii.dev\"}]]]",
+    "[[8,2,2,1,[{\"key\":\"b\",\"kind\":0,\"title\":\"iii — More application.\",\"url\":\"iii.dev\"}]],[8,2,3,0,[{\"key\":\"c\",\"kind\":0,\"title\":\"GitHub\",\"url\":\"github.com/login\"}]]]",
+    "[[8,2,2,1,[]]]",
+    "[[8,2,1,2,[{\"key\":\"c\",\"kind\":0,\"title\":\"GitHub\",\"url\":\"github.com/login\"},{\"key\":\"a\",\"kind\":0,\"title\":\"Example Domain\",\"url\":\"example.com/\"}]]]",
+    "[[8,2,2,1,[{\"key\":\"a\",\"kind\":0,\"title\":\"Example Domain (opened)\",\"url\":\"example.com/\"}]]]",
+    "[[8,2,1,1,[]]]"
+  ],
+  "order": [
+    "fromVm",
+    "toVm",
+    "fromVm",
+    "toVm",
+    "toVm",
+    "fromVm",
+    "toVm",
+    "fromVm",
+    "toVm",
+    "fromVm",
+    "toVm",
+    "fromVm",
+    "toVm",
+    "fromVm",
+    "toVm",
+    "fromVm"
+  ],
+  "tree": {
+    "1": {
+      "type": "Page",
+      "id": 1,
+      "props": {
+        "title": "Tabs"
+      },
+      "slots": {
+        "body": [
+          {
+            "type": "List",
+            "id": 2,
+            "props": {
+              "testTag": "tabs",
+              "kindField": "kind",
+              "dividers": true
+            },
+            "slots": {
+              "header": [
+                {
+                  "type": "Text",
+                  "id": 6,
+                  "props": {
+                    "text": "All tabs",
+                    "role": "micro"
+                  }
+                }
+              ],
+              "template0": [
+                {
+                  "type": "ListRow",
+                  "id": 3,
+                  "props": {
+                    "events": ["press"],
+                    "title": {
+                      "$item": "title"
+                    },
+                    "subtitle": {
+                      "$item": "url"
+                    },
+                    "icon": "globe"
+                  },
+                  "slots": {
+                    "trailing": [
+                      {
+                        "type": "IconButton",
+                        "id": 4,
+                        "props": {
+                          "events": ["press"],
+                          "testTag": "close",
+                          "icon": "x",
+                          "label": "Close tab"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ],
+              "template1": [
+                {
+                  "type": "Text",
+                  "id": 5,
+                  "props": {
+                    "text": {
+                      "$item": "title"
+                    },
+                    "role": "micro"
+                  }
+                }
+              ],
+              "empty": [
+                {
+                  "type": "EmptyState",
+                  "id": 7,
+                  "props": {
+                    "icon": "globe",
+                    "title": "No tabs"
+                  }
+                }
+              ],
+              "footer": [
+                {
+                  "type": "Text",
+                  "id": 8,
+                  "props": {
+                    "text": "End of the list",
+                    "tone": "faint"
+                  }
+                }
+              ]
+            },
+            "items": [
+              {
+                "key": "h-tabs",
+                "kind": 1,
+                "title": "TABS"
+              },
+              {
+                "key": "a",
+                "kind": 0,
+                "title": "Example Domain (opened)",
+                "url": "example.com/"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

@@ -117,7 +117,8 @@ on navigation; re-snapshot before acting after any page change.
   in one read. The cheap way to drive a form and to read what an action
   changed.
 - `browser::act` — click, hover, type, select a native `<select>` option,
-  press, or scroll, addressed by ref or viewport coordinates. A ref is
+  press, or scroll (`delta_y` down, `delta_x` sideways), addressed by ref or
+  viewport coordinates. A ref is
   scrolled into view, and a click/type/select on a disabled, hidden or
   covered element is refused (the error names what covers it) instead of
   landing on the overlay. Typing into an input or textarea by ref replaces

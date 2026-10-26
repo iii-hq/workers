@@ -3,9 +3,9 @@
 //! Boot: parse the CLI, connect to the engine, register the trigger types and
 //! the `kanban::*` functions, register the `kanban` configuration entry and
 //! load its authoritative value, bind the reload trigger, inject the console
-//! UI, then sleep until SIGINT/SIGTERM. The optional `--config` YAML seeds the
-//! configuration entry the first time only; afterwards the configuration
-//! worker is the source of truth.
+//! UI, publish the native app for the iii app, then sleep until SIGINT/SIGTERM.
+//! The optional `--config` YAML seeds the configuration entry the first time
+//! only; afterwards the configuration worker is the source of truth.
 
 use std::sync::{Arc, RwLock};
 
@@ -17,7 +17,7 @@ use iii_sdk::{InitOptions, register_worker};
 use iii_kanban::events::Subscribers;
 use iii_kanban::functions::{self, Ctx};
 use iii_kanban::store::BoardStore;
-use iii_kanban::{configuration, ui};
+use iii_kanban::{configuration, native_ui, ui};
 
 #[derive(Parser, Debug)]
 #[command(name = "kanban", about = "Kanban board worker for iii.")]
@@ -103,6 +103,8 @@ async fn main() -> Result<()> {
     reload.run().await;
 
     ui::register(&iii);
+    // Native app for the iii app (kanban::native-ui); the handle lives as long as the worker.
+    let _native_ui = native_ui::register(&iii);
 
     let board_file = iii_kanban::store::config_snapshot(&config).board_file();
     tracing::info!(board_file = %board_file.display(), "kanban ready");

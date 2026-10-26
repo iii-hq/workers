@@ -61,6 +61,7 @@ jobs:
       integration_changed: ${{ steps.bucket.outputs.integration_changed }}
       llm_router_integration: ${{ steps.bucket.outputs.llm_router_integration }}
       provider_contract: ${{ steps.bucket.outputs.provider_contract }}
+      native_ui: ${{ steps.bucket.outputs.native_ui }}
       any: ${{ steps.bucket.outputs.any }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -187,7 +188,9 @@ jobs:
 
           bundles=()
           for root in "${roots[@]}"; do
-            for directory in web ui; do
+            # native-ui/: a worker's native app for the iii app (its build.rs
+            # embeds native-ui/dist/native.js, docs/sops/native-ui.md).
+            for directory in web ui native-ui; do
               if [[ -f "$root/$directory/package.json" ]]; then
                 bundles+=("$root/$directory")
               fi
@@ -217,7 +220,7 @@ jobs:
           # pnpm-lock.yaml); the glob also covers standalone web/ locks.
           cache-dependency-path: '**/pnpm-lock.yaml'
 
-      - name: Pre-build frontend bundle (web/ and/or ui/)
+      - name: Pre-build frontend bundle (web/, ui/ and/or native-ui/)
         if: steps.frontends.outputs.found == 'true'
         run: |
           set -euo pipefail
@@ -827,6 +830,73 @@ jobs:
         run: cargo test --locked --all-features
 
   # ──────────────────────────────────────────────────────────────
+  # Worker native UI: the @iii-dev/native-ui SDK (packages/native-ui) and
+  # every worker's native app built with it (<worker>/native-ui). The rust
+  # matrix only builds an app's bundle on the way to its worker's binary;
+  # this job runs their own suites: the SDK's (the QuickJS harness, the
+  # runtime, the build, the conformance flows), its generated catalogue and
+  # conformance files, biome, and each app's typecheck and tests. discover's
+  # native_ui gates it: the SDK, an app, crates/native-ui, the root pnpm
+  # workspace or this CI changed. A source change in the SDK also puts the
+  # workers that bundle it in the rust matrix (discover's BUNDLED_PACKAGES).
+  # ──────────────────────────────────────────────────────────────
+  native-ui:
+    name: "native-ui: SDK + native apps"
+    needs: discover
+    if: needs.discover.outputs.native_ui == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # The test host's step and load deadlines are wall time (250 ms and 2 s,
+      # the device's); a shared runner took over 250 ms for a 42 ms step.
+      III_NATIVE_UI_BUDGET_SCALE: '4'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: 'pnpm'
+          cache-dependency-path: '**/pnpm-lock.yaml'
+
+      - name: Install the SDK and the native apps
+        # Only these packages and their workspace deps (as computer-native
+        # does): an unrelated package must not break this job. Native apps are
+        # named @iii-workers/<worker>-native-ui; selected by name, the closure
+        # follows their workspace devDependencies too (the browser's imports
+        # its console UI's address helpers, whose tsconfig needs that UI's own
+        # install), which a path selector does not.
+        run: pnpm --filter '@iii-dev/native-ui...' --filter '@iii-workers/*-native-ui...' install --frozen-lockfile
+
+      - name: Biome
+        # packages/native-ui and every <worker>/native-ui.
+        run: |
+          mapfile -t dirs < <(dirname -- */native-ui/package.json)
+          npx --yes @biomejs/biome@2.4.10 ci "${dirs[@]}"
+
+      - name: SDK typecheck
+        run: pnpm --filter '@iii-dev/native-ui' typecheck
+
+      - name: SDK tests
+        run: pnpm --filter '@iii-dev/native-ui' test
+
+      - name: Generated catalogue and conformance files are fresh
+        working-directory: packages/native-ui
+        run: |
+          node scripts/gen-catalog.mjs --check
+          node scripts/gen-conformance.mjs --check
+
+      - name: Native apps typecheck
+        run: pnpm --filter '@iii-workers/*-native-ui' typecheck
+
+      - name: Native apps tests
+        run: pnpm --filter '@iii-workers/*-native-ui' test
+
+  # ──────────────────────────────────────────────────────────────
   # llm-router lifecycle contract: unlike the regular Rust job, this always
   # supplies the pinned engine and therefore cannot silently self-skip the
   # real-bus registration, streaming, cancellation, and restart scenarios.
@@ -1119,12 +1189,12 @@ jobs:
       # short-circuits it — mirrors the `rust` job above. provider-opencode-go
       # embeds the llm-router UI transitively, so it needs that UI prepared too.
       - name: Setup pnpm (workers with bundled web/)
-        if: steps.optout.outputs.kind == 'rust-binary' && (hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go')
+        if: steps.optout.outputs.kind == 'rust-binary' && (hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker), format('{0}/native-ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go')
         # Version comes from the repo-root package.json packageManager field.
         uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
 
       - name: Setup Node (workers with bundled web/)
-        if: steps.optout.outputs.kind == 'rust-binary' && (hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go')
+        if: steps.optout.outputs.kind == 'rust-binary' && (hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker), format('{0}/native-ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go')
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
@@ -1133,11 +1203,11 @@ jobs:
           # pnpm-lock.yaml); the glob also covers standalone web/ locks.
           cache-dependency-path: '**/pnpm-lock.yaml'
 
-      - name: Pre-build frontend bundle (web/ and/or ui/)
-        if: steps.optout.outputs.kind == 'rust-binary' && (hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go')
+      - name: Pre-build frontend bundle (web/, ui/ and/or native-ui/)
+        if: steps.optout.outputs.kind == 'rust-binary' && (hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker), format('{0}/native-ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go')
         run: |
           set -euo pipefail
-          for d in "${{ matrix.worker }}/web" "${{ matrix.worker }}/ui"; do
+          for d in "${{ matrix.worker }}/web" "${{ matrix.worker }}/ui" "${{ matrix.worker }}/native-ui"; do
             if [[ -f "$d/package.json" ]]; then
               (cd "$d" && pnpm install --frozen-lockfile && pnpm build)
             fi
@@ -1394,6 +1464,63 @@ jobs:
           SUMMARY: ${{ steps.e2e.outputs.summary }}
         run: |
           echo "::warning::Harness E2E: ${SUMMARY:-no verdict}"
+          exit 1
+
+  # ──────────────────────────────────────────────────────────────
+  # Memory E2E (non-required). A pull request from this repository that
+  # changes memory runs harness-e2e's `memory` and `memory-learning` suites on
+  # its stacks/memory.yaml, with memory built from the PR head and the rest
+  # released. Memory is outside the harness graph, so the pr suite above never
+  # builds it. Like that job it warns and never gates; each suite keeps its
+  # own PR comment.
+  # ──────────────────────────────────────────────────────────────
+  memory-e2e:
+    name: memory e2e (${{ matrix.suite }})
+    needs: discover
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && !startsWith(github.head_ref, 'eval/')
+      && contains(fromJSON(needs.discover.outputs.changed_workers), 'memory')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [memory, memory-learning]
+    steps:
+      - name: Mint a token that can run iii-hq/harness-e2e
+        id: app
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.III_CI_APP_ID }}
+          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+          owner: iii-hq
+          repositories: harness-e2e
+          permission-actions: write
+
+      - name: Run the ${{ matrix.suite }} suite on memory built from this PR
+        id: e2e
+        uses: iii-hq/harness-e2e/.github/actions/verify-stack@8ba21985193f44a86eaa64848f71c1a54c251d58
+        with:
+          token: ${{ steps.app.outputs.token }}
+          comment-token: ${{ github.token }}
+          pins: '["memory"]'
+          commit: ${{ github.event.pull_request.head.sha }}
+          suite: ${{ matrix.suite }}
+          stack: memory
+          comment-pr: ${{ github.repository }}#${{ github.event.pull_request.number }}
+
+      - name: Turn red when the suite did not pass
+        if: steps.e2e.outputs.status != 'passed' && steps.e2e.outputs.status != 'skipped'
+        env:
+          SUITE: ${{ matrix.suite }}
+          SUMMARY: ${{ steps.e2e.outputs.summary }}
+        run: |
+          echo "::warning::Memory E2E (${SUITE}): ${SUMMARY:-no verdict}"
           exit 1
 
   # ──────────────────────────────────────────────────────────────
