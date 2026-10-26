@@ -13,7 +13,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = ROOT / "template"
-ADAPTER = "sandbox-builtin"
+ADAPTER = "sandbox-libkrun"
 
 
 def tracked_files(*paths):
@@ -61,7 +61,7 @@ class TemplateTests(unittest.TestCase):
         """computer needs the adapter for sandbox::*, so Compose must never remove it."""
         self.assertNotIn("workers", self.compose["engine"])
         adapter = self.containers[ADAPTER]
-        self.assertEqual((adapter["worker"], adapter["version"]), ("package://sandbox-builtin", "^1"))
+        self.assertEqual((adapter["worker"], adapter["version"]), ("package://sandbox-libkrun", "^1"))
         self.assertEqual(adapter["config_override"]["image_allowlist"], ["desktop", "anthropic"])
         self.assertEqual(adapter["config_override"]["custom_images"]["desktop"], "ghcr.io/trycua/linux:24.04-slim-20261013-36bc520")
         lines = (TEMPLATE / "worker-compose.yaml").read_text().splitlines()

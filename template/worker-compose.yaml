@@ -10,8 +10,8 @@ containers:
   # Serves the engine's sandbox::* calls in microVMs, behind computer's sandbox
   # sessions. Operator-declared and unmarked, so Compose never removes it while
   # computer needs it. `desktop` is the console's default image.
-  sandbox-builtin:
-    worker: package://sandbox-builtin
+  sandbox-libkrun:
+    worker: package://sandbox-libkrun
     version: '^1'
     config_override:
       auto_install: true
@@ -250,7 +250,7 @@ containers:
       - judge-typesafe
       - judge
       - computer
-      - sandbox-builtin
+      - sandbox-libkrun
     environment:
       RUST_LOG: info
       CI: "true"

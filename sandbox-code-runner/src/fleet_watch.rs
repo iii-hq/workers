@@ -277,7 +277,7 @@ mod tests {
         // last fleet must not stay on screen.
         let (emitter, recorder) = harness();
         let (state, _) = step(&Reported::Nothing, Ok(fleet_of(&["a"])), &emitter);
-        let s301 = r#"remote error (invocation_failed): {"code":"S301","message":"adapter sandbox-builtin not connected in namespace default; compose::add iii-sandbox in that project installs it","retryable":true,"type":"transient"}"#;
+        let s301 = r#"remote error (invocation_failed): {"code":"S301","message":"adapter sandbox-libkrun not connected in namespace default; compose::add iii-sandbox in that project installs it","retryable":true,"type":"transient"}"#;
         let (state, delay) = step(&state, Err(s301.into()), &emitter);
         assert!(state == Reported::Absent);
         assert_eq!(delay, ABSENT_RECHECK);
@@ -290,7 +290,7 @@ mod tests {
     #[tokio::test]
     async fn router_s303_reports_absent() {
         let (emitter, recorder) = harness();
-        let s303 = r#"remote error (invocation_failed): {"code":"S303","message":"no sandbox adapter configured: this engine is not managed by a Compose file; set sandbox.adapter in its engine config (Compose-managed engines default to sandbox-builtin)","retryable":false,"type":"validation"}"#;
+        let s303 = r#"remote error (invocation_failed): {"code":"S303","message":"no sandbox adapter configured: this engine is not managed by a Compose file; set sandbox.adapter in its engine config (Compose-managed engines default to sandbox-libkrun)","retryable":false,"type":"validation"}"#;
         let (state, delay) = step(&Reported::Nothing, Err(s303.into()), &emitter);
         assert!(state == Reported::Absent);
         assert_eq!(delay, ABSENT_RECHECK);

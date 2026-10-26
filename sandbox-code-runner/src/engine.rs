@@ -420,7 +420,7 @@ mod tests {
 
     fn router_reply(info: Value) -> CallResult {
         Ok(json!({
-            "adapter": "sandbox-builtin",
+            "adapter": "sandbox-libkrun",
             "namespace": "default",
             "contract": { "major": 1, "minor": 0 },
             "info": info,
@@ -437,7 +437,7 @@ mod tests {
         fake.with_response(
             ADAPTER_INFO,
             router_reply(json!({
-                "adapter": "sandbox-builtin",
+                "adapter": "sandbox-libkrun",
                 "adapter_version": "1.0.0",
                 "contract": { "major": 1, "minor": 0 },
             })),

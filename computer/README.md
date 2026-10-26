@@ -34,7 +34,7 @@ iii trigger compose::add worker=computer
 ```
 
 To drive a throwaway desktop instead of your own machine, run the sandbox
-adapter: the `sandbox-builtin` worker serves the engine's `sandbox::*` calls in
+adapter: the `sandbox-libkrun` worker serves the engine's `sandbox::*` calls in
 the microVM the `image` driver runs in. `iii trigger compose::add worker=iii-sandbox`
 installs it. To also name the desktop image, declare it yourself in
 `worker-compose.yaml`; an unmarked container is yours, so Compose never removes
@@ -42,8 +42,8 @@ it:
 
 ```yaml
 containers:
-  sandbox-builtin:
-    worker: package://sandbox-builtin
+  sandbox-libkrun:
+    worker: package://sandbox-libkrun
     version: '^1'
     config_override:
       auto_install: true

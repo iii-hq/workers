@@ -490,7 +490,7 @@ mod tests {
         // canonical codes and collapses to S216.
         let stub = StubFwd::remote_err(
             "invocation_failed",
-            r#"{"type":"transient","code":"S301","message":"adapter sandbox-builtin not connected in namespace my-proj; compose::add iii-sandbox in that project installs it","retryable":true}"#,
+            r#"{"type":"transient","code":"S301","message":"adapter sandbox-libkrun not connected in namespace my-proj; compose::add iii-sandbox in that project installs it","retryable":true}"#,
         );
         let b = backend(stub, Uuid::new_v4());
         let err = b

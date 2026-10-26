@@ -361,7 +361,7 @@ fn registry_add_evidence(
                     evidence.shell_succeeded = true;
                 }
                 if sandbox_calls.contains(call_id)
-                    && compose_add_succeeded(message, "sandbox-builtin")
+                    && compose_add_succeeded(message, "sandbox-libkrun")
                 {
                     evidence.sandbox_succeeded = true;
                     evidence.ordered |= ordered_sandbox_calls.contains(call_id);
@@ -838,7 +838,7 @@ mod tests {
                     assistant_calls(vec![add_call("call-shell", "ide")]),
                     add_result("call-shell", "ide", "ok"),
                     assistant_calls(vec![add_call("call-sandbox", "iii-sandbox")]),
-                    add_result("call-sandbox", "sandbox-builtin", "ok"),
+                    add_result("call-sandbox", "sandbox-libkrun", "ok"),
                 ]),
                 RegistryAddEvidence {
                     shell_succeeded: true,
@@ -852,7 +852,7 @@ mod tests {
                     assistant_calls(vec![add_call("call-shell", "ide")]),
                     add_result("call-shell", "ide", "failed"),
                     assistant_calls(vec![add_call("call-sandbox", "iii-sandbox")]),
-                    add_result("call-sandbox", "sandbox-builtin", "ok"),
+                    add_result("call-sandbox", "sandbox-libkrun", "ok"),
                 ]),
                 RegistryAddEvidence {
                     shell_succeeded: false,
@@ -868,7 +868,7 @@ mod tests {
                         add_call("call-sandbox", "iii-sandbox"),
                     ]),
                     add_result("call-shell", "ide", "ok"),
-                    add_result("call-sandbox", "sandbox-builtin", "ok"),
+                    add_result("call-sandbox", "sandbox-libkrun", "ok"),
                 ]),
                 RegistryAddEvidence {
                     shell_succeeded: true,

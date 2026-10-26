@@ -2,7 +2,7 @@
 title: Exposing a service that runs inside a worker microVM
 type: how-to
 description: >-
-  Workers that Compose runs in sandbox-builtin's libkrun microVMs have an
+  Workers that Compose runs in sandbox-libkrun's microVMs have an
   egress-only network: the guest cannot reach its own TCP loopback and the host
   cannot dial in at all.
   This is the verified networking map plus the guest-initiated tunnel pattern for
@@ -22,7 +22,7 @@ the map below before writing any code that binds a port inside a worker.
 
 `engine::workers::info { name }` → `isolation: "libkrun"` with `os: "linux … (arm64)"`
 means yes, whatever the host OS is. Compose runs a worker in a VM, through the
-`sandbox-builtin` worker, when it is a bundle package or a `path://` worker whose
+`sandbox-libkrun` worker, when it is a bundle package or a `path://` worker whose
 `iii.worker.yaml` sets `runtime.base_image`; binary workers (console, state, shell,
 cron, …) run natively on the host. Consequences that bite immediately:
 
@@ -36,7 +36,7 @@ cron, …) run natively on the host. Consequences that bite immediately:
 
 ## 2. The networking map (verified, not assumed)
 
-The launcher (`sandbox-builtin __vm-boot --network`) runs a **userspace smoltcp stack on
+The launcher (`sandbox-libkrun __vm-boot --network`) runs a **userspace smoltcp stack on
 the host** that proxies guest TCP **outward only**. The guest learns its addressing
 from env vars: `III_INIT_IP` (e.g. `100.96.0.2`), `III_INIT_GW` (`100.96.0.1`),
 `III_INIT_CIDR` (`30`), `III_INIT_DNS`.

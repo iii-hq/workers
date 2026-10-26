@@ -119,7 +119,7 @@ def configure_local_workers(compose, destination, workers_root):
         if not match:
             continue
         name = match[1]
-        if name == "sandbox-builtin":
+        if name == "sandbox-libkrun":
             continue  # its release build embeds init and firmware, which `cargo run` cannot produce
         source = workers_root / name
         manifest_path = source / "iii.worker.yaml"

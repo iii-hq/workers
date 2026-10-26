@@ -1,10 +1,10 @@
-//! End-to-end: engine → sandbox-code-runner → sandbox router → sandbox-builtin
+//! End-to-end: engine → sandbox-code-runner → sandbox router → sandbox-libkrun
 //! adapter → microVM → runner.
 //!
 //! GATED: set SANDBOX_CODE_RUNNER_E2E=1 to run (needs /dev/kvm, network for the
 //! first image pull, an engine binary — same convention as
 //! node-engine's integration test — and the adapter binary in ADAPTER_BIN, a
-//! sandbox-builtin built with `--features embed-init`, as in its isolation e2e).
+//! sandbox-libkrun built with `--features embed-init`, as in its isolation e2e).
 //! Skips silently otherwise so `cargo test` is green on machines without
 //! virtualization.
 
@@ -61,13 +61,13 @@ fn iii_bin() -> std::path::PathBuf {
 /// `-c <path> --no-update-check`.
 ///
 /// The config also carries the top-level `sandbox:` key that binds the
-/// engine's `sandbox::*` router to the `sandbox-builtin` adapter. The VM
+/// engine's `sandbox::*` router to the `sandbox-libkrun` adapter. The VM
 /// daemon is no longer an `iii-sandbox` entry under `workers:` (the engine
 /// refuses one); `spawn_adapter` starts it as its own process instead.
 fn spawn_engine(port: u16, home: &std::path::Path) -> std::process::Child {
     let cfg_path = home.join("config.yaml");
     let cfg_body = format!(
-        "workers:\n  - name: iii-worker-manager\n    config:\n      host: 127.0.0.1\n      port: {port}\n\nsandbox:\n  adapter: sandbox-builtin\n"
+        "workers:\n  - name: iii-worker-manager\n    config:\n      host: 127.0.0.1\n      port: {port}\n\nsandbox:\n  adapter: sandbox-libkrun\n"
     );
     std::fs::write(&cfg_path, &cfg_body).expect("write engine config.yaml");
 
@@ -81,16 +81,16 @@ fn spawn_engine(port: u16, home: &std::path::Path) -> std::process::Child {
         .expect("spawn iii engine binary")
 }
 
-/// Seed the adapter's config, then spawn the `$ADAPTER_BIN` sandbox-builtin.
+/// Seed the adapter's config, then spawn the `$ADAPTER_BIN` sandbox-libkrun.
 ///
-/// The adapter reads config id `sandbox-builtin` once at startup and falls
+/// The adapter reads config id `sandbox-libkrun` once at startup and falls
 /// back to serde defaults that deny every image, so the allowlist must be in
 /// the engine's configuration worker first. `flush: false` keeps it in memory
 /// (`configuration::set` may precede registration). The port can open before
 /// the configuration worker serves, so the call is retried until it exits 0.
 fn spawn_adapter(iii_bin: &std::path::Path, port: u16) -> std::process::Child {
     let set = serde_json::json!({
-        "id": "sandbox-builtin",
+        "id": "sandbox-libkrun",
         "value": { "auto_install": true, "image_allowlist": ["python", "node"] },
         "flush": false,
     });
@@ -106,7 +106,7 @@ fn spawn_adapter(iii_bin: &std::path::Path, port: u16) -> std::process::Child {
         }
         assert!(
             start.elapsed() < Duration::from_secs(30),
-            "configuration::set sandbox-builtin never exited 0: {} {}",
+            "configuration::set sandbox-libkrun never exited 0: {} {}",
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
@@ -114,12 +114,12 @@ fn spawn_adapter(iii_bin: &std::path::Path, port: u16) -> std::process::Child {
     }
 
     let adapter_bin = std::env::var_os("ADAPTER_BIN").expect(
-        "ADAPTER_BIN must point at a sandbox-builtin binary built with --features embed-init",
+        "ADAPTER_BIN must point at a sandbox-libkrun binary built with --features embed-init",
     );
     std::process::Command::new(adapter_bin)
         .env("III_URL", format!("ws://127.0.0.1:{port}"))
         .spawn()
-        .expect("sandbox-builtin adapter starts")
+        .expect("sandbox-libkrun adapter starts")
 }
 
 /// Kills whatever processes have been handed to it and removes the scratch

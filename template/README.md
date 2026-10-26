@@ -58,11 +58,11 @@ preserved. Other local workers use their manifest's `scripts.start`. Workers
 without a local manifest or a usable start command keep their package source.
 Existing `path://` entries and custom registry URLs are kept.
 
-`sandbox-builtin` is the exception: sync keeps it as a `package://` entry even
+`sandbox-libkrun` is the exception: sync keeps it as a `package://` entry even
 when its source is in the repository, because its release build embeds the
 guest init and firmware, which `cargo run` cannot produce. The baseline
 `worker-compose.yaml` declares it for computer's sandboxes, so `up` on a host
-with no `sandbox-builtin` build fails with `UNSUPPORTED_PLATFORM`; remove that
+with no `sandbox-libkrun` build fails with `UNSUPPORTED_PLATFORM`; remove that
 container there.
 
 The YAML editor preserves comments, including disabled provider examples, and

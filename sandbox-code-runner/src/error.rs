@@ -260,7 +260,7 @@ mod tests {
 
     /// MUST FIX 3 (final review): S003's raw daemon message embeds
     /// `sandbox_id` ("concurrent exec on sandbox {id}: …" — see
-    /// `sandbox-builtin/src/sandbox_daemon/errors.rs`'s `ConcurrentExec` Display).
+    /// `sandbox-libkrun/src/sandbox_daemon/errors.rs`'s `ConcurrentExec` Display).
     /// `sandbox_id` must never reach a caller (see the module doc's design
     /// invariant), so the classifier must swap in fixed, id-free text rather
     /// than passing the daemon's own message through — the redaction on the
