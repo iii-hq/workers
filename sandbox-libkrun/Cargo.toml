@@ -66,6 +66,8 @@ base64 = "0.23"
 libc = "0.2"
 uuid = { version = "1", features = ["v4", "serde"] }
 thiserror = "2"
+# Held at 0.8: iii-sdk (0.24.6 and 0.25.0) requires schemars 0.8 JsonSchema on
+# handler request/response types; upgrade to 1.x when iii-sdk moves to schemars 1.
 schemars = "0.8"
 # sandbox::exec shlex-splits a shell-style `cmd` into argv.
 shlex = "2"

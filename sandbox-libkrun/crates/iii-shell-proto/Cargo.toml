@@ -14,6 +14,8 @@ path = "src/lib.rs"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+# Held at 0.8: sandbox-libkrun embeds these types in iii-sdk handler schemas, and
+# iii-sdk requires schemars 0.8; upgrade to 1.x when iii-sdk moves to schemars 1.
 schemars = "0.8"
 
 [dev-dependencies]
