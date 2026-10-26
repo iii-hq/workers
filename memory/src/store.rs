@@ -76,6 +76,10 @@ pub struct Evidence {
     pub matched: Vec<String>,
     /// How many content terms the question has.
     pub terms: usize,
+    /// The question asks what memory holds of the user ("what do you
+    /// remember about me?"), not a question of pronouns alone ("what should
+    /// I do now?").
+    pub of_me: bool,
     /// BM25 over the shared max: the lexical part of `relevance`.
     pub lexical: f32,
     /// `lexical + weight * semantic`, before entity, corroboration, pin
@@ -975,6 +979,7 @@ impl Bank {
                         .map(|t| t.to_string())
                         .collect(),
                     terms: content.len(),
+                    of_me: expanded && of_me,
                     lexical: s / max_bm25,
                     relevance,
                     cosine: cos,

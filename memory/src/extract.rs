@@ -499,7 +499,7 @@ fn content_words(text: &str) -> BTreeSet<String> {
 /// The word a statement leads with, stemmed: its first content word, past a
 /// possessive `user's` ("the user's sister" leads with "sister"). English
 /// puts the subject there.
-fn lead(text: &str) -> Option<String> {
+pub(crate) fn lead(text: &str) -> Option<String> {
     let tokens = crate::index::tokenize(text);
     let mut at = tokens.iter().position(|t| is_content(t))?;
     if tokens[at] == "user" && tokens.get(at + 1).is_some_and(|t| t == "s") {

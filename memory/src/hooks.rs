@@ -641,8 +641,9 @@ fn two_subjects(a: &Memory, b: &Memory) -> bool {
 /// own, or with the turn's best in a turn anchored in the bank (a bank too
 /// small for a z-score anchors on any meaning match), one line per fact,
 /// `limit` of them, or more for a list (every line on the same two or more
-/// question words, or on the `user` of a question about the user, each on its
-/// own: all its siblings come); nothing when none has any.
+/// question words, each leading with its own subject, or on the `user` of a
+/// question about what memory holds of the user: all its siblings come);
+/// nothing when none has any.
 /// An older statement of a changed fact is never told: when it stands,
 /// the current statement takes its place, whatever the newer's own rank or
 /// relevance. `seen` holds the memory lines the window shows: a rewording of
@@ -766,20 +767,38 @@ pub fn select(
     // stands on the same question words ("which services use Postgres 16?"
     // over seven services), so does each sibling past it, to the token budget.
     // A mixed list keeps the count: its tail shares a stray word, not the subject.
-    // One word is a list only as the `user` of "what do you remember about me?":
-    // "kotlin?" over many Kotlin lines keeps the count.
+    // Siblings lead with different subjects, while facts on one subject
+    // ("payments-api", two question words) keep the count. One word is a list
+    // only as the `user` of "what do you remember about me?", whose facts all
+    // lead with "user": "kotlin?" over many Kotlin lines, or "what should I do
+    // now?" over the user's, keeps the count.
     // shortcut: one line in the first `limit` on other words (a meaning-only hit,
     // a pinned line, a newer statement in an older line's slot) cancels the whole
     // list; carry on per sibling when an eval shows a list lost that way.
+    // shortcut: object-first siblings ("Postgres 16 runs search") keep the count;
+    // read the subject past the lead if an eval shows such a list lost.
     let past = kept.split_off(limit.min(kept.len()));
     let same = |a: &Evidence, b: &Evidence| within(a, b) && within(b, a);
-    let list = kept.first().map(|(m, _)| ev(m)).filter(|first| {
-        on_words(first)
-            && (first.terms >= 2 || first.matched == ["user"])
-            && kept.iter().all(|(m, _)| same(ev(m), first))
-    });
-    if let Some(first) = list {
+    let Some(first) = kept
+        .first()
+        .map(|(m, _)| ev(m))
+        .filter(|first| on_words(first) && kept.iter().all(|(m, _)| same(ev(m), first)))
+    else {
+        return kept;
+    };
+    if first.matched == ["user"] && first.of_me {
         kept.extend(past.into_iter().filter(|(m, _)| same(ev(m), first)));
+    } else if first.terms >= 2 {
+        // Each line's lead, once: a line with none, or a repeat, is no list.
+        let mut leads = HashSet::new();
+        let mut lead_once = |m: &Memory| extract::lead(&m.text).is_some_and(|l| leads.insert(l));
+        if kept.iter().all(|(m, _)| lead_once(m)) {
+            let siblings: Vec<_> = past
+                .into_iter()
+                .filter(|(m, _)| same(ev(m), first) && lead_once(m))
+                .collect();
+            kept.extend(siblings);
+        }
     }
     kept
 }
@@ -2086,29 +2105,36 @@ Formal."
         assert_eq!(told(&deps, &[], "Postgres?").await.len(), 6);
     }
 
-    #[tokio::test]
-    async fn what_you_remember_about_me_lists_every_user_fact() {
-        // The question's one term is the `user` its pronoun stands for: a list.
-        let dir = tempfile::tempdir().unwrap();
-        let deps = offline_deps(dir.path(), offline_cfg(6));
+    /// Sixteen facts "The user …", all tagged `user`.
+    const USER_FACTS: [&str; 16] = [
+        "The user's team nickname is nick-7f3a.",
+        "The user's cat is named Pixel.",
+        "The user grew up in Porto.",
+        "The user plays the cello in a quartet.",
+        "The user's favorite author is Ursula Le Guin.",
+        "The user is vegetarian.",
+        "The user's sister lives in Montreal.",
+        "The user speaks Portuguese and Italian.",
+        "The user was born in 1988.",
+        "The user keeps bees on a rooftop.",
+        "The user drives an electric scooter.",
+        "The user swims every Saturday morning.",
+        "The user collects vintage typewriters.",
+        "The user is allergic to peanuts.",
+        "The user studied physics in Coimbra.",
+        "The user runs a book club on Thursdays.",
+    ];
+
+    /// Deps over a `w-abc123` bank holding [`USER_FACTS`] (`fp-u<n>`) beside
+    /// workplace facts on no user.
+    async fn user_facts_bank(dir: &std::path::Path) -> Deps {
+        let deps = offline_deps(dir, offline_cfg(6));
         let (repo, _) = deps
             .store()
             .await
             .ensure_bank("w-abc123", None)
             .await
             .unwrap();
-        let user = [
-            "The user's team nickname is nick-7f3a.",
-            "The user's cat is named Pixel.",
-            "The user grew up in Porto.",
-            "The user plays the cello in a quartet.",
-            "The user's favorite author is Ursula Le Guin.",
-            "The user is vegetarian.",
-            "The user's sister lives in Montreal.",
-            "The user speaks Portuguese and Italian.",
-            "The user was born in 1988.",
-            "The user keeps bees on a rooftop.",
-        ];
         let workplace = [
             "The office coffee machine is on the third floor.",
             "The quarterly planning meeting happens in March.",
@@ -2119,7 +2145,7 @@ Formal."
             "Team lunches are on Fridays.",
             "The support rotation changes every Monday.",
         ];
-        for (n, text) in user.iter().enumerate() {
+        for (n, text) in USER_FACTS.iter().enumerate() {
             let m = Memory {
                 entities: vec!["user".into()],
                 ..memory(&format!("fp-u{n}"), text)
@@ -2131,17 +2157,61 @@ Formal."
                 .await
                 .unwrap();
         }
+        deps
+    }
+
+    #[tokio::test]
+    async fn what_you_remember_about_me_lists_every_user_fact() {
+        // The question's one term is the `user` its pronoun stands for: a list.
+        let dir = tempfile::tempdir().unwrap();
+        let deps = user_facts_bank(dir.path()).await;
         let mut ids: Vec<String> = told(&deps, &[], "What do you remember about me?")
             .await
             .into_iter()
             .map(|(id, _)| id)
             .collect();
         ids.sort();
-        let all: Vec<String> = (0..user.len()).map(|n| format!("fp-u{n}")).collect();
+        let mut all: Vec<String> = (0..USER_FACTS.len()).map(|n| format!("fp-u{n}")).collect();
+        all.sort();
         assert_eq!(
             ids, all,
             "every user fact past recall_limit, no workplace fact"
         );
+    }
+
+    #[tokio::test]
+    async fn a_pronoun_only_follow_up_keeps_the_count() {
+        // Its `user` stands for "I", but it asks nothing of what memory holds.
+        let dir = tempfile::tempdir().unwrap();
+        let deps = user_facts_bank(dir.path()).await;
+        let told = told(&deps, &[], "What should I do now?").await;
+        assert!(told.len() <= 6, "{told:?}");
+    }
+
+    #[tokio::test]
+    async fn facts_on_one_hyphenated_service_keep_the_count() {
+        // "payments-api" is two question words, and every line leads with it.
+        let facts = [
+            "payments-api runs three replicas in production.",
+            "payments-api is written in Kotlin.",
+            "payments-api keeps its secrets in Vault.",
+            "payments-api ships its logs to Loki.",
+            "payments-api deploys on Tuesday mornings.",
+            "payments-api talks to the ledger over gRPC.",
+            "payments-api stores card tokens in Postgres 16.",
+            "payments-api pages the billing rotation.",
+            "payments-api retries webhooks five times.",
+            "payments-api caches exchange rates in Redis.",
+            "payments-api exposes metrics on port 9090.",
+            "payments-api was split out of the monolith in 2022.",
+        ];
+        let memories = facts
+            .iter()
+            .enumerate()
+            .map(|(n, text)| memory(&format!("fp-p{n}"), text))
+            .collect();
+        let ids = told_ids(memories, "Is payments-api down right now?").await;
+        assert!(ids.len() <= 6, "{ids:?}");
     }
 
     /// A memory tagged with `entities`, last stated at `at`.
@@ -2593,20 +2663,26 @@ Formal."
             matched: vec!["w0".into(), "w2".into()],
             ..two()
         };
+        // Each line's text is its id, so each leads with its own subject.
         let list = vec![
-            ("fp-a", two()),
-            ("fp-b", two()),
-            ("fp-c", two()),
-            ("fp-d", other()),
+            ("alpha", two()),
+            ("bravo", two()),
+            ("charlie", two()),
+            ("delta", other()),
         ];
-        assert_eq!(selected(list, 1), ["fp-a", "fp-b", "fp-c"]);
+        assert_eq!(selected(list, 1), ["alpha", "bravo", "charlie"]);
         // A mixed list keeps the count, even for the last line's sibling.
-        let mixed = vec![("fp-a", other()), ("fp-b", two()), ("fp-c", two())];
-        assert_eq!(selected(mixed, 2), ["fp-a", "fp-b"]);
+        let mixed = vec![("alpha", other()), ("bravo", two()), ("charlie", two())];
+        assert_eq!(selected(mixed, 2), ["alpha", "bravo"]);
         // One word of three is no list, however many lines hold it.
         let one = || words(1, 3, 1.0);
         assert_eq!(
-            selected(vec![("fp-a", one()), ("fp-b", one())], 1),
+            selected(vec![("alpha", one()), ("bravo", one())], 1),
+            ["alpha"]
+        );
+        // Lines leading with one subject are facts on it, not siblings.
+        assert_eq!(
+            selected(vec![("fp-a", two()), ("fp-b", two())], 1),
             ["fp-a"]
         );
     }
