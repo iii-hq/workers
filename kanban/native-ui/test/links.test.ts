@@ -288,3 +288,14 @@ it('stays linear on hostile text', () => {
     assert.ok(took < 500, `${name}: ${took.toFixed(1)} ms`)
   }
 })
+
+it('keeps one pattern per list of tickets, and a new list gets its own', () => {
+  const one = [{ key: 'KAN-1', title: 'One', status: 'Backlog' }]
+  const two = [{ key: 'KAN-2', title: 'Two', status: 'Done' }]
+  const link = (key: string, title: string, text = key) => `[${text}](#kanban-ticket/${key} "${title}")`
+  assert.equal(linkTicketKeys('KAN-1 KAN-2', one), `${link('KAN-1', 'One · Backlog')} KAN-2`)
+  assert.equal(linkTicketKeys('KAN-2 KAN-1', one), `KAN-2 ${link('KAN-1', 'One · Backlog')}`, 'the same list again')
+  assert.equal(linkTicketKeys('KAN-1 KAN-2', two), `KAN-1 ${link('KAN-2', 'Two · Done')}`, 'another list')
+  assert.equal(linkTicketKeys('KAN-1 KAN-2', []), 'KAN-1 KAN-2', 'an empty list')
+  assert.equal(linkTicketKeys('kan-1', [...one]), link('KAN-1', 'One · Backlog', 'kan-1'), 'a copy of the first')
+})

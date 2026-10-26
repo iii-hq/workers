@@ -75,6 +75,38 @@ const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 const inert = (text: string) =>
   text.replace(/\s+/g, ' ').replace(/[!-/:<-@[-`{-~]/g, (char) => (char === '`' ? '&#96;' : `\\${char}`))
 
+type Matcher = { re: RegExp; tails: Map<string, string> }
+
+/**
+ * The pattern of `tickets`' keys, and what follows each key in its link. A
+ * ticket's items link every comment and piece of the description with the
+ * same list, and QuickJS builds the `WORD` class anew on each compile (600
+ * comments took 125 ms in one step): the last list's pattern is kept.
+ */
+let last: { tickets: readonly LinkedTicket[]; matcher: Matcher | null } | null = null
+function matcherFor(tickets: readonly LinkedTicket[]): Matcher | null {
+  if (last?.tickets === tickets) return last.matcher
+  // Only keys that are inert inside `[…](…)` (word characters, `.`, `+`, `-`); a prefix with others is not linked.
+  const byKey = new Map(
+    tickets.filter(({ key }) => /^[\w.+-]+$/.test(key)).map((ticket) => [ticket.key.toUpperCase(), ticket] as const),
+  )
+  let matcher: Matcher | null = null
+  if (byKey.size > 0) {
+    const tails = new Map(
+      [...byKey].map(([key, ticket]) => [
+        key,
+        `](${TICKET_HREF}${ticket.key} "${inert(`${ticket.title} · ${ticket.status}`)}")`,
+      ]),
+    )
+    const keys = [...byKey.keys()].map(escapeRe).join('|')
+    // No lookbehind (older Safari): the characters around a key are tested by offset. The `iu` flags also
+    // fold U+212A to `k` and U+017F to `s`; the scanner is ASCII-only, so those matches are dropped.
+    matcher = { re: new RegExp(`(?:${keys})(?![${WORD}/-])`, 'giu'), tails }
+  }
+  last = { tickets, matcher }
+  return matcher
+}
+
 /**
  * Replace every case-insensitive key of `tickets` with
  * `[KEY](#kanban-ticket/KEY "Title · Status")`, in plain prose. A key is a
@@ -93,21 +125,9 @@ const inert = (text: string) =>
  * Parse the Markdown instead if text with code, links or lists must link too.
  */
 export function linkTicketKeys(markdown: string, tickets: readonly LinkedTicket[]): string {
-  // Only keys that are inert inside `[…](…)` (word characters, `.`, `+`, `-`); a prefix with others is not linked.
-  const byKey = new Map(
-    tickets.filter(({ key }) => /^[\w.+-]+$/.test(key)).map((ticket) => [ticket.key.toUpperCase(), ticket] as const),
-  )
-  if (byKey.size === 0 || BARE_CR.test(markdown) || DEFINITION.test(markdown)) return markdown
-  const tails = new Map(
-    [...byKey].map(([key, ticket]) => [
-      key,
-      `](${TICKET_HREF}${ticket.key} "${inert(`${ticket.title} · ${ticket.status}`)}")`,
-    ]),
-  )
-  const keys = [...byKey.keys()].map(escapeRe).join('|')
-  // No lookbehind (older Safari): the characters around a key are tested by offset. The `iu` flags also
-  // fold U+212A to `k` and U+017F to `s`; the scanner is ASCII-only, so those matches are dropped.
-  const re = new RegExp(`(?:${keys})(?![${WORD}/-])`, 'giu')
+  const matcher = matcherFor(tickets)
+  if (!matcher || BARE_CR.test(markdown) || DEFINITION.test(markdown)) return markdown
+  const { re, tails } = matcher
   if (markdown.search(re) < 0) return markdown // most texts name no ticket
 
   const rewrite = (line: string): string =>

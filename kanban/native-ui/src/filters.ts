@@ -103,9 +103,19 @@ export function fold(text: string): string {
 
 const DIGITS = /^\d+$/
 
+/**
+ * The query folded once, not once per ticket: the board and every facet
+ * count test each card, and a pasted page of text took 99 ms in one step.
+ */
+let lastQuery = { raw: '', folded: '' }
+function foldedQuery(raw: string): string {
+  if (lastQuery.raw !== raw) lastQuery = { raw, folded: fold(raw.trim()) }
+  return lastQuery.folded
+}
+
 function matchesQuery(ticket: Summary, raw: string): boolean {
   if (!raw) return true
-  const q = fold(raw.trim())
+  const q = foldedQuery(raw)
   if (!q) return true
   const key = ticket.key.toLowerCase()
   if (key.includes(q) || fold(ticket.title).includes(q)) return true
