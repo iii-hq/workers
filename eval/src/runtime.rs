@@ -253,6 +253,7 @@ fn new_cycle(
         proposal: None,
         candidate: None,
         pull_request: None,
+        retry_of: None,
     }
 }
 
@@ -272,6 +273,14 @@ pub async fn cycle_start(
     deps: &Deps,
     request: CycleStartRequestV1,
 ) -> Result<CycleStartResponseV1, EvalError> {
+    if let Some(retry) = request.retry.as_deref().map(str::trim) {
+        if request.objective.is_some() || request.execution_id.is_some() || retry.is_empty() {
+            return Err(EvalError::InvalidRequest(
+                "give exactly one of objective, execution_id or retry".into(),
+            ));
+        }
+        return cycle_retry(deps, retry).await;
+    }
     let input = request.input()?;
     let (executions, detail) = match &input {
         CycleInputV1::Objective(_) => (Vec::new(), "started from an objective"),
@@ -282,6 +291,62 @@ pub async fn cycle_start(
     };
     let config = state::get_config(&deps.iii).await?;
     let record = new_cycle(ids::cycle_id(), input, executions, config, detail);
+    persist_new(deps, &record).await?;
+    Ok(CycleStartResponseV1 {
+        cycle_id: record.cycle_id,
+        status: record.status,
+    })
+}
+
+/// A new cycle from an ended one's finding: an execution is not imported or
+/// triaged again (its analysis and a triage that proceeded are copied), so it
+/// starts at coverage and plans under the current configuration.
+async fn cycle_retry(deps: &Deps, cycle_id: &str) -> Result<CycleStartResponseV1, EvalError> {
+    let ended = state::get_cycle(&deps.iii, cycle_id)
+        .await?
+        .ok_or_else(|| EvalError::NotFound(format!("cycle {cycle_id}")))?;
+    if !ended.status.is_terminal() {
+        return Err(EvalError::Conflict(format!(
+            "cycle {cycle_id} is still {:?}: retry it once it ends",
+            ended.status
+        )));
+    }
+    let analyses: Vec<_> = ended
+        .analyses
+        .iter()
+        .filter(|analysis| analysis.role == ExecutionRoleV1::Source)
+        .cloned()
+        .collect();
+    let executions = match &ended.input {
+        CycleInputV1::Objective(_) => Vec::new(),
+        CycleInputV1::ExecutionId(execution_id) => {
+            let Some(analysis) = analyses.first() else {
+                return Err(EvalError::Conflict(format!(
+                    "cycle {cycle_id} never analyzed execution {execution_id}: start a cycle from a new execution"
+                )));
+            };
+            vec![source(
+                execution_id,
+                ExecutionStateV1::Imported,
+                Some(analysis.admission_key.clone()),
+            )]
+        }
+    };
+    let config = state::get_config(&deps.iii).await?;
+    let mut record = new_cycle(
+        ids::cycle_id(),
+        ended.input.clone(),
+        executions,
+        config,
+        &format!("retry of cycle {cycle_id}: measured again from its finding"),
+    );
+    record.stage = CycleStageV1::Coverage;
+    record.history[0].stage = CycleStageV1::Coverage;
+    record.analyses = analyses;
+    record.triage = ended
+        .triage
+        .filter(|triage| triage.outcome == TriageOutcomeV1::Proceed);
+    record.retry_of = Some(cycle_id.into());
     persist_new(deps, &record).await?;
     Ok(CycleStartResponseV1 {
         cycle_id: record.cycle_id,

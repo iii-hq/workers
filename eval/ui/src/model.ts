@@ -693,3 +693,88 @@ export function span(ms: number): string {
 
 /** `1 case`, `5 cases`. */
 export const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`
+
+// ── what an ended cycle found, and what can follow ──────────────────────
+
+/** One criterion the runs lost, over every execution the cycle read. */
+export interface Lost {
+  scenario: string
+  criterion: string
+  /** The question the test's contract asks of it, when the cycle froze one. */
+  description?: string
+  /** Runs that lost points on it, of `runs` read runs of its scenario. */
+  lost: number
+  runs: number
+  /** The evaluator's `name=false` checks: what the runs did not do. */
+  failed: string[]
+  /** Each losing run's evaluator detail, in order. */
+  details: string[]
+}
+
+/** The first pass writes `run <scenario>/<run>: criterion <id> awarded <n> of <m>: <why>`. */
+const AWARD = /^run ([^/\s]+)\/\S+: criterion (\S+) awarded [^:]*:? ?(.*)$/
+
+/** The lost criteria, one entry each, most often lost first. */
+export function lostCriteria(record: CycleRecord): Lost[] {
+  const analyses = record.analyses ?? []
+  const tests = record.coverage?.selected ?? record.plan?.tests ?? []
+  const found = new Map<string, Lost>()
+  for (const finding of analyses.flatMap((analysis) => analysis.findings)) {
+    if (finding.class !== 'defect' && finding.class !== 'improvement_opportunity') continue
+    const match = finding.observation.match(AWARD)
+    if (!match) continue
+    const [, scenario, criterion, why] = match
+    const key = `${scenario}:${criterion}`
+    const entry = found.get(key) ?? {
+      scenario,
+      criterion,
+      description: tests.find((test) => test.scenario_id === scenario)?.criteria.find((item) => item.id === criterion)
+        ?.description,
+      lost: 0,
+      runs: 0,
+      failed: [],
+      details: [],
+    }
+    entry.lost += 1
+    entry.details.push(why)
+    for (const [, name] of why.matchAll(/(\w+)=false\b/g)) if (!entry.failed.includes(name)) entry.failed.push(name)
+    found.set(key, entry)
+  }
+  for (const entry of found.values()) {
+    const read = analyses
+      .flatMap((analysis) => analysis.scenarios ?? [])
+      .filter((scenario) => scenario.scenario_id === entry.scenario)
+      .reduce((sum, scenario) => sum + scenario.runs, 0)
+    entry.runs = Math.max(read, entry.lost)
+  }
+  return [...found.values()].sort((a, b) => b.lost - a.lost)
+}
+
+/** An ended cycle that changed nothing can measure its finding again. */
+export function canRetry(record: CycleRecord): boolean {
+  if (isActive(record.status) || record.pull_request || record.decision?.outcome === 'accepted') return false
+  if (record.outcome?.code === 'no_coverage') return false
+  return 'objective' in record.input || (record.analyses ?? []).some((analysis) => analysis.role === 'source')
+}
+
+/** An ended cycle's result as a sentence. */
+export function resultHeadline(record: CycleRecord, lost: number): string {
+  if (record.status === 'cancelled') return 'The cycle was cancelled before it decided anything.'
+  if (record.status === 'failed') return 'The cycle failed before it decided anything.'
+  switch (record.outcome?.code) {
+    case 'no_action':
+      return lost
+        ? 'The runs lost points, but the cycle stopped before proposing a change.'
+        : 'Nothing in the runs was worth changing.'
+    case 'no_coverage':
+      return 'No E2E test measures this, so nothing ran.'
+    case 'budget':
+      return 'The cycle reached its budget before it could decide.'
+    case 'inconclusive':
+      return 'The cycle ended without a verdict.'
+    case 'proposed':
+      return 'The change was proven and a pull request was opened.'
+    default:
+      return record.decision ? `The change was ${record.decision.outcome}.` : 'The cycle ended.'
+  }
+}

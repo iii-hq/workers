@@ -206,6 +206,8 @@ export interface CycleAnalysis {
   findings: Finding[]
   unknowns: string[]
   child_transcripts_complete: boolean
+  /** One entry per case the execution ran, with its run count. */
+  scenarios?: { scenario_id: string; runs: number }[]
   /** What `sentinel::reports::ingest` answered; absent when the reports recorded no failure. */
   sentinel?: SentinelForward
   analyzed_at: number
@@ -395,6 +397,8 @@ export interface CycleRecord {
   candidate?: CandidateState
   /** The accepted candidate's pull request, once opened or found. */
   pull_request?: PullRequest
+  /** The ended cycle this one measures again, from its finding. */
+  retry_of?: string
 }
 
 /** `PullRequestV1` (eval/src/pull_request.rs). `created`: opened by this cycle rather than found. */

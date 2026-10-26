@@ -2,7 +2,7 @@
   "function_id": "eval::start",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "Exactly one of `objective` or `execution_id`.",
+    "description": "Exactly one of `objective`, `execution_id` or `retry`.",
     "properties": {
       "execution_id": {
         "default": null,
@@ -13,6 +13,14 @@
       },
       "objective": {
         "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "retry": {
+        "default": null,
+        "description": "An ended cycle to measure again from its finding: its input, source analysis and a triage that proceeded are reused, under the current configuration.",
         "type": [
           "string",
           "null"

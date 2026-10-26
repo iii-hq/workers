@@ -78,8 +78,9 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             "Start one loop cycle from exactly one input: a free `objective` (mapped onto the \
              E2E catalog; no coverage spends nothing; a covered objective freezes its plan and \
              starts a budgeted baseline) or the `execution_id` of an existing E2E execution \
-             (its reports are imported and analyzed without a model). Both converge on the same \
-             cycle record; follow it with eval::status and eval::result, stop it with \
+             (its reports are imported and analyzed without a model), or `retry`, the id of an \
+             ended cycle to measure again from its finding (no new import or paid triage). All \
+             converge on the same cycle record; follow it with eval::status and eval::result, stop it with \
              eval::cancel.",
         ),
     );

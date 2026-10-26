@@ -120,6 +120,7 @@ fn record() -> CycleRecordV1 {
         proposal: None,
         candidate: None,
         pull_request: None,
+        retry_of: None,
     }
 }
 

@@ -1508,12 +1508,31 @@ async fn a_baseline_that_already_holds_the_lost_award_ends_before_any_paid_propo
     assert!(
         outcome
             .detail
-            .contains("only 0 of 5 baseline runs leave room"),
+            .contains("5 of the 5 baseline runs already scored within"),
         "{}",
         outcome.detail
     );
     assert!(rig.world().calls_to("harness::send").is_empty());
     assert_eq!(rig.world().e2e.dispatched.len(), 1, "the baseline alone");
+
+    // Try again: the same finding is measured anew, without a second triage.
+    let judged = rig.world().calls_to("judge::evaluate").len();
+    let retry = rig.begin(json!({"retry": cycle_id})).await;
+    let again = rig.cycle(&retry).await;
+    assert_eq!(again.retry_of.as_deref(), Some(cycle_id.as_str()));
+    assert_eq!(again.input, record.input);
+    assert_eq!(again.triage, record.triage, "the triage that proceeded is reused");
+    assert_eq!(rig.world().calls_to("judge::evaluate").len(), judged);
+    assert_eq!(again.stage, CycleStageV1::AwaitingExecution, "{:?}", again.history);
+    assert_eq!(rig.world().e2e.dispatched.len(), 2, "a new baseline");
+    // This time the baseline loses the award: the cycle goes on to a proposal.
+    rig.world()
+        .e2e
+        .finish("plan-2", "passed", side(TOKENS, LOST), &base);
+    rig.changed("plan-2").await;
+    let again = rig.cycle(&retry).await;
+    assert!(again.outcome.is_none(), "{:?}", again.outcome);
+    assert_eq!(rig.world().calls_to("harness::send").len(), 1, "{:?}", again.history);
 }
 
 #[cfg(target_os = "linux")]

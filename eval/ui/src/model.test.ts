@@ -3,16 +3,19 @@ import { describe, expect, it, vi } from 'vitest'
 import { createEvalApi } from './api'
 import { configFromDraft, draftFromConfig, draftFromJson, EMPTY_DRAFT } from './config-draft'
 import {
+  canRetry,
   cycleTitle,
   fixFor,
   gaps,
   groupOf,
+  lostCriteria,
   marks,
   nowView,
   outcomeView,
   parseOpenContext,
   phaseOf,
   readiness,
+  resultHeadline,
   review,
   sentinelResult,
   validateConfig,
@@ -81,6 +84,7 @@ describe('loop api', () => {
     await api.configure(CONFIG)
     await api.start({ objective: 'o' })
     await api.start({ execution_id: 'exec_1' })
+    await api.retry('cycle_0')
     await api.list()
     await api.result('cycle_1')
     await api.cancel('cycle_1')
@@ -91,6 +95,7 @@ describe('loop api', () => {
       ['eval::configure', { config: CONFIG }],
       ['eval::start', { objective: 'o' }],
       ['eval::start', { execution_id: 'exec_1' }],
+      ['eval::start', { retry: 'cycle_0' }],
       ['eval::list', { limit: 200 }],
       ['eval::result', { cycle_id: 'cycle_1' }],
       ['eval::cancel', { cycle_id: 'cycle_1' }],
@@ -381,7 +386,12 @@ describe('stage 2 config', () => {
 })
 
 describe('review', () => {
-  const pr = { number: 7, url: 'https://github.com/iii-hq/workers/pull/7', head_ref: 'loop/c1', head_sha: 'c'.repeat(40) }
+  const pr = {
+    number: 7,
+    url: 'https://github.com/iii-hq/workers/pull/7',
+    head_ref: 'loop/c1',
+    head_sha: 'c'.repeat(40),
+  }
 
   it('shows a proposed outcome only with the pull request the record holds', () => {
     const proposed = { code: 'proposed' as const, detail: 'opened #7' }
@@ -404,7 +414,9 @@ describe('review', () => {
     expect(phaseOf(waiting)).toBe(3)
     const none = record({ decision: decision(), outcome: { code: 'decided', detail: 'no github token configured' } })
     expect(review(none)).toEqual({ kind: 'none', detail: 'no github token configured' })
-    expect(review(record({ decision: decision({ outcome: 'rejected' }), outcome: { code: 'decided', detail: 'd' } }))).toBeNull()
+    expect(
+      review(record({ decision: decision({ outcome: 'rejected' }), outcome: { code: 'decided', detail: 'd' } })),
+    ).toBeNull()
   })
 })
 
@@ -522,5 +534,58 @@ describe('stage 2 record', () => {
       ['inconclusive', 'Candidate'],
       ['unknown', 'Candidate cost'],
     ])
+  })
+})
+
+describe('an ended cycle', () => {
+  const analysis = (role: 'source' | 'baseline', runs: number, lost: string[]) => ({
+    execution_id: `exec_${role}`,
+    admission_key: `key_${role}`,
+    role,
+    identity: {
+      contract_digest: null,
+      artifacts_digest: null,
+      stack_digest: null,
+      model: null,
+      provider: null,
+      harness_version: null,
+      workers_revision: null,
+      engine_version: null,
+      e2e_revision: null,
+    },
+    findings: lost.map((run) => ({
+      fingerprint: `${role}-${run}`,
+      class: 'improvement_opportunity' as const,
+      signal: 'criterion',
+      observation: `run db/${run}: criterion report awarded 0 of 15: writes=2, exact_report=false`,
+    })),
+    unknowns: [],
+    child_transcripts_complete: true,
+    scenarios: [
+      ...Array.from({ length: runs }, () => ({ scenario_id: 'db', runs: 1 })),
+      { scenario_id: 'other', runs: 2 },
+    ],
+    analyzed_at: 1,
+  })
+  const ended = record({
+    input: { execution_id: 'exec_source' },
+    outcome: { code: 'no_action', detail: '1 of the 3 baseline runs already scored within 10 pp of the top' },
+    analyses: [analysis('source', 2, ['a', 'b']), analysis('baseline', 3, ['c', 'd'])],
+  })
+
+  it('counts each lost criterion once, over the runs of its scenario, with what failed', () => {
+    expect(lostCriteria(ended)).toEqual([
+      expect.objectContaining({ scenario: 'db', criterion: 'report', lost: 4, runs: 5, failed: ['exact_report'] }),
+    ])
+    expect(resultHeadline(ended, 1)).toContain('stopped before proposing a change')
+  })
+
+  it('offers to try again only an ended cycle that changed nothing and has a finding to measure', () => {
+    expect(canRetry(ended)).toBe(true)
+    expect(canRetry({ ...ended, status: 'waiting' })).toBe(false)
+    expect(canRetry({ ...ended, analyses: [] })).toBe(false)
+    expect(canRetry({ ...ended, outcome: { code: 'no_coverage', detail: '' } })).toBe(false)
+    expect(canRetry({ ...ended, pull_request: { number: 1, url: 'u', created: true } as never })).toBe(false)
+    expect(canRetry(record({ outcome: { code: 'inconclusive', detail: '' } }))).toBe(true)
   })
 })

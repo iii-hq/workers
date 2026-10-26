@@ -32,6 +32,7 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import type { EvalApi } from '../api'
 import {
   badge,
+  canRetry,
   criterionName,
   cycleInput,
   cycleTitle,
@@ -43,12 +44,15 @@ import {
   formatMetric,
   gaps,
   isActive,
+  type Lost,
+  lostCriteria,
   type Mark,
   marks,
   nowView,
   PHASES,
   phaseOf,
   plural,
+  resultHeadline,
   review,
   runningExecution,
   runValue,
@@ -102,6 +106,7 @@ export function CycleDetail({
   const [response, setResponse] = useState<CycleResultResponse | null | undefined>(undefined)
   const [error, setError] = useState<string | null>(null)
   const [cancelling, setCancelling] = useState(false)
+  const [retrying, setRetrying] = useState(false)
   const { confirm, dialog } = useConfirm()
   const seq = useRef(0)
 
@@ -142,6 +147,31 @@ export function CycleDetail({
       setError(errorMessage(failure))
     } finally {
       setCancelling(false)
+    }
+  }
+
+  async function retry() {
+    const runs = current?.runs_per_side
+    const estimate = response?.cycle.plan?.estimated_usd
+    const ok = await confirm({
+      title: 'Measure this again?',
+      description: `A new cycle reuses this finding and runs a new baseline${runs ? ` of ${plural(runs, 'run')}` : ''}${
+        estimate ? `, about ${usd(estimate)}` : ''
+      }. It goes on to propose a change only if the new runs still lose the points.`,
+      confirmLabel: 'Try again',
+      cancelLabel: 'Not now',
+    })
+    if (!ok) return
+    setRetrying(true)
+    try {
+      const started = await api.retry(cycleId)
+      onChanged()
+      nav.announce('Cycle started again')
+      nav.cycle(started.cycle_id)
+    } catch (failure) {
+      setError(errorMessage(failure))
+    } finally {
+      setRetrying(false)
     }
   }
 
@@ -229,6 +259,8 @@ export function CycleDetail({
                 narrow={narrow}
                 nav={nav}
                 error={error}
+                onRetry={canRetry(cycle) ? () => void retry() : undefined}
+                retrying={retrying}
               />
             )}
           </div>
@@ -246,6 +278,8 @@ function Cycle({
   narrow,
   nav,
   error,
+  onRetry,
+  retrying,
 }: {
   host: Host
   cycle: CycleRecord
@@ -254,6 +288,8 @@ function Cycle({
   narrow: boolean
   nav: Nav
   error: string | null
+  onRetry?: () => void
+  retrying: boolean
 }) {
   const input = cycleInput(cycle)
   const view = badge(cycle)
@@ -272,6 +308,20 @@ function Cycle({
   const openE2E =
     host.panels && running?.execution_id ? () => host.panels?.open({ pageId: E2E_PAGE, context: {} }) : null
   const found = gaps(cycle).filter((gap) => !gap.subject.startsWith('Outcome'))
+  const ended = !isActive(cycle.status)
+  const lost = lostCriteria(cycle)
+  // The runs a person reads: the baseline's when it ran, else the source's.
+  const runsId = ['baseline', 'source']
+    .map((role) => cycle.executions?.filter((entry) => entry.role === role && entry.execution_id).at(-1))
+    .find(Boolean)?.execution_id
+  const openRuns =
+    ended && host.panels && runsId
+      ? () => {
+          // The E2E page routes itself from this hash when it opens.
+          window.location.hash = `#/ext/${E2E_PAGE}/execution/${runsId}`
+          host.panels?.open({ pageId: E2E_PAGE, context: {} })
+        }
+      : undefined
   const action = now.fix ? (
     <Button variant="pill" size={narrow ? 'lg' : 'md'} onClick={() => now.fix && nav.settings(now.fix)}>
       {FIX[now.fix].action}
@@ -299,6 +349,18 @@ function Cycle({
             )}
           </Eyebrow>
           <h2 className="eval-ui-title">{cycleTitle(cycle)}</h2>
+          {cycle.retry_of ? (
+            <p className="eval-ui-faint">
+              Measured again from{' '}
+              <button
+                type="button"
+                className="eval-ui-link"
+                onClick={() => cycle.retry_of && nav.cycle(cycle.retry_of)}
+              >
+                {cycle.retry_of.slice(0, 14)}
+              </button>
+            </p>
+          ) : null}
           <div className="eval-ui-meta">
             <StatusChip tone={view.tone} label={view.label} pulse={isActive(cycle.status)} />
             <span>{where}</span>
@@ -310,22 +372,29 @@ function Cycle({
           </div>
         </header>
         {error ? <StatusPanel variant="alert" headline="Last action failed" detail={error} /> : null}
-        <StatusPanel
-          variant={PANEL[now.tone]}
-          icon={<ToneIcon tone={now.tone} />}
-          headline={now.headline}
-          detail={now.detail}
-          action={narrow ? undefined : action}
-        />
-        {/* A phone keeps the sentence whole and puts its action underneath, full width. */}
-        {narrow && action ? <div className="eval-ui-wide">{action}</div> : null}
+        {ended && !now.fix ? (
+          <Result cycle={cycle} lost={lost} onRetry={onRetry} retrying={retrying} onOpenRuns={openRuns} />
+        ) : (
+          <>
+            <StatusPanel
+              variant={PANEL[now.tone]}
+              icon={<ToneIcon tone={now.tone} />}
+              headline={now.headline}
+              detail={now.detail}
+              action={narrow ? undefined : action}
+            />
+            {/* A phone keeps the sentence whole and puts its action underneath, full width. */}
+            {narrow && action ? <div className="eval-ui-wide">{action}</div> : null}
+          </>
+        )}
         {narrow ? <Budget usage={usage} /> : null}
         <Path cycle={cycle} current={current} narrow={narrow} />
-        {cycle.plan && !cycle.decision ? <Rule cycle={cycle} /> : null}
+        {/* The rule matters once a change can be judged; an ended cycle that never got one keeps it in the record. */}
+        {cycle.plan && !cycle.decision && (!ended || cycle.candidate) ? <Rule cycle={cycle} /> : null}
         {cycle.decision ? <Decision title="Source decision" cycle={cycle} decision={cycle.decision} /> : null}
-        <Findings cycle={cycle} />
+        <Findings cycle={cycle} collapsed={ended && lost.length > 0} />
         {found.length ? <Unknowns host={host} cycle={cycle} found={found} /> : null}
-        <Activity cycle={cycle} />
+        <Activity cycle={cycle} collapsed={ended} />
         <FullRecord cycle={cycle} />
       </div>
       <aside className="eval-ui-aside" aria-label="Cycle facts">
@@ -333,6 +402,83 @@ function Cycle({
         <Details cycle={cycle} />
       </aside>
     </div>
+  )
+}
+
+// ── what an ended cycle found, and what can follow ──────────────────────
+
+function Result({
+  cycle,
+  lost,
+  onRetry,
+  retrying,
+  onOpenRuns,
+}: {
+  cycle: CycleRecord
+  lost: Lost[]
+  onRetry?: () => void
+  retrying: boolean
+  onOpenRuns?: () => void
+}) {
+  const view = badge(cycle)
+  // A decision says why below, in its own panel.
+  const why = cycle.decision ? '' : view.reason
+  return (
+    <Panel>
+      <PanelHeader>Result</PanelHeader>
+      <PanelBody className="eval-ui-stack">
+        <p className="eval-ui-lead eval-ui-strong">{resultHeadline(cycle, lost.length)}</p>
+        {lost.length ? (
+          <div className="eval-ui-stack-sm">
+            <Eyebrow as="p">What the runs lost</Eyebrow>
+            <ul className="eval-ui-lost">
+              {lost.map((item) => (
+                <li key={`${item.scenario}:${item.criterion}`}>
+                  <p>
+                    <span className="eval-ui-mono">{item.criterion}</span> on{' '}
+                    <span className="eval-ui-mono">{item.scenario}</span>
+                    <span className="eval-ui-num eval-ui-faint">
+                      {' · '}lost in {item.lost} of {plural(item.runs, 'run')}
+                    </span>
+                  </p>
+                  {item.description ? <p className="eval-ui-faint">{item.description}</p> : null}
+                  {item.failed.length ? (
+                    <p className="eval-ui-faint">
+                      Check that failed: <span className="eval-ui-mono">{item.failed.join(', ')}</span>
+                    </p>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        {why ? (
+          <div className="eval-ui-stack-sm">
+            <Eyebrow as="p">{cycle.outcome?.code === 'proposed' ? 'What happened' : 'Why it stopped'}</Eyebrow>
+            <p className="eval-ui-lead">{sentence(why)}</p>
+          </div>
+        ) : null}
+        {onRetry || onOpenRuns ? (
+          <div className="eval-ui-result-actions">
+            {onRetry ? (
+              <Button variant="primary" disabled={retrying} onClick={onRetry}>
+                {retrying ? 'Starting…' : 'Try again'}
+              </Button>
+            ) : null}
+            {onOpenRuns ? (
+              <Button variant="ghost" onClick={onOpenRuns}>
+                Open the runs in E2E
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+        {onRetry ? (
+          <p className="eval-ui-faint">
+            Try again measures the same test anew; a change is proposed only if the new runs still lose the points.
+          </p>
+        ) : null}
+      </PanelBody>
+    </Panel>
   )
 }
 
@@ -501,15 +647,7 @@ const LANE: Record<Mark, { word: string; tone: Tone }> = {
 }
 
 /** The four phases with their steps; a finished cycle shows only each phase's last step. */
-function Path({
-  cycle,
-  current,
-  narrow,
-}: {
-  cycle: CycleRecord
-  current: LoopConfig | null
-  narrow: boolean
-}) {
+function Path({ cycle, current, narrow }: { cycle: CycleRecord; current: LoopConfig | null; narrow: boolean }) {
   const all = steps(cycle, current)
   const lanes = marks(cycle)
   const at = phaseOf(cycle)
@@ -861,46 +999,63 @@ function PairRow({
 
 // ── findings, unknowns, activity ────────────────────────────────────────
 
-function Findings({ cycle }: { cycle: CycleRecord }) {
+function Findings({ cycle, collapsed }: { cycle: CycleRecord; collapsed: boolean }) {
   const findings = (cycle.analyses ?? []).flatMap((analysis) =>
     analysis.findings
       .filter((finding) => finding.class !== 'expected_behavior')
       .map((finding) => ({ ...finding, role: analysis.role })),
   )
   if (findings.length === 0) return null
+  const table = (
+    <TableViewport>
+      <Table density="compact" inset>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Kind</TableHead>
+            <TableHead>Criterion</TableHead>
+            <TableHead>What happened</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {findings.map((finding) => {
+            const view = findingView(finding.class)
+            // The first pass writes `run …: criterion <id> awarded <n> of <m>: <why>`.
+            const award = finding.observation.match(/criterion (\S+) (awarded .*)$/)
+            return (
+              <TableRow key={`${finding.role}:${finding.fingerprint}`}>
+                <TableCell>
+                  <StatusChip tone={view.tone} label={view.label} />
+                </TableCell>
+                <TableCell className="eval-ui-mono eval-ui-nowrap">{award?.[1] ?? finding.signal}</TableCell>
+                <TableCell>{award ? sentence(award[2]) : finding.observation}</TableCell>
+              </TableRow>
+            )
+          })}
+        </TableBody>
+      </Table>
+    </TableViewport>
+  )
+  // An ended cycle says what was lost above; the run-by-run rows stay one click away.
+  if (collapsed) {
+    return (
+      <details className="eval-ui-details">
+        <summary>
+          <span>
+            Run by run · <span className="eval-ui-num">{plural(findings.length, 'finding')}</span>
+          </span>
+          <Caret />
+        </summary>
+        {table}
+      </details>
+    )
+  }
   return (
     <Panel>
       <PanelHeader className="eval-ui-panel-head">
         <span>What the first pass found</span>
         <Badge className="eval-ui-num">{findings.length}</Badge>
       </PanelHeader>
-      <TableViewport>
-        <Table density="compact" inset>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Kind</TableHead>
-              <TableHead>Criterion</TableHead>
-              <TableHead>What happened</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {findings.map((finding) => {
-              const view = findingView(finding.class)
-              // The first pass writes `run …: criterion <id> awarded <n> of <m>: <why>`.
-              const award = finding.observation.match(/criterion (\S+) (awarded .*)$/)
-              return (
-                <TableRow key={`${finding.role}:${finding.fingerprint}`}>
-                  <TableCell>
-                    <StatusChip tone={view.tone} label={view.label} />
-                  </TableCell>
-                  <TableCell className="eval-ui-mono eval-ui-nowrap">{award?.[1] ?? finding.signal}</TableCell>
-                  <TableCell>{award ? sentence(award[2]) : finding.observation}</TableCell>
-                </TableRow>
-              )
-            })}
-          </TableBody>
-        </Table>
-      </TableViewport>
+      {table}
     </Panel>
   )
 }
@@ -910,8 +1065,13 @@ function Unknowns({ host, cycle, found }: { host: Host; cycle: CycleRecord; foun
     .flatMap((analysis) => (analysis.sentinel?.results ?? []).map(sentinelResult))
     .find((result) => result?.group_id)?.group_id
   return (
-    <section aria-label="What the loop could not tell" className="eval-ui-section">
-      <h3 className="eval-ui-h">What the loop could not tell</h3>
+    <details className="eval-ui-details" aria-label="What the loop could not tell">
+      <summary>
+        <span>
+          What the loop could not tell · <span className="eval-ui-num">{found.length}</span>
+        </span>
+        <Caret />
+      </summary>
       <ul className="eval-ui-events">
         {found.map((gap, index) => (
           <li key={`${gap.kind}-${index}`}>
@@ -933,17 +1093,16 @@ function Unknowns({ host, cycle, found }: { host: Host; cycle: CycleRecord; foun
           Open in Sentinel
         </Button>
       ) : null}
-    </section>
+    </details>
   )
 }
 
-function Activity({ cycle }: { cycle: CycleRecord }) {
+function Activity({ cycle, collapsed }: { cycle: CycleRecord; collapsed: boolean }) {
   const [all, setAll] = useState(false)
   const events = [...cycle.history].reverse()
   const shown = all ? events : events.slice(0, ACTIVITY_SHOWN)
-  return (
-    <section aria-label="Activity" className="eval-ui-section">
-      <h3 className="eval-ui-h">Activity</h3>
+  const list = (
+    <>
       <ol className="eval-ui-events">
         {shown.map((event, index) => (
           <li key={`${event.at}-${index}`}>
@@ -966,6 +1125,23 @@ function Activity({ cycle }: { cycle: CycleRecord }) {
           {all ? 'Show the latest' : `Show all ${events.length} events`}
         </Button>
       ) : null}
+    </>
+  )
+  // An ended cycle's step log is for digging; the result above says what happened.
+  return collapsed ? (
+    <details className="eval-ui-details" aria-label="Activity">
+      <summary>
+        <span>
+          Activity · <span className="eval-ui-num">{plural(events.length, 'event')}</span>
+        </span>
+        <Caret />
+      </summary>
+      {list}
+    </details>
+  ) : (
+    <section aria-label="Activity" className="eval-ui-section">
+      <h3 className="eval-ui-h">Activity</h3>
+      {list}
     </section>
   )
 }

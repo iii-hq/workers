@@ -895,3 +895,38 @@
   color: inherit;
   text-decoration: underline;
 }
+
+[data-iii-ui="eval"] .eval-ui-lost {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+
+[data-iii-ui="eval"] .eval-ui-lost li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+[data-iii-ui="eval"] .eval-ui-result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+[data-iii-ui="eval"] .eval-ui-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-family: var(--font-mono);
+  text-decoration: underline;
+  cursor: pointer;
+}

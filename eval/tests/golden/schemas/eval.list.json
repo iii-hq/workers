@@ -1168,6 +1168,13 @@
             ],
             "description": "The accepted candidate's pull request, once opened or found."
           },
+          "retry_of": {
+            "description": "The ended cycle this one measures again, from its finding.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "schema_version": {
             "format": "uint32",
             "minimum": 0.0,

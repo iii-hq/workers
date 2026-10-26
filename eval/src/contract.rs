@@ -597,6 +597,9 @@ pub struct CycleRecordV1 {
     /// The accepted candidate's pull request, once opened or found.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pull_request: Option<PullRequestV1>,
+    /// The ended cycle this one measures again, from its finding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_of: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -788,13 +791,18 @@ pub struct CycleUsageV1 {
 // Requests
 // ---------------------------------------------------------------------------
 
-/// Exactly one of `objective` or `execution_id`.
+/// Exactly one of `objective`, `execution_id` or `retry`.
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct CycleStartRequestV1 {
     #[serde(default)]
     pub objective: Option<String>,
     #[serde(default)]
     pub execution_id: Option<String>,
+    /// An ended cycle to measure again from its finding: its input, source
+    /// analysis and a triage that proceeded are reused, under the current
+    /// configuration.
+    #[serde(default)]
+    pub retry: Option<String>,
 }
 
 impl CycleStartRequestV1 {
@@ -809,7 +817,7 @@ impl CycleStartRequestV1 {
             (Some(objective), None) => Ok(CycleInputV1::Objective(objective)),
             (None, Some(execution_id)) => Ok(CycleInputV1::ExecutionId(execution_id)),
             _ => Err(EvalError::InvalidRequest(
-                "give exactly one of objective or execution_id".into(),
+                "give exactly one of objective, execution_id or retry".into(),
             )),
         }
     }

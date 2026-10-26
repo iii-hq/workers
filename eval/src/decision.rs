@@ -506,16 +506,22 @@ pub fn no_room(criterion: &CriterionV1, pairs: u32, baseline: &EvidenceSideV1) -
         p: sign_test_p(room, pairs),
     };
     (!best.passes()).then(|| {
+        let already = match criterion.direction {
+            DirectionV1::Decrease => "were already within",
+            DirectionV1::Increase => "already scored within",
+        };
+        let bound = match criterion.direction {
+            DirectionV1::Decrease => "zero",
+            DirectionV1::Increase => "the top",
+        };
         format!(
-            "only {room} of {pairs} baseline runs leave room for {} {unit} of {} {}: even if \
-             each of them improved, the pairs would be neither unanimous nor at p <= \
-             {SIGN_TEST_ALPHA} (p={:.5})",
+            "{} of the {pairs} baseline runs {already} {} {unit} of {bound} on {}, so at most \
+             {room} of {pairs} pairs could improve: a change needs every pair, or p <= \
+             {SIGN_TEST_ALPHA} (here p={:.5} at best). Not even a perfect change could be \
+             proven, so the cycle stopped before paying for a proposal",
+            pairs.saturating_sub(room),
             number(criterion.min_effect),
             metric_label(criterion),
-            match criterion.direction {
-                DirectionV1::Decrease => "less",
-                DirectionV1::Increase => "more",
-            },
             best.p
         )
     })
@@ -1427,7 +1433,10 @@ mod tests {
         };
         // Zero errors, or too few runs with one to lose: no candidate can pass.
         let none = no_room(&errors, 5, &side(FunctionCallErrors, &[0.0; 5])).unwrap();
-        assert!(none.contains("only 0 of 5"), "{none}");
+        assert!(
+            none.contains("5 of the 5 baseline runs were already within 1 errors of zero"),
+            "{none}"
+        );
         assert!(no_room(
             &errors,
             5,
@@ -1468,7 +1477,7 @@ mod tests {
         assert!(no_room(&errors, 3, &side(FunctionCallErrors, &[2.0, 1.0, 3.0])).is_none());
         let short = no_room(&errors, 3, &side(FunctionCallErrors, &[2.0, 0.0, 3.0])).unwrap();
         assert!(
-            short.contains("only 2 of 3") && short.contains("neither unanimous"),
+            short.contains("1 of the 3 baseline runs") && short.contains("at most 2 of 3 pairs"),
             "{short}"
         );
     }
