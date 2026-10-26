@@ -1188,28 +1188,25 @@ mod tests {
     fn ensure_test_reaper() {
         static STARTED: OnceLock<()> = OnceLock::new();
         STARTED.get_or_init(|| {
-            use nix::errno::Errno;
-            use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
-            use nix::unistd::Pid;
+            use nix::sys::wait::WaitStatus;
             thread::Builder::new()
                 .name("shell-dispatcher-test-reaper".to_string())
                 .spawn(|| {
                     loop {
-                        match waitpid(Pid::from_raw(-1), Some(WaitPidFlag::WNOHANG)) {
+                        // PID 1's own reap (registry-locked), not a bare waitpid(-1): that
+                        // reaped other tests' failed spawns before std waited for them.
+                        match crate::child_exits::wait_any() {
                             Ok(WaitStatus::Exited(pid, code)) => {
                                 crate::child_exits::dispatch_exit(pid.as_raw(), code);
                             }
                             Ok(WaitStatus::Signaled(pid, sig, _)) => {
                                 crate::child_exits::dispatch_exit(pid.as_raw(), 128 + sig as i32);
                             }
-                            Ok(WaitStatus::StillAlive) | Err(Errno::ECHILD) => {
-                                thread::sleep(Duration::from_millis(10));
-                            }
                             // Stopped/Continued/PtraceEvent/PtraceSyscall —
                             // not terminal, leave the child alone.
                             Ok(_) => {}
-                            // EINTR or other transient errno; brief pause
-                            // and retry so we don't busy-loop on errors.
+                            // ECHILD (no children yet), EINTR or another transient
+                            // errno; brief pause and retry so we don't busy-loop.
                             Err(_) => thread::sleep(Duration::from_millis(10)),
                         }
                     }
