@@ -40,6 +40,7 @@ fn metric_value(run: &EvidenceRunV1, criterion: &CriterionV1) -> Option<f64> {
         CriterionMetricV1::Duration => run.wall_time_ms,
         CriterionMetricV1::Tokens => run.total_tokens,
         CriterionMetricV1::FunctionCalls => run.function_calls,
+        CriterionMetricV1::FunctionCallErrors => run.function_call_errors,
     }
 }
 
@@ -56,6 +57,7 @@ fn metric_label(criterion: &CriterionV1) -> String {
         (CriterionMetricV1::Duration, _) => "wall time (ms)".into(),
         (CriterionMetricV1::Tokens, _) => "tokens".into(),
         (CriterionMetricV1::FunctionCalls, _) => "function calls".into(),
+        (CriterionMetricV1::FunctionCallErrors, _) => "function call errors".into(),
     }
 }
 
@@ -75,6 +77,7 @@ fn effect_unit(metric: CriterionMetricV1) -> (&'static str, f64) {
         CriterionMetricV1::Duration => ("s", 1_000.0),
         CriterionMetricV1::Tokens => ("tokens", 1.0),
         CriterionMetricV1::FunctionCalls => ("calls", 1.0),
+        CriterionMetricV1::FunctionCallErrors => ("errors", 1.0),
     }
 }
 
@@ -1135,6 +1138,7 @@ mod tests {
             wall_time_ms: None,
             total_tokens: None,
             function_calls: None,
+            function_call_errors: None,
             criteria: BTreeMap::new(),
             signals: signal.map(|count| {
                 BTreeMap::from([("repeated_tool_error:crm::schedule".to_string(), count)])
@@ -1338,6 +1342,7 @@ mod tests {
                         CostUsd => run.cost_usd = Some(value),
                         Duration => run.wall_time_ms = Some(value),
                         Tokens => run.total_tokens = Some(value),
+                        FunctionCallErrors => run.function_call_errors = Some(value),
                         _ => run.function_calls = Some(value),
                     }
                     run
@@ -1349,6 +1354,7 @@ mod tests {
             (Duration, 5.0, 30_000.0, 25_000.0, "s"),
             (Tokens, 1_000.0, 9_000.0, 8_000.0, "tokens"),
             (FunctionCalls, 2.0, 9.0, 7.0, "calls"),
+            (FunctionCallErrors, 1.0, 3.0, 2.0, "errors"),
         ] {
             let wanted = CriterionV1 {
                 min_effect,

@@ -1168,6 +1168,8 @@ pub enum CriterionMetricV1 {
     Duration,
     Tokens,
     FunctionCalls,
+    /// Function results marked as errors in the run's own transcript.
+    FunctionCallErrors,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1225,6 +1227,8 @@ pub struct EvidenceRunV1 {
     pub total_tokens: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub function_calls: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function_call_errors: Option<f64>,
     /// `awarded / possible` per evaluated criterion id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub criteria: BTreeMap<String, f64>,

@@ -593,6 +593,13 @@
               "criterion_score"
             ],
             "type": "string"
+          },
+          {
+            "description": "Function results marked as errors in the run's own transcript.",
+            "enum": [
+              "function_call_errors"
+            ],
+            "type": "string"
           }
         ]
       },
@@ -1461,6 +1468,13 @@
             },
             "description": "`awarded / possible` per evaluated criterion id.",
             "type": "object"
+          },
+          "function_call_errors": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
           },
           "function_calls": {
             "format": "double",

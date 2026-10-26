@@ -479,6 +479,7 @@ const METRIC: Record<CriterionMetric, string> = {
   duration: 'wall time',
   tokens: 'tokens',
   function_calls: 'function calls',
+  function_call_errors: 'function call errors',
 }
 
 const trim = (value: number) => (Number.isInteger(value) ? String(value) : value.toFixed(2))
@@ -535,6 +536,8 @@ export function runValue(run: EvidenceRun, criterion: Criterion): number | undef
       return run.total_tokens
     case 'function_calls':
       return run.function_calls
+    case 'function_call_errors':
+      return run.function_call_errors
   }
 }
 

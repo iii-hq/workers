@@ -77,7 +77,7 @@ impl World {
             "sha256:5cfc",
             "Resolve a stale scheduling function, discover its current contract, and create exactly one event.",
             "Schedule the follow-up with the scheduling provider.",
-            &[("contract_recovered", "The exact current contract was followed.")],
+            &[("contract_recovered", "The exact current contract was followed after at most one function-call error.")],
         );
         let fallback_noise = tests_row(
             "subagent_validation_failure",
@@ -573,6 +573,32 @@ async fn a_native_child_owned_by_a_plan_is_never_admitted_as_another_cycle() {
         response.reason
     );
     assert!(state::list_cycles(&h.iii).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_function_call_error_objective_measures_errors_on_a_test_that_names_them() {
+    let h = Harness::start(World::new()).await;
+    h.configure(10.0).await;
+    for objective in [
+        "Diminuir a quantidade de errors nas chamadas de função iii",
+        "I want to decrease the amount of function call errors",
+    ] {
+        let cycle_id = h.start_cycle(json!({"objective": objective})).await;
+        h.drain().await;
+        let record = h.cycle(&cycle_id).await;
+        let coverage = record.coverage.unwrap();
+        assert_eq!(coverage.need, "function_call_errors", "{objective}");
+        assert_eq!(coverage.selected[0].scenario_id, "tool_contract_recovery");
+        let criterion = record.plan.unwrap().criterion;
+        assert_eq!(
+            (criterion.metric, criterion.direction, criterion.min_effect),
+            (
+                CriterionMetricV1::FunctionCallErrors,
+                DirectionV1::Decrease,
+                1.0
+            )
+        );
+    }
 }
 
 #[tokio::test]

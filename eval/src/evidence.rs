@@ -494,6 +494,17 @@ pub fn runs_of(bundle: &Value, scenario_id: &str, patterns: &[String]) -> Vec<Ev
                 wall_time_ms: run["wall_time_ms"].as_f64(),
                 total_tokens: run["efficiency"]["total_tokens"].as_f64(),
                 function_calls: run["efficiency"]["function_calls"].as_f64(),
+                // Read from the transcript, not `efficiency.function_call_errors`:
+                // that total is `harness::metrics`, which a candidate may change.
+                function_call_errors: run["transcript"]["messages"].as_array().map(|messages| {
+                    messages
+                        .iter()
+                        .filter(|entry| {
+                            diagnostics::role(entry) == "function_result"
+                                && entry["message"]["is_error"] == true
+                        })
+                        .count() as f64
+                }),
                 criteria: criterion_scores(run),
                 signals,
             }
@@ -1002,6 +1013,21 @@ mod tests {
         let (_, cut) = transcript_excerpt(&bundle, "s", Some("two_turns"), 30).unwrap();
         assert_eq!(cut, "user: Store it once.\n…");
         assert!(transcript_excerpt(&bundle, "other", None, 1000).is_none());
+    }
+
+    #[test]
+    fn function_call_errors_are_counted_on_the_transcript_not_the_harness_total() {
+        let result =
+            |is_error: bool| json!({"message": {"role": "function_result", "is_error": is_error}});
+        let bundle = json!({"detail": {"reports": [{"report": {"scenarios": [{"scenario_id": "s", "runs": [
+            {"run_id": "a", "efficiency": {"function_call_errors": 0},
+             "transcript": {"messages": [result(true), result(false), result(true)]}},
+            {"run_id": "b", "efficiency": {"function_call_errors": 4}}]}]}}]}});
+        let errors: Vec<_> = runs_of(&bundle, "s", &[])
+            .iter()
+            .map(|run| run.function_call_errors)
+            .collect();
+        assert_eq!(errors, [Some(2.0), None]);
     }
 
     #[test]

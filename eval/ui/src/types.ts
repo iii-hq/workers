@@ -254,6 +254,7 @@ export type CriterionMetric =
   | 'duration'
   | 'tokens'
   | 'function_calls'
+  | 'function_call_errors'
 export type Direction = 'decrease' | 'increase'
 
 export interface Criterion {
@@ -278,6 +279,7 @@ export interface EvidenceRun {
   wall_time_ms?: number
   total_tokens?: number
   function_calls?: number
+  function_call_errors?: number
   criteria?: Record<string, number>
   signals?: Record<string, number>
 }

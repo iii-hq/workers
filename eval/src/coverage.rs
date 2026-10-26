@@ -24,7 +24,7 @@ pub struct Need {
 }
 
 /// Checked in order: the first whose every trigger group matches wins.
-pub const NEEDS: [Need; 3] = [
+pub const NEEDS: [Need; 4] = [
     Need {
         id: "provider_fallback",
         triggers: &[&["fallback"], &["provider", "providers", "provedor", "model", "models", "modelo"]],
@@ -48,6 +48,17 @@ pub const NEEDS: [Need; 3] = [
         metric: CriterionMetricV1::Tokens,
         direction: DirectionV1::Decrease,
         gap: "no E2E test spec puts the context under load (context together with distractor, recall, memory, pressure or load)",
+    },
+    Need {
+        id: "function_call_errors",
+        triggers: &[
+            &["error", "errors", "erro", "erros", "failure", "failures", "falha", "falhas"],
+            &["function", "functions", "call", "calls", "tool", "tools", "função", "funções", "funcao", "funcoes", "chamada", "chamadas"],
+        ],
+        evidence: &[&["function"], &["call", "calls"], &["error", "errors"]],
+        metric: CriterionMetricV1::FunctionCallErrors,
+        direction: DirectionV1::Decrease,
+        gap: "no E2E test spec puts function-call errors in play (function, call and error in its criteria, summary or invariants)",
     },
 ];
 
@@ -460,6 +471,8 @@ pub fn plan(
         CriterionMetricV1::PassRate | CriterionMetricV1::CriterionScore => {
             config.min_effect.pass_rate_pp
         }
+        // One error fewer per run: no configured effect is in errors.
+        CriterionMetricV1::FunctionCallErrors => 1.0,
         _ => config.min_effect.tokens,
     };
     let criterion =

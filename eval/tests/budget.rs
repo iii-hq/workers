@@ -232,6 +232,7 @@ fn no_cost_reduction_is_accepted_while_a_cost_is_unknown() {
         wall_time_ms: None,
         total_tokens: None,
         function_calls: None,
+        function_call_errors: None,
         criteria: Default::default(),
         signals: None,
     };
