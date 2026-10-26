@@ -194,7 +194,10 @@ pub fn agent_trigger_schema(language: Option<&ResponseLanguage>) -> AgentFunctio
                       when `<discovery_assist>` is present, follow it. Fall back to engine::functions::list only \
                       when directory::search_functions is unavailable. \
                       Fixed-prefix inventory checks for a documented surface or after an install still apply. \
-                      Before first use, get selected contracts with engine::functions::info. Ordinary calls in one \
+                      Before first use, get selected contracts with engine::functions::info. \
+                      When the task already names the target function id and supplies its arguments, call it \
+                      directly and skip both steps: search only for an unknown id, read a contract only for \
+                      arguments not already given. Ordinary calls in one \
                       assistant response execute sequentially in content order. For independent same-function \
                       work, use that function's supported bulk input."
                 .to_string(),
@@ -649,6 +652,15 @@ mod tests {
             .find("Fall back to engine::functions::list only when directory::search_functions is unavailable")
             .expect("tool description keeps engine discovery as the explicit fallback");
         assert!(primary < fallback);
+    }
+
+    #[test]
+    fn agent_trigger_schema_lets_a_named_call_skip_discovery() {
+        let description = agent_trigger_schema(None).description;
+        assert!(description.contains(
+            "When the task already names the target function id and supplies its arguments, call it \
+             directly and skip both steps"
+        ));
     }
 
     #[test]
