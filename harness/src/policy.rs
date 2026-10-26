@@ -190,11 +190,11 @@ pub fn agent_trigger_schema(language: Option<&ResponseLanguage>) -> AgentFunctio
     AgentFunction {
         name: AGENT_TRIGGER_NAME.to_string(),
         description:
-            "Trigger any allowed iii function by id. Discover task-capability IDs with directory::search_functions (its `capabilities` entries always in English); \
+            "Trigger any allowed iii function by id. When the task already names the exact function id and its arguments, call it directly — skip directory::search_functions and engine::functions::info. Otherwise discover task-capability IDs with directory::search_functions (its `capabilities` entries always in English); \
                       when `<discovery_assist>` is present, follow it. Fall back to engine::functions::list only \
                       when directory::search_functions is unavailable. \
                       Fixed-prefix inventory checks for a documented surface or after an install still apply. \
-                      Before first use, get selected contracts with engine::functions::info. Ordinary calls in one \
+                      Get selected contracts with engine::functions::info before first use. Ordinary calls in one \
                       assistant response execute sequentially in content order. For independent same-function \
                       work, use that function's supported bulk input."
                 .to_string(),
@@ -636,8 +636,11 @@ mod tests {
     #[test]
     fn agent_trigger_schema_defaults_discovery_to_directory_search() {
         let description = agent_trigger_schema(None).description;
+        let exemption = description
+            .find("When the task already names the exact function id and its arguments, call it directly")
+            .expect("a task that supplies the id and arguments skips discovery");
         let primary = description
-            .find("Discover task-capability IDs with directory::search_functions")
+            .find("Otherwise discover task-capability IDs with directory::search_functions")
             .expect("tool description makes directory search the default discovery path");
         description
             .find("when `<discovery_assist>` is present, follow it")
@@ -648,6 +651,7 @@ mod tests {
         let fallback = description
             .find("Fall back to engine::functions::list only when directory::search_functions is unavailable")
             .expect("tool description keeps engine discovery as the explicit fallback");
+        assert!(exemption < primary, "the exemption leads the discovery rule");
         assert!(primary < fallback);
     }
 
