@@ -373,6 +373,89 @@ fn retry_attempts(run: &Value) -> &[Value] {
     run["retry_attempts"].as_array().map_or(&[], Vec::as_slice)
 }
 
+/// The transcript of the first run of `scenario_id` that lost `criterion`
+/// (else its first run), one line per message: who spoke, what it called,
+/// the start of each text. At most `max` characters, cut at a line; `None`
+/// when no run kept a transcript. What an actor reads to see what the agent
+/// did, not only how it scored.
+pub fn transcript_excerpt(
+    bundle: &Value,
+    scenario_id: &str,
+    criterion: Option<&str>,
+    max: usize,
+) -> Option<(String, String)> {
+    let runs: Vec<&Value> = runs(bundle)
+        .into_iter()
+        .filter(|(scenario, run)| {
+            scenario["scenario_id"] == scenario_id
+                && run["transcript"]["messages"]
+                    .as_array()
+                    .is_some_and(|messages| !messages.is_empty())
+        })
+        .map(|(_, run)| run)
+        .collect();
+    let lost = |run: &&&Value| {
+        criterion.is_some_and(|id| {
+            criterion_scores(run)
+                .get(id)
+                .is_some_and(|score| *score < 1.0)
+        })
+    };
+    let run = runs.iter().find(lost).or(runs.first())?;
+    let clip = |text: &str, at: usize| {
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        match text.char_indices().nth(at) {
+            Some((cut, _)) => format!("{}…", &text[..cut]),
+            None => text,
+        }
+    };
+    let mut lines = Vec::new();
+    for entry in run["transcript"]["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let Some(message) = entry.get("message") else {
+            let kind = entry["custom"]["custom_type"].as_str().unwrap_or("entry");
+            lines.push(format!("(notice: {kind})"));
+            continue;
+        };
+        let role = message["role"].as_str().unwrap_or("?");
+        let parts: Vec<String> = message["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|part| match part["type"].as_str() {
+                Some("text") => Some(clip(part["text"].as_str()?, 240)),
+                Some("function_call") => {
+                    let arguments = &part["arguments"];
+                    let target = arguments["function"]
+                        .as_str()
+                        .or(part["function_id"].as_str())
+                        .unwrap_or("?");
+                    Some(format!(
+                        "calls {target} {}",
+                        clip(&arguments.to_string(), 160)
+                    ))
+                }
+                Some(other) => Some(format!("({other})")),
+                None => None,
+            })
+            .collect();
+        lines.push(format!("{role}: {}", parts.join(" | ")));
+    }
+    let mut text = String::new();
+    for line in lines {
+        if text.len() + line.len() + 1 > max {
+            text.push('…');
+            break;
+        }
+        text.push_str(&line);
+        text.push('\n');
+    }
+    Some((text_at(run, "/run_id").unwrap_or_default(), text))
+}
+
 /// Every run of `scenario_id` as evidence, with `patterns` counted by the
 /// detectors on its own transcript.
 pub fn runs_of(bundle: &Value, scenario_id: &str, patterns: &[String]) -> Vec<EvidenceRunV1> {
@@ -893,6 +976,32 @@ mod tests {
             bundle["manifest"]["system_under_test"] = json!({"harness_binary_sha256": manifest});
         }
         bundle
+    }
+
+    #[test]
+    fn the_transcript_handed_on_is_a_run_that_lost_the_criterion() {
+        let run = |id: &str, award: u8, reply: &str| {
+            json!({"run_id": id, "criteria": [{"id": "two_turns", "possible": 10, "awarded": award}],
+                "transcript": {"messages": [
+                    {"message": {"role": "user", "content": [{"type": "text", "text": "Store  it\nonce."}]}},
+                    {"custom": {"custom_type": "runtime_context"}},
+                    {"message": {"role": "assistant", "content": [{"type": "thinking"},
+                        {"type": "function_call", "function_id": "agent_trigger",
+                         "arguments": {"function": "directory::search", "payload": {"q": "state"}}}]}},
+                    {"message": {"role": "assistant", "content": [{"type": "text", "text": reply}]}}]}})
+        };
+        let bundle = json!({"detail": {"reports": [{"report": {"scenarios": [
+            {"scenario_id": "s", "runs": [run("kept", 10, "fine"), run("lost", 0, "MIN-DONE")]}]}}]}});
+        let (run_id, text) = transcript_excerpt(&bundle, "s", Some("two_turns"), 1000).unwrap();
+        assert_eq!(run_id, "lost");
+        assert_eq!(
+            text,
+            "user: Store it once.\n(notice: runtime_context)\nassistant: (thinking) | calls directory::search {\"function\":\"directory::search\",\"payload\":{\"q\":\"state\"}}\nassistant: MIN-DONE\n"
+        );
+        // A limit cuts at a line, and a scenario without transcripts has none.
+        let (_, cut) = transcript_excerpt(&bundle, "s", Some("two_turns"), 30).unwrap();
+        assert_eq!(cut, "user: Store it once.\n…");
+        assert!(transcript_excerpt(&bundle, "other", None, 1000).is_none());
     }
 
     #[test]

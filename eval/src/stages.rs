@@ -29,6 +29,8 @@ const TRIAGE_QUESTION: &str = "opportunity";
 const MIN_MARGIN: f64 = 0.2;
 /// Native evidence entries handed to the proposal.
 const MAX_EVIDENCE: usize = 20;
+/// Characters of one baseline transcript handed to the proposal.
+const MAX_TRANSCRIPT: usize = 6000;
 /// The longest a candidate push may take before its outcome is unknown.
 const PUBLISH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -469,15 +471,40 @@ fn criterion_text(criterion: &CriterionV1) -> String {
 }
 
 /// The proposal input, all of it supplied by the cycle: the frozen
-/// objective and criteria and the native evidence the analyses recorded.
-fn proposal_input(record: &CycleRecordV1, plan: &CyclePlanV1) -> ProposalInputV1 {
-    let mut evidence: Vec<CandidateEvidenceV1> = findings_of(record, true)
-        .into_iter()
-        .map(|(execution_id, finding)| CandidateEvidenceV1 {
-            source: format!("e2e execution {execution_id}: {}", finding.signal),
-            excerpt: finding.observation,
+/// objective and criteria and the native evidence the analyses recorded,
+/// led by what the agent did in a baseline run that lost the goal
+/// (`baseline`: its imported bundle).
+fn proposal_input(
+    record: &CycleRecordV1,
+    plan: &CyclePlanV1,
+    baseline: Option<&serde_json::Value>,
+) -> ProposalInputV1 {
+    let transcript = baseline.and_then(|bundle| {
+        crate::evidence::transcript_excerpt(
+            bundle,
+            &plan.criterion.scenario_id,
+            plan.criterion.criterion_id.as_deref(),
+            MAX_TRANSCRIPT,
+        )
+    });
+    let mut evidence: Vec<CandidateEvidenceV1> = transcript
+        .map(|(run_id, text)| CandidateEvidenceV1 {
+            source: format!(
+                "e2e baseline run {run_id} of {}: its transcript, one line per message",
+                plan.criterion.scenario_id
+            ),
+            excerpt: text,
         })
+        .into_iter()
         .collect();
+    evidence.extend(
+        findings_of(record, true)
+            .into_iter()
+            .map(|(execution_id, finding)| CandidateEvidenceV1 {
+                source: format!("e2e execution {execution_id}: {}", finding.signal),
+                excerpt: finding.observation,
+            }),
+    );
     if let Some(baseline) = &record.baseline {
         for side in std::iter::once(&baseline.primary).chain(&baseline.preserved) {
             if let Some(mean) = side.mean {
@@ -515,7 +542,18 @@ fn proposal_input(record: &CycleRecordV1, plan: &CyclePlanV1) -> ProposalInputV1
         evidence,
         criteria: std::iter::once(&plan.criterion)
             .chain(&plan.preserved)
-            .map(criterion_text)
+            .map(|criterion| {
+                // What the scenario asks of it, as its spec words it.
+                let asks = plan
+                    .tests
+                    .iter()
+                    .filter(|test| test.scenario_id == criterion.scenario_id)
+                    .flat_map(|test| &test.criteria)
+                    .find(|spec| Some(&spec.id) == criterion.criterion_id.as_ref())
+                    .map(|spec| format!(" (asks: {})", spec.description))
+                    .unwrap_or_default();
+                format!("{}{asks}", criterion_text(criterion))
+            })
             .collect(),
     }
 }
@@ -600,7 +638,18 @@ pub async fn proposal_stage(
         )
         .await;
     }
-    let input = proposal_input(record, &plan);
+    let baseline = match record.executions.iter().find(|entry| {
+        entry.role == ExecutionRoleV1::Baseline && entry.state == ExecutionStateV1::Imported
+    }) {
+        Some(entry) => match &entry.admission_key {
+            Some(key) => state::get_evidence(&deps.iii, key)
+                .await?
+                .map(|evidence| evidence.bundle),
+            None => None,
+        },
+        None => None,
+    };
+    let input = proposal_input(record, &plan, baseline.as_ref());
     let work_id = format!("{}:proposal", record.cycle_id);
     let Some(state_now) = record.proposal.clone() else {
         if input.evidence.is_empty() {
