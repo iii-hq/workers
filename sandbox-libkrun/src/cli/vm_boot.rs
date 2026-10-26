@@ -426,7 +426,7 @@ fn spawn_env_writer(
 }
 
 /// Budget for what iii adds to the kernel command line. msb_krun's limit is
-/// 16 KiB for the whole line, and it unwraps the insert (`TooLarge` panics).
+/// 16 KiB for the whole line; past it the boot fails (`TooLarge`).
 /// Its own part (default cmdline, root/init, KRUN_INIT, KRUN_RLIMITS,
 /// KRUN_BOOT_START_NS, the `--` epilog) is about 260 bytes; 1 KiB is left
 /// for it.
@@ -495,10 +495,10 @@ fn split_vm_env(
 }
 
 /// Checks everything iii puts on the kernel command line before msb_krun
-/// unwraps the insert. msb_krun writes each pair as ` KEY="VALUE"` and only
-/// accepts printable ASCII: anything else panics the boot (`InvalidAscii`,
-/// MOT-5493), and an embedded `"` silently splits the value. Names the key,
-/// never the value.
+/// builds it. msb_krun writes each pair as ` KEY="VALUE"` and only accepts
+/// printable ASCII without `"` (0.1.16 panicked the boot, MOT-5493; 0.1.42
+/// fails the build). Checking here first adds the size budget and an error
+/// that names the key, never the value.
 fn validate_cmdline_env(env: &[(String, String)]) -> Result<(), String> {
     let carriable = |s: &str| s.chars().all(|c| matches!(c, ' '..='~') && c != '"');
     for (key, value) in env {
@@ -819,7 +819,7 @@ fn boot_vm(
     }
     // Worker env and command transport (MOT-5493). The kernel command line
     // is readable in the guest's `/proc/cmdline`, only carries printable
-    // ASCII without quotes, and msb_krun panics on anything else. With an
+    // ASCII without quotes, and msb_krun refuses anything else. With an
     // embedded init, which is guaranteed to be this build's, both cross the
     // `iii.env` virtio-console port and iii-init exports them before
     // starting the worker. An on-disk init may predate the port, so that

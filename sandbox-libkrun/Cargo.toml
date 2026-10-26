@@ -35,8 +35,10 @@ iii-config-client = { path = "../crates/config-client" }
 iii-shell-client = { path = "crates/iii-shell-client" }
 iii-shell-proto = { path = "crates/iii-shell-proto" }
 iii-supervisor = { path = "crates/iii-supervisor" }
-# Pinned: msb_krun_devices 0.1.39 uses libc::statx, which libc does not define for musl.
-msb_krun = { version = "=0.1.16", features = ["net", "blk"] }
+# Exact pin: the VMM must not float. musl hosts cannot build it since 0.1.21 (msb_krun_vmm
+# moves a pthread_t, a raw pointer on musl, into a Send closure); musl is not a release
+# target here (.deploy/workers.yaml). The old statx blocker is gone with libc >= 0.2.190.
+msb_krun = { version = "=0.1.42", features = ["net", "blk"] }
 oci-client = "0.18"
 oci-spec = "0.10"
 tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal", "time", "io-std"] }

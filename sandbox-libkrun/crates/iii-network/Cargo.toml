@@ -14,8 +14,8 @@ smoltcp = { version = "0.14", default-features = false, features = [
     "medium-ethernet", "proto-ipv4", "socket-tcp", "socket-udp", "alloc"
 ] }
 crossbeam-queue = "0.3"
-# Pinned: msb_krun_devices 0.1.39 uses libc::statx, which libc does not define for musl (breaks the musl build).
-msb_krun = { version = "=0.1.16", features = ["net"] }
+# Same exact pin as the root package (see its Cargo.toml).
+msb_krun = { version = "=0.1.42", features = ["net"] }
 libc = "0.2"
 tracing = "0.1"
 bytes = "1"
