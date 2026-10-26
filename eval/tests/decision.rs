@@ -119,11 +119,7 @@ fn record() -> CycleRecordV1 {
         triage: None,
         proposal: None,
         candidate: None,
-        artifact_decision: None,
-        promotion: None,
-        canary: None,
-        recovery: None,
-        activation_intent: None,
+        pull_request: None,
     }
 }
 
@@ -606,10 +602,6 @@ fn a_lucky_single_pair_never_becomes_an_approval() {
     let recorded =
         decision::decide_cycle(&mut cycle, None, &baseline, &candidate, &lucky, NOW).unwrap();
     assert_ne!(recorded.outcome, DecisionOutcomeV1::Accepted);
-    // So the artifact is never judged on it either.
-    let error = decision::decide_artifact(&mut cycle, None, &baseline, &candidate, &lucky, NOW)
-        .unwrap_err();
-    assert!(is_conflict(&error), "{error}");
 
     // Five consistent pairs pass at p = 0.03125.
     let decided = decision::decide(&plan(), &baseline, &candidate, &cheaper_and_correct(), NOW);
@@ -1462,7 +1454,7 @@ fn changing(units: &[&str], dependents: &[&str], template: &str) -> CycleRecordV
         "budget": {"max_spend_usd": 10.0, "max_duration_ms": 3_600_000, "max_calls": 50,
             "max_candidates": 1},
         "validation": {"where": "docker", "stack_name": "loop",
-            "source_stack_template": template, "artifact_stack_template": "{version}"},
+            "source_stack_template": template},
     }))
     .unwrap();
     let identity: eval::candidate::CandidateIdentityV1 = serde_json::from_value(json!({
@@ -1579,9 +1571,7 @@ fn a_change_the_validation_stack_did_not_build_is_never_accepted() {
                     decided.reason
                 );
                 assert_eq!(
-                    decided
-                        .reason
-                        .contains("never released by the loop: kanban"),
+                    decided.reason.contains("not measured: kanban"),
                     dependents.contains(&"kanban"),
                     "{}",
                     decided.reason
@@ -1655,59 +1645,6 @@ fn configured_controls_count_toward_the_scenario_limit() {
     assert!(!coverage.covered);
     assert!(coverage.selected.is_empty());
     assert!(coverage.gaps.iter().any(|gap| gap.contains("no primary")));
-}
-
-/// The canary's side as it runs on the activated target: the proved
-/// executable, on the target's own Source-mode stack, E2E and engine.
-fn on_target(binary: &str) -> DecisionSideV1 {
-    let (_, mut side) = pair();
-    side.identity.fixed_stack_digest = None;
-    side.identity.e2e_revision = Some("e2e-on-target".into());
-    side.identity.engine_version = Some("engine-on-target".into());
-    side.identity.harness_binary_sha256 = Some(format!("sha256:{binary}"));
-    side
-}
-
-fn canary_analysis() -> CycleAnalysisV1 {
-    CycleAnalysisV1 {
-        execution_id: "cand".into(),
-        admission_key: "admission-cand".into(),
-        role: ExecutionRoleV1::Canary,
-        identity: Default::default(),
-        findings: Vec::new(),
-        unknowns: Vec::new(),
-        child_transcripts_complete: false,
-        sentinel: None,
-        scenarios: Vec::new(),
-        analyzed_at: NOW,
-    }
-}
-
-#[test]
-fn a_canary_on_the_targets_own_stack_holds_and_any_loss_violates() {
-    let binary = "a".repeat(64);
-    let (base, _) = pair();
-    let judge = |evidence: &[EvidenceV1]| {
-        eval::release::canary(
-            &plan(),
-            &base,
-            &on_target(&binary),
-            evidence,
-            &canary_analysis(),
-            &[("harness".to_string(), binary.clone())].into(),
-            NOW,
-        )
-    };
-    let held = judge(&cheaper_and_correct());
-    assert_eq!(held.outcome, CanaryOutcomeV1::Held, "{}", held.reason);
-    // Half a cent dearer: under the 1 cent minimum effect, and still a loss.
-    let dearer = judge(&with_control(runs(5, 5, 0.10), runs(5, 5, 0.105)));
-    assert_eq!(
-        dearer.outcome,
-        CanaryOutcomeV1::Violated,
-        "{}",
-        dearer.reason
-    );
 }
 
 #[test]

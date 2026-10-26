@@ -13,7 +13,7 @@ use crate::candidate::{
     ProposalV1,
 };
 use crate::error::EvalError;
-use crate::promotion::{PromotionConfig, PromotionJournal};
+use crate::pull_request::PullRequestV1;
 
 /// Identity of the detectors, first pass and coverage rules; part of every
 /// `policy_revision`.
@@ -113,19 +113,11 @@ pub struct LoopConfigV1 {
     /// absent: a cycle stops before any proposal, inconclusive.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate: Option<CandidateConfigV1>,
-    /// The stacks that pin the Harness under test; required to validate a
-    /// candidate. With it, the baseline runs the candidate's base commit.
+    /// The stack that builds the workers under test from a commit; required
+    /// to validate a candidate. With it, the baseline runs the candidate's
+    /// base commit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validation: Option<ValidationConfigV1>,
-    /// Official release and explicit local activation; absent: an accepted
-    /// source candidate is never merged, published or activated.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub promotion: Option<PromotionConfig>,
-    /// What one official build (rc or finalization) is reserved at; its
-    /// cost is not reported, so it stays charged at this. Required with
-    /// `promotion`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub release_build_estimate_usd: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -137,10 +129,10 @@ pub struct JudgeConfigV1 {
     pub estimated_usd: f64,
 }
 
-/// E2E stacks in the E2E's own shape. Every worker a candidate may change is
-/// declared in the source stack as a `package://<worker>` container with
-/// `commit: {commit}`, so both sides build it from their own commit;
-/// everything else (Engine, evaluator, unchanged workers) stays fixed.
+/// The E2E stack in the E2E's own shape. Every worker a candidate may change
+/// is declared as a `package://<worker>` container with `commit: {commit}`,
+/// so both sides build it from their own commit; everything else (Engine,
+/// evaluator, unchanged workers) stays fixed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ValidationConfigV1 {
@@ -150,10 +142,6 @@ pub struct ValidationConfigV1 {
     /// Stack YAML pinning a source revision; every `{commit}` is replaced by
     /// the 40-hex sha.
     pub source_stack_template: String,
-    /// Stack YAML pinning immutable Registry versions: each
-    /// `{version:<worker>}` is replaced by that worker's rc, a bare
-    /// `{version}` by the Harness's.
-    pub artifact_stack_template: String,
 }
 
 impl ValidationConfigV1 {
@@ -181,42 +169,6 @@ impl ValidationConfigV1 {
             .filter_map(|(_, container)| container["worker"].as_str()?.strip_prefix("package://"))
             .map(str::to_string)
             .collect()
-    }
-
-    /// The workers the artifact stack can pin to an rc: each
-    /// `{version:<worker>}`, and the Harness for a bare `{version}`.
-    pub fn artifact_workers(&self) -> std::collections::BTreeSet<String> {
-        let template = &self.artifact_stack_template;
-        let mut workers: std::collections::BTreeSet<String> = template
-            .split("{version:")
-            .skip(1)
-            .filter_map(|rest| Some(rest.split_once('}')?.0.to_string()))
-            .collect();
-        if template.contains("{version}") {
-            workers.insert(crate::promotion::HARNESS.into());
-        }
-        workers
-    }
-
-    /// The artifact stack with each worker's `{version:<worker>}` (the
-    /// Harness's also `{version}`) replaced by its pinned version; a worker
-    /// this cycle does not release runs its `latest` release.
-    pub fn artifact_stack(&self, pins: &BTreeMap<String, String>) -> StackV1 {
-        let pinned = |worker: &str| {
-            pins.get(worker)
-                .map_or("latest", String::as_str)
-                .to_string()
-        };
-        let mut yaml = self
-            .artifact_stack_template
-            .replace("{version}", &pinned(crate::promotion::HARNESS));
-        for worker in self.artifact_workers() {
-            yaml = yaml.replace(&format!("{{version:{worker}}}"), &pinned(&worker));
-        }
-        StackV1 {
-            name: self.stack_name.clone(),
-            yaml,
-        }
     }
 }
 
@@ -282,21 +234,10 @@ impl LoopConfigV1 {
                 return invalid("validation pins the Harness: where must be docker or github");
             }
             if !validation.source_stack_template.contains("{commit}")
-                || validation.artifact_workers().is_empty()
                 || validation.stack_name.trim().is_empty()
             {
-                return invalid(
-                    "validation needs a stack_name and templates with {commit} and {version} or {version:<worker>}",
-                );
+                return invalid("validation needs a stack_name and a template with {commit}");
             }
-        }
-        if self.promotion.is_some() && self.validation.is_none() {
-            return invalid(
-                "promotion needs validation: an unvalidated artifact is never released",
-            );
-        }
-        if self.promotion.is_some() && !self.release_build_estimate_usd.is_some_and(positive) {
-            return invalid("promotion needs a positive release_build_estimate_usd");
         }
         Ok(())
     }
@@ -364,7 +305,7 @@ impl CycleStatusV1 {
 }
 
 /// Where the cycle is. An objective goes coverage, baseline, analysis,
-/// proposal, candidate, validation, analysis, promotion; an execution starts
+/// proposal, candidate, validation, analysis, pull request; an execution starts
 /// at analysis and, with a pertinent finding, goes coverage, triage (paid only when
 /// covered and ambiguous), then baseline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -383,9 +324,8 @@ pub enum CycleStageV1 {
     Candidate,
     /// The candidate's source validation execution.
     Validation,
-    /// Merge, official release, final artifact comparison, activation and
-    /// canary, journaled phase by phase.
-    Promotion,
+    /// The accepted candidate's pull request, ready for review.
+    PullRequest,
     Done,
 }
 
@@ -407,10 +347,6 @@ pub enum ExecutionRoleV1 {
     Baseline,
     /// The candidate's source validation.
     Candidate,
-    /// The immutable rc artifact's final comparison.
-    Artifact,
-    /// The canary of the activated stable artifact.
-    Canary,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -446,18 +382,6 @@ pub struct CycleExecutionV1 {
     pub admission_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
-    /// Set when the execution runs on another Engine than this worker's:
-    /// the canary on the explicit activation target. Recorded before the
-    /// dispatch; every read goes through that Engine.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub route: Option<ExecutionRouteV1>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ExecutionRouteV1 {
-    pub engine_url: String,
-    pub namespace: String,
 }
 
 /// One criterion of a test spec (`spec.criteria[]`), the id run reports
@@ -612,15 +536,12 @@ pub enum OutcomeCodeV1 {
     Budget,
     /// The evidence cannot support a conclusion (e.g. an unusable baseline).
     Inconclusive,
-    /// `decision` holds accepted, rejected or inconclusive; nothing was
-    /// released.
+    /// `decision` holds accepted, rejected or inconclusive, and no pull
+    /// request was opened.
     Decided,
-    /// Activated on the explicit target, the executable proved and the
-    /// canary held.
-    Promoted,
-    /// The canary was violated and the prior executable is proved running
-    /// again.
-    RolledBack,
+    /// The accepted change is in a pull request ready for review
+    /// (`pull_request`). Nothing is merged or released by the loop.
+    Proposed,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -678,26 +599,9 @@ pub struct CycleRecordV1 {
     pub proposal: Option<ProposalStateV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate: Option<CandidateStateV1>,
-    /// The decision on the immutable rc artifact under the same frozen plan
-    /// as `decision` (the source decision). Recorded once.
+    /// The accepted candidate's pull request, once opened or found.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub artifact_decision: Option<CycleDecisionV1>,
-    /// Every promotion phase, requested and confirmed apart.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub promotion: Option<PromotionJournal>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub canary: Option<CanaryV1>,
-    /// Why an already requested activation is being restored instead of
-    /// abandoned (a cancel or a budget limit). While set the cycle only
-    /// reconciles the activation and proves the prior executable running;
-    /// it is not terminal until that is proved.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recovery: Option<String>,
-    /// The Compose operation id of the activation, persisted before the pin
-    /// is sent: a crash or a lost write between the two still counts as an
-    /// activation in flight, never as nothing activated.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub activation_intent: Option<String>,
+    pub pull_request: Option<PullRequestV1>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -771,23 +675,6 @@ pub struct CandidateStateV1 {
     pub publish: Option<CandidatePublishV1>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum CanaryOutcomeV1 {
-    Held,
-    Violated,
-    Unknown,
-}
-
-/// The canary of the activated artifact against the frozen plan.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct CanaryV1 {
-    pub execution_id: String,
-    pub outcome: CanaryOutcomeV1,
-    pub reason: String,
-}
-
 /// The E2E `ExecutionParameters` the plan dispatches, frozen with it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -848,7 +735,6 @@ pub enum CycleWorkKindV1 {
     /// The candidate actor.
     Implementation,
     Jev,
-    Build,
     E2e,
     Control,
     Retry,
@@ -1145,14 +1031,9 @@ pub struct EvidenceIdentityV1 {
     /// E2E runner (`system_under_test.harness_binary_sha256`), never from the
     /// subject. Known only when every report agrees. Like the Harness
     /// version it is the product side, kept per side and never part of the
-    /// fixed comparability; a final artifact decision and activation bind it.
+    /// fixed comparability; it binds the run to the commit's build.
     #[serde(default)]
     pub harness_binary_sha256: Option<String>,
-    /// SHA-256 of each running worker executable the E2E captured
-    /// (`system_under_test.worker_binaries`), by worker; every report must
-    /// agree.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub worker_binaries: BTreeMap<String, String>,
     pub workers_revision: Option<String>,
     pub engine_version: Option<String>,
     pub e2e_revision: Option<String>,

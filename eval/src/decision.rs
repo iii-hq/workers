@@ -571,7 +571,7 @@ fn validate(plan: &CyclePlanV1) -> Result<(), EvalError> {
 /// frozen plan, a frozen plan never changes or disappears, and a recorded
 /// decision is never replaced.
 pub fn check_write(stored: Option<&CycleRecordV1>, next: &CycleRecordV1) -> Result<(), EvalError> {
-    if (next.decision.is_some() || next.artifact_decision.is_some()) && next.plan.is_none() {
+    if next.decision.is_some() && next.plan.is_none() {
         return Err(EvalError::Conflict(format!(
             "cycle {} has no frozen plan, so it cannot record a decision",
             next.cycle_id
@@ -583,12 +583,6 @@ pub fn check_write(stored: Option<&CycleRecordV1>, next: &CycleRecordV1) -> Resu
     if stored.plan.is_some() && next.plan != stored.plan {
         return Err(EvalError::Conflict(format!(
             "the frozen plan of cycle {} cannot change",
-            next.cycle_id
-        )));
-    }
-    if stored.artifact_decision.is_some() && next.artifact_decision != stored.artifact_decision {
-        return Err(EvalError::Conflict(format!(
-            "the artifact decision of cycle {} is recorded and cannot change",
             next.cycle_id
         )));
     }
@@ -1005,46 +999,6 @@ pub fn decide_cycle(
     Ok(decision)
 }
 
-/// The final decision on the immutable rc artifact, against the same
-/// baseline under the same frozen plan, recorded once in
-/// `artifact_decision`. Only after an accepted source decision: the source
-/// approval never stands for the artifact.
-pub fn decide_artifact(
-    record: &mut CycleRecordV1,
-    ledger: Option<&CycleLedgerV1>,
-    baseline: &DecisionSideV1,
-    artifact: &DecisionSideV1,
-    evidence: &[EvidenceV1],
-    now: i64,
-) -> Result<CycleDecisionV1, EvalError> {
-    let Some(plan) = &record.plan else {
-        return Err(EvalError::InvalidRequest(format!(
-            "cycle {} has no frozen plan",
-            record.cycle_id
-        )));
-    };
-    if record.decision.as_ref().map(|decision| decision.outcome)
-        != Some(DecisionOutcomeV1::Accepted)
-    {
-        return Err(EvalError::Conflict(format!(
-            "cycle {} has no accepted source decision; its artifact is not judged",
-            record.cycle_id
-        )));
-    }
-    if let Some(decided) = &record.artifact_decision {
-        return Ok(decided.clone());
-    }
-    let decision = spent(
-        decide(plan, baseline, artifact, evidence, now),
-        plan,
-        ledger,
-        now,
-    );
-    record.artifact_decision = Some(decision.clone());
-    record.updated_at = now;
-    Ok(decision)
-}
-
 /// Whether `worker` produces the token, cost and function-call totals: the
 /// Harness counts them (`harness::metrics`) from the usage the router and
 /// the providers report.
@@ -1056,8 +1010,7 @@ fn meters(worker: &str) -> bool {
 /// every unit the candidate touches (shared code aside) is built from the
 /// candidate commit by the source stack, some built worker runs the change,
 /// and a total the changed code reports itself never qualifies it.
-/// Dependents the stack does not build are named: not measured, so never
-/// released by the loop.
+/// Dependents the stack does not build are named: not measured.
 fn measured(
     mut decision: CycleDecisionV1,
     plan: &CyclePlanV1,
@@ -1118,7 +1071,7 @@ fn measured(
             .collect();
         if !unmeasured.is_empty() {
             decision.reason = format!(
-                "{}; not measured and never released by the loop: {}, which build with the \
+                "{}; not measured: {}, which build with the \
                  changed code",
                 decision.reason,
                 unmeasured.join(", ")

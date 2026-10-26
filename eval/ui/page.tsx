@@ -34,7 +34,7 @@ export default function setup(host: Host) {
     {
       id: 'settings',
       title: 'Eval loop settings',
-      detail: 'What the loop may do: measure, improve, prove and ship',
+      detail: 'What the loop may do: measure, improve, prove and open a pull request',
       keywords: ['config', 'budget', 'model', 'provider'],
       run: () => host.panels?.open({ pageId: PAGE_ID, context: { type: 'config' } }),
     },

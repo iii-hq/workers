@@ -9,29 +9,6 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "additionalProperties": false,
     "definitions": {
-      "ActivationTarget": {
-        "additionalProperties": false,
-        "description": "The explicit local Engine whose Compose daemon runs the Harness to activate. Never defaulted: it must not be the operator's own Harness by accident. The caller connects the [`IIIClient`] it hands to [`Promotion::new`] to `engine_url`.",
-        "properties": {
-          "compose_file": {
-            "description": "The compose file on the daemon host.",
-            "type": "string"
-          },
-          "engine_url": {
-            "description": "`ws://127.0.0.1:<port>`.",
-            "type": "string"
-          },
-          "namespace": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "compose_file",
-          "engine_url",
-          "namespace"
-        ],
-        "type": "object"
-      },
       "CandidateConfigV1": {
         "additionalProperties": false,
         "description": "Operator configuration. Model and provider come from here, never from code.",
@@ -208,25 +185,6 @@
           "min_effect": {
             "$ref": "#/definitions/MinEffectV1"
           },
-          "promotion": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/PromotionConfig"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Official release and explicit local activation; absent: an accepted source candidate is never merged, published or activated."
-          },
-          "release_build_estimate_usd": {
-            "description": "What one official build (rc or finalization) is reserved at; its cost is not reported, so it stays charged at this. Required with `promotion`.",
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
           "runs_per_side": {
             "format": "uint32",
             "minimum": 0.0,
@@ -260,7 +218,7 @@
                 "type": "null"
               }
             ],
-            "description": "The stacks that pin the Harness under test; required to validate a candidate. With it, the baseline runs the candidate's base commit."
+            "description": "The stack that builds the workers under test from a commit; required to validate a candidate. With it, the baseline runs the candidate's base commit."
           },
           "where": {
             "$ref": "#/definitions/WhereV1"
@@ -296,24 +254,6 @@
         "required": [
           "pass_rate_pp",
           "tokens"
-        ],
-        "type": "object"
-      },
-      "PromotionConfig": {
-        "additionalProperties": false,
-        "description": "What a cycle may choose about a promotion: which archive target to digest and which local Engine to activate. Nothing here names a service or a credential.",
-        "properties": {
-          "artifact_target": {
-            "description": "The Registry `binaries` key whose archive is digested, e.g. `x86_64-unknown-linux-gnu`.",
-            "type": "string"
-          },
-          "target": {
-            "$ref": "#/definitions/ActivationTarget"
-          }
-        },
-        "required": [
-          "artifact_target",
-          "target"
         ],
         "type": "object"
       },
@@ -403,12 +343,8 @@
       },
       "ValidationConfigV1": {
         "additionalProperties": false,
-        "description": "E2E stacks in the E2E's own shape. Every worker a candidate may change is declared in the source stack as a `package://<worker>` container with `commit: {commit}`, so both sides build it from their own commit; everything else (Engine, evaluator, unchanged workers) stays fixed.",
+        "description": "The E2E stack in the E2E's own shape. Every worker a candidate may change is declared as a `package://<worker>` container with `commit: {commit}`, so both sides build it from their own commit; everything else (Engine, evaluator, unchanged workers) stays fixed.",
         "properties": {
-          "artifact_stack_template": {
-            "description": "Stack YAML pinning immutable Registry versions: each `{version:<worker>}` is replaced by that worker's rc, a bare `{version}` by the Harness's.",
-            "type": "string"
-          },
           "source_stack_template": {
             "description": "Stack YAML pinning a source revision; every `{commit}` is replaced by the 40-hex sha.",
             "type": "string"
@@ -421,7 +357,6 @@
           }
         },
         "required": [
-          "artifact_stack_template",
           "source_stack_template",
           "stack_name",
           "where"

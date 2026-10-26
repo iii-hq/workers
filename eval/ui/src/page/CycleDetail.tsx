@@ -47,10 +47,9 @@ import {
   marks,
   nowView,
   PHASES,
-  type Progress,
   phaseOf,
   plural,
-  promotionSummary,
+  review,
   runningExecution,
   runValue,
   sentinelResult,
@@ -66,7 +65,6 @@ import type {
   CycleUsage,
   Evidence,
   LoopConfig,
-  PromotionPhase,
 } from '../types'
 import { ago, Caret, MarkIcon, PANEL, StatusChip, ToneIcon, usd } from './bits'
 import type { Nav } from './index'
@@ -322,13 +320,9 @@ function Cycle({
         {/* A phone keeps the sentence whole and puts its action underneath, full width. */}
         {narrow && action ? <div className="eval-ui-wide">{action}</div> : null}
         {narrow ? <Budget usage={usage} /> : null}
-        <Path cycle={cycle} current={current} narrow={narrow} nav={nav} />
+        <Path cycle={cycle} current={current} narrow={narrow} />
         {cycle.plan && !cycle.decision ? <Rule cycle={cycle} /> : null}
         {cycle.decision ? <Decision title="Source decision" cycle={cycle} decision={cycle.decision} /> : null}
-        {cycle.artifact_decision ? (
-          <Decision title="Release candidate decision" cycle={cycle} decision={cycle.artifact_decision} brief />
-        ) : null}
-        {cycle.promotion || cycle.canary ? <Release cycle={cycle} /> : null}
         <Findings cycle={cycle} />
         {found.length ? <Unknowns host={host} cycle={cycle} found={found} /> : null}
         <Activity cycle={cycle} />
@@ -350,12 +344,6 @@ interface Step {
   fact?: ReactNode
 }
 
-const PROGRESS_MARK: Record<Progress, Mark> = {
-  not_requested: 'todo',
-  requested: 'now',
-  confirmed: 'done',
-  unknown: 'stop',
-}
 const OUTCOME_MARK = { accepted: 'done', rejected: 'fail', inconclusive: 'stop' } as const
 
 /** What each phase recorded, step by step, in the order it happens. */
@@ -477,42 +465,29 @@ function steps(cycle: CycleRecord, current: LoopConfig | null): Step[][] {
       : entry('candidate')
         ? { mark: 'todo', label: 'Source decision', fact: 'In code, when the run ends' }
         : null,
-    executionStep('artifact', 'Release candidate run'),
-    cycle.artifact_decision
-      ? {
-          mark: OUTCOME_MARK[cycle.artifact_decision.outcome],
-          label: 'Release candidate decision',
-          fact: decisionView(cycle.artifact_decision.outcome).label,
-        }
-      : null,
   ]
-  const summary = promotionSummary(cycle.promotion)
-  const ship: (Step | null)[] = frozen?.promotion
-    ? cycle.promotion || cycle.canary
-      ? [
-          { mark: PROGRESS_MARK[summary.merge], label: 'Merge' },
-          { mark: PROGRESS_MARK[summary.release], label: 'Release' },
-          { mark: PROGRESS_MARK[summary.activation], label: 'Activate' },
-          cycle.canary
-            ? {
-                mark: cycle.canary.outcome === 'held' ? 'done' : cycle.canary.outcome === 'violated' ? 'fail' : 'stop',
-                label: `Canary ${cycle.canary.outcome}`,
-              }
-            : null,
-          summary.rollback === 'not_requested' ? null : { mark: PROGRESS_MARK[summary.rollback], label: 'Roll back' },
-        ]
-      : []
-    : active || cycle.decision
-      ? [
-          {
-            mark: 'off',
-            label: 'Merge, release, activate, canary',
-            fact: current?.promotion
-              ? 'Ship was off when this cycle started.'
-              : 'Ship is off: an accepted change stops at the decision.',
-          },
-        ]
-      : []
+  const held = review(cycle)
+  const pr = cycle.pull_request
+  const ship: (Step | null)[] = held
+    ? [
+        held.kind === 'opened' && pr
+          ? {
+              mark: 'done',
+              label: 'Pull request',
+              fact: (
+                <>
+                  <a className="eval-ui-pr-link" href={pr.url} target="_blank" rel="noreferrer">
+                    #{pr.number}
+                  </a>
+                  {pr.created ? ' opened' : ' found'}
+                </>
+              ),
+            }
+          : held.kind === 'waiting'
+            ? { mark: 'now', label: 'Pull request', fact: held.detail }
+            : { mark: 'stop', label: 'No pull request', fact: held.detail },
+      ]
+    : []
   return [measure, improve, prove, ship].map((list) => list.filter((step): step is Step => step !== null))
 }
 
@@ -530,24 +505,21 @@ function Path({
   cycle,
   current,
   narrow,
-  nav,
 }: {
   cycle: CycleRecord
   current: LoopConfig | null
   narrow: boolean
-  nav: Nav
 }) {
   const all = steps(cycle, current)
   const lanes = marks(cycle)
   const at = phaseOf(cycle)
   const active = isActive(cycle.status)
-  const shipOff = !cycle.config?.config.promotion && (active || !!cycle.decision)
   return (
     <section aria-label="Where the cycle is" className="eval-ui-section">
       <h3 className="eval-ui-h">Where the cycle is</h3>
       <ol className="eval-ui-lanes" data-narrow={narrow ? 'true' : undefined}>
         {PHASES.map((phase, index) => {
-          const lane = LANE[index === 3 && shipOff ? 'off' : lanes[index]]
+          const lane = LANE[lanes[index]]
           const list = active ? all[index] : all[index].slice(-1)
           // The step that says where the phase stands: the live or stopped one, else the last.
           const current_ =
@@ -572,18 +544,12 @@ function Path({
               <p className="eval-ui-faint">Not reached</p>
             </div>
           )
-          const setUp =
-            index === 3 && shipOff && !current?.promotion ? (
-              <Button variant="pill" size="sm" className="eval-ui-start" onClick={() => nav.settings('ship')}>
-                Set up Ship
-              </Button>
-            ) : null
           return (
             <li key={phase} className="eval-ui-lane" aria-current={index === at ? 'step' : undefined}>
               {narrow ? (
                 <details open={index === at}>
                   <summary className="eval-ui-lane-sum">
-                    <MarkIcon mark={index === 3 && shipOff ? 'off' : lanes[index]} />
+                    <MarkIcon mark={lanes[index]} />
                     <span className="eval-ui-lane-text">
                       <span className="eval-ui-strong">{phase}</span>
                       <span className="eval-ui-faint eval-ui-clip">
@@ -601,7 +567,6 @@ function Path({
                     <Caret />
                   </summary>
                   {body}
-                  {setUp}
                 </details>
               ) : (
                 <>
@@ -612,7 +577,6 @@ function Path({
                     {lane.word ? <StatusChip tone={lane.tone} label={lane.word} /> : null}
                   </div>
                   {body}
-                  {setUp}
                 </>
               )}
             </li>
@@ -895,106 +859,6 @@ function PairRow({
   )
 }
 
-// ── release ─────────────────────────────────────────────────────────────
-
-const PHASE_LABEL: Record<PromotionPhase['phase'], string> = {
-  source_approved: 'Source approved',
-  pull_request: 'Pull request',
-  merge_requested: 'Merge requested',
-  merged: 'Merged to main',
-  rc_planned: 'Release candidate planned',
-  rc_confirmed: 'Release candidate confirmed',
-  rc_published: 'Release candidate built',
-  artifact_approved: 'Release candidate decided',
-  finalize_planned: 'Release planned',
-  finalize_confirmed: 'Release confirmed',
-  stable_published: 'Released',
-  rollback_destination: 'Rollback target checked',
-  activation_requested: 'Activation requested',
-  activation_confirmed: 'Activated',
-  rollback_requested: 'Rollback requested',
-  rollback_confirmed: 'Rolled back',
-  stopped: 'Stopped',
-}
-
-/** The worker a step acts on; a journal from before workers were named is the Harness's. */
-const who = (worker: string | undefined) => worker ?? 'harness'
-
-/** One journal entry in words, with the evidence that phase carries. */
-function phaseLine(entry: PromotionPhase): string {
-  switch (entry.phase) {
-    case 'source_approved':
-      return `${entry.outcome} · candidate ${short(entry.candidate_sha)} on ${short(entry.base_sha)} · releases ${(entry.workers ?? ['harness']).join(', ')}`
-    case 'pull_request':
-      return `#${entry.number} ${entry.created ? 'opened' : 'found'} · head ${short(entry.head_sha)}`
-    case 'merge_requested':
-      return `#${entry.pull_request} · merge sha ${entry.merge_sha ? short(entry.merge_sha) : 'not returned'}`
-    case 'merged':
-      return `${short(entry.merged_sha)} · tree ${entry.merged_tree === entry.candidate_tree ? 'matches' : 'differs from'} the approved tree`
-    case 'rc_planned':
-    case 'finalize_planned':
-      return `${who(entry.worker)} ${entry.target_version} on ${entry.channel}, plan ${entry.plan_id}`
-    case 'rc_confirmed':
-    case 'finalize_confirmed':
-      return `${who(entry.plan.worker)} · plan ${entry.plan.plan_id} · operation ${entry.operation_id}`
-    case 'rc_published':
-    case 'stable_published':
-      return `${who(entry.worker)} ${entry.version} · archive ${short(entry.archive_sha256)} · from ${short(entry.source_sha)}`
-    case 'artifact_approved':
-      return `${entry.outcome} · ${who(entry.worker)} ${entry.version}`
-    case 'rollback_destination':
-      return `${who(entry.worker)} ${entry.version} · binary ${short(entry.binary_sha256)}`
-    case 'activation_requested':
-    case 'rollback_requested':
-      return `${who(entry.worker)} ${entry.version} · ${entry.accepted ? 'accepted by Compose' : 'not accepted'}`
-    case 'activation_confirmed':
-    case 'rollback_confirmed':
-      return `${who(entry.worker)} ${entry.version} running · pid ${entry.pid} · binary ${short(entry.binary_sha256)}`
-    case 'stopped':
-      return `${entry.step} · ${entry.kind}: ${entry.reason}`
-  }
-}
-
-function Release({ cycle }: { cycle: CycleRecord }) {
-  const phases = cycle.promotion?.phases ?? []
-  return (
-    <Panel>
-      <PanelHeader className="eval-ui-panel-head">
-        <span>Release</span>
-        <span className="eval-ui-faint eval-ui-light">each step is recorded before the next one starts</span>
-      </PanelHeader>
-      <PanelBody>
-        <ol className="eval-ui-events">
-          {phases.map((entry, index) => (
-            <li key={`${entry.phase}-${index}`}>
-              <MarkIcon
-                mark={entry.phase === 'stopped' ? 'stop' : entry.phase.endsWith('_requested') ? 'now' : 'done'}
-              />
-              <div>
-                <p className="eval-ui-strong">{PHASE_LABEL[entry.phase]}</p>
-                <p className="eval-ui-faint">{phaseLine(entry)}</p>
-              </div>
-            </li>
-          ))}
-          {cycle.canary ? (
-            <li>
-              <MarkIcon
-                mark={cycle.canary.outcome === 'held' ? 'done' : cycle.canary.outcome === 'violated' ? 'fail' : 'stop'}
-              />
-              <div>
-                <p className="eval-ui-strong">Canary {cycle.canary.outcome}</p>
-                <p className="eval-ui-faint">
-                  <span className="eval-ui-mono">{cycle.canary.execution_id}</span> on the target: {cycle.canary.reason}
-                </p>
-              </div>
-            </li>
-          ) : null}
-        </ol>
-      </PanelBody>
-    </Panel>
-  )
-}
-
 // ── findings, unknowns, activity ────────────────────────────────────────
 
 function Findings({ cycle }: { cycle: CycleRecord }) {
@@ -1189,8 +1053,6 @@ function Details({ cycle }: { cycle: CycleRecord }) {
   const plan = cycle.plan
   const frozen = cycle.config
   const source = cycle.analyses?.find((analysis) => analysis.role === 'source')
-  const released = cycle.promotion?.phases.find((entry) => entry.phase === 'stable_published')
-  const target = frozen?.config.promotion?.target
   const subject = plan?.parameters ?? frozen?.config.subject
   const model = subject?.model ?? source?.identity.model
   const facts: [string, ReactNode][] = [
@@ -1211,24 +1073,6 @@ function Details({ cycle }: { cycle: CycleRecord }) {
         frozen?.config.validation ? ` · candidate on ${frozen.config.validation.where}` : ''
       }`,
     ],
-    ...(released?.phase === 'stable_published'
-      ? ([
-          [
-            'Released',
-            <span key="r" className="eval-ui-mono">
-              harness {released.version}
-            </span>,
-          ],
-        ] as [string, ReactNode][])
-      : []),
-    ...(target
-      ? ([
-          [
-            'Target',
-            <span key="t" className="eval-ui-mono eval-ui-clip">{`${target.engine_url} · ${target.namespace}`}</span>,
-          ],
-        ] as [string, ReactNode][])
-      : []),
     ['Started', <span key="s" className="eval-ui-num">{`${clock(cycle.created_at)} · ${ago(cycle.created_at)}`}</span>],
     [
       'Policy',

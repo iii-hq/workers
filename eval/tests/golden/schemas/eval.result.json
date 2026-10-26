@@ -24,37 +24,6 @@
       }
     ],
     "definitions": {
-      "ActivationTarget": {
-        "additionalProperties": false,
-        "description": "The explicit local Engine whose Compose daemon runs the Harness to activate. Never defaulted: it must not be the operator's own Harness by accident. The caller connects the [`IIIClient`] it hands to [`Promotion::new`] to `engine_url`.",
-        "properties": {
-          "compose_file": {
-            "description": "The compose file on the daemon host.",
-            "type": "string"
-          },
-          "engine_url": {
-            "description": "`ws://127.0.0.1:<port>`.",
-            "type": "string"
-          },
-          "namespace": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "compose_file",
-          "engine_url",
-          "namespace"
-        ],
-        "type": "object"
-      },
-      "ApprovalOutcome": {
-        "enum": [
-          "accepted",
-          "rejected",
-          "inconclusive"
-        ],
-        "type": "string"
-      },
       "BaselineV1": {
         "additionalProperties": false,
         "description": "The baseline measured against the frozen plan.",
@@ -86,35 +55,6 @@
           "primary",
           "reason",
           "usable"
-        ],
-        "type": "object"
-      },
-      "CanaryOutcomeV1": {
-        "enum": [
-          "held",
-          "violated",
-          "unknown"
-        ],
-        "type": "string"
-      },
-      "CanaryV1": {
-        "additionalProperties": false,
-        "description": "The canary of the activated artifact against the frozen plan.",
-        "properties": {
-          "execution_id": {
-            "type": "string"
-          },
-          "outcome": {
-            "$ref": "#/definitions/CanaryOutcomeV1"
-          },
-          "reason": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "execution_id",
-          "outcome",
-          "reason"
         ],
         "type": "object"
       },
@@ -917,17 +857,6 @@
           "role": {
             "$ref": "#/definitions/ExecutionRoleV1"
           },
-          "route": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/ExecutionRouteV1"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Set when the execution runs on another Engine than this worker's: the canary on the explicit activation target. Recorded before the dispatch; every read goes through that Engine."
-          },
           "state": {
             "$ref": "#/definitions/ExecutionStateV1"
           },
@@ -1088,13 +1017,6 @@
         "additionalProperties": false,
         "description": "The one record of a cycle, whichever input started it.",
         "properties": {
-          "activation_intent": {
-            "description": "The Compose operation id of the activation, persisted before the pin is sent: a crash or a lost write between the two still counts as an activation in flight, never as nothing activated.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "analyses": {
             "default": [],
             "items": {
@@ -1102,31 +1024,10 @@
             },
             "type": "array"
           },
-          "artifact_decision": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/CycleDecisionV1"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The decision on the immutable rc artifact under the same frozen plan as `decision` (the source decision). Recorded once."
-          },
           "baseline": {
             "anyOf": [
               {
                 "$ref": "#/definitions/BaselineV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "canary": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/CanaryV1"
               },
               {
                 "type": "null"
@@ -1243,17 +1144,6 @@
             ],
             "description": "Frozen before any dispatch; never changes."
           },
-          "promotion": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/PromotionJournal"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Every promotion phase, requested and confirmed apart."
-          },
           "proposal": {
             "anyOf": [
               {
@@ -1264,12 +1154,16 @@
               }
             ]
           },
-          "recovery": {
-            "description": "Why an already requested activation is being restored instead of abandoned (a cancel or a budget limit). While set the cycle only reconciles the activation and proves the prior executable running; it is not terminal until that is proved.",
-            "type": [
-              "string",
-              "null"
-            ]
+          "pull_request": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/PullRequestV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The accepted candidate's pull request, once opened or found."
           },
           "schema_version": {
             "format": "uint32",
@@ -1340,7 +1234,7 @@
         "type": "object"
       },
       "CycleStageV1": {
-        "description": "Where the cycle is. An objective goes coverage, baseline, analysis, proposal, candidate, validation, analysis, promotion; an execution starts at analysis and, with a pertinent finding, goes coverage, triage (paid only when covered and ambiguous), then baseline.",
+        "description": "Where the cycle is. An objective goes coverage, baseline, analysis, proposal, candidate, validation, analysis, pull request; an execution starts at analysis and, with a pertinent finding, goes coverage, triage (paid only when covered and ambiguous), then baseline.",
         "oneOf": [
           {
             "enum": [
@@ -1381,9 +1275,9 @@
             "type": "string"
           },
           {
-            "description": "Merge, official release, final artifact comparison, activation and canary, journaled phase by phase.",
+            "description": "The accepted candidate's pull request, ready for review.",
             "enum": [
-              "promotion"
+              "pull_request"
             ],
             "type": "string"
           }
@@ -1506,7 +1400,7 @@
           },
           "harness_binary_sha256": {
             "default": null,
-            "description": "SHA-256 of `/proc/<pid>/exe` of the ready Harness, captured by the E2E runner (`system_under_test.harness_binary_sha256`), never from the subject. Known only when every report agrees. Like the Harness version it is the product side, kept per side and never part of the fixed comparability; a final artifact decision and activation bind it.",
+            "description": "SHA-256 of `/proc/<pid>/exe` of the ready Harness, captured by the E2E runner (`system_under_test.harness_binary_sha256`), never from the subject. Known only when every report agrees. Like the Harness version it is the product side, kept per side and never part of the fixed comparability; it binds the run to the commit's build.",
             "type": [
               "string",
               "null"
@@ -1550,13 +1444,6 @@
               "string",
               "null"
             ]
-          },
-          "worker_binaries": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "description": "SHA-256 of each running worker executable the E2E captured (`system_under_test.worker_binaries`), by worker; every report must agree.",
-            "type": "object"
           },
           "workers_revision": {
             "type": [
@@ -1800,38 +1687,8 @@
               "candidate"
             ],
             "type": "string"
-          },
-          {
-            "description": "The immutable rc artifact's final comparison.",
-            "enum": [
-              "artifact"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "The canary of the activated stable artifact.",
-            "enum": [
-              "canary"
-            ],
-            "type": "string"
           }
         ]
-      },
-      "ExecutionRouteV1": {
-        "additionalProperties": false,
-        "properties": {
-          "engine_url": {
-            "type": "string"
-          },
-          "namespace": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "engine_url",
-          "namespace"
-        ],
-        "type": "object"
       },
       "ExecutionStateV1": {
         "oneOf": [
@@ -1978,25 +1835,6 @@
           "min_effect": {
             "$ref": "#/definitions/MinEffectV1"
           },
-          "promotion": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/PromotionConfig"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Official release and explicit local activation; absent: an accepted source candidate is never merged, published or activated."
-          },
-          "release_build_estimate_usd": {
-            "description": "What one official build (rc or finalization) is reserved at; its cost is not reported, so it stays charged at this. Required with `promotion`.",
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
           "runs_per_side": {
             "format": "uint32",
             "minimum": 0.0,
@@ -2030,7 +1868,7 @@
                 "type": "null"
               }
             ],
-            "description": "The stacks that pin the Harness under test; required to validate a candidate. With it, the baseline runs the candidate's base commit."
+            "description": "The stack that builds the workers under test from a commit; required to validate a candidate. With it, the baseline runs the candidate's base commit."
           },
           "where": {
             "$ref": "#/definitions/WhereV1"
@@ -2117,826 +1955,18 @@
             "type": "string"
           },
           {
-            "description": "`decision` holds accepted, rejected or inconclusive; nothing was released.",
+            "description": "`decision` holds accepted, rejected or inconclusive, and no pull request was opened.",
             "enum": [
               "decided"
             ],
             "type": "string"
           },
           {
-            "description": "Activated on the explicit target, the executable proved and the canary held.",
+            "description": "The accepted change is in a pull request ready for review (`pull_request`). Nothing is merged or released by the loop.",
             "enum": [
-              "promoted"
+              "proposed"
             ],
             "type": "string"
-          },
-          {
-            "description": "The canary was violated and the prior executable is proved running again.",
-            "enum": [
-              "rolled_back"
-            ],
-            "type": "string"
-          }
-        ]
-      },
-      "PromotionConfig": {
-        "additionalProperties": false,
-        "description": "What a cycle may choose about a promotion: which archive target to digest and which local Engine to activate. Nothing here names a service or a credential.",
-        "properties": {
-          "artifact_target": {
-            "description": "The Registry `binaries` key whose archive is digested, e.g. `x86_64-unknown-linux-gnu`.",
-            "type": "string"
-          },
-          "target": {
-            "$ref": "#/definitions/ActivationTarget"
-          }
-        },
-        "required": [
-          "artifact_target",
-          "target"
-        ],
-        "type": "object"
-      },
-      "PromotionJournal": {
-        "description": "Everything one promotion did, in order. Persisted by the caller after each phase, before the next effect.",
-        "properties": {
-          "phases": {
-            "items": {
-              "$ref": "#/definitions/PromotionPhase"
-            },
-            "type": "array"
-          },
-          "promotion_id": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "phases",
-          "promotion_id"
-        ],
-        "type": "object"
-      },
-      "PromotionPhase": {
-        "oneOf": [
-          {
-            "description": "The frozen source comparison decision: it authorizes merging exactly this candidate onto exactly this base, and nothing past the merge.",
-            "properties": {
-              "base_sha": {
-                "type": "string"
-              },
-              "candidate_id": {
-                "type": "string"
-              },
-              "candidate_sha": {
-                "type": "string"
-              },
-              "candidate_tree": {
-                "type": "string"
-              },
-              "evidence_urls": {
-                "default": [],
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "outcome": {
-                "$ref": "#/definitions/ApprovalOutcome"
-              },
-              "phase": {
-                "enum": [
-                  "source_approved"
-                ],
-                "type": "string"
-              },
-              "policy_revision": {
-                "type": "string"
-              },
-              "workers": {
-                "default": [
-                  "harness"
-                ],
-                "description": "The workers the candidate was measured in, released in this order.",
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              }
-            },
-            "required": [
-              "base_sha",
-              "candidate_id",
-              "candidate_sha",
-              "candidate_tree",
-              "outcome",
-              "phase",
-              "policy_revision"
-            ],
-            "type": "object"
-          },
-          {
-            "properties": {
-              "created": {
-                "description": "Opened by this call rather than found.",
-                "type": "boolean"
-              },
-              "head_ref": {
-                "type": "string"
-              },
-              "head_sha": {
-                "type": "string"
-              },
-              "number": {
-                "format": "uint64",
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              "phase": {
-                "enum": [
-                  "pull_request"
-                ],
-                "type": "string"
-              },
-              "url": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "created",
-              "head_ref",
-              "head_sha",
-              "number",
-              "phase",
-              "url"
-            ],
-            "type": "object"
-          },
-          {
-            "properties": {
-              "candidate_sha": {
-                "type": "string"
-              },
-              "phase": {
-                "enum": [
-                  "merge_requested"
-                ],
-                "type": "string"
-              },
-              "pull_request": {
-                "format": "uint64",
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              "updated": {
-                "description": "False when `main` already was the candidate and nothing was sent. Either way the outcome is proved only by [`Promotion::read_merge`].",
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "candidate_sha",
-              "phase",
-              "pull_request",
-              "updated"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "`main` fast-forwarded to the candidate: the merged commit is the candidate commit, one parent on the approved base, with the approved tree. `main_sha` is `main` when it was read back (the candidate, or a later commit that contains it).",
-            "properties": {
-              "base_sha": {
-                "type": "string"
-              },
-              "candidate_sha": {
-                "type": "string"
-              },
-              "candidate_tree": {
-                "type": "string"
-              },
-              "main_sha": {
-                "type": "string"
-              },
-              "merged_sha": {
-                "type": "string"
-              },
-              "merged_tree": {
-                "type": "string"
-              },
-              "phase": {
-                "enum": [
-                  "merged"
-                ],
-                "type": "string"
-              },
-              "pull_request": {
-                "format": "uint64",
-                "minimum": 0.0,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "base_sha",
-              "candidate_sha",
-              "candidate_tree",
-              "main_sha",
-              "merged_sha",
-              "merged_tree",
-              "phase",
-              "pull_request"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "A Release Control preview frozen as it was answered.",
-            "properties": {
-              "candidate_version": {
-                "description": "The rc a finalization promotes.",
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "channel": {
-                "type": "string"
-              },
-              "expires_at": {
-                "type": "string"
-              },
-              "kind": {
-                "$ref": "#/definitions/ReleaseKind"
-              },
-              "phase": {
-                "enum": [
-                  "rc_planned"
-                ],
-                "type": "string"
-              },
-              "plan_hash": {
-                "type": "string"
-              },
-              "plan_id": {
-                "type": "string"
-              },
-              "preview_sha256": {
-                "description": "sha256 of the preview document as received.",
-                "type": "string"
-              },
-              "prior_latest": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "prior_next": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "source_sha": {
-                "type": "string"
-              },
-              "target_version": {
-                "description": "The version the operation will publish: the rc for a deploy, the stable version for a finalization.",
-                "type": "string"
-              },
-              "worker": {
-                "default": "harness",
-                "type": "string"
-              }
-            },
-            "required": [
-              "channel",
-              "expires_at",
-              "kind",
-              "phase",
-              "plan_hash",
-              "plan_id",
-              "preview_sha256",
-              "source_sha",
-              "target_version"
-            ],
-            "type": "object"
-          },
-          {
-            "properties": {
-              "operation_id": {
-                "type": "string"
-              },
-              "phase": {
-                "enum": [
-                  "rc_confirmed"
-                ],
-                "type": "string"
-              },
-              "plan": {
-                "$ref": "#/definitions/ReleasePlan"
-              }
-            },
-            "required": [
-              "operation_id",
-              "phase",
-              "plan"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "An exact Registry version whose archive bytes were downloaded and hashed, matching the digest the Registry claims.",
-            "properties": {
-              "archive_sha256": {
-                "type": "string"
-              },
-              "archive_url": {
-                "type": "string"
-              },
-              "binary_sha256": {
-                "description": "sha256 of the archive's one regular entry named after the worker: the executable this release installs. A separate fact from `archive_sha256`.",
-                "type": "string"
-              },
-              "build_run_id": {
-                "format": "uint64",
-                "minimum": 0.0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
-              "deployment_id": {
-                "type": "string"
-              },
-              "operation_id": {
-                "type": "string"
-              },
-              "phase": {
-                "enum": [
-                  "rc_published"
-                ],
-                "type": "string"
-              },
-              "source_sha": {
-                "type": "string"
-              },
-              "tags": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "target": {
-                "type": "string"
-              },
-              "version": {
-                "type": "string"
-              },
-              "worker": {
-                "default": "harness",
-                "type": "string"
-              }
-            },
-            "required": [
-              "archive_sha256",
-              "archive_url",
-              "binary_sha256",
-              "deployment_id",
-              "operation_id",
-              "phase",
-              "source_sha",
-              "tags",
-              "target",
-              "version"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "The frozen decision on the immutable rc build, from an E2E run against it. `binary_sha256` is the running executable the run measured (`system_under_test.harness_binary_sha256`); absent is unknown.",
-            "properties": {
-              "archive_sha256": {
-                "type": "string"
-              },
-              "binary_sha256": {
-                "default": null,
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "outcome": {
-                "$ref": "#/definitions/ApprovalOutcome"
-              },
-              "phase": {
-                "enum": [
-                  "artifact_approved"
-                ],
-                "type": "string"
-              },
-              "policy_revision": {
-                "type": "string"
-              },
-              "source_sha": {
-                "type": "string"
-              },
-              "version": {
-                "type": "string"
-              },
-              "worker": {
-                "default": "harness",
-                "type": "string"
-              }
-            },
-            "required": [
-              "archive_sha256",
-              "outcome",
-              "phase",
-              "policy_revision",
-              "source_sha",
-              "version"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "A Release Control preview frozen as it was answered.",
-            "properties": {
-              "candidate_version": {
-                "description": "The rc a finalization promotes.",
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "channel": {
-                "type": "string"
-              },
-              "expires_at": {
-                "type": "string"
-              },
-              "kind": {
-                "$ref": "#/definitions/ReleaseKind"
-              },
-              "phase": {
-                "enum": [
-                  "finalize_planned"
-                ],
-                "type": "string"
-              },
-              "plan_hash": {
-                "type": "string"
-              },
-              "plan_id": {
-                "type": "string"
-              },
-              "preview_sha256": {
-                "description": "sha256 of the preview document as received.",
-                "type": "string"
-              },
-              "prior_latest": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "prior_next": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "source_sha": {
-                "type": "string"
-              },
-              "target_version": {
-                "description": "The version the operation will publish: the rc for a deploy, the stable version for a finalization.",
-                "type": "string"
-              },
-              "worker": {
-                "default": "harness",
-                "type": "string"
-              }
-            },
-            "required": [
-              "channel",
-              "expires_at",
-              "kind",
-              "phase",
-              "plan_hash",
-              "plan_id",
-              "preview_sha256",
-              "source_sha",
-              "target_version"
-            ],
-            "type": "object"
-          },
-          {
-            "properties": {
-              "operation_id": {
-                "type": "string"
-              },
-              "phase": {
-                "enum": [
-                  "finalize_confirmed"
-                ],
-                "type": "string"
-              },
-              "plan": {
-                "$ref": "#/definitions/ReleasePlan"
-              }
-            },
-            "required": [
-              "operation_id",
-              "phase",
-              "plan"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "An exact Registry version whose archive bytes were downloaded and hashed, matching the digest the Registry claims.",
-            "properties": {
-              "archive_sha256": {
-                "type": "string"
-              },
-              "archive_url": {
-                "type": "string"
-              },
-              "binary_sha256": {
-                "description": "sha256 of the archive's one regular entry named after the worker: the executable this release installs. A separate fact from `archive_sha256`.",
-                "type": "string"
-              },
-              "build_run_id": {
-                "format": "uint64",
-                "minimum": 0.0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
-              "deployment_id": {
-                "type": "string"
-              },
-              "operation_id": {
-                "type": "string"
-              },
-              "phase": {
-                "enum": [
-                  "stable_published"
-                ],
-                "type": "string"
-              },
-              "source_sha": {
-                "type": "string"
-              },
-              "tags": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "target": {
-                "type": "string"
-              },
-              "version": {
-                "type": "string"
-              },
-              "worker": {
-                "default": "harness",
-                "type": "string"
-              }
-            },
-            "required": [
-              "archive_sha256",
-              "archive_url",
-              "binary_sha256",
-              "deployment_id",
-              "operation_id",
-              "phase",
-              "source_sha",
-              "tags",
-              "target",
-              "version"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "An immutable version whose archive and running executable were both validated. The two digests are separate facts and never compared.",
-            "properties": {
-              "archive_sha256": {
-                "type": "string"
-              },
-              "binary_sha256": {
-                "type": "string"
-              },
-              "phase": {
-                "enum": [
-                  "rollback_destination"
-                ],
-                "type": "string"
-              },
-              "version": {
-                "type": "string"
-              },
-              "worker": {
-                "default": "harness",
-                "type": "string"
-              }
-            },
-            "required": [
-              "archive_sha256",
-              "binary_sha256",
-              "phase",
-              "version"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "A Compose pin this module asked for. `accepted: false` means the target already ran the destination and nothing was sent.",
-            "properties": {
-              "accepted": {
-                "type": "boolean"
-              },
-              "operation_id": {
-                "type": "string"
-              },
-              "phase": {
-                "enum": [
-                  "activation_requested"
-                ],
-                "type": "string"
-              },
-              "version": {
-                "type": "string"
-              },
-              "worker": {
-                "default": "harness",
-                "type": "string"
-              }
-            },
-            "required": [
-              "accepted",
-              "operation_id",
-              "phase",
-              "version"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "The target proved to run the expected executable.",
-            "properties": {
-              "binary_sha256": {
-                "type": "string"
-              },
-              "file": {
-                "type": "string"
-              },
-              "namespace": {
-                "type": "string"
-              },
-              "operation_id": {
-                "type": "string"
-              },
-              "phase": {
-                "enum": [
-                  "activation_confirmed"
-                ],
-                "type": "string"
-              },
-              "pid": {
-                "description": "The Harness process whose executable was hashed.",
-                "format": "uint32",
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              "supervisor_pid": {
-                "description": "The Compose-supervised process the Harness was found under.",
-                "format": "uint32",
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              "version": {
-                "type": "string"
-              },
-              "worker": {
-                "default": "harness",
-                "type": "string"
-              }
-            },
-            "required": [
-              "binary_sha256",
-              "file",
-              "namespace",
-              "operation_id",
-              "phase",
-              "pid",
-              "supervisor_pid",
-              "version"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "A Compose pin this module asked for. `accepted: false` means the target already ran the destination and nothing was sent.",
-            "properties": {
-              "accepted": {
-                "type": "boolean"
-              },
-              "operation_id": {
-                "type": "string"
-              },
-              "phase": {
-                "enum": [
-                  "rollback_requested"
-                ],
-                "type": "string"
-              },
-              "version": {
-                "type": "string"
-              },
-              "worker": {
-                "default": "harness",
-                "type": "string"
-              }
-            },
-            "required": [
-              "accepted",
-              "operation_id",
-              "phase",
-              "version"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "The target proved to run the expected executable.",
-            "properties": {
-              "binary_sha256": {
-                "type": "string"
-              },
-              "file": {
-                "type": "string"
-              },
-              "namespace": {
-                "type": "string"
-              },
-              "operation_id": {
-                "type": "string"
-              },
-              "phase": {
-                "enum": [
-                  "rollback_confirmed"
-                ],
-                "type": "string"
-              },
-              "pid": {
-                "description": "The Harness process whose executable was hashed.",
-                "format": "uint32",
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              "supervisor_pid": {
-                "description": "The Compose-supervised process the Harness was found under.",
-                "format": "uint32",
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              "version": {
-                "type": "string"
-              },
-              "worker": {
-                "default": "harness",
-                "type": "string"
-              }
-            },
-            "required": [
-              "binary_sha256",
-              "file",
-              "namespace",
-              "operation_id",
-              "phase",
-              "pid",
-              "supervisor_pid",
-              "version"
-            ],
-            "type": "object"
-          },
-          {
-            "properties": {
-              "kind": {
-                "$ref": "#/definitions/StopKind"
-              },
-              "phase": {
-                "enum": [
-                  "stopped"
-                ],
-                "type": "string"
-              },
-              "reason": {
-                "type": "string"
-              },
-              "step": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "kind",
-              "phase",
-              "reason",
-              "step"
-            ],
-            "type": "object"
           }
         ]
       },
@@ -3124,75 +2154,35 @@
         ],
         "type": "object"
       },
-      "ReleaseKind": {
-        "enum": [
-          "deploy",
-          "finalize_release"
-        ],
-        "type": "string"
-      },
-      "ReleasePlan": {
-        "description": "A Release Control preview frozen as it was answered.",
+      "PullRequestV1": {
+        "additionalProperties": false,
+        "description": "The pull request of an accepted candidate.",
         "properties": {
-          "candidate_version": {
-            "description": "The rc a finalization promotes.",
-            "type": [
-              "string",
-              "null"
-            ]
+          "created": {
+            "description": "Opened by this cycle rather than found.",
+            "type": "boolean"
           },
-          "channel": {
+          "head_ref": {
             "type": "string"
           },
-          "expires_at": {
+          "head_sha": {
             "type": "string"
           },
-          "kind": {
-            "$ref": "#/definitions/ReleaseKind"
+          "number": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
           },
-          "plan_hash": {
-            "type": "string"
-          },
-          "plan_id": {
-            "type": "string"
-          },
-          "preview_sha256": {
-            "description": "sha256 of the preview document as received.",
-            "type": "string"
-          },
-          "prior_latest": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "prior_next": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "source_sha": {
-            "type": "string"
-          },
-          "target_version": {
-            "description": "The version the operation will publish: the rc for a deploy, the stable version for a finalization.",
-            "type": "string"
-          },
-          "worker": {
-            "default": "harness",
+          "url": {
             "type": "string"
           }
         },
         "required": [
-          "channel",
-          "expires_at",
-          "kind",
-          "plan_hash",
-          "plan_id",
-          "preview_sha256",
-          "source_sha",
-          "target_version"
+          "created",
+          "head_ref",
+          "head_sha",
+          "number",
+          "url"
         ],
         "type": "object"
       },
@@ -3432,32 +2422,6 @@
         ],
         "type": "object"
       },
-      "StopKind": {
-        "description": "Why a step did not produce its evidence.",
-        "oneOf": [
-          {
-            "description": "Missing or expired credentials, an unreachable service, or a target this module cannot observe.",
-            "enum": [
-              "unavailable"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "The outcome cannot be proved: a lost response, mergeability not yet computed, an unknown executable digest.",
-            "enum": [
-              "inconclusive"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "A concrete divergence or failed precondition. The promotion stops.",
-            "enum": [
-              "rejected"
-            ],
-            "type": "string"
-          }
-        ]
-      },
       "StoredConfigV1": {
         "additionalProperties": false,
         "description": "The stored configuration. `revision` (SHA-256 of the config and the rules) is the `policy_revision` every plan freezes.",
@@ -3653,12 +2617,8 @@
       },
       "ValidationConfigV1": {
         "additionalProperties": false,
-        "description": "E2E stacks in the E2E's own shape. Every worker a candidate may change is declared in the source stack as a `package://<worker>` container with `commit: {commit}`, so both sides build it from their own commit; everything else (Engine, evaluator, unchanged workers) stays fixed.",
+        "description": "The E2E stack in the E2E's own shape. Every worker a candidate may change is declared as a `package://<worker>` container with `commit: {commit}`, so both sides build it from their own commit; everything else (Engine, evaluator, unchanged workers) stays fixed.",
         "properties": {
-          "artifact_stack_template": {
-            "description": "Stack YAML pinning immutable Registry versions: each `{version:<worker>}` is replaced by that worker's rc, a bare `{version}` by the Harness's.",
-            "type": "string"
-          },
           "source_stack_template": {
             "description": "Stack YAML pinning a source revision; every `{commit}` is replaced by the 40-hex sha.",
             "type": "string"
@@ -3671,7 +2631,6 @@
           }
         },
         "required": [
-          "artifact_stack_template",
           "source_stack_template",
           "stack_name",
           "where"

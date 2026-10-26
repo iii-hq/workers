@@ -34,14 +34,12 @@ There are exactly two inputs, and both converge on one `CycleRecordV1`:
    - the exact `ExecutionParameters` and the selected test identities;
    - the policy revision.
 4. **Budget before work.** Every paid or external dispatch reserves its work
-   first: proposal, candidate actor, judge, each E2E execution and each
-   official build. Reservations are keyed by a stable work id, so a
+   first: proposal, candidate actor, judge and each E2E execution. Reservations are keyed by a stable work id, so a
    redelivery or a restart never dispatches twice.
    - An unreported cost stays charged at its estimate.
    - E2E estimates count technical retries.
    - The sweep ends a waiting cycle only past a limit (time at it), never
      with work reserved within it, and stops what the cycle dispatched.
-   - Builds use the frozen `release_build_estimate_usd`.
 5. **Cheap first pass.** Every imported execution gets a deterministic
    analysis. It calls no model. An unknown is listed and never assumed. An
    evaluation gap is the evaluator's to close; it never authorizes a Harness
@@ -63,9 +61,9 @@ There are exactly two inputs, and both converge on one `CycleRecordV1`:
 8. **Decision in code.** A decision is accepted only when:
    - the pair is comparable on behavior, inputs, contract, model, provider,
      E2E revision, engine, cases and policy;
-   - each side ran what it had to: the base, candidate or rc revision as the
+   - each side ran what it had to: the base or candidate revision as the
      E2E recorded it, and the frozen stack template with only the commit
-     or rc pin differing;
+     differing;
    - every unit the candidate changes is built from the candidate commit
      by the source template;
    - a total the changed code reports itself (tokens, cost, function
@@ -77,63 +75,18 @@ There are exactly two inputs, and both converge on one `CycleRecordV1`:
 
    Effort counts only on completed, passed runs. A cost reduction is never
    claimed while a cost is unknown.
-9. **Source and artifact are decided separately.** The source decision
-   authorizes only the exact-base, non-forced fast-forward of `main`. The rc
-   artifact built by Release Control from that exact commit gets its own
-   decision under the same plan, from one run that pins every released
-   worker's rc. It binds each worker's running executable digest
-   (`system_under_test.worker_binaries`, and `harness_binary_sha256` for the
-   Harness), which must equal the single executable named after the worker
-   inside its rc's Registry tar.gz. Without every digest nothing is
-   activated. Finalization must republish the same bytes.
-10. **Explicit activation.** Activation only targets the configured local
-    Compose target. It is never the operator's own Harness by default.
-    - Requested and confirmed are recorded apart.
-    - Confirmed means the target runs the approved executable digest.
-    - The prior executable must match its Registry artifact before becoming
-      the rollback destination.
-    - The canary is reserved before anything is activated.
-11. **Canary.** The canary runs on the activated target through that
-    Engine's own E2E (`where: harness`). Its ownership and route are recorded
-    before the dispatch.
-    - **Held:** every preserved condition and the planned metric were
-      measured, none lost anything (the planned metric's minimum effect
-      never excuses a loss), and no recorded failure, retried attempts
-      included, was unexpected or of unknown expectedness. Only Held
-      promotes. The canary runs on the target's own stack and E2E, so its
-      stack digest, E2E revision and engine are not compared with the
-      baseline's; the activated executable digest proves what ran.
-    - **Violated:** a regression or an unexpected failure. It requests a
-      rollback, and the rollback must be proved by the prior digest.
-    - **Unknown:** anything else, including an executable digest other than
-      the activated one, or no coverage or traffic. The observation stays
-      pending on the activated target (never claimed stable, no new E2E is
-      started) until a cycle limit turns it into a restoration of the prior.
-12. **Never abandon an activation.** The activation's operation id is
-    persisted (`cycle.activation_intent`) before the pin is sent. A cancel,
-    a budget limit or an activation error after that turns into a recovery (`cycle.recovery`), which
-    needs no model or E2E budget:
-    - the original operation is reconciled read-only
-      (`read_compose_operation`) and never sent again;
-    - running or unknown waits; unknown past the reconcile grace is restored
-      like a failed operation;
-    - failed or cancelled settles the operation but does not prove its
-      partial effects were undone; the prior must still be restored;
-      succeeded counts only once the candidate's executable is proved, and
-      a succeeded pin whose process has exited is restored like a failed
-      one;
-    - the prior is then pinned and proved by its executable digest; a pin
-      that ends or runs another executable is pinned again, up to three
-      attempts, before the cycle ends with the target not proved;
-    - a Compose call that errors says nothing about the target and is
-      asked again on the next sweep; only an observation (the target runs
-      neither the prior nor the candidate) refuses a restoration;
-    - with several workers, a refused restoration never stops the others:
-      every other worker is restored first, then the cycle ends naming
-      what was restored and what was refused.
-
-    Until that is proved the cycle is not terminal.
-13. **One state, current shape only.** State lives in the `eval_cycle*`
+9. **The loop ends at a pull request.** An accepted source decision opens a
+   pull request from the candidate's branch to `main`, ready for review,
+   with the evidence in its body (`pull_request.rs`), and the cycle ends
+   `proposed`. Nothing is merged, released or activated by the loop.
+   - A pull request already open or merged for the exact candidate head is
+     reused, so a lost answer asked again never opens a second one.
+   - A lost answer or a GitHub 5xx is asked again on the next sweep, within
+     the cycle's limits; a refusal (no token, a branch that moved, a 4xx)
+     ends `decided` with the reason and the change left on its branch.
+   - The token comes only from `EVAL_GITHUB_TOKEN`, read at each request;
+     no reason carries remote text.
+10. **One state, current shape only.** State lives in the `eval_cycle*`
     scopes. Legacy scopes are never read, migrated or deleted.
 
 ## Outcomes
@@ -143,12 +96,9 @@ There are exactly two inputs, and both converge on one `CycleRecordV1`:
 | `no_coverage` | The objective or execution has no E2E coverage. |
 | `no_action` | The analysis found nothing worth candidate work. |
 | `budget` | A limit of the cycle was reached. |
-| `inconclusive` | Missing capability or configuration, unknown evidence, isolation not available, credentials unavailable, or an activation whose outcome could not be reconciled. |
-| `decided` | A source decision with nothing released. |
-| `promoted` | Activated, proved, and the canary held. |
-| `rolled_back` | The prior executable is proved running again. |
-
-An accepted source decision alone is never `promoted`.
+| `inconclusive` | Missing capability or configuration, unknown evidence or isolation not available. |
+| `decided` | A source decision and no pull request: rejected, inconclusive, or accepted with the reason none was opened. |
+| `proposed` | The accepted change is in a pull request ready for review (`pull_request`). |
 
 ## Self-reported metrics
 

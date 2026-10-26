@@ -75,22 +75,13 @@ const STEPS: { id: Setup; section?: SectionId; eyebrow: string; needs?: SectionI
     needs: 'candidate',
     eyebrow: '3 · Needs Improve',
     intro:
-      'Runs the candidate commit, and later the release candidate, on a stack where only the Harness differs. Each is accepted or rejected in code.',
-  },
-  {
-    id: 'ship',
-    section: 'promotion',
-    needs: 'validation',
-    eyebrow: '4 · Needs Prove',
-    intro:
-      'Merges an accepted change, builds a release from that exact commit, activates it on your local Compose target and watches a canary. A failed canary rolls back on its own.',
+      'Runs the candidate commit on a stack where only the Harness differs. It is accepted or rejected in code, and an accepted change is opened as a pull request for review.',
   },
 ]
 const TITLE: Record<Setup, string> = {
   measure: 'Measure',
   improve: 'Improve',
   prove: 'Prove',
-  ship: 'Ship',
   judge: 'Also',
 }
 
@@ -100,8 +91,7 @@ const OFF_DETAIL: Record<Setup, string | undefined> = {
   judge: undefined,
   improve:
     'Turn it on to name the repository, the base commit and the actor model. A cycle then proposes and writes one change.',
-  prove: 'Turn it on to name the stacks that pin the candidate commit and the release candidate.',
-  ship: "Turn it on to name the Release Control target, the local Compose engine and namespace, and the build estimate. Release Control and GitHub credentials stay in the worker's environment.",
+  prove: 'Turn it on to name the stack that pins the candidate commit.',
 }
 
 /** `eval::config` / `eval::configure`: the loop's `LoopConfigV1`, nothing else. */
@@ -157,8 +147,7 @@ export function LoopSettings({
   // Turning a step off turns off every step that needs it.
   const toggle = (id: SectionId, next: boolean) => {
     const sections = { ...draft.sections, [id]: next ? emptySection(id) : null }
-    if (!next && id === 'candidate') sections.validation = sections.promotion = null
-    if (!next && id === 'validation') sections.promotion = null
+    if (!next && id === 'candidate') sections.validation = null
     set({ sections })
   }
 
@@ -434,8 +423,7 @@ export function LoopSettings({
                                 </div>
                               ))}
                               <p className="eval-ui-faint eval-ui-span-all">
-                                A cycle that passes a limit stops what it started. If something was activated, the prior
-                                executable is restored and proved first.
+                                A cycle that passes a limit stops what it started.
                               </p>
                             </PanelBody>
                           </Panel>
@@ -444,19 +432,11 @@ export function LoopSettings({
                         <>
                           <SettingsList>
                             <SectionFields id={id} draft={draft} set={set} />
-                            {id === 'promotion'
-                              ? field(
-                                  'release_build_estimate_usd',
-                                  'Release build estimate (USD)',
-                                  'What one official rc or finalization build is reserved at; its cost is not reported.',
-                                )
-                              : null}
                           </SettingsList>
-                          {id === 'promotion' ? (
+                          {id === 'validation' ? (
                             <p className="eval-ui-faint">
-                              Release Control and GitHub credentials stay in the worker's environment
-                              (EVAL_RELEASE_CONTROL_URL, EVAL_GITHUB_TOKEN, EVAL_RELEASE_CONTROL_SESSION), never in this
-                              form.
+                              The pull request uses the GitHub token in the worker's environment (EVAL_GITHUB_TOKEN),
+                              never one typed in this form.
                             </p>
                           ) : null}
                         </>

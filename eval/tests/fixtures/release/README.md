@@ -1,1 +1,0 @@
-`harness-pipeline.tar.gz` is a synthetic interoperability fixture produced by the actual `.github/scripts/deployment_train.py::normalized_tar` release packager (PAX format, normalized gzip). Its regular `harness` entry is the literal bytes `\x7fELF official-normalized-tar-fixture\n`. It is not a release or executable qualification artifact.

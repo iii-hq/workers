@@ -1,7 +1,7 @@
 // The settings form's draft of `LoopConfigV1`: every field a string while it
 // is typed, converted only on save. Nothing has a default; an empty field
 // stays empty and is refused by `validateConfig`.
-import type { CandidateConfig, JudgeConfig, LoopConfig, PromotionConfig, ValidationConfig, Where } from './types'
+import type { CandidateConfig, JudgeConfig, LoopConfig, ValidationConfig, Where } from './types'
 
 export interface ConfigDraft {
   provider: string
@@ -23,13 +23,11 @@ export interface ConfigDraft {
   max_candidates: string
   /** Control scenario ids, comma or newline separated. */
   controls: string
-  /** Top-level in `LoopConfigV1`, edited with the promotion section and saved only while it is on. */
-  release_build_estimate_usd: string
   /** Each optional section: `null` when off, else its fields as typed. */
   sections: Record<SectionId, Record<string, string> | null>
 }
 
-export type SectionId = 'judge' | 'candidate' | 'validation' | 'promotion'
+export type SectionId = 'judge' | 'candidate' | 'validation'
 
 export interface FieldSpec {
   /** Dotted path inside the section, e.g. `target.engine_url`. */
@@ -48,7 +46,7 @@ export interface SectionSpec {
   fields: FieldSpec[]
 }
 
-/** The four optional sections of `LoopConfigV1`, field for field. */
+/** The three optional sections of `LoopConfigV1`, field for field. */
 export const SECTIONS: SectionSpec[] = [
   {
     id: 'judge',
@@ -121,33 +119,6 @@ export const SECTIONS: SectionSpec[] = [
         kind: 'multiline',
         hint: '{commit} becomes the candidate commit.',
       },
-      {
-        key: 'artifact_stack_template',
-        label: 'Release candidate stack',
-        kind: 'multiline',
-        hint: '{version} becomes the Registry version.',
-      },
-    ],
-  },
-  {
-    id: 'promotion',
-    title: 'Ship',
-    off: 'Off: accepted changes stop at the source decision.',
-    fields: [
-      {
-        key: 'artifact_target',
-        label: 'Artifact target',
-        kind: 'text',
-        hint: 'Registry binaries key, e.g. x86_64-unknown-linux-gnu.',
-      },
-      {
-        key: 'target.engine_url',
-        label: 'Activation Engine URL',
-        kind: 'text',
-        hint: 'Explicit local Engine, e.g. ws://127.0.0.1:49134.',
-      },
-      { key: 'target.namespace', label: 'Activation namespace', kind: 'text' },
-      { key: 'target.compose_file', label: 'Activation compose file', kind: 'text' },
     ],
   },
 ]
@@ -167,11 +138,9 @@ const TOP_LEVEL = new Set([
   'judge',
   'candidate',
   'validation',
-  'promotion',
-  'release_build_estimate_usd',
 ])
 
-const NO_SECTIONS: ConfigDraft['sections'] = { judge: null, candidate: null, validation: null, promotion: null }
+const NO_SECTIONS: ConfigDraft['sections'] = { judge: null, candidate: null, validation: null }
 
 /** A section switched on with every field empty: nothing defaulted. */
 export function emptySection(id: SectionId): Record<string, string> {
@@ -238,7 +207,6 @@ export const EMPTY_DRAFT: ConfigDraft = {
   max_calls: '',
   max_candidates: '',
   controls: '',
-  release_build_estimate_usd: '',
   sections: NO_SECTIONS,
 }
 
@@ -261,13 +229,10 @@ export function draftFromConfig(config: LoopConfig): ConfigDraft {
     max_calls: String(config.budget.max_calls),
     max_candidates: String(config.budget.max_candidates),
     controls: (config.controls ?? []).join(', '),
-    release_build_estimate_usd:
-      config.release_build_estimate_usd === undefined ? '' : String(config.release_build_estimate_usd),
     sections: {
       judge: sectionDraft('judge', config.judge),
       candidate: sectionDraft('candidate', config.candidate),
       validation: sectionDraft('validation', config.validation),
-      promotion: sectionDraft('promotion', config.promotion),
     },
   }
 }
@@ -304,8 +269,6 @@ export function configFromDraft(draft: ConfigDraft): LoopConfig | null {
     ...optional('judge', sectionValue('judge', draft.sections.judge) as JudgeConfig | undefined),
     ...optional('candidate', sectionValue('candidate', draft.sections.candidate) as CandidateConfig | undefined),
     ...optional('validation', sectionValue('validation', draft.sections.validation) as ValidationConfig | undefined),
-    ...optional('promotion', sectionValue('promotion', draft.sections.promotion) as PromotionConfig | undefined),
-    ...(draft.sections.promotion ? { release_build_estimate_usd: num(draft.release_build_estimate_usd) } : {}),
   }
 }
 

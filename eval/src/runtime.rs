@@ -35,12 +35,9 @@ const SENTINEL_BATCH: usize = 100;
 pub struct Deps {
     pub iii: Arc<IIIClient>,
     pub locks: EvalLocks,
-    /// Clients of explicit activation targets, by Engine URL.
-    targets: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<IIIClient>>>>,
-    /// The trusted service origins of a release; `None` reads the
-    /// deployment's (`PromotionOrigins::from_deployment_env`). Never from a
-    /// payload.
-    pub(crate) release_origins: Option<crate::promotion::PromotionOrigins>,
+    /// The GitHub API the pull request is opened on; `None` is
+    /// [`crate::pull_request::GITHUB_API_URL`]. Never from a payload.
+    github_api_url: Option<String>,
     /// The trusted candidate repository and worktrees roots; `None` reads
     /// the deployment's (`EVAL_CANDIDATE_REPOSITORY`,
     /// `EVAL_CANDIDATE_WORKTREES_DIR`). Never from a payload.
@@ -67,8 +64,7 @@ impl Deps {
         Self {
             iii,
             locks: EvalLocks::default(),
-            targets: Default::default(),
-            release_origins: None,
+            github_api_url: None,
             candidate_roots: None,
         }
     }
@@ -111,94 +107,16 @@ impl Deps {
         Ok(())
     }
 
-    /// Pins the release service origins (local fixtures in tests).
-    pub fn with_release_origins(mut self, origins: crate::promotion::PromotionOrigins) -> Self {
-        self.release_origins = Some(origins);
+    /// Pins the GitHub API origin (a local fixture in tests).
+    pub fn with_github_api(mut self, url: impl Into<String>) -> Self {
+        self.github_api_url = Some(url.into());
         self
     }
 
-    /// Closes every activation target connection. Each client's connection
-    /// thread outlives the client and keeps redialling its Engine.
-    pub fn close_targets(&self) {
-        let clients: Vec<Arc<IIIClient>> = self
-            .targets
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .drain()
-            .map(|(_, client)| client)
-            .collect();
-        for client in clients {
-            client.shutdown();
-        }
-    }
-
-    /// A client connected to the explicit activation target's Engine, never
-    /// this worker's own Engine unless configured so.
-    pub(crate) async fn target(&self, engine_url: &str) -> Result<Arc<IIIClient>, EvalError> {
-        let existing = self
-            .targets
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(engine_url)
-            .cloned();
-        let client = match existing {
-            Some(client) => client,
-            None => {
-                let client = Arc::new(iii_sdk::register_worker(
-                    engine_url,
-                    iii_sdk::InitOptions::default(),
-                ));
-                self.targets
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .insert(engine_url.into(), client.clone());
-                client
-            }
-        };
-        for _ in 0..100 {
-            if client.get_connection_state() == iii_sdk::runtime::IIIConnectionState::Connected {
-                return Ok(client);
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-        Err(EvalError::Dependency(format!(
-            "the activation target {engine_url} is not reachable"
-        )))
-    }
-}
-
-/// A call on another Engine (the explicit activation target), in its
-/// namespace.
-pub(crate) async fn call_on(
-    client: &IIIClient,
-    namespace: &str,
-    function_id: &str,
-    payload: Value,
-    timeout_ms: u64,
-) -> Result<Value, EvalError> {
-    let request = TriggerRequest {
-        function_id: function_id.into(),
-        payload,
-        action: None,
-        timeout_ms: Some(timeout_ms.max(1)),
-    }
-    .namespace(namespace);
-    match tokio::time::timeout(
-        std::time::Duration::from_millis(timeout_ms.max(1)),
-        client.trigger(request),
-    )
-    .await
-    {
-        Ok(Ok(value)) => Ok(value),
-        Ok(Err(iii_sdk::errors::Error::Timeout)) => Err(EvalError::Unanswered(format!(
-            "{function_id} on {namespace} timed out"
-        ))),
-        Ok(Err(error)) => Err(EvalError::Dependency(format!(
-            "{function_id} on {namespace} failed: {error}"
-        ))),
-        Err(_) => Err(EvalError::Unanswered(format!(
-            "{function_id} on {namespace} exceeded {timeout_ms} ms"
-        ))),
+    pub(crate) fn github_api_url(&self) -> String {
+        self.github_api_url
+            .clone()
+            .unwrap_or_else(|| crate::pull_request::GITHUB_API_URL.into())
     }
 }
 
@@ -294,7 +212,6 @@ fn source(
         dispatched_at: None,
         admission_key,
         detail: None,
-        route: None,
     }
 }
 
@@ -334,11 +251,7 @@ fn new_cycle(
         triage: None,
         proposal: None,
         candidate: None,
-        artifact_decision: None,
-        promotion: None,
-        canary: None,
-        recovery: None,
-        activation_intent: None,
+        pull_request: None,
     }
 }
 
@@ -519,30 +432,17 @@ pub async fn cycle_cancel(
     let _guard = deps.locks.guard(&request.cycle_id).await;
     let now = ids::now_ms();
     let changed = state::update_cycle(&deps.iii, &request.cycle_id, |stored| {
-        if stored.status.is_terminal() || stored.recovery.is_some() {
+        if stored.status.is_terminal() {
             return Ok((None, (false, stored.clone())));
         }
         let mut next = stored.clone();
-        if crate::release::activation_in_flight(stored) {
-            // An activation was requested: the cancel completes the safety
-            // action (restore and prove the prior) before the cycle ends.
-            next.recovery = Some("cancelled by request".into());
-            apply(
-                &mut next,
-                now,
-                CycleStatusV1::Running,
-                CycleStageV1::Promotion,
-                "cancel requested after activation: restoring the prior executable",
-            );
-        } else {
-            apply(
-                &mut next,
-                now,
-                CycleStatusV1::Cancelled,
-                CycleStageV1::Done,
-                "cancelled",
-            );
-        }
+        apply(
+            &mut next,
+            now,
+            CycleStatusV1::Cancelled,
+            CycleStageV1::Done,
+            "cancelled",
+        );
         Ok((Some(next.clone()), (true, next)))
     })
     .await?
@@ -551,9 +451,6 @@ pub async fn cycle_cancel(
     if cancelled {
         crate::stages::stop_actors(deps, &record).await;
         stop_executions(deps, &record).await;
-        if record.status == CycleStatusV1::Running {
-            queue::enqueue_step(&deps.iii, &record.cycle_id, record.step).await?;
-        }
     }
     Ok(CycleCancelResponseV1 {
         cancelled,
@@ -561,10 +458,8 @@ pub async fn cycle_cancel(
     })
 }
 
-/// Ends a waiting cycle past a budget limit, under its lock and from the
-/// stored record, never a snapshot: an activation in flight becomes a
-/// recovery (restoring the prior needs no model or E2E budget), anything
-/// else completes as `budget`. Either way its actors and executions are
+/// Ends a waiting cycle past a budget limit as `budget`, under its lock and
+/// from the stored record, never a snapshot; its actors and executions are
 /// asked to stop, as a cancel does.
 async fn expire(
     deps: &Deps,
@@ -574,34 +469,21 @@ async fn expire(
     let _guard = deps.locks.guard(cycle_id).await;
     let now = ids::now_ms();
     let written = state::update_cycle(&deps.iii, cycle_id, |stored| {
-        if stored.status != CycleStatusV1::Waiting || stored.recovery.is_some() {
+        if stored.status != CycleStatusV1::Waiting {
             return Ok((None, None));
         }
         let mut next = stored.clone();
-        if crate::release::activation_in_flight(stored) {
-            next.recovery = Some(format!("budget: {reason}"));
-            apply(
-                &mut next,
-                now,
-                CycleStatusV1::Running,
-                CycleStageV1::Promotion,
-                &format!(
-                    "budget reached after activation ({reason}): restoring the prior executable"
-                ),
-            );
-        } else {
-            next.outcome = Some(CycleOutcomeV1 {
-                code: OutcomeCodeV1::Budget,
-                detail: reason.into(),
-            });
-            apply(
-                &mut next,
-                now,
-                CycleStatusV1::Completed,
-                CycleStageV1::Done,
-                &format!("{:?}: {reason}", OutcomeCodeV1::Budget),
-            );
-        }
+        next.outcome = Some(CycleOutcomeV1 {
+            code: OutcomeCodeV1::Budget,
+            detail: reason.into(),
+        });
+        apply(
+            &mut next,
+            now,
+            CycleStatusV1::Completed,
+            CycleStageV1::Done,
+            &format!("{:?}: {reason}", OutcomeCodeV1::Budget),
+        );
         Ok((Some(next.clone()), Some(next)))
     })
     .await?
@@ -609,15 +491,12 @@ async fn expire(
     if let Some(record) = &written {
         crate::stages::stop_actors(deps, record).await;
         stop_executions(deps, record).await;
-        if record.status == CycleStatusV1::Running {
-            queue::enqueue_step(&deps.iii, cycle_id, record.step).await?;
-        }
     }
     Ok(written)
 }
 
-/// Asks every execution the cycle dispatched and that still runs to stop,
-/// through the Engine it runs on (best effort).
+/// Asks every execution the cycle dispatched and that still runs to stop
+/// (best effort).
 pub(crate) async fn stop_executions(deps: &Deps, record: &CycleRecordV1) {
     for execution in record.executions.iter().filter(|execution| {
         execution.role != ExecutionRoleV1::Source && execution.state == ExecutionStateV1::Running
@@ -626,28 +505,13 @@ pub(crate) async fn stop_executions(deps: &Deps, record: &CycleRecordV1) {
             continue;
         };
         let payload = json!({ "execution_id": execution_id });
-        let result = match &execution.route {
-            None => call::<_, Value>(
-                deps,
-                "e2e::dashboard::execution-cancel",
-                payload,
-                BUS_TIMEOUT_MS,
-            )
-            .await
-            .map(|_| ()),
-            Some(route) => match deps.target(&route.engine_url).await {
-                Ok(client) => call_on(
-                    &client,
-                    &route.namespace,
-                    "e2e::dashboard::execution-cancel",
-                    payload,
-                    BUS_TIMEOUT_MS,
-                )
-                .await
-                .map(|_| ()),
-                Err(error) => Err(error),
-            },
-        };
+        let result = call::<_, Value>(
+            deps,
+            "e2e::dashboard::execution-cancel",
+            payload,
+            BUS_TIMEOUT_MS,
+        )
+        .await;
         if let Err(error) = result {
             tracing::warn!(%execution_id, %error, "could not stop a cycle's execution");
         }
@@ -769,7 +633,7 @@ const POLLED: [CycleStageV1; 5] = [
     CycleStageV1::Proposal,
     CycleStageV1::Candidate,
     CycleStageV1::Validation,
-    CycleStageV1::Promotion,
+    CycleStageV1::PullRequest,
 ];
 
 pub async fn step(deps: &Deps, request: StepRequestV1) -> Result<StepResponseV1, EvalError> {
@@ -797,7 +661,7 @@ pub async fn step(deps: &Deps, request: StepRequestV1) -> Result<StepResponseV1,
         CycleStageV1::Validation => {
             Box::pin(crate::stages::validation_stage(deps, &record)).await?
         }
-        CycleStageV1::Promotion => Box::pin(crate::release::promotion_stage(deps, &record)).await?,
+        CycleStageV1::PullRequest => Box::pin(crate::pull_request::stage(deps, &record)).await?,
         CycleStageV1::AwaitingExecution | CycleStageV1::Done => None,
     };
     Ok(match written {
@@ -1194,7 +1058,6 @@ pub(crate) async fn dispatch(
             dispatched_at: Some(now),
             admission_key: None,
             detail: None,
-            route: None,
         });
         next.updated_at = now;
         Ok((Some(next), true))
@@ -1459,7 +1322,7 @@ pub(crate) fn pertinent(analysis: &CycleAnalysisV1) -> Vec<String> {
         .collect()
 }
 
-fn class_counts(analysis: &CycleAnalysisV1) -> String {
+pub(crate) fn class_counts(analysis: &CycleAnalysisV1) -> String {
     let mut counts = std::collections::BTreeMap::new();
     for finding in &analysis.findings {
         *counts.entry(format!("{:?}", finding.class)).or_insert(0u32) += 1;
@@ -1599,7 +1462,6 @@ async fn analysis_stage(
         Vec<EvidenceV1>,
         Option<CycleLedgerV1>,
     )> = None;
-    let mut canary = None;
     match entry.role {
         ExecutionRoleV1::Source if findings.is_empty() => {
             outcome = Some((
@@ -1651,7 +1513,7 @@ async fn analysis_stage(
             }
             baseline = Some(measured);
         }
-        ExecutionRoleV1::Candidate | ExecutionRoleV1::Artifact | ExecutionRoleV1::Canary => {
+        ExecutionRoleV1::Candidate => {
             let plan = record
                 .plan
                 .clone()
@@ -1671,114 +1533,46 @@ async fn analysis_stage(
                 .await?
                 .ok_or_else(|| EvalError::State("the baseline evidence is missing".into()))?;
             let validation = config.and_then(|config| config.validation.clone());
-            // `pin` is the Registry version an artifact side's stack pins. The
-            // compiled Harness version label is never compared: the official
-            // build does not rewrite it for an rc, and the executable digest
-            // (archive to measured run) is the proof of what ran.
-            let side =
-                |evidence: &ExecutionEvidenceV1,
-                 expected_revision: Option<String>,
-                 pins: Option<std::collections::BTreeMap<String, String>>| {
-                    // The recorded stack must be the frozen template with only its
-                    // pins put in: the commit, or each worker's rc.
-                    let (expected_stack, observed_stack) =
-                        match (&validation, &expected_revision, &pins) {
-                            (Some(validation), Some(commit), _) => {
-                                stack_proof(evidence, &validation.source_stack(commit).yaml)
-                            }
-                            (Some(validation), None, Some(pins)) => {
-                                stack_proof(evidence, &validation.artifact_stack(pins).yaml)
-                            }
-                            _ => (None, None),
-                        };
-                    DecisionSideV1 {
-                        execution_id: evidence.execution_id.clone(),
-                        identity: evidence.identity.clone(),
-                        seeds: evidence::seeds(&evidence.bundle),
-                        policy_revision: Some(plan.policy_revision.clone()),
-                        expected_revision,
-                        expected_stack,
-                        observed_stack,
+            let side = |evidence: &ExecutionEvidenceV1, expected_revision: Option<String>| {
+                // The recorded stack must be the frozen template with only
+                // the commit put in.
+                let (expected_stack, observed_stack) = match (&validation, &expected_revision) {
+                    (Some(validation), Some(commit)) => {
+                        stack_proof(evidence, &validation.source_stack(commit).yaml)
                     }
+                    _ => (None, None),
                 };
+                DecisionSideV1 {
+                    execution_id: evidence.execution_id.clone(),
+                    identity: evidence.identity.clone(),
+                    seeds: evidence::seeds(&evidence.bundle),
+                    policy_revision: Some(plan.policy_revision.clone()),
+                    expected_revision,
+                    expected_stack,
+                    observed_stack,
+                }
+            };
             // With a pinned stack the baseline must have run the base commit.
             let base_revision = config
                 .and_then(|config| config.validation.as_ref().zip(config.candidate.as_ref()))
                 .map(|(_, candidate)| candidate.base_sha.clone());
-            let other = match entry.role {
-                ExecutionRoleV1::Candidate => side(
-                    &evidence,
-                    Some(crate::stages::candidate_sha(record).ok_or_else(|| {
-                        EvalError::State("a candidate execution without a candidate commit".into())
-                    })?),
-                    None,
-                ),
-                ExecutionRoleV1::Artifact => side(
-                    &evidence,
-                    None,
-                    Some(crate::release::rc_pins(record).ok_or_else(|| {
-                        EvalError::State("an artifact execution without an rc".into())
-                    })?),
-                ),
-                // The canary runs on the target's own stack: its proof is the
-                // activated executable digest (checked by the canary judgment)
-                // and the Compose activation of the stable package.
-                _ => side(&evidence, None, None),
-            };
+            let other = side(
+                &evidence,
+                Some(crate::stages::candidate_sha(record).ok_or_else(|| {
+                    EvalError::State("a candidate execution without a candidate commit".into())
+                })?),
+            );
             let pairs = decision::pair_evidence(
                 &plan,
                 (&base.execution_id, &base.bundle),
                 (&evidence.execution_id, &evidence.bundle),
                 now,
             );
-            let base_side = side(&base, base_revision, None);
-            if entry.role == ExecutionRoleV1::Canary {
-                let judged_canary = crate::release::canary(
-                    &plan,
-                    &base_side,
-                    &other,
-                    &pairs,
-                    &analysis,
-                    &crate::release::stable_binaries(record),
-                    now,
-                );
-                match judged_canary.outcome {
-                    CanaryOutcomeV1::Held => {
-                        outcome = Some((
-                            OutcomeCodeV1::Promoted,
-                            format!(
-                                "activated, executable proved and canary held: {}",
-                                judged_canary.reason
-                            ),
-                        ))
-                    }
-                    CanaryOutcomeV1::Violated => {
-                        next_stage = Some((
-                            CycleStageV1::Promotion,
-                            format!("canary violated, rolling back: {}", judged_canary.reason),
-                        ))
-                    }
-                    // Unknown keeps the observation pending on the activated
-                    // target until a limit, when recovery restores the prior.
-                    CanaryOutcomeV1::Unknown => {
-                        next_stage = Some((
-                            CycleStageV1::Promotion,
-                            format!(
-                                "activated; the canary is unknown, observation pending (never claimed stable): {}",
-                                judged_canary.reason
-                            ),
-                        ))
-                    }
-                }
-                canary = Some(judged_canary);
-            } else {
-                let ledger = state::get_ledger(&deps.iii, &record.cycle_id).await?;
-                judged = Some((base_side, other, pairs, ledger));
-            }
+            let base_side = side(&base, base_revision);
+            let ledger = state::get_ledger(&deps.iii, &record.cycle_id).await?;
+            judged = Some((base_side, other, pairs, ledger));
         }
     }
-    let promotion_configured = config.is_some_and(|config| config.promotion.is_some());
-    let role = entry.role;
     transition_with(deps, record, |next| {
         if let Some(stored) = next.executions.iter_mut().find(|stored| {
             stored.label == entry.label
@@ -1791,33 +1585,15 @@ async fn analysis_stage(
         if let Some(measured) = &baseline {
             next.baseline = Some(measured.clone());
         }
-        if let Some(judged_canary) = &canary {
-            next.canary = Some(judged_canary.clone());
-        }
         let mut outcome = outcome.clone();
         let mut next_stage = next_stage.clone();
         if let Some((base, other, pairs, ledger)) = &judged {
-            if role == ExecutionRoleV1::Candidate {
-                let decision =
-                    decision::decide_cycle(next, ledger.as_ref(), base, other, pairs, now)?;
-                let detail = format!("source {:?}: {}", decision.outcome, decision.reason);
-                if decision.outcome == DecisionOutcomeV1::Accepted && promotion_configured {
-                    next_stage = Some((CycleStageV1::Promotion, detail));
-                } else if decision.outcome == DecisionOutcomeV1::Accepted {
-                    outcome = Some((
-                        OutcomeCodeV1::Decided,
-                        format!("{detail}; nothing released: promotion is not configured"),
-                    ));
-                } else {
-                    outcome = Some((OutcomeCodeV1::Decided, detail));
-                }
+            let decision = decision::decide_cycle(next, ledger.as_ref(), base, other, pairs, now)?;
+            let detail = format!("source {:?}: {}", decision.outcome, decision.reason);
+            if decision.outcome == DecisionOutcomeV1::Accepted {
+                next_stage = Some((CycleStageV1::PullRequest, detail));
             } else {
-                let decision =
-                    decision::decide_artifact(next, ledger.as_ref(), base, other, pairs, now)?;
-                next_stage = Some((
-                    CycleStageV1::Promotion,
-                    format!("artifact {:?}: {}", decision.outcome, decision.reason),
-                ));
+                outcome = Some((OutcomeCodeV1::Decided, detail));
             }
         }
         Ok(match (outcome, next_stage) {
@@ -2326,7 +2102,6 @@ pub async fn sweep(deps: &Deps) -> Result<SweepResponseV1, EvalError> {
                     if let Some(reason) = state::get_ledger(&deps.iii, &cycle.cycle_id)
                         .await?
                         .and_then(|ledger| cost::exceeded(&ledger, now))
-                        .filter(|_| cycle.recovery.is_none())
                     {
                         if expire(deps, &cycle.cycle_id, &reason)
                             .await?

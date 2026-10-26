@@ -34,8 +34,7 @@ const WILL = [
   'This cycle will only map coverage: the loop is not configured',
   'This cycle will measure and stop: Improve is off',
   'This cycle will measure and write a change, but cannot prove it: Prove is off',
-  'This cycle will measure, improve and prove, then stop at the decision',
-  'This cycle will measure, improve, prove and, if accepted, ship',
+  'This cycle will measure, improve, prove and, if accepted, open a pull request',
 ]
 
 /** The one way to start a cycle: pick an execution that lost points, or name an objective. */

@@ -16,8 +16,6 @@ import type {
   FindingClass,
   LoopConfig,
   OutcomeCode,
-  PromotionJournal,
-  PromotionPhase,
   SentinelResult,
   SentinelTriage,
 } from './types'
@@ -68,14 +66,14 @@ const STAGE: Record<CycleStage, string> = {
   proposal: 'Proposal',
   candidate: 'Candidate',
   validation: 'Validation',
-  promotion: 'Promotion',
+  pull_request: 'Pull request',
   done: 'Done',
 }
 
 export const stageLabel = (stage: CycleStage) => STAGE[stage]
 
 const DECISION: Record<DecisionOutcome, { label: string; tone: Tone }> = {
-  // Approval of the candidate only: not a merge, publication or activation.
+  // Approval of the candidate only: the loop opens a pull request, never merges.
   accepted: { label: 'Accepted', tone: 'ok' },
   rejected: { label: 'Rejected', tone: 'alert' },
   inconclusive: { label: 'Inconclusive', tone: 'warn' },
@@ -87,76 +85,17 @@ const OUTCOME: Record<OutcomeCode, { label: string; tone: Tone }> = {
   budget: { label: 'Budget reached', tone: 'warn' },
   inconclusive: { label: 'Inconclusive', tone: 'warn' },
   decided: { label: 'Decided', tone: 'neutral' },
-  promoted: { label: 'Promoted', tone: 'ok' },
-  rolled_back: { label: 'Rolled back', tone: 'warn' },
-}
-
-export type Progress = 'not_requested' | 'requested' | 'confirmed' | 'unknown'
-
-export interface PromotionSummary {
-  merge: Progress
-  release: Progress
-  activation: Progress
-  /** `confirmed` means the prior executable is proved running again. */
-  rollback: Progress
-  stopped?: Extract<PromotionPhase, { phase: 'stopped' }>
-}
-
-const has = (journal: PromotionJournal | undefined, phase: PromotionPhase['phase']) =>
-  journal?.phases.some((entry) => entry.phase === phase) ?? false
-
-/**
- * Requested and confirmed apart, per effect, from the journal only. A step
- * requested and then stopped as unavailable or inconclusive is `unknown`:
- * the effect may or may not have happened.
- */
-export function promotionSummary(journal: PromotionJournal | undefined): PromotionSummary {
-  const stopped = [...(journal?.phases ?? [])]
-    .reverse()
-    .find((entry): entry is Extract<PromotionPhase, { phase: 'stopped' }> => entry.phase === 'stopped')
-  const uncertain = stopped !== undefined && stopped.kind !== 'rejected'
-  const progress = (requested: boolean, confirmed: boolean): Progress =>
-    confirmed ? 'confirmed' : requested ? (uncertain ? 'unknown' : 'requested') : 'not_requested'
-  return {
-    merge: progress(has(journal, 'merge_requested'), has(journal, 'merged')),
-    release: progress(
-      has(journal, 'rc_planned') ||
-        has(journal, 'rc_confirmed') ||
-        has(journal, 'finalize_planned') ||
-        has(journal, 'finalize_confirmed'),
-      has(journal, 'stable_published'),
-    ),
-    activation: progress(has(journal, 'activation_requested'), has(journal, 'activation_confirmed')),
-    rollback: progress(has(journal, 'rollback_requested'), has(journal, 'rollback_confirmed')),
-    stopped,
-  }
+  proposed: { label: 'Pull request opened', tone: 'ok' },
 }
 
 /**
  * The cycle's headline outcome. A completed status alone is never a
- * decision, an accepted decision is never "Promoted", and the backend's
- * `promoted`/`rolled_back` claims are shown only with the journal's
- * confirmation of activation/rollback (otherwise unconfirmed).
+ * decision, and `proposed` is shown only with the pull request the record holds.
  */
 export function outcomeView(record: CycleRecord): { label: string; tone: Tone; reason: string } | null {
   const outcome = record.outcome
-  if (outcome?.code === 'promoted' || outcome?.code === 'rolled_back') {
-    const summary = promotionSummary(record.promotion)
-    if (outcome.code === 'rolled_back') {
-      if (summary.rollback === 'confirmed') return { ...OUTCOME.rolled_back, reason: outcome.detail }
-      return {
-        label: 'Rollback unconfirmed',
-        tone: 'warn',
-        reason: `${outcome.detail} (the promotion journal holds no rollback confirmation)`,
-      }
-    }
-    // Promoted needs both facts: the executable proved running and the canary held.
-    const missing = [
-      summary.activation === 'confirmed' ? null : 'no activation confirmation in the journal',
-      record.canary?.outcome === 'held' ? null : `canary ${record.canary?.outcome ?? 'not recorded'}`,
-    ].filter(Boolean)
-    if (missing.length === 0) return { ...OUTCOME.promoted, reason: outcome.detail }
-    return { label: 'Promotion unconfirmed', tone: 'warn', reason: `${outcome.detail} (${missing.join('; ')})` }
+  if (outcome?.code === 'proposed' && !record.pull_request) {
+    return { label: 'Pull request unconfirmed', tone: 'warn', reason: `${outcome.detail} (the record holds no pull request)` }
   }
   if (outcome && outcome.code !== 'decided') return { ...OUTCOME[outcome.code], reason: outcome.detail }
   if (record.decision) return { ...DECISION[record.decision.outcome], reason: record.decision.reason }
@@ -194,7 +133,7 @@ export const badge = (record: CycleRecord): { label: string; tone: Tone; reason:
 
 // ── the four phases ──────────────────────────────────────────────────────
 
-export const PHASES = ['Measure', 'Improve', 'Prove', 'Ship'] as const
+export const PHASES = ['Measure', 'Improve', 'Prove', 'Review'] as const
 /** `off`: a step its settings never allowed, as opposed to one not reached yet. */
 export type Mark = 'done' | 'now' | 'stop' | 'fail' | 'todo' | 'off'
 
@@ -204,11 +143,27 @@ export function lastStage(record: CycleRecord): CycleStage {
   return [...record.history].reverse().find((event) => event.stage !== 'done')?.stage ?? 'done'
 }
 
+/**
+ * What the Review phase holds: the pull request, the wait to open it, or why
+ * an accepted change got none. `null`: not reached.
+ */
+export function review(record: CycleRecord): { kind: 'opened' | 'waiting' | 'none'; detail: string } | null {
+  const pr = record.pull_request
+  if (pr) return { kind: 'opened', detail: `#${pr.number} ${pr.created ? 'opened' : 'found'}` }
+  if (record.stage === 'pull_request' && record.status === 'waiting') {
+    return { kind: 'waiting', detail: record.history.at(-1)?.detail ?? '' }
+  }
+  if (record.outcome?.code === 'decided' && record.decision?.outcome === 'accepted') {
+    return { kind: 'none', detail: record.outcome.detail }
+  }
+  return null
+}
+
 /** Which phase the cycle reached, from what it recorded, so it never moves back. */
 export function phaseOf(record: CycleRecord): number {
   const stage = lastStage(record)
   const stopped = stoppedFor(record)
-  if (record.promotion || record.canary || stage === 'promotion') return 3
+  if (review(record)) return 3
   if (record.decision || stage === 'validation' || stopped === 'prove') return 2
   if (record.executions?.some((entry) => entry.role === 'candidate')) return 2
   if (record.proposal || record.candidate || stage === 'proposal' || stage === 'candidate' || stopped === 'improve') {
@@ -235,37 +190,35 @@ export type Group = 'you' | 'active' | 'done'
 
 /**
  * Active; needing you, when there is something to do now (a setting to turn
- * on, a failure, a promotion or rollback not confirmed); else finished.
+ * on, a failure, a pull request not confirmed); else finished.
  */
 export function groupOf(record: CycleRecord, current: LoopConfig | null | undefined): Group {
   if (isActive(record.status)) return 'active'
   const code = record.outcome?.code
   const label = badge(record).label
-  const unconfirmed =
-    (code === 'promoted' && label !== 'Promoted') || (code === 'rolled_back' && label !== 'Rolled back')
+  const unconfirmed = code === 'proposed' && label !== OUTCOME.proposed.label
   return record.status === 'failed' || unconfirmed || fixFor(record, current) ? 'you' : 'done'
 }
 
 /** A settings section, in the order each needs the one before it. */
-export type Setup = 'measure' | 'improve' | 'prove' | 'ship' | 'judge'
+export type Setup = 'measure' | 'improve' | 'prove' | 'judge'
 
-/** How far a new cycle can go with this configuration: 0 nothing runs, 4 it can ship. */
+/** How far a new cycle can go with this configuration: 0 nothing runs, 3 it can open a pull request. */
 export function readiness(config: LoopConfig | null | undefined): number {
   if (!config) return 0
   if (!config.candidate) return 1
   if (!config.validation) return 2
-  return config.promotion ? 4 : 3
+  return 3
 }
 
 export const READY_LINE = [
   'Not configured: a new cycle maps coverage and runs nothing until Measure is set up.',
   'New cycles measure and stop: no change is written until Improve is on.',
   'New cycles write a change but cannot prove it until Prove is on.',
-  'New cycles stop at the source decision: nothing is merged or activated until Ship is set up.',
-  'New cycles can ship an accepted change: merge, release, activate locally and watch a canary.',
+  'New cycles open a pull request for an accepted change; a person reviews and merges it.',
 ]
 
-const SETUP: Setup[] = ['measure', 'improve', 'prove', 'ship']
+const SETUP: Setup[] = ['measure', 'improve', 'prove']
 /** The next section to set up, if any. */
 export const nextSetup = (config: LoopConfig | null | undefined): Setup | null => SETUP[readiness(config)] ?? null
 
@@ -274,26 +227,24 @@ export const FIX: Record<Setup, { action: string; why: string }> = {
   judge: { action: 'Turn on the judge', why: 'no judge settles an ambiguous finding' },
   improve: { action: 'Turn on Improve', why: 'candidate work is off' },
   prove: { action: 'Turn on Prove', why: 'nothing can validate the candidate' },
-  ship: { action: 'Set up Ship', why: 'Ship is off, so nothing was merged or activated' },
 }
 
 const CONFIG_KEY: Record<string, Setup> = {
   candidate: 'improve',
   judge: 'judge',
   validation: 'prove',
-  promotion: 'ship',
 }
 
 /**
  * The setting a finished cycle stopped for: the outcome names the missing
- * `config.*` key; an accepted change without Ship stops at the decision.
+ * `config.*` key.
  */
 function stoppedFor(record: CycleRecord): Setup | null {
   if (isActive(record.status)) return null
   if (!record.config) return 'measure'
-  const key = record.outcome?.detail.match(/config\.(candidate|judge|validation|promotion)\b/)?.[1]
+  const key = record.outcome?.detail.match(/config\.(candidate|judge|validation)\b/)?.[1]
   if (key) return CONFIG_KEY[key]
-  return record.decision?.outcome === 'accepted' && !record.config.config.promotion ? 'ship' : null
+  return null
 }
 
 /** What to turn on for a cycle like this one to go further; `null` once the current settings have it. */
@@ -305,7 +256,6 @@ export function fixFor(record: CycleRecord, current: LoopConfig | null | undefin
     judge: current?.judge,
     improve: current?.candidate,
     prove: current?.validation,
-    ship: current?.promotion,
   }
   return done[setup] ? null : setup
 }
@@ -319,7 +269,7 @@ const DOING: Record<CycleStage, string> = {
   proposal: 'Proposing one change',
   candidate: 'Writing the candidate change',
   validation: 'Running the candidate on the E2E',
-  promotion: 'Shipping the accepted change',
+  pull_request: 'Opening the pull request',
   done: 'Finishing',
 }
 
@@ -327,8 +277,6 @@ const RUNNING: Record<ExecutionRole, string> = {
   source: 'Waiting for the execution to finish',
   baseline: "Measuring today's Harness on the E2E",
   candidate: 'Running the candidate on the E2E',
-  artifact: 'Running the release candidate on the E2E',
-  canary: 'Running the canary on the target',
 }
 
 /** The E2E execution the cycle waits on now, if any. */
@@ -347,15 +295,13 @@ export function nowView(
     const headline =
       record.status === 'queued'
         ? 'Queued'
-        : record.recovery
-          ? 'Restoring the prior executable'
-          : running
-            ? RUNNING[running.role]
-            : DOING[record.stage]
+        : running
+          ? RUNNING[running.role]
+          : DOING[record.stage]
     return {
       tone: 'accent',
       headline,
-      detail: record.recovery ?? record.next?.detail ?? record.history.at(-1)?.detail ?? '',
+      detail: record.next?.detail ?? record.history.at(-1)?.detail ?? '',
       fix: null,
     }
   }
@@ -483,12 +429,6 @@ export function gaps(record: CycleRecord): Gap[] {
       found.push(...evidenceGaps(`Preserved #${index + 1}`, evidence))
     }
   }
-  if (record.artifact_decision) {
-    found.push(...evidenceGaps('Artifact primary', record.artifact_decision.primary))
-    for (const [index, evidence] of record.artifact_decision.preserved.entries()) {
-      found.push(...evidenceGaps(`Artifact preserved #${index + 1}`, evidence))
-    }
-  }
   const triage = record.triage
   if (triage?.outcome === 'unknown')
     found.push({ kind: 'unknown', subject: `Triage · ${triage.source}`, reason: triage.reason })
@@ -507,19 +447,6 @@ export function gaps(record: CycleRecord): Gap[] {
     if (actor && actor.status.state !== 'not_started' && actor.cost.cost_usd === null) {
       found.push({ kind: 'unknown', subject, reason: 'harness::metrics reported no cost.' })
     }
-  }
-  const stopped = promotionSummary(record.promotion).stopped
-  // A rejected stop is a concrete result, shown with the promotion; only an
-  // unavailable or inconclusive stop leaves an effect unknown.
-  if (stopped && stopped.kind !== 'rejected') {
-    found.push({
-      kind: stopped.kind === 'inconclusive' ? 'inconclusive' : 'unknown',
-      subject: `Promotion · ${stopped.step} (${stopped.kind})`,
-      reason: stopped.reason,
-    })
-  }
-  if (record.canary?.outcome === 'unknown') {
-    found.push({ kind: 'unknown', subject: `Canary · ${record.canary.execution_id}`, reason: record.canary.reason })
   }
   const outcome = record.outcome
   if (outcome && (outcome.code === 'inconclusive' || outcome.code === 'budget')) {
@@ -735,25 +662,10 @@ export function validateConfig(config: LoopConfig): string | null {
     if (validation.where === 'harness') return 'validation pins the Harness: where must be docker or github'
     if (
       !validation.source_stack_template.includes('{commit}') ||
-      !validation.artifact_stack_template.includes('{version}') ||
       !validation.stack_name.trim()
     ) {
-      return 'validation needs a stack_name and templates with {commit} and {version}'
+      return 'validation needs a stack_name and a source template with {commit}'
     }
-  }
-  const promotion = config.promotion
-  if (promotion) {
-    if (!validation) return 'promotion needs validation: an unvalidated artifact is never released'
-    if (!positive(config.release_build_estimate_usd ?? Number.NaN)) {
-      return 'promotion needs a positive release_build_estimate_usd'
-    }
-    const target = [
-      promotion.artifact_target,
-      promotion.target.engine_url,
-      promotion.target.namespace,
-      promotion.target.compose_file,
-    ]
-    if (target.some((value) => !value.trim())) return 'promotion needs the artifact target and the activation target'
   }
   return null
 }

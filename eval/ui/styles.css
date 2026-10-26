@@ -890,3 +890,8 @@
   padding: 12px 0 24px;
   background: var(--color-panel-raised);
 }
+
+[data-iii-ui="eval"] .eval-ui-pr-link {
+  color: inherit;
+  text-decoration: underline;
+}

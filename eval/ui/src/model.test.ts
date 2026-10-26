@@ -12,12 +12,12 @@ import {
   outcomeView,
   parseOpenContext,
   phaseOf,
-  promotionSummary,
   readiness,
+  review,
   sentinelResult,
   validateConfig,
 } from './model'
-import type { CycleDecision, CyclePlan, CycleRecord, EvidenceSide, LoopConfig, PromotionJournal } from './types'
+import type { CycleDecision, CyclePlan, CycleRecord, EvidenceSide, LoopConfig } from './types'
 
 const record = (patch: Partial<CycleRecord> = {}): CycleRecord => ({
   schema_version: 1,
@@ -106,8 +106,8 @@ describe('outcome', () => {
     expect(outcomeView(record({ status: 'waiting', stage: 'candidate' }))).toBeNull()
     const accepted = outcomeView(record({ decision: decision(), outcome: { code: 'decided', detail: 'd' } }))
     expect(accepted).toMatchObject({ label: 'Accepted', tone: 'ok' })
-    // Without activation evidence it is never promoted or rolled back.
-    expect(accepted?.label).not.toMatch(/promot|roll/i)
+    // Without a pull request it is never reported as proposed.
+    expect(accepted?.label).not.toMatch(/pull request/i)
     expect(
       outcomeView(record({ decision: decision({ outcome: 'rejected', reason: 'lost pass rate' }) })),
     ).toMatchObject({
@@ -352,112 +352,58 @@ const STAGE2: LoopConfig = {
     where: 'docker',
     stack_name: 'harness',
     source_stack_template: 'ref: commit:{commit}',
-    artifact_stack_template: 'version: {version}',
   },
-  release_build_estimate_usd: 1.5,
-  promotion: {
-    artifact_target: 'x86_64-unknown-linux-gnu',
-    target: { engine_url: 'ws://127.0.0.1:49134', namespace: 'loop-test', compose_file: '/srv/worker-compose.yaml' },
-  },
-}
-
-const running = {
-  version: '1.2.0',
-  pid: 42,
-  binary_sha256: 'b'.repeat(64),
-  file: 'f',
-  namespace: 'n',
-  operation_id: 'op',
 }
 
 describe('stage 2 config', () => {
-  it('round-trips judge, candidate, validation and promotion through the form', () => {
+  it('round-trips judge, candidate and validation through the form', () => {
     expect(configFromDraft(draftFromConfig(STAGE2))).toEqual(STAGE2)
     expect(validateConfig(STAGE2)).toBeNull()
   })
 
   it('applies the dependency rules of the backend', () => {
     expect(validateConfig({ ...STAGE2, candidate: undefined })).toMatch(/validation needs candidate/)
-    expect(validateConfig({ ...STAGE2, validation: undefined })).toMatch(/promotion needs validation/)
     expect(validateConfig({ ...STAGE2, validation: { ...STAGE2.validation!, where: 'harness' } })).toMatch(
       /docker or github/,
     )
     expect(validateConfig({ ...STAGE2, candidate: { ...STAGE2.candidate!, base_sha: 'main' } })).toMatch(/40-hex/)
   })
 
-  it('requires a positive release build estimate with promotion, and saves it only with promotion', () => {
-    expect(validateConfig({ ...STAGE2, release_build_estimate_usd: undefined })).toMatch(/release_build_estimate_usd/)
-    expect(validateConfig({ ...STAGE2, release_build_estimate_usd: 0 })).toMatch(/release_build_estimate_usd/)
-    const off = draftFromConfig(STAGE2)
-    off.sections = { ...off.sections, promotion: null }
-    expect(configFromDraft(off)).not.toHaveProperty('release_build_estimate_usd')
-  })
-
-  it('has no service origins or credential names in the promotion config', () => {
-    expect(Object.keys(STAGE2.promotion ?? {}).sort()).toEqual(['artifact_target', 'target'])
-    const legacy = { ...STAGE2, promotion: { ...STAGE2.promotion, github_token_env: 'GITHUB_TOKEN' } }
-    expect(() => draftFromJson(JSON.stringify(legacy))).toThrow(/promotion.github_token_env/)
+  it('refuses the removed promotion and release fields', () => {
+    const legacy = { ...STAGE2, promotion: { artifact_target: 'x' } }
+    expect(() => draftFromJson(JSON.stringify(legacy))).toThrow(/promotion/)
+    expect(() => draftFromJson(JSON.stringify({ ...STAGE2, release_build_estimate_usd: 1 }))).toThrow(
+      /release_build_estimate_usd/,
+    )
     expect(() => draftFromJson(JSON.stringify({ ...STAGE2, registry_url: 'https://x' }))).toThrow(/registry_url/)
   })
 })
 
-describe('promotion', () => {
-  const journal = (...phases: PromotionJournal['phases']): PromotionJournal => ({ promotion_id: 'p1', phases })
-  const accepted = decision()
+describe('review', () => {
+  const pr = { number: 7, url: 'https://github.com/iii-hq/workers/pull/7', head_ref: 'loop/c1', head_sha: 'c'.repeat(40) }
 
-  it('keeps an accepted candidate Accepted until activation is confirmed and the canary held', () => {
-    expect(outcomeView(record({ decision: accepted, outcome: { code: 'decided', detail: 'd' } }))?.label).toBe(
-      'Accepted',
-    )
-    const requested = journal({ phase: 'activation_requested', operation_id: 'op', version: '1.2.0', accepted: true })
-    expect(promotionSummary(requested).activation).toBe('requested')
-    // The backend's claim alone is not enough.
-    const claimed = outcomeView(
-      record({ decision: accepted, outcome: { code: 'promoted', detail: 'canary held' }, promotion: requested }),
-    )
-    expect(claimed?.label).toBe('Promotion unconfirmed')
-    const proved = journal(
-      { phase: 'activation_requested', operation_id: 'op', version: '1.2.0', accepted: true },
-      { phase: 'activation_confirmed', ...running },
-    )
-    const promotedRecord = (canary?: CycleRecord['canary']) =>
-      record({ decision: accepted, outcome: { code: 'promoted', detail: 'activated' }, promotion: proved, canary })
-    // Activation proved but the canary did not hold, or was not recorded: not promoted.
-    expect(outcomeView(promotedRecord())).toMatchObject({ label: 'Promotion unconfirmed' })
-    expect(outcomeView(promotedRecord({ execution_id: 'k', outcome: 'unknown', reason: 'r' }))?.reason).toMatch(
-      /canary unknown/,
-    )
-    expect(outcomeView(promotedRecord({ execution_id: 'k', outcome: 'held', reason: 'r' }))?.label).toBe('Promoted')
+  it('shows a proposed outcome only with the pull request the record holds', () => {
+    const proposed = { code: 'proposed' as const, detail: 'opened #7' }
+    const held = record({ decision: decision(), outcome: proposed, pull_request: { ...pr, created: true } })
+    expect(outcomeView(held)?.label).toBe('Pull request opened')
+    expect(review(held)).toEqual({ kind: 'opened', detail: '#7 opened' })
+    expect(review(record({ ...held, pull_request: { ...pr, created: false } }))?.detail).toBe('#7 found')
+    expect(phaseOf(held)).toBe(3)
+    expect(marks(held)).toEqual(['done', 'done', 'done', 'done'])
+    expect(outcomeView(record({ decision: decision(), outcome: proposed }))?.label).toBe('Pull request unconfirmed')
   })
 
-  it('says Rolled back only with the rollback confirmed', () => {
-    const back = journal(
-      { phase: 'activation_confirmed', ...running },
-      { phase: 'rollback_requested', operation_id: 'op2', version: '1.1.0', accepted: true },
-    )
-    expect(
-      outcomeView(record({ outcome: { code: 'rolled_back', detail: 'canary violated' }, promotion: back }))?.label,
-    ).toBe('Rollback unconfirmed')
-    const proved = journal(...back.phases, { phase: 'rollback_confirmed', ...running, version: '1.1.0' })
-    expect(promotionSummary(proved).rollback).toBe('confirmed')
-    expect(
-      outcomeView(record({ outcome: { code: 'rolled_back', detail: 'canary violated' }, promotion: proved }))?.label,
-    ).toBe('Rolled back')
-  })
-
-  it('marks a requested effect unknown when the promotion stopped unavailable or inconclusive', () => {
-    const lost = journal(
-      { phase: 'merge_requested', pull_request: 7, head_sha: 'c'.repeat(40), merge_sha: null },
-      { phase: 'stopped', step: 'read_merge', kind: 'inconclusive', reason: 'merge response lost' },
-    )
-    expect(promotionSummary(lost)).toMatchObject({ merge: 'unknown', activation: 'not_requested' })
-    expect(gaps(record({ promotion: lost }))).toContainEqual({
-      kind: 'inconclusive',
-      subject: 'Promotion \u00b7 read_merge (inconclusive)',
-      reason: 'merge response lost',
+  it('waits on the next sweep, and says why an accepted change got no pull request', () => {
+    const waiting = record({
+      status: 'waiting',
+      stage: 'pull_request',
+      history: [{ at: 5, status: 'waiting', stage: 'pull_request', detail: 'asked again on the next sweep' }],
     })
-    const refused = journal({ phase: 'stopped', step: 'merge', kind: 'rejected', reason: 'head moved' })
-    expect(gaps(record({ promotion: refused }))).toEqual([])
+    expect(review(waiting)).toEqual({ kind: 'waiting', detail: 'asked again on the next sweep' })
+    expect(phaseOf(waiting)).toBe(3)
+    const none = record({ decision: decision(), outcome: { code: 'decided', detail: 'no github token configured' } })
+    expect(review(none)).toEqual({ kind: 'none', detail: 'no github token configured' })
+    expect(review(record({ decision: decision({ outcome: 'rejected' }), outcome: { code: 'decided', detail: 'd' } }))).toBeNull()
   })
 })
 
@@ -494,9 +440,9 @@ describe('stage 2 record', () => {
     const improving = { ...CONFIG, candidate: { repository: '/r' } } as LoopConfig
     expect(fixFor(stopped, improving)).toBeNull()
     expect(groupOf(stopped, improving)).toBe('done')
-    const promoted = record({ decision: decision(), outcome: { code: 'decided', detail: 'accepted' } })
-    expect(marks(promoted)).toEqual(['done', 'done', 'done', 'todo'])
-    expect(groupOf(promoted, CONFIG)).toBe('done')
+    const rejected = record({ decision: decision({ outcome: 'rejected' }), outcome: { code: 'decided', detail: 'no' } })
+    expect(marks(rejected)).toEqual(['done', 'done', 'fail', 'todo'])
+    expect(groupOf(rejected, CONFIG)).toBe('done')
     expect(marks(record({ decision: decision({ outcome: 'rejected' }) }))).toEqual(['done', 'done', 'fail', 'todo'])
   })
 
@@ -532,7 +478,6 @@ describe('stage 2 record', () => {
     const candidate = { ...CONFIG, candidate: {} } as LoopConfig
     expect(readiness(candidate)).toBe(2)
     expect(readiness({ ...candidate, validation: {} } as LoopConfig)).toBe(3)
-    expect(readiness({ ...candidate, validation: {}, promotion: {} } as LoopConfig)).toBe(4)
   })
 
   it('reports an unknown JEV triage and failed or unmeasured actors without inventing results', () => {
@@ -569,14 +514,12 @@ describe('stage 2 record', () => {
             commit: null,
           },
         },
-        canary: { execution_id: 'exec_k', outcome: 'unknown', reason: 'binary digest unknown' },
       }),
     )
     expect(found.map((gap) => [gap.kind, gap.subject])).toEqual([
       ['unknown', 'Triage \u00b7 jev'],
       ['inconclusive', 'Candidate'],
       ['unknown', 'Candidate cost'],
-      ['unknown', 'Canary \u00b7 exec_k'],
     ])
   })
 })

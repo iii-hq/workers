@@ -47,7 +47,7 @@ const PHASE_HINT = [
   'Baseline on the E2E, then a first pass that calls no model',
   'One change inside harness/, in its own worktree',
   'Paired runs on a pinned stack, decided in code',
-  'Merge, release, activate locally, watch a canary',
+  'A pull request for an accepted change; you review and merge',
 ]
 
 type Show = 'all' | Group

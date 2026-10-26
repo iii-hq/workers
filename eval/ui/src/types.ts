@@ -43,10 +43,6 @@ export interface LoopConfig {
   candidate?: CandidateConfig
   /** Stacks pinning the Harness under test; needs `candidate`. */
   validation?: ValidationConfig
-  /** Official release and explicit local activation; needs `validation`. */
-  promotion?: PromotionConfig
-  /** What one official build (rc or finalization) is reserved at; required and positive with `promotion`. */
-  release_build_estimate_usd?: number
 }
 
 export interface JudgeConfig {
@@ -76,18 +72,6 @@ export interface ValidationConfig {
   stack_name: string
   /** `{commit}` is replaced by the 40-hex sha. */
   source_stack_template: string
-  /** `{version}` is replaced by the Registry version. */
-  artifact_stack_template: string
-}
-
-/**
- * `PromotionConfig` (eval/src/promotion.rs): only which archive to digest and
- * which local Engine to activate. Service origins and credentials are fixed by
- * the deployment, never configured here.
- */
-export interface PromotionConfig {
-  artifact_target: string
-  target: { engine_url: string; namespace: string; compose_file: string }
 }
 
 export interface StoredConfig {
@@ -114,7 +98,7 @@ export type CycleStage =
   | 'proposal'
   | 'candidate'
   | 'validation'
-  | 'promotion'
+  | 'pull_request'
   | 'done'
 
 /** Exactly one of the two entries; serde's externally tagged `CycleInputV1`. */
@@ -127,7 +111,7 @@ export interface CycleEvent {
   detail: string
 }
 
-export type ExecutionRole = 'source' | 'baseline' | 'candidate' | 'artifact' | 'canary'
+export type ExecutionRole = 'source' | 'baseline' | 'candidate'
 export type ExecutionState = 'dispatching' | 'running' | 'imported' | 'lost'
 
 export interface CycleExecution {
@@ -208,8 +192,6 @@ export interface EvidenceIdentity {
   e2e_revision: string | null
   /** SHA-256 of the running Harness executable, as the E2E runner captured it. */
   harness_binary_sha256?: string | null
-  /** Each running worker executable the E2E captured, by worker. */
-  worker_binaries?: Record<string, string>
   /** Digest of the native subject configuration (model, provider, agent). */
   subject_sha256?: string | null
   /** Digest of every stack component but the Harness. */
@@ -321,15 +303,7 @@ export interface CycleNext {
   findings?: string[]
 }
 
-/** `promoted` and `rolled_back` are the backend's claims; the UI also requires the journal's confirmation. */
-export type OutcomeCode =
-  | 'no_coverage'
-  | 'no_action'
-  | 'budget'
-  | 'inconclusive'
-  | 'decided'
-  | 'promoted'
-  | 'rolled_back'
+export type OutcomeCode = 'no_coverage' | 'no_action' | 'budget' | 'inconclusive' | 'decided' | 'proposed'
 
 export interface CycleOutcome {
   code: OutcomeCode
@@ -417,13 +391,17 @@ export interface CycleRecord {
   triage?: Triage
   proposal?: ProposalState
   candidate?: CandidateState
-  /** The decision on the immutable rc artifact, under the same frozen plan. */
-  artifact_decision?: CycleDecision
-  /** Every promotion phase, requested and confirmed apart. */
-  promotion?: PromotionJournal
-  canary?: Canary
-  recovery?: string
-  activation_intent?: string
+  /** The accepted candidate's pull request, once opened or found. */
+  pull_request?: PullRequest
+}
+
+/** `PullRequestV1` (eval/src/pull_request.rs). `created`: opened by this cycle rather than found. */
+export interface PullRequest {
+  number: number
+  url: string
+  head_ref: string
+  head_sha: string
+  created: boolean
 }
 
 // ── triage, proposal, candidate ──
@@ -539,122 +517,6 @@ export interface CandidateState {
   candidate?: Candidate
   candidate_tree?: string
   publish?: { remote: string; branch: string; candidate_sha: string; builder_ref: string }
-}
-
-// ── promotion journal (eval/src/promotion.rs) ──
-
-export type StopKind = 'unavailable' | 'inconclusive' | 'rejected'
-export type ApprovalOutcome = 'accepted' | 'rejected' | 'inconclusive'
-
-export interface ReleasePlan {
-  worker?: string
-  kind: 'deploy' | 'finalize_release'
-  plan_id: string
-  plan_hash: string
-  expires_at: string
-  source_sha: string
-  target_version: string
-  candidate_version: string | null
-  channel: string
-  prior_next: string | null
-  prior_latest: string | null
-  preview_sha256: string
-}
-
-export interface ReleaseArtifact {
-  /** Absent in a journal from before workers were named: the Harness. */
-  worker?: string
-  version: string
-  tags: string[]
-  target: string
-  archive_url: string
-  archive_sha256: string
-  binary_sha256: string
-  source_sha: string
-  operation_id: string
-  deployment_id: string
-  build_run_id: number | null
-}
-
-export interface ComposeRequest {
-  worker?: string
-  operation_id: string
-  version: string
-  accepted: boolean
-}
-
-/** The target proved to run the expected executable. */
-export interface RunningEvidence {
-  worker?: string
-  operation_id: string
-  version: string
-  pid: number
-  binary_sha256: string
-  file: string
-  namespace: string
-}
-
-/** `PromotionPhase`, internally tagged by `phase`. */
-export type PromotionPhase =
-  | ({ phase: 'source_approved' } & {
-      candidate_id: string
-      outcome: ApprovalOutcome
-      policy_revision: string
-      base_sha: string
-      candidate_sha: string
-      candidate_tree: string
-      evidence_urls?: string[]
-      /** The workers released, in order. */
-      workers?: string[]
-    })
-  | ({ phase: 'pull_request' } & { number: number; url: string; head_ref: string; head_sha: string; created: boolean })
-  | ({ phase: 'merge_requested' } & { pull_request: number; head_sha: string; merge_sha: string | null })
-  | ({ phase: 'merged' } & {
-      pull_request: number
-      base_sha: string
-      candidate_sha: string
-      candidate_tree: string
-      merged_sha: string
-      merged_tree: string
-    })
-  | ({ phase: 'rc_planned' } & ReleasePlan)
-  | ({ phase: 'rc_confirmed' } & { plan: ReleasePlan; operation_id: string })
-  | ({ phase: 'rc_published' } & ReleaseArtifact)
-  | ({ phase: 'artifact_approved' } & {
-      worker?: string
-      outcome: ApprovalOutcome
-      policy_revision: string
-      version: string
-      source_sha: string
-      archive_sha256: string
-      binary_sha256?: string | null
-    })
-  | ({ phase: 'finalize_planned' } & ReleasePlan)
-  | ({ phase: 'finalize_confirmed' } & { plan: ReleasePlan; operation_id: string })
-  | ({ phase: 'stable_published' } & ReleaseArtifact)
-  | ({ phase: 'rollback_destination' } & {
-      worker?: string
-      version: string
-      archive_sha256: string
-      binary_sha256: string
-    })
-  | ({ phase: 'activation_requested' } & ComposeRequest)
-  | ({ phase: 'activation_confirmed' } & RunningEvidence)
-  | ({ phase: 'rollback_requested' } & ComposeRequest)
-  | ({ phase: 'rollback_confirmed' } & RunningEvidence)
-  | ({ phase: 'stopped' } & { step: string; kind: StopKind; reason: string })
-
-export interface PromotionJournal {
-  promotion_id: string
-  phases: PromotionPhase[]
-}
-
-export type CanaryOutcome = 'held' | 'violated' | 'unknown'
-
-export interface Canary {
-  execution_id: string
-  outcome: CanaryOutcome
-  reason: string
 }
 
 /** What a cycle has drawn on its budget. */

@@ -23,7 +23,7 @@ execution_id ──────────────────────�
 | `eval::executions` `{query?}` | Recent finished E2E executions a cycle can start from: each scenario's mean score and what a cycle would restore, or the cycle that already imported it. Executions a cycle dispatched are left out. |
 
 The console page (`ui/`) shows the cycles as four phases, Measure,
-Improve, Prove and Ship, with one sentence for what runs now or why a cycle
+Improve, Prove and Review, with one sentence for what runs now or why a cycle
 stopped and the setting that would let it go on. The New cycle dialog
 starts from an execution picked with `eval::executions`, or from an
 objective. Loop settings are laid out as the same ladder: each phase needs
@@ -122,7 +122,7 @@ and cannot pin a candidate. `docker` and `github` need a
   - nothing pertinent: outcome `no_action`;
   - an unusable baseline: outcome `inconclusive`.
 
-## Candidate, release and canary
+## Candidate and pull request
 
 Each part below needs its own optional configuration. When a part is
 missing, the cycle stops `inconclusive` with the exact reason, never with a
@@ -131,20 +131,14 @@ false result.
 - `candidate`: repository, `base_sha`, `worktrees_dir`, the actor's model and
   provider, and its bounds. It is checked by `eval::configure`, and it needs
   `runs_per_side` of at least 5: the sign test accepts nothing on fewer pairs.
-- `validation`: `where: docker|github`, `stack_name` and two stack templates
-  (`{commit}`, and `{version:<worker>}` for each worker an rc can be pinned
-  to; a bare `{version}` is the Harness's, and a worker this cycle does not
-  release runs its `latest`). The source template declares each worker a
-  candidate may change as a `package://<worker>` container with
-  `commit: {commit}`, so both sides build it from their own commit. A
-  change to a unit it does not build that way is never accepted: no run
-  measured it. Neither is a change no commit-built worker runs (only
-  documentation, or shared code only unbuilt workers read). A dependent
-  the stack does not build is named in the decision: not measured, never
-  released by the loop.
-- `promotion`: `artifact_target` and an explicit activation `target`
-  (`engine_url`, `namespace`, `compose_file`), with
-  `release_build_estimate_usd`.
+- `validation`: `where: docker|github`, `stack_name` and a stack template
+  with `{commit}`. It declares each worker a candidate may change as a
+  `package://<worker>` container with `commit: {commit}`, so both sides
+  build it from their own commit. A change to a unit it does not build that
+  way is never accepted: no run measured it. Neither is a change no
+  commit-built worker runs (only documentation, or shared code only unbuilt
+  workers read). A dependent the stack does not build is named in the
+  decision: not measured.
 - `judge`: `provider` and `estimated_usd`. Only ambiguous improvement
   opportunities are asked, with what each scenario expects and what each
   lost criterion asks. The cycle acts on the answer only when the choice
@@ -152,10 +146,6 @@ false result.
   A judge that does not answer is asked again on the next sweep until the
   cycle's time budget runs out.
 - `controls`: control scenarios, e.g. `minimal_path`.
-
-The release service origins and credentials come only from the
-deployment's environment: `EVAL_RELEASE_CONTROL_URL`, `EVAL_GITHUB_TOKEN` and
-`EVAL_RELEASE_CONTROL_SESSION`.
 
 After a measured baseline, or a covered and triaged source execution, the
 cycle runs these steps:
@@ -167,48 +157,23 @@ cycle runs these steps:
    `crates/<c>` and `packages/<p>` for shared code) and its dependents:
    every other unit whose non-test files read changed code, transitively,
    by a relative path (Cargo `path`, `#[path]`, `include_str!`, an import,
-   a build script) or a `workspace:` package. Its changed paths are
-   recorded and it is published to its own branch.
+   a build script, a symlink) or a `workspace:` package. Its changed paths
+   are recorded and it is published to its own branch.
 3. A source validation runs under the frozen plan.
-4. The source decision is made. Steps 5 to 11 release every worker the
-   change was measured in (its units and dependents the source stack
-   built), and only those. One the artifact template cannot pin ends
-   `decided`, delivered from its branch by hand.
-5. `main` is fast-forwarded to exactly that commit.
-6. Release Control builds each worker's rc from that commit.
-7. One artifact run pins every rc and gets its own decision, which binds
-   each worker's running executable digest.
-8. Finalization republishes each worker's same bytes.
-9. Each prior executable is validated as its rollback destination, and the
-   canary is reserved.
-10. Each stable version is activated on the target and proved by its digest,
-    one worker at a time.
-11. One canary runs on the target's own E2E and must have run every
-    activated executable.
+4. The source decision is made.
+5. An accepted change becomes a pull request from its branch to `main`,
+   ready for review, and the cycle ends `proposed`. The body carries the
+   evidence: objective, hypothesis and change, each criterion on both sides
+   with its runs and result, the E2E executions, the transcript findings,
+   where the change runs (measured and not measured) and what the cycle
+   spent. A pull request already open or merged for the same head is
+   reused. A lost answer is asked again on the next sweep; a refusal (no
+   `EVAL_GITHUB_TOKEN`, a branch that moved) ends `decided` with the reason,
+   the change left on its branch.
 
-A target Engine that does not answer is waited for on the sweep at any of
-these steps, within the cycle's limits; nothing is sent to it before it
-does.
-
-The canary ends one of three ways:
-
-- **Held:** the cycle is `promoted`. Any loss of a measured condition is a
-  violation; the target's own stack, E2E revision and engine are not
-  compared with the baseline's, the activated digest is.
-- **Violated:** a proved rollback of every worker, last activated first,
-  then `rolled_back`.
-- **Unknown:** the observation stays pending on the activated target until
-  a cycle limit, which restores the prior. It is never claimed stable and no
-  new canary is started.
-
-A cancel or a budget limit after an activation request restores and proves
-the prior executable before the cycle ends. A rollback pin that ends or
-runs another executable is pinned again, up to three attempts. A Compose
-call that errors is asked again on the next sweep; an activation whose
-process exits is restored like a failed one; a worker whose restoration is
-refused (the target runs something the loop did not pin) never keeps the
-other workers from theirs. See `SPECIFICATION.md` and
-`IMPLEMENTATION.md`.
+Nothing is merged, released or activated by the loop: a person reviews and
+merges. The GitHub token comes only from the deployment's environment
+(`EVAL_GITHUB_TOKEN`). See `SPECIFICATION.md` and `IMPLEMENTATION.md`.
 
 ## Decision and budget
 
@@ -222,8 +187,8 @@ Decisions are made once, in code, by the frozen plan (`e2e-loop-rules/5`):
 - Effort counts only on completed, passed runs.
 - A cost reduction is never accepted while any cost is unknown.
 
-Every dispatch is reserved first: proposal, actor, judge, E2E runs (counting
-retries) and official builds. A reservation that is found again is never
+Every dispatch is reserved first: proposal, actor, judge and E2E runs
+(counting retries). A reservation that is found again is never
 dispatched twice. An unreported cost stays charged at its estimate.
 The sweep ends a waiting cycle only once a limit is passed (time at it):
 work reserved within the budget runs. The cycle's actors and executions
@@ -254,7 +219,7 @@ migrated or deleted.
 ## Checks
 
 ```
-cd eval && SKIP_UI_BUILD=1 cargo test --lib --test flow --test lifecycle --test decision --test budget --test schemas --test manifest --test candidate --test promotion
+cd eval && SKIP_UI_BUILD=1 cargo test --lib --test flow --test lifecycle --test decision --test budget --test schemas --test manifest --test candidate --test pull_request
 ```
 
 To regenerate the schema goldens, run the same command with
