@@ -129,11 +129,13 @@ mod tests {
 
     #[test]
     fn test_resolve_init_binary_env_var() {
+        // Held like every other test that touches III_INIT_PATH, so they do not race.
+        let _g = crate::cli::test_support::lock_home();
         let tmp = TempDir::new().unwrap();
         let init_path = tmp.path().join("iii-init");
         std::fs::write(&init_path, b"fake-init").unwrap();
 
-        // SAFETY: test-only, single-threaded access to env var
+        // SAFETY: the env lock above serializes access to the variable.
         unsafe {
             std::env::set_var("III_INIT_PATH", init_path.to_str().unwrap());
         }
