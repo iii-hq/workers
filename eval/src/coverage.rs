@@ -401,8 +401,12 @@ pub fn select(
 }
 
 /// What a source execution's own runs show was lost, as a criterion to
-/// restore: the criterion with the lowest mean award, else the pass rate
-/// when a run did not complete and pass. `None`: nothing measurable.
+/// restore: among the criteria not awarded in full on average, first those
+/// some run was awarded in full (the subject is shown to reach them; one no
+/// run reached may be beyond any change, as `single_turn` is for a task
+/// that needs one call and a reply), then the lowest mean award; else the
+/// pass rate when a run did not complete and pass. `None`: nothing
+/// measurable.
 pub(crate) fn lost(
     bundle: &Value,
     scenario_id: &str,
@@ -416,15 +420,23 @@ pub(crate) fn lost(
     }
     let worst = awards
         .iter()
-        .map(|(id, values)| (*id, values.iter().sum::<f64>() / values.len() as f64))
-        .filter(|(_, mean)| *mean < 1.0)
-        .min_by(|left, right| left.1.total_cmp(&right.1));
-    if let Some((id, mean)) = worst {
+        .map(|(id, values)| {
+            let mean = values.iter().sum::<f64>() / values.len() as f64;
+            let full = values.iter().filter(|award| **award >= 1.0).count();
+            (*id, mean, full, values.len())
+        })
+        .filter(|(_, mean, _, _)| *mean < 1.0)
+        .min_by(|left, right| {
+            (left.2 == 0)
+                .cmp(&(right.2 == 0))
+                .then(left.1.total_cmp(&right.1))
+        });
+    if let Some((id, mean, full, runs)) = worst {
         return Some((
             CriterionMetricV1::CriterionScore,
             Some(id.to_string()),
             format!(
-                "criterion {id} of {scenario_id} was awarded {:.0}% on average",
+                "criterion {id} of {scenario_id} was awarded {:.0}% on average, in full on {full} of {runs} run(s)",
                 mean * 100.0
             ),
         ));
@@ -634,4 +646,39 @@ pub fn need_goal(
 ) -> Option<(CriterionMetricV1, DirectionV1, Option<String>)> {
     let need = NEEDS.iter().find(|need| need.id == coverage.need)?;
     Some((need.metric, need.direction, None))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    fn bundle(awards: &[(&str, &[u32])]) -> serde_json::Value {
+        let runs = (0..awards[0].1.len())
+            .map(|at| {
+                json!({"run_id": format!("r{at}"), "technical": "valid", "criteria": awards
+                    .iter()
+                    .map(|(id, values)| json!({"id": id, "possible": 10, "awarded": values[at]}))
+                    .collect::<Vec<_>>()})
+            })
+            .collect::<Vec<_>>();
+        json!({"detail": {"reports": [{"report": {"scenarios": [{"scenario_id": "s", "runs": runs}]}}]}})
+    }
+
+    #[test]
+    fn a_loss_some_run_already_reached_comes_before_one_no_run_reached() {
+        // minimal_path on Opus 5.5: single_turn never, at_most_two_turns on 2 of 5.
+        let source = bundle(&[
+            ("at_most_two_turns", &[10, 0, 10, 0, 0]),
+            ("single_turn", &[0, 0, 0, 0, 0]),
+        ]);
+        let (_, id, why) = super::lost(&source, "s").unwrap();
+        assert_eq!(id.as_deref(), Some("at_most_two_turns"), "{why}");
+        assert!(why.ends_with("in full on 2 of 5 run(s)"), "{why}");
+        // No run reached either: the lowest mean, as before.
+        let source = bundle(&[("a", &[5, 5]), ("b", &[0, 0])]);
+        assert_eq!(super::lost(&source, "s").unwrap().1.as_deref(), Some("b"));
+        // Among reached losses, the lowest mean.
+        let source = bundle(&[("a", &[10, 5]), ("b", &[10, 0]), ("c", &[0, 0])]);
+        assert_eq!(super::lost(&source, "s").unwrap().1.as_deref(), Some("b"));
+    }
 }
