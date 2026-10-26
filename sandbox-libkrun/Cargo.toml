@@ -68,7 +68,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 thiserror = "2"
 schemars = "0.8"
 # sandbox::exec shlex-splits a shell-style `cmd` into argv.
-shlex = "1"
+shlex = "2"
 
 [build-dependencies]
 sha2 = "0.11"
