@@ -183,10 +183,30 @@ fn bundle(
             })
             .collect()
     };
+    // Like the real E2E: the summary records each container's pin, and the
+    // stack YAML it was sent is replaced by the one it assembled.
+    let mut parameters = parameters.clone();
+    let stack: Vec<Value> = parameters["stack"]["yaml"]
+        .as_str()
+        .and_then(|yaml| serde_yaml::from_str::<serde_yaml::Value>(yaml).ok())
+        .and_then(|stack| stack["containers"].as_mapping().cloned())
+        .map(|containers| {
+            containers
+                .iter()
+                .map(|(name, container)| {
+                    json!({"name": name.as_str(), "commit": container["commit"].as_str(),
+                        "requested": container["version"].as_str(), "source": "package"})
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(yaml) = parameters["stack"]["yaml"].as_str() {
+        parameters["stack"]["yaml"] = json!(format!("# assembled by the E2E\n{yaml}"));
+    }
     json!({"manifest": {"executions": [{"id": id, "label": label, "status": status,
             "run_id": id, "attempt": 1, "started_at": "2099-01-01T00:00:00Z",
             "completed_at": if status == "running" { "" } else { "2099-01-01T00:10:00Z" },
-            "parameters": parameters}]},
+            "parameters": parameters, "stack": stack}]},
         "detail": {"reports": reports}})
 }
 

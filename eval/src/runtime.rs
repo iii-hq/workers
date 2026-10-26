@@ -3,6 +3,7 @@
 //! step runs on the `eval-run` queue under the cycle's lock and writes the
 //! record with compare-and-set; the sweep recovers lost steps and events.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use iii_sdk::protocol::TriggerRequest;
@@ -1650,11 +1651,65 @@ async fn analysis_stage(
 
 /// (sha256 of the frozen template, sha256 of the recorded stack YAML with
 /// only `pin` replaced by `placeholder`); unknown when nothing was recorded.
+/// The pins of the frozen template with its commit put in (`expected`) and
+/// the pins the execution recorded for the same containers, as digests of
+/// `{container: "commit:<sha>" | "version:<v>"}`. Pins, not YAML: the E2E
+/// replaces the YAML it was sent by the one it assembled (path:// builds,
+/// iii and runner pinned), so the YAML never matches; its summary's `stack`
+/// keeps each container's commit or requested version.
 fn stack_proof(evidence: &ExecutionEvidenceV1, expected: &str) -> (Option<String>, Option<String>) {
+    let digest = |pins: &BTreeMap<String, String>| {
+        ids::sha256_text(&serde_json::to_string(pins).unwrap_or_default())
+    };
+    let pinned = |commit: Option<&str>, version: Option<String>| {
+        commit
+            .map(|commit| format!("commit:{commit}"))
+            .or(version.map(|version| format!("version:{version}")))
+    };
+    let Some(expected) = serde_yaml::from_str::<serde_yaml::Value>(expected)
+        .ok()
+        .and_then(|stack| {
+            stack["containers"].as_mapping().map(|containers| {
+                containers
+                    .iter()
+                    .map(|(name, container)| {
+                        let version = match &container["version"] {
+                            serde_yaml::Value::String(version) => Some(version.clone()),
+                            serde_yaml::Value::Number(version) => Some(version.to_string()),
+                            _ => None,
+                        };
+                        Some((
+                            name.as_str()?.to_string(),
+                            pinned(container["commit"].as_str(), version)?,
+                        ))
+                    })
+                    .collect::<Option<BTreeMap<_, _>>>()
+            })
+        })
+        .flatten()
+    else {
+        return (Some(ids::sha256_text(expected.trim())), None);
+    };
     let observed = evidence::summary(&evidence.bundle, &evidence.execution_id)
-        .and_then(|summary| evidence::text_at(summary, "/parameters/stack/yaml"))
-        .map(|yaml| ids::sha256_text(yaml.trim()));
-    (Some(ids::sha256_text(expected.trim())), observed)
+        .and_then(|summary| summary["stack"].as_array())
+        .and_then(|recorded| {
+            expected
+                .keys()
+                .map(|name| {
+                    let entry = recorded
+                        .iter()
+                        .find(|entry| entry["name"] == name.as_str())?;
+                    Some((
+                        name.clone(),
+                        pinned(
+                            entry["commit"].as_str(),
+                            entry["requested"].as_str().map(str::to_string),
+                        )?,
+                    ))
+                })
+                .collect::<Option<BTreeMap<_, _>>>()
+        });
+    (Some(digest(&expected)), observed.as_ref().map(digest))
 }
 
 /// [`transition`] whose target status, stage and detail are decided inside
