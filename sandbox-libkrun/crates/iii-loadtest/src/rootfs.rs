@@ -26,7 +26,7 @@ use anyhow::{Context, Result, bail};
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct RootfsArgs {
-    /// Directory to create (or refresh).
+    /// Directory to create (or replace, when an earlier `rootfs` built it).
     #[arg(long)]
     pub out: PathBuf,
 
@@ -43,11 +43,31 @@ pub struct RootfsArgs {
 pub const BIN_DIR: &str = "opt/bench/bin";
 
 pub fn build(args: &RootfsArgs) -> Result<()> {
-    let out = &args.out;
     let init = args
         .init
         .clone()
         .context("no iii-init: pass --init (sandbox-libkrun/scripts/build-init.sh builds it)")?;
+    // Built in a fresh `<out>.new`, then renamed over `out`, never refreshed
+    // in place: a VM serves `out` writable, and writing through a symlink its
+    // guest left there (at `etc/passwd`, or as a parent directory) would
+    // land outside it.
+    let name = args
+        .out
+        .file_name()
+        .with_context(|| format!("{} has no file name", args.out.display()))?;
+    // `out` is deleted below: never a directory this tool did not build.
+    let other = std::fs::read_dir(&args.out).is_ok_and(|mut d| d.next().is_some());
+    if other && args.out.join("init.krun").symlink_metadata().is_err() {
+        bail!(
+            "{} is not empty and holds no rootfs: pick another --out",
+            args.out.display()
+        );
+    }
+    let mut staged = name.to_owned();
+    staged.push(".new");
+    let out = &args.out.with_file_name(staged);
+    // Left by a build that failed halfway.
+    remove_tree(out)?;
 
     for dir in [
         "bin", "dev", "etc", "proc", "run", "sys", "tmp", "root", BIN_DIR,
@@ -77,7 +97,20 @@ pub fn build(args: &RootfsArgs) -> Result<()> {
     std::fs::write(out.join("etc/passwd"), "root:x:0:0:root:/root:/bin/sh\n")?;
     std::fs::write(out.join("etc/group"), "root:x:0:\n")?;
     std::fs::write(out.join("etc/hosts"), "127.0.0.1 localhost\n")?;
-    Ok(())
+
+    remove_tree(&args.out)?;
+    std::fs::rename(out, &args.out)
+        .with_context(|| format!("move {} to {}", out.display(), args.out.display()))
+}
+
+/// Removes `dir` and everything in it, following no symlink; absent is fine.
+fn remove_tree(dir: &Path) -> Result<()> {
+    match std::fs::remove_dir_all(dir) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(e).with_context(|| format!("remove {}", dir.display()))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// The absolute paths `ldd` lists for `bin`, the loader included.
@@ -123,9 +156,6 @@ fn copy_file(from: &Path, to: &Path) -> Result<()> {
     if let Some(parent) = to.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    // Replace rather than overwrite: a binary the guest still has open from
-    // an earlier run keeps its old inode.
-    let _ = std::fs::remove_file(to);
     std::fs::copy(from, to)
         .with_context(|| format!("copy {} to {}", from.display(), to.display()))?;
     let mode = std::fs::metadata(from)?.permissions().mode();
@@ -136,6 +166,61 @@ fn copy_file(from: &Path, to: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A rebuild over a rootfs a guest wrote to follows none of its symlinks.
+    #[test]
+    fn a_rebuild_writes_through_no_symlink_the_guest_left() {
+        let dir = std::env::temp_dir().join(format!("iii-loadtest-rootfs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = dir.join("rootfs");
+        let outside = dir.join("outside");
+        std::fs::create_dir_all(out.join("etc")).unwrap();
+        std::fs::write(out.join("init.krun"), "an earlier build").unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("passwd"), "host\n").unwrap();
+        std::os::unix::fs::symlink(outside.join("passwd"), out.join("etc/passwd")).unwrap();
+        std::os::unix::fs::symlink(&outside, out.join("bin")).unwrap();
+        let init = dir.join("init");
+        std::fs::write(&init, "init").unwrap();
+
+        build(&RootfsArgs {
+            out: out.clone(),
+            init: Some(init),
+            bins: Vec::new(),
+        })
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(outside.join("passwd")).unwrap(),
+            "host\n"
+        );
+        assert!(!outside.join("sh").exists());
+        assert!(!out.join("etc/passwd").is_symlink());
+        assert!(out.join("bin/sh").is_file());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A directory that holds no rootfs is never replaced.
+    #[test]
+    fn a_build_leaves_a_directory_that_is_no_rootfs() {
+        let dir = std::env::temp_dir().join(format!("iii-loadtest-other-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("keep"), "mine").unwrap();
+        let init = std::env::temp_dir().join(format!("iii-loadtest-init-{}", std::process::id()));
+        std::fs::write(&init, "init").unwrap();
+
+        let built = build(&RootfsArgs {
+            out: dir.clone(),
+            init: Some(init.clone()),
+            bins: Vec::new(),
+        });
+
+        assert!(built.is_err());
+        assert_eq!(std::fs::read_to_string(dir.join("keep")).unwrap(), "mine");
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::remove_file(&init).unwrap();
+    }
 
     #[test]
     fn ldd_output_gives_every_absolute_path() {
