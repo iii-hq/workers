@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -298,14 +299,9 @@ impl VmLauncher for VmBootLauncher {
             .id()
             .ok_or_else(|| SandboxError::BootFailed("child exited immediately".to_string()))?;
 
-        // Detach — the child is the VM process; let it run independently.
-        // Dropping `tokio::process::Child` with its default `kill_on_drop:
-        // false` releases tokio's bookkeeping (fds + the background reap
-        // future) without signaling the process. `sandbox::stop` later
-        // sends SIGTERM/SIGKILL by `vm_pid` directly, so we don't need
-        // the handle. (mem::forget here would leak the reap state
-        // permanently, once per `sandbox::create`.)
-        drop(child);
+        // A waiter task reaps the VM when it exits; `sandbox::stop` signals
+        // `vm_pid` only until then (see `signal_vm`).
+        watch_vm(child, vm_pid);
         tracing::info!(
             ms = t_spawn.elapsed().as_millis() as u64,
             pid = vm_pid,
@@ -679,27 +675,53 @@ impl ShellRunner for ShellProtoRunner {
     }
 }
 
+/// Pids of the VMs this process spawned and has not reaped yet. The stopper
+/// signals only these: once reaped, a pid may name another process. Global
+/// because every handler builds its own `SignalStopper`.
+static UNREAPED_VMS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+fn unreaped_vms() -> MutexGuard<'static, Vec<u32>> {
+    UNREAPED_VMS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Hand the VM `child` (pid `pid`) to a task that reaps it on exit, and keep
+/// its pid signalable until then.
+fn watch_vm(mut child: tokio::process::Child, pid: u32) {
+    unreaped_vms().push(pid);
+    tokio::spawn(async move {
+        let _ = child.wait().await;
+        unreaped_vms().retain(|&p| p != pid);
+    });
+}
+
+/// Send `signal` to `pid` if it is a VM not reaped yet.
+/// shortcut: a VM reaped but not yet removed from the list can still be
+/// signaled in that microsecond gap; move to a pidfd if that ever matters.
+fn signal_vm(pid: u32, signal: nix::sys::signal::Signal) {
+    if unreaped_vms().contains(&pid) {
+        let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), signal);
+    }
+}
+
 pub struct SignalStopper;
 
 #[async_trait::async_trait]
 impl VmStopper for SignalStopper {
     async fn stop(&self, vm_pid: u32) -> Result<(), SandboxError> {
-        use nix::sys::signal::{Signal, kill};
-        use nix::unistd::Pid;
+        use nix::sys::signal::Signal;
 
         let t_stop = Instant::now();
-        let pid = Pid::from_raw(vm_pid as i32);
 
         // SIGTERM first so iii-init/libkrun can close cleanly when they
         // do respond. The grace here is intentionally short: the sandbox
         // VM's upper layer is tmpfs and discarded on reap, so "allow
         // flush" isn't a real use case. Every millisecond of grace is
         // visible in `sandbox run` end-to-end latency.
-        let _ = kill(pid, Signal::SIGTERM);
+        signal_vm(vm_pid, Signal::SIGTERM);
 
         tokio::time::sleep(Duration::from_millis(STOP_GRACE_MS)).await;
 
-        let _ = kill(pid, Signal::SIGKILL);
+        signal_vm(vm_pid, Signal::SIGKILL);
 
         tracing::info!(
             ms = t_stop.elapsed().as_millis() as u64,
@@ -794,6 +816,36 @@ mod tests {
         let wire = serde_json::to_value(&resp).unwrap();
         assert_eq!(wire["stdout_truncated"], true);
         assert_eq!(wire["stderr_truncated"], false);
+    }
+
+    /// The stopper signals only a VM this process spawned and has not reaped:
+    /// any other pid, such as a reaped VM's reused one, is left alone.
+    #[tokio::test]
+    async fn the_stopper_signals_only_unreaped_vms() {
+        let mut other = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        SignalStopper.stop(other.id()).await.unwrap();
+        let untouched = other.try_wait().unwrap().is_none();
+        other.kill().unwrap();
+        other.wait().unwrap();
+        assert!(untouched, "signaled a pid that is no live VM");
+
+        let vm = tokio::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = vm.id().unwrap();
+        watch_vm(vm, pid);
+        SignalStopper.stop(pid).await.unwrap();
+        for _ in 0..100 {
+            if !unreaped_vms().contains(&pid) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("the VM was not stopped and reaped");
     }
 
     #[test]
