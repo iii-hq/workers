@@ -118,6 +118,9 @@ pub enum SandboxProbe {
     Ready,
     /// The engine answered and there is no adapter.
     Missing,
+    /// An adapter is connected but implements another contract major, so the
+    /// router refuses every call with S302; carries why.
+    Incompatible(String),
     /// The engine did not answer; carries its raw error.
     Unverified(String),
 }
@@ -130,8 +133,16 @@ pub enum SandboxProbe {
 pub async fn probe_sandbox(engine: &dyn Engine) -> SandboxProbe {
     const ROUTER: &str = "sandbox::adapter::info";
     match engine.call(ROUTER.to_string(), json!({}), 5_000).await {
-        Ok(v) if v.get("info").is_some_and(|i| !i.is_null()) => SandboxProbe::Ready,
-        Ok(_) => SandboxProbe::Missing,
+        Ok(v) => match v.get("info").filter(|i| !i.is_null()) {
+            None => SandboxProbe::Missing,
+            Some(info) if info.pointer("/contract/major") == v.pointer("/contract/major") => {
+                SandboxProbe::Ready
+            }
+            Some(info) => SandboxProbe::Incompatible(format!(
+                "adapter implements sandbox contract {}, but this engine needs major {}",
+                info["contract"], v["contract"]["major"]
+            )),
+        },
         Err(raw) if classify_probe_error(&raw, ROUTER) == ProbeOutcome::Free => {
             let legacy = engine
                 .call(
@@ -444,6 +455,26 @@ mod tests {
         );
         assert_eq!(probe_sandbox(fake.as_ref()).await, SandboxProbe::Ready);
         assert_eq!(called_ids(&fake), [ADAPTER_INFO]);
+    }
+
+    #[tokio::test]
+    async fn probe_incompatible_when_the_adapter_major_differs() {
+        let fake = FakeEngine::new();
+        fake.with_response(
+            ADAPTER_INFO,
+            router_reply(json!({
+                "adapter": "sandbox-libkrun",
+                "adapter_version": "2.0.0",
+                "contract": { "major": 2, "minor": 0 },
+            })),
+        );
+        assert_eq!(
+            probe_sandbox(fake.as_ref()).await,
+            SandboxProbe::Incompatible(
+                r#"adapter implements sandbox contract {"major":2,"minor":0}, but this engine needs major 1"#
+                    .into()
+            )
+        );
     }
 
     #[tokio::test]

@@ -130,6 +130,10 @@ async fn main() -> Result<()> {
             "iii-sandbox is NOT installed on this engine — every sandbox-code-runner \
              call will fail until an operator runs `iii trigger compose::add worker=iii-sandbox`"
         ),
+        SandboxProbe::Incompatible(reason) => tracing::warn!(
+            "{reason}: every sandbox-code-runner call will fail with S302 until a \
+             compatible sandbox adapter release is installed"
+        ),
         SandboxProbe::Unverified(raw) => {
             tracing::warn!(error = %raw, "could not verify iii-sandbox presence");
         }
