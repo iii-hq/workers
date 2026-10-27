@@ -340,13 +340,16 @@ renders what the caller gets back.
   block: text verbatim, non-blank thinking as `[thinking] <text>` lines (where
   an agent notes what it read), `function_call`s as terse
   `[tool_call] <id> <args>` one-liners; other block kinds dropped.
-- **`strip_media(head, max_chars)`** — a copy fed to the summariser with
-  images replaced by `[image stripped]` everywhere and `function_result` text
-  truncated to `max_result_tokens × 4` chars (+ `... [truncated]`): the cap the
-  agent saw each result under, not the prune threshold, which cut away
-  whatever a result said past its first 2,000 chars. The original transcript
-  the caller holds is never mutated. This keeps base64 blobs and one giant
-  tool dump from dominating the summariser's input.
+- **`strip_media(head)`** — a copy fed to the summariser with images replaced
+  by `[image stripped]` everywhere. The original transcript the caller holds
+  is never mutated. `summarize_head` then caps each function result at the
+  `max_result_tokens` the caller's results are held to (assemble's, after a
+  request's override; `context::compact`'s configured one; `0` none), with
+  the cap pass assemble uses: the whole result across its blocks, head +
+  marker + tail. The summariser sees each result as the agent did, not cut
+  at the prune threshold, which lost whatever a result said past its first
+  2,000 chars. This keeps base64 blobs and one giant tool dump from
+  dominating the summariser's input.
 - **`render_system_prompt(base, summary)`** — what assemble returns: the base
   prompt, then a `# Conversation summary` section with the summary. Empty base
   → just the section; no summary → just the base.

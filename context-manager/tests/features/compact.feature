@@ -186,8 +186,9 @@ Feature: context::compact — summarise the head, keep a verbatim tail
     And the summariser user prompt does not contain "AAAA"
 
   # Prevents: a single huge tool output dominating the summariser's
-  # input — function outputs are truncated to the max_result_tokens cap first.
-  Scenario: function outputs over the result cap are truncated before summarisation
+  # input — function outputs are capped at max_result_tokens first, as
+  # assemble caps them.
+  Scenario: function outputs over the result cap are capped before summarisation
     Given the router knows model "big" with context window 200000 and max output 8000
     And a user message "start"
     And an assistant function call "c1" to "shell::run"
@@ -196,7 +197,7 @@ Feature: context::compact — summarise the head, keep a verbatim tail
     And a user message "q3"
     When I compact the history with model "big"
     Then the response field "status" is "ok"
-    And the summariser user prompt contains "... [truncated]"
+    And the summariser user prompt contains "result capped"
 
   # Prevents: the summary losing what a result said past the prune
   # threshold (max_output_chars) when the agent wrote none of it down.
@@ -209,7 +210,7 @@ Feature: context::compact — summarise the head, keep a verbatim tail
     And a user message "q3"
     When I compact the history with model "big"
     Then the response field "status" is "ok"
-    And the summariser user prompt does not contain "... [truncated]"
+    And the summariser user prompt does not contain "result capped"
 
   # Prevents: the summariser running on a surprise model — it must run
   # on exactly the model the caller passed.

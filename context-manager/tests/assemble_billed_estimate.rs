@@ -77,12 +77,23 @@ async fn assemble_messages(
     messages: Vec<Value>,
     request_overhead_tokens: u64,
 ) -> Value {
+    let options =
+        json!({ "reserved_tokens": RESERVED, "request_overhead_tokens": request_overhead_tokens });
+    assemble_with_options(resolver, summarizer, messages, options).await
+}
+
+async fn assemble_with_options(
+    resolver: Arc<FakeModelResolver>,
+    summarizer: Arc<FakeSummarizer>,
+    messages: Vec<Value>,
+    options: Value,
+) -> Value {
     let request = serde_json::from_value(json!({
         "messages": messages,
         "model": { "id": "deepseek-flash", "provider": "deepseek",
                    "limits": { "context_window": 1_000_000, "max_output_tokens": 384_000 } },
         "system_prompt": "You are an iii agent worker.",
-        "options": { "reserved_tokens": RESERVED, "request_overhead_tokens": request_overhead_tokens },
+        "options": options,
     }))
     .unwrap();
     serde_json::to_value(
@@ -241,6 +252,34 @@ async fn markers_past_the_prune_threshold_reach_the_summary_without_notes() {
             "segment {i}'s marker never reached the summariser"
         );
     }
+}
+
+#[tokio::test]
+async fn a_request_without_a_result_cap_reaches_the_summariser_whole() {
+    // The first document runs to 100,000 chars, its marker past the
+    // configured cap (20,000 tokens, 80,000 chars); the request disables it.
+    let mut messages = unnoted_long_turn(48);
+    let text = format!("{}{}", "a3f9 ".repeat(20_000), marker(0));
+    messages[2]["content"] = json!([{ "type": "text", "text": text }]);
+    let summarizer = Arc::new(FakeSummarizer::new());
+    let response = assemble_with_options(
+        Arc::new(FakeModelResolver::billing(2.25)),
+        summarizer.clone(),
+        messages,
+        json!({ "reserved_tokens": RESERVED, "max_result_tokens": 0 }),
+    )
+    .await;
+
+    assert_eq!(response["applied"]["compacted"], true);
+    let prompts: String = summarizer
+        .calls()
+        .iter()
+        .map(|call| call.user_prompt.as_str())
+        .collect();
+    assert!(
+        prompts.contains(&marker(0)),
+        "the summariser cut a result the agent saw whole"
+    );
 }
 
 #[tokio::test]

@@ -425,6 +425,7 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
             options.tail_turns.unwrap_or(config.tail_turns),
             &lease_key,
             options.previous_summary.as_deref(),
+            max_result_tokens,
         )
         .await
         {
@@ -641,6 +642,7 @@ async fn try_compact(
     tail_turns: usize,
     lease_key: &str,
     previous_summary: Option<&str>,
+    max_result_tokens: u64,
 ) -> Option<CompactionOutcome> {
     let config = deps.config().await;
     let leases = deps.leases().await;
@@ -672,6 +674,7 @@ async fn try_compact(
             model,
             head,
             usable_budget,
+            max_result_tokens,
             PromptSteering {
                 previous_summary,
                 instructions: None,

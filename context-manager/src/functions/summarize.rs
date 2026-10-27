@@ -2,6 +2,7 @@
 use std::time::Duration;
 
 use crate::core::estimate::{estimator_for_model, Estimator};
+use crate::core::prune::cap_results_with_sizes;
 use crate::core::summary::{build_system_prompt, render_user_prompt, strip_media};
 use crate::ports::{Deps, SummarizeError, SummarizeRequest};
 use crate::types::{AgentMessage, ContentBlock, ModelInput};
@@ -16,15 +17,26 @@ pub(super) struct PromptSteering<'a> {
     pub instructions: Option<&'a str>,
 }
 
+/// `max_result_tokens` is the cap the caller's results are held to (`0`
+/// none): assemble's, after a request's override, or the configured one.
 pub(super) async fn summarize_head(
     deps: &Deps,
     model: &ModelInput,
     head: &[AgentMessage],
     input_budget: u64,
+    max_result_tokens: u64,
     steering: PromptSteering<'_>,
 ) -> Result<String, SummarizeError> {
     let config = deps.config().await;
-    let stripped = strip_media(head, result_chars(config.max_result_tokens));
+    let mut stripped = strip_media(head);
+    // Each result as the agent saw it: under the same cap, whole across its
+    // blocks, head and tail kept. Cutting at the prune threshold dropped
+    // whatever a result said past its first 2,000 chars.
+    if max_result_tokens > 0 {
+        let estimator = estimator_for_model(&model.id);
+        let mut sizes: Vec<u64> = stripped.iter().map(|m| estimator.message(m)).collect();
+        cap_results_with_sizes(&mut stripped, &mut sizes, max_result_tokens, estimator);
+    }
     let prompt = render_user_prompt(&stripped);
     // One deadline for the entire pipeline, not a fresh full allowance per chunk.
     // Finish before the lease expires so another caller cannot overlap this work.
@@ -38,19 +50,6 @@ pub(super) async fn summarize_head(
     tokio::time::timeout(Duration::from_millis(timeout_ms), operation)
         .await
         .map_err(|_| SummarizeError::Failed("summary pipeline exceeded its time budget".into()))?
-}
-
-/// Each result as the agent saw it: under the `max_result_tokens` cap, in the
-/// estimator's four chars a token. Cutting at the prune threshold instead
-/// dropped whatever a result said past its first 2,000 chars. `0` disables
-/// the cap, here as in assemble.
-fn result_chars(max_result_tokens: u64) -> usize {
-    match max_result_tokens {
-        0 => usize::MAX,
-        tokens => usize::try_from(tokens)
-            .unwrap_or(usize::MAX)
-            .saturating_mul(4),
-    }
 }
 
 async fn summarize_prompt(
@@ -204,12 +203,6 @@ fn fitting_prefix(estimator: &dyn Estimator, system: &str, text: &str, budget: u
 mod tests {
     use super::*;
     use crate::core::estimate::HeuristicEstimator;
-
-    #[test]
-    fn results_reach_the_summariser_under_the_result_cap() {
-        assert_eq!(result_chars(20_000), 80_000);
-        assert_eq!(result_chars(0), usize::MAX);
-    }
 
     #[test]
     fn fitting_prefix_accounts_for_escaping_and_never_splits_unicode() {

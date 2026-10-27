@@ -139,6 +139,51 @@ fn single_tool_heavy_turn(spawns: usize, result_chars: usize) -> Vec<Value> {
     messages
 }
 
+/// A result answered in several text blocks, each under the summariser's
+/// per-block cut, together well over `max_result_tokens` (20,000).
+#[tokio::test]
+async fn a_result_split_across_blocks_reaches_the_summariser_under_the_result_cap() {
+    let blocks: Vec<Value> = (0..5)
+        .map(|i| json!({ "type": "text", "text": format!("{i}").repeat(60_000) }))
+        .collect();
+    let messages = vec![
+        user("Collect the shards."),
+        call("c0", "shards::read"),
+        json!({
+            "role": "function_result", "function_call_id": "c0", "function_id": "shards::read",
+            "content": blocks, "timestamp": 4
+        }),
+        assistant("Collected."),
+        user("q2"),
+        assistant("a2"),
+        user("q3"),
+    ];
+
+    let summarizer = Arc::new(FakeSummarizer::new());
+    let response = compact_json(
+        &deps(summarizer.clone()),
+        &messages,
+        inline_model(),
+        json!({}),
+    )
+    .await;
+
+    assert_eq!(response["status"], "ok", "{response}");
+    let prompt: String = summarizer
+        .calls()
+        .iter()
+        .map(|call| call.user_prompt.as_str())
+        .collect();
+    // Capped as a whole, as assemble caps it: head, marker, tail.
+    assert!(prompt.contains("result capped"), "no cap marker");
+    assert!(prompt.contains("0000") && prompt.contains("4444"));
+    assert!(
+        HeuristicEstimator.text(&prompt) <= 20_000 + 1_000,
+        "{} estimated tokens reached the summariser",
+        HeuristicEstimator.text(&prompt)
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The verbatim-tail selection
 // ---------------------------------------------------------------------------
