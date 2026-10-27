@@ -4,14 +4,16 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! OCI image-ref helper for the rootfs cache: [`canonical_cache_key`] strips
+//! OCI image-ref helpers for the rootfs cache: [`canonical_cache_key`] strips
 //! any `@sha256:...` suffix before hashing so pinned and unpinned variants of
-//! the same image share one cache dir.
+//! the same image can share one cache dir, and [`pinned_digest`] returns the
+//! pin the cache checks before sharing it.
 
 /// Return the portion of `image_ref` that should be used as the cache-dir
 /// hash input. Strips any trailing `@sha256:...` so `foo:latest` and
 /// `foo:latest@sha256:abc` resolve to the same cache dir, and a pinned ref
-/// doesn't re-pull an image the cache already holds.
+/// doesn't re-pull an image the cache already holds (as long as that image
+/// is the pinned one: see `rootfs_cache::canonical_path`).
 ///
 /// Examples:
 /// - `foo:latest` -> `foo:latest`
@@ -23,6 +25,11 @@ pub(crate) fn canonical_cache_key(image_ref: &str) -> &str {
         .split_once("@sha256:")
         .map(|(lhs, _)| lhs)
         .unwrap_or(image_ref)
+}
+
+/// The `sha256:...` digest `image_ref` is pinned to, if any.
+pub(crate) fn pinned_digest(image_ref: &str) -> Option<&str> {
+    image_ref.find("@sha256:").map(|at| &image_ref[at + 1..])
 }
 
 #[cfg(test)]
@@ -60,6 +67,16 @@ mod tests {
         let unpinned = "docker.io/andersonofl/todo-worker:latest";
         let pinned = "docker.io/andersonofl/todo-worker:latest@sha256:aabbcc";
         assert_eq!(canonical_cache_key(unpinned), canonical_cache_key(pinned));
+    }
+
+    #[test]
+    fn pinned_digest_is_the_part_after_the_at() {
+        assert_eq!(
+            pinned_digest("docker.io/foo/bar:latest@sha256:abc"),
+            Some("sha256:abc")
+        );
+        assert_eq!(pinned_digest("foo@sha256:abc"), Some("sha256:abc"));
+        assert_eq!(pinned_digest("foo:latest"), None);
     }
 
     #[test]

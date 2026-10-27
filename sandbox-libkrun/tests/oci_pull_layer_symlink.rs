@@ -275,6 +275,29 @@ async fn benign_layer_writes_regular_config_file() {
     assert_config_is_regular_file(&out.dest, &config);
 }
 
+/// The rootfs cache records what the pull returns and lets a digest pin
+/// reuse the rootfs only when the pin is listed, so the pull must return
+/// the digest a pin of this image names, for a tag and for the pin itself.
+#[tokio::test(flavor = "multi_thread")]
+async fn pull_returns_the_manifest_digest_a_pin_names() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mock = build_mock(layer(None), b"{}".to_vec());
+    let digest = sha(&mock.manifest);
+    let port = serve(mock).await;
+    let image = format!("127.0.0.1:{port}/evil/base:1");
+
+    let by_tag = oci::pull_and_extract_rootfs(&image, &tmp.path().join("tag"))
+        .await
+        .unwrap();
+    let pinned = format!("{image}@{digest}");
+    let by_pin = oci::pull_and_extract_rootfs(&pinned, &tmp.path().join("pin"))
+        .await
+        .unwrap();
+
+    assert_eq!(by_tag, std::slice::from_ref(&digest));
+    assert_eq!(by_pin, [digest]);
+}
+
 /// Pull from `mock` and return the error the pull must fail with.
 async fn pull_error(mock: Mock) -> String {
     let tmp = tempfile::tempdir().unwrap();

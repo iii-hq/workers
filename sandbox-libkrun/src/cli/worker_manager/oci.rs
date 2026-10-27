@@ -650,11 +650,14 @@ fn insecure_registries(reference: &oci_client::Reference) -> Vec<String> {
 ///
 /// Atomicity scope is `dest` ONLY — callers can rely on
 /// `dest` either existing with the full rootfs or not existing. Sibling
-/// metadata (e.g. a digest sidecar in a later task) is written by the
-/// caller AFTER this function returns and is not covered by the same
-/// rename; a missing sidecar beside a valid rootfs is treated as a
-/// cache miss upstream, which forces a re-pull that rewrites both.
-pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Result<()> {
+/// metadata (the rootfs cache's digest sidecar) is written by the caller
+/// AFTER this function returns and is not covered by the same rename; a
+/// missing sidecar beside a valid rootfs makes a digest-pinned ref miss
+/// upstream instead of trusting the rootfs.
+///
+/// Returns the manifest digests that name the pulled image: the one `image`
+/// resolved to, then the platform manifest's when that was an image index.
+pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Result<Vec<String>> {
     use oci_client::client::{ClientConfig, ClientProtocol};
     use oci_client::secrets::RegistryAuth;
     use oci_client::{Client, Reference};
@@ -743,6 +746,7 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
 
     const MAX_PULL_ATTEMPTS: u32 = 3;
     let mut image_data = None;
+    let mut image_digests = Vec::new();
     let mut last_err = None;
 
     for attempt in 0..MAX_PULL_ATTEMPTS {
@@ -766,8 +770,9 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
         let pull_result = pull_with_progress(&client, &reference, image, host_arch).await;
 
         match pull_result {
-            Ok(data) => {
+            Ok((data, digests)) => {
                 image_data = Some(data);
+                image_digests = digests;
                 break;
             }
             Err(e) => {
@@ -905,7 +910,7 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
                 })?;
                 tracing::info!(path = %dest.display(), "rootfs ready (atomic promote)");
                 eprintln!("  {} Rootfs ready", "\u{2713}".green());
-                Ok(())
+                Ok(image_digests)
             }
             Err(e) => {
                 // Extraction failed mid-way. Clean up the temp dir so the
@@ -920,7 +925,7 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
         extract_result?;
         tracing::info!(path = %dest.display(), "rootfs ready");
         eprintln!("  {} Rootfs ready", "\u{2713}".green());
-        Ok(())
+        Ok(image_digests)
     }
 }
 
@@ -971,7 +976,7 @@ async fn pull_with_progress(
     reference: &oci_client::Reference,
     image: &str,
     host_arch: &str,
-) -> Result<oci_client::client::ImageData> {
+) -> Result<(oci_client::client::ImageData, Vec<String>)> {
     use futures::StreamExt;
     use oci_client::client::{Config, ImageData, ImageLayer};
     use sha2::Digest;
@@ -979,9 +984,9 @@ async fn pull_with_progress(
     use std::sync::atomic::{AtomicU64, Ordering};
 
     // 1. Manifest (resolving multi-platform if the registry returned an
-    //    ImageIndex). Tracks the resolved manifest digest so we can
-    //    return it to the caller alongside the data.
-    let (image_manifest, manifest_digest) =
+    //    ImageIndex). Tracks the manifest digests so we can return them
+    //    to the caller alongside the data.
+    let (image_manifest, manifest_digests) =
         pull_image_manifest_resolved(client, reference, host_arch).await?;
     check_declared_blob_sizes(&image_manifest)?;
 
@@ -1128,12 +1133,13 @@ async fn pull_with_progress(
         image, final_mb, total_mb, final_elapsed as f64
     );
 
-    Ok(ImageData {
+    let image_data = ImageData {
         layers,
-        digest: manifest_digest,
+        digest: manifest_digests.last().cloned(),
         config,
         manifest: Some(image_manifest),
-    })
+    };
+    Ok((image_data, manifest_digests))
 }
 
 /// Refuse a manifest whose blobs could not fit the extraction limits before
@@ -1222,12 +1228,13 @@ fn verify_sha256_digest(expected: &str, hasher: sha2::Sha256, label: &str) -> Re
 
 /// Fetch the image manifest, resolving multi-platform `ImageIndex` to
 /// the appropriate `linux/<host_arch>` `Image` manifest. Returns the
-/// resolved Image manifest and its digest.
+/// resolved Image manifest and the digests naming it: the reference's own
+/// (a pin names this one), then the platform manifest's for an index.
 async fn pull_image_manifest_resolved(
     client: &oci_client::Client,
     reference: &oci_client::Reference,
     host_arch: &str,
-) -> Result<(oci_client::manifest::OciImageManifest, Option<String>)> {
+) -> Result<(oci_client::manifest::OciImageManifest, Vec<String>)> {
     use oci_client::secrets::RegistryAuth;
 
     let target_arch = match host_arch {
@@ -1241,7 +1248,7 @@ async fn pull_image_manifest_resolved(
         .context("failed to pull image manifest")?;
 
     match manifest {
-        oci_client::manifest::OciManifest::Image(m) => Ok((m, Some(digest))),
+        oci_client::manifest::OciManifest::Image(m) => Ok((m, vec![digest])),
         oci_client::manifest::OciManifest::ImageIndex(idx) => {
             let chosen = idx.manifests.iter().find(|m| {
                 m.platform.as_ref().is_some_and(|p| {
@@ -1273,7 +1280,7 @@ async fn pull_image_manifest_resolved(
                 .await
                 .context("failed to pull resolved platform manifest")?;
             match m {
-                oci_client::manifest::OciManifest::Image(im) => Ok((im, Some(d))),
+                oci_client::manifest::OciManifest::Image(im) => Ok((im, vec![digest, d])),
                 oci_client::manifest::OciManifest::ImageIndex(_) => {
                     Err(anyhow::anyhow!("nested ImageIndex not supported"))
                 }
