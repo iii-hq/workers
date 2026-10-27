@@ -682,20 +682,23 @@ pub async fn insight_stage(
             return end(deps, record, OutcomeCodeV1::Budget, &detail).await;
         }
         let (system, user) = insight::analyst_prompt(&plan.objective, &unread);
+        // The configured actors' model reads too (a subscription costs
+        // nothing per call); else the default.
+        let (provider, model) = candidate_config(record).map_or(
+            (insight::ANALYST_PROVIDER, insight::ANALYST_MODEL),
+            |config| (config.provider.as_str(), config.model.as_str()),
+        );
         let answered: Result<Value, EvalError> = call(
             deps,
             "router::complete",
-            json!({"model": insight::ANALYST_MODEL, "provider": insight::ANALYST_PROVIDER,
+            json!({"model": model, "provider": provider,
                 "system_prompt": system, "max_output_tokens": insight::ANALYST_MAX_OUTPUT,
                 "messages": [{"role": "user", "timestamp": ids::now_ms(),
                     "content": [{"type": "text", "text": user}]}]}),
             ANALYST_TIMEOUT_MS,
         )
         .await;
-        let cost = answered
-            .as_ref()
-            .ok()
-            .and_then(|reply| reply["usage"]["cost_usd"].as_f64());
+        let cost = answered.as_ref().ok().and_then(billed);
         settle(deps, &record.cycle_id, &work.work_id, cost).await?;
         let read = answered
             .map_err(|error| error.to_string())
@@ -708,11 +711,11 @@ pub async fn insight_stage(
                     .collect();
                 insight::parse_points(&text, &unread)
             });
-        let read_by = format!("the default LLM ({})", insight::ANALYST_MODEL);
+        let read_by = format!("the default LLM ({model})");
         match (read, &no_jev) {
             (Ok(points), Some(why)) => {
                 found.source = Some(InsightSourceV1::Llm);
-                found.model = Some(insight::ANALYST_MODEL.into());
+                found.model = Some(model.into());
                 found.reason = format!(
                     "{why}; {read_by} read the {} failed call(s) and found {} point(s)",
                     unread.len(),
@@ -1689,7 +1692,7 @@ async fn replay_steps(deps: &Deps, record: &CycleRecordV1) -> Result<ReplayV1, E
         .await;
     let cost: f64 = answers
         .iter()
-        .filter_map(|(_, _, answer)| answer["usage"]["cost_usd"].as_f64())
+        .filter_map(|(_, _, answer)| billed(answer))
         .sum();
     settle(deps, &record.cycle_id, &work.work_id, Some(cost)).await?;
 
@@ -1729,6 +1732,13 @@ async fn replay_steps(deps: &Deps, record: &CycleRecordV1) -> Result<ReplayV1, E
         p_fewer: Some(p_fewer),
         p_more: Some(p_more),
     })
+}
+
+/// What a `router::complete` answer cost: its reported cost, or nothing
+/// when it reports usage without one (a subscription bills no call).
+fn billed(reply: &Value) -> Option<f64> {
+    let usage = reply.get("usage")?;
+    Some(usage["cost_usd"].as_f64().unwrap_or(0.0))
 }
 
 fn record_model(record: &CycleRecordV1) -> String {
