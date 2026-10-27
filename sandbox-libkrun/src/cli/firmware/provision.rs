@@ -24,6 +24,10 @@ pub async fn ensure_libkrunfw() -> anyhow::Result<PathBuf> {
 }
 
 async fn ensure_libkrunfw_from(bytes: &[u8]) -> anyhow::Result<PathBuf> {
+    // Concurrent first boots in one process would share the pid-named temp file.
+    static PROVISIONING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _provisioning = PROVISIONING.lock().await;
+
     let home_lib = dirs::home_dir().map(|h| h.join(".iii").join("lib"));
     let filename = libkrunfw_filename();
 
@@ -160,6 +164,44 @@ mod tests {
             let ino = std::fs::metadata(&file).unwrap().ino();
             block_on(ensure_libkrunfw_from(b"new firmware")).unwrap();
             assert_eq!(std::fs::metadata(&file).unwrap().ino(), ino);
+        });
+    }
+
+    /// Two first boots in one daemon provision at once; neither may fail or
+    /// leave a temp file behind.
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_ensure_libkrunfw_calls_all_succeed() {
+        let _g = lock_home();
+        with_clean_env(|| {
+            // Seeded, so a system-wide libkrunfw cannot satisfy the lookup instead.
+            let lib = dirs::home_dir().unwrap().join(".iii").join("lib");
+            std::fs::create_dir_all(&lib).unwrap();
+            std::fs::write(lib.join(libkrunfw_filename()), b"old firmware").unwrap();
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(4)
+                .enable_all()
+                .build()
+                .unwrap();
+            let results = rt.block_on(async {
+                let calls: Vec<_> = (0..16)
+                    .map(|_| tokio::spawn(ensure_libkrunfw_from(b"new firmware")))
+                    .collect();
+                futures::future::join_all(calls).await
+            });
+            for result in results {
+                assert_eq!(result.unwrap().unwrap(), lib);
+            }
+            assert_eq!(
+                std::fs::read(lib.join(libkrunfw_filename())).unwrap(),
+                b"new firmware"
+            );
+            let leftovers: Vec<_> = std::fs::read_dir(&lib)
+                .unwrap()
+                .filter_map(|e| e.ok()?.file_name().into_string().ok())
+                .filter(|name| name.starts_with('.'))
+                .collect();
+            assert!(leftovers.is_empty(), "{leftovers:?}");
         });
     }
 
