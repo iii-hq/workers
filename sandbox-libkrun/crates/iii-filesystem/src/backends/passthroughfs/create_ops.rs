@@ -10,7 +10,7 @@
 use std::{
     ffi::CStr,
     io,
-    os::fd::FromRawFd,
+    os::fd::{AsRawFd, FromRawFd},
     sync::{Arc, RwLock, atomic::Ordering},
 };
 
@@ -68,15 +68,20 @@ pub(crate) fn do_create(
         return Err(platform::linux_error(io::Error::last_os_error()));
     }
 
-    // Close the creation fd, then do a proper lookup.
-    unsafe { libc::close(fd) };
+    // The creation fd is the handle's file. A reopen would check the access
+    // again against the new file's mode (EACCES for O_RDWR on a 0444 file when
+    // the host is not root) and apply O_TRUNC a second time.
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    let st = platform::fstat(file.as_raw_fd())?;
 
     let entry = inode::do_lookup(fs, parent, name)?;
-
-    // Reopen for the handle -- strip O_CREAT since the file already exists.
-    // open_inode_fd adds O_CLOEXEC itself and rejects real host symlinks.
-    let open_fd = inode::open_inode_fd(fs, entry.inode, open_flags & !libc::O_CREAT)?;
-    let file = unsafe { std::fs::File::from_raw_fd(open_fd) };
+    // A host process may have renamed another file over the name meanwhile.
+    if platform::stat_ino(&entry.attr) != platform::stat_ino(&st)
+        || platform::stat_dev(&entry.attr) != platform::stat_dev(&st)
+    {
+        inode::forget_one(fs, entry.inode, 1);
+        return Err(platform::eio());
+    }
 
     let handle = fs.next_handle.fetch_add(1, Ordering::Relaxed);
     let data = Arc::new(HandleData {

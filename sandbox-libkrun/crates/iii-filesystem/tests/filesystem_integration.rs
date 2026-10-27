@@ -11,6 +11,7 @@
 use std::ffi::CString;
 use std::fs::File;
 use std::io;
+use std::os::unix::fs::MetadataExt;
 use std::time::Duration;
 
 use iii_filesystem::{
@@ -817,4 +818,57 @@ fn readdirplus_lists_a_subdirectory_init_krun_as_the_real_file() {
     assert_eq!(found.len(), 1);
     assert_ne!(found[0].0, 2, "listed as the virtual init");
     assert_eq!(found[0].1, 4);
+}
+
+// ---------------------------------------------------------------------------
+// Create, unlink and setattr without read access
+// ---------------------------------------------------------------------------
+
+/// Linux O_EXCL, as the guest sends it (the macOS host value differs).
+const LINUX_O_EXCL: u32 = 0o200;
+
+/// A file created read-only (git writes objects as 0444) still gets the
+/// writable handle its creator asked for, on a host that is not root.
+#[test]
+fn create_read_only_file_returns_a_writable_handle() {
+    let h = setup_fs();
+    let ctx = test_ctx();
+    let (entry, handle, _) =
+        h.fs.create(
+            ctx,
+            ROOT_ID,
+            &cstr("obj"),
+            0o444,
+            false,
+            libc::O_RDWR as u32 | LINUX_O_EXCL,
+            0,
+            Extensions::default(),
+        )
+        .unwrap();
+    let fh = handle.unwrap();
+
+    let mut reader = TestReader::new(b"blob".to_vec());
+    let n =
+        h.fs.write(
+            ctx,
+            entry.inode,
+            fh,
+            &mut reader,
+            4,
+            0,
+            None,
+            false,
+            false,
+            0,
+        )
+        .unwrap();
+    assert_eq!(n, 4);
+    h.fs.release(ctx, entry.inode, 0, fh, false, false, None)
+        .unwrap();
+
+    let (st, _) = h.fs.getattr(ctx, entry.inode, None).unwrap();
+    assert_eq!(st.st_size, 4);
+    let path = h._dir.path().join("obj");
+    assert_eq!(std::fs::read(&path).unwrap(), b"blob");
+    assert_eq!(std::fs::metadata(&path).unwrap().mode() & 0o777, 0o444);
 }
