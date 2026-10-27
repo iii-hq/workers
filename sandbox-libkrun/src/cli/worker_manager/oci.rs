@@ -197,7 +197,9 @@ pub(crate) fn write_default_hosts_no_follow(hosts_path: &std::path::Path) {
 /// outside the rootfs. `remove_dir_all` only refuses a symlink as the final
 /// component, so walk the ancestors and require each one to be a real
 /// directory inside `dest`, and refuse names (empty, `.`, `..`) that would
-/// resolve to the directory itself or to its parent.
+/// resolve to the directory itself or to its parent. The opaque marker
+/// `<dir>/.wh..wh..opq` (target `.wh..opq`) instead clears every child
+/// lower layers gave `<dir>`, keeping `<dir>` itself.
 fn apply_whiteout(
     dest: &std::path::Path,
     entry_path: &std::path::Path,
@@ -234,10 +236,17 @@ fn apply_whiteout(
             Err(_) => return,
         }
     }
-    let target = dir.join(target_name);
-    // Neither call follows a symlink in the final component.
-    let _ = std::fs::remove_file(&target);
-    let _ = std::fs::remove_dir_all(&target);
+    let targets: Vec<PathBuf> = if target_name == ".wh..opq" {
+        let children = std::fs::read_dir(&dir).into_iter().flatten().flatten();
+        children.map(|child| child.path()).collect()
+    } else {
+        vec![dir.join(target_name)]
+    };
+    for target in targets {
+        // Neither call follows a symlink in the final component.
+        let _ = std::fs::remove_file(&target);
+        let _ = std::fs::remove_dir_all(&target);
+    }
 }
 
 /// OCI image to use as rootfs for each `runtime.kind` value. Keep in sync
@@ -2026,6 +2035,50 @@ mod tests {
 
         assert!(!rootfs.join("a/gone").exists());
         assert!(rootfs.join("a/stays").exists());
+    }
+
+    /// `dir/.wh..wh..opq` hides every lower-layer child of `dir` (it used to
+    /// delete a nonexistent `dir/.wh..opq`), keeps this layer's children and
+    /// never clears a directory reached through a symlink.
+    #[test]
+    fn opaque_whiteout_clears_lower_layer_children_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("keep"), b"host").unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(rootfs.join("a/sub")).unwrap();
+        std::fs::create_dir_all(rootfs.join("b")).unwrap();
+        std::fs::write(rootfs.join("a/old"), b"lower").unwrap();
+        std::fs::write(rootfs.join("a/sub/x"), b"lower").unwrap();
+        std::fs::write(rootfs.join("b/keep"), b"lower").unwrap();
+        std::os::unix::fs::symlink(&outside, rootfs.join("a/link")).unwrap();
+        std::os::unix::fs::symlink(&outside, rootfs.join("c")).unwrap();
+        let layer = layer_with(|b| {
+            append_empty_file(b, "a/new");
+            append_empty_file(b, "a/.wh..wh..opq");
+            append_empty_file(b, "c/.wh..wh..opq");
+        });
+
+        let mut total_size = 0u64;
+        extract_layer_with_limits(
+            &layer,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
+
+        let mut children: Vec<_> = std::fs::read_dir(rootfs.join("a"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        children.sort();
+        assert_eq!(children, ["new"], "only this layer's child is left");
+        assert!(rootfs.join("b/keep").exists());
+        assert!(outside.join("keep").exists(), "cleared through a symlink");
     }
 
     /// A whiteout hides lower-layer files only, so a same-layer file or
