@@ -42,11 +42,23 @@ provider. Logging out does not sign out the Codex CLI or revoke other clients.
 The provider will not silently reconnect using a local or external credential.
 
 One account is shared by this provider's consumers in each engine namespace.
-Run one provider instance per namespace. Its tokens are kept in the private
-`provider-openai-codex-auth` state scope, separate from router registration.
-The state worker's public API and state-change subscriptions cannot expose that
-scope. Keep the state adapter durable to retain sessions across stack restarts;
-a private namespace provides access separation, not encryption at rest.
+Run one provider instance per namespace. Its complete session is encrypted in
+the [`secrets`](../secrets/README.md) vault as
+`secret://PROVIDER_OPENAI_CODEX_SESSION`, readable only by this provider.
+Preserve the secrets data directory and its master key across stack restarts.
+The provider's separate router registration token continues to use `state`.
+
+Existing managed logins migrate automatically from the private
+`provider-openai-codex-auth` state scope. The provider confirms that it can read
+the encrypted session before clearing the old session to `null` and flushing
+the state adapter. Interrupted migrations resume on the next access. If the
+legacy session changes before cleanup, migration copies the current session
+and retries. Logout and expiry are preserved; a completed vault migration is
+never overwritten by an old state session. Once complete, session access no
+longer consults that state scope. Update the `secrets` and `state` workers with
+the provider, and stop the old provider instance before starting the new one.
+Cleanup removes active session data; existing backups and snapshots follow
+their own retention policy.
 
 Managed credentials renew automatically within 60 seconds of expiry. Refresh
 requests are serialized and token rotations are persisted atomically. A
