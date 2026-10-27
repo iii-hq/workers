@@ -158,6 +158,12 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
         }
     }
 
+    // Normalise env from EnvShape to Vec<String> with the other request
+    // checks, before any pull, directory or `BootingVm` event: `into_kv_vec`
+    // rejects invalid var names with S001. Accepts both the historical
+    // Vec<"K=V"> shape and the agent-natural { K: V } map.
+    let env_vec = req.env.clone().into_kv_vec()?;
+
     // Refuse before resolving or pulling the image when the
     // launcher cannot boot an isolated root (no embedded iii-init).
     launcher.preflight()?;
@@ -195,19 +201,18 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
     };
 
     let id = Uuid::new_v4();
-    let layout = OverlayLayout::for_sandbox(id);
+    // Removes the dirs unless the create succeeds: a failed boot, a failed
+    // `ensure_dirs`, or a caller that drops this future mid-boot.
+    let mut dirs = DirsGuard {
+        layout: OverlayLayout::for_sandbox(id),
+        keep: false,
+    };
+    let layout = &dirs.layout;
     layout
         .ensure_dirs()
         .map_err(|e| SandboxError::BootFailed(format!("overlay dirs: {e}")))?;
     let shell_sock = layout.base().join("shell.sock");
     let workdir = layout.merged.clone();
-
-    // Normalise env from EnvShape to Vec<String> BEFORE emitting
-    // `BootingVm`. `into_kv_vec` rejects invalid var names with S001;
-    // emitting the event first would tell subscribers boot has begun
-    // for a sandbox that never actually starts. Accepts both the
-    // historical Vec<"K=V"> shape and the agent-natural { K: V } map.
-    let env_vec = req.env.clone().into_kv_vec()?;
 
     on_event(SandboxCreateEvent::BootingVm);
     let boot = launcher
@@ -221,11 +226,7 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
             env: env_vec,
             network: req.network.unwrap_or(false),
         })
-        .await
-        .inspect_err(|_| {
-            // Don't leak the per-sandbox dirs of a sandbox that never booted.
-            let _ = layout.cleanup();
-        })?;
+        .await?;
 
     let state = SandboxState {
         id,
@@ -245,6 +246,7 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
         stopped: false,
     };
     registry.insert(state).await;
+    dirs.keep = true;
 
     on_event(SandboxCreateEvent::Ready {
         sandbox_id: id.to_string(),
@@ -261,6 +263,20 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
         sandbox_id: id.to_string(),
         image: req.image,
     })
+}
+
+/// Removes a sandbox's directories on drop unless told to keep them.
+struct DirsGuard {
+    layout: OverlayLayout,
+    keep: bool,
+}
+
+impl Drop for DirsGuard {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = self.layout.cleanup();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -332,20 +348,21 @@ mod tests {
         assert_eq!(err.code().as_str(), "S100");
     }
 
+    /// Fails the preflight, the step right after the request checks.
+    struct NoInit;
+    #[async_trait::async_trait]
+    impl VmLauncher for NoInit {
+        fn preflight(&self) -> Result<(), SandboxError> {
+            Err(SandboxError::BootFailed("no embedded init".into()))
+        }
+        async fn boot(&self, _p: &BootParams) -> Result<BootHandle, SandboxError> {
+            unreachable!("the preflight fails first")
+        }
+    }
+
     /// cpus 0 and a guest too small to boot are bad requests, not a later S300.
     #[tokio::test]
     async fn unbootable_cpus_or_memory_is_s001_at_create() {
-        /// Fails the preflight, the step right after the resource checks.
-        struct NoInit;
-        #[async_trait::async_trait]
-        impl VmLauncher for NoInit {
-            fn preflight(&self) -> Result<(), SandboxError> {
-                Err(SandboxError::BootFailed("no embedded init".into()))
-            }
-            async fn boot(&self, _p: &BootParams) -> Result<BootHandle, SandboxError> {
-                unreachable!("the preflight fails first")
-            }
-        }
         let cfg = cfg_with_python_allowed();
         let reg = SandboxRegistry::new();
         let launcher = NoInit;
@@ -374,6 +391,31 @@ mod tests {
                 "cpus={cpus:?} memory_mb={memory_mb:?}: {err}"
             );
         }
+    }
+
+    /// A bad env name is caught with the other request checks, before any
+    /// pull or sandbox dir: found after `ensure_dirs`, it leaked those dirs.
+    #[tokio::test]
+    async fn invalid_env_name_is_s001_before_the_preflight() {
+        let req = CreateRequest {
+            image: "python".into(),
+            cpus: None,
+            memory_mb: None,
+            name: None,
+            network: None,
+            idle_timeout_secs: None,
+            env: serde_json::from_value(serde_json::json!({"9bad": "x"})).unwrap(),
+        };
+        let err = handle_create(
+            req,
+            &cfg_with_python_allowed(),
+            &SandboxRegistry::new(),
+            &NoInit,
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code().as_str(), "S001", "{err}");
     }
 
     #[tokio::test]
