@@ -715,7 +715,10 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
         .await
     {
         Ok((oci_client::manifest::OciManifest::Image(m), _)) => {
-            let bytes: i64 = m.layers.iter().map(|l| l.size).sum();
+            let bytes = m
+                .layers
+                .iter()
+                .fold(0i64, |sum, l| sum.saturating_add(l.size));
             format!(
                 " ({} layer{}, {:.1} MiB)",
                 m.layers.len(),
@@ -971,6 +974,7 @@ async fn pull_with_progress(
     //    return it to the caller alongside the data.
     let (image_manifest, manifest_digest) =
         pull_image_manifest_resolved(client, reference, host_arch).await?;
+    check_declared_blob_sizes(&image_manifest)?;
 
     let total_bytes: u64 = image_manifest
         .layers
@@ -1039,7 +1043,9 @@ async fn pull_with_progress(
     //    response or MITM doesn't slip through — the upstream
     //    `client.pull(...)` we replaced did this internally; the
     //    streaming path needs to do it explicitly.
-    let mut config_bytes: Vec<u8> = Vec::with_capacity(image_manifest.config.size.max(0) as usize);
+    // Never sized from the descriptor: a capacity the allocator cannot
+    // satisfy aborts the process instead of returning an error.
+    let mut config_bytes: Vec<u8> = Vec::new();
     let mut config_hasher = sha2::Sha256::new();
     let mut config_stream = client
         .pull_blob_stream(reference, &image_manifest.config)
@@ -1047,6 +1053,11 @@ async fn pull_with_progress(
         .context("failed to pull image config blob")?;
     while let Some(chunk) = config_stream.next().await {
         let chunk = chunk.context("config blob stream chunk failed")?;
+        check_blob_len(
+            config_bytes.len() + chunk.len(),
+            &image_manifest.config,
+            "image config",
+        )?;
         config_hasher.update(&chunk);
         config_bytes.extend_from_slice(&chunk);
     }
@@ -1067,7 +1078,7 @@ async fn pull_with_progress(
     //    extract step touches the rootfs.
     let mut layers: Vec<ImageLayer> = Vec::with_capacity(image_manifest.layers.len());
     for (idx, layer_desc) in image_manifest.layers.iter().enumerate() {
-        let mut layer_bytes: Vec<u8> = Vec::with_capacity(layer_desc.size.max(0) as usize);
+        let mut layer_bytes: Vec<u8> = Vec::new();
         let mut layer_hasher = sha2::Sha256::new();
         let mut stream = client
             .pull_blob_stream(reference, layer_desc)
@@ -1075,6 +1086,11 @@ async fn pull_with_progress(
             .with_context(|| format!("failed to pull layer {} blob", idx + 1))?;
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.with_context(|| format!("layer {} stream chunk failed", idx + 1))?;
+            check_blob_len(
+                layer_bytes.len() + chunk.len(),
+                layer_desc,
+                &format!("layer {}", idx + 1),
+            )?;
             layer_hasher.update(&chunk);
             downloaded.fetch_add(chunk.len() as u64, Ordering::Relaxed);
             layer_bytes.extend_from_slice(&chunk);
@@ -1109,6 +1125,42 @@ async fn pull_with_progress(
         config,
         manifest: Some(image_manifest),
     })
+}
+
+/// Refuse a manifest whose blobs could not fit the extraction limits before
+/// anything is fetched: every blob is held in memory until extraction, and
+/// the sizes come from the registry.
+fn check_declared_blob_sizes(manifest: &oci_client::manifest::OciImageManifest) -> Result<()> {
+    let mut total: u64 = 0;
+    for desc in std::iter::once(&manifest.config).chain(&manifest.layers) {
+        total = u64::try_from(desc.size)
+            .ok()
+            .and_then(|size| total.checked_add(size))
+            .filter(|&total| total <= MAX_TOTAL_SIZE)
+            .with_context(|| {
+                format!(
+                    "image blobs exceed {MAX_TOTAL_SIZE} bytes ({} declares {} bytes)",
+                    desc.digest, desc.size
+                )
+            })?;
+    }
+    Ok(())
+}
+
+/// Refuse a blob that streams more bytes than its descriptor declares, so
+/// memory stays within what `check_declared_blob_sizes` accepted.
+fn check_blob_len(
+    received: usize,
+    desc: &oci_client::manifest::OciDescriptor,
+    label: &str,
+) -> Result<()> {
+    if received as u64 > desc.size as u64 {
+        anyhow::bail!(
+            "{label} is larger than the {} bytes its descriptor declares",
+            desc.size
+        );
+    }
+    Ok(())
 }
 
 /// Compare the SHA256 digest a streaming hasher produced against the OCI
@@ -1293,6 +1345,34 @@ mod tests {
         h2.update(b"hello world");
         let expected2 = "SHA256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
         verify_sha256_digest(expected2, h2, "SHA256-prefix").expect("ALL-CAPS prefix must match");
+    }
+
+    /// Registry-declared sizes are checked before any blob is fetched or any
+    /// buffer is sized from them: negative, overflowing and over-limit totals
+    /// fail with an error instead of reaching the allocator.
+    #[test]
+    fn declared_blob_sizes_are_capped_before_any_fetch() {
+        let manifest = |config: i64, layers: &[i64]| {
+            let desc = |size: i64| serde_json::json!({"mediaType": "x", "digest": "sha256:00", "size": size});
+            let layers: Vec<_> = layers.iter().map(|&s| desc(s)).collect();
+            serde_json::from_value::<oci_client::manifest::OciImageManifest>(
+                serde_json::json!({"schemaVersion": 2, "config": desc(config), "layers": layers}),
+            )
+            .unwrap()
+        };
+        let max = MAX_TOTAL_SIZE as i64;
+
+        check_declared_blob_sizes(&manifest(100, &[1 << 20, max - 100 - (1 << 20)])).unwrap();
+        for (config, layers) in [
+            (i64::MAX, vec![]),
+            (-1, vec![]),
+            (1, vec![i64::MAX, i64::MAX]),
+            (1, vec![max]),
+        ] {
+            let err = check_declared_blob_sizes(&manifest(config, &layers))
+                .expect_err(&format!("config {config}, layers {layers:?}"));
+            assert!(err.to_string().contains("image blobs exceed"), "got: {err}");
+        }
     }
 
     #[test]

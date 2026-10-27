@@ -108,17 +108,25 @@ async fn serve(mock: Mock) -> u16 {
     port
 }
 
+/// An image manifest whose descriptors declare the given sizes.
+fn manifest(config_digest: &str, config_size: i64, layer_digest: &str, layer_size: i64) -> Vec<u8> {
+    format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json",
+"config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{config_digest}","size":{config_size}}},
+"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"{layer_digest}","size":{layer_size}}}]}}"#
+    )
+    .into_bytes()
+}
+
 fn build_mock(layer: Vec<u8>, config: Vec<u8>) -> Mock {
     let config_digest = sha(&config);
     let layer_digest = sha(&layer);
-    let manifest = format!(
-        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json",
-"config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{config_digest}","size":{}}},
-"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"{layer_digest}","size":{}}}]}}"#,
-        config.len(),
-        layer.len()
-    )
-    .into_bytes();
+    let manifest = manifest(
+        &config_digest,
+        config.len() as i64,
+        &layer_digest,
+        layer.len() as i64,
+    );
     Mock {
         manifest,
         config_digest,
@@ -265,4 +273,44 @@ async fn benign_layer_writes_regular_config_file() {
 
     assert!(out.ok);
     assert_config_is_regular_file(&out.dest, &config);
+}
+
+/// Pull from `mock` and return the error the pull must fail with.
+async fn pull_error(mock: Mock) -> String {
+    let tmp = tempfile::tempdir().unwrap();
+    let port = serve(mock).await;
+    let image = format!("127.0.0.1:{port}/evil/base:1");
+    let res = oci::pull_and_extract_rootfs(&image, &tmp.path().join("rootfs")).await;
+    format!("{:#}", res.expect_err("the pull must fail"))
+}
+
+/// Descriptor sizes come from the registry. One the allocator cannot satisfy
+/// used to be passed to `Vec::with_capacity` and abort the whole process.
+#[tokio::test(flavor = "multi_thread")]
+async fn absurd_declared_blob_size_fails_the_pull_without_aborting() {
+    let mut mock = build_mock(layer(None), b"{}".to_vec());
+    let layer_size = mock.layer.len() as i64;
+    mock.manifest = manifest(
+        &mock.config_digest,
+        i64::MAX,
+        &mock.layer_digest,
+        layer_size,
+    );
+
+    let err = pull_error(mock).await;
+
+    assert!(err.contains("image blobs exceed"), "got: {err}");
+}
+
+/// A blob that streams past its declared size is refused before it is
+/// buffered, so memory stays within the sizes the manifest was checked for.
+#[tokio::test(flavor = "multi_thread")]
+async fn blob_longer_than_its_descriptor_fails_the_pull() {
+    let mut mock = build_mock(layer(None), b"{}".to_vec());
+    let layer_size = mock.layer.len() as i64 - 1;
+    mock.manifest = manifest(&mock.config_digest, 2, &mock.layer_digest, layer_size);
+
+    let err = pull_error(mock).await;
+
+    assert!(err.contains("layer 1 is larger than"), "got: {err}");
 }
