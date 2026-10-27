@@ -331,6 +331,12 @@ fn classify_ipv4(payload: &[u8]) -> FrameAction {
     let Ok(ipv4) = Ipv4Packet::new_checked(payload) else {
         return FrameAction::Passthrough;
     };
+    // A fragment has no trustworthy transport header (a later one starts
+    // mid-datagram). smoltcp, built without `proto-ipv4-fragmentation`,
+    // drops it, so oversized datagrams fail instead of relaying junk.
+    if ipv4.more_frags() || ipv4.frag_offset() != 0 {
+        return FrameAction::Passthrough;
+    }
     let src_ip = std::net::IpAddr::V4(ipv4.src_addr());
     let dst_ip = std::net::IpAddr::V4(ipv4.dst_addr());
     classify_transport(ipv4.next_header(), src_ip, dst_ip, ipv4.payload())
@@ -526,6 +532,20 @@ mod tests {
             }
             _ => panic!("expected UdpRelay"),
         }
+    }
+
+    /// Only a whole datagram carries a transport header we can trust: a
+    /// later fragment's payload is mid-datagram bytes, and a first fragment
+    /// is short of its declared UDP length.
+    #[test]
+    fn classify_ipv4_fragments_as_passthrough() {
+        let mut later = build_udp_frame([10, 0, 0, 2], [8, 8, 8, 8], 12345, 443);
+        later[14 + 7] = 185; // fragment offset 185 * 8 = 1480 bytes
+        assert!(matches!(classify_frame(&later), FrameAction::Passthrough));
+
+        let mut first = build_udp_frame([10, 0, 0, 2], [8, 8, 8, 8], 12345, 443);
+        first[14 + 6] = 0x20; // More Fragments
+        assert!(matches!(classify_frame(&first), FrameAction::Passthrough));
     }
 
     #[test]
