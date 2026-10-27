@@ -70,8 +70,9 @@ struct SessionHandle {
     /// TTY-mode master fd, for `Resize`. `None` in pipe mode.
     master: Option<Arc<Mutex<File>>>,
     /// Set by the waiter after `exit_rx.recv()` returns. Once true
-    /// the pid has been reaped and the kernel may recycle the pgid,
-    /// so `kill(-pid, sig)` could land on an unrelated process group.
+    /// the pid has been reaped and the kernel may recycle it once the
+    /// group is empty, so `kill(-pid, sig)` could land on an unrelated
+    /// process group (see the `Signal` arm).
     terminated: bool,
 }
 
@@ -126,6 +127,10 @@ impl Window {
     pub(crate) fn cancel(&self) {
         self.state.lock().expect("window mutex poisoned").1 = true;
         self.granted.notify_all();
+    }
+
+    fn cancelled(&self) -> bool {
+        self.state.lock().expect("window mutex poisoned").1
     }
 }
 
@@ -294,12 +299,16 @@ fn handle_frame(
             }
         }
         ShellMessage::Signal { signal } => {
-            // Refuse delivery if terminated: PID 1 has reaped and the
-            // pgid may be recycled, so `kill(-pid, sig)` could hit an
-            // unrelated process group.
+            // Once terminated, PID 1 has reaped the leader, but a job it
+            // left behind may still hold the output open, so the group is
+            // still signalled until the session ends. Its pgid cannot be
+            // reused while any member lives; with none left, a live
+            // `/proc/<pid>` means the pid now names someone else.
             let pid = {
                 let map = sessions.lock().expect("session map mutex poisoned");
-                map.get(&corr_id).filter(|s| !s.terminated).map(|s| s.pid)
+                map.get(&corr_id)
+                    .filter(|s| !s.terminated || !Path::new(&format!("/proc/{}", s.pid)).exists())
+                    .map(|s| s.pid)
             };
             if let Some(pid) = pid
                 && signal > 0
@@ -1056,7 +1065,10 @@ enum OutputKind {
     Stderr,
 }
 
-fn stream_fd<R: Read>(
+/// How often an idle output stream checks whether the host cancelled it.
+const CANCEL_POLL_MS: libc::c_int = 100;
+
+fn stream_fd<R: Read + AsRawFd>(
     writer: Writer,
     corr_id: u32,
     mut src: R,
@@ -1065,6 +1077,23 @@ fn stream_fd<R: Read>(
 ) {
     let mut buf = vec![0u8; IO_CHUNK_SIZE];
     loop {
+        // Wait for output in slices: a process the kill cannot reach (outside
+        // the group) may hold the pipe open, and the host's cancel must still
+        // end the stream, so the waiter can send `Exited`.
+        let mut pfd = libc::pollfd {
+            fd: src.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ready = unsafe { libc::poll(&mut pfd, 1, CANCEL_POLL_MS) };
+        let interrupted =
+            ready < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted;
+        if ready == 0 || interrupted {
+            if window.cancelled() {
+                break;
+            }
+            continue;
+        }
         match src.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
@@ -2153,6 +2182,81 @@ mod tests {
         // Past the holder's exit, which frees the stdin writer.
         thread::sleep(Duration::from_millis(2500));
         assert_eq!(host.leaks(), 0, "frames after the session's end");
+    }
+
+    /// `$!` of the background job a session printed.
+    #[cfg(target_os = "linux")]
+    fn job_pid(out: &[u8]) -> libc::pid_t {
+        String::from_utf8_lossy(out)
+            .trim()
+            .parse()
+            .expect("job pid")
+    }
+
+    /// Gone or a zombie, within a few seconds.
+    #[cfg(target_os = "linux")]
+    fn dies(pid: libc::pid_t) -> bool {
+        (0..100).any(|_| {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"));
+            let dead = stat.map_or(true, |s| {
+                s.rsplit(')')
+                    .next()
+                    .unwrap_or("")
+                    .trim_start()
+                    .starts_with('Z')
+            });
+            if !dead {
+                thread::sleep(Duration::from_millis(50));
+            }
+            dead
+        })
+    }
+
+    /// A background job that keeps the output open after its shell exited
+    /// is still in the session's group: the host's SIGKILL reaches it, and
+    /// the session ends instead of waiting out the job.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_kill_reaches_a_job_left_behind_by_its_shell() {
+        let _g = serial_spawn_guard();
+        let host = SimHost::start();
+        let s = host.open(1, sh("sleep 20 & echo $!"));
+        // The shell exits at once and is reaped; the job holds stdout.
+        thread::sleep(Duration::from_millis(500));
+        s.send(ShellMessage::Signal { signal: 9 });
+        let killed = std::time::Instant::now();
+        let (out, end) = s.wait();
+        assert_eq!(end, EXITED_0);
+        assert!(
+            killed.elapsed() < Duration::from_secs(5),
+            "waited out the job"
+        );
+        assert!(dies(job_pid(&out)), "the job survived the kill");
+        assert_eq!(host.leaks(), 0);
+    }
+
+    /// A SIGKILL ends the session even while a process outside its group,
+    /// which the kill cannot reach, holds the output open.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_kill_ends_a_session_whose_output_is_held_outside_it() {
+        if skip_if_missing("/usr/bin/setsid") {
+            return;
+        }
+        let _g = serial_spawn_guard();
+        let host = SimHost::start();
+        let s = host.open(1, sh("setsid sleep 20 & echo $!"));
+        thread::sleep(Duration::from_millis(500));
+        s.send(ShellMessage::Signal { signal: 9 });
+        let killed = std::time::Instant::now();
+        let (out, end) = s.wait();
+        unsafe { libc::kill(job_pid(&out), libc::SIGKILL) };
+        assert_eq!(end, EXITED_0);
+        assert!(
+            killed.elapsed() < Duration::from_secs(5),
+            "waited out the holder"
+        );
+        assert_eq!(host.leaks(), 0);
     }
 
     /// 128 MiB uploaded within its window lands whole; the guest's write
