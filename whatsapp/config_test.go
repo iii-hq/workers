@@ -7,6 +7,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"go.mau.fi/whatsmeow/proto/waCompanionReg"
+	"go.mau.fi/whatsmeow/store"
 )
 
 func TestConfigDefaultsAndStrictSecretSafeParsing(t *testing.T) {
@@ -58,13 +61,15 @@ func TestConfigReloadKeepsStructuralValuesAndDefersInboxTrim(t *testing.T) {
 	changed := c
 	changed.DataDir = "another-directory"
 	changed.MaxEvents = 23
+	changed.DeviceName = "Example Desk"
+	changed.DevicePlatform = "chrome"
 	changed.MaxInboxMessages = 2
 	changed.Cloud.AccessToken = "private-sentinel"
 	got, pending, err := m.applyConfigSnapshotContext(context.Background(), changed)
-	if err != nil || !reflect.DeepEqual(pending, []string{"data_dir", "max_events"}) {
+	if err != nil || !reflect.DeepEqual(pending, []string{"data_dir", "device_name", "device_platform", "max_events"}) {
 		t.Fatalf("reload %v %v", pending, err)
 	}
-	if got.DataDir != c.DataDir || got.MaxEvents != c.MaxEvents || got.MaxInboxMessages != 2 || got.Cloud.AccessToken != "private-sentinel" {
+	if got.DataDir != c.DataDir || got.DeviceName != c.DeviceName || got.DevicePlatform != c.DevicePlatform || got.MaxEvents != c.MaxEvents || got.MaxInboxMessages != 2 || got.Cloud.AccessToken != "private-sentinel" {
 		t.Fatal("reload state mismatch")
 	}
 	if !reflect.DeepEqual(got, m.Config()) {
@@ -93,5 +98,55 @@ func TestConfigReloadKeepsStructuralValuesAndDefersInboxTrim(t *testing.T) {
 	}
 	if !reflect.DeepEqual(m.Config(), got) {
 		t.Fatal("invalid reload altered state")
+	}
+}
+func TestConfigDeviceNameAndPlatform(t *testing.T) {
+	clearCloudEnvironment(t)
+	c := DefaultConfig()
+	if c.DeviceName != "" || c.DevicePlatform != "desktop" {
+		t.Fatalf("device defaults %q %q", c.DeviceName, c.DevicePlatform)
+	}
+	for _, tc := range []struct {
+		name, platform string
+		ok             bool
+	}{{"Example Desk", "chrome", true}, {strings.Repeat("é", 64), "unknown", true}, {strings.Repeat("é", 65), "desktop", false}, {"Example\nDesk", "desktop", false}, {"Example", "DESKTOP", false}, {"Example", "nope", false}, {"Example", "deſktop", false}} {
+		c.DeviceName, c.DevicePlatform = tc.name, tc.platform
+		if err := c.Validate(); (err == nil) != tc.ok {
+			t.Errorf("validate %q %q: %v", tc.name, tc.platform, err)
+		}
+		b, _ := json.Marshal(c)
+		if _, err := parseConfigJSON(b); (err == nil) != tc.ok {
+			t.Errorf("parse %q %q: %v", tc.name, tc.platform, err)
+		}
+	}
+	var schema struct {
+		Properties map[string]struct{ Enum []string }
+	}
+	if err := json.Unmarshal(configSchema, &schema); err != nil {
+		t.Fatal(err)
+	}
+	enum := schema.Properties["device_platform"].Enum
+	if len(enum) != len(waCompanionReg.DeviceProps_PlatformType_value) {
+		t.Fatalf("schema lists %d platforms, whatsmeow has %d", len(enum), len(waCompanionReg.DeviceProps_PlatformType_value))
+	}
+	for _, p := range enum {
+		if _, ok := waCompanionReg.DeviceProps_PlatformType_value[strings.ToUpper(p)]; !ok || p != strings.ToLower(p) {
+			t.Errorf("schema platform %q is not a lowercase whatsmeow platform type", p)
+		}
+	}
+}
+func TestApplyDevicePropsOnlyWithAName(t *testing.T) {
+	name, platform := store.DeviceProps.Os, store.DeviceProps.PlatformType
+	t.Cleanup(func() { store.DeviceProps.Os, store.DeviceProps.PlatformType = name, platform })
+	c := DefaultConfig()
+	c.DeviceName = "  "
+	applyDeviceProps(c)
+	if store.DeviceProps.Os != name || store.DeviceProps.PlatformType != platform {
+		t.Fatal("an empty device_name changed the whatsmeow defaults")
+	}
+	c.DeviceName, c.DevicePlatform = " Example Desk ", "chrome"
+	applyDeviceProps(c)
+	if store.DeviceProps.GetOs() != "Example Desk" || store.DeviceProps.GetPlatformType() != waCompanionReg.DeviceProps_CHROME {
+		t.Fatalf("device props %q %v", store.DeviceProps.GetOs(), store.DeviceProps.GetPlatformType())
 	}
 }

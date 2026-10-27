@@ -1,5 +1,9 @@
 # Use a fresh directory: whatsmeow cannot read the Rust worker's credentials.
 data_dir: data/whatsapp-go
+# Name the phone lists under Linked devices; empty shows "Other device". Both
+# keys reach WhatsApp only when a device pairs: relink to rename an existing one.
+device_name: ''
+device_platform: desktop
 max_sessions: 32
 max_media_bytes: 16777216
 max_events: 1000

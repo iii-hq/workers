@@ -454,6 +454,14 @@ func (m *Manager) applyConfigSnapshotContext(ctx context.Context, next Config) (
 		pending = append(pending, "data_dir")
 		next.DataDir = m.config.DataDir
 	}
+	if next.DeviceName != m.config.DeviceName {
+		pending = append(pending, "device_name")
+		next.DeviceName = m.config.DeviceName
+	}
+	if next.DevicePlatform != m.config.DevicePlatform {
+		pending = append(pending, "device_platform")
+		next.DevicePlatform = m.config.DevicePlatform
+	}
 	if next.MaxEvents != m.config.MaxEvents {
 		pending = append(pending, "max_events")
 		next.MaxEvents = m.config.MaxEvents

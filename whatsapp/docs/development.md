@@ -3,7 +3,7 @@
 Build, inspect, and test the worker from source. For installation and first use, follow the [consumer README](../README.md).
 
 The dependency is pinned to
-`8b41cfe6d9c4` (`v0.0.0-20260929112325-8b41cfe6d9c4`). The iii Go SDK is pinned
+`1fbae988179a` (`v0.0.0-20261026125351-1fbae988179a`). The iii Go SDK is pinned
 to merged commit `a075c6e40389` (`v0.24.6-rc.1.0.20261002194513-a075c6e40389`),
 which includes the trigger schema API. A local SDK workspace is optional for SDK
 development.
@@ -57,7 +57,9 @@ For isolated development without the configuration worker:
 Use `--config file.yaml` for a YAML seed. In normal mode, the central entry
 `whatsapp` is authoritative; `III_CONFIG_NAME` selects another entry for a
 second instance. `III_URL` supplies the engine address. Resource limits and
-timeouts apply live; `database`, `data_dir` and `max_events` require a worker restart.
+timeouts apply live; `database`, `data_dir`, `device_name`, `device_platform` and
+`max_events` require a worker restart; `device_name` and `device_platform` also
+reach WhatsApp only when a device pairs, so relink a device to rename it.
 [iii.worker.yaml](../iii.worker.yaml) contains defaults.
 Give each process its own `data_dir`; sharing live credential databases between
 worker processes is unsupported.
