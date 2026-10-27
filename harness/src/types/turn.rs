@@ -412,6 +412,10 @@ pub struct TurnRecord {
     /// Last effective names-only skill view admitted to the transcript.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_ack: Option<SkillAck>,
+    /// The last full skills list body in the transcript after the baseline,
+    /// so a later change appends only the rows that differ from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_list: Option<String>,
     /// Whether this session has begun a model generation under the new skill
     /// context. Before then, first availability may still become the baseline.
     #[serde(default)]
@@ -594,6 +598,7 @@ pub(crate) mod tests {
             function_contract_ledger: Default::default(),
             failed_calls: Default::default(),
             skill_ack: None,
+            skill_list: None,
             skills_started: false,
             context_snapshot: None,
             result: None,

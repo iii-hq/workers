@@ -1131,6 +1131,7 @@ mod tests {
             function_contract_ledger: Default::default(),
             failed_calls: Default::default(),
             skill_ack: None,
+            skill_list: None,
             skills_started: false,
             context_snapshot: None,
             result: None,

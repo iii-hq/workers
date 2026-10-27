@@ -401,7 +401,22 @@ async fn sync_skills(
         }
     }
 
-    match crate::skills::plan_sync(record.skill_ack.as_ref(), record.skills_started, &view) {
+    let last = record
+        .skill_list
+        .clone()
+        .or_else(|| context.baseline.clone());
+    let body = match &view {
+        crate::skills::EffectiveView::Available(view) => Some(view.body.clone()),
+        _ => None,
+    };
+    let plan = crate::skills::plan_sync(
+        record.skill_ack.as_ref(),
+        record.skills_started,
+        &view,
+        last.as_deref(),
+    );
+    let changed = plan != crate::skills::SyncPlan::None;
+    match plan {
         crate::skills::SyncPlan::None => {}
         crate::skills::SyncPlan::Acknowledge(ack) => record.skill_ack = Some(ack),
         crate::skills::SyncPlan::FreezeBaseline { body, ack } => {
@@ -421,6 +436,9 @@ async fn sync_skills(
             )
             .await?;
         }
+    }
+    if changed {
+        record.skill_list = body;
     }
     Ok(())
 }

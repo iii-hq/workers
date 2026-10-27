@@ -1863,6 +1863,7 @@ pub(crate) async fn seed_new(
         // Per turn: a new message may have changed what failed before.
         failed_calls: Default::default(),
         skill_ack,
+        skill_list: prior.and_then(|record| record.skill_list.clone()),
         skills_started,
         context_snapshot: None,
         result: None,
@@ -2582,6 +2583,7 @@ mod tests {
                 generation,
                 fingerprint: Some(format!("sha256:{generation}")),
             }),
+            skill_list: None,
             skills_started: started,
             context_snapshot: None,
             result: None,

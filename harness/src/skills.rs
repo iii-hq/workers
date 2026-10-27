@@ -93,10 +93,44 @@ fn view_ack(view: &EffectiveView) -> Option<SkillAck> {
     }
 }
 
+fn rows(body: &str) -> Vec<&str> {
+    body.lines().filter(|line| line.starts_with("- **")).collect()
+}
+
+fn row_id(row: &str) -> &str {
+    let rest = row.trim_start_matches("- **");
+    rest.split_once("** — ").map_or(rest, |(id, _)| id)
+}
+
+/// The rows `body` adds to or drops from `last` as a short correction;
+/// `None` when the visible rows are the same.
+fn delta(last: &str, body: &str) -> Option<String> {
+    let (old, new) = (rows(last), rows(body));
+    let new_ids: HashSet<&str> = new.iter().map(|row| row_id(row)).collect();
+    let added: Vec<&str> = new.iter().copied().filter(|row| !old.contains(row)).collect();
+    let removed: Vec<&str> = old
+        .iter()
+        .map(|row| row_id(row))
+        .filter(|id| !new_ids.contains(id))
+        .collect();
+    let mut parts = Vec::new();
+    if !added.is_empty() {
+        parts.push(format!("Skills added:\n{}", added.join("\n")));
+    }
+    if !removed.is_empty() {
+        parts.push(format!("Skills removed: {}", removed.join(", ")));
+    }
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
+/// `last` is the most recent full list body already in the transcript: the
+/// frozen baseline, or the last list appended after it. With it, a change
+/// appends only the rows that differ instead of the whole catalog again.
 pub(crate) fn plan_sync(
     previous: Option<&SkillAck>,
     started: bool,
     view: &EffectiveView,
+    last: Option<&str>,
 ) -> SyncPlan {
     let Some(next) = view_ack(view) else {
         return SyncPlan::None;
@@ -113,6 +147,17 @@ pub(crate) fn plan_sync(
             ack: next,
         },
         (None, _, EffectiveView::Removed { .. }) => SyncPlan::Acknowledge(next),
+        (
+            Some(SkillAck {
+                fingerprint: Some(_),
+                ..
+            }),
+            _,
+            EffectiveView::Available(view),
+        ) if last.is_some() => match delta(last.unwrap_or_default(), &view.body) {
+            Some(message) => SyncPlan::Append { message, ack: next },
+            None => SyncPlan::Acknowledge(next),
+        },
         (_, _, EffectiveView::Available(view)) => SyncPlan::Append {
             message: format!(
                 "The available skills have changed. This list supersedes the previous\navailable skills list.\n{}",
@@ -718,7 +763,7 @@ mod tests {
     #[test]
     fn sync_plan_preserves_unavailable_and_emits_exact_durable_corrections() {
         assert_eq!(
-            plan_sync(None, false, &EffectiveView::Unavailable),
+            plan_sync(None, false, &EffectiveView::Unavailable, None),
             SyncPlan::None
         );
 
@@ -736,11 +781,11 @@ mod tests {
             ..rendered
         });
         assert!(matches!(
-            plan_sync(None, false, &available),
+            plan_sync(None, false, &available, None),
             SyncPlan::FreezeBaseline { .. }
         ));
 
-        let SyncPlan::Append { message, ack } = plan_sync(None, true, &available) else {
+        let SyncPlan::Append { message, ack } = plan_sync(None, true, &available, None) else {
             panic!("late first availability must be explicit");
         };
         assert_eq!(
@@ -764,7 +809,7 @@ mod tests {
             }
         });
         assert_eq!(
-            plan_sync(Some(&admitted), true, &moved_without_view_change),
+            plan_sync(Some(&admitted), true, &moved_without_view_change, None),
             SyncPlan::Acknowledge(SkillAck {
                 generation: 3,
                 fingerprint: Some("sha256:one".into())
@@ -775,6 +820,7 @@ mod tests {
             Some(&admitted),
             true,
             &EffectiveView::Removed { generation: 3 },
+            Some(&expected_body),
         ) else {
             panic!("removal must append");
         };
@@ -788,9 +834,44 @@ mod tests {
             generation: 3,
             fingerprint: None,
         };
+        let SyncPlan::Append { message, .. } =
+            plan_sync(Some(&removed), true, &available, Some(&expected_body))
+        else {
+            panic!("availability after removal must append the full list");
+        };
+        assert!(message.ends_with(&expected_body));
+
+        let changed = render(
+            &[Skill {
+                id: "two".into(),
+                description: "Second".into(),
+            }],
+            None,
+        );
+        let changed_view = EffectiveView::Available(RenderedView {
+            generation: 4,
+            ..changed.clone()
+        });
+        let SyncPlan::Append { message, ack } =
+            plan_sync(Some(&admitted), true, &changed_view, Some(&expected_body))
+        else {
+            panic!("a changed list must append only a delta");
+        };
+        assert_eq!(
+            message,
+            "Skills added:\n- **two** — Second.\nSkills removed: one"
+        );
+        assert_eq!(ack.fingerprint, Some(changed.fingerprint.clone()));
+
+        let reworded = EffectiveView::Available(RenderedView {
+            body: expected_body.replace("<available_skills>", "<available_skills>\nNew preamble."),
+            fingerprint: "sha256:reworded".into(),
+            generation: 5,
+            unknown: Vec::new(),
+        });
         assert!(matches!(
-            plan_sync(Some(&removed), true, &available),
-            SyncPlan::Append { .. }
+            plan_sync(Some(&admitted), true, &reworded, Some(&expected_body)),
+            SyncPlan::Acknowledge(_)
         ));
     }
 
@@ -807,7 +888,7 @@ mod tests {
             unknown: Vec::new(),
         });
 
-        let SyncPlan::Append { message, ack } = plan_sync(Some(&baseline), false, &current) else {
+        let SyncPlan::Append { message, ack } = plan_sync(Some(&baseline), false, &current, None) else {
             panic!("a frozen send-time baseline must not be rewritten")
         };
         assert!(message.ends_with("<available_skills>current</available_skills>"));
