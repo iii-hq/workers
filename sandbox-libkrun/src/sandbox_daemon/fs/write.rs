@@ -74,6 +74,16 @@ impl ChannelReaderAdapter {
     }
 }
 
+/// A dropped upload (S218 on the caller's idle timeout) must not leave its
+/// spawned read holding the channel until the caller's writer closes.
+impl Drop for ChannelReaderAdapter {
+    fn drop(&mut self) {
+        if let Some(task) = self.pending_task.take() {
+            task.abort();
+        }
+    }
+}
+
 impl tokio::io::AsyncRead for ChannelReaderAdapter {
     fn poll_read(
         self: Pin<&mut Self>,
@@ -612,6 +622,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(got, b"abcd");
+    }
+
+    /// Dropping the adapter mid-upload ends its pending channel read.
+    #[tokio::test]
+    async fn dropping_the_adapter_ends_its_pending_read() {
+        use tokio::io::AsyncReadExt;
+        let (held, released) = tokio::sync::oneshot::channel::<()>();
+        let held = std::sync::Mutex::new(Some(held));
+        let mut reader = ChannelReaderAdapter::from_source(move || {
+            let held = held.lock().unwrap().take();
+            Box::pin(async move {
+                // Released only when this read ends.
+                let _held = held;
+                std::future::pending::<Frame>().await
+            })
+        });
+        let mut buf = [0u8; 8];
+        let read = reader.read(&mut buf);
+        let short = std::time::Duration::from_millis(50);
+        assert!(tokio::time::timeout(short, read).await.is_err());
+
+        drop(reader);
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(1), released).await;
+        assert!(ended.is_ok(), "the read outlived the adapter");
     }
 
     /// Serde dispatch: a bare JSON string lands as `Utf8`; an object
