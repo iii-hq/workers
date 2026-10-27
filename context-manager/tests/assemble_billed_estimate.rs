@@ -54,12 +54,20 @@ fn single_long_turn(documents: usize) -> Vec<Value> {
 }
 
 async fn assemble(resolver: Arc<FakeModelResolver>, documents: usize) -> Value {
+    assemble_with_overhead(resolver, documents, 0).await
+}
+
+async fn assemble_with_overhead(
+    resolver: Arc<FakeModelResolver>,
+    documents: usize,
+    request_overhead_tokens: u64,
+) -> Value {
     let request = serde_json::from_value(json!({
         "messages": single_long_turn(documents),
         "model": { "id": "deepseek-flash", "provider": "deepseek",
                    "limits": { "context_window": 1_000_000, "max_output_tokens": 384_000 } },
         "system_prompt": "You are an iii agent worker.",
-        "options": { "reserved_tokens": RESERVED },
+        "options": { "reserved_tokens": RESERVED, "request_overhead_tokens": request_overhead_tokens },
     }))
     .unwrap();
     serde_json::to_value(assemble::handle(&deps(resolver), request).await.unwrap()).unwrap()
@@ -76,6 +84,20 @@ async fn a_provider_billing_more_than_the_estimate_compacts_inside_the_window() 
     assert!(resolver.counts.load(Ordering::SeqCst) >= 1);
     // What goes out fits the window as the provider counts it.
     let sent = response["token_count"].as_u64().unwrap() as f64 * 2.25;
+    assert!(sent <= 128_000.0, "sent {sent} provider tokens");
+}
+
+#[tokio::test]
+async fn the_request_overhead_counts_with_the_provider_count() {
+    // 22 documents: about 103k billed, inside the window on their own; a 40k
+    // request overhead (response format, provider options) takes them past.
+    const OVERHEAD: u64 = 40_000;
+    let resolver = Arc::new(FakeModelResolver::billing(2.25));
+    let response = assemble_with_overhead(resolver, 22, OVERHEAD).await;
+
+    assert_eq!(response["applied"]["compacted"], true);
+    let messages = response["token_count"].as_u64().unwrap() - OVERHEAD;
+    let sent = messages as f64 * 2.25 + OVERHEAD as f64;
     assert!(sent <= 128_000.0, "sent {sent} provider tokens");
 }
 
