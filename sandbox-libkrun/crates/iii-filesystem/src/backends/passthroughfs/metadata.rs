@@ -105,9 +105,10 @@ pub(crate) fn do_setattr(
     let mut opened = None;
     let fd = match &file_guard {
         Some(fg) => Some(fg.as_raw_fd()),
-        // truncate(2) needs write access, not read access.
+        // truncate(2) needs write access, not read access. O_NONBLOCK: a FIFO
+        // with no reader would block the fs worker thread.
         None if valid.contains(SetattrValid::SIZE) => {
-            let fd = inode::open_inode_fd(fs, ino, libc::O_WRONLY)?;
+            let fd = inode::open_inode_fd(fs, ino, libc::O_WRONLY | libc::O_NONBLOCK)?;
             Some(opened.insert(unsafe { File::from_raw_fd(fd) }).as_raw_fd())
         }
         None => None,

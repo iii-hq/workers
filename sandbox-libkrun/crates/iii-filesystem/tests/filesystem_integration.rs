@@ -896,6 +896,29 @@ fn unlink_fifo_does_not_block() {
     assert!(!exists);
 }
 
+/// Truncating a FIFO that nobody reads, with no handle, fails at once
+/// instead of blocking the fs worker thread in the open.
+#[test]
+fn setattr_size_on_fifo_does_not_block() {
+    let h = setup_fs();
+    let path = h._dir.path().join("pipe");
+    let c_path = CString::new(path.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+    let pipe = h.fs.lookup(test_ctx(), ROOT_ID, &cstr("pipe")).unwrap();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let attr: stat64 = unsafe { std::mem::zeroed() };
+        let res =
+            h.fs.setattr(test_ctx(), pipe.inode, attr, None, SetattrValid::SIZE);
+        tx.send(res.is_err()).unwrap();
+    });
+    let failed = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("setattr blocked on the FIFO");
+    assert!(failed);
+}
+
 /// Unlinking one of two hard links leaves the file reachable through the
 /// other, and opening it for writing still gives a writable handle.
 #[test]
