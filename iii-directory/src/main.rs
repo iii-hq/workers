@@ -540,10 +540,16 @@ async fn reconcile_workers(
     let local_root = cfg.local_skills_folder();
     let mut reconciled = 0;
     for (name, version) in workers {
-        // The version keys the attempt; a first download takes the latest
-        // skill tag, an updated worker the skills of its new version.
-        let Some(spec) = reconcile_decision(name, None, &local_root, &global_root)
-            .or_else(|| refresh_decision(name, version, &local_root, &global_root))
+        // The version keys the attempt and picks the skills: those of the
+        // version Compose runs, or the latest tag when it reports none.
+        // `local` (a path:// worker) is no registry version.
+        let installed = if version == "local" {
+            ""
+        } else {
+            version.as_str()
+        };
+        let Some(spec) = reconcile_decision(name, Some(installed), &local_root, &global_root)
+            .or_else(|| refresh_decision(name, installed, &local_root, &global_root))
         else {
             continue;
         };
@@ -724,21 +730,24 @@ mod tests {
     /// no skills bundle is not asked again on the next connection.
     #[tokio::test]
     async fn the_worker_pass_downloads_new_workers_and_asks_once_per_version() {
-        use wiremock::matchers::{method, path};
+        use wiremock::matchers::{method, path, query_param};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
-        let bundle = json!({
-            "name": "alpha",
-            "version": "1.0.0",
-            "skills": [{"path": "index.md", "content": "# alpha\n"}],
-            "prompts": []
-        });
-        Mock::given(method("GET"))
-            .and(path("/w/alpha/skills"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&bundle))
-            .mount(&server)
-            .await;
+        for version in ["1.0.0", "1.1.0"] {
+            let bundle = json!({
+                "name": "alpha",
+                "version": version,
+                "skills": [{"path": "index.md", "content": format!("# alpha {version}\n")}],
+                "prompts": []
+            });
+            Mock::given(method("GET"))
+                .and(path("/w/alpha/skills"))
+                .and(query_param("version", version))
+                .respond_with(ResponseTemplate::new(200).set_body_json(&bundle))
+                .mount(&server)
+                .await;
+        }
         Mock::given(method("GET"))
             .and(path("/w/beta/skills"))
             .respond_with(ResponseTemplate::new(404))
@@ -754,25 +763,59 @@ mod tests {
             ..SkillsConfig::default()
         };
         let in_flight = Arc::new(InFlightGuard::new());
-        let status = |beta: &str| {
+        let status = |alpha: &str, beta: &str| {
             json!({ "containers": [
-                { "container": "alpha", "version": "1.0.0", "state": "ready" },
+                { "container": "alpha", "version": alpha, "state": "ready" },
                 { "container": "beta", "version": beta, "state": "ready" }
             ]})
         };
         let asked = || async { server.received_requests().await.unwrap().len() };
-
-        assert_eq!(worker_pass(&cfg, &in_flight, &status("2.0.0")).await, 1);
         let written = cfg.resolved_skills_folder().join("alpha").join("index.md");
-        assert_eq!(std::fs::read_to_string(written).unwrap(), "# alpha\n");
+        let marked = || {
+            iii_directory::functions::download::read_worker_markers(&cfg.resolved_skills_folder())
+                .into_iter()
+                .find(|m| m.worker == "alpha")
+                .and_then(|m| m.version)
+        };
+
+        // The first download pulls the skills of the version Compose runs.
+        assert_eq!(
+            worker_pass(&cfg, &in_flight, &status("1.0.0", "2.0.0")).await,
+            1
+        );
+        assert_eq!(
+            std::fs::read_to_string(&written).unwrap(),
+            "# alpha 1.0.0\n"
+        );
         assert_eq!(asked().await, 2);
 
         // The next connection: alpha is on disk, beta was asked at 2.0.0.
-        assert_eq!(worker_pass(&cfg, &in_flight, &status("2.0.0")).await, 0);
+        assert_eq!(
+            worker_pass(&cfg, &in_flight, &status("1.0.0", "2.0.0")).await,
+            0
+        );
         assert_eq!(asked().await, 2);
 
         // Another version of beta is asked again.
-        worker_pass(&cfg, &in_flight, &status("2.1.0")).await;
+        worker_pass(&cfg, &in_flight, &status("1.0.0", "2.1.0")).await;
         assert_eq!(asked().await, 3);
+
+        // An updated alpha gets the skills of its new version, once.
+        assert_eq!(
+            worker_pass(&cfg, &in_flight, &status("1.1.0", "2.1.0")).await,
+            1
+        );
+        assert_eq!(
+            std::fs::read_to_string(&written).unwrap(),
+            "# alpha 1.1.0\n"
+        );
+        assert_eq!(marked().as_deref(), Some("1.1.0"));
+        assert_eq!(asked().await, 4);
+        worker_pass(&cfg, &in_flight, &status("1.1.0", "2.1.0")).await;
+        assert_eq!(asked().await, 4);
+
+        // A path:// worker reports `local`, which is no registry version.
+        worker_pass(&cfg, &in_flight, &status("local", "2.1.0")).await;
+        assert_eq!(asked().await, 4);
     }
 }
