@@ -150,7 +150,15 @@ fn send_current_entry(stream: &mut UnixStream, root: &Path, path: &Path) -> io::
     if should_ignore_path(path, root) {
         return Ok(());
     }
-    let relative = relative_utf8(root, path)?;
+    // The wire format carries UTF-8 paths only: skip such a path (and its
+    // subtree), as an error here would end the sync thread for good.
+    let relative = match relative_utf8(root, path) {
+        Ok(relative) => relative,
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "source sync: path skipped");
+            return Ok(());
+        }
+    };
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             let link = std::fs::read_link(path)?;
@@ -411,6 +419,19 @@ mod tests {
         let (header, payload) = receiver.join().unwrap();
         assert_eq!(header.path, "main.rs");
         assert_eq!(payload, b"fn main() {}\n");
+    }
+
+    /// Linux allows non-UTF-8 names; one such path is skipped instead of
+    /// ending the sync thread for the rest of the VM's life.
+    #[test]
+    fn non_utf8_path_is_skipped_without_stopping_sync() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut host, _guest) = UnixStream::pair().unwrap();
+        let path = temp
+            .path()
+            .join(std::ffi::OsStr::from_bytes(b"bad-\xff.ts"));
+
+        send_current_entry(&mut host, temp.path(), &path).unwrap();
     }
 
     #[test]
