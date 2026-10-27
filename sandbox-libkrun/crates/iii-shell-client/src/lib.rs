@@ -106,6 +106,13 @@ const STDIN_CHUNK: usize = 64 * 1024;
 /// saturation).
 const FS_WRITE_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long `FsStreamReader` waits for the guest's next frame. A path that
+/// blocks after `FsMeta` (a FIFO with no writer) would otherwise hold the
+/// caller's read, the reader's task and the socket forever. A slow caller
+/// does not count: the timer runs only while the task waits on the socket,
+/// not while it waits on a full channel.
+const FS_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Specification for a single `ShellMessage::Request` frame.
 ///
 /// Pipe-mode only: `tty`, `rows`, and `cols` are always `false`/0.
@@ -753,6 +760,9 @@ pub struct FsStreamReader {
     /// Set to `true` after the background task signals end-of-stream;
     /// subsequent reads return `Poll::Ready(Ok(()))` with zero bytes.
     finished: bool,
+    /// The background task, aborted on drop: it notices a dropped reader
+    /// only on its next send, and a stalled guest may never let it get there.
+    task: tokio::task::AbortHandle,
 }
 
 impl FsStreamReader {
@@ -762,26 +772,41 @@ impl FsStreamReader {
         // 8 × 64 KiB = 512 KiB ceiling — enough to hide single-stall
         // jitter, small enough to surface a stuck caller.
         let (tx, rx) = tokio::sync::mpsc::channel(8);
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             loop {
-                let frame = match read_frame_async(&mut stream).await {
-                    Ok(Some(f)) => f,
-                    Ok(None) => {
-                        // The guest always ends a read with FsEnd or FsError, so
-                        // an EOF before it means the file came through short.
-                        let _ = tx
-                            .send(Err(std::io::Error::new(
-                                std::io::ErrorKind::UnexpectedEof,
-                                "session closed before FsEnd",
-                            )))
-                            .await;
-                        break;
-                    }
-                    Err(e) => {
-                        let _ = tx.send(Err(std::io::Error::other(e.to_string()))).await;
-                        break;
-                    }
-                };
+                let frame =
+                    match tokio::time::timeout(FS_READ_IDLE_TIMEOUT, read_frame_async(&mut stream))
+                        .await
+                    {
+                        Ok(Ok(Some(f))) => f,
+                        Ok(Ok(None)) => {
+                            // The guest always ends a read with FsEnd or FsError, so
+                            // an EOF before it means the file came through short.
+                            let _ = tx
+                                .send(Err(std::io::Error::new(
+                                    std::io::ErrorKind::UnexpectedEof,
+                                    "session closed before FsEnd",
+                                )))
+                                .await;
+                            break;
+                        }
+                        Ok(Err(e)) => {
+                            let _ = tx.send(Err(std::io::Error::other(e.to_string()))).await;
+                            break;
+                        }
+                        Err(_elapsed) => {
+                            let _ = tx
+                                .send(Err(std::io::Error::new(
+                                    std::io::ErrorKind::TimedOut,
+                                    format!(
+                                        "no data from the guest for {}s",
+                                        FS_READ_IDLE_TIMEOUT.as_secs()
+                                    ),
+                                )))
+                                .await;
+                            break;
+                        }
+                    };
                 match frame {
                     (_, _, ShellMessage::FsEnd) => break,
                     (_, _, ShellMessage::FsChunk { data_b64 }) => {
@@ -828,7 +853,14 @@ impl FsStreamReader {
             rx,
             leftover: Vec::new(),
             finished: false,
+            task: task.abort_handle(),
         }
+    }
+}
+
+impl Drop for FsStreamReader {
+    fn drop(&mut self) {
+        self.task.abort();
     }
 }
 
@@ -1326,5 +1358,36 @@ mod tests {
 
         assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
         assert_eq!(got, b"partial");
+    }
+
+    /// Dropping the reader ends its task, and so closes the socket, even
+    /// while the guest sends nothing.
+    #[tokio::test]
+    async fn fs_stream_dropped_closes_the_socket() {
+        let (a, mut b) = UnixStream::pair().expect("socketpair");
+        drop(FsStreamReader::new(a));
+
+        let mut byte = [0u8; 1];
+        let read = tokio::time::timeout(Duration::from_secs(5), b.read(&mut byte))
+            .await
+            .expect("the socket closed");
+
+        assert_eq!(read.expect("read"), 0);
+    }
+
+    /// A guest that goes quiet after FsMeta (a FIFO with no writer) fails the
+    /// read instead of holding it forever.
+    #[tokio::test(start_paused = true)]
+    async fn fs_stream_from_a_silent_guest_times_out() {
+        let (a, _b) = UnixStream::pair().expect("socketpair");
+        let mut got = Vec::new();
+        let read = tokio::time::timeout(
+            FS_READ_IDLE_TIMEOUT * 2,
+            FsStreamReader::new(a).read_to_end(&mut got),
+        )
+        .await
+        .expect("the reader gave up first");
+
+        assert_eq!(read.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
     }
 }
