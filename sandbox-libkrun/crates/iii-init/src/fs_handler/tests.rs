@@ -1023,6 +1023,29 @@ fn sed_regex_mode_supports_captures() {
     );
 }
 
+/// A literal replacement is written as given: `$` is not a capture
+/// reference, with or without `ignore_case`.
+#[test]
+fn sed_literal_ignore_case_keeps_dollar_signs() {
+    let dir = tmpdir();
+    let f = dir.path().join("x.txt");
+    std::fs::write(&f, "HELLO hello\n").unwrap();
+    ops::sed(
+        vec![f.to_string_lossy().into()],
+        None,
+        true,
+        Vec::new(),
+        Vec::new(),
+        "hello".into(),
+        "$HOME$1".into(),
+        false,
+        false,
+        true,
+    )
+    .unwrap();
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "$HOME$1 $HOME$1\n");
+}
+
 #[test]
 fn sed_per_file_failure_does_not_abort_remaining() {
     let dir = tmpdir();

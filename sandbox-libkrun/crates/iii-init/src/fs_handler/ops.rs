@@ -179,10 +179,9 @@ fn literal_replace_line(
     }
     if case_insensitive {
         // `(?i)` + literal-escaped needle gives correct Unicode case
-        // folding without re-implementing it. `$` in `replacement`
-        // would otherwise be expanded as a backref; escape it.
+        // folding without re-implementing it. A closure replacer's
+        // output is never expanded, so `$` in `replacement` stays literal.
         let escaped_needle = regex::escape(needle);
-        let escaped_replacement = replacement.replace('$', "$$");
         let pattern = format!("(?i){escaped_needle}");
         let re = match regex::Regex::new(&pattern) {
             Ok(r) => r,
@@ -195,13 +194,13 @@ fn literal_replace_line(
         let out = if first_only {
             re.replacen(line, 1, |_caps: &regex::Captures| {
                 count += 1;
-                escaped_replacement.clone()
+                replacement
             })
             .into_owned()
         } else {
             re.replace_all(line, |_caps: &regex::Captures| {
                 count += 1;
-                escaped_replacement.clone()
+                replacement
             })
             .into_owned()
         };
