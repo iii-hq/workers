@@ -18,7 +18,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use iii_supervisor::source_sync::{self, EntryHeader, EntryKind};
 use notify::{Event, EventKind, Watcher};
@@ -26,6 +26,10 @@ use notify::{Event, EventKind, Watcher};
 use super::source_watcher::{DEBOUNCE_MS, register_new_dirs, should_ignore_path, watch_pruned};
 
 const FILE_READ_ATTEMPTS: usize = 3;
+
+/// Longest a burst may keep extending, so a host file written more often
+/// than DEBOUNCE_MS (a log, say) cannot hold the flush back forever.
+const MAX_BURST: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
 struct FileSnapshot {
@@ -83,20 +87,36 @@ fn run_loop(
             Ok(event) => event,
             Err(_) => return Ok(()),
         };
-        let mut paths = first.paths;
-        loop {
-            match rx.recv_timeout(Duration::from_millis(DEBOUNCE_MS)) {
-                Ok(event) => paths.extend(event.paths),
-                Err(RecvTimeoutError::Timeout) => break,
-                Err(RecvTimeoutError::Disconnected) => return Ok(()),
-            }
-        }
+        let Some(paths) = collect_burst(first, &rx, MAX_BURST) else {
+            return Ok(());
+        };
+        let paths: Vec<PathBuf> = paths.into_iter().collect();
 
         register_new_dirs(&mut watcher, &paths, &source_root, &mut registered);
         for path in coalesce_paths(paths, &source_root) {
             send_current_entry(&mut stream, &source_root, &path)?;
         }
     }
+}
+
+/// Gathers the paths of `first` and of the events after it until the tree is
+/// quiet for DEBOUNCE_MS or the burst is `max_burst` old. None once the
+/// watcher is gone.
+fn collect_burst(
+    first: Event,
+    rx: &mpsc::Receiver<Event>,
+    max_burst: Duration,
+) -> Option<BTreeSet<PathBuf>> {
+    let deadline = Instant::now() + max_burst;
+    let mut paths: BTreeSet<PathBuf> = first.paths.into_iter().collect();
+    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+        match rx.recv_timeout(left.min(Duration::from_millis(DEBOUNCE_MS))) {
+            Ok(event) => paths.extend(event.paths),
+            Err(RecvTimeoutError::Timeout) => break,
+            Err(RecvTimeoutError::Disconnected) => return None,
+        }
+    }
+    Some(paths)
 }
 
 fn coalesce_paths(paths: Vec<PathBuf>, root: &Path) -> Vec<PathBuf> {
@@ -333,6 +353,30 @@ mod tests {
             coalesce_paths(paths, &root),
             vec![root.join("gone"), root.join("src"), root.join("src/old.ts")]
         );
+    }
+
+    /// A host file written more often than the debounce window must not
+    /// postpone the flush forever, nor grow the burst by one entry per event.
+    #[test]
+    fn a_continuous_writer_cannot_postpone_the_flush_forever() {
+        let event = || Event::new(EventKind::Any).add_path(PathBuf::from("/project/app.log"));
+        let (tx, rx) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            for _ in 0..100 {
+                if tx.send(event()).is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+
+        let started = Instant::now();
+        let paths = collect_burst(event(), &rx, Duration::from_millis(300)).unwrap();
+
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(paths, BTreeSet::from([PathBuf::from("/project/app.log")]));
+        drop(rx);
+        writer.join().unwrap();
     }
 
     #[test]
