@@ -13,6 +13,19 @@ sys.path.insert(0, str(SCRIPTS))
 import discover_changed_workers as discover  # noqa: E402
 
 
+@pytest.mark.parametrize("source", ["secrets/src/store.rs", "state/src/functions.rs"])
+def test_codex_contract_runs_for_session_backend_changes(source: str) -> None:
+    assert discover.provider_contract_selection(
+        [source], {"provider-openai-codex", "provider-openai"}
+    ) == ["provider-openai-codex"]
+
+
+def test_codex_backend_documentation_does_not_run_contracts() -> None:
+    assert discover.provider_contract_selection(
+        ["secrets/README.md", "state/README.md"], {"provider-openai-codex"}
+    ) == []
+
+
 def harness_changed(files: list[str]) -> bool:
     return discover.suite_changed(
         files,

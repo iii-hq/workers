@@ -2,7 +2,7 @@
 //! Never render credential-bearing RPC values or captured requests on failure.
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -10,7 +10,9 @@ use anyhow::{anyhow, ensure, Context};
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::{register_worker, IIIClient, RegisterFunction};
-use provider_openai_codex::credential_store::{PrivateStateStore, SessionStore, AUTH_SCOPE};
+use provider_openai_codex::credential_store::{
+    PrivateStateStore, SecretsSessionStore, SessionRecord, SessionStore, AUTH_SCOPE,
+};
 use provider_openai_codex::oauth::{Credential, DeviceCode, OAuthError, PollOutcome};
 use provider_openai_codex::session::{
     AuthManager, LegacySource, OAuthTransport, ResolvedCredential, SessionError,
@@ -50,6 +52,9 @@ struct FakeOAuth {
     polling: Semaphore,
     /// One permit per in-flight poll that returned or was dropped.
     settled: Semaphore,
+    pause_refresh: AtomicBool,
+    refresh_started: Semaphore,
+    release_refresh: Semaphore,
 }
 
 impl Default for FakeOAuth {
@@ -58,6 +63,9 @@ impl Default for FakeOAuth {
             authorized: Semaphore::new(0),
             polling: Semaphore::new(0),
             settled: Semaphore::new(0),
+            pause_refresh: AtomicBool::new(false),
+            refresh_started: Semaphore::new(0),
+            release_refresh: Semaphore::new(0),
         }
     }
 }
@@ -110,8 +118,20 @@ impl OAuthTransport for FakeOAuth {
         })
     }
 
-    fn refresh<'a>(&'a self, _: &'a Credential) -> Reply<'a, Result<Credential, OAuthError>> {
-        Box::pin(async {
+    fn refresh<'a>(&'a self, old: &'a Credential) -> Reply<'a, Result<Credential, OAuthError>> {
+        Box::pin(async move {
+            if self.pause_refresh.load(Ordering::SeqCst) {
+                self.refresh_started.add_permits(1);
+                self.release_refresh
+                    .acquire()
+                    .await
+                    .expect("refresh fixture open")
+                    .forget();
+                let mut rotated = old.clone();
+                rotated.access_token = "codex-login-synthetic-rotated-access".into();
+                rotated.refresh_token = Some("codex-login-synthetic-rotated-refresh".into());
+                return Ok(rotated);
+            }
             Err(OAuthError {
                 code: "unexpected_refresh".into(),
                 message: "Fresh synthetic credentials must not be refreshed".into(),
@@ -152,7 +172,8 @@ struct Fixture {
     engine: Engine,
     operator: IIIClient,
     provider: IIIClient,
-    store: Arc<PrivateStateStore>,
+    store: Arc<SecretsSessionStore>,
+    auth: Arc<AuthManager>,
     oauth: Arc<FakeOAuth>,
     legacy: Arc<EmptyLegacy>,
     stub: StubUpstream,
@@ -161,6 +182,10 @@ struct Fixture {
 
 impl Fixture {
     async fn start() -> anyhow::Result<Self> {
+        Self::start_with_legacy(None).await
+    }
+
+    async fn start_with_legacy(seed: Option<SessionRecord>) -> anyhow::Result<Self> {
         let case = enabled_cases()
             .into_iter()
             .find(|case| case.id == "openai-codex")
@@ -173,17 +198,29 @@ impl Fixture {
         let stub = StubUpstream::start(case).await?;
         configure(&router, case, &stub.endpoint(case.generation_path)).await?;
         let provider = clients.connect(&engine.url, true);
-        let store = Arc::new(PrivateStateStore::new(provider.clone()));
+        let store = Arc::new(SecretsSessionStore::new(provider.clone()));
         wait_for_codex_state(&provider).await?;
+        let seeded = seed.is_some();
+        if let Some(record) = seed {
+            ensure!(
+                PrivateStateStore::new(provider.clone())
+                    .compare_and_set(None, &record)
+                    .await?,
+                "could not seed legacy auth session"
+            );
+        }
         ensure!(
-            store.load().await?.is_none(),
-            "fresh engine already has an auth record"
+            store.load().await?.is_some() == seeded,
+            "unexpected managed session after migration"
         );
         let oauth = Arc::new(FakeOAuth::default());
         let legacy = Arc::new(EmptyLegacy::default());
         let auth = AuthManager::with_dependencies(store.clone(), oauth.clone(), legacy.clone());
-        provider_openai_codex::register::register_provider_with_auth(provider.clone(), auth)
-            .await?;
+        provider_openai_codex::register::register_provider_with_auth(
+            provider.clone(),
+            auth.clone(),
+        )
+        .await?;
         wait_for_provider(&router, case.id).await?;
         wait_for_registration_token(&provider, case.id).await?;
         Ok(Self {
@@ -192,6 +229,7 @@ impl Fixture {
             operator,
             provider,
             store,
+            auth,
             oauth,
             legacy,
             stub,
@@ -315,6 +353,119 @@ struct ObservedEvent {
     scope: String,
     key: String,
     secret: bool,
+}
+
+fn persisted_session() -> SessionRecord {
+    SessionRecord::connected(Credential {
+        access_token: ACCESS.into(),
+        refresh_token: Some(REFRESH.into()),
+        id_token: Some(ID_TOKEN.into()),
+        account_id: ACCOUNT.into(),
+        expires_at: 4_102_444_800,
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires III_ENGINE_BIN and III_STATE_BIN; isolated secrets migration"]
+async fn codex_login_migrates_state_and_encrypts_the_complete_session() -> anyhow::Result<()> {
+    let record = persisted_session();
+    let revision = record.revision.clone();
+    let fixture = Fixture::start_with_legacy(Some(record)).await?;
+    let status = fixture
+        .rpc("provider::openai-codex::auth::status", json!({}))
+        .await?;
+    ensure!(
+        status["status"] == "authenticated" && status["account_id"] == ACCOUNT,
+        "migration did not retain the active account"
+    );
+    let migrated = fixture
+        .store
+        .load()
+        .await?
+        .context("missing migrated session")?;
+    ensure!(
+        migrated.revision == revision,
+        "migration changed the session revision"
+    );
+    ensure!(
+        PrivateStateStore::new(fixture.provider.clone())
+            .load()
+            .await?
+            .is_none(),
+        "migration retained credentials in state"
+    );
+    let disk = std::fs::read_to_string(fixture.engine.secrets_vault_path())?;
+    ensure!(
+        ![ACCESS, REFRESH, ID_TOKEN, ACCOUNT]
+            .iter()
+            .any(|token| disk.contains(token)),
+        "vault persisted credential plaintext"
+    );
+    let refused = call(
+        &fixture.operator,
+        "secrets::resolve",
+        json!({"ref":"secret://PROVIDER_OPENAI_CODEX_SESSION"}),
+    )
+    .await;
+    ensure!(
+        matches!(refused, Err(Error::Remote { code, .. }) if code == "SECRET_FORBIDDEN"),
+        "non-consumer could resolve the managed session"
+    );
+    let restarted = AuthManager::with_dependencies(
+        Arc::new(SecretsSessionStore::new(fixture.provider.clone())),
+        fixture.oauth.clone(),
+        fixture.legacy.clone(),
+    );
+    ensure!(
+        restarted.resolve(None).await?.is_some(),
+        "restart lost the migrated session"
+    );
+    restarted.logout().await?;
+    ensure!(
+        fixture.auth.resolve(None).await?.is_none(),
+        "logout did not survive another manager"
+    );
+    ensure!(
+        fixture.legacy.0.load(Ordering::SeqCst) == 0,
+        "migration or logout used legacy credentials"
+    );
+    fixture.assert_public_state_is_private().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires III_ENGINE_BIN and III_STATE_BIN; isolated refresh/logout race"]
+async fn codex_login_logout_wins_over_a_secrets_backed_refresh() -> anyhow::Result<()> {
+    let fixture = Fixture::start_with_legacy(Some(persisted_session())).await?;
+    fixture.oauth.pause_refresh.store(true, Ordering::SeqCst);
+    let auth = fixture.auth.clone();
+    let refresh = tokio::spawn(async move { auth.resolve(Some(ACCESS)).await });
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        fixture.oauth.refresh_started.acquire(),
+    )
+    .await
+    .context("refresh did not start")??
+    .forget();
+    fixture
+        .rpc("provider::openai-codex::auth::logout", json!({}))
+        .await?;
+    fixture.oauth.release_refresh.add_permits(1);
+    ensure!(
+        tokio::time::timeout(Duration::from_secs(10), refresh)
+            .await???
+            .is_none(),
+        "in-flight refresh restored a logged-out session"
+    );
+    ensure!(
+        fixture
+            .store
+            .load()
+            .await?
+            .is_some_and(|record| record.credential.is_none()),
+        "refresh overwrote the logout record"
+    );
+    Ok(())
 }
 
 async fn observe_state(
@@ -453,7 +604,7 @@ async fn codex_login_persists_discovers_streams_and_logs_out() -> anyhow::Result
 
     // A new manager reads the durable record through a new store instance.
     let reloaded = AuthManager::with_dependencies(
-        Arc::new(PrivateStateStore::new(fixture.provider.clone())),
+        Arc::new(SecretsSessionStore::new(fixture.provider.clone())),
         fixture.oauth.clone(),
         fixture.legacy.clone(),
     );

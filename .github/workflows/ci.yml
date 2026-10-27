@@ -895,6 +895,15 @@ jobs:
             --features "${{ matrix.provider }}" \
             tests::provider_contract -- --ignored --exact --nocapture
 
+      - name: Run Codex login and migration contracts
+        if: matrix.provider == 'provider-openai-codex'
+        run: |
+          cargo test \
+            --locked \
+            --manifest-path crates/provider-integration-testkit/Cargo.toml \
+            --features provider-openai-codex \
+            codex_login -- --ignored --nocapture
+
       - name: Write contract summary
         if: success()
         env:

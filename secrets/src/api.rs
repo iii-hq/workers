@@ -5,8 +5,8 @@
 //! `secret://NAME`) or `env` (the value is an environment variable in the
 //! project's `.env` or this worker's environment, referenced as `env://NAME`).
 //!
-//! Only two types carry a value: [`SetRequest`] (in) and [`ResolveResponse`]
-//! (out). Both hold it in a [`SecretString`], so their derived `Debug`
+//! Value-carrying types, including [`CompareAndSetRequest`], hold values in
+//! [`SecretString`], so their derived `Debug`
 //! prints `[REDACTED]`. Requests ignore unknown fields: the engine stamps
 //! `_caller_worker_id` into every invocation payload.
 use schemars::JsonSchema;
