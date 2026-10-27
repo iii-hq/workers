@@ -418,6 +418,7 @@ impl Session {
         let mut credit = SEND_WINDOW;
 
         let (mut reader, mut writer) = self.stream.into_split();
+        let mut frames = Frames::default();
         let mut stdout_truncated = false;
         let mut stderr_truncated = false;
         let deadline = timeout.map(|d| tokio::time::Instant::now() + d);
@@ -427,7 +428,7 @@ impl Session {
                 deadline.map(|dl| dl.saturating_duration_since(tokio::time::Instant::now()));
             if remaining.is_some_and(|r| r.is_zero()) {
                 let _ = send_signal(&mut writer, self.corr_id, SIG_KILL).await;
-                let status = await_exited_with_grace(&mut reader, self.corr_id).await;
+                let status = await_exited_with_grace(&mut frames, &mut reader, self.corr_id).await;
                 return Ok(RunOutcome {
                     status: ExitStatus {
                         code: status,
@@ -449,13 +450,15 @@ impl Session {
             }
             let frame_opt = match remaining {
                 Some(remaining) => {
-                    match tokio::time::timeout(remaining, read_one_frame(&mut reader)).await {
+                    match tokio::time::timeout(remaining, frames.next(&mut reader)).await {
                         Ok(v) => v,
                         // The deadline: the top of the loop ends the session.
+                        // A frame cut short here stays in `frames` for the
+                        // post-kill read.
                         Err(_) => continue,
                     }
                 }
-                None => read_one_frame(&mut reader).await,
+                None => frames.next(&mut reader).await,
             };
 
             let (got_corr, flags, msg) = match frame_opt? {
@@ -904,6 +907,7 @@ async fn send_signal(
 /// spend up to `POST_KILL_GRACE` trying to collect the Exited frame.
 /// Best-effort — returns `Some(code)` if we got it, `None` otherwise.
 async fn await_exited_with_grace(
+    frames: &mut Frames,
     reader: &mut tokio::net::unix::OwnedReadHalf,
     expected_corr_id: u32,
 ) -> Option<i32> {
@@ -913,7 +917,7 @@ async fn await_exited_with_grace(
         if remaining.is_zero() {
             return None;
         }
-        let frame = match tokio::time::timeout(remaining, read_one_frame(reader)).await {
+        let frame = match tokio::time::timeout(remaining, frames.next(reader)).await {
             Ok(Ok(Some(f))) => f,
             _ => return None,
         };
@@ -994,59 +998,55 @@ where
     Ok(Some(()))
 }
 
-/// Read one complete frame from the socket. Returns `Ok(None)` on
-/// clean EOF at a frame boundary.
-async fn read_one_frame(
-    reader: &mut tokio::net::unix::OwnedReadHalf,
-) -> Result<Option<(u32, u8, ShellMessage)>, VmClientError> {
-    let mut len_buf = [0u8; 4];
-    if read_exact_or_eof(reader, &mut len_buf).await?.is_none() {
-        return Ok(None);
-    }
-    let frame_len = u32::from_be_bytes(len_buf) as usize;
-    if !(FRAME_HEADER_SIZE..=MAX_FRAME_SIZE).contains(&frame_len) {
-        return Err(VmClientError::ProtocolViolation(format!(
-            "frame length {frame_len} out of range"
-        )));
-    }
-    // Incremental capped read: see read_frame_async above.
-    let mut body: Vec<u8> = Vec::with_capacity(frame_len.min(FRAME_READ_INITIAL_CAP));
-    let read = (&mut *reader)
-        .take(frame_len as u64)
-        .read_to_end(&mut body)
-        .await
-        .map_err(|e| VmClientError::Io(format!("short read on frame body: {e}")))?;
-    if read != frame_len {
-        return Err(VmClientError::Io("short read on frame body".to_string()));
-    }
-    decode_frame_body(&body)
-        .map(Some)
-        .map_err(|e| VmClientError::ProtocolViolation(e.to_string()))
+/// The frame decoder of one session's socket. A frame read only in part
+/// stays in `buf`, so a `next` dropped by a timeout or a `select!` loses no
+/// bytes (`read_buf` is cancel-safe) and the following `next` resumes it.
+#[derive(Default)]
+struct Frames {
+    buf: Vec<u8>,
 }
 
-async fn read_exact_or_eof(
-    reader: &mut tokio::net::unix::OwnedReadHalf,
-    buf: &mut [u8],
-) -> Result<Option<()>, VmClientError> {
-    let mut read = 0;
-    while read < buf.len() {
-        match reader
-            .read(&mut buf[read..])
-            .await
-            .map_err(|e| VmClientError::Io(e.to_string()))?
-        {
-            0 => {
-                if read == 0 {
-                    return Ok(None);
+impl Frames {
+    /// The next frame; `Ok(None)` on clean EOF at a frame boundary.
+    async fn next<R>(
+        &mut self,
+        reader: &mut R,
+    ) -> Result<Option<(u32, u8, ShellMessage)>, VmClientError>
+    where
+        R: tokio::io::AsyncRead + Unpin,
+    {
+        loop {
+            if let Some(prefix) = self.buf.first_chunk::<4>() {
+                let frame_len = u32::from_be_bytes(*prefix) as usize;
+                if !(FRAME_HEADER_SIZE..=MAX_FRAME_SIZE).contains(&frame_len) {
+                    return Err(VmClientError::ProtocolViolation(format!(
+                        "frame length {frame_len} out of range"
+                    )));
                 }
-                return Err(VmClientError::ProtocolViolation(
-                    "partial read on frame length prefix".into(),
-                ));
+                if let Some(body) = self.buf.get(4..4 + frame_len) {
+                    let frame = decode_frame_body(body)
+                        .map_err(|e| VmClientError::ProtocolViolation(e.to_string()))?;
+                    self.buf.drain(..4 + frame_len);
+                    return Ok(Some(frame));
+                }
             }
-            n => read += n,
+            // `buf` grows only as bytes arrive: a peer announcing a max-size
+            // frame and stalling costs what it sent, not MAX_FRAME_SIZE.
+            let read = reader
+                .read_buf(&mut self.buf)
+                .await
+                .map_err(|e| VmClientError::Io(e.to_string()))?;
+            if read == 0 {
+                return match self.buf.len() {
+                    0 => Ok(None),
+                    1..4 => Err(VmClientError::ProtocolViolation(
+                        "partial read on frame length prefix".into(),
+                    )),
+                    _ => Err(VmClientError::Io("short read on frame body".into())),
+                };
+            }
         }
     }
-    Ok(Some(()))
 }
 
 /// An `OutputSink` that buffers stdout/stderr up to a per-stream cap,
@@ -1204,34 +1204,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_one_frame_round_trips_valid_frame_over_unix_socket() {
+    async fn frames_round_trip_back_to_back_frames_over_unix_socket() {
         let (a, mut b) = UnixStream::pair().expect("socketpair");
         let (mut read_half, _keep_write) = a.into_split();
-        let msg = ShellMessage::Exited { code: 42 };
-        let frame = encode_frame(9, 0, &msg).expect("encode");
-        b.write_all(&frame).await.expect("write frame");
+        let first = ShellMessage::Exited { code: 42 };
+        let second = ShellMessage::Started { pid: 7 };
+        let mut bytes = encode_frame(9, 0, &first).expect("encode");
+        bytes.extend(encode_frame(9, 0, &second).expect("encode"));
+        b.write_all(&bytes).await.expect("write frames");
+        drop(b);
 
-        let got = read_one_frame(&mut read_half)
-            .await
-            .expect("read ok")
-            .expect("frame present");
-
-        assert_eq!(got, (9, 0, msg));
+        let mut frames = Frames::default();
+        let got = frames.next(&mut read_half).await.expect("read ok");
+        assert_eq!(got, Some((9, 0, first)));
+        let got = frames.next(&mut read_half).await.expect("read ok");
+        assert_eq!(got, Some((9, 0, second)));
+        assert!(frames.next(&mut read_half).await.expect("eof").is_none());
     }
 
     #[tokio::test]
-    async fn read_one_frame_returns_none_on_eof_at_frame_boundary() {
+    async fn frames_return_none_on_eof_at_frame_boundary() {
         let (a, b) = UnixStream::pair().expect("socketpair");
         let (mut read_half, _keep_write) = a.into_split();
         drop(b);
 
-        let got = read_one_frame(&mut read_half).await.expect("clean eof");
+        let got = Frames::default()
+            .next(&mut read_half)
+            .await
+            .expect("clean eof");
 
         assert!(got.is_none());
     }
 
     #[tokio::test]
-    async fn read_one_frame_rejects_frame_length_above_max() {
+    async fn frames_reject_frame_length_above_max() {
         let (a, mut b) = UnixStream::pair().expect("socketpair");
         let (mut read_half, _keep_write) = a.into_split();
         let oversized = (MAX_FRAME_SIZE as u32) + 1;
@@ -1240,13 +1246,25 @@ mod tests {
             .expect("write prefix");
         drop(b);
 
-        let err = read_one_frame(&mut read_half).await.unwrap_err();
+        let err = Frames::default().next(&mut read_half).await.unwrap_err();
 
         assert!(matches!(err, VmClientError::ProtocolViolation(_)));
     }
 
     #[tokio::test]
-    async fn read_one_frame_errors_on_truncated_body() {
+    async fn frames_reject_partial_length_prefix() {
+        let (a, mut b) = UnixStream::pair().expect("socketpair");
+        let (mut read_half, _keep_write) = a.into_split();
+        b.write_all(&[0u8, 0]).await.expect("write 2 bytes");
+        drop(b);
+
+        let err = Frames::default().next(&mut read_half).await.unwrap_err();
+
+        assert!(matches!(err, VmClientError::ProtocolViolation(_)));
+    }
+
+    #[tokio::test]
+    async fn frames_error_on_truncated_body() {
         let (a, mut b) = UnixStream::pair().expect("socketpair");
         let (mut read_half, _keep_write) = a.into_split();
         let frame = encode_frame(5, 0, &ShellMessage::Exited { code: 1 }).expect("encode");
@@ -1255,7 +1273,7 @@ mod tests {
             .expect("write truncated");
         drop(b);
 
-        let err = read_one_frame(&mut read_half).await.unwrap_err();
+        let err = Frames::default().next(&mut read_half).await.unwrap_err();
 
         assert!(matches!(err, VmClientError::Io(_)));
     }

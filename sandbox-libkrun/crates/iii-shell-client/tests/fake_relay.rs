@@ -242,6 +242,52 @@ async fn timeout_sends_kill() {
     relay.await.expect("relay join");
 }
 
+/// A deadline that lands mid-frame keeps the bytes already read, so the
+/// post-kill grace read still parses that frame and the `Exited` after it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn timeout_mid_frame_still_reads_the_exit_code() {
+    let (_dir, sock, listener) = bind_socket();
+
+    let relay = spawn_relay(listener, |mut s| async move {
+        write_handshake(&mut s, 0).await.expect("handshake");
+        let _req = read_one_frame(&mut s).await.expect("read").expect("some");
+        let stdout = encode_frame(
+            1,
+            0,
+            &ShellMessage::Stdout {
+                data_b64: B64.encode(b"cut short by the deadline"),
+            },
+        )
+        .expect("encode");
+        let (head, tail) = stdout.split_at(stdout.len() / 2);
+        s.write_all(head).await.expect("head");
+        // The rest only once the client's deadline has sent SIGKILL.
+        let (_, _, msg) = read_one_frame(&mut s).await.expect("read").expect("signal");
+        assert!(matches!(msg, ShellMessage::Signal { signal: 9 }), "{msg:?}");
+        s.write_all(tail).await.expect("tail");
+        write_framed(
+            &mut s,
+            1,
+            FLAG_TERMINAL,
+            &ShellMessage::Exited { code: 137 },
+        )
+        .await
+        .expect("exited");
+    });
+
+    let session = Session::connect(&sock).await.expect("connect");
+    let mut sink = VecSink::with_cap(1024);
+    let outcome = session
+        .run(sample_req(), &mut sink, Some(Duration::from_millis(200)))
+        .await
+        .expect("run");
+
+    assert!(outcome.status.timed_out);
+    assert_eq!(outcome.status.code, Some(137));
+
+    relay.await.expect("relay join");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn output_truncation_via_sink_drains_until_exited() {
     let (_dir, sock, listener) = bind_socket();
