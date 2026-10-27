@@ -203,11 +203,11 @@ pub(crate) fn watch_pruned(
     Ok(())
 }
 
-/// Register `NonRecursive` watches on any paths from a burst that turn
-/// out to be non-ignored directories. The initial `watch_pruned` pass
-/// only covers directories that exist at startup; this catches
-/// post-startup `mkdir` calls so edits inside new subdirs don't go
-/// silent on Linux. Paths that aren't directories (files, stat errors,
+/// Register [`watch_pruned`] watches on any paths from a burst that turn
+/// out to be non-ignored directories, and on their subdirectories. The
+/// initial `watch_pruned` pass only covers directories that exist at
+/// startup; this catches post-startup `mkdir` calls so edits inside new
+/// subdirs don't go silent on Linux. Paths that aren't directories (files, stat errors,
 /// ignored-subtree matches) are skipped. Duplicate registrations are
 /// harmless — `notify` treats `watch(existing_path)` as a no-op on
 /// inotify. Errors are logged at debug level and swallowed so a single
@@ -257,17 +257,14 @@ pub(crate) fn register_new_dirs(
         if !p.starts_with(root) {
             continue;
         }
-        match watcher.watch(p, RecursiveMode::NonRecursive) {
-            Ok(()) => {
-                registered.insert(p.clone());
-            }
-            Err(e) => {
-                tracing::debug!(
-                    path = %p.display(),
-                    error = %e,
-                    "source watcher: could not register new dir, skipping"
-                );
-            }
+        // Walk it, not just watch it: on Linux a moved-in tree or
+        // `mkdir -p a/b/c` reports only its top directory.
+        if let Err(e) = watch_pruned(watcher, p, registered) {
+            tracing::debug!(
+                path = %p.display(),
+                error = %e,
+                "source watcher: could not register new dir, skipping"
+            );
         }
     }
 }
@@ -545,6 +542,30 @@ mod tests {
             "in-root directory must register; got registered set: {:?}",
             registered
         );
+    }
+
+    /// On Linux a moved-in tree or `mkdir -p a/b/c` reports only `a`, so the
+    /// subdirectories must be registered from that one event (ignored
+    /// subtrees still excluded).
+    #[test]
+    fn register_new_dirs_watches_the_whole_new_subtree() {
+        let proj = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(proj.path()).unwrap();
+        let top = root.join("a");
+        std::fs::create_dir_all(top.join("b/c")).unwrap();
+        std::fs::create_dir_all(top.join("node_modules/pkg")).unwrap();
+
+        let mut watcher = notify::recommended_watcher(|_| {}).unwrap();
+        let mut registered: HashSet<PathBuf> = HashSet::new();
+        register_new_dirs(
+            &mut watcher,
+            std::slice::from_ref(&top),
+            &root,
+            &mut registered,
+        );
+
+        assert!(registered.contains(&top.join("b/c")), "{registered:?}");
+        assert!(!registered.contains(&top.join("node_modules")));
     }
 
     /// Regression lock for the canonical-root seed: `watch_pruned` is
