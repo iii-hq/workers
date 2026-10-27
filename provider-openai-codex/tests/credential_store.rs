@@ -301,6 +301,11 @@ async fn storage_errors_and_invalid_envelopes_are_not_absence() {
         "not-json",
         "{}",
         r#"{"version":1,"migration_complete":true}"#,
+        r#"{"session":null,"migration_complete":true}"#,
+        r#"{"version":1,"session":null}"#,
+        r#"{"version":1,"session":{"credential":null,"needs_login":false},"migration_complete":true}"#,
+        r#"{"version":1,"session":{"revision":"session","credential":null},"migration_complete":true}"#,
+        r#"{"version":1,"session":{"revision":"session","needs_login":false},"migration_complete":true}"#,
         r#"{"version":2,"session":null,"migration_complete":true}"#,
     ] {
         let bus = SessionBus::start(Value::Null, Some(value.into())).await;

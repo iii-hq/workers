@@ -203,9 +203,13 @@ impl Fixture {
         let seeded = seed.is_some();
         if let Some(record) = seed {
             ensure!(
-                PrivateStateStore::new(provider.clone())
-                    .compare_and_set(None, &record)
-                    .await?,
+                call(
+                    &provider,
+                    "provider-openai-codex::state::compare-and-set",
+                    json!({"scope":AUTH_SCOPE,"key":"session","expected":null,"value":record}),
+                )
+                .await?["swapped"]
+                    == true,
                 "could not seed legacy auth session"
             );
         }

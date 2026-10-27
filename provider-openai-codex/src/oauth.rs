@@ -12,7 +12,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const DEFAULT_INTERVAL: u64 = 5;
 const DEVICE_LIFETIME_SECS: i64 = 900;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Credential {
     pub access_token: String,
     pub refresh_token: Option<String>,

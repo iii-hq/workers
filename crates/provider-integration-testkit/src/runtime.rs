@@ -225,7 +225,7 @@ pub(crate) fn provider_init_options(provider: &str) -> InitOptions {
 
 #[cfg(feature = "provider-openai-codex")]
 pub(crate) async fn wait_for_codex_state(provider: &IIIClient) -> anyhow::Result<()> {
-    use provider_openai_codex::credential_store::{PrivateStateStore, SessionStore};
+    use provider_openai_codex::credential_store::PrivateStateStore;
     let store = PrivateStateStore::new(provider.clone());
     // The claim response can precede engine visibility of the dynamic
     // accessors. Probe through the real store before boot-time discovery.

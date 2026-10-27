@@ -59,19 +59,9 @@ impl SecretsSessionStore {
             .ok_or_else(SessionError::storage)?;
         let value: Value = serde_json::from_str(raw).map_err(|_| SessionError::storage())?;
         // Missing Option fields must not silently become an empty session.
-        if !["version", "session", "migration_complete"]
-            .iter()
-            .all(|key| value.get(key).is_some())
-        {
+        let session = value.get("session").ok_or_else(SessionError::storage)?;
+        if !session.is_null() && session.get("credential").is_none() {
             return Err(SessionError::storage());
-        }
-        if let Some(session) = value.get("session").filter(|session| !session.is_null()) {
-            if !["revision", "credential", "needs_login"]
-                .iter()
-                .all(|key| session.get(key).is_some())
-            {
-                return Err(SessionError::storage());
-            }
         }
         let envelope: Envelope =
             serde_json::from_value(value).map_err(|_| SessionError::storage())?;
@@ -146,10 +136,7 @@ impl SessionStore for SecretsSessionStore {
         Box::pin(async move {
             let _transition = self.transition.lock().await;
             let (raw, envelope) = self.ready().await?;
-            let current =
-                serde_json::to_value(&envelope.session).map_err(|_| SessionError::storage())?;
-            let expected = serde_json::to_value(expected).map_err(|_| SessionError::storage())?;
-            if current != expected {
+            if envelope.session.as_ref() != expected {
                 return Ok(false);
             }
             self.swap(
