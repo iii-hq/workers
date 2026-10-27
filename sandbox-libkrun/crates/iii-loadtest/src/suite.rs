@@ -381,6 +381,7 @@ impl VmRun<'_> {
         loop {
             console.print_new();
             if let Some(status) = child.try_wait()? {
+                runner::untrack();
                 console.print_new();
                 if !result_path.exists() {
                     bail!(
@@ -392,6 +393,7 @@ impl VmRun<'_> {
             }
             if started.elapsed() > limit {
                 stop_vm(&mut child);
+                runner::untrack();
                 bail!(
                     "the VM ran past {limit:?}; console:\n{}",
                     console.last_lines(15)

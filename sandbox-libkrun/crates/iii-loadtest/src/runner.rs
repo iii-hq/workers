@@ -422,12 +422,18 @@ fn engine_cgroup(mem_mib: Option<u64>) -> Option<PathBuf> {
 
 /// The process group the run has running (an engine, or a VM), so a suite
 /// stopped by a signal takes it down with it: each lives in a group of its
-/// own and would outlive the suite otherwise.
+/// own and would outlive the suite otherwise. 0 when none is.
 pub static CHILD_PGID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
 /// Records `child` as the group to stop on a signal.
 pub fn track(child: &Child) {
     CHILD_PGID.store(child.id() as i32, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Forgets the tracked group once its leader is reaped: its pid is free
+/// again, and may come back as another group's.
+pub fn untrack() {
+    CHILD_PGID.store(0, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// Stops the tracked group and exits, on SIGTERM or SIGINT. Call before any
@@ -492,6 +498,7 @@ fn stop(child: &mut Child) {
     }
     unsafe { libc::kill(-pgid, libc::SIGKILL) };
     let _ = child.wait();
+    untrack();
 }
 
 /// Waits until the engine answers a WebSocket with `workerregistered`.
@@ -653,6 +660,20 @@ mod tests {
             let _ = child.wait();
             assert!(started.elapsed() < Duration::from_secs(10), "{script}");
         }
+    }
+
+    /// `stop` reaps the engine, so a signal after it must not reach the
+    /// group its pid may lead by then.
+    #[test]
+    fn stop_untracks_the_group_it_reaps() {
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .expect("spawn sleep");
+        track(&child);
+        stop(&mut child);
+        assert_eq!(CHILD_PGID.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     #[test]
