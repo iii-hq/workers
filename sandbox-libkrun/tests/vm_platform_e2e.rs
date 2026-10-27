@@ -95,6 +95,18 @@ fn test_vm_boot_platform() {
             return;
         }
     }
+    // The other prerequisites are checked here, not read back from the boot's
+    // output: past this point every failure is a real boot failure.
+    if sandbox_libkrun::cli::vm_boot::resolve_krunfw_file_path().is_none() {
+        eprintln!(
+            "Skipping: libkrunfw not found (~/.iii/lib, III_LIBKRUNFW_PATH or a system path)"
+        );
+        return;
+    }
+    if !iii_filesystem::init::has_init() {
+        eprintln!("Skipping: no embedded iii-init (build with --features embed-init)");
+        return;
+    }
 
     // 1. Find the sandbox-libkrun binary
     let bin_path = env!("CARGO_BIN_EXE_sandbox-libkrun");
@@ -169,25 +181,13 @@ fn test_vm_boot_platform() {
     eprintln!("--- stdout ---\n{}", stdout);
     eprintln!("--- stderr ---\n{}", stderr);
 
-    // The VM boot subprocess may exit non-zero if libkrun is not installed.
-    // In that case, check stderr for known error indicators and skip.
-    if !output.status.success() {
-        let combined = format!("{}{}", stdout, stderr);
-        if combined.contains("not found")
-            || combined.contains("dlopen")
-            || combined.contains("library")
-            || combined.contains("libkrun")
-        {
-            eprintln!("Skipping: libkrun not installed ({})", output.status);
-            return;
-        }
-        panic!(
-            "VM boot failed with exit code {:?}\nstdout: {}\nstderr: {}",
-            output.status.code(),
-            stdout,
-            stderr
-        );
-    }
+    assert!(
+        output.status.success(),
+        "VM boot failed with exit code {:?}\nstdout: {}\nstderr: {}",
+        output.status.code(),
+        stdout,
+        stderr
+    );
 
     // Verify init mounted /proc and the worker command executed successfully
     assert!(
