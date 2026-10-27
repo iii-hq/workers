@@ -283,11 +283,19 @@ pub fn validate_manifest_keys(
 }
 
 pub fn load_from_manifest(manifest_path: &std::path::Path) -> Option<ProjectInfo> {
-    let doc = read_manifest_doc(manifest_path).ok()??;
+    project_from_doc(&read_manifest_doc(manifest_path).ok()??, manifest_path)
+}
+
+/// [`load_from_manifest`] on a doc already read, so a caller that validated
+/// the doc loads those same bytes instead of a second read of the file.
+pub(crate) fn project_from_doc(
+    doc: &serde_yaml::Value,
+    manifest_path: &std::path::Path,
+) -> Option<ProjectInfo> {
     // Typed view — the manifest schema's single source of truth. A shape
     // mismatch (e.g. `runtime: node`) yields None here; on the start path
     // `validate_manifest_keys` has already surfaced the precise error.
-    let manifest = super::worker_manifest::WorkerManifest::from_value(&doc).ok()?;
+    let manifest = super::worker_manifest::WorkerManifest::from_value(doc).ok()?;
     let name = manifest.name.clone()?;
 
     let rt = manifest.runtime.clone().unwrap_or_default();

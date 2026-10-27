@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use super::project::{ProjectInfo, WORKER_MANIFEST, load_from_manifest};
+use super::project::{ProjectInfo, WORKER_MANIFEST, project_from_doc};
 use super::rootfs::clone_rootfs;
 
 const PREPARED_MARKER_VERSION: &str = "workspace-copy-in-v1";
@@ -323,10 +323,10 @@ pub async fn local_vm_command(
 
 /// A local VM runs only on an explicit, valid OCI image: an invalid VM request
 /// must not silently change into another image.
-fn validate_compose_base_image(worker_dir: &Path) -> Result<(), String> {
-    let manifest_path = worker_dir.join(WORKER_MANIFEST);
-    let doc = super::project::read_manifest_doc(&manifest_path)?
-        .ok_or_else(|| format!("{} does not exist", manifest_path.display()))?;
+fn validate_compose_base_image(
+    doc: &serde_yaml::Value,
+    manifest_path: &Path,
+) -> Result<(), String> {
     let value = doc
         .get("runtime")
         .and_then(|runtime| runtime.get("base_image"))
@@ -425,14 +425,14 @@ pub(crate) fn validate_source(
     }
 
     // 1a. Bundle workers: re-run the strict manifest validator before
-    // we touch the publisher-controlled YAML via load_from_manifest.
+    // we touch the publisher-controlled YAML via project_from_doc.
     // Whatever checked the bundle at install time, the
     // install dir is on the host filesystem — any local-FS-write
     // attacker (or a future bug that lets a bundle write to its own
     // install dir) could modify the iii.worker.yaml in that install dir
     // (Compose's package cache) between install and start to introduce
     // scripts.setup, scripts.install, or runtime.base_image. The permissive
-    // load_from_manifest path below would honor those fields. The
+    // project_from_doc path below would honor those fields. The
     // strict validator also enforces the 64 KiB manifest cap, which
     // defuses billion-laughs YAML expansion before serde_yaml sees it.
     if let Some(package) = package
@@ -447,18 +447,19 @@ pub(crate) fn validate_source(
     // 1b. Local (non-bundle) workers: the manifest must exist, and gets
     // strict key validation, so a manifest hand-edited after it was written
     // can't smuggle unknown keys (or an oversize/billion-laughs YAML) past
-    // the engine via the permissive load_from_manifest path below.
+    // the engine via the permissive load path below. The manifest is read
+    // once, so the doc that passes these checks is the one loaded.
     let manifest_path = project_path.join(WORKER_MANIFEST);
-    if package.is_none() {
-        let doc = super::project::read_manifest_doc(&manifest_path)?
-            .ok_or_else(|| format!("{} does not exist", manifest_path.display()))?;
-        if let Err(e) = super::project::validate_manifest_keys(&doc, &manifest_path) {
-            return Err(format!("manifest validation failed at start: {}", e));
-        }
+    let doc = super::project::read_manifest_doc(&manifest_path)?
+        .ok_or_else(|| format!("{} does not exist", manifest_path.display()))?;
+    if package.is_none()
+        && let Err(e) = super::project::validate_manifest_keys(&doc, &manifest_path)
+    {
+        return Err(format!("manifest validation failed at start: {}", e));
     }
 
     // 2. Load the manifest
-    let mut project = load_from_manifest(&manifest_path).ok_or_else(|| {
+    let mut project = project_from_doc(&doc, &manifest_path).ok_or_else(|| {
         format!(
             "Could not load the worker manifest in '{}'",
             project_path.display()
@@ -487,7 +488,7 @@ pub(crate) fn validate_source(
         .to_string();
 
     if package.is_none() {
-        validate_compose_base_image(project_path)?;
+        validate_compose_base_image(&doc, &manifest_path)?;
     }
     Ok((project, kind))
 }
