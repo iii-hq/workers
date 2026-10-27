@@ -4,19 +4,26 @@ use crate::error::InitError;
 pub const DEFAULT_NOFILE: u64 = 65536;
 
 /// Raise RLIMIT_NOFILE to the value specified in `III_INIT_NOFILE` env var,
-/// or `DEFAULT_NOFILE` (65536) if not set.
+/// else to the host's `--nofile-limit` (from `KRUN_RLIMITS`), else to
+/// `DEFAULT_NOFILE` (65536).
 pub fn raise_nofile() -> Result<(), InitError> {
-    let limit = match std::env::var("III_INIT_NOFILE") {
-        Ok(val) => val.parse::<u64>().map_err(|e| InitError::ParseNofile {
-            value: val,
-            source: e,
-        })?,
-        Err(_) => DEFAULT_NOFILE,
+    let (soft, hard) = match std::env::var("III_INIT_NOFILE") {
+        Ok(val) => {
+            let limit = val.parse::<u64>().map_err(|e| InitError::ParseNofile {
+                value: val,
+                source: e,
+            })?;
+            (limit, limit)
+        }
+        Err(_) => std::env::var("KRUN_RLIMITS")
+            .ok()
+            .and_then(|rlimits| krun_nofile(&rlimits))
+            .unwrap_or((DEFAULT_NOFILE, DEFAULT_NOFILE)),
     };
 
     let rlim = libc::rlimit {
-        rlim_cur: limit,
-        rlim_max: limit,
+        rlim_cur: soft,
+        rlim_max: hard,
     };
     let ret = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &rlim) };
     if ret != 0 {
@@ -25,9 +32,30 @@ pub fn raise_nofile() -> Result<(), InitError> {
     Ok(())
 }
 
+/// The NOFILE `(soft, hard)` in libkrun's `KRUN_RLIMITS`
+/// (`RLIMIT_NOFILE:soft:hard,...`). Only libkrun's stock init applies that
+/// variable, and iii-init runs in its place.
+fn krun_nofile(rlimits: &str) -> Option<(u64, u64)> {
+    rlimits.split(',').find_map(|entry| {
+        let mut parts = entry.split(':');
+        if parts.next()?.trim_start_matches("RLIMIT_") != "NOFILE" {
+            return None;
+        }
+        Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn krun_rlimits_nofile_is_parsed() {
+        assert_eq!(krun_nofile("RLIMIT_NOFILE:1024:4096"), Some((1024, 4096)));
+        assert_eq!(krun_nofile("RLIMIT_NPROC:1:2,NOFILE:3:4"), Some((3, 4)));
+        assert_eq!(krun_nofile("RLIMIT_NPROC:1:2"), None);
+        assert_eq!(krun_nofile("RLIMIT_NOFILE:x:4096"), None);
+    }
 
     #[test]
     fn test_default_nofile_value() {
