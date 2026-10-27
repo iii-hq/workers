@@ -116,3 +116,13 @@ def test_the_deployed_lane_passes_only_files_the_repo_has():
     for rel in re.findall(r'"\$repo_root/([^"$]+)"', script):
         if not rel.startswith("target/"):
             assert (repo / rel).exists(), rel
+
+
+def test_the_deployed_engine_binds_the_sandbox_router():
+    """Compose attaches to this engine and never writes its sandbox binding."""
+    repo = Path(__file__).parents[3]
+    script = (repo / "harness/tests/e2e/run-deployed-ci.sh").read_text()
+    body = re.search(r"printf '([^']*)'[\s\\]*>\"\$project_dir/config\.yaml\"", script)
+    assert body, "run-deployed-ci.sh no longer writes the engine config"
+    config = yaml.safe_load(body.group(1).encode().decode("unicode_escape"))
+    assert config["sandbox"]["adapter"] == "sandbox-libkrun"

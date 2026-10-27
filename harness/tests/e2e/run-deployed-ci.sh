@@ -310,7 +310,10 @@ printf '%s\n' "$cli_version" >"$artifact_dir/cli-version.txt"
 "$iii_bin" compose --help >/dev/null 2>&1 \
   || die "the installed iii CLI ($cli_version) has no compose command"
 
-printf 'workers: []\n' >"$project_dir/config.yaml"
+# Compose attaches to this engine instead of spawning it, so it never writes
+# the sandbox binding: without one every sandbox::* call gets S303.
+printf 'workers: []\nsandbox:\n  adapter: sandbox-libkrun\n  namespace: default\n' \
+  >"$project_dir/config.yaml"
 (cd "$project_dir" && exec setsid "$iii_bin" -c config.yaml --no-update-check) \
   >"$log_dir/engine.log" 2>&1 &
 engine_pid=$!
