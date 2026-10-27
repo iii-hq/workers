@@ -55,22 +55,24 @@ pub fn build(args: &RootfsArgs) -> Result<()> {
         .out
         .file_name()
         .with_context(|| format!("{} has no file name", args.out.display()))?;
-    // `out` is deleted below: never a directory this tool did not build.
-    let other = std::fs::read_dir(&args.out).is_ok_and(|mut d| d.next().is_some());
-    if other && args.out.join("init.krun").symlink_metadata().is_err() {
-        bail!(
-            "{} is not empty and holds no rootfs: pick another --out",
-            args.out.display()
-        );
-    }
     let mut staged = name.to_owned();
     staged.push(".new");
     let out = &args.out.with_file_name(staged);
+    // Both are deleted below: never a directory this tool did not build.
+    for dir in [&args.out, out] {
+        if !ours(dir) {
+            bail!(
+                "{} is not empty and holds no rootfs this tool built: pick another --out",
+                dir.display()
+            );
+        }
+    }
     // Left by a build that failed halfway.
     remove_tree(out)?;
 
+    // BIN_DIR first: it marks the tree as ours even if the build then fails.
     for dir in [
-        "bin", "dev", "etc", "proc", "run", "sys", "tmp", "root", BIN_DIR,
+        BIN_DIR, "bin", "dev", "etc", "proc", "run", "sys", "tmp", "root",
     ] {
         std::fs::create_dir_all(out.join(dir))?;
     }
@@ -101,6 +103,16 @@ pub fn build(args: &RootfsArgs) -> Result<()> {
     remove_tree(&args.out)?;
     std::fs::rename(out, &args.out)
         .with_context(|| format!("move {} to {}", out.display(), args.out.display()))
+}
+
+/// Whether `dir` is absent, empty or built by this tool: only it makes
+/// `BIN_DIR` (sandbox-libkrun's worker rootfses also hold an `init.krun`).
+fn ours(dir: &Path) -> bool {
+    std::fs::read_dir(dir).map_or(true, |mut d| d.next().is_none())
+        || dir
+            .join(BIN_DIR)
+            .symlink_metadata()
+            .is_ok_and(|m| m.is_dir())
 }
 
 /// Removes `dir` and everything in it, following no symlink; absent is fine.
@@ -175,6 +187,7 @@ mod tests {
         let out = dir.join("rootfs");
         let outside = dir.join("outside");
         std::fs::create_dir_all(out.join("etc")).unwrap();
+        std::fs::create_dir_all(out.join(BIN_DIR)).unwrap();
         std::fs::write(out.join("init.krun"), "an earlier build").unwrap();
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("passwd"), "host\n").unwrap();
@@ -200,26 +213,29 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// A directory that holds no rootfs is never replaced.
+    /// Neither `out` nor `<out>.new` is replaced when this tool did not build
+    /// it, even when it is a rootfs (a worker's, with its `init.krun`).
     #[test]
-    fn a_build_leaves_a_directory_that_is_no_rootfs() {
+    fn a_build_leaves_a_directory_it_did_not_build() {
         let dir = std::env::temp_dir().join(format!("iii-loadtest-other-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("keep"), "mine").unwrap();
-        let init = std::env::temp_dir().join(format!("iii-loadtest-init-{}", std::process::id()));
-        std::fs::write(&init, "init").unwrap();
+        let init = dir.join("init");
+        for other in ["rootfs", "rootfs.new"] {
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join(other)).unwrap();
+            std::fs::write(dir.join(other).join("init.krun"), "mine").unwrap();
+            std::fs::write(&init, "init").unwrap();
 
-        let built = build(&RootfsArgs {
-            out: dir.clone(),
-            init: Some(init.clone()),
-            bins: Vec::new(),
-        });
+            let built = build(&RootfsArgs {
+                out: dir.join("rootfs"),
+                init: Some(init.clone()),
+                bins: Vec::new(),
+            });
 
-        assert!(built.is_err());
-        assert_eq!(std::fs::read_to_string(dir.join("keep")).unwrap(), "mine");
+            assert!(built.is_err(), "{other}");
+            let kept = std::fs::read_to_string(dir.join(other).join("init.krun"));
+            assert_eq!(kept.unwrap(), "mine", "{other}");
+        }
         std::fs::remove_dir_all(&dir).unwrap();
-        std::fs::remove_file(&init).unwrap();
     }
 
     #[test]
