@@ -1255,6 +1255,9 @@ const MAX_PROOF_ROUNDS: u32 = 20;
 
 /// At most this many past runs are read into one history baseline.
 const MAX_HISTORY_RUNS: usize = 40;
+/// And at most this many bytes of them, transcripts included: the baseline
+/// is stored as one evidence, which must pass the bus frame (16 MiB).
+const MAX_HISTORY_BYTES: usize = 8 << 20;
 
 /// The past E2E runs the loop reads instead of dispatching: finished GitHub
 /// executions (the release-control campaigns) of `model`, completed in the
@@ -1343,7 +1346,7 @@ async fn history_stage(
     // the bus frame limit. Each run's projection and its retained transcript.
     let mut reports = Vec::new();
     let mut read = std::collections::BTreeSet::new();
-    let mut runs_read = 0;
+    let (mut runs_read, mut bytes) = (0, 0);
     for scenario_id in &plan.parameters.scenarios {
         let history: Value = call(
             deps,
@@ -1362,7 +1365,7 @@ async fn history_stage(
                 continue;
             }
             for run in observation["runs"].as_array().into_iter().flatten() {
-                if runs_read == MAX_HISTORY_RUNS {
+                if runs_read == MAX_HISTORY_RUNS || bytes >= MAX_HISTORY_BYTES {
                     break;
                 }
                 let (Some(run_id), Some(attempt_id)) =
@@ -1401,6 +1404,13 @@ async fn history_stage(
                 if let Some(transcript) = transcript {
                     projected["transcript"] = transcript;
                 }
+                let size = serde_json::to_vec(&projected).map_or(0, |text| text.len());
+                if bytes + size > MAX_HISTORY_BYTES {
+                    // Full: the baseline is the runs already read.
+                    bytes = MAX_HISTORY_BYTES;
+                    break;
+                }
+                bytes += size;
                 runs.push(projected);
                 runs_read += 1;
                 read.insert(plan_execution.to_string());

@@ -1632,6 +1632,10 @@ async fn with_history_days_the_cycle_measures_the_github_runs_already_made_and_d
     ci["manifest"]["executions"][0]["status"] = json!("passed");
     ci["manifest"]["executions"][0]["source"] = json!({"kind": "github"});
     world.executions.insert("ci-1".into(), ci.clone());
+    // A second campaign whose run would push the stored baseline past the
+    // bus frame: the baseline is the runs read before it.
+    ci["manifest"]["executions"][0]["id"] = json!("ci-2");
+    world.executions.insert("ci-2".into(), ci.clone());
     // A cycle's own GitHub proof ran its candidate, not today's Harness.
     ci["manifest"]["executions"][0]["id"] = json!("proof-1");
     ci["manifest"]["executions"][0]["idempotency_key"] = json!("cycle_0f:candidate-1");
@@ -1643,7 +1647,10 @@ async fn with_history_days_the_cycle_measures_the_github_runs_already_made_and_d
             "status": "passed", "function_call_errors": 5.0}]},
             {"subject_model": "m", "plan_execution_id": "proof-1",
             "execution_id": "native-2", "runs": [{"run_id": "r2", "attempt_id": "a2",
-            "status": "passed", "function_call_errors": 50.0}]}]}),
+            "status": "passed", "function_call_errors": 50.0}]},
+            {"subject_model": "m", "plan_execution_id": "ci-2",
+            "execution_id": "native-3", "runs": [{"run_id": "r3", "attempt_id": "a3",
+            "status": "passed", "function_call_errors": 5.0}]}]}),
     );
     let edit = (
         "coder::update-file",
@@ -1655,6 +1662,14 @@ async fn with_history_days_the_cycle_measures_the_github_runs_already_made_and_d
     world
         .transcripts
         .insert("native-1/evidence/r1/a1/transcript.json".into(), transcript);
+    let mut huge = failed_all("r3", &[]);
+    huge["transcript"]["messages"] = json!([{"entry_id": "u", "message": {"role": "user",
+        "timestamp": 0, "content": [{"type": "text", "text": "x".repeat(9 << 20)}]}}]);
+    let transcript = huge["transcript"].take();
+    world.attempts.insert("native-3/r3/a3".into(), huge);
+    world
+        .transcripts
+        .insert("native-3/evidence/r3/a3/transcript.json".into(), transcript);
     let mut proof = failed_all("r2", &[edit; 9]);
     let transcript = proof["transcript"].take();
     world.attempts.insert("native-2/r2/a2".into(), proof);
