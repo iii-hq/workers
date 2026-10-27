@@ -1199,8 +1199,8 @@ async fn baseline_stage(
 /// again never dispatches twice: an entry already `dispatching` is
 /// reconciled by its idempotency key in the E2E listing. Answered, the cycle waits
 /// for the execution; unanswered, it waits at its current stage, polled.
-/// At most this many past executions are read into one history baseline.
-const MAX_HISTORY: usize = 30;
+/// At most this many past runs are read into one history baseline.
+const MAX_HISTORY_RUNS: usize = 40;
 
 /// The past E2E runs the loop reads instead of dispatching: finished GitHub
 /// executions (the release-control campaigns) of `model`, completed in the
@@ -1272,43 +1272,98 @@ async fn history_stage(
     plan: &CyclePlanV1,
     days: u32,
 ) -> Result<Option<CycleRecordV1>, EvalError> {
-    let window = history_window(deps, days, &plan.parameters.model).await?;
-    let wanted: Vec<&String> = window
-        .iter()
-        .filter(|(_, scenarios)| {
-            scenarios
-                .iter()
-                .any(|scenario| plan.parameters.scenarios.contains(scenario))
-        })
-        .map(|(execution_id, _)| execution_id)
-        .take(MAX_HISTORY)
-        .collect();
+    let window: std::collections::BTreeSet<String> =
+        history_window(deps, days, &plan.parameters.model)
+            .await?
+            .into_iter()
+            .map(|(execution_id, _)| execution_id)
+            .collect();
+    // Run by run, never a whole execution: a campaign's full report can pass
+    // the bus frame limit. Each run's projection and its retained transcript.
+    let mut reports = Vec::new();
+    let mut read = std::collections::BTreeSet::new();
+    let mut runs_read = 0;
+    for scenario_id in &plan.parameters.scenarios {
+        let history: Value = call(
+            deps,
+            "e2e::dashboard::test-history-get",
+            json!({"test_id": scenario_id, "subject_model": plan.parameters.model, "limit": 100}),
+            BUS_TIMEOUT_MS,
+        )
+        .await?;
+        let mut runs = Vec::new();
+        for observation in history["observations"].as_array().into_iter().flatten() {
+            let plan_execution = observation["plan_execution_id"]
+                .as_str()
+                .unwrap_or_default();
+            let native = observation["execution_id"].as_str().unwrap_or_default();
+            if !window.contains(plan_execution) || native.is_empty() {
+                continue;
+            }
+            for run in observation["runs"].as_array().into_iter().flatten() {
+                if runs_read == MAX_HISTORY_RUNS {
+                    break;
+                }
+                let (Some(run_id), Some(attempt_id)) =
+                    (run["run_id"].as_str(), run["attempt_id"].as_str())
+                else {
+                    continue;
+                };
+                let Ok(mut projected) = call::<_, Value>(
+                    deps,
+                    "e2e::dashboard::attempt-get",
+                    json!({"execution_id": native, "run_id": run_id, "attempt_id": attempt_id}),
+                    BUS_TIMEOUT_MS,
+                )
+                .await
+                else {
+                    continue;
+                };
+                let transcript = call::<_, Value>(
+                    deps,
+                    "e2e::dashboard::evidence-read",
+                    json!({"execution_id": native,
+                        "path": format!("evidence/{run_id}/{attempt_id}/transcript.json")}),
+                    BUS_TIMEOUT_MS,
+                )
+                .await
+                .ok()
+                .and_then(|file| {
+                    use base64::Engine as _;
+                    base64::engine::general_purpose::STANDARD
+                        .decode(file["base64"].as_str()?)
+                        .ok()
+                })
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+                projected["run_id"] = json!(run_id);
+                projected["attempt_id"] = json!(attempt_id);
+                if let Some(transcript) = transcript {
+                    projected["transcript"] = transcript;
+                }
+                runs.push(projected);
+                runs_read += 1;
+                read.insert(plan_execution.to_string());
+            }
+        }
+        if !runs.is_empty() {
+            reports.push(json!({"scenario_id": scenario_id, "available": true,
+                "report": {"scenarios": [{"scenario_id": scenario_id, "runs": runs}]}}));
+        }
+    }
+    let wanted: Vec<String> = read.into_iter().collect();
     if wanted.is_empty() {
         let detail = format!(
-            "no GitHub execution of {} with {} finished in the last {days} day(s): import the \
+            "no GitHub run of {} with {} finished in the last {days} day(s): import the \
              release-control runs, or widen history_days",
             plan.parameters.scenarios.join(", "),
             plan.parameters.model
         );
         return end(deps, record, OutcomeCodeV1::Inconclusive, &detail).await;
     }
-    let mut reports = Vec::new();
-    let mut summaries = Vec::new();
-    for execution_id in &wanted {
-        let bundle = execution_get(deps, execution_id).await?;
-        reports.extend(
-            bundle["detail"]["reports"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default(),
-        );
-        summaries.extend(
-            bundle["manifest"]["executions"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default(),
-        );
-    }
+    let summaries: Vec<Value> = wanted
+        .iter()
+        .map(|id| json!({"id": id, "status": "passed"}))
+        .collect();
     let execution_id = format!("history:{}", wanted.len());
     let merged = json!({"manifest": {"executions": summaries}, "detail": {"reports": reports}});
     let evidence = ExecutionEvidenceV1 {
@@ -2364,6 +2419,29 @@ pub async fn admit_execution(
     deps: &Deps,
     execution_id: &str,
 ) -> Result<(ExecutionAdmissionResponseV1, bool), EvalError> {
+    // With admission off only the loop's own executions are read: a foreign
+    // one (an imported CI campaign can be tens of MB) is never fetched.
+    if state::get_config(&deps.iii)
+        .await?
+        .is_some_and(|stored| !stored.config.admit_executions)
+        && !state::list_open_cycles(&deps.iii)
+            .await?
+            .iter()
+            .any(|cycle| {
+                cycle
+                    .executions
+                    .iter()
+                    .any(|entry| entry.execution_id.as_deref() == Some(execution_id))
+            })
+    {
+        return Ok((
+            not_admitted(
+                "automatic admission is off (config.admit_executions): a cycle starts only when asked",
+                None,
+            ),
+            false,
+        ));
+    }
     let bundle = execution_get(deps, execution_id).await?;
     let Some(summary) = evidence::summary(&bundle, execution_id) else {
         return Ok((
@@ -2450,18 +2528,6 @@ pub async fn admit_execution(
                     "already in a cycle"
                 },
                 Some(cycle.cycle_id),
-            ),
-            false,
-        ));
-    }
-    if state::get_config(&deps.iii)
-        .await?
-        .is_some_and(|stored| !stored.config.admit_executions)
-    {
-        return Ok((
-            not_admitted(
-                "automatic admission is off (config.admit_executions): a cycle starts only when asked",
-                None,
             ),
             false,
         ));

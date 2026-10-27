@@ -45,6 +45,9 @@ struct World {
     jev_class: Option<&'static str>,
     /// Jev's fit of each test to the objective (0–3), by test id.
     fits: BTreeMap<String, f64>,
+    /// `attempt-get` and `evidence-read` answers, by `native/run/attempt`.
+    attempts: BTreeMap<String, Value>,
+    transcripts: BTreeMap<String, Value>,
     /// What the default LLM replies, or `None`: it does not answer.
     analyst_reply: Option<String>,
 }
@@ -121,6 +124,8 @@ impl World {
             histories: BTreeMap::new(),
             jev_class: None,
             fits: BTreeMap::new(),
+            attempts: BTreeMap::new(),
+            transcripts: BTreeMap::new(),
             analyst_reply: None,
         }
     }
@@ -310,6 +315,32 @@ impl World {
                 json!({"status": "ok", "model": "jev-test", "results": results,
                     "stats": {"attempts": 1, "elapsed_ms": 1, "input_tokens": 10, "output_tokens": 1,
                         "questions": results.len(), "requests": 1, "usage_complete": true}})
+            }
+            "e2e::dashboard::attempt-get" => {
+                let key = format!(
+                    "{}/{}/{}",
+                    data["execution_id"].as_str().unwrap_or_default(),
+                    data["run_id"].as_str().unwrap_or_default(),
+                    data["attempt_id"].as_str().unwrap_or_default()
+                );
+                match self.attempts.get(&key) {
+                    Some(attempt) => attempt.clone(),
+                    None => return Some(Err(format!("unknown attempt {key}"))),
+                }
+            }
+            "e2e::dashboard::evidence-read" => {
+                use base64::Engine as _;
+                let key = format!(
+                    "{}/{}",
+                    data["execution_id"].as_str().unwrap_or_default(),
+                    data["path"].as_str().unwrap_or_default()
+                );
+                match self.transcripts.get(&key) {
+                    Some(transcript) => json!({"media_type": "application/json",
+                        "base64": base64::engine::general_purpose::STANDARD
+                            .encode(serde_json::to_vec(transcript).unwrap())}),
+                    None => return Some(Err(format!("no evidence {key}"))),
+                }
             }
             "router::complete" => {
                 let Some(reply) = &self.analyst_reply else {
@@ -1589,21 +1620,33 @@ async fn with_history_days_the_cycle_measures_the_github_runs_already_made_and_d
 {
     let mut world = World::new();
     world.jev_class = Some("preventable");
-    world
-        .histories
-        .insert("context_pressure".into(), history("m", &[5.0]));
-    let edit = (
-        "coder::update-file",
-        "did not run: the arguments were truncated",
-    );
+    // A GitHub campaign finished in the window; its run read one by one:
+    // the history row, the attempt's projection, the retained transcript.
     let mut ci = bundle(
         "ci-1",
         "Essential checks before merge",
         "passed",
-        vec![failed_all("r1", &[edit; 5])],
+        Vec::new(),
     );
+    ci["manifest"]["executions"][0]["status"] = json!("passed");
     ci["manifest"]["executions"][0]["source"] = json!({"kind": "github"});
     world.executions.insert("ci-1".into(), ci);
+    world.histories.insert(
+        "context_pressure".into(),
+        json!({"observations": [{"subject_model": "m", "plan_execution_id": "ci-1",
+            "execution_id": "native-1", "runs": [{"run_id": "r1", "attempt_id": "a1",
+            "status": "passed", "function_call_errors": 5.0}]}]}),
+    );
+    let edit = (
+        "coder::update-file",
+        "did not run: the arguments were truncated",
+    );
+    let mut run = failed_all("r1", &[edit; 5]);
+    let transcript = run["transcript"].take();
+    world.attempts.insert("native-1/r1/a1".into(), run);
+    world
+        .transcripts
+        .insert("native-1/evidence/r1/a1/transcript.json".into(), transcript);
     let h = Harness::start(world).await;
     let config = json!({
         "subject": {"provider": "p", "model": "m"}, "where": "harness",
