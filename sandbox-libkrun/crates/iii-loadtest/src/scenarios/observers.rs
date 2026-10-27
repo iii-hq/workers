@@ -43,6 +43,8 @@ pub async fn run(env: &Env) -> Result<()> {
 
     let mut observing = Vec::new();
     let mut handles = Vec::new();
+    // Observers the engine refused: they hold no memory.
+    let mut refused = 0;
     for n in env.levels(&[1_000, 4_000, 16_000, 64_000], &[1_000, 4_000]) {
         let from = handles.len();
         let mut needed = Vec::new();
@@ -84,15 +86,19 @@ pub async fn run(env: &Env) -> Result<()> {
             .await;
         let (step, added) = step?;
         handles.extend(added);
+        refused += step.errors as usize;
+        let held = n.saturating_sub(refused);
         let rest = env
             .idle(
                 format!("{n} observers (at rest)"),
-                json!({ "observers": n }),
+                json!({ "observers": held }),
                 json!({ "create_errors": step.errors }),
             )
             .await?;
-        let per = (rest.resources.rss_avg_mb - base_rss) * 1024.0 * 1024.0 / n as f64;
-        env.annotate_last(json!({ "rss_bytes_per_observer": per.round() }));
+        if held > 0 {
+            let per = (rest.resources.rss_avg_mb - base_rss) * 1024.0 * 1024.0 / held as f64;
+            env.annotate_last(json!({ "rss_bytes_per_observer": per.round() }));
+        }
     }
 
     let total = handles.len();
