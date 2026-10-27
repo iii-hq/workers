@@ -1,201 +1,223 @@
-//! Durable records on the shared `state::*` functions. Compact records and
-//! their evidence assets live in separate scopes so `list` and the sweep never
-//! carry transcripts in one engine frame.
+//! Durable loop records on the shared `state::*` functions, in the loop's
+//! own scopes only. Records of earlier eval versions live in other scopes
+//! and are never read.
 
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::contract::{
-    AnalysisAssetsV1, AnalysisRecordV1, CapacityRejectionV1, MonitorConfigV1, SuggestionReviewV1,
+    AdmissionCheckpointV1, AdmissionV1, CycleLedgerV1, CycleRecordV1, ExecutionEvidenceV1,
+    StoredConfigV1,
 };
+use crate::decision;
 use crate::error::EvalError;
 
-pub const CONFIG_SCOPE: &str = "eval_monitor";
-pub const CONFIG_KEY: &str = "config";
-pub const LAST_REJECTION_KEY: &str = "last_rejection";
-pub const DAILY_SPEND_KEY: &str = "daily_spend";
-pub const OBSERVATION_SCOPE: &str = "eval_observation";
-pub const ANALYSIS_SCOPE: &str = "eval_analysis";
-pub const ASSETS_SCOPE: &str = "eval_analysis_assets";
-/// What people decided about each suggestion, keyed
-/// `<evaluation_id>:<suggestion_index>`; outlives the analysis's retention.
-pub const REVIEW_SCOPE: &str = "eval_suggestion";
-/// The Harness's own turn records, keyed by session: only the latest turn.
-pub const HARNESS_TURN_SCOPE: &str = "harness_turn";
+pub const CONFIG_SCOPE: &str = "eval_cycle_config";
+pub const CONFIG_KEY: &str = "current";
+/// Cycle records, keyed by `cycle_id`.
+pub const CYCLE_SCOPE: &str = "eval_cycle";
+/// Admission claims keyed by admission key, and the sweep checkpoint.
+pub const ADMISSION_SCOPE: &str = "eval_cycle_admission";
+pub const ADMISSION_CHECKPOINT_KEY: &str = "checkpoint";
+/// Imported native report bundles, keyed by admission key.
+pub const EVIDENCE_SCOPE: &str = "eval_cycle_evidence";
+/// Budget ledgers, keyed by `cycle_id`.
+pub const BUDGET_SCOPE: &str = "eval_cycle_budget";
+/// Open (non-terminal) cycles, keyed by `cycle_id`: what the sweep and the
+/// admission read, never every cycle ever kept.
+pub const OPEN_SCOPE: &str = "eval_cycle_open";
+/// An open entry is written just before its cycle is created: without a
+/// cycle it is kept this long, then dropped.
+const OPEN_ORPHAN_MS: i64 = 10 * 60 * 1000;
+const CAS_ATTEMPTS: usize = 8;
 const DISPATCH_TIMEOUT_MS: u64 = 10_000;
 
-/// Marks one observed session turn as admitted. It outlives a deleted
-/// analysis until retention, so a redelivered event cannot re-admit it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ObservationIndexV1 {
-    pub observation_key: String,
-    pub session_id: String,
-    pub turn_id: String,
-    pub evaluation_id: String,
-    pub admitted_at: i64,
-}
-
-pub async fn get_config(iii: &IIIClient) -> Result<Option<MonitorConfigV1>, EvalError> {
+pub async fn get_config(iii: &IIIClient) -> Result<Option<StoredConfigV1>, EvalError> {
     get(iii, CONFIG_SCOPE, CONFIG_KEY).await
 }
 
-pub async fn put_config(iii: &IIIClient, config: &MonitorConfigV1) -> Result<(), EvalError> {
+pub async fn put_config(iii: &IIIClient, config: &StoredConfigV1) -> Result<(), EvalError> {
     set(iii, CONFIG_SCOPE, CONFIG_KEY, config).await
 }
 
-pub async fn get_last_rejection(iii: &IIIClient) -> Result<Option<CapacityRejectionV1>, EvalError> {
-    get(iii, CONFIG_SCOPE, LAST_REJECTION_KEY).await
-}
-
-pub async fn put_last_rejection(
+pub async fn get_cycle(
     iii: &IIIClient,
-    rejection: &CapacityRejectionV1,
-) -> Result<(), EvalError> {
-    set(iii, CONFIG_SCOPE, LAST_REJECTION_KEY, rejection).await
+    cycle_id: &str,
+) -> Result<Option<CycleRecordV1>, EvalError> {
+    get(iii, CYCLE_SCOPE, cycle_id).await
 }
 
-/// What the monitor spent on the UTC day starting at `since`, kept apart from
-/// the analyses: deleting one, or retention, must not give the budget back.
-/// Two buckets: `usd` is the capture spend, the only one the daily cap
-/// compares; the replay spend is reported next to it, never capped.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct DailySpendV1 {
-    pub since: i64,
-    /// Capture: what an analysis spends. The key predates the buckets, when it
-    /// held everything, so a day stored then counts as capture (conservative).
-    pub usd: f64,
-    /// Replay: the known cost of `eval::reproduce` samples.
-    #[serde(default)]
-    pub replay_usd: f64,
-    /// Replay samples without a cost, failed ones included: unknown, not in
-    /// `replay_usd`.
-    #[serde(default)]
-    pub replay_unknown: u32,
+pub async fn list_cycles(iii: &IIIClient) -> Result<Vec<CycleRecordV1>, EvalError> {
+    list(iii, CYCLE_SCOPE).await
 }
 
-pub async fn get_spend(iii: &IIIClient) -> Result<Option<DailySpendV1>, EvalError> {
-    get(iii, CONFIG_SCOPE, DAILY_SPEND_KEY).await
+#[derive(serde::Deserialize, Serialize)]
+struct OpenCycle {
+    cycle_id: String,
+    at: i64,
 }
 
-pub async fn put_spend(iii: &IIIClient, spend: &DailySpendV1) -> Result<(), EvalError> {
-    set(iii, CONFIG_SCOPE, DAILY_SPEND_KEY, spend).await
+/// Every open cycle, from the open index. An entry whose cycle ended (or
+/// was never created) is cleared here, so a lost clear heals itself.
+pub async fn list_open_cycles(iii: &IIIClient) -> Result<Vec<CycleRecordV1>, EvalError> {
+    let now = crate::ids::now_ms();
+    let mut open = Vec::new();
+    for entry in list::<OpenCycle>(iii, OPEN_SCOPE).await? {
+        match get_cycle(iii, &entry.cycle_id).await? {
+            Some(cycle) if !cycle.status.is_terminal() => open.push(cycle),
+            None if now - entry.at < OPEN_ORPHAN_MS => {}
+            _ => delete(iii, OPEN_SCOPE, &entry.cycle_id).await?,
+        }
+    }
+    Ok(open)
 }
 
-pub async fn get_observation(
+/// Creates a cycle that must not exist yet, indexed as open first so it is
+/// never missing from the sweep.
+pub async fn create_cycle(iii: &IIIClient, record: &CycleRecordV1) -> Result<bool, EvalError> {
+    let entry = OpenCycle {
+        cycle_id: record.cycle_id.clone(),
+        at: crate::ids::now_ms(),
+    };
+    set(iii, OPEN_SCOPE, &record.cycle_id, &entry).await?;
+    cas(iii, CYCLE_SCOPE, &record.cycle_id, None, record).await
+}
+
+/// Applies `apply` to the stored cycle and writes the result with
+/// compare-and-set against exactly what was read, after
+/// [`decision::check_write`]: a frozen plan or a recorded decision never
+/// changes, and a concurrent write (cancel, admission) is never lost.
+/// `None` from `apply` writes nothing.
+pub async fn update_cycle<T>(
     iii: &IIIClient,
-    key: &str,
-) -> Result<Option<ObservationIndexV1>, EvalError> {
-    get(iii, OBSERVATION_SCOPE, key).await
+    cycle_id: &str,
+    mut apply: impl FnMut(&CycleRecordV1) -> Result<(Option<CycleRecordV1>, T), EvalError>,
+) -> Result<Option<T>, EvalError> {
+    for _ in 0..CAS_ATTEMPTS {
+        let Some(raw): Option<Value> = get(iii, CYCLE_SCOPE, cycle_id).await? else {
+            return Ok(None);
+        };
+        let stored: CycleRecordV1 = parse(CYCLE_SCOPE, cycle_id, raw.clone())?;
+        let (next, out) = apply(&stored)?;
+        let Some(next) = next else {
+            return Ok(Some(out));
+        };
+        decision::check_write(Some(&stored), &next)?;
+        if cas(iii, CYCLE_SCOPE, cycle_id, Some(raw), &next).await? {
+            if next.status.is_terminal() && !stored.status.is_terminal() {
+                // Best effort: `list_open_cycles` clears what this misses.
+                if let Err(error) = delete(iii, OPEN_SCOPE, cycle_id).await {
+                    tracing::warn!(%cycle_id, %error, "could not clear an ended cycle's open entry");
+                }
+            }
+            return Ok(Some(out));
+        }
+    }
+    Err(EvalError::Conflict(format!(
+        "{CYCLE_SCOPE}/{cycle_id} kept changing under {CAS_ATTEMPTS} attempts"
+    )))
 }
 
-pub async fn put_observation(iii: &IIIClient, index: &ObservationIndexV1) -> Result<(), EvalError> {
-    set(iii, OBSERVATION_SCOPE, &index.observation_key, index).await
-}
-
-pub async fn list_observations(iii: &IIIClient) -> Result<Vec<ObservationIndexV1>, EvalError> {
-    list(iii, OBSERVATION_SCOPE).await
-}
-
-pub async fn delete_observation(iii: &IIIClient, key: &str) -> Result<(), EvalError> {
-    delete(iii, OBSERVATION_SCOPE, key).await
-}
-
-pub async fn get_record(
+/// Claims `claim.admission_key` only when absent. Returns the stored claim
+/// and whether this call set it.
+pub async fn claim_admission(
     iii: &IIIClient,
-    evaluation_id: &str,
-) -> Result<Option<AnalysisRecordV1>, EvalError> {
-    get(iii, ANALYSIS_SCOPE, evaluation_id).await
-}
-
-pub async fn put_record(iii: &IIIClient, record: &AnalysisRecordV1) -> Result<(), EvalError> {
-    set(iii, ANALYSIS_SCOPE, &record.evaluation_id, record).await
-}
-
-pub async fn list_records(iii: &IIIClient) -> Result<Vec<AnalysisRecordV1>, EvalError> {
-    list(iii, ANALYSIS_SCOPE).await
-}
-
-pub async fn get_assets(
-    iii: &IIIClient,
-    evaluation_id: &str,
-) -> Result<AnalysisAssetsV1, EvalError> {
-    Ok(get(iii, ASSETS_SCOPE, evaluation_id)
+    claim: &AdmissionV1,
+) -> Result<(AdmissionV1, bool), EvalError> {
+    if cas(iii, ADMISSION_SCOPE, &claim.admission_key, None, claim).await? {
+        return Ok((claim.clone(), true));
+    }
+    get(iii, ADMISSION_SCOPE, &claim.admission_key)
         .await?
-        .unwrap_or_else(|| AnalysisAssetsV1 {
-            evaluation_id: evaluation_id.into(),
-            ..AnalysisAssetsV1::default()
-        }))
+        .map(|stored| (stored, false))
+        .ok_or_else(|| {
+            EvalError::State(format!(
+                "compare-and-set {ADMISSION_SCOPE}/{} neither swapped nor stored",
+                claim.admission_key
+            ))
+        })
 }
 
-pub async fn put_assets(iii: &IIIClient, assets: &AnalysisAssetsV1) -> Result<(), EvalError> {
-    set(iii, ASSETS_SCOPE, &assets.evaluation_id, assets).await
-}
-
-fn review_key(evaluation_id: &str, suggestion_index: usize) -> String {
-    format!("{evaluation_id}:{suggestion_index}")
-}
-
-/// The Harness's record of a session's latest turn, with its content-addressed
-/// prompt bodies restored.
-pub async fn get_turn_record(
+pub async fn get_admission(
     iii: &IIIClient,
-    session_id: &str,
-) -> Result<Option<Value>, EvalError> {
-    let Some(mut stored): Option<Value> = get(iii, HARNESS_TURN_SCOPE, session_id).await? else {
-        return Ok(None);
-    };
-    let Some(hydrated) = harness::state::get_turn(iii, session_id, DISPATCH_TIMEOUT_MS)
+    admission_key: &str,
+) -> Result<Option<AdmissionV1>, EvalError> {
+    get(iii, ADMISSION_SCOPE, admission_key).await
+}
+
+pub async fn get_ledger(
+    iii: &IIIClient,
+    cycle_id: &str,
+) -> Result<Option<CycleLedgerV1>, EvalError> {
+    get(iii, BUDGET_SCOPE, cycle_id).await
+}
+
+pub async fn list_ledgers(iii: &IIIClient) -> Result<Vec<CycleLedgerV1>, EvalError> {
+    list(iii, BUDGET_SCOPE).await
+}
+
+/// Compare-and-set update of a cycle's ledger, retried on a concurrent
+/// write. `None` writes nothing.
+pub async fn update_ledger<T>(
+    iii: &IIIClient,
+    cycle_id: &str,
+    mut apply: impl FnMut(Option<CycleLedgerV1>) -> Result<(Option<CycleLedgerV1>, T), EvalError>,
+) -> Result<T, EvalError> {
+    for _ in 0..CAS_ATTEMPTS {
+        let raw: Option<Value> = get(iii, BUDGET_SCOPE, cycle_id).await?;
+        let current = raw
+            .clone()
+            .map(|raw| parse(BUDGET_SCOPE, cycle_id, raw))
+            .transpose()?;
+        let (next, out) = apply(current)?;
+        let Some(next) = next else {
+            return Ok(out);
+        };
+        if cas(iii, BUDGET_SCOPE, cycle_id, raw, &next).await? {
+            return Ok(out);
+        }
+    }
+    Err(EvalError::Conflict(format!(
+        "{BUDGET_SCOPE}/{cycle_id} kept changing under {CAS_ATTEMPTS} attempts"
+    )))
+}
+
+pub async fn get_evidence(
+    iii: &IIIClient,
+    admission_key: &str,
+) -> Result<Option<ExecutionEvidenceV1>, EvalError> {
+    get(iii, EVIDENCE_SCOPE, admission_key).await
+}
+
+/// Stores the first copy only: a re-import keeps it.
+pub async fn put_evidence_once(
+    iii: &IIIClient,
+    evidence: &ExecutionEvidenceV1,
+) -> Result<(), EvalError> {
+    cas(iii, EVIDENCE_SCOPE, &evidence.admission_key, None, evidence)
         .await
-        .map_err(|error| EvalError::State(format!("read harness turn {session_id}: {error}")))?
-    else {
-        return Ok(None);
-    };
-    if stored["turn_id"].as_str() != Some(hydrated.turn_id.as_str()) {
-        return Ok(None);
-    }
-    if let Some(prompt) = hydrated.options.system_prompt {
-        stored["options"]["system_prompt"] = Value::String(prompt);
-    }
-    if let Some(baseline) = hydrated
-        .options
-        .skill_context
-        .and_then(|context| context.baseline)
-    {
-        stored["options"]["skill_context"]["baseline"] = Value::String(baseline);
-    }
-    Ok(Some(stored))
+        .map(|_| ())
 }
 
-pub async fn get_review(
+pub async fn get_admission_checkpoint(
     iii: &IIIClient,
-    evaluation_id: &str,
-    suggestion_index: usize,
-) -> Result<Option<SuggestionReviewV1>, EvalError> {
-    get(
-        iii,
-        REVIEW_SCOPE,
-        &review_key(evaluation_id, suggestion_index),
-    )
-    .await
+) -> Result<Option<AdmissionCheckpointV1>, EvalError> {
+    get(iii, ADMISSION_SCOPE, ADMISSION_CHECKPOINT_KEY).await
 }
 
-pub async fn put_review(iii: &IIIClient, review: &SuggestionReviewV1) -> Result<(), EvalError> {
-    let key = review_key(&review.evaluation_id, review.suggestion_index);
-    set(iii, REVIEW_SCOPE, &key, review).await
+pub async fn put_admission_checkpoint(
+    iii: &IIIClient,
+    checkpoint: &AdmissionCheckpointV1,
+) -> Result<(), EvalError> {
+    set(iii, ADMISSION_SCOPE, ADMISSION_CHECKPOINT_KEY, checkpoint).await
 }
 
-pub async fn list_reviews(iii: &IIIClient) -> Result<Vec<SuggestionReviewV1>, EvalError> {
-    list(iii, REVIEW_SCOPE).await
-}
-
-/// Removes the assets before the record, so a partial delete never leaves a
-/// listed record without its evidence.
-pub async fn delete_analysis(iii: &IIIClient, evaluation_id: &str) -> Result<(), EvalError> {
-    delete(iii, ASSETS_SCOPE, evaluation_id).await?;
-    delete(iii, ANALYSIS_SCOPE, evaluation_id).await
+fn parse<T: DeserializeOwned>(scope: &str, key: &str, value: Value) -> Result<T, EvalError> {
+    serde_json::from_value(value)
+        .map_err(|error| EvalError::State(format!("parse {scope}/{key}: {error}")))
 }
 
 async fn get<T: DeserializeOwned>(
@@ -207,9 +229,7 @@ async fn get<T: DeserializeOwned>(
     if value.is_null() {
         return Ok(None);
     }
-    serde_json::from_value(value)
-        .map(Some)
-        .map_err(|error| EvalError::State(format!("parse {scope}/{key}: {error}")))
+    parse(scope, key, value).map(Some)
 }
 
 async fn set(
@@ -234,8 +254,23 @@ async fn delete(iii: &IIIClient, scope: &str, key: &str) -> Result<(), EvalError
         .map(|_| ())
 }
 
-/// `state::list` returns the stored values; unreadable rows are logged and
-/// skipped rather than failing every listing.
+/// `state::compare-and-set` against `expected` (`None`: only when absent).
+async fn cas(
+    iii: &IIIClient,
+    scope: &str,
+    key: &str,
+    expected: Option<Value>,
+    value: &impl Serialize,
+) -> Result<bool, EvalError> {
+    let mut payload = json!({ "scope": scope, "key": key, "value": serde_json::to_value(value)? });
+    if let Some(expected) = expected {
+        payload["expected"] = expected;
+    }
+    let response = call(iii, "state::compare-and-set", payload).await?;
+    Ok(response["swapped"].as_bool() == Some(true))
+}
+
+/// `state::list` values; unreadable rows are logged and skipped.
 async fn list<T: DeserializeOwned>(iii: &IIIClient, scope: &str) -> Result<Vec<T>, EvalError> {
     let value = call(iii, "state::list", json!({ "scope": scope })).await?;
     let rows: Vec<Value> = match value {

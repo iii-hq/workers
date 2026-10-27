@@ -129,6 +129,56 @@ The session id it answers with is a real console conversation: opening it in
 the console puts you in the middle of the investigation, with the same
 controls as any other chat.
 
+## E2E reports
+
+An E2E run happens in a Docker stack that is gone before anyone looks, so
+there is no trace to read and no sentinel installed per stack. The evaluation
+that imported the run's report sends its error observations to the central
+monitor instead, in one explicit envelope (the monitor does not parse report
+formats):
+
+```bash
+iii trigger sentinel::reports::ingest --json '{
+  "report_id": "pkg_42",
+  "observations": [{
+    "execution_id": "exe_1", "run_id": "run_1", "attempt": 1,
+    "scenario_id": "checkout", "phase": "act", "side": "candidate",
+    "revision": "git:abc1234", "artifact": "logs/orders.log", "occurrence_index": 0,
+    "at_ms": 1789000000000, "service_name": "orders", "function_id": "orders::place",
+    "exception_type": "Panic", "message": "index out of bounds",
+    "expected_errors": [],
+    "excerpts": [{ "name": "orders.log", "content": "thread main panicked at src/place.rs:42" }]
+  }]
+}'
+```
+
+Each observation goes through the same redactor (every field, provenance and
+excerpts included), normalizer, fingerprint and store as a span, with source
+`report`. Its identity is where it was observed (execution, run, attempt,
+scenario, phase, side, revision, artifact, index), so importing the same
+package again answers `deduped` and never moves a count. Side and revision
+are not part of the fingerprint: a baseline and its candidate failing the
+same way meet in one group, and each occurrence keeps its own origin in
+`evidence.report`, readable with `sentinel::evidence::get` long after the
+stack is torn down.
+
+`expected_errors` is the scenario contract, and it decides what the
+observation may do:
+
+| contract | classification | effect |
+|---|---|---|
+| `[]` | `unexpected` | opens or counts its group under the normal lifecycle |
+| entries, one matches | `expected` | its own group (never a real defect's), triaged `test_traffic` by rule, never moves a state |
+| entries, none match | `expected_mismatch` | like `unexpected`: a different failure than the one provoked |
+| absent | `insufficient_evidence` | counted without moving the group (no regression, no ignore expiry), untriaged: the triage sweep skips report groups |
+
+An observation with neither a message nor an exception type (a score that
+dropped, say) records nothing: no runtime error is made up for it. Each
+result carries the group's triage when it has one, with the question,
+criterion, evidence, model and token usage it was decided from; a caller
+that needs a semantic label reuses it rather than judging the same
+occurrence again.
+
 ## Configuration
 
 Registered with the `configuration` worker under the id `sentinel` and
@@ -225,3 +275,8 @@ The whole suite runs against Postgres too:
 docker run -d --rm -p 127.0.0.1:5439:5432 -e POSTGRES_PASSWORD=pg postgres:17-alpine
 SENTINEL_TEST_POSTGRES_URL=postgres://postgres:pg@127.0.0.1:5439/postgres cargo test
 ```
+
+Report-sourced groups keep the `test_traffic` label of an expected failure,
+but never enter the background triage sweep, rule or model. Eval owns their
+budgeted semantic analysis; importing a report must not start hidden model
+spending later, nor crowd trace and log groups out of the sweep.

@@ -1,8 +1,8 @@
 import type { Host } from '@iii-dev/console-ui'
+import { formatRelative } from '@iii-dev/console-ui/format'
 import { createEvalApi } from './src/api'
-import { statusPresentation } from './src/model'
+import { badge, cycleTitle } from './src/model'
 import { EvalPage } from './src/page'
-import { clock, rowTitle } from './src/page/monitor/shell-state'
 
 const PAGE_ID = 'eval-benchmarks'
 const PALETTE_ROWS = 30
@@ -20,46 +20,48 @@ export default function setup(host: Host) {
     {
       id: 'open',
       title: 'Open eval',
-      detail: 'Session monitor',
-      keywords: ['monitor', 'analysis', 'sessions'],
+      detail: 'Loop cycles',
+      keywords: ['loop', 'cycle', 'evaluation'],
       run: () => host.panels?.open({ pageId: PAGE_ID, context: {} }),
     },
     {
-      id: 'analyze-session',
-      title: 'Analyze a session…',
-      detail: 'Run the session monitor on a finished session',
-      keywords: ['analyze', 'monitor', 'session', 'suggestions'],
-      run: () => host.panels?.open({ pageId: PAGE_ID, context: { type: 'analyze' } }),
+      id: 'start-cycle',
+      title: 'Start an eval cycle…',
+      detail: 'From a finished E2E execution or an objective',
+      keywords: ['objective', 'execution', 'evaluate', 'e2e'],
+      run: () => host.panels?.open({ pageId: PAGE_ID, context: { type: 'start' } }),
+    },
+    {
+      id: 'settings',
+      title: 'Eval loop settings',
+      detail: 'What the loop may do: measure, improve, prove and open a pull request',
+      keywords: ['config', 'budget', 'model', 'provider'],
+      run: () => host.panels?.open({ pageId: PAGE_ID, context: { type: 'config' } }),
     },
   ])
 
   host.palette?.registerSource({
-    id: 'eval-analyses',
-    title: 'Session monitor',
+    id: 'eval-cycles',
+    title: 'Eval cycles',
     kind: 'item',
     minQuery: 2,
     async search(query, { signal }) {
-      const records = await api.list().catch(() => [])
+      const cycles = await api.list().then(
+        (list) => list.cycles,
+        () => [],
+      )
       if (signal.aborted) return []
       const needle = query.trim().toLowerCase()
-      return records
-        .filter((record) =>
-          [record.source_title, record.session_id, record.evaluation_id].some((field) =>
-            field?.toLowerCase().includes(needle),
-          ),
-        )
+      return cycles
+        .filter((cycle) => [cycleTitle(cycle), cycle.cycle_id].some((field) => field.toLowerCase().includes(needle)))
         .slice(0, PALETTE_ROWS)
-        .map((record) => ({
-          id: record.evaluation_id,
-          title: rowTitle(record),
-          detail: `${statusPresentation(record).label} · ${record.session_id}`,
-          meta: clock(record.created_at),
-          keywords: [record.session_id, record.evaluation_id],
-          run: () =>
-            host.panels?.open({
-              pageId: PAGE_ID,
-              context: { type: 'analysis', evaluationId: record.evaluation_id },
-            }),
+        .map((cycle) => ({
+          id: cycle.cycle_id,
+          title: cycleTitle(cycle),
+          detail: `${badge(cycle).label} · ${cycle.cycle_id}`,
+          meta: formatRelative(cycle.updated_at),
+          keywords: [cycle.cycle_id],
+          run: () => host.panels?.open({ pageId: PAGE_ID, context: { type: 'cycle', cycleId: cycle.cycle_id } }),
         }))
     },
   })

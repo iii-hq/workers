@@ -4275,6 +4275,8 @@ impl Clone for SessionStreamSink {
     }
 }
 
+pub mod replay;
+
 #[cfg(test)]
 mod stack_tests;
 

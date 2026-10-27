@@ -1,26 +1,29 @@
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-/// Prefix of every investigation session the monitor creates. Recursion
-/// guard only — it is not an access check.
-pub const ANALYST_PREFIX: &str = "eval_monitor_";
+/// Prefix of every loop cycle id.
+pub const CYCLE_PREFIX: &str = "cycle_";
+/// Prefix of the label of every E2E execution a cycle dispatches.
+pub const LABEL_PREFIX: &str = "eval:";
 
-pub fn evaluation_id() -> String {
-    format!("eval_{}", Uuid::new_v4().simple())
+pub fn cycle_id() -> String {
+    format!("{CYCLE_PREFIX}{}", Uuid::new_v4().simple())
 }
 
-/// Stable identity of one observed session turn. The length prefix keeps the
-/// two parts unambiguous.
-pub fn observation_key(session_id: &str, turn_id: &str) -> String {
-    sha256_text(&format!("{}:{session_id}{turn_id}", session_id.len()))
+pub fn is_cycle(id: &str) -> bool {
+    id.starts_with(CYCLE_PREFIX)
 }
 
-pub fn analyst_session(evaluation_id: &str) -> String {
-    format!("{ANALYST_PREFIX}{evaluation_id}")
+/// The deterministic label of an execution a cycle dispatches: the only
+/// correlation `e2e::dashboard::execution-start` keeps.
+pub fn execution_label(cycle_id: &str, role: &str) -> String {
+    format!("{LABEL_PREFIX}{cycle_id}:{role}")
 }
 
-pub fn judge_request_id(evaluation_id: &str, step: u64) -> String {
-    format!("{evaluation_id}-judge-{step}")
+/// The cycle a dispatched execution's label names, if any.
+pub fn label_cycle(label: &str) -> Option<&str> {
+    let cycle = label.strip_prefix(LABEL_PREFIX)?.split(':').next()?;
+    is_cycle(cycle).then_some(cycle)
 }
 
 pub fn sha256_text(value: &str) -> String {
@@ -30,6 +33,21 @@ pub fn sha256_text(value: &str) -> String {
 pub fn sha256_json(value: &impl serde::Serialize) -> String {
     let bytes = serde_json::to_vec(value).unwrap_or_default();
     format!("{:x}", Sha256::digest(bytes))
+}
+
+/// The UTC calendar date `days` before `now_ms`, as `YYYY-MM-DD` (Howard
+/// Hinnant's civil-from-days): RFC 3339 times compare to it as text.
+pub fn date_days_before(now_ms: i64, days: u32) -> String {
+    let z = now_ms.div_euclid(86_400_000) - i64::from(days) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
 }
 
 pub fn now_ms() -> i64 {
@@ -87,10 +105,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn observation_key_is_stable_and_unambiguous() {
-        assert_eq!(observation_key("s", "t"), observation_key("s", "t"));
-        assert_ne!(observation_key("ab", "c"), observation_key("a", "bc"));
-        assert_ne!(evaluation_id(), evaluation_id());
+    fn labels_name_their_cycle() {
+        let cycle = cycle_id();
+        assert_eq!(
+            label_cycle(&execution_label(&cycle, "baseline")),
+            Some(cycle.as_str())
+        );
+        assert_eq!(label_cycle("eval:other:baseline"), None);
+        assert_eq!(label_cycle("nightly"), None);
     }
 
     #[test]
@@ -113,5 +135,19 @@ mod tests {
         assert_eq!(parse_ms(""), None);
         assert_eq!(parse_ms("2026-13-02T00:00:00Z"), None);
         assert_eq!(parse_ms("yesterday"), None);
+    }
+}
+
+#[cfg(test)]
+mod date_tests {
+    #[test]
+    fn a_date_some_days_before_crosses_months_years_and_leap_days() {
+        // 2026-10-27T01:00:00Z
+        let now = 1_793_062_800_000;
+        assert_eq!(super::date_days_before(now, 0), "2026-10-27");
+        assert_eq!(super::date_days_before(now, 27), "2026-09-30");
+        assert_eq!(super::date_days_before(now, 299), "2026-01-01");
+        assert_eq!(super::date_days_before(now, 300), "2025-12-31");
+        assert_eq!(super::date_days_before(951_782_400_000, 0), "2000-02-29");
     }
 }

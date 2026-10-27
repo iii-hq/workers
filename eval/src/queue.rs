@@ -8,7 +8,7 @@ use crate::contract::StepRequestV1;
 use crate::error::EvalError;
 
 pub const RUN_QUEUE: &str = "eval-run";
-/// Steps processed at once; waiting for a model holds no slot.
+/// Steps processed at once; a waiting cycle holds no slot.
 pub const RUN_CONCURRENCY: u32 = 8;
 const DEFINE_TIMEOUT_MS: u64 = 5_000;
 const DEFINE_ATTEMPTS: u32 = 20;
@@ -41,13 +41,9 @@ pub async fn ensure_run_queue(iii: &IIIClient) -> Result<(), EvalError> {
     )))
 }
 
-pub async fn enqueue_step(
-    iii: &IIIClient,
-    evaluation_id: &str,
-    step: u64,
-) -> Result<(), EvalError> {
+pub async fn enqueue_step(iii: &IIIClient, cycle_id: &str, step: u64) -> Result<(), EvalError> {
     let payload = serde_json::to_value(StepRequestV1 {
-        evaluation_id: evaluation_id.into(),
+        cycle_id: cycle_id.into(),
         step,
     })?;
     iii.trigger(TriggerRequest {
@@ -68,7 +64,7 @@ fn run_queue_definition() -> Value {
         "queue": RUN_QUEUE,
         "config": {
             "type": "fifo",
-            "message_group_field": "evaluation_id",
+            "message_group_field": "cycle_id",
             "concurrency": RUN_CONCURRENCY,
             "max_retries": 3,
             "backoff_ms": 1_000
@@ -81,10 +77,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn eval_queue_is_fifo_and_grouped_by_evaluation() {
+    fn eval_queue_is_fifo_and_grouped_by_cycle() {
         let definition = run_queue_definition();
         assert_eq!(definition["queue"], "eval-run");
-        assert_eq!(definition["config"]["message_group_field"], "evaluation_id");
+        assert_eq!(definition["config"]["message_group_field"], "cycle_id");
         assert_eq!(definition["config"]["type"], "fifo");
     }
 }

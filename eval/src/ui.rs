@@ -1,4 +1,4 @@
-//! Injectable console page for the session monitor.
+//! Console page for the E2E improvement loop.
 
 use std::sync::Arc;
 

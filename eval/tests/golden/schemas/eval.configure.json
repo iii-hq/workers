@@ -4,23 +4,49 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "additionalProperties": false,
     "definitions": {
-      "MonitorModelV1": {
+      "CandidateConfigV1": {
         "additionalProperties": false,
-        "description": "The Harness model the user chose for investigations. Credentials stay in the provider worker; this request never carries a key.",
+        "description": "Operator configuration. Model and provider come from here, never from code.",
         "properties": {
+          "base_sha": {
+            "description": "Exact 40-hex commit the candidate is based on.",
+            "type": "string"
+          },
+          "max_cost_usd": {
+            "format": "double",
+            "type": "number"
+          },
+          "max_output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_total_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_turns": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
           "model": {
             "type": "string"
           },
           "provider": {
             "type": "string"
           },
-          "provider_options": {
-            "additionalProperties": true,
-            "description": "Provider-native options, namespaced by the selected provider id.",
+          "publish_remote": {
+            "description": "Already configured remote the candidate branch may be pushed to; `None` disables [`publish`].",
             "type": [
-              "object",
+              "string",
               "null"
             ]
+          },
+          "repository": {
+            "description": "Absolute path of the Workers repository.",
+            "type": "string"
           },
           "thinking_level": {
             "anyOf": [
@@ -31,6 +57,248 @@
                 "type": "null"
               }
             ]
+          },
+          "worktrees_dir": {
+            "description": "Absolute directory for candidate worktrees; inside the repository only when git ignores it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "base_sha",
+          "max_cost_usd",
+          "max_output_tokens",
+          "max_total_tokens",
+          "max_turns",
+          "model",
+          "provider",
+          "repository",
+          "worktrees_dir"
+        ],
+        "type": "object"
+      },
+      "CycleBudgetV1": {
+        "additionalProperties": false,
+        "description": "The limits of one cycle, covering every kind of its work.",
+        "properties": {
+          "max_calls": {
+            "description": "Dispatched work items, retries included.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_candidates": {
+            "description": "Candidates the cycle may try.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_duration_ms": {
+            "description": "Wall time since the cycle was created.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "max_spend_usd": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "max_calls",
+          "max_candidates",
+          "max_duration_ms",
+          "max_spend_usd"
+        ],
+        "type": "object"
+      },
+      "JudgeConfigV1": {
+        "additionalProperties": false,
+        "properties": {
+          "estimated_usd": {
+            "description": "What one grouped question is reserved at.",
+            "format": "double",
+            "type": "number"
+          },
+          "provider": {
+            "description": "The judge provider (`judge::evaluate` hub routing), e.g. `typesafe`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "estimated_usd",
+          "provider"
+        ],
+        "type": "object"
+      },
+      "LoopConfigV1": {
+        "additionalProperties": false,
+        "description": "Everything a cycle needs to spend on the E2E. Nothing has a default: an unconfigured loop selects coverage but dispatches nothing.",
+        "properties": {
+          "admit_executions": {
+            "default": true,
+            "description": "Whether a finished E2E execution nobody started from the loop opens a cycle on its own. Off, executions (imported CI runs among them) are data the loop reads, and a cycle starts only when a person asks.",
+            "type": "boolean"
+          },
+          "budget": {
+            "$ref": "#/definitions/CycleBudgetV1"
+          },
+          "candidate": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CandidateConfigV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The bounded read-only proposal and the isolated candidate actor; absent: a cycle stops before any proposal, inconclusive."
+          },
+          "controls": {
+            "default": [],
+            "description": "Control scenarios every plan also runs and preserves (pass rate and every spec criterion), e.g. `minimal_path`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "estimated_usd_per_run": {
+            "description": "What one run is reserved at before dispatch; an unreported actual cost stays charged at it, never at zero.",
+            "format": "double",
+            "type": "number"
+          },
+          "history_days": {
+            "description": "Measure from the E2E runs already made instead of dispatching a baseline: the GitHub executions (the release-control campaigns) of the subject completed in the last this many days. Absent: dispatch.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "judge": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/JudgeConfigV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Semantic triage of ambiguous findings through `judge::evaluate`; absent: an ambiguous finding stays inconclusive."
+          },
+          "max_scenarios": {
+            "description": "Scenarios one plan may run at most.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "min_effect": {
+            "$ref": "#/definitions/MinEffectV1"
+          },
+          "runs_per_side": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "stack": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/StackV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Required for `docker` and `github`; refused for `harness`, which runs on its own stack."
+          },
+          "subject": {
+            "$ref": "#/definitions/SubjectV1"
+          },
+          "technical_retries": {
+            "format": "uint8",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "validation": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ValidationConfigV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The stack that builds the workers under test from a commit; required to validate a candidate. With it, the baseline runs the candidate's base commit."
+          },
+          "where": {
+            "$ref": "#/definitions/WhereV1"
+          }
+        },
+        "required": [
+          "budget",
+          "estimated_usd_per_run",
+          "max_scenarios",
+          "min_effect",
+          "runs_per_side",
+          "subject",
+          "technical_retries",
+          "where"
+        ],
+        "type": "object"
+      },
+      "MinEffectV1": {
+        "additionalProperties": false,
+        "description": "The minimum effect a plan freezes for each metric it can target.",
+        "properties": {
+          "pass_rate_pp": {
+            "description": "Percentage points of pass rate.",
+            "format": "double",
+            "type": "number"
+          },
+          "tokens": {
+            "description": "Total tokens per run.",
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "pass_rate_pp",
+          "tokens"
+        ],
+        "type": "object"
+      },
+      "StackV1": {
+        "additionalProperties": false,
+        "description": "A stack in the E2E's own shape (`ExecutionStack`), e.g. `package://harness` pinned to `commit:<40 hex>` of `iii-hq/workers` path `harness`.",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "yaml": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "yaml"
+        ],
+        "type": "object"
+      },
+      "SubjectV1": {
+        "additionalProperties": false,
+        "description": "The model the E2E subject runs on. Credentials stay in the providers.",
+        "properties": {
+          "agent": {
+            "description": "Agent profile the subject runs under; absent uses the E2E default.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
           }
         },
         "required": [
@@ -55,6 +323,47 @@
             "description": "No reasoning at all; honoured only where the model advertises `supports_thinking_off` (elsewhere the provider falls back to its own lowest setting, or omits the parameter, and warns).",
             "enum": [
               "off"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "ValidationConfigV1": {
+        "additionalProperties": false,
+        "description": "The E2E stack in the E2E's own shape. Every worker a candidate may change is declared as a `package://<worker>` container with `commit: {commit}`, so both sides build it from their own commit; everything else (Engine, evaluator, unchanged workers) stays fixed.",
+        "properties": {
+          "source_stack_template": {
+            "description": "Stack YAML pinning a source revision; every `{commit}` is replaced by the 40-hex sha.",
+            "type": "string"
+          },
+          "stack_name": {
+            "type": "string"
+          },
+          "where": {
+            "$ref": "#/definitions/WhereV1"
+          }
+        },
+        "required": [
+          "source_stack_template",
+          "stack_name",
+          "where"
+        ],
+        "type": "object"
+      },
+      "WhereV1": {
+        "description": "Where the E2E runs a dispatched execution (`ExecutionParameters.where`).",
+        "oneOf": [
+          {
+            "enum": [
+              "docker",
+              "github"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The E2E's own Harness: observes the current stack, cannot pin a candidate commit.",
+            "enum": [
+              "harness"
             ],
             "type": "string"
           }
@@ -63,38 +372,19 @@
     },
     "properties": {
       "_caller_worker_id": {
-        "description": "Stamped by the engine on every invocation; callers omit it. Listed so the closed schema still accepts the engine's metadata.",
-        "type": [
-          "string",
-          "null"
-        ],
-        "writeOnly": true
-      },
-      "code_repository": {
-        "description": "Absolute path of the codebase directory the investigation reads and runs in (normally the iii workers repository, checked out on the monitor's host); absent means no code access.",
+        "default": null,
+        "description": "Stamped by the engine on every invocation; callers omit it.",
         "type": [
           "string",
           "null"
         ]
       },
-      "daily_cost_cap_usd": {
-        "description": "US dollars of known investigation cost per UTC day after which automatic observation admits nothing until the next day; absent means no cap. A manual `eval::analyze-session` is never refused by it.",
-        "format": "double",
-        "type": [
-          "number",
-          "null"
-        ]
-      },
-      "enabled": {
-        "type": "boolean"
-      },
-      "model": {
-        "$ref": "#/definitions/MonitorModelV1"
+      "config": {
+        "$ref": "#/definitions/LoopConfigV1"
       }
     },
     "required": [
-      "enabled",
-      "model"
+      "config"
     ],
     "title": "ConfigureRequestV1",
     "type": "object"
@@ -103,23 +393,49 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "additionalProperties": false,
     "definitions": {
-      "MonitorModelV1": {
+      "CandidateConfigV1": {
         "additionalProperties": false,
-        "description": "The Harness model the user chose for investigations. Credentials stay in the provider worker; this request never carries a key.",
+        "description": "Operator configuration. Model and provider come from here, never from code.",
         "properties": {
+          "base_sha": {
+            "description": "Exact 40-hex commit the candidate is based on.",
+            "type": "string"
+          },
+          "max_cost_usd": {
+            "format": "double",
+            "type": "number"
+          },
+          "max_output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_total_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_turns": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
           "model": {
             "type": "string"
           },
           "provider": {
             "type": "string"
           },
-          "provider_options": {
-            "additionalProperties": true,
-            "description": "Provider-native options, namespaced by the selected provider id.",
+          "publish_remote": {
+            "description": "Already configured remote the candidate branch may be pushed to; `None` disables [`publish`].",
             "type": [
-              "object",
+              "string",
               "null"
             ]
+          },
+          "repository": {
+            "description": "Absolute path of the Workers repository.",
+            "type": "string"
           },
           "thinking_level": {
             "anyOf": [
@@ -130,6 +446,248 @@
                 "type": "null"
               }
             ]
+          },
+          "worktrees_dir": {
+            "description": "Absolute directory for candidate worktrees; inside the repository only when git ignores it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "base_sha",
+          "max_cost_usd",
+          "max_output_tokens",
+          "max_total_tokens",
+          "max_turns",
+          "model",
+          "provider",
+          "repository",
+          "worktrees_dir"
+        ],
+        "type": "object"
+      },
+      "CycleBudgetV1": {
+        "additionalProperties": false,
+        "description": "The limits of one cycle, covering every kind of its work.",
+        "properties": {
+          "max_calls": {
+            "description": "Dispatched work items, retries included.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_candidates": {
+            "description": "Candidates the cycle may try.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_duration_ms": {
+            "description": "Wall time since the cycle was created.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "max_spend_usd": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "max_calls",
+          "max_candidates",
+          "max_duration_ms",
+          "max_spend_usd"
+        ],
+        "type": "object"
+      },
+      "JudgeConfigV1": {
+        "additionalProperties": false,
+        "properties": {
+          "estimated_usd": {
+            "description": "What one grouped question is reserved at.",
+            "format": "double",
+            "type": "number"
+          },
+          "provider": {
+            "description": "The judge provider (`judge::evaluate` hub routing), e.g. `typesafe`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "estimated_usd",
+          "provider"
+        ],
+        "type": "object"
+      },
+      "LoopConfigV1": {
+        "additionalProperties": false,
+        "description": "Everything a cycle needs to spend on the E2E. Nothing has a default: an unconfigured loop selects coverage but dispatches nothing.",
+        "properties": {
+          "admit_executions": {
+            "default": true,
+            "description": "Whether a finished E2E execution nobody started from the loop opens a cycle on its own. Off, executions (imported CI runs among them) are data the loop reads, and a cycle starts only when a person asks.",
+            "type": "boolean"
+          },
+          "budget": {
+            "$ref": "#/definitions/CycleBudgetV1"
+          },
+          "candidate": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CandidateConfigV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The bounded read-only proposal and the isolated candidate actor; absent: a cycle stops before any proposal, inconclusive."
+          },
+          "controls": {
+            "default": [],
+            "description": "Control scenarios every plan also runs and preserves (pass rate and every spec criterion), e.g. `minimal_path`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "estimated_usd_per_run": {
+            "description": "What one run is reserved at before dispatch; an unreported actual cost stays charged at it, never at zero.",
+            "format": "double",
+            "type": "number"
+          },
+          "history_days": {
+            "description": "Measure from the E2E runs already made instead of dispatching a baseline: the GitHub executions (the release-control campaigns) of the subject completed in the last this many days. Absent: dispatch.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "judge": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/JudgeConfigV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Semantic triage of ambiguous findings through `judge::evaluate`; absent: an ambiguous finding stays inconclusive."
+          },
+          "max_scenarios": {
+            "description": "Scenarios one plan may run at most.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "min_effect": {
+            "$ref": "#/definitions/MinEffectV1"
+          },
+          "runs_per_side": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "stack": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/StackV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Required for `docker` and `github`; refused for `harness`, which runs on its own stack."
+          },
+          "subject": {
+            "$ref": "#/definitions/SubjectV1"
+          },
+          "technical_retries": {
+            "format": "uint8",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "validation": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ValidationConfigV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The stack that builds the workers under test from a commit; required to validate a candidate. With it, the baseline runs the candidate's base commit."
+          },
+          "where": {
+            "$ref": "#/definitions/WhereV1"
+          }
+        },
+        "required": [
+          "budget",
+          "estimated_usd_per_run",
+          "max_scenarios",
+          "min_effect",
+          "runs_per_side",
+          "subject",
+          "technical_retries",
+          "where"
+        ],
+        "type": "object"
+      },
+      "MinEffectV1": {
+        "additionalProperties": false,
+        "description": "The minimum effect a plan freezes for each metric it can target.",
+        "properties": {
+          "pass_rate_pp": {
+            "description": "Percentage points of pass rate.",
+            "format": "double",
+            "type": "number"
+          },
+          "tokens": {
+            "description": "Total tokens per run.",
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "pass_rate_pp",
+          "tokens"
+        ],
+        "type": "object"
+      },
+      "StackV1": {
+        "additionalProperties": false,
+        "description": "A stack in the E2E's own shape (`ExecutionStack`), e.g. `package://harness` pinned to `commit:<40 hex>` of `iii-hq/workers` path `harness`.",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "yaml": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "yaml"
+        ],
+        "type": "object"
+      },
+      "SubjectV1": {
+        "additionalProperties": false,
+        "description": "The model the E2E subject runs on. Credentials stay in the providers.",
+        "properties": {
+          "agent": {
+            "description": "Agent profile the subject runs under; absent uses the E2E default.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
           }
         },
         "required": [
@@ -158,40 +716,55 @@
             "type": "string"
           }
         ]
+      },
+      "ValidationConfigV1": {
+        "additionalProperties": false,
+        "description": "The E2E stack in the E2E's own shape. Every worker a candidate may change is declared as a `package://<worker>` container with `commit: {commit}`, so both sides build it from their own commit; everything else (Engine, evaluator, unchanged workers) stays fixed.",
+        "properties": {
+          "source_stack_template": {
+            "description": "Stack YAML pinning a source revision; every `{commit}` is replaced by the 40-hex sha.",
+            "type": "string"
+          },
+          "stack_name": {
+            "type": "string"
+          },
+          "where": {
+            "$ref": "#/definitions/WhereV1"
+          }
+        },
+        "required": [
+          "source_stack_template",
+          "stack_name",
+          "where"
+        ],
+        "type": "object"
+      },
+      "WhereV1": {
+        "description": "Where the E2E runs a dispatched execution (`ExecutionParameters.where`).",
+        "oneOf": [
+          {
+            "enum": [
+              "docker",
+              "github"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The E2E's own Harness: observes the current stack, cannot pin a candidate commit.",
+            "enum": [
+              "harness"
+            ],
+            "type": "string"
+          }
+        ]
       }
     },
+    "description": "The stored configuration. `revision` (SHA-256 of the config and the rules) is the `policy_revision` every plan freezes.",
     "properties": {
-      "code_repository": {
-        "description": "The codebase directory the investigation reads (see `ConfigureRequestV1`).",
-        "type": [
-          "string",
-          "null"
-        ]
-      },
-      "daily_cost_cap_usd": {
-        "description": "The daily cap on known investigation cost (see `ConfigureRequestV1`).",
-        "format": "double",
-        "type": [
-          "number",
-          "null"
-        ]
-      },
-      "enabled": {
-        "type": "boolean"
-      },
-      "enabled_since": {
-        "description": "When automatic observation last went from paused to on; analyses use it to bound which earlier turns they may report. Unchanged by edits that keep observation on.",
-        "format": "int64",
-        "type": [
-          "integer",
-          "null"
-        ]
-      },
-      "model": {
-        "$ref": "#/definitions/MonitorModelV1"
+      "config": {
+        "$ref": "#/definitions/LoopConfigV1"
       },
       "revision": {
-        "description": "SHA-256 of the effective configuration; analyses keep the revision they were admitted with.",
         "type": "string"
       },
       "updated_at": {
@@ -200,12 +773,11 @@
       }
     },
     "required": [
-      "enabled",
-      "model",
+      "config",
       "revision",
       "updated_at"
     ],
-    "title": "MonitorConfigV1",
+    "title": "StoredConfigV1",
     "type": "object"
   }
 }

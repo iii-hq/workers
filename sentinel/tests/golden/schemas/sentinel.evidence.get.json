@@ -43,6 +43,17 @@
             },
             "type": "array"
           },
+          "report": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/EvidenceReportV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The E2E report a `report` occurrence was read from: no span tree survives a torn-down test stack, so this is the evidence."
+          },
           "settled": {
             "description": "True once the settle pass re-read the trace: ancestors that were still open at capture are closed here.",
             "type": "boolean"
@@ -146,6 +157,86 @@
           "body",
           "severity_text",
           "timestamp_unix_nano"
+        ],
+        "type": "object"
+      },
+      "EvidenceReportV1": {
+        "additionalProperties": false,
+        "description": "The report an occurrence came from, frozen with its evidence.",
+        "properties": {
+          "artifact": {
+            "type": "string"
+          },
+          "attempt": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "classification": {
+            "$ref": "#/definitions/ReportClassificationV1"
+          },
+          "excerpts": {
+            "description": "Redacted and capped.",
+            "items": {
+              "$ref": "#/definitions/ReportExcerptV1"
+            },
+            "type": "array"
+          },
+          "execution_id": {
+            "type": "string"
+          },
+          "expected_errors": {
+            "items": {
+              "$ref": "#/definitions/ExpectedErrorV1"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "occurrence_index": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "report_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "scenario_id": {
+            "type": "string"
+          },
+          "side": {
+            "$ref": "#/definitions/ReportSideV1"
+          },
+          "stacktrace": {
+            "description": "Redacted.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "artifact",
+          "attempt",
+          "classification",
+          "execution_id",
+          "occurrence_index",
+          "phase",
+          "report_id",
+          "revision",
+          "run_id",
+          "scenario_id",
+          "side"
         ],
         "type": "object"
       },
@@ -267,6 +358,89 @@
           "service_name"
         ],
         "type": "object"
+      },
+      "ExpectedErrorV1": {
+        "additionalProperties": false,
+        "description": "One error the scenario contract declares it provokes on purpose. Every field given must match; an entry with none matches any error.",
+        "properties": {
+          "exception_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "function_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message_contains": {
+            "description": "A substring of the raw message.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "ReportClassificationV1": {
+        "description": "What an observation is, measured against its scenario contract.",
+        "oneOf": [
+          {
+            "enum": [
+              "unexpected"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Provoked on purpose: kept as evidence, triaged as test traffic, never correction work and never a state change.",
+            "enum": [
+              "expected"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The scenario expected an error and a different one happened.",
+            "enum": [
+              "expected_mismatch"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The contract does not say, or the observation carries no error. With no error nothing is recorded; otherwise it is recorded without moving the group and left to triage.",
+            "enum": [
+              "insufficient_evidence"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "ReportExcerptV1": {
+        "additionalProperties": false,
+        "description": "A text excerpt of the artifact the error was read from, frozen into the evidence so it stays readable after the test stack is gone.",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "content",
+          "name"
+        ],
+        "type": "object"
+      },
+      "ReportSideV1": {
+        "description": "Which side of an E2E comparison an observation came from.",
+        "enum": [
+          "baseline",
+          "candidate"
+        ],
+        "type": "string"
       }
     },
     "properties": {

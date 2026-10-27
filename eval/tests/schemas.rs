@@ -14,21 +14,15 @@ fn catalog_matches_the_registered_surface() {
         [
             "eval::configure",
             "eval::config",
-            "eval::analyze-session",
+            "eval::start",
             "eval::list",
             "eval::status",
             "eval::result",
             "eval::cancel",
-            "eval::delete",
-            "eval::attach-validation",
-            "eval::start-validation",
-            "eval::review",
-            "eval::reviews",
-            "eval::recurrence",
-            "eval::reproduce",
+            "eval::executions",
             "eval::step",
-            "eval::on-turn-completed",
             "eval::sweep",
+            "eval::execution-changed",
         ]
     );
 }
@@ -60,23 +54,65 @@ fn schemas_are_typed_and_match_goldens() {
 }
 
 #[test]
-fn transport_requests_accept_engine_metadata_but_llm_output_stays_closed() {
-    let by_id = |id: &str| {
-        catalog()
-            .into_iter()
-            .find(|spec| spec.function_id == id)
-            .unwrap()
+fn configure_accepts_engine_metadata_but_no_credentials_or_unknown_fields() {
+    let configure = catalog()
+        .into_iter()
+        .find(|spec| spec.function_id == "eval::configure")
+        .unwrap();
+    let schema = serde_json::to_value(&configure.request_schema).unwrap();
+    assert_eq!(schema["additionalProperties"], false);
+    assert!(schema["properties"].get("_caller_worker_id").is_some());
+    let config = serde_json::json!({
+        "subject": {"provider": "anthropic", "model": "claude"},
+        "where": "harness", "runs_per_side": 3, "technical_retries": 1,
+        "max_scenarios": 1, "estimated_usd_per_run": 0.5,
+        "min_effect": {"tokens": 1000.0, "pass_rate_pp": 10.0},
+        "budget": {"max_spend_usd": 10.0, "max_duration_ms": 7200000, "max_calls": 20,
+                   "max_candidates": 2}
+    });
+    let request: eval::contract::ConfigureRequestV1 = serde_json::from_value(
+        serde_json::json!({"config": config, "_caller_worker_id": "console"}),
+    )
+    .unwrap();
+    request.config.validate().unwrap();
+    let mut with_key = config.clone();
+    with_key["api_key"] = "secret".into();
+    assert!(
+        serde_json::from_value::<eval::contract::ConfigureRequestV1>(
+            serde_json::json!({"config": with_key})
+        )
+        .is_err()
+    );
+    // A stack on the E2E's own harness, or docker without one, cannot run.
+    let mut harness_stack = request.config.clone();
+    harness_stack.stack = Some(eval::contract::StackV1 {
+        name: "s".into(),
+        yaml: "y".into(),
+    });
+    assert!(harness_stack.validate().is_err());
+    let mut docker = request.config.clone();
+    docker.where_ = eval::contract::WhereV1::Docker;
+    assert!(docker.validate().is_err());
+    // Candidate work is checked when configured, before any paid baseline,
+    // and it needs the five runs a side the sign test can accept on.
+    let parse = |value: &serde_json::Value| {
+        serde_json::from_value::<eval::contract::ConfigureRequestV1>(
+            serde_json::json!({"config": value}),
+        )
     };
-    let configure = serde_json::to_value(&by_id("eval::configure").request_schema).unwrap();
-    assert_eq!(configure["additionalProperties"], false);
-    assert!(configure["properties"].get("_caller_worker_id").is_some());
-    assert!(configure["properties"].get("api_key").is_none());
-    let output =
-        serde_json::to_value(schemars::schema_for!(eval::contract::InvestigationOutputV1)).unwrap();
-    assert_eq!(output["additionalProperties"], false);
-    assert_eq!(output["properties"]["suggestions"]["maxItems"], 3);
-    assert_eq!(
-        output["definitions"]["SuggestionV1"]["additionalProperties"],
-        false
+    let mut with_candidate = config.clone();
+    with_candidate["candidate"] = serde_json::json!({
+        "repository": "/repo", "base_sha": "a".repeat(40), "worktrees_dir": "/repo/.worktrees",
+        "model": "m", "provider": "p", "max_turns": 4, "max_output_tokens": 100,
+        "max_total_tokens": 1000, "max_cost_usd": 1.0});
+    // No minimum of runs: fewer than 5 pairs are accepted only when unanimous.
+    parse(&with_candidate).unwrap().config.validate().unwrap();
+    with_candidate["candidate"]["base_sha"] = "main".into();
+    assert!(parse(&with_candidate).unwrap().config.validate().is_err());
+    with_candidate["candidate"]["base_sha"] = "a".repeat(40).into();
+    with_candidate["candidate"]["publish_remot"] = "origin".into();
+    assert!(
+        parse(&with_candidate).is_err(),
+        "a misspelt field is refused"
     );
 }

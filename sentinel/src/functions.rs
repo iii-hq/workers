@@ -32,8 +32,8 @@ use crate::{
     InvestigationCancelRequestV1, InvestigationGetRequestV1, InvestigationGetResponseV1,
     InvestigationSummaryV1, InvestigationsListRequestV1, InvestigationsListResponseV1,
     LogsListRequestV1, LogsListResponseV1, OccurrencesListRequestV1, OccurrencesListResponseV1,
-    ResolveRequestV1, StatusRequestV1, StatusResponseV1, TraceGetRequestV1, TraceGetResponseV1,
-    TurnCompletedEventV1,
+    ReportsIngestRequestV1, ReportsIngestResponseV1, ResolveRequestV1, StatusRequestV1,
+    StatusResponseV1, TraceGetRequestV1, TraceGetResponseV1, TurnCompletedEventV1,
 };
 
 pub const STATUS_ID: &str = "sentinel::status";
@@ -57,6 +57,9 @@ pub const OCCURRENCES_LIST_ID: &str = "sentinel::occurrences::list";
 pub const OCCURRENCES_LIST_DESC: &str = "List the recorded occurrences of one group, newest first, each saying whether its frozen evidence is still kept.";
 pub const EVIDENCE_GET_ID: &str = "sentinel::evidence::get";
 pub const EVIDENCE_GET_DESC: &str = "Read the frozen evidence of one occurrence: the span tree, the logs of that trace and the session tags, captured before the engine's ring discarded them. Reports pruned when retention has removed it.";
+
+pub const REPORTS_INGEST_ID: &str = "sentinel::reports::ingest";
+pub const REPORTS_INGEST_DESC: &str = "Record the error observations of an E2E report that was already imported, after its test stack is gone. Each observation is keyed by execution, run, attempt, scenario, phase, side, revision, artifact and index, so a re-import never counts twice; it is redacted, fingerprinted and frozen as evidence like any other failure. The scenario contract decides what it may do: unexpected errors open or count their group, expected ones are kept as test-traffic evidence in their own group and never become work, and ones the contract cannot place are counted without moving the group. An observation without an error records nothing. Each result carries the group's existing triage, to be reused rather than judged again.";
 
 pub const INGEST_ID: &str = "sentinel::ingest";
 pub const INGEST_DESC: &str =
@@ -307,6 +310,20 @@ pub fn register_all<E: EngineRegistry + 'static>(iii: &IIIClient, deps: &Arc<Dep
             async move { deps.service.diagnoses(request).await.map_err(Into::into) }
         })
         .description(DIAGNOSES_LIST_DESC),
+    );
+
+    let current = deps.clone();
+    iii.register_function(
+        REPORTS_INGEST_ID,
+        RegisterFunction::new_async(move |request: ReportsIngestRequestV1| {
+            let deps = current.clone();
+            // Off the connection thread, like the queue step: recording calls
+            // the database over the same socket.
+            crate::offload::offload(async move {
+                reports_ingest(&deps, request).await.map_err(Into::into)
+            })
+        })
+        .description(REPORTS_INGEST_DESC),
     );
 
     // ── investigation ───────────────────────────────────────────────────
@@ -574,7 +591,41 @@ async fn ingest<E: EngineRegistry>(
     let report = deps.ingest.handle(job, &config).await?;
     deps.counters.sub_queued(1);
 
-    for event in &report.events {
+    announce_ingest(deps, &report.events).await;
+    for follow_up in report.follow_up {
+        if let Err(error) = deps.queue.enqueue(&follow_up).await {
+            tracing::warn!(%error, "could not queue follow-up ingest work");
+        } else {
+            deps.counters.add_queued(1);
+        }
+    }
+    Ok(IngestResponseV1 {
+        recorded: report.recorded,
+        deduped: report.deduped,
+    })
+}
+
+async fn reports_ingest<E: EngineRegistry>(
+    deps: &Deps<E>,
+    request: ReportsIngestRequestV1,
+) -> Result<ReportsIngestResponseV1, crate::SentinelError> {
+    if !deps.counters.is_ready() {
+        return Err(crate::SentinelError::NotReady(
+            "the store is not claimed yet; send the report again".into(),
+        ));
+    }
+    let config = deps.config.read().await.clone();
+    let (response, report) = deps.ingest.ingest_report(&request, &config).await?;
+    announce_ingest(deps, &report.events).await;
+    Ok(response)
+}
+
+/// Tell subscribers what an ingest did to its groups.
+async fn announce_ingest<E: EngineRegistry>(
+    deps: &Deps<E>,
+    events: &[crate::ingest::GroupChanged],
+) {
+    for event in events {
         let op = if event.created {
             GroupChangedOpV1::Created
         } else if event.reason.is_some() {
@@ -592,17 +643,6 @@ async fn ingest<E: EngineRegistry>(
             ))
             .await;
     }
-    for follow_up in report.follow_up {
-        if let Err(error) = deps.queue.enqueue(&follow_up).await {
-            tracing::warn!(%error, "could not queue follow-up ingest work");
-        } else {
-            deps.counters.add_queued(1);
-        }
-    }
-    Ok(IngestResponseV1 {
-        recorded: report.recorded,
-        deduped: report.deduped,
-    })
 }
 
 async fn prune<E: EngineRegistry>(deps: &Deps<E>) -> Result<PruneResponseV1, crate::SentinelError> {
@@ -733,6 +773,10 @@ pub fn catalog() -> Vec<FunctionSpec> {
             ON_TRACE_ACTIVITY_DESC,
         ),
         spec::<StoredLogEventV1, QueuedResponseV1>(ON_LOG_ID, ON_LOG_DESC),
+        spec::<ReportsIngestRequestV1, ReportsIngestResponseV1>(
+            REPORTS_INGEST_ID,
+            REPORTS_INGEST_DESC,
+        ),
         spec::<IngestJob, IngestResponseV1>(INGEST_ID, INGEST_DESC),
         spec::<TurnCompletedEventV1, DoorbellResponseV1>(
             ON_TURN_COMPLETED_ID,
@@ -771,7 +815,7 @@ pub const INVESTIGATION_ALLOW: [&str; 13] = [
 
 /// Denied outright. Deny wins over allow in the harness policy, so a function
 /// added to this worker later is refused until somebody decides otherwise.
-pub const INVESTIGATION_DENY: [&str; 20] = [
+pub const INVESTIGATION_DENY: [&str; 21] = [
     "shell::*",
     "state::*",
     "queue::*",
@@ -789,6 +833,8 @@ pub const INVESTIGATION_DENY: [&str; 20] = [
     "sentinel::investigations::*",
     "sentinel::on-*",
     "sentinel::ingest",
+    // Recording is the pipeline's, never the investigation's.
+    "sentinel::reports::*",
     // The agent works from the evidence it was handed and the code it can
     // read. The worker's own health surface and the list of every other
     // occurrence are the console's, not the investigation's.

@@ -477,6 +477,7 @@ pub fn bundle_for(
             version: None,
         },
         truncated,
+        report: None,
     }
 }
 

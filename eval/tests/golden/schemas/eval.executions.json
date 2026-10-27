@@ -1,0 +1,102 @@
+{
+  "function_id": "eval::executions",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "query": {
+        "default": null,
+        "description": "Passed to the E2E's own execution search.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "ExecutionsRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "ExecutionOptionV1": {
+        "additionalProperties": false,
+        "properties": {
+          "cycle_id": {
+            "description": "The cycle that already imported it; a second cycle would stop at once.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "execution_id": {
+            "type": "string"
+          },
+          "scenarios": {
+            "description": "Empty when it is in a cycle or its reports could not be read.",
+            "items": {
+              "$ref": "#/definitions/ExecutionScenarioV1"
+            },
+            "type": "array"
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "execution_id",
+          "scenarios",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ExecutionScenarioV1": {
+        "additionalProperties": false,
+        "properties": {
+          "lost": {
+            "description": "What a cycle from this execution would restore; absent: nothing measurable was lost.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mean_score": {
+            "description": "The E2E's mean score, 0 to 100.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "scenario_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "scenario_id"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "Recent finished E2E executions a cycle can start from, newest first.",
+    "properties": {
+      "executions": {
+        "items": {
+          "$ref": "#/definitions/ExecutionOptionV1"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "executions"
+    ],
+    "title": "ExecutionsResponseV1",
+    "type": "object"
+  }
+}

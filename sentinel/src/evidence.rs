@@ -122,6 +122,10 @@ pub struct EvidenceBundleV1 {
     pub logs: Vec<EvidenceLogV1>,
     pub worker: EvidenceWorkerV1,
     pub truncated: EvidenceTruncatedV1,
+    /// The E2E report a `report` occurrence was read from: no span tree
+    /// survives a torn-down test stack, so this is the evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<crate::EvidenceReportV1>,
 }
 
 impl EvidenceBundleV1 {
@@ -259,7 +263,7 @@ where
 /// Truncate on a character boundary, marking that it happened. The marker is
 /// part of the budget, not added on top of it: a cap that can be exceeded is
 /// not a cap.
-fn cap_bytes(value: String, max: usize) -> String {
+pub(crate) fn cap_bytes(value: String, max: usize) -> String {
     const MARKER: &str = "…";
     if value.len() <= max {
         return value;
@@ -313,6 +317,7 @@ mod tests {
                 version: Some("0.23.0".into()),
             },
             truncated: EvidenceTruncatedV1::default(),
+            report: None,
         }
     }
 

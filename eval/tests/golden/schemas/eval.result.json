@@ -3,529 +3,458 @@
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
-      "evaluation_id": {
+      "cycle_id": {
         "type": "string"
       }
     },
     "required": [
-      "evaluation_id"
+      "cycle_id"
     ],
-    "title": "EvaluationIdRequestV1",
+    "title": "CycleIdRequestV1",
     "type": "object"
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "anyOf": [
       {
-        "$ref": "#/definitions/EvalResultResponseV1"
+        "$ref": "#/definitions/CycleResultResponseV1"
       },
       {
         "type": "null"
       }
     ],
     "definitions": {
-      "AnalysisAssetsV1": {
+      "BaselineV1": {
         "additionalProperties": false,
+        "description": "The baseline measured against the frozen plan.",
         "properties": {
-          "capture": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/TurnCaptureV1"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The observed turn's record, copied when the evidence was captured: what a reproduction rebuilds the request from."
-          },
-          "evaluation_id": {
+          "execution_id": {
             "type": "string"
           },
-          "investigation": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/InvestigationV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "snapshot": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/SnapshotV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "triage": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/TriageV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "triage_failure": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/TriageFailureV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "validations": {
-            "default": [],
+          "preserved": {
+            "description": "In the plan's `preserved` order.",
             "items": {
-              "$ref": "#/definitions/ValidationLinkV1"
+              "$ref": "#/definitions/EvidenceSideV1"
+            },
+            "type": "array"
+          },
+          "primary": {
+            "$ref": "#/definitions/EvidenceSideV1"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "usable": {
+            "description": "Every criterion has its runs and a value: a candidate can be compared.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "execution_id",
+          "preserved",
+          "primary",
+          "reason",
+          "usable"
+        ],
+        "type": "object"
+      },
+      "CandidateCommitV1": {
+        "properties": {
+          "base_sha": {
+            "type": "string"
+          },
+          "candidate_sha": {
+            "type": "string"
+          },
+          "dependents": {
+            "default": [],
+            "description": "Other units whose build reads changed code: see [`changed_units`].",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "patch": {
+            "description": "`git diff --binary base candidate`.",
+            "type": "string"
+          },
+          "patch_digest": {
+            "type": "string"
+          },
+          "paths": {
+            "items": {
+              "$ref": "#/definitions/CandidatePathV1"
+            },
+            "type": "array"
+          },
+          "units": {
+            "default": [],
+            "description": "The units the change touches: see [`changed_units`].",
+            "items": {
+              "type": "string"
             },
             "type": "array"
           }
         },
         "required": [
-          "evaluation_id"
+          "base_sha",
+          "candidate_sha",
+          "patch",
+          "patch_digest",
+          "paths"
         ],
         "type": "object"
       },
-      "AnalysisCountersV1": {
+      "CandidateConfigV1": {
         "additionalProperties": false,
+        "description": "Operator configuration. Model and provider come from here, never from code.",
         "properties": {
-          "diagnostics": {
+          "base_sha": {
+            "description": "Exact 40-hex commit the candidate is based on.",
+            "type": "string"
+          },
+          "max_cost_usd": {
+            "format": "double",
+            "type": "number"
+          },
+          "max_output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_total_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_turns": {
             "format": "uint32",
             "minimum": 0.0,
             "type": "integer"
           },
-          "entries": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
+          "model": {
+            "type": "string"
           },
-          "rejected_suggestions": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
+          "provider": {
+            "type": "string"
           },
-          "sessions": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
+          "publish_remote": {
+            "description": "Already configured remote the candidate branch may be pushed to; `None` disables [`publish`].",
+            "type": [
+              "string",
+              "null"
+            ]
           },
-          "suggestions": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
+          "repository": {
+            "description": "Absolute path of the Workers repository.",
+            "type": "string"
           },
-          "validations": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "diagnostics",
-          "entries",
-          "rejected_suggestions",
-          "sessions",
-          "suggestions",
-          "validations"
-        ],
-        "type": "object"
-      },
-      "AnalysisOriginV1": {
-        "enum": [
-          "automatic",
-          "manual"
-        ],
-        "type": "string"
-      },
-      "AnalysisRecordV1": {
-        "additionalProperties": false,
-        "description": "The compact analysis record listed by `eval::list`; evidence and model outputs live separately in the analysis assets.",
-        "properties": {
-          "analyst": {
+          "thinking_level": {
             "anyOf": [
               {
-                "$ref": "#/definitions/AnalystRefV1"
+                "$ref": "#/definitions/ThinkingLevel"
               },
               {
                 "type": "null"
               }
             ]
           },
-          "code_root": {
-            "description": "Frozen at admission with the model: the directory the investigation reads and runs in, absent when code access was off.",
+          "worktrees_dir": {
+            "description": "Absolute directory for candidate worktrees; inside the repository only when git ignores it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "base_sha",
+          "max_cost_usd",
+          "max_output_tokens",
+          "max_total_tokens",
+          "max_turns",
+          "model",
+          "provider",
+          "repository",
+          "worktrees_dir"
+        ],
+        "type": "object"
+      },
+      "CandidateCostV1": {
+        "properties": {
+          "cost_usd": {
+            "description": "Measured by `harness::metrics`; `None` is unknown, never zero.",
+            "format": "double",
             "type": [
-              "string",
+              "number",
               "null"
             ]
           },
-          "completed_at": {
-            "format": "int64",
+          "input_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
             "type": [
               "integer",
               "null"
             ]
           },
-          "config_revision": {
-            "type": "string"
-          },
-          "counters": {
-            "$ref": "#/definitions/AnalysisCountersV1"
-          },
-          "coverage": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/CoverageLevelV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "created_at": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "criteria_version": {
-            "type": "string"
-          },
-          "deadline": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "evaluation_id": {
-            "type": "string"
-          },
-          "failure": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/FailureV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "harness_version": {
-            "description": "The Harness version the engine reported when a live event admitted the analysis (the turn just ended on it); absent on a manual analysis, which may be of an older session, and when the engine did not say.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "judge_call": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/JudgeCallV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "model": {
-            "allOf": [
-              {
-                "$ref": "#/definitions/MonitorModelV1"
-              }
-            ],
-            "description": "Frozen at admission: later configuration changes never alter it."
-          },
-          "observation_key": {
-            "type": "string"
-          },
-          "observe_since": {
-            "description": "Earlier root turns join the window only if they started after this instant: the monitor was observing then. Turns from before the monitor was enabled are never reported as new.",
-            "format": "int64",
-            "type": "integer"
-          },
-          "origin": {
-            "$ref": "#/definitions/AnalysisOriginV1"
-          },
-          "pending_reason": {
-            "description": "Why collection is still waiting (descendants running, metrics incomplete).",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "routing": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/RoutingV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "rules_version": {
-            "type": "string"
-          },
-          "schema_version": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "session_id": {
-            "type": "string"
-          },
-          "signals": {
-            "additionalProperties": {
-              "format": "uint32",
-              "minimum": 0.0,
-              "type": "integer"
-            },
-            "description": "Occurrences of each deterministic pattern the collection found, keyed `<rule_id>:<target>` (a target may itself contain colons). Empty both when nothing was found and before collection (`coverage` is set once collection read the evidence).",
-            "type": "object"
-          },
-          "source_title": {
-            "description": "The session's title, once collection has read it.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "stages": {
-            "description": "When each status began, oldest first.",
-            "items": {
-              "$ref": "#/definitions/StageTimeV1"
-            },
-            "type": "array"
-          },
-          "status": {
-            "$ref": "#/definitions/EvalStatusV1"
-          },
-          "step": {
+          "output_tokens": {
             "format": "uint64",
             "minimum": 0.0,
-            "type": "integer"
-          },
-          "supersedes": {
-            "description": "The earlier analysis of the same turn this reanalysis was requested over (same `observation_key`); absent on a first analysis.",
             "type": [
-              "string",
+              "integer",
               "null"
             ]
-          },
-          "turn_id": {
+          }
+        },
+        "type": "object"
+      },
+      "CandidateEvidenceV1": {
+        "properties": {
+          "excerpt": {
+            "description": "The observed excerpt; untrusted data.",
             "type": "string"
           },
-          "updated_at": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "usage": {
-            "allOf": [
-              {
-                "$ref": "#/definitions/MonitorUsageV1"
-              }
-            ],
-            "description": "The monitor's own consumption, apart from the observed task."
+          "source": {
+            "description": "Where it was observed (execution, session, run, entry).",
+            "type": "string"
           }
         },
         "required": [
-          "config_revision",
-          "counters",
-          "created_at",
-          "criteria_version",
-          "deadline",
-          "evaluation_id",
-          "model",
-          "observation_key",
-          "observe_since",
-          "origin",
-          "rules_version",
-          "schema_version",
-          "session_id",
-          "stages",
-          "status",
-          "step",
-          "turn_id",
-          "updated_at",
-          "usage"
+          "excerpt",
+          "source"
         ],
         "type": "object"
       },
-      "AnalystRefV1": {
-        "additionalProperties": false,
+      "CandidateIdentityV1": {
         "properties": {
-          "sent_at": {
-            "format": "int64",
-            "type": "integer"
+          "base_sha": {
+            "type": "string"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "brief_digest": {
+            "type": "string"
+          },
+          "candidate_id": {
+            "type": "string"
+          },
+          "cycle_id": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "root": {
+            "description": "`fs_scope.root` of the actor: the worktree.",
+            "type": "string"
           },
           "session_id": {
             "type": "string"
           },
-          "turn_id": {
+          "worktree": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "base_sha",
+          "branch",
+          "brief_digest",
+          "candidate_id",
+          "cycle_id",
+          "idempotency_key",
+          "root",
+          "session_id",
+          "worktree"
+        ],
+        "type": "object"
+      },
+      "CandidatePathV1": {
+        "properties": {
+          "change": {
+            "description": "`A`, `M` or `D`.",
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "change",
+          "path"
+        ],
+        "type": "object"
+      },
+      "CandidatePublishV1": {
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "builder_ref": {
+            "description": "What the official builder pins: `commit:<sha>`.",
+            "type": "string"
+          },
+          "candidate_sha": {
+            "type": "string"
+          },
+          "remote": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "branch",
+          "builder_ref",
+          "candidate_sha",
+          "remote"
+        ],
+        "type": "object"
+      },
+      "CandidateStateV1": {
+        "additionalProperties": false,
+        "description": "The candidate's identity (persisted before it starts), latest state, tree and the branch it was published to.",
+        "properties": {
+          "candidate": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CandidateV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "candidate_tree": {
             "type": [
               "string",
               "null"
             ]
+          },
+          "identity": {
+            "$ref": "#/definitions/CandidateIdentityV1"
+          },
+          "publish": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CandidatePublishV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
-          "sent_at",
-          "session_id"
+          "identity"
         ],
         "type": "object"
       },
-      "Answer": {
+      "CandidateStatusV1": {
         "oneOf": [
           {
-            "additionalProperties": false,
+            "description": "No Harness turn exists for the session: call [`start`] again.",
             "properties": {
-              "noul": {
-                "format": "double",
-                "type": "number"
+              "reason": {
+                "type": "string"
               },
-              "type": {
+              "state": {
                 "enum": [
-                  "noul"
+                  "not_started"
                 ],
                 "type": "string"
               }
             },
             "required": [
-              "noul",
-              "type"
+              "reason",
+              "state"
             ],
             "type": "object"
           },
           {
-            "additionalProperties": false,
             "properties": {
-              "choice": {
+              "reason": {
                 "type": "string"
               },
-              "confidence": {
-                "format": "double",
-                "type": "number"
-              },
-              "probabilities": {
-                "additionalProperties": {
-                  "format": "double",
-                  "type": "number"
-                },
-                "type": "object"
-              },
-              "type": {
+              "state": {
                 "enum": [
-                  "choice"
+                  "pending"
                 ],
                 "type": "string"
               }
             },
             "required": [
-              "choice",
-              "confidence",
-              "probabilities",
-              "type"
+              "reason",
+              "state"
             ],
             "type": "object"
           },
           {
-            "additionalProperties": false,
             "properties": {
-              "confidence": {
-                "format": "double",
-                "type": "number"
-              },
-              "legend": {
-                "additionalProperties": {
-                  "$ref": "#/definitions/ScoreLevel"
-                },
-                "type": "object"
-              },
-              "probabilities": {
-                "additionalProperties": {
-                  "format": "double",
-                  "type": "number"
-                },
-                "type": "object"
-              },
-              "score": {
-                "format": "double",
-                "type": "number"
-              },
-              "type": {
+              "state": {
                 "enum": [
-                  "score"
+                  "completed"
                 ],
                 "type": "string"
               }
             },
             "required": [
-              "confidence",
-              "legend",
-              "probabilities",
-              "score",
-              "type"
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "state": {
+                "enum": [
+                  "failed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "reason",
+              "state"
             ],
             "type": "object"
           }
         ]
       },
-      "ChangeEditV1": {
-        "additionalProperties": false,
-        "description": "One edit of what the model saw. `target` is an entry id of the conversation before the decision point, or `system_prompt`. An edit either replaces `find` with `replace` in the target's text or removes the entry.",
+      "CandidateV1": {
         "properties": {
-          "find": {
+          "commit": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CandidateCommitV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cost": {
+            "$ref": "#/definitions/CandidateCostV1"
+          },
+          "identity": {
+            "$ref": "#/definitions/CandidateIdentityV1"
+          },
+          "status": {
+            "$ref": "#/definitions/CandidateStatusV1"
+          },
+          "turn_id": {
             "type": [
               "string",
               "null"
             ]
-          },
-          "remove": {
-            "type": "boolean"
-          },
-          "replace": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "target": {
-            "type": "string"
           }
         },
         "required": [
-          "target"
-        ],
-        "type": "object"
-      },
-      "CodeRefV1": {
-        "additionalProperties": false,
-        "description": "Lines of one file of the code directory.",
-        "properties": {
-          "line_from": {
-            "description": "First line, 1-based and inclusive.",
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "line_to": {
-            "description": "Last line, inclusive; at most the file's line count.",
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "path": {
-            "description": "Relative to the code directory, e.g. `harness/src/registry.rs` or `context-manager/src/prune.rs`; never absolute and never with `..`.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "line_from",
-          "line_to",
-          "path"
+          "cost",
+          "identity",
+          "status"
         ],
         "type": "object"
       },
@@ -559,7 +488,6 @@
       },
       "ComparabilityV1": {
         "additionalProperties": false,
-        "description": "The conditions that must match for a fair comparison; only the Harness version is meant to differ.",
         "properties": {
           "checks": {
             "items": {
@@ -577,233 +505,71 @@
         ],
         "type": "object"
       },
-      "ContextSnapshotV1": {
-        "description": "One generation's context accounting. `free = usable - total`, floored at zero: once provider usage lands, `total` is what was billed, which can exceed the `usable` budget the window was fit into — that budget was derived before the generation from an estimate.",
+      "CoverageV1": {
+        "additionalProperties": false,
+        "description": "The objective mapped onto the E2E catalog, before any spend.",
         "properties": {
-          "categories": {
-            "$ref": "#/definitions/SnapshotCategoriesV1"
-          },
-          "compacted": {
-            "description": "The context carries a conversation summary: compacted on this step, or anchored on an earlier compaction entry (a previous step, the console's `/compact`). The summary's tokens count in `system_prompt`.",
-            "type": "boolean"
-          },
-          "effective_max_output_tokens": {
-            "description": "Output allocation `usable` was derived against.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "estimator": {
-            "description": "Which estimator produced the numbers (`heuristic` until the context-manager resolves a real tokenizer). Absent when the context-manager predates the breakdown response.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "free": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "model": {
+          "catalog_sha256": {
             "type": "string"
           },
-          "prefix_divergences": {
-            "description": "Already-sent rows this session's requests rewrote, newest last (at most [`MAX_PREFIX_DIVERGENCES`]), carried from step to step.",
+          "controls": {
+            "default": [],
+            "description": "The configured controls, each in its current definition.",
             "items": {
-              "$ref": "#/definitions/PrefixDivergenceV1"
+              "$ref": "#/definitions/SelectedTestV1"
             },
             "type": "array"
           },
-          "prompt_sections_fallback": {
-            "description": "Why no shared prefix went out: `disabled` (config), `no_stable_prefix` (empty identity prompt) or `prefix_rewritten` (a pre_generate hook replaced the prompt head; its prompt still wins, it just shares nothing).",
-            "type": [
-              "string",
-              "null"
-            ]
+          "covered": {
+            "type": "boolean"
           },
-          "prompt_surface_digest": {
-            "description": "Identity of the shared prompt prefix this generation went out with (`sha256:` of the stable section) — present only when the request carried `system_sections`. A local identity, never a provider hit; `usage.cache_read` is the reuse signal.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "provider": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "session_cost_usd": {
-            "description": "Running cost of the whole session in USD, accumulated across every generation step. `usage.cost_usd` is one step's bill — on providers with steep cache discounts the per-step number swings two orders of magnitude, so a chip showing it alone reads as a bouncing total.",
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "session_id": {
-            "type": "string"
-          },
-          "step": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "summarized_head_tokens": {
-            "description": "Size of the history that summary replaced.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "timestamp": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "total": {
-            "description": "Final request estimate: categories plus post-assembly growth.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "turn_id": {
-            "type": "string"
-          },
-          "usable": {
-            "description": "The input budget the window was fit into.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "usage": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/Usage"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Actual provider usage for this generation, stamped after the terminal frame; absent when the provider returned none (or the generation never completed)."
-          }
-        },
-        "required": [
-          "categories",
-          "compacted",
-          "effective_max_output_tokens",
-          "free",
-          "model",
-          "session_id",
-          "step",
-          "timestamp",
-          "total",
-          "turn_id",
-          "usable"
-        ],
-        "type": "object"
-      },
-      "CorrelationV1": {
-        "oneOf": [
-          {
-            "enum": [
-              "unknown"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "A `registry-changed` notice reached the model between the sources and the repeated call. Temporal correlation, not a proven cause.",
-            "enum": [
-              "harness_notice_correlated"
-            ],
-            "type": "string"
-          }
-        ]
-      },
-      "CoverageLevelV1": {
-        "oneOf": [
-          {
-            "description": "Every in-scope transcript was read and the model context holds every diagnostic's evidence.",
-            "enum": [
-              "complete"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "Previews omit or shorten entries; the full transcripts were read.",
-            "enum": [
-              "partial"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "Required evidence did not fit; no conclusion of healthy behavior.",
-            "enum": [
-              "insufficient"
-            ],
-            "type": "string"
-          }
-        ]
-      },
-      "CoverageV1": {
-        "additionalProperties": false,
-        "properties": {
-          "context_bytes": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "diagnostics_in_context": {
-            "description": "Diagnostics shown to the models; all of them stay in the snapshot.",
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "entries_read": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "level": {
-            "$ref": "#/definitions/CoverageLevelV1"
-          },
-          "limitations": {
+          "gaps": {
+            "description": "The exact missing coverage when `covered` is false; limitations else.",
             "items": {
               "type": "string"
             },
             "type": "array"
           },
-          "sessions_in_scope": {
-            "format": "uint32",
-            "minimum": 0.0,
+          "need": {
+            "description": "The need the objective maps to (`context_consumption`, `provider_fallback`, `skills`), or `unmapped`.",
+            "type": "string"
+          },
+          "selected": {
+            "items": {
+              "$ref": "#/definitions/SelectedTestV1"
+            },
+            "type": "array"
+          },
+          "selected_at": {
+            "format": "int64",
             "type": "integer"
           },
-          "sessions_out_of_scope": {
+          "tests_revision": {
+            "type": "string"
+          },
+          "tests_total": {
             "format": "uint32",
             "minimum": 0.0,
             "type": "integer"
           }
         },
         "required": [
-          "context_bytes",
-          "diagnostics_in_context",
-          "entries_read",
-          "level",
-          "limitations",
-          "sessions_in_scope",
-          "sessions_out_of_scope"
+          "catalog_sha256",
+          "covered",
+          "gaps",
+          "need",
+          "selected",
+          "selected_at",
+          "tests_revision",
+          "tests_total"
         ],
         "type": "object"
       },
       "CriterionMetricV1": {
-        "description": "What a validation measures. Every metric but `signal_per_run` is the mean over the runs of the scenario the infrastructure did not break (`pass_rate` is the share that passed, an unfinished run counting as not passed; `duration` is the wall time in milliseconds).",
+        "description": "What a criterion measures, per measurable run, averaged.",
         "oneOf": [
           {
             "enum": [
-              "pass_rate",
               "cost_usd",
               "duration",
               "tokens",
@@ -812,9 +578,30 @@
             "type": "string"
           },
           {
-            "description": "Occurrences of one of the suggestion's patterns per run, counted by the deterministic detectors over each run's transcript.",
+            "description": "Occurrences of `pattern` per run, by the detectors.",
             "enum": [
               "signal_per_run"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Share of runs that completed and passed (`task_incomplete` fails).",
+            "enum": [
+              "pass_rate"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "`awarded / possible` of the E2E criterion `criterion_id`; a run that did not evaluate it measures nothing.",
+            "enum": [
+              "criterion_score"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Function results marked as errors in the run's own transcript.",
+            "enum": [
+              "function_call_errors"
             ],
             "type": "string"
           }
@@ -823,6 +610,12 @@
       "CriterionV1": {
         "additionalProperties": false,
         "properties": {
+          "criterion_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "direction": {
             "$ref": "#/definitions/DirectionV1"
           },
@@ -830,6 +623,7 @@
             "$ref": "#/definitions/CriterionMetricV1"
           },
           "min_effect": {
+            "description": "In the metric's unit (pp for pass rate and criterion score, s for duration); 0 makes any loss a regression.",
             "format": "double",
             "type": "number"
           },
@@ -844,15 +638,7 @@
               "null"
             ]
           },
-          "registered_at": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "registered_by": {
-            "type": "string"
-          },
           "scenario_id": {
-            "description": "The scenario whose runs are measured.",
             "type": "string"
           }
         },
@@ -861,46 +647,228 @@
           "metric",
           "min_effect",
           "min_runs",
-          "registered_at",
-          "registered_by",
           "scenario_id"
         ],
         "type": "object"
       },
-      "DiagnosticV1": {
+      "CycleAnalysisV1": {
         "additionalProperties": false,
-        "description": "One deterministic observation. Model judgments never remove it.",
+        "description": "The deterministic first pass over one imported execution.",
         "properties": {
-          "correlation": {
-            "$ref": "#/definitions/CorrelationV1"
+          "admission_key": {
+            "type": "string"
           },
-          "evidence": {
-            "description": "Calls, results and notices, in transcript order.",
+          "analyzed_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "child_transcripts_complete": {
+            "description": "True only when the report says every child transcript was kept.",
+            "type": "boolean"
+          },
+          "execution_id": {
+            "type": "string"
+          },
+          "findings": {
             "items": {
-              "$ref": "#/definitions/EntryRefV1"
+              "$ref": "#/definitions/FindingV1"
             },
             "type": "array"
           },
-          "fingerprint": {
-            "description": "Rule, session, turn and the call ids of this occurrence.",
+          "identity": {
+            "$ref": "#/definitions/EvidenceIdentityV1"
+          },
+          "role": {
+            "$ref": "#/definitions/ExecutionRoleV1"
+          },
+          "scenarios": {
+            "description": "What each reported scenario expects and how many runs it had, for the judge.",
+            "items": {
+              "$ref": "#/definitions/ScenarioContextV1"
+            },
+            "type": "array"
+          },
+          "sentinel": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/SentinelForwardV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What `sentinel::reports::ingest` answered for the runs' recorded failures; absent when the reports recorded none."
+          },
+          "unknowns": {
+            "description": "What the stored copy could not tell; never assumed.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "admission_key",
+          "analyzed_at",
+          "child_transcripts_complete",
+          "execution_id",
+          "findings",
+          "identity",
+          "role",
+          "unknowns"
+        ],
+        "type": "object"
+      },
+      "CycleBudgetV1": {
+        "additionalProperties": false,
+        "description": "The limits of one cycle, covering every kind of its work.",
+        "properties": {
+          "max_calls": {
+            "description": "Dispatched work items, retries included.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_candidates": {
+            "description": "Candidates the cycle may try.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "max_duration_ms": {
+            "description": "Wall time since the cycle was created.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "max_spend_usd": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "max_calls",
+          "max_candidates",
+          "max_duration_ms",
+          "max_spend_usd"
+        ],
+        "type": "object"
+      },
+      "CycleDecisionV1": {
+        "additionalProperties": false,
+        "properties": {
+          "baseline_execution_id": {
             "type": "string"
           },
-          "observation": {
+          "candidate_execution_id": {
             "type": "string"
           },
-          "rule_id": {
+          "comparability": {
+            "$ref": "#/definitions/ComparabilityV1"
+          },
+          "decided_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "outcome": {
+            "$ref": "#/definitions/DecisionOutcomeV1"
+          },
+          "policy_revision": {
             "type": "string"
           },
-          "rule_version": {
+          "preserved": {
+            "items": {
+              "$ref": "#/definitions/EvidenceV1"
+            },
+            "type": "array"
+          },
+          "primary": {
+            "$ref": "#/definitions/EvidenceV1"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "baseline_execution_id",
+          "candidate_execution_id",
+          "comparability",
+          "decided_at",
+          "outcome",
+          "policy_revision",
+          "preserved",
+          "primary",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "CycleEventV1": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "detail": {
             "type": "string"
           },
-          "session_id": {
-            "type": "string"
+          "stage": {
+            "$ref": "#/definitions/CycleStageV1"
           },
-          "target": {
-            "type": "string"
+          "status": {
+            "$ref": "#/definitions/CycleStatusV1"
+          }
+        },
+        "required": [
+          "at",
+          "detail",
+          "stage",
+          "status"
+        ],
+        "type": "object"
+      },
+      "CycleExecutionV1": {
+        "additionalProperties": false,
+        "description": "One E2E execution the cycle owns. Recorded before dispatch; `work_id` is sent to the E2E as its immutable idempotency key. `label` is display only.",
+        "properties": {
+          "admission_key": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
-          "turn_id": {
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dispatched_at": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "execution_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "role": {
+            "$ref": "#/definitions/ExecutionRoleV1"
+          },
+          "state": {
+            "$ref": "#/definitions/ExecutionStateV1"
+          },
+          "work_id": {
+            "description": "The budget reservation it was dispatched under.",
             "type": [
               "string",
               "null"
@@ -908,16 +876,534 @@
           }
         },
         "required": [
-          "correlation",
-          "evidence",
-          "fingerprint",
-          "observation",
-          "rule_id",
-          "rule_version",
-          "session_id",
-          "target"
+          "role",
+          "state"
         ],
         "type": "object"
+      },
+      "CycleInputV1": {
+        "description": "What started a cycle: `{\"objective\": \"...\"}` or `{\"execution_id\": \"...\"}`.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "objective": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "objective"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "execution_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "execution_id"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "CycleNextV1": {
+        "additionalProperties": false,
+        "description": "The durable next step of a waiting cycle.",
+        "properties": {
+          "action": {
+            "$ref": "#/definitions/NextActionV1"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "findings": {
+            "default": [],
+            "description": "Fingerprints of the findings it rests on.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "action",
+          "detail"
+        ],
+        "type": "object"
+      },
+      "CycleOutcomeV1": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "$ref": "#/definitions/OutcomeCodeV1"
+          },
+          "detail": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "detail"
+        ],
+        "type": "object"
+      },
+      "CyclePlanV1": {
+        "additionalProperties": false,
+        "description": "What a cycle commits to before any result.",
+        "properties": {
+          "controls": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "criterion": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/CriterionV1"
+              }
+            ],
+            "description": "The metric, its direction, the minimum effect and the scenario."
+          },
+          "estimated_usd": {
+            "description": "What the baseline is reserved at: runs × scenarios × the configured per-run estimate.",
+            "format": "double",
+            "type": "number"
+          },
+          "frozen_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "objective": {
+            "type": "string"
+          },
+          "parameters": {
+            "$ref": "#/definitions/ExecutionParametersV1"
+          },
+          "policy_revision": {
+            "description": "The configuration revision the cycle runs under.",
+            "type": "string"
+          },
+          "preserved": {
+            "default": [],
+            "description": "Correctness the candidate must keep: a loss rejects, an unmeasured one is inconclusive.",
+            "items": {
+              "$ref": "#/definitions/CriterionV1"
+            },
+            "type": "array"
+          },
+          "sampling": {
+            "$ref": "#/definitions/SamplingPlanV1"
+          },
+          "tests": {
+            "description": "The selected tests and controls, each with the executable identity of its current definition, frozen with the plan.",
+            "items": {
+              "$ref": "#/definitions/SelectedTestV1"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "criterion",
+          "estimated_usd",
+          "frozen_at",
+          "objective",
+          "parameters",
+          "policy_revision",
+          "sampling",
+          "tests"
+        ],
+        "type": "object"
+      },
+      "CycleRecordV1": {
+        "additionalProperties": false,
+        "description": "The one record of a cycle, whichever input started it.",
+        "properties": {
+          "analyses": {
+            "default": [],
+            "items": {
+              "$ref": "#/definitions/CycleAnalysisV1"
+            },
+            "type": "array"
+          },
+          "baseline": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/BaselineV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "candidate": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CandidateStateV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "completed_at": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "config": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/StoredConfigV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The configuration frozen when the cycle was created: later edits of the global configuration never change its actor, budget, target or criteria. `null`: created unconfigured."
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CoverageV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "cycle_id": {
+            "type": "string"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CycleDecisionV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Recorded once."
+          },
+          "executions": {
+            "default": [],
+            "items": {
+              "$ref": "#/definitions/CycleExecutionV1"
+            },
+            "type": "array"
+          },
+          "failure": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "history": {
+            "description": "Oldest first.",
+            "items": {
+              "$ref": "#/definitions/CycleEventV1"
+            },
+            "type": "array"
+          },
+          "input": {
+            "$ref": "#/definitions/CycleInputV1"
+          },
+          "insight": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/InsightV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the measured runs' transcripts show, read before the proposal."
+          },
+          "next": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CycleNextV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CycleOutcomeV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CyclePlanV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Frozen before any dispatch; never changes."
+          },
+          "proposal": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ProposalStateV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pull_request": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/PullRequestV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The accepted candidate's pull request, once opened or found."
+          },
+          "replay": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ReplayV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The failed steps replayed under both builds, before the runs."
+          },
+          "retry_of": {
+            "description": "The ended cycle this one measures again, from its finding.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "schema_version": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "stage": {
+            "$ref": "#/definitions/CycleStageV1"
+          },
+          "status": {
+            "$ref": "#/definitions/CycleStatusV1"
+          },
+          "step": {
+            "description": "Durable step counter; a queued step that does not match is stale.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "triage": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/TriageV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "updated_at": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "created_at",
+          "cycle_id",
+          "history",
+          "input",
+          "schema_version",
+          "stage",
+          "status",
+          "step",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "CycleResultResponseV1": {
+        "additionalProperties": false,
+        "properties": {
+          "cycle": {
+            "$ref": "#/definitions/CycleRecordV1"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CycleUsageV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`null` until the cycle reserves work."
+          }
+        },
+        "required": [
+          "cycle"
+        ],
+        "type": "object"
+      },
+      "CycleStageV1": {
+        "description": "Where the cycle is. An objective goes coverage, baseline, analysis, proposal, candidate, validation, analysis, pull request; an execution starts at analysis and, with a pertinent finding, goes coverage, triage (paid only when covered and ambiguous), then baseline.",
+        "oneOf": [
+          {
+            "enum": [
+              "coverage",
+              "baseline",
+              "awaiting_execution",
+              "analysis",
+              "done"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Ambiguous findings judged once (`judge::evaluate`), or the recorded reason no judgment is needed.",
+            "enum": [
+              "triage"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The measured runs' transcripts read for what a Harness change could improve: each errored call judged by Jev, or read by the default LLM when Jev cannot tell.",
+            "enum": [
+              "insight"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The bounded read-only proposal turning evidence into a brief.",
+            "enum": [
+              "proposal"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The isolated candidate actor.",
+            "enum": [
+              "candidate"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The steps whose calls failed, replayed under the base and the candidate build (`replay`).",
+            "enum": [
+              "replay"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The candidate's source validation execution.",
+            "enum": [
+              "validation"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The accepted candidate's pull request, ready for review.",
+            "enum": [
+              "pull_request"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "CycleStatusV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "failed",
+              "cancelled"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Durably paused on an external event: an E2E execution to finish, or the candidate stage (`next`).",
+            "enum": [
+              "waiting"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "CycleUsageV1": {
+        "additionalProperties": false,
+        "description": "What a cycle has drawn on its budget.",
+        "properties": {
+          "budget": {
+            "$ref": "#/definitions/CycleBudgetV1"
+          },
+          "calls": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "candidates": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "elapsed_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "spend_usd": {
+            "description": "Reported costs plus the estimate of work without one.",
+            "format": "double",
+            "type": "number"
+          },
+          "unknown_cost": {
+            "description": "Work settled without a reported cost.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "budget",
+          "calls",
+          "candidates",
+          "elapsed_ms",
+          "spend_usd",
+          "unknown_cost"
+        ],
+        "type": "object"
+      },
+      "DecisionOutcomeV1": {
+        "enum": [
+          "accepted",
+          "rejected",
+          "inconclusive"
+        ],
+        "type": "string"
       },
       "DirectionV1": {
         "enum": [
@@ -926,47 +1412,92 @@
         ],
         "type": "string"
       },
-      "E2eAssessmentsV1": {
+      "ErrorSiteV1": {
         "additionalProperties": false,
+        "description": "One errored function call of a measured run.",
         "properties": {
-          "passed": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
+          "after": {
+            "type": "string"
           },
-          "total": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "passed",
-          "total"
-        ],
-        "type": "object"
-      },
-      "E2eExecutionRefV1": {
-        "additionalProperties": false,
-        "description": "What `e2e::dashboard::execution-get` reported at lookup time.",
-        "properties": {
-          "assessments": {
+          "arguments": {
+            "description": "The call's arguments and the error the Harness returned, clipped.",
+            "type": "string"
+          },
+          "before": {
+            "description": "What the agent said before the call, and what it did next.",
+            "type": "string"
+          },
+          "class": {
             "anyOf": [
               {
-                "$ref": "#/definitions/E2eAssessmentsV1"
+                "$ref": "#/definitions/SiteClassV1"
               },
               {
                 "type": "null"
               }
             ]
           },
-          "availability": {
+          "entry_id": {
+            "description": "The `function_result` entry.",
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "execution_id": {
+            "type": "string"
+          },
+          "function_id": {
+            "type": "string"
+          },
+          "probability": {
+            "description": "The judge's probability of `class`.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "scenario_id": {
+            "type": "string"
+          },
+          "site_id": {
+            "type": "string"
+          },
+          "step": {
+            "default": "",
+            "description": "How the step that made the call ended: its stop reason and output tokens, which tell a limit the Harness set from the model's own stop.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "after",
+          "arguments",
+          "before",
+          "entry_id",
+          "error",
+          "execution_id",
+          "function_id",
+          "run_id",
+          "scenario_id",
+          "site_id"
+        ],
+        "type": "object"
+      },
+      "EvidenceIdentityV1": {
+        "additionalProperties": false,
+        "description": "Identity of an imported execution as its reports state it. `None` is unknown (absent, or reports that disagree), never assumed.",
+        "properties": {
+          "artifacts_digest": {
             "type": [
               "string",
               "null"
             ]
           },
-          "conclusion": {
+          "contract_digest": {
             "type": [
               "string",
               "null"
@@ -984,22 +1515,23 @@
               "null"
             ]
           },
-          "evidence_error": {
+          "fixed_stack_digest": {
+            "default": null,
+            "description": "Digest of every stack component but the Harness, as the reports prove it; unknown when they cannot.",
             "type": [
               "string",
               "null"
             ]
           },
-          "execution_id": {
-            "type": "string"
+          "harness_binary_sha256": {
+            "default": null,
+            "description": "SHA-256 of `/proc/<pid>/exe` of the ready Harness, captured by the E2E runner (`system_under_test.harness_binary_sha256`), never from the subject. Known only when every report agrees. Like the Harness version it is the product side, kept per side and never part of the fixed comparability; it binds the run to the commit's build.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "harness_version": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "label": {
             "type": [
               "string",
               "null"
@@ -1017,259 +1549,72 @@
               "null"
             ]
           },
-          "reports": {
-            "items": {
-              "$ref": "#/definitions/E2eReportRefV1"
-            },
-            "type": "array"
-          },
-          "reports_available": {
-            "description": "True only when the execution reported retained reports.",
-            "type": "boolean"
-          },
           "scenarios": {
-            "items": {
-              "$ref": "#/definitions/E2eScenarioV1"
-            },
-            "type": "array"
-          },
-          "started_at": {
-            "description": "When the E2E started the execution (ms since the Unix epoch): its results cannot have existed before.",
-            "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "status": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "execution_id",
-          "reports",
-          "reports_available",
-          "scenarios"
-        ],
-        "type": "object"
-      },
-      "E2eMeasureV1": {
-        "additionalProperties": false,
-        "properties": {
-          "average": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "samples": {
-            "description": "Runs that reported this measure; fewer than `run_count` means some runs reported nothing (never counted as zero).",
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "samples"
-        ],
-        "type": "object"
-      },
-      "E2eReportRefV1": {
-        "additionalProperties": false,
-        "properties": {
-          "available": {
-            "type": "boolean"
-          },
-          "scenario_id": {
-            "type": "string"
-          },
-          "subject_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "available",
-          "scenario_id"
-        ],
-        "type": "object"
-      },
-      "E2eScenarioV1": {
-        "additionalProperties": false,
-        "description": "One scenario's identity and the execution's own averages, as the E2E computed them.",
-        "properties": {
-          "behavior_sha256": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "completed_runs": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "contract_fingerprint": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "cost_usd_per_run": {
-            "description": "The cohort's total cost divided by its completed runs; the total also covers failed attempts.",
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "mean_score": {
-            "description": "Mean score of the scored runs (0 to 100).",
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "measures": {
-            "additionalProperties": {
-              "$ref": "#/definitions/E2eMeasureV1"
-            },
-            "description": "`function_calls`, `function_call_errors`, `tokens`, `duration_seconds` and `cost_usd`, when reported.",
-            "type": "object"
-          },
-          "median_wall_time_ms": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "p50_function_calls": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "pass_rate": {
-            "description": "The scenario's cohort in `plan_execution.measurements.cohorts[]`, when the execution has exactly one for it. Each value below is absent when the E2E did not report it, never zero.\n\nShare of the planned runs that passed (0 to 1).",
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "planned_runs": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "run_count": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "scenario_id": {
-            "type": "string"
-          },
-          "total_tokens_per_run": {
-            "description": "The cohort's total tokens divided by its completed runs.",
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "measures",
-          "run_count",
-          "scenario_id"
-        ],
-        "type": "object"
-      },
-      "EntryRefV1": {
-        "additionalProperties": false,
-        "description": "A transcript entry, addressed the way `session::messages` returns it.",
-        "properties": {
-          "entry_id": {
-            "type": "string"
-          },
-          "session_id": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "entry_id",
-          "session_id"
-        ],
-        "type": "object"
-      },
-      "EvalResultResponseV1": {
-        "additionalProperties": false,
-        "properties": {
-          "assets": {
-            "$ref": "#/definitions/AnalysisAssetsV1"
-          },
-          "record": {
-            "$ref": "#/definitions/AnalysisRecordV1"
-          },
-          "reviews": {
             "default": [],
-            "description": "One row per suggestion, in suggestion order: what people decided about it. A suggestion nobody acted on reads as `new`.",
             "items": {
-              "$ref": "#/definitions/SuggestionReviewV1"
+              "$ref": "#/definitions/ScenarioIdentityV1"
             },
             "type": "array"
+          },
+          "stack_digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subject_sha256": {
+            "default": null,
+            "description": "Digest of the full native subject configuration (model, provider, agent profile) as the reports state it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workers_revision": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
-        "required": [
-          "assets",
-          "record"
-        ],
         "type": "object"
-      },
-      "EvalStatusV1": {
-        "enum": [
-          "queued",
-          "collecting",
-          "judging",
-          "investigating",
-          "completed",
-          "failed",
-          "cancelled"
-        ],
-        "type": "string"
       },
       "EvidenceRunV1": {
         "additionalProperties": false,
-        "description": "One run of the scenario as the E2E reported it. Runs the infrastructure broke are listed with the E2E's own words, never counted.",
+        "description": "One run as the E2E reported it; unreported values stay absent.",
         "properties": {
+          "case_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "completed": {
-            "description": "The E2E reported the run complete with a valid technical outcome.",
+            "description": "`completion == completed` with a `valid` technical outcome.",
             "type": "boolean"
           },
           "completion": {
-            "description": "`completion` as the E2E reported it.",
             "type": [
               "string",
               "null"
             ]
           },
           "cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "criteria": {
+            "additionalProperties": {
+              "format": "double",
+              "type": "number"
+            },
+            "description": "`awarded / possible` per evaluated criterion id.",
+            "type": "object"
+          },
+          "function_call_errors": {
             "format": "double",
             "type": [
               "number",
@@ -1292,21 +1637,18 @@
               "minimum": 0.0,
               "type": "integer"
             },
-            "description": "Occurrences of each of the row's patterns the detectors found in this run's transcript (0 is a measurement); absent when the report held no transcript.",
             "type": [
               "object",
               "null"
             ]
           },
           "status": {
-            "description": "`passed` or `failed`, the run's task outcome.",
             "type": [
               "string",
               "null"
             ]
           },
           "technical": {
-            "description": "`technical` as the E2E reported it; anything but `valid` is an infrastructure failure.",
             "type": [
               "string",
               "null"
@@ -1340,7 +1682,6 @@
             "type": "string"
           },
           "mean": {
-            "description": "Mean of the criterion's metric over those runs; absent without a criterion or without such runs.",
             "format": "double",
             "type": [
               "number",
@@ -1348,13 +1689,11 @@
             ]
           },
           "n": {
-            "description": "Measurable runs (see `EvidenceRunV1::measurable`) with a value of the criterion's metric (every measurable run while there is no criterion).",
             "format": "uint32",
             "minimum": 0.0,
             "type": "integer"
           },
           "runs": {
-            "description": "Every run of the scenario the execution holds.",
             "items": {
               "$ref": "#/definitions/EvidenceRunV1"
             },
@@ -1370,7 +1709,7 @@
       },
       "EvidenceV1": {
         "additionalProperties": false,
-        "description": "Computed in code from the attached pair's runs, never by a model. It is what the person's verdict is shown next to.",
+        "description": "A criterion judged on a pair, in code.",
         "properties": {
           "baseline": {
             "$ref": "#/definitions/EvidenceSideV1"
@@ -1402,309 +1741,660 @@
         ],
         "type": "object"
       },
-      "ExcludedProbeV1": {
+      "ExecutionParametersV1": {
         "additionalProperties": false,
+        "description": "The E2E `ExecutionParameters` the plan dispatches, frozen with it.",
         "properties": {
-          "calls": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "code": {
-            "type": "string"
-          },
-          "session_id": {
-            "type": "string"
-          },
-          "target": {
-            "type": "string"
-          },
-          "turn_id": {
+          "agent": {
             "type": [
               "string",
               "null"
             ]
-          }
-        },
-        "required": [
-          "calls",
-          "code",
-          "session_id",
-          "target"
-        ],
-        "type": "object"
-      },
-      "FailureV1": {
-        "additionalProperties": false,
-        "description": "The stage that failed and why. `stage` is the status the analysis was in.",
-        "properties": {
-          "code": {
+          },
+          "model": {
             "type": "string"
           },
-          "message": {
+          "provider": {
             "type": "string"
           },
-          "stage": {
-            "$ref": "#/definitions/EvalStatusV1"
-          }
-        },
-        "required": [
-          "code",
-          "message",
-          "stage"
-        ],
-        "type": "object"
-      },
-      "FidelityLevelV1": {
-        "oneOf": [
-          {
-            "enum": [
-              "approximate"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "The provider counts the rebuilt request like the original, up to a fixed per-request overhead measured at the turn's first step.",
-            "enum": [
-              "exact"
-            ],
-            "type": "string"
-          }
-        ]
-      },
-      "FidelityV1": {
-        "additionalProperties": false,
-        "description": "How faithfully the request at the decision point was rebuilt.",
-        "properties": {
-          "counted_tokens": {
-            "format": "uint64",
+          "runs": {
+            "format": "uint32",
             "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "estimator": {
-            "description": "`provider` when the provider counted, else the estimator's name.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "level": {
-            "$ref": "#/definitions/FidelityLevelV1"
-          },
-          "off_ratio": {
-            "description": "The unexplained difference over the recorded tokens.",
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "reasons": {
-            "default": [],
-            "description": "Why the rebuild is approximate; empty when exact.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "recorded_tokens": {
-            "description": "Input tokens of the original step: input + cache read + cache write.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "level"
-        ],
-        "type": "object"
-      },
-      "InvestigationV1": {
-        "additionalProperties": false,
-        "description": "The investigation and its own consumption, kept apart from the observed task's metrics.",
-        "properties": {
-          "code_root": {
-            "description": "The directory the analyst read and ran in; absent when access was off.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "completed_at": {
-            "format": "int64",
             "type": "integer"
           },
-          "effective_model": {
-            "type": [
-              "string",
-              "null"
-            ]
+          "scenarios": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
-          "effective_provider": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "metrics": {
+          "stack": {
             "anyOf": [
               {
-                "$ref": "#/definitions/SessionMetricsResponseV1"
+                "$ref": "#/definitions/StackV1"
               },
               {
                 "type": "null"
               }
             ]
           },
-          "rejected": {
-            "items": {
-              "$ref": "#/definitions/RejectedSuggestionV1"
-            },
-            "type": "array"
+          "technical_retries": {
+            "format": "uint8",
+            "minimum": 0.0,
+            "type": "integer"
           },
-          "requested_model": {
-            "type": "string"
-          },
-          "requested_provider": {
-            "type": "string"
-          },
-          "session_id": {
-            "type": "string"
-          },
-          "signal_assessments": {
-            "items": {
-              "$ref": "#/definitions/SignalAssessmentV1"
-            },
-            "type": "array"
-          },
-          "suggestions": {
-            "items": {
-              "$ref": "#/definitions/SuggestionV1"
-            },
-            "type": "array"
-          },
-          "turn_id": {
-            "type": "string"
+          "where": {
+            "$ref": "#/definitions/WhereV1"
           }
         },
         "required": [
-          "completed_at",
-          "rejected",
-          "requested_model",
-          "requested_provider",
-          "session_id",
-          "signal_assessments",
-          "suggestions",
-          "turn_id"
+          "model",
+          "provider",
+          "runs",
+          "scenarios",
+          "technical_retries",
+          "where"
         ],
         "type": "object"
       },
-      "JudgeCallV1": {
-        "additionalProperties": false,
-        "description": "A Jev call started by this analysis. Persisted before the call so a restart can tell a lost answer from one never requested.",
-        "properties": {
-          "deadline": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "request_id": {
+      "ExecutionRoleV1": {
+        "description": "Why an execution belongs to the cycle.",
+        "oneOf": [
+          {
+            "enum": [
+              "baseline"
+            ],
             "type": "string"
           },
-          "started_at": {
-            "format": "int64",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "deadline",
-          "request_id",
-          "started_at"
-        ],
-        "type": "object"
-      },
-      "LifecycleEventV1": {
-        "additionalProperties": false,
-        "description": "One change of status, with who made it.",
-        "properties": {
-          "at": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "by": {
+          {
+            "description": "The execution that started the cycle.",
+            "enum": [
+              "source"
+            ],
             "type": "string"
           },
-          "note": {
-            "type": [
-              "string",
-              "null"
-            ]
+          {
+            "description": "One round of the candidate's source validation.",
+            "enum": [
+              "candidate"
+            ],
+            "type": "string"
           },
-          "status": {
-            "$ref": "#/definitions/LifecycleStatusV1"
+          {
+            "description": "One round of the base commit, run beside the candidate's: the validation compares the candidate with these, never with the baseline the cycle measured before its proposal.",
+            "enum": [
+              "control"
+            ],
+            "type": "string"
           }
-        },
-        "required": [
-          "at",
-          "by",
-          "status"
-        ],
-        "type": "object"
+        ]
       },
-      "LifecycleStatusV1": {
-        "description": "Where a suggestion stands. Only people move it: the monitor never does.",
+      "ExecutionStateV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "running"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Ownership recorded, `execution-start` called or about to be: its id may be unknown; it is reconciled by `work_id`, never dispatched again.",
+            "enum": [
+              "dispatching"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Terminal and its reports copied into the loop's evidence.",
+            "enum": [
+              "imported"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The dispatch was refused, or never appeared in the E2E.",
+            "enum": [
+              "lost"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "FindingClassV1": {
+        "description": "The six classes the first pass sorts a finding into.",
         "enum": [
-          "new",
-          "accepted",
-          "in_progress",
-          "shipped",
-          "rejected",
-          "duplicate"
+          "defect",
+          "improvement_opportunity",
+          "evaluation_gap",
+          "infrastructure_or_evaluator_failure",
+          "expected_behavior",
+          "insufficient_evidence"
         ],
         "type": "string"
       },
-      "LifecycleV1": {
+      "FindingV1": {
         "additionalProperties": false,
         "properties": {
-          "duplicate_of": {
-            "description": "What it duplicates: a pull request, or another `<evaluation_id>:<index>` (`duplicate`).",
+          "asks": {
+            "description": "What the lost E2E criterion asks (its description), for the judge.",
             "type": [
               "string",
               "null"
             ]
           },
-          "history": {
-            "description": "Every change of status, oldest first; empty while `new`.",
+          "class": {
+            "$ref": "#/definitions/FindingClassV1"
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "observation": {
+            "type": "string"
+          },
+          "signal": {
+            "description": "The detector rule or execution signal it comes from.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "class",
+          "fingerprint",
+          "observation",
+          "signal"
+        ],
+        "type": "object"
+      },
+      "ImprovementPointV1": {
+        "additionalProperties": false,
+        "description": "A Harness change worth trying, with the sites that show it.",
+        "properties": {
+          "function_id": {
+            "type": "string"
+          },
+          "sites": {
+            "description": "`ErrorSiteV1::site_id`s.",
             "items": {
-              "$ref": "#/definitions/LifecycleEventV1"
+              "type": "string"
             },
             "type": "array"
           },
-          "pr": {
-            "description": "The pull request that implements it (`in_progress`, `shipped`).",
+          "source": {
+            "$ref": "#/definitions/InsightSourceV1"
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "function_id",
+          "sites",
+          "source",
+          "summary"
+        ],
+        "type": "object"
+      },
+      "InsightSourceV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "jev"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The default LLM, when Jev was not configured, did not answer or decided no site.",
+            "enum": [
+              "llm"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Measured from the transcripts in code: where a run's tokens go.",
+            "enum": [
+              "transcripts"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "InsightV1": {
+        "additionalProperties": false,
+        "description": "What the measured runs' transcripts show.",
+        "properties": {
+          "model": {
             "type": [
               "string",
               "null"
             ]
+          },
+          "points": {
+            "default": [],
+            "items": {
+              "$ref": "#/definitions/ImprovementPointV1"
+            },
+            "type": "array"
           },
           "reason": {
-            "description": "Why it was rejected (`rejected`).",
+            "type": "string"
+          },
+          "request_id": {
+            "description": "Set before `judge::evaluate` is called, so a restart asks again under it.",
             "type": [
               "string",
               "null"
             ]
           },
-          "status": {
-            "$ref": "#/definitions/LifecycleStatusV1"
+          "sites": {
+            "items": {
+              "$ref": "#/definitions/ErrorSiteV1"
+            },
+            "type": "array"
           },
-          "version": {
-            "description": "The Harness version that shipped it, a semantic version like `1.8.43`; the recurrence query splits the analyses at it.",
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/InsightSourceV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who decided; absent before anyone did."
+          },
+          "usage": true
+        },
+        "required": [
+          "reason",
+          "sites"
+        ],
+        "type": "object"
+      },
+      "JudgeConfigV1": {
+        "additionalProperties": false,
+        "properties": {
+          "estimated_usd": {
+            "description": "What one grouped question is reserved at.",
+            "format": "double",
+            "type": "number"
+          },
+          "provider": {
+            "description": "The judge provider (`judge::evaluate` hub routing), e.g. `typesafe`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "estimated_usd",
+          "provider"
+        ],
+        "type": "object"
+      },
+      "LoopConfigV1": {
+        "additionalProperties": false,
+        "description": "Everything a cycle needs to spend on the E2E. Nothing has a default: an unconfigured loop selects coverage but dispatches nothing.",
+        "properties": {
+          "admit_executions": {
+            "default": true,
+            "description": "Whether a finished E2E execution nobody started from the loop opens a cycle on its own. Off, executions (imported CI runs among them) are data the loop reads, and a cycle starts only when a person asks.",
+            "type": "boolean"
+          },
+          "budget": {
+            "$ref": "#/definitions/CycleBudgetV1"
+          },
+          "candidate": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CandidateConfigV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The bounded read-only proposal and the isolated candidate actor; absent: a cycle stops before any proposal, inconclusive."
+          },
+          "controls": {
+            "default": [],
+            "description": "Control scenarios every plan also runs and preserves (pass rate and every spec criterion), e.g. `minimal_path`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "estimated_usd_per_run": {
+            "description": "What one run is reserved at before dispatch; an unreported actual cost stays charged at it, never at zero.",
+            "format": "double",
+            "type": "number"
+          },
+          "history_days": {
+            "description": "Measure from the E2E runs already made instead of dispatching a baseline: the GitHub executions (the release-control campaigns) of the subject completed in the last this many days. Absent: dispatch.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "judge": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/JudgeConfigV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Semantic triage of ambiguous findings through `judge::evaluate`; absent: an ambiguous finding stays inconclusive."
+          },
+          "max_scenarios": {
+            "description": "Scenarios one plan may run at most.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "min_effect": {
+            "$ref": "#/definitions/MinEffectV1"
+          },
+          "runs_per_side": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "stack": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/StackV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Required for `docker` and `github`; refused for `harness`, which runs on its own stack."
+          },
+          "subject": {
+            "$ref": "#/definitions/SubjectV1"
+          },
+          "technical_retries": {
+            "format": "uint8",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "validation": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ValidationConfigV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The stack that builds the workers under test from a commit; required to validate a candidate. With it, the baseline runs the candidate's base commit."
+          },
+          "where": {
+            "$ref": "#/definitions/WhereV1"
+          }
+        },
+        "required": [
+          "budget",
+          "estimated_usd_per_run",
+          "max_scenarios",
+          "min_effect",
+          "runs_per_side",
+          "subject",
+          "technical_retries",
+          "where"
+        ],
+        "type": "object"
+      },
+      "MinEffectV1": {
+        "additionalProperties": false,
+        "description": "The minimum effect a plan freezes for each metric it can target.",
+        "properties": {
+          "pass_rate_pp": {
+            "description": "Percentage points of pass rate.",
+            "format": "double",
+            "type": "number"
+          },
+          "tokens": {
+            "description": "Total tokens per run.",
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "pass_rate_pp",
+          "tokens"
+        ],
+        "type": "object"
+      },
+      "NextActionV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "await_execution"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Evidence-backed candidate work, coordinated by a later stage.",
+            "enum": [
+              "candidate_work"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "OutcomeCodeV1": {
+        "oneOf": [
+          {
+            "description": "The objective has no E2E coverage; `coverage.gaps` names it.",
+            "enum": [
+              "no_coverage"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The analysis found nothing worth candidate work.",
+            "enum": [
+              "no_action"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A limit of the cycle was reached.",
+            "enum": [
+              "budget"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The evidence cannot support a conclusion (e.g. an unusable baseline).",
+            "enum": [
+              "inconclusive"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "`decision` holds accepted, rejected or inconclusive, and no pull request was opened.",
+            "enum": [
+              "decided"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The accepted change is in a pull request ready for review (`pull_request`). Nothing is merged or released by the loop.",
+            "enum": [
+              "proposed"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "ProposalCitationV1": {
+        "description": "A source range in the base commit, repository-relative.",
+        "properties": {
+          "line_end": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "line_start": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "line_end",
+          "line_start",
+          "path"
+        ],
+        "type": "object"
+      },
+      "ProposalIdentityV1": {
+        "properties": {
+          "base_sha": {
+            "type": "string"
+          },
+          "cycle_id": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "input_digest": {
+            "type": "string"
+          },
+          "proposal_id": {
+            "type": "string"
+          },
+          "root": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "worktree": {
+            "description": "Detached checkout at `base_sha`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "base_sha",
+          "cycle_id",
+          "idempotency_key",
+          "input_digest",
+          "proposal_id",
+          "root",
+          "session_id",
+          "worktree"
+        ],
+        "type": "object"
+      },
+      "ProposalInputV1": {
+        "description": "What core knows about the case; copied verbatim into the brief.",
+        "properties": {
+          "case_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "criteria": {
+            "description": "Frozen criteria.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "evidence": {
+            "description": "Native evidence; untrusted data for the actor.",
+            "items": {
+              "$ref": "#/definitions/CandidateEvidenceV1"
+            },
+            "type": "array"
+          },
+          "objective": {
+            "description": "The trusted objective (the question asked).",
+            "type": "string"
+          },
+          "occurrence": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "case_ids",
+          "criteria",
+          "evidence",
+          "objective",
+          "occurrence"
+        ],
+        "type": "object"
+      },
+      "ProposalStateV1": {
+        "additionalProperties": false,
+        "description": "The proposal's identity (persisted before it starts) and latest state.",
+        "properties": {
+          "identity": {
+            "$ref": "#/definitions/ProposalIdentityV1"
+          },
+          "proposal": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ProposalV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "identity"
+        ],
+        "type": "object"
+      },
+      "ProposalV1": {
+        "description": "`status` is `completed` for a validated proposal and `failed` with code `insufficient_evidence` when the actor found no supported mechanism.",
+        "properties": {
+          "change": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/definitions/ProposalCitationV1"
+            },
+            "type": "array"
+          },
+          "cost": {
+            "$ref": "#/definitions/CandidateCostV1"
+          },
+          "hypothesis": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "identity": {
+            "$ref": "#/definitions/ProposalIdentityV1"
+          },
+          "input": {
+            "$ref": "#/definitions/ProposalInputV1"
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/definitions/CandidateStatusV1"
+          },
+          "turn_id": {
             "type": [
               "string",
               "null"
@@ -1712,138 +2402,503 @@
           }
         },
         "required": [
-          "history",
+          "citations",
+          "cost",
+          "identity",
+          "input",
+          "model",
+          "provider",
           "status"
         ],
         "type": "object"
       },
-      "MetricsScopeV1": {
-        "oneOf": [
-          {
-            "description": "Cumulative over the root and every descendant, all turns.",
-            "enum": [
-              "session_tree"
-            ],
+      "PullRequestV1": {
+        "additionalProperties": false,
+        "description": "The pull request of an accepted candidate.",
+        "properties": {
+          "created": {
+            "description": "Opened by this cycle rather than found.",
+            "type": "boolean"
+          },
+          "head_ref": {
+            "type": "string"
+          },
+          "head_sha": {
+            "type": "string"
+          },
+          "number": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "url": {
             "type": "string"
           }
-        ]
+        },
+        "required": [
+          "created",
+          "head_ref",
+          "head_sha",
+          "number",
+          "url"
+        ],
+        "type": "object"
       },
-      "ModelUsageV1": {
+      "ReplayPointV1": {
         "additionalProperties": false,
-        "description": "What the steps one model generated used. A conversation can switch models mid-way, and providers differ in what they report (one may send tokens and no cost, another nothing), so the session's counters alone cannot say which model a gap belongs to.",
+        "description": "One recorded step whose call failed, sampled under both builds. A sample is a mistake when one of its calls would be refused before it runs: arguments that are not valid JSON, or that do not match the target's request schema.",
         "properties": {
-          "cache_read_tokens": {
-            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
+          "after": {
+            "default": false,
+            "description": "The step after the failed call, which saw its error; else the step that made it.",
+            "type": "boolean"
+          },
+          "base_mistakes": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "candidate_mistakes": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "changed": {
+            "description": "The candidate build sends this step a different request.",
+            "type": "boolean"
+          },
+          "exact": {
+            "default": [],
+            "description": "Parts of the base build's request that equal the recorded one (`system`, `tools`, `messages`).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "samples": {
+            "description": "Answers sampled on each side; zero when unchanged.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "site_id": {
+            "description": "The first failed call of the step.",
+            "type": "string"
+          },
+          "step": {
             "format": "uint64",
             "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "cache_write_tokens": {
-            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
-            "format": "uint64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "base_mistakes",
+          "candidate_mistakes",
+          "changed",
+          "run_id",
+          "samples",
+          "site_id",
+          "step"
+        ],
+        "type": "object"
+      },
+      "ReplayV1": {
+        "additionalProperties": false,
+        "description": "Level 1: the failed steps replayed. Its outcome decides the counted criterion when it shows a change; the runs still decide the rest.",
+        "properties": {
+          "base_mistakes": {
+            "default": 0,
+            "format": "uint32",
             "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": "integer"
           },
-          "cost_usd": {
-            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
+          "base_samples": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "base_tokens": {
             "format": "double",
             "type": [
               "number",
               "null"
             ]
           },
-          "function_calls": {
-            "format": "uint64",
+          "candidate_mistakes": {
+            "default": 0,
+            "format": "uint32",
             "minimum": 0.0,
             "type": "integer"
           },
-          "input_tokens": {
-            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
-            "format": "uint64",
+          "candidate_samples": {
+            "default": 0,
+            "format": "uint32",
             "minimum": 0.0,
+            "type": "integer"
+          },
+          "candidate_tokens": {
+            "format": "double",
             "type": [
-              "integer",
+              "number",
               "null"
             ]
           },
-          "model": {
+          "outcome": {
+            "$ref": "#/definitions/ValidationOutcomeV1"
+          },
+          "p_fewer": {
+            "description": "Fisher's exact test, one-sided: the candidate makes fewer mistakes.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "p_more": {
+            "description": "The same, the candidate makes more.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "points": {
+            "default": [],
+            "items": {
+              "$ref": "#/definitions/ReplayPointV1"
+            },
+            "type": "array"
+          },
+          "reason": {
             "type": "string"
           },
-          "output_tokens": {
-            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
-            "format": "uint64",
+          "steps": {
+            "description": "A token objective: every recorded step rebuilt by both builds, and the uncached input tokens a run each pays at the recorded trajectory.",
+            "format": "uint32",
             "minimum": 0.0,
             "type": [
               "integer",
               "null"
             ]
+          }
+        },
+        "required": [
+          "outcome",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "SamplingPlanV1": {
+        "additionalProperties": false,
+        "description": "How many measured runs each side needs and the cases they run on.",
+        "properties": {
+          "runs_per_side": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
           },
-          "provider": {
+          "seeds": {
+            "default": [],
+            "description": "The canonical `case_id`s both sides must report.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "runs_per_side"
+        ],
+        "type": "object"
+      },
+      "ScenarioContextV1": {
+        "additionalProperties": false,
+        "description": "One reported scenario as the E2E describes it.",
+        "properties": {
+          "runs": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "scenario_id": {
             "type": "string"
           },
-          "reasoning_tokens": {
-            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "runs",
+          "scenario_id"
+        ],
+        "type": "object"
+      },
+      "ScenarioIdentityV1": {
+        "additionalProperties": false,
+        "description": "The executable identity of one reported scenario.",
+        "properties": {
+          "behavior_sha256": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "case_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contract_sha256": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "inputs_sha256": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scenario_id": {
+            "type": "string"
+          },
+          "seed": {
             "format": "uint64",
             "minimum": 0.0,
             "type": [
               "integer",
               "null"
             ]
+          }
+        },
+        "required": [
+          "scenario_id"
+        ],
+        "type": "object"
+      },
+      "SelectedTestV1": {
+        "additionalProperties": false,
+        "description": "A test selected as coverage hypothesis, with the executable identity of its CURRENT definition from `e2e::scenarios-list`.",
+        "properties": {
+          "behavior_sha256": {
+            "type": "string"
           },
-          "turns": {
-            "description": "Model steps (assistant messages) this model generated.",
+          "case_id": {
+            "type": "string"
+          },
+          "contract_sha256": {
+            "type": "string"
+          },
+          "criteria": {
+            "items": {
+              "$ref": "#/definitions/TestCriterionV1"
+            },
+            "type": "array"
+          },
+          "history_note": {
+            "description": "Set when the catalog row's history is of another version.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "inputs_sha256": {
+            "type": "string"
+          },
+          "invariants": {
+            "description": "The deliverable invariants the catalog declares.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "matched_terms": {
+            "description": "Spec words that matched each required term group.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "scenario_id": {
+            "type": "string"
+          },
+          "seed": {
             "format": "uint64",
             "minimum": 0.0,
             "type": "integer"
           }
         },
         "required": [
-          "cache_read_tokens",
-          "cache_write_tokens",
-          "cost_usd",
-          "function_calls",
-          "input_tokens",
-          "model",
-          "output_tokens",
-          "provider",
-          "reasoning_tokens",
-          "turns"
+          "behavior_sha256",
+          "case_id",
+          "contract_sha256",
+          "criteria",
+          "inputs_sha256",
+          "invariants",
+          "matched_terms",
+          "rationale",
+          "scenario_id",
+          "seed"
         ],
         "type": "object"
       },
-      "MonitorModelV1": {
+      "SentinelForwardV1": {
         "additionalProperties": false,
-        "description": "The Harness model the user chose for investigations. Credentials stay in the provider worker; this request never carries a key.",
+        "description": "The runs' recorded failures forwarded to the central Sentinel. Its classification and triage are kept as it answered and reused, never judged again.",
         "properties": {
+          "deduped": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "observations": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "recorded": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "results": {
+            "default": [],
+            "description": "`results[]` as Sentinel answered: dedupe_key, classification, outcome, group_id, occurrence_id, group_status, triage.",
+            "items": true,
+            "type": "array"
+          },
+          "skipped": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "observations"
+        ],
+        "type": "object"
+      },
+      "SiteClassV1": {
+        "description": "Whose doing one errored function call is, as the insight judged it.",
+        "oneOf": [
+          {
+            "description": "A Harness change could prevent it or its repetition, instructing the model better included: the prompt, a function's description or contract, the error message, a limit.",
+            "enum": [
+              "preventable"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A one-off slip no instruction would plausibly prevent.",
+            "enum": [
+              "one_off"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The task expects it: a probe, a negative test, a recovery it asks for.",
+            "enum": [
+              "task"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "No clear lead.",
+            "enum": [
+              "unclear"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "StackV1": {
+        "additionalProperties": false,
+        "description": "A stack in the E2E's own shape (`ExecutionStack`), e.g. `package://harness` pinned to `commit:<40 hex>` of `iii-hq/workers` path `harness`.",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "yaml": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "yaml"
+        ],
+        "type": "object"
+      },
+      "StoredConfigV1": {
+        "additionalProperties": false,
+        "description": "The stored configuration. `revision` (SHA-256 of the config and the rules) is the `policy_revision` every plan freezes.",
+        "properties": {
+          "config": {
+            "$ref": "#/definitions/LoopConfigV1"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "config",
+          "revision",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "SubjectV1": {
+        "additionalProperties": false,
+        "description": "The model the E2E subject runs on. Credentials stay in the providers.",
+        "properties": {
+          "agent": {
+            "description": "Agent profile the subject runs under; absent uses the E2E default.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "model": {
             "type": "string"
           },
           "provider": {
             "type": "string"
-          },
-          "provider_options": {
-            "additionalProperties": true,
-            "description": "Provider-native options, namespaced by the selected provider id.",
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "thinking_level": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/ThinkingLevel"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         },
         "required": [
@@ -1852,1473 +2907,24 @@
         ],
         "type": "object"
       },
-      "MonitorUsageV1": {
+      "TestCriterionV1": {
         "additionalProperties": false,
-        "description": "Known usage only: absent counters are unknown, never zero.",
-        "properties": {
-          "judge_calls": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "judge_input_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "judge_output_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "judge_usage_complete": {
-            "description": "False when Jev reported incomplete usage or failed.",
-            "type": "boolean"
-          },
-          "llm_cost_usd": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "llm_input_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "llm_output_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "judge_calls",
-          "judge_input_tokens",
-          "judge_output_tokens",
-          "judge_usage_complete"
-        ],
-        "type": "object"
-      },
-      "PrefixDivergenceV1": {
-        "description": "One generation that rewrote a row an earlier request of the session had already sent: a prefix-matching provider cache (DeepSeek) stops reusing at that row.",
-        "properties": {
-          "cache_read": {
-            "description": "`usage.cache_read` of the rewriting request: what the provider still reused.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "call_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "cause": {
-            "description": "What rewrote the row, as far as the harness can tell: `prune` (context-manager pruned or reduced function results to fit the budget that step) or `system_prompt` (row 0: a compaction summary or a prompt change).",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "index": {
-            "description": "First row (0 = system prompt, then one per message) that differs from the session's previous request. Absent when only the provider's wire mapping changed.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "prev_len": {
-            "description": "Rows the previous request carried.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "provider_note": {
-            "description": "The provider's own wire-level finding, cause included, when it reported one (a final-message warning starting with [`PROVIDER_PREFIX_NOTE`]).",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "role": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "step": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "turn_id": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "step",
-          "turn_id"
-        ],
-        "type": "object"
-      },
-      "RejectedSuggestionV1": {
-        "additionalProperties": false,
-        "properties": {
-          "index": {
-            "format": "uint",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "reasons": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "title": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "index",
-          "reasons",
-          "title"
-        ],
-        "type": "object"
-      },
-      "ReplyCallV1": {
-        "additionalProperties": false,
-        "description": "One function call of a reply.",
+        "description": "One criterion of a test spec (`spec.criteria[]`), the id run reports award points under.",
         "properties": {
           "description": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "payload": {
-            "description": "The payload as JSON text, cut at 600 characters.",
             "type": "string"
           },
-          "target": {
-            "description": "The function called (through `agent_trigger` or directly).",
-            "type": "string"
-          }
-        },
-        "required": [
-          "payload",
-          "target"
-        ],
-        "type": "object"
-      },
-      "ReplyUsageV1": {
-        "additionalProperties": false,
-        "properties": {
-          "cache_read_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "cache_write_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "cost_usd": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "input_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "output_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          }
-        },
-        "type": "object"
-      },
-      "ReplyV1": {
-        "additionalProperties": false,
-        "description": "One reply at the decision point: a sample, or the original step read the same way.",
-        "properties": {
-          "calls": {
-            "items": {
-              "$ref": "#/definitions/ReplyCallV1"
-            },
-            "type": "array"
-          },
-          "duration_ms": {
-            "default": 0,
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "error": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "index": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "signal": {
-            "description": "Whether the signal shows in this reply; null when Jev answered unclear, the reply failed or it was not classified yet.",
-            "type": [
-              "boolean",
-              "null"
-            ]
-          },
-          "text": {
-            "type": "string"
-          },
-          "thinking": {
-            "description": "The opening of the reply's reasoning and of its text, 400 characters each.",
-            "type": "string"
-          },
-          "usage": {
-            "allOf": [
-              {
-                "$ref": "#/definitions/ReplyUsageV1"
-              }
-            ],
-            "default": {}
-          }
-        },
-        "required": [
-          "calls",
-          "index",
-          "text",
-          "thinking"
-        ],
-        "type": "object"
-      },
-      "ReproductionChangeKindV1": {
-        "oneOf": [
-          {
-            "description": "The context as the model saw it.",
-            "enum": [
-              "none"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "The suggestion's own `check.change`.",
-            "enum": [
-              "proposed"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "Edits a person wrote.",
-            "enum": [
-              "custom"
-            ],
-            "type": "string"
-          }
-        ]
-      },
-      "ReproductionStateV1": {
-        "enum": [
-          "running",
-          "completed",
-          "failed"
-        ],
-        "type": "string"
-      },
-      "ReproductionV1": {
-        "additionalProperties": false,
-        "description": "A replay of the decision point: N replies sampled from the rebuilt request, with or without a change. No function ever runs.",
-        "properties": {
-          "by": {
-            "type": "string"
-          },
-          "change": {
-            "default": [],
-            "items": {
-              "$ref": "#/definitions/ChangeEditV1"
-            },
-            "type": "array"
-          },
-          "change_kind": {
-            "$ref": "#/definitions/ReproductionChangeKindV1"
-          },
-          "check": {
-            "allOf": [
-              {
-                "$ref": "#/definitions/SuggestionCheckV1"
-              }
-            ],
-            "description": "The decision point and signal this replay used."
-          },
-          "cost_unknown_samples": {
-            "default": 0,
-            "description": "Samples without a reported cost, failed ones included (the provider may have billed a request that never answered): unknown, not in `cost_usd`, and never estimated.",
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "cost_usd": {
-            "description": "Known cost of the samples; null while no reply reported one. Only a lower bound while `cost_unknown_samples` is above zero. Jev's calls are in tokens below, never priced.",
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "error": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "fidelity": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/FidelityV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "finished_at": {
-            "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
+          "gate": {
+            "type": "boolean"
           },
           "id": {
             "type": "string"
-          },
-          "judge_input_tokens": {
-            "default": 0,
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "judge_output_tokens": {
-            "default": 0,
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "model": {
-            "type": "string"
-          },
-          "original": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/ReplyV1"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The original reply at the decision point, read the same way."
-          },
-          "phase": {
-            "description": "`sampling` or `classifying` while running.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "provider": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "requested": {
-            "description": "Replies asked for, extensions included.",
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "samples": {
-            "default": [],
-            "items": {
-              "$ref": "#/definitions/ReplyV1"
-            },
-            "type": "array"
-          },
-          "started_at": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "state": {
-            "$ref": "#/definitions/ReproductionStateV1"
-          },
-          "updated_at": {
-            "format": "int64",
-            "type": "integer"
           }
         },
         "required": [
-          "by",
-          "change_kind",
-          "check",
-          "id",
-          "model",
-          "requested",
-          "started_at",
-          "state",
-          "updated_at"
-        ],
-        "type": "object"
-      },
-      "RoutingReasonV1": {
-        "oneOf": [
-          {
-            "enum": [
-              "needs_investigation"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "Legacy: no longer produced; kept so stored records still deserialize.",
-            "enum": [
-              "diagnostics"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "Legacy: no longer produced.",
-            "enum": [
-              "insufficient_evidence"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "Legacy: no longer produced.",
-            "enum": [
-              "low_confidence"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "Legacy: no longer produced.",
-            "enum": [
-              "coverage_insufficient"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "Legacy: no longer produced.",
-            "enum": [
-              "audit_sample"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "Legacy: no longer produced.",
-            "enum": [
-              "manual_request"
-            ],
-            "type": "string"
-          }
-        ]
-      },
-      "RoutingV1": {
-        "additionalProperties": false,
-        "properties": {
-          "investigate": {
-            "type": "boolean"
-          },
-          "reasons": {
-            "items": {
-              "$ref": "#/definitions/RoutingReasonV1"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "investigate",
-          "reasons"
-        ],
-        "type": "object"
-      },
-      "ScoreLevel": {
-        "anyOf": [
-          {
-            "type": "string"
-          },
-          {
-            "additionalProperties": true,
-            "type": "object"
-          },
-          {
-            "items": true,
-            "type": "array"
-          }
-        ],
-        "description": "Score levels require a description. Unlike instructions, Choice option descriptions and Noul criteria, the provider rejects a null level (HTTP422)."
-      },
-      "SessionEvidenceV1": {
-        "additionalProperties": false,
-        "properties": {
-          "depth": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "entries": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "in_scope": {
-            "description": "Out-of-scope descendants belong to earlier turns and are not read.",
-            "type": "boolean"
-          },
-          "json_sha256": {
-            "description": "SHA-256 of the collected JSON entries (not of the stored bytes).",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "omitted_entries": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "parent_session_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "parent_turn_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "preview": {
-            "description": "Masked, shortened entries shown to the models.",
-            "items": true,
-            "type": "array"
-          },
-          "reduced_entries": {
-            "description": "Preview entries whose strings were truncated or whose secrets were masked.",
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "session_id": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "depth",
-          "entries",
-          "in_scope",
-          "omitted_entries",
-          "preview",
-          "reduced_entries",
-          "session_id"
-        ],
-        "type": "object"
-      },
-      "SessionMetricsResponseV1": {
-        "additionalProperties": false,
-        "properties": {
-          "by_session": {
-            "items": {
-              "$ref": "#/definitions/SessionUsageV1"
-            },
-            "type": "array"
-          },
-          "complete": {
-            "type": "boolean"
-          },
-          "root_session_id": {
-            "type": "string"
-          },
-          "totals": {
-            "$ref": "#/definitions/SessionUsageTotalsV1"
-          },
-          "traces": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/SessionTraceMetricsV1"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Trace/span aggregates when the engine's in-memory observability exporter is available. Usage metrics remain available when it is not."
-          }
-        },
-        "required": [
-          "by_session",
-          "complete",
-          "root_session_id",
-          "totals"
-        ],
-        "type": "object"
-      },
-      "SessionTraceMetricsV1": {
-        "additionalProperties": false,
-        "properties": {
-          "by_session": {
-            "items": {
-              "$ref": "#/definitions/SessionTraceUsageV1"
-            },
-            "type": "array"
-          },
-          "duration_ms": {
-            "description": "Elapsed window from the first observed span to the last observed span.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "error_span_count": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "span_count": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "trace_count": {
-            "description": "Distinct traces across the root session and all descendants.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "by_session",
-          "duration_ms",
-          "error_span_count",
-          "span_count",
-          "trace_count"
-        ],
-        "type": "object"
-      },
-      "SessionTraceUsageV1": {
-        "additionalProperties": false,
-        "properties": {
-          "depth": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "duration_ms": {
-            "description": "Elapsed window from the session's first observed span to its last.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "error_span_count": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "parent_session_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "session_id": {
-            "type": "string"
-          },
-          "span_count": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "trace_count": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "depth",
-          "duration_ms",
-          "error_span_count",
-          "session_id",
-          "span_count",
-          "trace_count"
-        ],
-        "type": "object"
-      },
-      "SessionUsageTotalsV1": {
-        "additionalProperties": false,
-        "properties": {
-          "by_model": {
-            "description": "The same counters per model that generated a step, ordered by provider then model. Absent when nothing generated, and from a harness that predates it.",
-            "items": {
-              "$ref": "#/definitions/ModelUsageV1"
-            },
-            "type": "array"
-          },
-          "cache_read_tokens": {
-            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "cache_write_tokens": {
-            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "cost_usd": {
-            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "function_call_errors": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "function_calls": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "input_tokens": {
-            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "output_tokens": {
-            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "reasoning_tokens": {
-            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "sessions": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "turns": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "cache_read_tokens",
-          "cache_write_tokens",
-          "cost_usd",
-          "function_call_errors",
-          "function_calls",
-          "input_tokens",
-          "output_tokens",
-          "reasoning_tokens",
-          "sessions",
-          "turns"
-        ],
-        "type": "object"
-      },
-      "SessionUsageV1": {
-        "additionalProperties": false,
-        "properties": {
-          "by_model": {
-            "description": "The same counters per model that generated a step, ordered by provider then model. Absent when nothing generated, and from a harness that predates it.",
-            "items": {
-              "$ref": "#/definitions/ModelUsageV1"
-            },
-            "type": "array"
-          },
-          "cache_read_tokens": {
-            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "cache_write_tokens": {
-            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "context": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/ContextSnapshotV1"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The session's latest per-generation context snapshot (categories, budget, usage) — absent for sessions that have not generated since snapshots landed."
-          },
-          "cost_usd": {
-            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "depth": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "function_call_errors": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "function_calls": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "input_tokens": {
-            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "output_tokens": {
-            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "parent_session_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "reasoning_tokens": {
-            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "session_id": {
-            "type": "string"
-          },
-          "turns": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "cache_read_tokens",
-          "cache_write_tokens",
-          "cost_usd",
-          "depth",
-          "function_call_errors",
-          "function_calls",
-          "input_tokens",
-          "output_tokens",
-          "reasoning_tokens",
-          "session_id",
-          "turns"
-        ],
-        "type": "object"
-      },
-      "SignalAssessmentV1": {
-        "additionalProperties": false,
-        "properties": {
-          "explanation": {
-            "type": "string"
-          },
-          "fingerprint": {
-            "description": "The `fingerprint` of a diagnostic in the evidence.",
-            "type": "string"
-          },
-          "verdict": {
-            "$ref": "#/definitions/SignalVerdictV1"
-          }
-        },
-        "required": [
-          "explanation",
-          "fingerprint",
-          "verdict"
-        ],
-        "type": "object"
-      },
-      "SignalRuleV1": {
-        "oneOf": [
-          {
-            "description": "The reply asks `engine::functions::info` only for contracts an earlier result in the context already supplied.",
-            "enum": [
-              "contract_rediscovery"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "The reply repeats the last call that failed: same target, equal payload.",
-            "enum": [
-              "repeated_error_call"
-            ],
-            "type": "string"
-          }
-        ]
-      },
-      "SignalV1": {
-        "additionalProperties": false,
-        "description": "How to recognize the behavior in one reply: exactly one of a rule computed in code or a yes/no question Jev answers about the reply.",
-        "properties": {
-          "question": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "rule": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/SignalRuleV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "type": "object"
-      },
-      "SignalVerdictV1": {
-        "enum": [
-          "likely_expected",
-          "worth_changing",
-          "unclear"
-        ],
-        "type": "string"
-      },
-      "SnapshotCategoriesV1": {
-        "description": "Where the request's tokens sit. Categories are assembly-time estimates; `hook_guidance` is the measured growth after assembly (pre-generate hook appends and orphan-repair patches), 0 when the request left assembly unchanged.",
-        "properties": {
-          "hook_guidance": {
-            "default": 0,
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "messages": {
-            "$ref": "#/definitions/SnapshotMessagesV1"
-          },
-          "overhead": {
-            "description": "Provider framing plus response_format / provider_options fields.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "skills": {
-            "default": 0,
-            "description": "Selected skill bodies contained in the system prompt.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "system_prompt": {
-            "description": "Final assembled system prompt excluding tokens attributed to `skills`: identity, per-step aids, and any compaction summary section.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "tools": {
-            "description": "Function schemas exposed to the model.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "messages",
-          "overhead",
-          "system_prompt",
-          "tools"
-        ],
-        "type": "object"
-      },
-      "SnapshotMessagesV1": {
-        "description": "Estimated tokens of the assembled window's messages, by role.",
-        "properties": {
-          "assistant": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "custom": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "function_result": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "user": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "assistant",
-          "custom",
-          "function_result",
-          "user"
-        ],
-        "type": "object"
-      },
-      "SnapshotV1": {
-        "additionalProperties": false,
-        "properties": {
-          "captured_at": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "coverage": {
-            "$ref": "#/definitions/CoverageV1"
-          },
-          "diagnostics": {
-            "items": {
-              "$ref": "#/definitions/DiagnosticV1"
-            },
-            "type": "array"
-          },
-          "e2e_scenario": {
-            "description": "The harness-e2e scenario the observed session ran, when it came from the E2E (`metadata.e2e_scenario`).",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "excluded_probes": {
-            "description": "Protocol probes that failed as expected and were not reported.",
-            "items": {
-              "$ref": "#/definitions/ExcludedProbeV1"
-            },
-            "type": "array"
-          },
-          "metrics": {
-            "$ref": "#/definitions/SessionMetricsResponseV1"
-          },
-          "metrics_scope": {
-            "$ref": "#/definitions/MetricsScopeV1"
-          },
-          "observed_model": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "observed_provider": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "rules_version": {
-            "type": "string"
-          },
-          "sessions": {
-            "items": {
-              "$ref": "#/definitions/SessionEvidenceV1"
-            },
-            "type": "array"
-          },
-          "source_result_error": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "source_session_id": {
-            "type": "string"
-          },
-          "source_status": {
-            "$ref": "#/definitions/TurnStatus"
-          },
-          "source_stop_reason": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "source_title": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "source_turn_id": {
-            "type": "string"
-          },
-          "window_turn_ids": {
-            "description": "The observed turn plus earlier root turns no analysis covered yet.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "captured_at",
-          "coverage",
-          "diagnostics",
-          "excluded_probes",
-          "metrics",
-          "metrics_scope",
-          "rules_version",
-          "sessions",
-          "source_session_id",
-          "source_status",
-          "source_turn_id",
-          "window_turn_ids"
-        ],
-        "type": "object"
-      },
-      "StageTimeV1": {
-        "additionalProperties": false,
-        "properties": {
-          "at": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "status": {
-            "$ref": "#/definitions/EvalStatusV1"
-          }
-        },
-        "required": [
-          "at",
-          "status"
-        ],
-        "type": "object"
-      },
-      "Stats": {
-        "additionalProperties": false,
-        "description": "Known accepted usage, never a billing estimate. Unreported counters or failure/cancellation make usage_complete false.",
-        "properties": {
-          "attempts": {
-            "format": "uint",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "elapsed_ms": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "input_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "output_tokens": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "questions": {
-            "format": "uint",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "requests": {
-            "format": "uint",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "usage_complete": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "attempts",
-          "elapsed_ms",
-          "input_tokens",
-          "output_tokens",
-          "questions",
-          "requests",
-          "usage_complete"
-        ],
-        "type": "object"
-      },
-      "SuggestionCheckV1": {
-        "additionalProperties": false,
-        "description": "How a suggestion is checked at the step where its behavior happened.",
-        "properties": {
-          "change": {
-            "default": [],
-            "description": "The proposed change as edits of what the model saw before that step; empty when it cannot be expressed as text.",
-            "items": {
-              "$ref": "#/definitions/ChangeEditV1"
-            },
-            "type": "array"
-          },
-          "decision_point": {
-            "description": "The assistant entry where the behavior happened (`…_<step>_assistant`), one of the suggestion's `evidence` entries.",
-            "type": "string"
-          },
-          "signal": {
-            "$ref": "#/definitions/SignalV1"
-          }
-        },
-        "required": [
-          "decision_point",
-          "signal"
-        ],
-        "type": "object"
-      },
-      "SuggestionReviewV1": {
-        "additionalProperties": false,
-        "description": "Everything people decided about one suggestion, in the `eval_suggestion` state scope. The title, component and patterns are copied from the suggestion so the row outlives the analysis's retention.",
-        "properties": {
-          "criterion": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/CriterionV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "evaluation_id": {
-            "type": "string"
-          },
-          "evidence": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/EvidenceV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "first_run_at": {
-            "description": "When the first execution this worker started for the suggestion began, kept when a new start replaces `run`: results of it may have been seen.",
-            "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "harness_component": {
-            "type": "string"
-          },
-          "lifecycle": {
-            "$ref": "#/definitions/LifecycleV1"
-          },
-          "patterns": {
-            "description": "`<rule_id>:<target>` of the diagnostics the suggestion's evidence cites: what a validation counts and a release is judged by.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "reproductions": {
-            "description": "Replays of the decision point, oldest first: the base and the tested changes.",
-            "items": {
-              "$ref": "#/definitions/ReproductionV1"
-            },
-            "type": "array"
-          },
-          "run": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/ValidationRunV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "scenario_id": {
-            "description": "The scenario the suggestion's validation plan names.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "suggestion_index": {
-            "format": "uint",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "title": {
-            "type": "string"
-          },
-          "verdict": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/VerdictV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "evaluation_id",
-          "harness_component",
-          "lifecycle",
-          "patterns",
-          "suggestion_index",
-          "title"
-        ],
-        "type": "object"
-      },
-      "SuggestionV1": {
-        "additionalProperties": false,
-        "properties": {
-          "check": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/SuggestionCheckV1"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "How to reproduce the behavior at the step where it happened, and the proposed change as edits of what the model saw there."
-          },
-          "code_refs": {
-            "default": [],
-            "description": "Code the suggestion rests on, as read in the code directory; only with code access. At most 8; each is checked against the directory.",
-            "items": {
-              "$ref": "#/definitions/CodeRefV1"
-            },
-            "maxItems": 8,
-            "type": "array"
-          },
-          "evidence": {
-            "items": {
-              "$ref": "#/definitions/EntryRefV1"
-            },
-            "type": "array"
-          },
-          "expected_effect": {
-            "type": "string"
-          },
-          "harness_component": {
-            "type": "string"
-          },
-          "hypothesis": {
-            "type": "string"
-          },
-          "limitations": {
-            "type": "string"
-          },
-          "observation": {
-            "type": "string"
-          },
-          "proposed_change": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          },
-          "validation": {
-            "$ref": "#/definitions/ValidationPlanV1"
-          }
-        },
-        "required": [
-          "evidence",
-          "expected_effect",
-          "harness_component",
-          "hypothesis",
-          "limitations",
-          "observation",
-          "proposed_change",
-          "title",
-          "validation"
+          "description",
+          "gate",
+          "id"
         ],
         "type": "object"
       },
@@ -3343,454 +2949,162 @@
           }
         ]
       },
-      "TriageFailureV1": {
-        "additionalProperties": false,
-        "properties": {
-          "code": {
-            "type": "string"
-          },
-          "http_status": {
-            "format": "uint16",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "message": {
-            "type": "string"
-          },
-          "request_id": {
-            "type": "string"
-          },
-          "stats": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/Stats"
-              },
-              {
-                "type": "null"
-              }
+      "TriageOutcomeV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "proceed",
+              "no_action"
             ],
-            "description": "Known usage of the failed call, when the provider returned it."
+            "type": "string"
+          },
+          {
+            "description": "The semantic step is unknown (unavailable, invalid or lost answer).",
+            "enum": [
+              "unknown"
+            ],
+            "type": "string"
           }
-        },
-        "required": [
-          "code",
-          "message",
-          "request_id"
-        ],
-        "type": "object"
+        ]
+      },
+      "TriageSourceV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "jev"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "An explicit objective: no authorization needed.",
+            "enum": [
+              "objective"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A clear deterministic defect.",
+            "enum": [
+              "deterministic"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Sentinel's triage of the same occurrences, reused.",
+            "enum": [
+              "sentinel"
+            ],
+            "type": "string"
+          }
+        ]
       },
       "TriageV1": {
         "additionalProperties": false,
+        "description": "Why the cycle proceeds past its findings, or stops.",
         "properties": {
-          "answers": {
-            "additionalProperties": {
-              "$ref": "#/definitions/Answer"
+          "answer": true,
+          "evidence_digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "findings": {
+            "items": {
+              "type": "string"
             },
-            "type": "object"
-          },
-          "completed_at": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "criteria_version": {
-            "type": "string"
+            "type": "array"
           },
           "model": {
-            "description": "The model the provider reports, not the configured default.",
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
-          "provider": {
+          "outcome": {
+            "$ref": "#/definitions/TriageOutcomeV1"
+          },
+          "question": true,
+          "reason": {
             "type": "string"
           },
           "request_id": {
-            "type": "string"
-          },
-          "stats": {
-            "$ref": "#/definitions/Stats"
-          }
-        },
-        "required": [
-          "answers",
-          "completed_at",
-          "criteria_version",
-          "model",
-          "provider",
-          "request_id",
-          "stats"
-        ],
-        "type": "object"
-      },
-      "TurnCaptureV1": {
-        "additionalProperties": false,
-        "description": "The observed turn's record as the Harness stored it, which keeps only a session's latest turn.",
-        "properties": {
-          "hook_guidance_tokens": {
-            "default": 0,
-            "description": "Tokens `pre_generate` hooks added at the turn's last step: above zero, the system prompt the model saw is not stored anywhere.",
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "options": {
-            "description": "The Harness's `TurnOptions`, unmodified."
-          },
-          "prompt_surface_digest": {
+            "description": "Set before `judge::evaluate` is called and sent again after a restart or an unavailable judge: the question has no side effect.",
             "type": [
               "string",
               "null"
             ]
           },
-          "record": {
-            "description": "The whole `TurnRecord` as read when the evidence was captured (it repeats `options`): what a later fork of the session needs, since the Harness overwrites it with the next turn. Absent when it would have taken the assets over their size limit (`record_omitted` says so) and on analyses made before it was kept."
+          "reused": {
+            "default": [],
+            "description": "Sentinel triage of the same occurrences, as Sentinel answered.",
+            "items": true,
+            "type": "array"
           },
-          "record_omitted": {
-            "description": "Why `record` was not kept.",
-            "type": [
-              "string",
-              "null"
-            ]
+          "source": {
+            "$ref": "#/definitions/TriageSourceV1"
           },
-          "turn_id": {
-            "type": "string"
-          }
+          "usage": true
         },
         "required": [
-          "options",
-          "turn_id"
+          "findings",
+          "outcome",
+          "reason",
+          "source"
         ],
         "type": "object"
       },
-      "TurnStatus": {
-        "description": "The coarse, harness-internal turn lifecycle (harness.md § API Reference). Finer-grained than the session's `status`, which the loop derives from it.",
-        "enum": [
-          "running",
-          "awaiting_functions",
-          "completed",
-          "cancelled",
-          "failed"
-        ],
-        "type": "string"
-      },
-      "Usage": {
-        "properties": {
-          "cache_read": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "cache_write": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "cost_usd": {
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "input": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "output": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "reasoning": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          }
-        },
-        "type": "object"
-      },
-      "ValidationLinkV1": {
+      "ValidationConfigV1": {
         "additionalProperties": false,
-        "description": "Baseline and candidate executions linked to one suggestion. A link is a reference, not a verdict: the improvement claim belongs to the E2E comparison and its criteria.",
+        "description": "The E2E stack in the E2E's own shape. Every worker a candidate may change is declared as a `package://<worker>` container with `commit: {commit}`, so both sides build it from their own commit; everything else (Engine, evaluator, unchanged workers) stays fixed.",
         "properties": {
-          "attached_at": {
-            "format": "int64",
-            "type": "integer"
+          "source_stack_template": {
+            "description": "Stack YAML pinning a source revision; every `{commit}` is replaced by the 40-hex sha.",
+            "type": "string"
           },
-          "baseline": {
-            "$ref": "#/definitions/E2eExecutionRefV1"
+          "stack_name": {
+            "type": "string"
           },
-          "candidate": {
-            "$ref": "#/definitions/E2eExecutionRefV1"
-          },
-          "comparability": {
-            "$ref": "#/definitions/ComparabilityV1"
-          },
-          "suggestion_index": {
-            "format": "uint",
-            "minimum": 0.0,
-            "type": "integer"
+          "where": {
+            "$ref": "#/definitions/WhereV1"
           }
         },
         "required": [
-          "attached_at",
-          "baseline",
-          "candidate",
-          "comparability",
-          "suggestion_index"
+          "source_stack_template",
+          "stack_name",
+          "where"
         ],
         "type": "object"
       },
       "ValidationOutcomeV1": {
+        "enum": [
+          "validated_improvement",
+          "no_improvement",
+          "regression",
+          "inconclusive"
+        ],
+        "type": "string"
+      },
+      "WhereV1": {
+        "description": "Where the E2E runs a dispatched execution (`ExecutionParameters.where`).",
         "oneOf": [
           {
-            "description": "The candidate moved the metric by at least `min_effect` in the wanted direction, with `min_runs` completed runs each side.",
             "enum": [
-              "validated_improvement"
+              "docker",
+              "github"
             ],
             "type": "string"
           },
           {
-            "description": "The metric moved less than `min_effect`.",
+            "description": "The E2E's own Harness: observes the current stack, cannot pin a candidate commit.",
             "enum": [
-              "no_improvement"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "The metric moved by at least `min_effect` the wrong way.",
-            "enum": [
-              "regression"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "Too few completed runs, missing data or no criterion.",
-            "enum": [
-              "inconclusive"
+              "harness"
             ],
             "type": "string"
           }
         ]
-      },
-      "ValidationPlanV1": {
-        "additionalProperties": false,
-        "description": "The E2E plan a suggestion must carry. A reviewer can run it without the LLM that wrote it.",
-        "properties": {
-          "expectation": {
-            "type": "string"
-          },
-          "invariants": {
-            "description": "Task-correctness invariants checked by an independent evaluator.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "non_regression_controls": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "primary_metric": {
-            "description": "The effort metric compared between baseline and candidate.",
-            "type": "string"
-          },
-          "reproduction": {
-            "type": "string"
-          },
-          "scenario_id": {
-            "description": "An existing harness-e2e scenario, or null when a new case is needed.",
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "expectation",
-          "invariants",
-          "non_regression_controls",
-          "primary_metric",
-          "reproduction"
-        ],
-        "type": "object"
-      },
-      "ValidationRunStateV1": {
-        "oneOf": [
-          {
-            "enum": [
-              "failed"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "Recorded before the executions are requested.",
-            "enum": [
-              "starting"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "Both executions were requested; the sweep waits for them.",
-            "enum": [
-              "running"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "Both ended; the pair is about to be attached.",
-            "enum": [
-              "finished"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "The pair is attached to the analysis and its evidence computed.",
-            "enum": [
-              "attached"
-            ],
-            "type": "string"
-          }
-        ]
-      },
-      "ValidationRunV1": {
-        "additionalProperties": false,
-        "description": "The baseline and candidate E2E executions this worker started for a suggestion (`eval::start-validation`).",
-        "properties": {
-          "baseline_commit": {
-            "description": "The full commits the Harness was built from.",
-            "type": "string"
-          },
-          "baseline_execution_id": {
-            "description": "Absent until the E2E accepted the execution.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "candidate_commit": {
-            "type": "string"
-          },
-          "candidate_execution_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "error": {
-            "description": "Why it failed, or why attaching is being retried; starts with a stable code (`e2e_unavailable:`, `e2e_busy:`…).",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "finished_at": {
-            "description": "When both executions were seen ended; the sweep stops trying to attach the pair some time after.",
-            "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "model": {
-            "type": "string"
-          },
-          "provider": {
-            "type": "string"
-          },
-          "runs": {
-            "description": "Runs requested for each side.",
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "scenario_id": {
-            "type": "string"
-          },
-          "started_at": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "state": {
-            "$ref": "#/definitions/ValidationRunStateV1"
-          }
-        },
-        "required": [
-          "baseline_commit",
-          "candidate_commit",
-          "model",
-          "provider",
-          "runs",
-          "scenario_id",
-          "started_at",
-          "state"
-        ],
-        "type": "object"
-      },
-      "VerdictV1": {
-        "additionalProperties": false,
-        "description": "The person's judgment, kept with the criterion it was made against.",
-        "properties": {
-          "at": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "by": {
-            "type": "string"
-          },
-          "controls_checked": {
-            "description": "The non-regression controls of the plan that were checked.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "criterion_snapshot": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/CriterionV1"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "outcome": {
-            "$ref": "#/definitions/ValidationOutcomeV1"
-          },
-          "rationale": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "at",
-          "by",
-          "controls_checked",
-          "outcome",
-          "rationale"
-        ],
-        "type": "object"
       }
     },
-    "title": "Nullable_EvalResultResponseV1"
+    "title": "Nullable_CycleResultResponseV1"
   }
 }

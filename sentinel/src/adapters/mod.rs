@@ -6,6 +6,7 @@
 //! than a second pipeline.
 
 pub mod log;
+pub mod report;
 pub mod trace;
 
 use crate::{evidence::EvidenceBundleV1, ErrorSourceV1};

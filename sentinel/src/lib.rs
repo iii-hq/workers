@@ -49,9 +49,9 @@ pub use contract::{
     ConfidenceV1, DiagnosesListRequestV1, DiagnosesListResponseV1, DiagnosisCategoryV1,
     DiagnosisEvidenceV1, DiagnosisRecordRequestV1, DiagnosisRecordResponseV1, DiagnosisRecordV1,
     DiagnosisSourceV1, DiagnosisV1, DoorbellResponseV1, EngineStatusV1, ErrorSourceV1,
-    EvidenceGetRequestV1, EvidenceGetResponseV1, EvidenceKindV1, GroupActionRequestV1,
-    GroupChangeReasonV1, GroupChangedConfigV1, GroupChangedEventV1, GroupChangedOpV1,
-    GroupCountsV1, GroupGetRequestV1, GroupGetResponseV1, GroupHistoryRequestV1,
+    EvidenceGetRequestV1, EvidenceGetResponseV1, EvidenceKindV1, EvidenceReportV1, ExpectedErrorV1,
+    GroupActionRequestV1, GroupChangeReasonV1, GroupChangedConfigV1, GroupChangedEventV1,
+    GroupChangedOpV1, GroupCountsV1, GroupGetRequestV1, GroupGetResponseV1, GroupHistoryRequestV1,
     GroupHistoryResponseV1, GroupStateResponseV1, GroupStatusV1, GroupSummaryV1, GroupTransitionV1,
     GroupTriageV1, GroupsListRequestV1, GroupsListResponseV1, IgnoreBaselineV1, IgnoreRequestV1,
     IgnoreRuleV1, IngestStatusV1, InvestigateRequestV1, InvestigateResponseV1,
@@ -60,9 +60,11 @@ pub use contract::{
     InvestigationModeV1, InvestigationStatusV1, InvestigationSummaryV1,
     InvestigationsListRequestV1, InvestigationsListResponseV1, LogsListRequestV1,
     LogsListResponseV1, OccurrenceSummaryV1, OccurrencesListRequestV1, OccurrencesListResponseV1,
-    ProposedFixV1, RelevanceV1, RepositoryStatusV1, ResolveRequestV1, RiskV1, RootCauseV1,
+    ProposedFixV1, RelevanceV1, ReportClassificationV1, ReportExcerptV1, ReportObservationResultV1,
+    ReportObservationV1, ReportOutcomeV1, ReportSideV1, ReportsIngestRequestV1,
+    ReportsIngestResponseV1, RepositoryStatusV1, ResolveRequestV1, RiskV1, RootCauseV1,
     SourcesStatusV1, StatusRequestV1, StatusResponseV1, TraceGetRequestV1, TraceGetResponseV1,
-    TraceStoreStateV1, TriageKindV1, TriageSourceV1, TurnCompletedEventV1,
+    TraceStoreStateV1, TriageKindV1, TriageSourceV1, TriageUsageV1, TurnCompletedEventV1,
 };
 pub use error::SentinelError;
 pub use events::Emitter;

@@ -1,0 +1,528 @@
+{
+  "description": "Record the error observations of an E2E report that was already imported, after its test stack is gone. Each observation is keyed by execution, run, attempt, scenario, phase, side, revision, artifact and index, so a re-import never counts twice; it is redacted, fingerprinted and frozen as evidence like any other failure. The scenario contract decides what it may do: unexpected errors open or count their group, expected ones are kept as test-traffic evidence in their own group and never become work, and ones the contract cannot place are counted without moving the group. An observation without an error records nothing. Each result carries the group's existing triage, to be reused rather than judged again.",
+  "function_id": "sentinel::reports::ingest",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "ExpectedErrorV1": {
+        "additionalProperties": false,
+        "description": "One error the scenario contract declares it provokes on purpose. Every field given must match; an entry with none matches any error.",
+        "properties": {
+          "exception_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "function_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message_contains": {
+            "description": "A substring of the raw message.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "ReportExcerptV1": {
+        "additionalProperties": false,
+        "description": "A text excerpt of the artifact the error was read from, frozen into the evidence so it stays readable after the test stack is gone.",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "content",
+          "name"
+        ],
+        "type": "object"
+      },
+      "ReportObservationV1": {
+        "additionalProperties": false,
+        "description": "One error observation from an E2E report that was already imported. The identity fields together name one physical occurrence: sending it again never counts twice.",
+        "properties": {
+          "artifact": {
+            "description": "The artifact inside the imported bundle the error was read from.",
+            "type": "string"
+          },
+          "at_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "attempt": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "exception_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "excerpts": {
+            "items": {
+              "$ref": "#/definitions/ReportExcerptV1"
+            },
+            "type": "array"
+          },
+          "execution_id": {
+            "type": "string"
+          },
+          "expected_errors": {
+            "description": "The scenario contract: absent or null when it does not say, an empty list when it expects no error at all.",
+            "items": {
+              "$ref": "#/definitions/ExpectedErrorV1"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "function_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "default": "",
+            "type": "string"
+          },
+          "occurrence_index": {
+            "default": 0,
+            "description": "Which error inside that artifact, when it holds several.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "revision": {
+            "description": "The revision under test; recorded as the worker version.",
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "scenario_id": {
+            "type": "string"
+          },
+          "service_name": {
+            "description": "The worker that failed.",
+            "type": "string"
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "side": {
+            "$ref": "#/definitions/ReportSideV1"
+          },
+          "span_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stacktrace": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trace_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "artifact",
+          "at_ms",
+          "attempt",
+          "execution_id",
+          "phase",
+          "revision",
+          "run_id",
+          "scenario_id",
+          "service_name",
+          "side"
+        ],
+        "type": "object"
+      },
+      "ReportSideV1": {
+        "description": "Which side of an E2E comparison an observation came from.",
+        "enum": [
+          "baseline",
+          "candidate"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "namespace": {
+        "default": null,
+        "description": "Defaults to `e2e`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "observations": {
+        "items": {
+          "$ref": "#/definitions/ReportObservationV1"
+        },
+        "type": "array"
+      },
+      "report_id": {
+        "description": "The imported report package the observations came from.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "observations",
+      "report_id"
+    ],
+    "title": "ReportsIngestRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "GroupStatusV1": {
+        "description": "The lifecycle of a group. `resolved` and `ignored` are human decisions; `regressed` is the one the ingest makes on its own, and the reason the worker exists.",
+        "oneOf": [
+          {
+            "enum": [
+              "new",
+              "diagnosed",
+              "resolved",
+              "ignored"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass of an investigation is running.",
+            "enum": [
+              "investigating"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A new occurrence after a resolve.",
+            "enum": [
+              "regressed"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "GroupTriageV1": {
+        "additionalProperties": false,
+        "description": "A hint for ordering and filtering the list. It never moves a group: resolving and ignoring stay human decisions.",
+        "properties": {
+          "at_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "confidence": {
+            "description": "Between 0 and 1, as the judge reports it; 1 for a rule.",
+            "format": "double",
+            "type": "number"
+          },
+          "criterion": {
+            "description": "The criterion the chosen kind stands for, verbatim — what the label claims and, read beside `confidence`, how far it can be trusted.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "evidence": {
+            "description": "The redacted state the decision was made from."
+          },
+          "kind": {
+            "$ref": "#/definitions/TriageKindV1"
+          },
+          "model": {
+            "description": "The judge model that answered.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "question": {
+            "description": "Which question decided it: [`crate::triage::JUDGE_QUESTION`], or the rule that settled it without a judge.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "$ref": "#/definitions/TriageSourceV1"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/TriageUsageV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Tokens the judge reported for this evaluation; absent for a rule."
+          }
+        },
+        "required": [
+          "at_ms",
+          "confidence",
+          "kind",
+          "source"
+        ],
+        "type": "object"
+      },
+      "ReportClassificationV1": {
+        "description": "What an observation is, measured against its scenario contract.",
+        "oneOf": [
+          {
+            "enum": [
+              "unexpected"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Provoked on purpose: kept as evidence, triaged as test traffic, never correction work and never a state change.",
+            "enum": [
+              "expected"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The scenario expected an error and a different one happened.",
+            "enum": [
+              "expected_mismatch"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The contract does not say, or the observation carries no error. With no error nothing is recorded; otherwise it is recorded without moving the group and left to triage.",
+            "enum": [
+              "insufficient_evidence"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "ReportObservationResultV1": {
+        "additionalProperties": false,
+        "properties": {
+          "classification": {
+            "$ref": "#/definitions/ReportClassificationV1"
+          },
+          "dedupe_key": {
+            "type": "string"
+          },
+          "group_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group_status": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GroupStatusV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "occurrence_id": {
+            "description": "Read its frozen evidence with `sentinel::evidence::get`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "$ref": "#/definitions/ReportOutcomeV1"
+          },
+          "triage": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GroupTriageV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The group's triage, when it has one: `test_traffic` for an expected failure. The triage sweep never labels report groups."
+          }
+        },
+        "required": [
+          "classification",
+          "dedupe_key",
+          "outcome"
+        ],
+        "type": "object"
+      },
+      "ReportOutcomeV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "created",
+              "counted"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Already recorded: the counts did not move.",
+            "enum": [
+              "deduped"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Not an error: nothing recorded.",
+            "enum": [
+              "skipped"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "TriageKindV1": {
+        "description": "What kind of failure a group is, as triage reads it.",
+        "oneOf": [
+          {
+            "description": "A bug the reporting worker's maintainer has to fix in code.",
+            "enum": [
+              "defect"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The worker rejected bad input and said so: working as designed.",
+            "enum": [
+              "caller_error"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A dependency starting, restarting or timing out; it went away.",
+            "enum": [
+              "transient"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Local setup: credentials, tokens, files, versions, a missing worker.",
+            "enum": [
+              "environment"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Tests, probes and deliberately fake identifiers.",
+            "enum": [
+              "test_traffic"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "TriageSourceV1": {
+        "description": "Who decided a triage.",
+        "oneOf": [
+          {
+            "description": "A deterministic check: a missing function that is registered by the time the group is looked at.",
+            "enum": [
+              "rule"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "`judge::evaluate`.",
+            "enum": [
+              "judge"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "TriageUsageV1": {
+        "additionalProperties": false,
+        "description": "What one judge evaluation consumed, as the judge reports it. A counter the provider did not report stays absent rather than zero.",
+        "properties": {
+          "input_tokens": {
+            "default": null,
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "output_tokens": {
+            "default": null,
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "properties": {
+      "deduped": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "recorded": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "results": {
+        "items": {
+          "$ref": "#/definitions/ReportObservationResultV1"
+        },
+        "type": "array"
+      },
+      "skipped": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "deduped",
+      "recorded",
+      "results",
+      "skipped"
+    ],
+    "title": "ReportsIngestResponseV1",
+    "type": "object"
+  }
+}
