@@ -390,7 +390,8 @@ pub fn declared_workers(yaml: &str) -> std::collections::BTreeSet<String> {
 /// the plan's stack runs, when known) cannot run there and is left out. At most
 /// `max_scenarios` are kept: for an observed need, those whose recorded runs
 /// (`observed`, by test id) show the most per run; otherwise those with the
-/// most current runs.
+/// most current runs. A test the objective names by its id is selected by
+/// that alone, ahead of the need's spec words or recorded runs.
 #[allow(clippy::too_many_arguments)]
 pub fn select(
     objective: &str,
@@ -412,6 +413,10 @@ pub fn select(
         return coverage;
     };
     coverage.need = need.id.into();
+    let named: Vec<&str> = objective
+        .split(|character: char| !character.is_alphanumeric() && character != '_')
+        .filter(|word| rows.iter().any(|row| row["test_id"] == *word))
+        .collect();
     // Ranked by (per-run observation, current runs), highest first.
     let mut candidates: Vec<((f64, u64), SelectedTestV1)> = Vec::new();
     let mut stale = Vec::new();
@@ -420,7 +425,12 @@ pub fn select(
         let Some((row, scenario)) = row_of(rows, catalog, &test_id) else {
             continue;
         };
-        let (matched, why, rank) = if need.observed {
+        let (matched, why, rank) = if !named.is_empty() {
+            if !named.contains(&test_id.as_str()) {
+                continue;
+            }
+            (Vec::new(), "the objective names it".to_string(), 0.0)
+        } else if need.observed {
             let seen = observed.get(&test_id).copied().unwrap_or_default();
             // Without Jev's judgment a test must have shown the failure;
             // with it, Jev weighs what the runs show against the task.

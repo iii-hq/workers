@@ -1627,6 +1627,28 @@ fn a_current_native_context_test_is_coverage_before_its_first_run() {
 }
 
 #[test]
+fn a_test_the_objective_names_is_selected_by_its_id() {
+    let fixture: Value =
+        serde_json::from_str(include_str!("fixtures/e2e/catalog-context-pressure.json")).unwrap();
+    let coverage = eval::coverage::select(
+        "reduce token spend in form_flow_build",
+        fixture["rows"].as_array().unwrap(),
+        fixture["revision"].as_str().unwrap(),
+        &fixture["catalog"],
+        2,
+        &[],
+        &Default::default(),
+        None,
+        NOW,
+    );
+    assert!(coverage.covered, "{:?}", coverage.gaps);
+    assert_eq!(coverage.need, "context_consumption");
+    assert_eq!(coverage.selected.len(), 1);
+    assert_eq!(coverage.selected[0].scenario_id, "form_flow_build");
+    assert!(coverage.selected[0].rationale.starts_with("the objective names it"));
+}
+
+#[test]
 fn configured_controls_count_toward_the_scenario_limit() {
     let fixture: Value =
         serde_json::from_str(include_str!("fixtures/e2e/catalog-context-pressure.json")).unwrap();

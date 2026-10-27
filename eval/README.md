@@ -64,7 +64,9 @@ and cannot pin a candidate. `docker` and `github` need a
    `e2e::scenarios-list`.
 3. A test covers the need only when its spec matches the need's word groups.
    The spec is its criteria and summaries, plus the catalog invariants.
-   The prompt, a matching title or an id is not enough.
+   The prompt, a matching title or an id is not enough. An objective that
+   names a test by its id (`… in shell_coder_sandbox`) selects that test
+   alone, whatever its spec says.
 4. A test is selected only in its current definition: the row's
    `current_version` must equal the scenario's `behavior_sha256`. History of
    another `selected_version` is flagged and never used as evidence.
