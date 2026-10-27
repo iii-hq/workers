@@ -17,11 +17,13 @@ iii-helpers = "=0.24.6"
 iii-console-ui = { path = "../crates/console-ui" }
 # Filesystem watch behind the shell::changed trigger type (FSEvents/inotify).
 notify = "8"
-schemars = { version = "0.8", features = ["uuid1"] }
+schemars = { version = "0.8", features = ["uuid1", "preserve_order"] }
 libc = "0.2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "process", "time", "io-util", "fs"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# preserve_order keeps published schema properties in declaration order
+# (e.g. `path` before the large `ops`/`content` bodies).
+serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
 anyhow = "1"
 thiserror = "2"
