@@ -213,7 +213,7 @@ survive (the structural invariant providers depend on).
 Eligibility, applied while scanning from the newest message backward:
 
 1. **Protected user turns:** the scan counts subsequent `user` messages and
-   skips outputs in the newest `protected_user_turns` (default `2`). User
+   skips outputs in the newest `protected_user_turns` (default `0`). User
    wrappers carrying inline function results do not increment age. `0`
    disables only this exemption.
 2. **`protected_functions`** (by `function_id`) are never pruned and never even
@@ -501,7 +501,7 @@ reserved_pct: 10
 tail_turns: 2                  # user+assistant pairs kept verbatim by compaction
 protect_recent_tokens: 40000   # newest function-output tokens never pruned
 decay_user_turns: 0            # prune after this many subsequent user turns; 0 disables decay
-protected_user_turns: 2        # recent user turns exempt from normal pruning; 0 disables this guard
+protected_user_turns: 0        # recent user turns exempt from normal pruning; 0 disables this guard
 min_free_tokens: 20000         # skip pruning when it would free less
 max_output_chars: 2000         # larger outputs immediately eligible; smaller ones may decay; also summariser cap
 max_result_tokens: 20000       # per-result ceiling for assemble's unconditional cap pass; 0 disables

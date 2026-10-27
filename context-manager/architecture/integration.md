@@ -203,7 +203,7 @@ needed]`. No LLM, no state, no removal.
   options?: {
     protect_recent_tokens?: number;   // newest output tokens never pruned (default 40000)
     decay_user_turns?: number;        // subsequent user turns before decay; null inherits, 0 disables (default 0)
-    protected_user_turns?: number;    // recent user turns exempt; null inherits, 0 disables (default 2)
+    protected_user_turns?: number;    // recent user turns exempt; null inherits, 0 disables (default 0)
     min_free_tokens?: number;         // skip the pass if it frees less (default 20000)
     max_output_chars?: number;        // larger outputs are immediately eligible; smaller ones may decay (default 2000)
     protected_functions?: string[];   // function_ids never pruned

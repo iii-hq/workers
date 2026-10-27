@@ -176,7 +176,9 @@ fn default_decay_user_turns() -> usize {
 }
 
 fn default_protected_user_turns() -> usize {
-    2
+    // 0: `protect_recent_tokens` is the recency guard. In one long agentic
+    // turn a user-turn count would pin every function result at full size.
+    0
 }
 
 fn default_min_free_tokens() -> u64 {
@@ -268,7 +270,7 @@ mod tests {
         assert_eq!(cfg.tail_turns, 2);
         assert_eq!(cfg.protect_recent_tokens, 40_000);
         assert_eq!(cfg.decay_user_turns, 0);
-        assert_eq!(cfg.protected_user_turns, 2);
+        assert_eq!(cfg.protected_user_turns, 0);
         assert_eq!(cfg.min_free_tokens, 20_000);
         assert_eq!(cfg.max_output_chars, 2_000);
         assert_eq!(cfg.max_result_tokens, 20_000);
@@ -282,7 +284,7 @@ mod tests {
     fn decay_controls_have_defaults_and_accept_explicit_values() {
         let defaults = WorkerConfig::from_json(&serde_json::json!({})).unwrap();
         assert_eq!(defaults.to_json()["decay_user_turns"], 0);
-        assert_eq!(defaults.to_json()["protected_user_turns"], 2);
+        assert_eq!(defaults.to_json()["protected_user_turns"], 0);
 
         let configured = WorkerConfig::from_json(&serde_json::json!({
             "decay_user_turns": 4,

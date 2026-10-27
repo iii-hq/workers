@@ -106,7 +106,7 @@ reserved_pct: 10
 tail_turns: 2                  # user+assistant pairs kept verbatim by compaction
 protect_recent_tokens: 40000   # newest function-output tokens never pruned
 decay_user_turns: 0            # prune after this many subsequent user turns; 0 disables decay
-protected_user_turns: 2        # recent user turns exempt from normal pruning; 0 disables this guard
+protected_user_turns: 0        # recent user turns exempt from normal pruning; 0 disables this guard
 min_free_tokens: 20000         # skip pruning when it would free less
 max_output_chars: 2000         # larger outputs are immediately eligible; smaller ones may decay
 max_result_tokens: 20000       # per-result ceiling for assemble's unconditional cap pass; 0 disables
