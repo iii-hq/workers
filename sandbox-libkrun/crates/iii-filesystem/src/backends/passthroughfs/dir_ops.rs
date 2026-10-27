@@ -103,7 +103,8 @@ pub(crate) fn do_readdirplus(
     offset: u64,
     add_entry: &mut AddDirEntryPlus<'_>,
 ) -> io::Result<()> {
-    do_readdir(fs, ctx, ino, handle, size, offset, &mut |mut de| {
+    let mut sent = Vec::new();
+    let res = do_readdir(fs, ctx, ino, handle, size, offset, &mut |mut de| {
         // Skip . and .. -- the kernel handles these itself.
         if de.name == b"." || de.name == b".." {
             return Ok(1);
@@ -127,11 +128,19 @@ pub(crate) fn do_readdirplus(
         de.type_ = platform::dirent_type_from_mode(platform::mode_file_type(entry.attr.st_mode));
         let looked_up = entry.inode;
         let added = add_entry(de, entry);
-        if !matches!(added, Ok(n) if n > 0) {
-            inode::forget_one(fs, looked_up, 1);
+        match added {
+            Ok(n) if n > 0 => sent.push(looked_up),
+            _ => inode::forget_one(fs, looked_up, 1),
         }
         added
-    })
+    });
+    // An error reply carries no entries, so the kernel forgets none of them.
+    if res.is_err() {
+        for looked_up in sent {
+            inode::forget_one(fs, looked_up, 1);
+        }
+    }
+    res
 }
 
 /// Release an open directory handle.
@@ -306,10 +315,14 @@ mod tests {
     use super::*;
     use crate::{DynFileSystem, FsOptions};
 
-    /// READDIRPLUS keeps a lookup reference only for the entries that fit in
-    /// the reply: the kernel forgets just those, so any other stays pinned.
-    #[test]
-    fn readdirplus_pins_only_the_entries_in_the_reply() {
+    const CTX: Context = Context {
+        uid: 0,
+        gid: 0,
+        pid: 1,
+    };
+
+    /// A filesystem over a directory of files `f0..f5`, and a handle open on its root.
+    fn six_files() -> (tempfile::TempDir, PassthroughFs, u64) {
         let dir = tempfile::tempdir().unwrap();
         for i in 0..6 {
             std::fs::write(dir.path().join(format!("f{i}")), b"x").unwrap();
@@ -319,15 +332,27 @@ mod tests {
             .build()
             .unwrap();
         fs.init(FsOptions::empty()).unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
-        let (dh, _) = fs.opendir(ctx, 1, 0).unwrap();
+        let (dh, _) = fs.opendir(CTX, 1, 0).unwrap();
+        (dir, fs, dh.unwrap())
+    }
 
+    /// Whether `name` holds a lookup reference besides the one this call takes.
+    fn pinned(fs: &PassthroughFs, name: &[u8]) -> bool {
+        let entry = fs.lookup(CTX, 1, &CString::new(name).unwrap()).unwrap();
+        fs.forget(CTX, entry.inode, 1);
+        fs.inodes.read().unwrap().get(&entry.inode).is_some()
+    }
+
+    /// READDIRPLUS keeps a lookup reference only for the entries that fit in
+    /// the reply: the kernel forgets just those, so any other stays pinned.
+    /// Listing stops at the first entry the reply turns away.
+    #[test]
+    fn readdirplus_pins_only_the_entries_in_the_reply() {
+        let (_dir, fs, dh) = six_files();
         let mut sent = Vec::new();
-        fs.readdirplus_for_each(ctx, 1, dh.unwrap(), 64 * 1024, 0, &mut |de, _| {
+        let mut calls = 0;
+        fs.readdirplus_for_each(CTX, 1, dh, 64 * 1024, 0, &mut |de, _| {
+            calls += 1;
             if sent.len() == 2 {
                 return Ok(0);
             }
@@ -336,13 +361,31 @@ mod tests {
         })
         .unwrap();
         assert_eq!(sent.len(), 2);
+        assert_eq!(calls, 3, "kept listing after the reply was full");
 
         for i in 0..6 {
-            let name = CString::new(format!("f{i}")).unwrap();
-            let entry = fs.lookup(ctx, 1, &name).unwrap();
-            fs.forget(ctx, entry.inode, 1);
-            let pinned = fs.inodes.read().unwrap().get(&entry.inode).is_some();
-            assert_eq!(pinned, sent.contains(&name.as_bytes().to_vec()), "f{i}");
+            let name = format!("f{i}").into_bytes();
+            assert_eq!(pinned(&fs, &name), sent.contains(&name), "f{i}");
+        }
+    }
+
+    /// An error reply carries no entries, so READDIRPLUS gives back the
+    /// references of the entries it had already added.
+    #[test]
+    fn readdirplus_error_pins_nothing() {
+        let (_dir, fs, dh) = six_files();
+        let mut added = 0;
+        let res = fs.readdirplus_for_each(CTX, 1, dh, 64 * 1024, 0, &mut |_, _| {
+            if added == 2 {
+                return Err(io::Error::from_raw_os_error(libc::EIO));
+            }
+            added += 1;
+            Ok(1)
+        });
+        assert!(res.is_err());
+
+        for i in 0..6 {
+            assert!(!pinned(&fs, format!("f{i}").as_bytes()), "f{i}");
         }
     }
 }
