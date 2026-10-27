@@ -47,6 +47,8 @@ pub struct UdpRelay {
     gateway_mac: EthernetAddress,
     guest_mac: EthernetAddress,
     gateway_ipv4: Ipv4Addr,
+    /// Largest reply payload that fits the guest's MTU.
+    max_payload: usize,
     tokio_handle: tokio::runtime::Handle,
 }
 
@@ -56,6 +58,7 @@ impl UdpRelay {
         gateway_mac: [u8; 6],
         guest_mac: [u8; 6],
         gateway_ipv4: Ipv4Addr,
+        mtu: usize,
         tokio_handle: tokio::runtime::Handle,
     ) -> Self {
         Self {
@@ -64,6 +67,7 @@ impl UdpRelay {
             gateway_mac: EthernetAddress(gateway_mac),
             guest_mac: EthernetAddress(guest_mac),
             gateway_ipv4,
+            max_payload: mtu.saturating_sub(IPV4_HDR_LEN + UDP_HDR_LEN),
             tokio_handle,
         }
     }
@@ -114,6 +118,7 @@ impl UdpRelay {
         let guest_mac = self.guest_mac;
         // Same rule as TCP: the gateway IP stands for the host's loopback.
         let host_dst = crate::proxy::resolve_host_dst(guest_dst, self.gateway_ipv4);
+        let max_payload = self.max_payload;
 
         self.tokio_handle.spawn(async move {
             if let Err(e) = udp_relay_task(
@@ -124,6 +129,7 @@ impl UdpRelay {
                 shared,
                 gateway_mac,
                 guest_mac,
+                max_payload,
             )
             .await
             {
@@ -140,6 +146,7 @@ impl UdpRelay {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn udp_relay_task(
     mut outbound_rx: mpsc::Receiver<Bytes>,
     guest_src: SocketAddr,
@@ -148,13 +155,16 @@ async fn udp_relay_task(
     shared: Arc<SharedState>,
     gateway_mac: EthernetAddress,
     guest_mac: EthernetAddress,
+    max_payload: usize,
 ) -> std::io::Result<()> {
     let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0u16)).await?;
     socket.connect(host_dst).await?;
 
-    // Room for any IPv4 datagram: `recv` truncates silently otherwise. One
-    // too big for the guest's rx buffers is dropped, with a log, by the backend.
-    let mut recv_buf = vec![0u8; MAX_UDP_PAYLOAD];
+    // One spare byte: `recv` truncates silently, so a datagram that fills the
+    // buffer is over the limit. The device offers no big-packet features, so
+    // the guest's rx buffers hold one MTU frame; a bigger one is never
+    // delivered and stalls the guest's whole RX queue.
+    let mut recv_buf = vec![0u8; max_payload + 1];
 
     loop {
         tokio::select! {
@@ -171,6 +181,9 @@ async fn udp_relay_task(
 
             result = socket.recv(&mut recv_buf) => {
                 match result {
+                    Ok(n) if n > max_payload => {
+                        tracing::debug!(%guest_dst, "UDP reply exceeds the guest MTU, dropping");
+                    }
                     Ok(n) => {
                         let frame = construct_udp_response_v4(
                             guest_dst,
@@ -304,6 +317,8 @@ mod tests {
     }
 
     const GATEWAY: Ipv4Addr = Ipv4Addr::new(100, 96, 0, 1);
+    /// Payload limit for the default 1500-byte MTU.
+    const MAX_PAYLOAD: usize = 1500 - IPV4_HDR_LEN - UDP_HDR_LEN;
 
     fn test_relay() -> UdpRelay {
         UdpRelay::new(
@@ -311,6 +326,7 @@ mod tests {
             [0x02, 0, 0, 0, 0, 1],
             [0x02, 0, 0, 0, 0, 2],
             GATEWAY,
+            1500,
             tokio::runtime::Handle::current(),
         )
     }
@@ -547,6 +563,7 @@ mod tests {
             shared.clone(),
             gateway_mac,
             guest_mac,
+            MAX_PAYLOAD,
         ));
 
         outbound_tx.send(Bytes::from_static(b"ping")).await.unwrap();
@@ -580,10 +597,10 @@ mod tests {
             .unwrap();
     }
 
-    /// A reply larger than a small receive buffer must arrive whole, never
-    /// as a well-formed frame carrying a silently truncated prefix.
+    /// A reply that fits the guest MTU arrives whole; a bigger one is dropped,
+    /// never injected (it would stall the guest's RX queue) nor truncated.
     #[tokio::test]
-    async fn relay_task_delivers_large_datagram_whole() {
+    async fn relay_task_drops_replies_larger_than_the_guest_mtu() {
         let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let server_addr = server.local_addr().unwrap();
         let guest_src: SocketAddr = (Ipv4Addr::new(100, 96, 0, 2), 40000).into();
@@ -597,18 +614,24 @@ mod tests {
             shared.clone(),
             EthernetAddress([0x02, 0, 0, 0, 0, 1]),
             EthernetAddress([0x02, 0, 0, 0, 0, 2]),
+            MAX_PAYLOAD,
         ));
 
         outbound_tx.send(Bytes::from_static(b"ping")).await.unwrap();
         let mut buf = [0u8; 64];
         let (_, peer) = server.recv_from(&mut buf).await.unwrap();
-        let reply: Vec<u8> = (0..9000u32).map(|i| i as u8).collect();
+        let reply: Vec<u8> = (0..MAX_PAYLOAD as u32 + 1).map(|i| i as u8).collect();
         server.send_to(&reply, peer).await.unwrap();
+        server.send_to(&reply[..MAX_PAYLOAD], peer).await.unwrap();
 
+        // Loopback keeps order: the first frame out is the one that fits.
         let frame = wait_for_rx_frame(&shared).await;
         let payload = extract_udp_payload(&frame).unwrap();
-        assert_eq!(payload.len(), reply.len(), "datagram was truncated");
-        assert_eq!(payload, &reply[..]);
+        assert_eq!(payload, &reply[..MAX_PAYLOAD], "reply was truncated");
+        assert!(
+            shared.rx_ring.pop().is_none(),
+            "an over-MTU reply must not be injected"
+        );
     }
 
     /// When frame construction refuses (here: non-IPv4 guest address), no
@@ -631,6 +654,7 @@ mod tests {
             shared.clone(),
             EthernetAddress([0x02, 0, 0, 0, 0, 1]),
             EthernetAddress([0x02, 0, 0, 0, 0, 2]),
+            MAX_PAYLOAD,
         ));
 
         outbound_tx.send(Bytes::from_static(b"ping")).await.unwrap();

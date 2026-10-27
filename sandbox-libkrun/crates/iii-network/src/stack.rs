@@ -253,6 +253,7 @@ pub fn smoltcp_poll_loop(
             config.gateway_mac,
             config.guest_mac,
             config.gateway_ipv4,
+            config.mtu,
             tokio_handle.clone(),
         ),
         last_cleanup: std::time::Instant::now(),
@@ -475,6 +476,7 @@ mod tests {
             config.gateway_mac,
             config.guest_mac,
             config.gateway_ipv4,
+            config.mtu,
             tokio_handle.clone(),
         );
 
