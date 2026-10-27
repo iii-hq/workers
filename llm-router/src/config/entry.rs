@@ -1,5 +1,5 @@
 //! (Re)register, fetch, and write the llm-router configuration entry through
-//! engine's `configuration::register/get/set` iii functions. Never passes
+//! engine's `configuration::ensure/get/set` iii functions. Never passes
 //! initial_value, so operator-stored values survive every re-register.
 use std::collections::BTreeMap;
 
@@ -37,7 +37,7 @@ pub async fn register_entry(
     migrate_provider_system_prompts(iii).await?;
     iii.trigger(
         TriggerRequest {
-            function_id: "configuration::register".into(),
+            function_id: "configuration::ensure".into(),
             payload: json!({
                 "id": config_id(),
                 "name": "LLM Router",
