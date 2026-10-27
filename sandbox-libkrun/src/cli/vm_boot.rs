@@ -256,11 +256,29 @@ fn check_kvm_at_path(kvm: &std::path::Path) -> Result<(), String> {
 /// The guest's `/dev/root` share: `--rootfs` served by PassthroughFs,
 /// read-only under `--rootfs-readonly` (the sandbox trampoline).
 pub(crate) fn root_share(args: &VmBootArgs) -> Result<iii_filesystem::PassthroughFs, String> {
+    passthrough_share(&args.rootfs, args.rootfs_readonly)
+}
+
+fn passthrough_share(dir: &str, read_only: bool) -> Result<iii_filesystem::PassthroughFs, String> {
     iii_filesystem::PassthroughFs::builder()
-        .root_dir(&args.rootfs)
-        .read_only(args.rootfs_readonly)
+        .root_dir(dir)
+        .read_only(read_only)
         .build()
-        .map_err(|e| format!("PassthroughFs failed for '{}': {}", args.rootfs, e))
+        .map_err(|e| format!("PassthroughFs failed for '{}': {}", dir, e))
+}
+
+/// The read-only backend for a `--mount` entry that shares the
+/// `--source-sync` dir, `None` for any other mount. The guest unmounts that
+/// share after its copy-in, but guest root can mount the tag again, so only
+/// the backend can keep it from writing the host project (`.git/hooks`).
+fn source_share(
+    entry: &VirtiofsMountEntry,
+    source_sync: Option<&str>,
+) -> Result<Option<iii_filesystem::PassthroughFs>, String> {
+    if source_sync != Some(entry.host_path.as_str()) {
+        return Ok(None);
+    }
+    passthrough_share(&entry.host_path, true).map(Some)
 }
 
 /// Raise the process fd limit (RLIMIT_NOFILE) to accommodate PassthroughFs.
@@ -633,14 +651,17 @@ fn boot_vm(
     let shm_bytes_per_mount: usize =
         (args.virtiofs_shm_size_mib as usize).saturating_mul(1024 * 1024);
     for entry in mount_plan.entries {
-        let tag = entry.tag.clone();
-        let host_path = entry.host_path.clone();
+        let ro_share = source_share(&entry, args.source_sync.as_deref())?;
+        let VirtiofsMountEntry { tag, host_path, .. } = entry;
         builder = builder.fs(move |fs| {
             let mut fs = fs.tag(&tag);
             if shm_bytes_per_mount > 0 {
                 fs = fs.shm_size(shm_bytes_per_mount);
             }
-            fs.path(&host_path)
+            match ro_share {
+                Some(share) => fs.custom(Box::new(share)),
+                None => fs.path(&host_path),
+            }
         });
     }
 
@@ -1216,6 +1237,44 @@ mod tests {
     fn build_virtiofs_mount_plan_rejects_empty_guest() {
         let err = build_virtiofs_mount_plan(&["/host:".to_string()]).unwrap_err();
         assert!(err.contains("Invalid mount format"));
+    }
+
+    /// Guest root can remount the source tag after dev-run.sh unmounts it,
+    /// so the share itself must refuse writes to the host project.
+    #[test]
+    fn source_sync_share_refuses_guest_writes() {
+        use iii_filesystem::{Context, DynFileSystem, Extensions, FsOptions};
+
+        let project = tempfile::tempdir().unwrap();
+        let host = project.path().to_str().unwrap();
+        let plan = build_virtiofs_mount_plan(&[
+            format!("{host}:/mnt/host-src"),
+            "/elsewhere:/opt/iii".to_string(),
+        ])
+        .unwrap();
+
+        assert!(
+            source_share(&plan.entries[1], Some(host))
+                .unwrap()
+                .is_none()
+        );
+        assert!(source_share(&plan.entries[0], None).unwrap().is_none());
+        let fs = source_share(&plan.entries[0], Some(host))
+            .unwrap()
+            .expect("the source-sync share gets its own backend");
+        fs.init(FsOptions::empty()).unwrap();
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        let name = std::ffi::CString::new(".git").unwrap();
+        let err = fs
+            .mkdir(ctx, 1, &name, 0o755, 0, Extensions::default())
+            .err()
+            .expect("mkdir on the source share must fail");
+        assert_eq!(err.raw_os_error(), Some(30), "expected EROFS, got {err:?}");
+        assert!(std::fs::read_dir(project.path()).unwrap().next().is_none());
     }
 
     // --- 6.1: check_kvm_nonexistent_path (Linux only) ---
