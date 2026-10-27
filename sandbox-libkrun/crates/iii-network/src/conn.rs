@@ -528,6 +528,39 @@ mod tests {
         );
     }
 
+    /// A closing connection whose guest never takes the proxy's tail is reset
+    /// once it has stalled for DEFERRED_CLOSE_STALL, not held forever.
+    #[test]
+    fn deferred_close_resets_after_stall() {
+        let mut tracker = ConnectionTracker::new(None);
+        let mut sockets = SocketSet::new(vec![]);
+        assert!(tracker.create_tcp_socket(addr(5000), dst_addr(80), &mut sockets));
+        let (&handle, conn) = tracker.connections.iter_mut().next().unwrap();
+        // A proxy that queued a reply and exited; the socket cannot send.
+        conn.proxy_spawned = true;
+        let channels = conn.proxy_channels.take().unwrap();
+        channels
+            .to_smoltcp
+            .try_send(Bytes::from_static(b"tail"))
+            .unwrap();
+        drop(channels);
+
+        tracker.relay_data(&mut sockets);
+        assert_eq!(
+            sockets.get::<tcp::Socket>(handle).state(),
+            tcp::State::Listen
+        );
+
+        for conn in tracker.connections.values_mut() {
+            *conn.close_stalled_since.as_mut().unwrap() -= DEFERRED_CLOSE_STALL;
+        }
+        tracker.relay_data(&mut sockets);
+        assert_eq!(
+            sockets.get::<tcp::Socket>(handle).state(),
+            tcp::State::Closed
+        );
+    }
+
     #[test]
     fn multiple_connections_tracked_independently() {
         let mut tracker = ConnectionTracker::new(None);
