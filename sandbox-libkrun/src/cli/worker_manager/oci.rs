@@ -398,7 +398,9 @@ const SETID_BITS: u32 = 0o6000;
 
 /// Extract a single OCI layer with safety limits.
 ///
-/// Setuid and setgid bits are stripped from every regular file as it lands.
+/// Setuid and setgid bits are masked off every entry as it lands, whatever
+/// its type: tar writes sparse, device, FIFO and unknown entries as regular
+/// files, so a per-type strip would leave a setuid file in the host cache.
 /// The microVM rootfs is served read-only through PassthroughFs with no UID
 /// translation: host ownership surfaces verbatim inside the guest. When the
 /// extracting user is not root (the common case), setuid binaries carry the
@@ -416,11 +418,11 @@ pub fn extract_layer_with_limits(
     layer_count: usize,
     total_size: &mut u64,
 ) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
     let decoder = flate2::read::GzDecoder::new(data);
     let mut archive = tar::Archive::new(decoder);
     archive.set_preserve_permissions(true);
+    // Applied when tar sets the mode, so the bits never exist on disk.
+    archive.set_mask(SETID_BITS);
     archive.set_overwrite(true);
 
     let mut entry_count: u64 = 0;
@@ -524,7 +526,6 @@ pub fn extract_layer_with_limits(
         }
 
         let entry_type = entry.header().entry_type();
-        let header_mode = entry.header().mode().unwrap_or(0);
 
         let unpacked = entry
             .unpack_in(dest)
@@ -544,31 +545,6 @@ pub fn extract_layer_with_limits(
         if entry_type.is_dir() {
             keep_dir_owner_writable(&dest.join(&path))
                 .with_context(|| format!("Failed to keep {} owner-writable", path.display()))?;
-        }
-
-        // Strip setuid/setgid from regular files. See function doc for why.
-        // Symlinks are skipped: chmod on a symlink path follows to the
-        // target, which may live outside the rootfs.
-        if matches!(
-            entry_type,
-            tar::EntryType::Regular | tar::EntryType::Continuous
-        ) && header_mode & SETID_BITS != 0
-        {
-            let target = dest.join(&path);
-            if let Ok(meta) = std::fs::metadata(&target) {
-                let current = meta.permissions().mode();
-                if current & SETID_BITS != 0 {
-                    let mut perms = meta.permissions();
-                    perms.set_mode(current & !SETID_BITS);
-                    if let Err(e) = std::fs::set_permissions(&target, perms) {
-                        tracing::warn!(
-                            path = %target.display(),
-                            error = %e,
-                            "failed to strip setuid/setgid bits; setuid binaries will drop PID-1 privileges inside the guest",
-                        );
-                    }
-                }
-            }
         }
     }
 
@@ -1809,6 +1785,38 @@ mod tests {
         h.set_mode(0o644);
         h.set_entry_type(tar::EntryType::Regular);
         b.append_data(&mut h, path, std::io::empty()).unwrap();
+    }
+
+    /// tar writes FIFO, device and unknown typeflags as regular files, so the
+    /// setuid strip must not depend on the entry type.
+    #[test]
+    fn extract_layer_strips_setid_bits_from_every_entry_type() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let kinds = [
+            ("fifo", tar::EntryType::Fifo),
+            ("chr", tar::EntryType::Char),
+            ("unknown", tar::EntryType::new(b'Z')),
+        ];
+        let layer = layer_with(|b| {
+            for (path, kind) in kinds {
+                let mut h = tar::Header::new_gnu();
+                h.set_size(0);
+                h.set_mode(0o6755);
+                h.set_entry_type(kind);
+                b.append_data(&mut h, path, std::io::empty()).unwrap();
+            }
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut total_size = 0u64;
+        extract_layer_with_limits(&layer, dir.path(), 0, 1, &mut total_size).unwrap();
+
+        for (path, _) in kinds {
+            let meta = std::fs::symlink_metadata(dir.path().join(path)).unwrap();
+            assert!(meta.is_file(), "{path} is written as a regular file");
+            assert_eq!(meta.permissions().mode() & 0o7777, 0o755, "{path}");
+        }
     }
 
     #[test]
