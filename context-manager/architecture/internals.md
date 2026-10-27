@@ -337,8 +337,9 @@ renders what the caller gets back.
   `... [truncated]` marker. Only `context::compact` threads it through;
   `assemble`'s inline compaction always passes `None`.
 - **`render_user_prompt(head)`** — the head messages inside a `<conversation>`
-  block: text verbatim, `function_call`s as terse `[tool_call] <id> <args>`
-  one-liners; other block kinds dropped.
+  block: text verbatim, non-blank thinking as `[thinking] <text>` lines (where
+  an agent notes what it read), `function_call`s as terse
+  `[tool_call] <id> <args>` one-liners; other block kinds dropped.
 - **`strip_media(head, max_output_chars)`** — a copy fed to the summariser with
   images replaced by `[image stripped]` everywhere and `function_result` text
   truncated to `max_output_chars` (+ `... [truncated]`). The original
