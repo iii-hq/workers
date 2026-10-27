@@ -190,20 +190,43 @@ fn install_skipped_warning(manifest_path: &std::path::Path) -> String {
 pub fn read_manifest_doc(
     manifest_path: &std::path::Path,
 ) -> Result<Option<serde_yaml::Value>, String> {
-    if !manifest_path.exists() {
-        return Ok(None);
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    // A FIFO or device reports length 0: O_NONBLOCK keeps a FIFO from
+    // blocking the open, and only a regular file is read, through a bound.
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(manifest_path)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("cannot read {}: {e}", manifest_path.display())),
+    };
+    let meta = file
+        .metadata()
+        .map_err(|e| format!("cannot stat {}: {e}", manifest_path.display()))?;
+    if !meta.is_file() {
+        return Err(format!("{} is not a regular file", manifest_path.display()));
     }
-    let len = std::fs::metadata(manifest_path)
-        .map_err(|e| format!("cannot stat {}: {e}", manifest_path.display()))?
-        .len();
-    if len > MAX_LOCAL_MANIFEST_BYTES {
-        return Err(format!(
+    let too_big = |len: u64| {
+        format!(
             "{} is {len} bytes; iii.worker.yaml is capped at {MAX_LOCAL_MANIFEST_BYTES} bytes",
             manifest_path.display(),
-        ));
+        )
+    };
+    if meta.len() > MAX_LOCAL_MANIFEST_BYTES {
+        return Err(too_big(meta.len()));
     }
-    let content = std::fs::read_to_string(manifest_path)
+    let mut content = String::new();
+    file.take(MAX_LOCAL_MANIFEST_BYTES + 1)
+        .read_to_string(&mut content)
         .map_err(|e| format!("cannot read {}: {e}", manifest_path.display()))?;
+    // The file may have grown since the length check.
+    if content.len() as u64 > MAX_LOCAL_MANIFEST_BYTES {
+        return Err(too_big(content.len() as u64));
+    }
     let doc = serde_yaml::from_str(&content)
         .map_err(|e| format!("invalid YAML in {}: {e}", manifest_path.display()))?;
     Ok(Some(doc))
@@ -251,8 +274,7 @@ pub fn validate_manifest_keys(
 }
 
 pub fn load_from_manifest(manifest_path: &std::path::Path) -> Option<ProjectInfo> {
-    let content = std::fs::read_to_string(manifest_path).ok()?;
-    let doc: serde_yaml::Value = serde_yaml::from_str(&content).ok()?;
+    let doc = read_manifest_doc(manifest_path).ok()??;
     // Typed view — the manifest schema's single source of truth. A shape
     // mismatch (e.g. `runtime: node`) yields None here; on the start path
     // `validate_manifest_keys` has already surfaced the precise error.
@@ -923,5 +945,23 @@ resources:
         std::fs::write(&path, big).unwrap();
         let err = read_manifest_doc(&path).unwrap_err();
         assert!(err.contains("capped at"), "got: {err}");
+    }
+
+    /// A device or FIFO reports length 0, so the size check alone let
+    /// `/dev/zero` be read forever and a FIFO block the start path.
+    #[test]
+    fn manifest_reads_refuse_non_regular_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(WORKER_MANIFEST);
+        std::os::unix::fs::symlink("/dev/zero", &path).unwrap();
+        let err = read_manifest_doc(&path).unwrap_err();
+        assert!(err.contains("not a regular file"), "got: {err}");
+        assert!(load_from_manifest(&path).is_none());
+
+        std::fs::remove_file(&path).unwrap();
+        nix::unistd::mkfifo(&path, nix::sys::stat::Mode::S_IRWXU).unwrap();
+        let err = read_manifest_doc(&path).unwrap_err();
+        assert!(err.contains("not a regular file"), "got: {err}");
+        assert!(load_from_manifest(&path).is_none());
     }
 }
