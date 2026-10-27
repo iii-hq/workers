@@ -8,6 +8,7 @@ use sandbox_libkrun::sandbox_daemon::{
     SandboxError,
     create::{BootHandle, BootParams, CreateRequest, VmLauncher, handle_create},
     exec::{EnvShape, ExecRequest, ExecResponse, ShellRunner, handle_exec},
+    overlay::OverlayLayout,
     registry::SandboxRegistry,
     stop::{StopRequest, VmStopper, handle_stop},
 };
@@ -172,6 +173,7 @@ async fn exec_beyond_the_concurrency_cap_returns_s003() {
     )
     .await
     .unwrap();
+    let _dirs = SandboxDirs(vec![create.sandbox_id.clone()]);
 
     // A second exec no longer bounces — both ends of the exec channel
     // multiplex by `corr_id`, and the registry now admits up to a cap.
@@ -301,7 +303,8 @@ async fn list_returns_every_sandbox() {
     let _guard = ensure_fake_rootfs("python");
     let h = harness("", 0);
     let cfg = cfg_all_presets_allowed();
-    let _ = handle_create(
+    let mut dirs = SandboxDirs(Vec::new());
+    let create = handle_create(
         CreateRequest {
             image: "python".into(),
             cpus: None,
@@ -318,7 +321,8 @@ async fn list_returns_every_sandbox() {
     )
     .await
     .unwrap();
-    let _ = handle_create(
+    dirs.0.push(create.sandbox_id);
+    let create = handle_create(
         CreateRequest {
             image: "python".into(),
             cpus: None,
@@ -335,10 +339,26 @@ async fn list_returns_every_sandbox() {
     )
     .await
     .unwrap();
+    dirs.0.push(create.sandbox_id);
 
     use sandbox_libkrun::sandbox_daemon::list::{ListRequest, handle_list};
     let resp = handle_list(ListRequest::default(), &h.registry).await;
     assert_eq!(resp.sandboxes.len(), 2);
+}
+
+/// Removes the dirs `handle_create` makes under /tmp/iii-sandbox for the
+/// sandboxes a test never stops.
+struct SandboxDirs(Vec<String>);
+impl Drop for SandboxDirs {
+    fn drop(&mut self) {
+        for id in self
+            .0
+            .iter()
+            .filter_map(|id| uuid::Uuid::parse_str(id).ok())
+        {
+            let _ = OverlayLayout::for_sandbox(id).cleanup();
+        }
+    }
 }
 
 struct RootfsGuard(
