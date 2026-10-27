@@ -382,12 +382,9 @@ fn opendir_readdir_readdirplus() {
     let (dh, _) = h.fs.opendir(ctx, ROOT_ID, libc::O_RDONLY as u32).unwrap();
     let dir_handle = dh.expect("opendir should return a handle");
 
-    let entries =
-        h.fs.readdir(ctx, ROOT_ID, dir_handle, 64 * 1024, 0)
-            .unwrap();
-    let entry_names: Vec<String> = entries
+    let entry_names: Vec<String> = readdir(&h.fs, ROOT_ID, dir_handle, 0)
         .iter()
-        .map(|e| String::from_utf8_lossy(e.name).to_string())
+        .map(|e| String::from_utf8_lossy(&e.name).to_string())
         .collect();
 
     for name in &names {
@@ -510,9 +507,7 @@ fn readdir_pagination_with_nonzero_offset() {
     let dir_handle = dh.expect("opendir should return a handle");
 
     // First batch: read all entries from offset 0.
-    let all_entries =
-        h.fs.readdir(ctx, ROOT_ID, dir_handle, 64 * 1024, 0)
-            .unwrap();
+    let all_entries = readdir(&h.fs, ROOT_ID, dir_handle, 0);
     assert!(
         all_entries.len() >= 12,
         "should have 10 files + . + .., got {}",
@@ -524,9 +519,7 @@ fn readdir_pagination_with_nonzero_offset() {
     let mid_offset = all_entries[mid - 1].offset;
 
     // Second batch: read entries starting after mid_offset.
-    let tail_entries =
-        h.fs.readdir(ctx, ROOT_ID, dir_handle, 64 * 1024, mid_offset)
-            .unwrap();
+    let tail_entries = readdir(&h.fs, ROOT_ID, dir_handle, mid_offset);
 
     // The tail batch must return only entries that came after the midpoint.
     assert!(
@@ -545,26 +538,16 @@ fn readdir_pagination_with_nonzero_offset() {
     // kernel's `d_off`, and tmpfs on recent kernels hands out cookies that do
     // not grow along the listing. Resuming from an entry's cookie must return
     // exactly the entries listed after it.
-    let tail_names: Vec<String> = tail_entries
-        .iter()
-        .map(|e| String::from_utf8_lossy(e.name).into_owned())
-        .collect();
-    let expected_names: Vec<String> = all_entries[mid..]
-        .iter()
-        .map(|e| String::from_utf8_lossy(e.name).into_owned())
-        .collect();
     assert_eq!(
-        tail_names,
-        expected_names,
+        names(&tail_entries),
+        names(&all_entries[mid..]),
         "readdir from offset {mid_offset} must resume right after entry {}",
         mid - 1
     );
 
     // Verify that reading past the last entry returns empty.
     let last_offset = all_entries.last().unwrap().offset;
-    let empty =
-        h.fs.readdir(ctx, ROOT_ID, dir_handle, 64 * 1024, last_offset)
-            .unwrap();
+    let empty = readdir(&h.fs, ROOT_ID, dir_handle, last_offset);
     assert!(
         empty.is_empty(),
         "readdir past last offset should return empty, got {} entries",
@@ -587,19 +570,17 @@ fn readdir_lists_virtual_init_once_from_every_offset() {
     let (dh, _) = h.fs.opendir(ctx, ROOT_ID, libc::O_RDONLY as u32).unwrap();
     let dh = dh.expect("opendir should return a handle");
 
-    let all = h.fs.readdir(ctx, ROOT_ID, dh, 64 * 1024, 0).unwrap();
+    let all = readdir(&h.fs, ROOT_ID, dh, 0);
     assert_eq!(all.iter().filter(|e| e.name == b"init.krun").count(), 1);
     for e in &all {
-        let tail = h.fs.readdir(ctx, ROOT_ID, dh, 64 * 1024, e.offset).unwrap();
+        let tail = readdir(&h.fs, ROOT_ID, dh, e.offset);
         let inits = tail.iter().filter(|t| t.name == b"init.krun").count();
         let expected = usize::from(e.name != b"init.krun");
         assert_eq!(inits, expected, "init.krun count after offset {}", e.offset);
     }
 
     // ext4 reports i64::MAX as the end-of-directory cookie of the last real entry.
-    let tail =
-        h.fs.readdir(ctx, ROOT_ID, dh, 64 * 1024, i64::MAX as u64)
-            .unwrap();
+    let tail = readdir(&h.fs, ROOT_ID, dh, i64::MAX as u64);
     assert_eq!(tail.iter().filter(|t| t.name == b"init.krun").count(), 1);
 
     h.fs.releasedir(ctx, ROOT_ID, 0, dh).unwrap();
@@ -657,13 +638,19 @@ fn nested_directory_lookup_open_read_python_encodings() {
             .unwrap();
     let dir_handle = dh.expect("opendir should return a handle");
 
-    let plus_entries =
-        h.fs.readdirplus(ctx, enc_entry.inode, dir_handle, 64 * 1024, 0)
-            .unwrap();
-    let plus_names: Vec<String> = plus_entries
-        .iter()
-        .map(|(de, _)| String::from_utf8_lossy(de.name).to_string())
-        .collect();
+    let mut plus_names = Vec::new();
+    h.fs.readdirplus_for_each(
+        ctx,
+        enc_entry.inode,
+        dir_handle,
+        64 * 1024,
+        0,
+        &mut |de, _| {
+            plus_names.push(String::from_utf8_lossy(de.name).to_string());
+            Ok(1)
+        },
+    )
+    .unwrap();
 
     for expected in &["__init__.py", "aliases.py", "utf_8.py"] {
         assert!(
@@ -723,4 +710,111 @@ fn nested_directory_lookup_open_read_python_encodings() {
         h.fs.release(ctx, file_entry.inode, 0, fh, false, false, None)
             .unwrap();
     }
+}
+
+// ---------------------------------------------------------------------------
+// Directory listings, as the FUSE server reads them
+// ---------------------------------------------------------------------------
+
+/// One directory entry as the FUSE server copies it into a reply.
+struct Dirent {
+    offset: u64,
+    name: Vec<u8>,
+}
+
+/// One READDIR reply with room for `max` entries: the server copies each
+/// entry out and answers 0 for the first one that does not fit.
+fn readdir_page(fs: &PassthroughFs, ino: u64, handle: u64, offset: u64, max: usize) -> Vec<Dirent> {
+    let mut page = Vec::new();
+    fs.readdir_for_each(test_ctx(), ino, handle, 64 * 1024, offset, &mut |de| {
+        if page.len() == max {
+            return Ok(0);
+        }
+        page.push(Dirent {
+            offset: de.offset,
+            name: de.name.to_vec(),
+        });
+        Ok(1)
+    })
+    .unwrap();
+    page
+}
+
+fn readdir(fs: &PassthroughFs, ino: u64, handle: u64, offset: u64) -> Vec<Dirent> {
+    readdir_page(fs, ino, handle, offset, usize::MAX)
+}
+
+fn names(entries: &[Dirent]) -> Vec<String> {
+    entries
+        .iter()
+        .map(|e| String::from_utf8_lossy(&e.name).into_owned())
+        .collect()
+}
+
+/// A rewind (offset 0 again on the same handle) lists the directory again,
+/// although the previous READDIR left the host fd at its end.
+#[test]
+fn readdir_from_offset_zero_twice_lists_everything_twice() {
+    let h = setup_fs();
+    for i in 0..3 {
+        std::fs::write(h._dir.path().join(format!("f{i}")), b"x").unwrap();
+    }
+    let (dh, _) = h.fs.opendir(test_ctx(), ROOT_ID, 0).unwrap();
+    let dh = dh.unwrap();
+
+    let first = names(&readdir(&h.fs, ROOT_ID, dh, 0));
+    assert!(first.contains(&"f0".to_string()), "got {first:?}");
+    assert_eq!(names(&readdir(&h.fs, ROOT_ID, dh, 0)), first);
+}
+
+/// Deleting the entries of one page, as `rm -r` does while it lists, must not
+/// hide entries of the next page.
+#[test]
+fn readdir_resumes_after_entries_of_earlier_pages_are_deleted() {
+    let h = setup_fs();
+    let want: Vec<String> = (0..20).map(|i| format!("file_{i:02}")).collect();
+    for name in &want {
+        std::fs::write(h._dir.path().join(name), b"x").unwrap();
+    }
+    let (dh, _) = h.fs.opendir(test_ctx(), ROOT_ID, 0).unwrap();
+    let dh = dh.unwrap();
+
+    let mut seen = Vec::new();
+    let mut offset = 0;
+    loop {
+        let page = readdir_page(&h.fs, ROOT_ID, dh, offset, 5);
+        let Some(last) = page.last() else { break };
+        offset = last.offset;
+        for name in names(&page).into_iter().filter(|n| n.starts_with("file_")) {
+            std::fs::remove_file(h._dir.path().join(&name)).unwrap();
+            seen.push(name);
+        }
+    }
+    seen.sort();
+    assert_eq!(seen, want);
+}
+
+/// Only the root's init.krun is the virtual init: a file of that name in a
+/// subdirectory is listed as itself.
+#[cfg(has_init_binary)]
+#[test]
+fn readdirplus_lists_a_subdirectory_init_krun_as_the_real_file() {
+    let h = setup_fs();
+    let ctx = test_ctx();
+    std::fs::create_dir(h._dir.path().join("sub")).unwrap();
+    std::fs::write(h._dir.path().join("sub/init.krun"), b"mine").unwrap();
+    let sub = h.fs.lookup(ctx, ROOT_ID, &cstr("sub")).unwrap();
+    let (dh, _) = h.fs.opendir(ctx, sub.inode, 0).unwrap();
+
+    let mut found = Vec::new();
+    h.fs.readdirplus_for_each(ctx, sub.inode, dh.unwrap(), 64 * 1024, 0, &mut |de, e| {
+        if de.name == b"init.krun" {
+            found.push((e.inode, e.attr.st_size));
+        }
+        Ok(1)
+    })
+    .unwrap();
+    assert_eq!(found.len(), 1);
+    assert_ne!(found[0].0, 2, "listed as the virtual init");
+    assert_eq!(found[0].1, 4);
 }

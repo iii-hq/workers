@@ -8,8 +8,9 @@ pub mod init;
 
 // Re-export DynFileSystem types from msb_krun (per D-08)
 pub use msb_krun::backends::fs::{
-    Context, DirEntry, DynFileSystem, Entry, Extensions, FsOptions, GetxattrReply, ListxattrReply,
-    OpenOptions, RemovemappingOne, SetattrValid, ZeroCopyReader, ZeroCopyWriter, stat64, statvfs64,
+    AddDirEntry, AddDirEntryPlus, Context, DirEntry, DynFileSystem, Entry, Extensions, FsOptions,
+    GetxattrReply, ListxattrReply, OpenOptions, RemovemappingOne, SetattrValid, ZeroCopyReader,
+    ZeroCopyWriter, stat64, statvfs64,
 };
 
 // Re-export PassthroughFs backend types

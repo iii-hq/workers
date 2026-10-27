@@ -1,23 +1,21 @@
 //! Directory operations: opendir, readdir, readdirplus, releasedir.
 //!
-//! ## Memory Strategy: Tracked Leak with Destroy Reclamation
-//!
-//! `DynFileSystem::readdir` returns `Vec<DirEntry<'static>>` where names are `&'static [u8]`.
-//! Since the trait requires `'static` lifetimes, we cannot return borrowed data. Instead, we
-//! collect all entry names into a single contiguous `Vec<u8>`, leak it once per readdir call,
-//! and slice `&'static [u8]` references from it. Leaked pointers are tracked in
-//! `PassthroughFs::leaked_readdir_bufs` and reclaimed in `destroy()` when the filesystem
-//! shuts down, preventing unbounded memory growth for long-lived VMs.
+//! Entries stream into the FUSE reply through `add_entry`, which answers 0 once
+//! the reply is full, and listing stops there. Names are borrowed from a
+//! per-request buffer (Linux) or from the handle's snapshot (macOS), so a
+//! listing leaves no host memory behind, and READDIRPLUS looks up only the
+//! entries the reply carries.
 
 use std::{
+    ffi::CString,
     io,
     os::fd::{AsRawFd, FromRawFd},
     sync::{Arc, RwLock, atomic::Ordering},
 };
 
-use super::{LeakedBufPtr, PassthroughFs, inode};
+use super::{PassthroughFs, inode};
 use crate::{
-    Context, DirEntry, Entry, OpenOptions,
+    AddDirEntry, AddDirEntryPlus, Context, DirEntry, OpenOptions,
     backends::shared::{handle_table::HandleData, init_binary, platform},
 };
 
@@ -54,13 +52,10 @@ pub(crate) fn do_opendir(
     Ok((Some(handle), fs.cache_dir_options()))
 }
 
-/// Read directory entries.
+/// Read directory entries into `add_entry` until the reply is full.
 ///
-/// On Linux, uses raw `getdents64` syscall with buffer sized by the FUSE
-/// `size` parameter (clamped to 1KB--64KB).
-///
-/// Names are collected into a single contiguous buffer that is leaked once
-/// per call and tracked for reclamation in destroy().
+/// The root lists the virtual init.krun last, in place of any real file of
+/// that name, as LOOKUP resolves the name to it.
 pub(crate) fn do_readdir(
     fs: &PassthroughFs,
     _ctx: Context,
@@ -68,31 +63,37 @@ pub(crate) fn do_readdir(
     handle: u64,
     size: u32,
     offset: u64,
-) -> io::Result<Vec<DirEntry<'static>>> {
-    let data = fs.handles.get(&handle).ok_or_else(platform::ebadf)?;
+    add_entry: &mut AddDirEntry<'_>,
+) -> io::Result<()> {
+    let with_init = ino == 1 && init_binary::has_init();
     // Resuming from init.krun's cookie means the listing is finished.
-    if ino == 1 && init_binary::has_init() && offset == INIT_DIR_OFFSET {
-        return Ok(Vec::new());
-    }
-    // Write lock: lseek in read_dir_entries modifies fd seek position.
-    #[allow(clippy::readonly_write_lock)]
-    let f = data.file.write().unwrap();
-    let fd = f.as_raw_fd();
-
-    let mut entries = read_dir_entries(fs, fd, offset, size)?;
-
-    // Inject init.krun into root directory listing.
-    if ino == 1 {
-        inject_init_entry(&mut entries);
+    if with_init && offset == INIT_DIR_OFFSET {
+        return Ok(());
     }
 
-    Ok(entries)
+    let reached_end = read_dir_entries(fs, handle, size, offset, &mut |de| {
+        if with_init && de.name == init_binary::INIT_FILENAME {
+            return Ok(1); // skipped, and the reply is not full
+        }
+        add_entry(de)
+    })?;
+
+    if with_init && reached_end {
+        add_entry(DirEntry {
+            ino: init_binary::INIT_INODE,
+            offset: INIT_DIR_OFFSET,
+            type_: platform::DIRENT_REG,
+            name: init_binary::INIT_FILENAME,
+        })?;
+    }
+    Ok(())
 }
 
 /// Read directory entries with attributes (readdirplus).
 ///
-/// Each entry gets a full `do_lookup` to obtain the Entry with stat data.
-/// For init.krun, returns the synthetic init entry.
+/// Each entry gets a full `do_lookup` just before it is sent, and gives that
+/// reference back if the reply turns it away: the kernel forgets only the
+/// entries it received. The root's virtual init.krun gets the synthetic entry.
 pub(crate) fn do_readdirplus(
     fs: &PassthroughFs,
     ctx: Context,
@@ -100,42 +101,37 @@ pub(crate) fn do_readdirplus(
     handle: u64,
     size: u32,
     offset: u64,
-) -> io::Result<Vec<(DirEntry<'static>, Entry)>> {
-    let dir_entries = do_readdir(fs, ctx, ino, handle, size, offset)?;
-    let mut result = Vec::with_capacity(dir_entries.len());
-
-    for de in dir_entries {
-        let name_bytes = de.name;
+    add_entry: &mut AddDirEntryPlus<'_>,
+) -> io::Result<()> {
+    do_readdir(fs, ctx, ino, handle, size, offset, &mut |mut de| {
         // Skip . and .. -- the kernel handles these itself.
-        if name_bytes == b"." || name_bytes == b".." {
-            continue;
+        if de.name == b"." || de.name == b".." {
+            return Ok(1);
         }
 
-        // For init.krun, return the synthetic entry (only when init is embedded).
-        if init_binary::has_init() && name_bytes == init_binary::INIT_FILENAME {
+        // Only the root lists init.krun as the virtual init (do_readdir hides a real one there).
+        if ino == 1 && init_binary::has_init() && de.name == init_binary::INIT_FILENAME {
             let entry = init_binary::init_entry(fs.cfg.entry_timeout, fs.cfg.attr_timeout);
-            result.push((de, entry));
-            continue;
+            return add_entry(de, entry);
         }
 
-        // Look up the entry to get full attributes.
-        let name_cstr = match std::ffi::CString::new(name_bytes.to_vec()) {
-            Ok(c) => c,
-            Err(_) => continue,
+        // An entry that is gone, or cannot be looked up, is left out.
+        let Ok(name) = CString::new(de.name) else {
+            return Ok(1);
         };
-        match inode::do_lookup(fs, ino, &name_cstr) {
-            Ok(entry) => {
-                // Correct d_type from the lookup's stat (free: no extra syscalls).
-                let mut de = de;
-                let file_type = platform::mode_file_type(entry.attr.st_mode);
-                de.type_ = platform::dirent_type_from_mode(file_type);
-                result.push((de, entry));
-            }
-            Err(_) => continue,
-        }
-    }
+        let Ok(entry) = inode::do_lookup(fs, ino, &name) else {
+            return Ok(1);
+        };
 
-    Ok(result)
+        // Correct d_type from the lookup's stat (free: no extra syscalls).
+        de.type_ = platform::dirent_type_from_mode(platform::mode_file_type(entry.attr.st_mode));
+        let looked_up = entry.inode;
+        let added = add_entry(de, entry);
+        if !matches!(added, Ok(n) if n > 0) {
+            inode::forget_one(fs, looked_up, 1);
+        }
+        added
+    })
 }
 
 /// Release an open directory handle.
@@ -147,6 +143,8 @@ pub(crate) fn do_releasedir(
     handle: u64,
 ) -> io::Result<()> {
     fs.handles.remove(&handle);
+    #[cfg(target_os = "macos")]
+    fs.dir_snapshots.remove(&handle);
     Ok(())
 }
 
@@ -154,140 +152,117 @@ pub(crate) fn do_releasedir(
 // Functions: Helpers
 //--------------------------------------------------------------------------------------------------
 
-/// Inject the init.krun entry into a directory listing if not already present.
-/// Only injects when the init binary is embedded; otherwise the real file on disk
-/// appears naturally in readdir results.
-fn inject_init_entry(entries: &mut Vec<DirEntry<'static>>) {
-    if !init_binary::has_init() {
-        return;
-    }
-
-    let already_present = entries.iter().any(|e| e.name == init_binary::INIT_FILENAME);
-
-    if !already_present {
-        let name: &'static [u8] = init_binary::INIT_FILENAME;
-        entries.push(DirEntry {
-            ino: init_binary::INIT_INODE,
-            offset: INIT_DIR_OFFSET,
-            type_: platform::DIRENT_REG,
-            name,
-        });
-    }
-}
-
-/// Read directory entries using `getdents64` with FUSE size as buffer hint.
-///
-/// Names are collected into a single contiguous buffer, leaked once, tracked
-/// in `PassthroughFs::leaked_readdir_bufs`, and sliced into `&'static [u8]` references.
+/// Stream the host entries after `offset` into `add_entry` with `getdents64`,
+/// one buffer (sized by the FUSE `size`, clamped to 1KB--64KB) at a time.
+/// Returns whether the listing reached its end.
 #[cfg(target_os = "linux")]
 fn read_dir_entries(
     fs: &PassthroughFs,
-    fd: i32,
-    offset: u64,
+    handle: u64,
     size: u32,
-) -> io::Result<Vec<DirEntry<'static>>> {
-    // Seek to the requested offset.
-    if offset > 0 {
-        let ret = unsafe { libc::lseek64(fd, offset as i64, libc::SEEK_SET) };
-        if ret < 0 {
-            return Err(platform::linux_error(io::Error::last_os_error()));
-        }
+    offset: u64,
+    add_entry: &mut AddDirEntry<'_>,
+) -> io::Result<bool> {
+    let data = fs.handles.get(&handle).ok_or_else(platform::ebadf)?.clone();
+    // Write lock: the lseek moves the handle's shared position.
+    #[allow(clippy::readonly_write_lock)]
+    let f = data.file.write().unwrap();
+    let fd = f.as_raw_fd();
+
+    // Seek to 0 too: the previous READDIR left the position where it stopped.
+    let ret = unsafe { libc::lseek64(fd, offset as i64, libc::SEEK_SET) };
+    if ret < 0 {
+        return Err(platform::linux_error(io::Error::last_os_error()));
     }
 
-    // Use FUSE size as a hint for the getdents buffer.
-    let buf_size = (size as usize).clamp(1024, 65536);
-    let mut buf = vec![0u8; buf_size];
-
-    // Collect raw entry data and names into a contiguous buffer.
-    let mut raw_entries: Vec<(u64, u64, u8, usize, usize)> = Vec::new();
-    let mut names_buf: Vec<u8> = Vec::new();
-
+    let mut buf = vec![0u8; (size as usize).clamp(1024, 65536)];
     loop {
         let nread = unsafe { libc::syscall(libc::SYS_getdents64, fd, buf.as_mut_ptr(), buf.len()) };
-
         if nread < 0 {
             return Err(platform::linux_error(io::Error::last_os_error()));
         }
         if nread == 0 {
-            break;
+            return Ok(true);
         }
 
         let mut pos = 0usize;
         while pos < nread as usize {
-            // SAFETY: getdents64 returns properly aligned linux_dirent64 structs.
+            // linux_dirent64: d_ino, d_off, d_reclen, d_type, then the NUL-terminated name.
             let d_ino = u64::from_ne_bytes(buf[pos..pos + 8].try_into().unwrap());
             let d_off = u64::from_ne_bytes(buf[pos + 8..pos + 16].try_into().unwrap());
-            let d_reclen = u16::from_ne_bytes(buf[pos + 16..pos + 18].try_into().unwrap());
-            let d_type = buf[pos + 18];
+            let d_reclen = u16::from_ne_bytes(buf[pos + 16..pos + 18].try_into().unwrap()) as usize;
+            let name = &buf[pos + 19..pos + d_reclen];
+            let name_len = name.iter().position(|&b| b == 0).unwrap_or(name.len());
 
-            // Name starts at offset 19, null-terminated.
-            let name_start = pos + 19;
-            let name_end = pos + d_reclen as usize;
-            let name_slice = &buf[name_start..name_end];
-            let name_len = name_slice
-                .iter()
-                .position(|&b| b == 0)
-                .unwrap_or(name_slice.len());
-            let name_bytes = &name_slice[..name_len];
-
-            let name_offset = names_buf.len();
-            names_buf.extend_from_slice(name_bytes);
-
-            raw_entries.push((d_ino, d_off, d_type, name_offset, name_len));
-
-            pos += d_reclen as usize;
+            let de = DirEntry {
+                ino: d_ino,
+                offset: d_off,
+                type_: buf[pos + 18] as u32,
+                name: &name[..name_len],
+            };
+            if add_entry(de)? == 0 {
+                return Ok(false);
+            }
+            pos += d_reclen;
         }
     }
-
-    if raw_entries.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    // Leak one contiguous buffer for all names and track for reclamation in destroy().
-    let boxed = names_buf.into_boxed_slice();
-    let len = boxed.len();
-    let leaked: &'static mut [u8] = Box::leak(boxed);
-    let ptr = leaked.as_mut_ptr();
-    fs.leaked_readdir_bufs
-        .lock()
-        .unwrap()
-        .push((LeakedBufPtr(ptr), len));
-
-    let entries = raw_entries
-        .into_iter()
-        .map(|(ino, off, typ, start, len)| DirEntry {
-            ino,
-            offset: off,
-            type_: typ as u32,
-            name: &leaked[start..start + len],
-        })
-        .collect();
-
-    Ok(entries)
 }
 
-/// Read directory entries from a file descriptor using readdir on macOS.
+/// Serve the entries after `offset` from the handle's snapshot of the
+/// directory, taken at offset 0 (open or rewind). Returns whether the listing
+/// reached its end.
 ///
-/// Names are collected into a single contiguous buffer, leaked once, and tracked
-/// in `PassthroughFs::leaked_readdir_bufs` for reclamation in `destroy()`.
-///
-/// macOS `seekdir`/`telldir` cookies are NOT portable across different
-/// `fdopendir` sessions: after one session reads to EOF the shared fd position
-/// is at the end, and a new `fdopendir(dup(fd))` starts there. `seekdir` with
-/// a cookie from the old session silently fails.
-///
-/// To work around this, we:
-///  1. `lseek(fd, 0)` to rewind the underlying fd before dup/fdopendir.
-///  2. Use a sequential entry index (1-based) as `d_off` instead of `telldir`.
-///  3. When `offset > 0`, skip that many entries from the start.
+/// Offsets are 1-based positions in the snapshot, so they stay valid while the
+/// guest deletes entries it already listed (`rm -r` does), which a fresh
+/// enumeration per page would shift. macOS `telldir` cookies cannot serve
+/// instead: they do not carry across `fdopendir` streams.
 #[cfg(target_os = "macos")]
 fn read_dir_entries(
     fs: &PassthroughFs,
-    fd: i32,
-    offset: u64,
+    handle: u64,
     _size: u32,
-) -> io::Result<Vec<DirEntry<'static>>> {
-    // Rewind the directory fd so dup inherits position 0.
+    offset: u64,
+    add_entry: &mut AddDirEntry<'_>,
+) -> io::Result<bool> {
+    // Take the snapshot out of the map first: inserting while holding its guard would deadlock.
+    let current = fs
+        .dir_snapshots
+        .get(&handle)
+        .filter(|_| offset > 0)
+        .map(|s| Arc::clone(&s));
+    let snapshot = match current {
+        Some(s) => s,
+        None => {
+            let data = fs.handles.get(&handle).ok_or_else(platform::ebadf)?.clone();
+            let s = Arc::new(snapshot_dir(&data)?);
+            fs.dir_snapshots.insert(handle, Arc::clone(&s));
+            s
+        }
+    };
+
+    for (i, (ino, type_, name)) in snapshot.iter().enumerate().skip(offset as usize) {
+        let de = DirEntry {
+            ino: *ino,
+            offset: i as u64 + 1,
+            type_: *type_,
+            name,
+        };
+        if add_entry(de)? == 0 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Every entry of the directory open as `data`.
+#[cfg(target_os = "macos")]
+fn snapshot_dir(data: &HandleData) -> io::Result<super::DirSnapshot> {
+    // Write lock: the lseek moves the handle's shared position.
+    #[allow(clippy::readonly_write_lock)]
+    let f = data.file.write().unwrap();
+    let fd = f.as_raw_fd();
+
+    // Rewind first: the stream below reads through a dup, which shares the position.
     let ret = unsafe { libc::lseek(fd, 0, libc::SEEK_SET) };
     if ret < 0 {
         return Err(platform::linux_error(io::Error::last_os_error()));
@@ -304,73 +279,70 @@ fn read_dir_entries(
         return Err(platform::linux_error(io::Error::last_os_error()));
     }
 
-    let mut raw_entries: Vec<(u64, u64, u32, usize, usize)> = Vec::new();
-    let mut names_buf: Vec<u8> = Vec::new();
-    let mut entry_index: u64 = 0;
-
+    let mut entries = Vec::new();
     loop {
         unsafe { *libc::__error() = 0 };
 
         let ent = unsafe { libc::readdir(dirp) };
         if ent.is_null() {
             let errno = unsafe { *libc::__error() };
+            unsafe { libc::closedir(dirp) };
             if errno != 0 {
-                unsafe { libc::closedir(dirp) };
                 return Err(platform::linux_error(io::Error::from_raw_os_error(errno)));
             }
-            break; // EOF
-        }
-
-        entry_index += 1;
-
-        // Skip entries before the requested offset.
-        if entry_index <= offset {
-            continue;
+            return Ok(entries);
         }
 
         let d = unsafe { &*ent };
-        let name_len = d.d_namlen as usize;
-
-        let name_bytes =
-            unsafe { std::slice::from_raw_parts(d.d_name.as_ptr() as *const u8, name_len) };
-
-        let name_offset = names_buf.len();
-        names_buf.extend_from_slice(name_bytes);
-
-        raw_entries.push((
-            d.d_ino,
-            entry_index, // sequential 1-based index as d_off
-            d.d_type as u32,
-            name_offset,
-            name_len,
-        ));
+        let name = unsafe {
+            std::slice::from_raw_parts(d.d_name.as_ptr() as *const u8, d.d_namlen as usize)
+        };
+        entries.push((d.d_ino, d.d_type as u32, name.into()));
     }
+}
 
-    unsafe { libc::closedir(dirp) };
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{DynFileSystem, FsOptions};
 
-    if raw_entries.is_empty() {
-        return Ok(Vec::new());
-    }
+    /// READDIRPLUS keeps a lookup reference only for the entries that fit in
+    /// the reply: the kernel forgets just those, so any other stays pinned.
+    #[test]
+    fn readdirplus_pins_only_the_entries_in_the_reply() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..6 {
+            std::fs::write(dir.path().join(format!("f{i}")), b"x").unwrap();
+        }
+        let fs = PassthroughFs::builder()
+            .root_dir(dir.path())
+            .build()
+            .unwrap();
+        fs.init(FsOptions::empty()).unwrap();
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        let (dh, _) = fs.opendir(ctx, 1, 0).unwrap();
 
-    // Leak one contiguous buffer for all names and track for reclamation in destroy().
-    let boxed = names_buf.into_boxed_slice();
-    let len = boxed.len();
-    let leaked: &'static mut [u8] = Box::leak(boxed);
-    let ptr = leaked.as_mut_ptr();
-    fs.leaked_readdir_bufs
-        .lock()
-        .unwrap()
-        .push((LeakedBufPtr(ptr), len));
-
-    let entries = raw_entries
-        .into_iter()
-        .map(|(ino, off, typ, start, len)| DirEntry {
-            ino,
-            offset: off,
-            type_: typ,
-            name: &leaked[start..start + len],
+        let mut sent = Vec::new();
+        fs.readdirplus_for_each(ctx, 1, dh.unwrap(), 64 * 1024, 0, &mut |de, _| {
+            if sent.len() == 2 {
+                return Ok(0);
+            }
+            sent.push(de.name.to_vec());
+            Ok(1)
         })
-        .collect();
+        .unwrap();
+        assert_eq!(sent.len(), 2);
 
-    Ok(entries)
+        for i in 0..6 {
+            let name = CString::new(format!("f{i}")).unwrap();
+            let entry = fs.lookup(ctx, 1, &name).unwrap();
+            fs.forget(ctx, entry.inode, 1);
+            let pinned = fs.inodes.read().unwrap().get(&entry.inode).is_some();
+            assert_eq!(pinned, sent.contains(&name.as_bytes().to_vec()), "f{i}");
+        }
+    }
 }
