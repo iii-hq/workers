@@ -229,6 +229,11 @@ impl ConnectionTracker {
             }
 
             write_proxy_data(socket, conn);
+            // Server EOF: the proxy dropped only its sender. FIN the guest once
+            // flushed; smoltcp still receives in FinWait1/2, so the upload goes on.
+            if conn.proxy_gone && conn.write_buf.is_none() {
+                socket.close();
+            }
         }
     }
 

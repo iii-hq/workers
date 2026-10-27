@@ -1081,3 +1081,84 @@ async fn refused_dial_then_same_port_reconnect_delivers_data() {
         "server must receive attempt B's bytes"
     );
 }
+
+/// A server that half-closes first (reply, then EOF) must still receive
+/// what the guest sends afterwards: the guest gets the reply and a FIN, and
+/// its later bytes and FIN still reach the server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn server_half_close_keeps_guest_upload_flowing() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let (mut sock, _) = listener.accept().unwrap();
+        sock.write_all(b"bye").unwrap();
+        sock.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut req = Vec::new();
+        sock.read_to_end(&mut req).unwrap();
+        req
+    });
+
+    let shared = Arc::new(SharedState::new(2048));
+    let config = test_config();
+    let handle = tokio::runtime::Handle::current();
+    let mut state = build_state(&shared, &config, &handle);
+    let mut guest = TestGuest::new(&config, config.gateway_ipv4, 45000, port);
+
+    shared.tx_ring.push(guest.arp_announce()).unwrap();
+    poll_iteration(&mut state, &shared, &config, &handle);
+    let syn = guest.syn();
+    shared.tx_ring.push(syn).unwrap();
+    pump_until(
+        &mut state,
+        &shared,
+        &config,
+        &handle,
+        &mut guest,
+        |g, _| g.established,
+        "handshake",
+    )
+    .await;
+
+    pump_until(
+        &mut state,
+        &shared,
+        &config,
+        &handle,
+        &mut guest,
+        |g, _| g.received == b"bye" && g.peer_fin,
+        "server reply + FIN",
+    )
+    .await;
+
+    let data = guest.data(b"after-eof");
+    shared.tx_ring.push(data).unwrap();
+    pump_until(
+        &mut state,
+        &shared,
+        &config,
+        &handle,
+        &mut guest,
+        |g, _| g.in_flight() == 0,
+        "post-EOF upload acked",
+    )
+    .await;
+    let fin = guest.fin();
+    shared.tx_ring.push(fin).unwrap();
+    pump_until(
+        &mut state,
+        &shared,
+        &config,
+        &handle,
+        &mut guest,
+        |_, _| server.is_finished(),
+        "server sees guest EOF",
+    )
+    .await;
+
+    assert_eq!(
+        server.join().unwrap(),
+        b"after-eof",
+        "bytes sent after server EOF must reach the server"
+    );
+}
