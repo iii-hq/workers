@@ -14,6 +14,8 @@
 //!   /tmp/iii-sandbox/<uuid>/merged/    (host-side workdir placeholder)
 //!   /tmp/iii-sandbox/<uuid>/owner      (pid of the adapter that created it)
 
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -63,7 +65,14 @@ impl OverlayLayout {
         for dir in TRAMPOLINE_STAGING_DIRS {
             std::fs::create_dir_all(self.root.join(dir))?;
         }
-        std::fs::write(self.base().join(OWNER_FILE), std::process::id().to_string())
+        // `create_new` (O_EXCL) refuses an `owner` symlink planted in the shared
+        // root; a swapped parent dir is still followed.
+        let mut owner = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(self.base().join(OWNER_FILE))?;
+        owner.write_all(std::process::id().to_string().as_bytes())
     }
 
     pub fn cleanup(&self) -> std::io::Result<()> {
@@ -175,5 +184,20 @@ mod tests {
         let owner = std::fs::read_to_string(l.base().join(OWNER_FILE)).unwrap();
         l.cleanup().unwrap();
         assert_eq!(owner, std::process::id().to_string());
+    }
+
+    /// `/tmp/iii-sandbox` is shared: a symlink planted at `owner` must fail the
+    /// write, not redirect it.
+    #[test]
+    fn ensure_dirs_refuses_a_planted_owner_symlink() {
+        let l = OverlayLayout::for_sandbox(Uuid::new_v4());
+        std::fs::create_dir_all(l.base()).unwrap();
+        let target = tempfile::NamedTempFile::new().unwrap();
+        std::os::unix::fs::symlink(target.path(), l.base().join(OWNER_FILE)).unwrap();
+
+        let planted = l.ensure_dirs();
+        l.cleanup().unwrap();
+        assert!(planted.is_err());
+        assert_eq!(std::fs::read(target.path()).unwrap(), b"");
     }
 }
