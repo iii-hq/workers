@@ -23,6 +23,10 @@ const RELAY_BUF_SIZE: usize = 16384;
 /// none accepted by the guest before it is reset. Wall time, not poll
 /// iterations: the loop also wakes for other connections' traffic.
 const DEFERRED_CLOSE_STALL: Duration = Duration::from_secs(30);
+/// A socket still handshaking after this long is reaped: a SYN smoltcp
+/// rejected (bad checksum) or a handshake the guest reset leaves it parked
+/// in Listen, holding a connection slot forever.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Tracks TCP connections between guest and proxy tasks.
 ///
@@ -54,6 +58,7 @@ struct Connection {
     write_buf: Option<(Bytes, usize)>,
     /// When the deferred close last stopped making progress.
     close_stalled_since: Option<Instant>,
+    created_at: Instant,
 }
 
 struct ProxyChannels {
@@ -161,6 +166,7 @@ impl ConnectionTracker {
                 proxy_gone: false,
                 write_buf: None,
                 close_stalled_since: None,
+                created_at: Instant::now(),
             },
         );
 
@@ -304,13 +310,17 @@ impl ConnectionTracker {
 
     /// Remove closed connections and their sockets.
     ///
-    /// Only removes sockets in the `Closed` state. Sockets in `TimeWait`
+    /// Removes sockets in the `Closed` state, and sockets whose handshake
+    /// never completed within [`HANDSHAKE_TIMEOUT`]. Sockets in `TimeWait`
     /// are left for smoltcp to handle naturally (2*MSL timer).
     pub fn cleanup_closed(&mut self, sockets: &mut SocketSet<'_>) {
         let keys = &mut self.connection_keys;
         self.connections.retain(|&handle, conn| {
             let socket = sockets.get::<tcp::Socket>(handle);
-            if matches!(socket.state(), tcp::State::Closed) {
+            let handshake_expired =
+                matches!(socket.state(), tcp::State::Listen | tcp::State::SynReceived)
+                    && conn.created_at.elapsed() >= HANDSHAKE_TIMEOUT;
+            if handshake_expired || matches!(socket.state(), tcp::State::Closed) {
                 tracing::debug!(src = %conn.src, dst = %conn.dst, "connection reaped");
                 keys.remove(&(conn.src, conn.dst));
                 sockets.remove(handle);
@@ -488,6 +498,29 @@ mod tests {
         tracker.cleanup_closed(&mut sockets);
         assert_eq!(tracker.connections.len(), 1);
         assert!(tracker.has_socket_for(&src, &dst));
+    }
+
+    /// A socket left in Listen (its SYN was rejected, e.g. on checksum) must
+    /// be reaped once the handshake window passes, or 256 such SYNs lock the
+    /// VM out of TCP.
+    #[test]
+    fn cleanup_reaps_socket_stuck_in_handshake() {
+        let mut tracker = ConnectionTracker::new(Some(1));
+        let mut sockets = SocketSet::new(vec![]);
+        let (src, dst) = (addr(5000), dst_addr(80));
+        assert!(tracker.create_tcp_socket(src, dst, &mut sockets));
+
+        for conn in tracker.connections.values_mut() {
+            conn.created_at -= HANDSHAKE_TIMEOUT;
+        }
+        tracker.cleanup_closed(&mut sockets);
+
+        assert!(!tracker.has_socket_for(&src, &dst));
+        assert_eq!(sockets.iter().count(), 0, "socket must leave the set");
+        assert!(
+            tracker.create_tcp_socket(addr(5001), dst, &mut sockets),
+            "the slot must be free again"
+        );
     }
 
     #[test]
