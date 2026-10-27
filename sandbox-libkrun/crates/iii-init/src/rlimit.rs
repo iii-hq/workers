@@ -7,20 +7,38 @@ pub const DEFAULT_NOFILE: u64 = 65536;
 /// else to the host's `--nofile-limit` (from `KRUN_RLIMITS`), else to
 /// `DEFAULT_NOFILE` (65536).
 pub fn raise_nofile() -> Result<(), InitError> {
-    let (soft, hard) = match std::env::var("III_INIT_NOFILE") {
-        Ok(val) => {
-            let limit = val.parse::<u64>().map_err(|e| InitError::ParseNofile {
-                value: val,
-                source: e,
-            })?;
-            (limit, limit)
-        }
-        Err(_) => std::env::var("KRUN_RLIMITS")
-            .ok()
-            .and_then(|rlimits| krun_nofile(&rlimits))
-            .unwrap_or((DEFAULT_NOFILE, DEFAULT_NOFILE)),
-    };
+    raise_nofile_from(
+        std::env::var("III_INIT_NOFILE").ok(),
+        std::env::var("KRUN_RLIMITS").ok(),
+    )
+}
 
+fn raise_nofile_from(
+    init_nofile: Option<String>,
+    krun_rlimits: Option<String>,
+) -> Result<(), InitError> {
+    if let Some(val) = init_nofile {
+        let limit = val.parse::<u64>().map_err(|e| InitError::ParseNofile {
+            value: val,
+            source: e,
+        })?;
+        return set_nofile(limit, limit);
+    }
+    if let Some((soft, hard)) = krun_rlimits.as_deref().and_then(krun_nofile) {
+        // A host value the guest refuses (e.g. above `fs.nr_open`) must not
+        // stop the boot.
+        match set_nofile(soft, hard) {
+            Ok(()) => return Ok(()),
+            Err(e) => eprintln!(
+                "iii-init: warning: host nofile limit {soft}:{hard} not applied ({e}); \
+                 using {DEFAULT_NOFILE}"
+            ),
+        }
+    }
+    set_nofile(DEFAULT_NOFILE, DEFAULT_NOFILE)
+}
+
+fn set_nofile(soft: u64, hard: u64) -> Result<(), InitError> {
     let rlim = libc::rlimit {
         rlim_cur: soft,
         rlim_max: hard,
@@ -55,6 +73,17 @@ mod tests {
         assert_eq!(krun_nofile("RLIMIT_NPROC:1:2,NOFILE:3:4"), Some((3, 4)));
         assert_eq!(krun_nofile("RLIMIT_NPROC:1:2"), None);
         assert_eq!(krun_nofile("RLIMIT_NOFILE:x:4096"), None);
+    }
+
+    /// A host limit the guest refuses (soft above hard here) falls back to
+    /// the default instead of failing the boot.
+    #[test]
+    fn a_refused_host_nofile_limit_falls_back_to_the_default() {
+        let res = raise_nofile_from(None, Some("RLIMIT_NOFILE:2:1".into()));
+        assert!(
+            !matches!(res, Err(InitError::Rlimit(ref e)) if e.raw_os_error() == Some(libc::EINVAL)),
+            "{res:?}"
+        );
     }
 
     #[test]
