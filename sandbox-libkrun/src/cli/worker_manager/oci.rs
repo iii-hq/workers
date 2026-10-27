@@ -86,19 +86,30 @@ pub(crate) fn ensure_rootfs_dir_no_follow(
     Ok(dir)
 }
 
-/// Read `<rootfs>/<rel>` without following a symlink anywhere below
-/// `rootfs`: every ancestor must be a real directory and the final entry a
-/// regular file. The rootfs comes from the image (and, without overlay, keeps
-/// what the guest wrote), so any component may be a symlink to a host path
-/// (reading through it would expose host contents or hit a device such as
-/// `/dev/zero`) or a FIFO. The final entry is opened with O_NOFOLLOW and its
-/// type is checked on the descriptor, so it cannot be swapped between the
-/// check and the read; O_NONBLOCK keeps a FIFO from blocking the open.
+/// Read `<rootfs>/<rel>` whole; see [`open_rootfs_file_no_follow`].
 pub(crate) fn read_rootfs_file_no_follow(
     rootfs: &std::path::Path,
     rel: &std::path::Path,
 ) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
+
+    let mut data = Vec::new();
+    open_rootfs_file_no_follow(rootfs, rel)?.read_to_end(&mut data)?;
+    Ok(data)
+}
+
+/// Open `<rootfs>/<rel>` for reading without following a symlink anywhere
+/// below `rootfs`: every ancestor must be a real directory and the final entry
+/// a regular file. The rootfs comes from the image (and, without overlay,
+/// keeps what the guest wrote), so any component may be a symlink to a host
+/// path (reading through it would expose host contents or hit a device such
+/// as `/dev/zero`) or a FIFO. The final entry is opened with O_NOFOLLOW and
+/// its type is checked on the descriptor, so it cannot be swapped between the
+/// check and the read; O_NONBLOCK keeps a FIFO from blocking the open.
+pub(crate) fn open_rootfs_file_no_follow(
+    rootfs: &std::path::Path,
+    rel: &std::path::Path,
+) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
 
     let refuse = |why: &str| {
@@ -121,16 +132,14 @@ pub(crate) fn read_rootfs_file_no_follow(
             return Err(refuse("non-directory ancestor in rootfs path"));
         }
     }
-    let mut file = std::fs::OpenOptions::new()
+    let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(&path)?;
     if !file.metadata()?.is_file() {
         return Err(refuse("not a regular file"));
     }
-    let mut data = Vec::new();
-    file.read_to_end(&mut data)?;
-    Ok(data)
+    Ok(file)
 }
 
 /// Read `<rootfs>/.oci-config.json` as text, refusing symlinks and
