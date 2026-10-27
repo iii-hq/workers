@@ -214,16 +214,9 @@ pub fn build_virtiofs_mount_plan(mounts: &[String]) -> Result<VirtiofsMountPlan,
     Ok(VirtiofsMountPlan { entries, env_var })
 }
 
-/// Compose the full libkrunfw file path from the resolved directory and platform filename.
+/// The libkrunfw file to load; a file override keeps its own name.
 pub fn resolve_krunfw_file_path() -> Option<std::path::PathBuf> {
-    let dir = crate::cli::firmware::resolve::resolve_libkrunfw_dir()?;
-    let filename = crate::cli::firmware::constants::libkrunfw_filename();
-    let file_path = dir.join(&filename);
-    if file_path.exists() {
-        Some(file_path)
-    } else {
-        None
-    }
+    crate::cli::firmware::resolve::resolve_libkrunfw_file()
 }
 
 /// Pre-flight check for KVM availability on Linux.
