@@ -169,6 +169,7 @@ fn build_state(
         shared.clone(),
         config.gateway_mac,
         config.guest_mac,
+        config.gateway_ipv4,
         handle.clone(),
     );
     PollLoopState {

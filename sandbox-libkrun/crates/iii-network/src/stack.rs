@@ -252,6 +252,7 @@ pub fn smoltcp_poll_loop(
             shared.clone(),
             config.gateway_mac,
             config.guest_mac,
+            config.gateway_ipv4,
             tokio_handle.clone(),
         ),
         last_cleanup: std::time::Instant::now(),
@@ -467,6 +468,7 @@ mod tests {
             shared.clone(),
             config.gateway_mac,
             config.guest_mac,
+            config.gateway_ipv4,
             tokio_handle.clone(),
         );
 

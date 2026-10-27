@@ -46,6 +46,7 @@ pub struct UdpRelay {
     sessions: HashMap<(SocketAddr, SocketAddr), mpsc::Sender<Bytes>>,
     gateway_mac: EthernetAddress,
     guest_mac: EthernetAddress,
+    gateway_ipv4: Ipv4Addr,
     tokio_handle: tokio::runtime::Handle,
 }
 
@@ -54,6 +55,7 @@ impl UdpRelay {
         shared: Arc<SharedState>,
         gateway_mac: [u8; 6],
         guest_mac: [u8; 6],
+        gateway_ipv4: Ipv4Addr,
         tokio_handle: tokio::runtime::Handle,
     ) -> Self {
         Self {
@@ -61,6 +63,7 @@ impl UdpRelay {
             sessions: HashMap::new(),
             gateway_mac: EthernetAddress(gateway_mac),
             guest_mac: EthernetAddress(guest_mac),
+            gateway_ipv4,
             tokio_handle,
         }
     }
@@ -109,12 +112,15 @@ impl UdpRelay {
         let shared = self.shared.clone();
         let gateway_mac = self.gateway_mac;
         let guest_mac = self.guest_mac;
+        // Same rule as TCP: the gateway IP stands for the host's loopback.
+        let host_dst = crate::proxy::resolve_host_dst(guest_dst, self.gateway_ipv4);
 
         self.tokio_handle.spawn(async move {
             if let Err(e) = udp_relay_task(
                 outbound_rx,
                 guest_src,
                 guest_dst,
+                host_dst,
                 shared,
                 gateway_mac,
                 guest_mac,
@@ -138,12 +144,13 @@ async fn udp_relay_task(
     mut outbound_rx: mpsc::Receiver<Bytes>,
     guest_src: SocketAddr,
     guest_dst: SocketAddr,
+    host_dst: SocketAddr,
     shared: Arc<SharedState>,
     gateway_mac: EthernetAddress,
     guest_mac: EthernetAddress,
 ) -> std::io::Result<()> {
     let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0u16)).await?;
-    socket.connect(guest_dst).await?;
+    socket.connect(host_dst).await?;
 
     // Room for any IPv4 datagram: `recv` truncates silently otherwise. One
     // too big for the guest's rx buffers is dropped, with a log, by the backend.
@@ -296,11 +303,14 @@ mod tests {
         .expect("relay task never injected a response frame into rx_ring")
     }
 
+    const GATEWAY: Ipv4Addr = Ipv4Addr::new(100, 96, 0, 1);
+
     fn test_relay() -> UdpRelay {
         UdpRelay::new(
             Arc::new(SharedState::new(64)),
             [0x02, 0, 0, 0, 0, 1],
             [0x02, 0, 0, 0, 0, 2],
+            GATEWAY,
             tokio::runtime::Handle::current(),
         )
     }
@@ -359,6 +369,35 @@ mod tests {
             relay.sessions.is_empty(),
             "an exited session must be reaped"
         );
+    }
+
+    /// UDP to the gateway (the guest's `localhost`) must reach the host's
+    /// loopback service, like TCP does, and replies must still come from
+    /// the address the guest sent to.
+    #[tokio::test]
+    async fn relay_maps_gateway_to_host_loopback() {
+        let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let port = server.local_addr().unwrap().port();
+        let src: SocketAddr = (Ipv4Addr::new(100, 96, 0, 2), 40000).into();
+        let dst: SocketAddr = (GATEWAY, port).into();
+        let mut relay = test_relay();
+
+        send_outbound(&mut relay, src, dst, b"ping");
+        let mut buf = [0u8; 16];
+        let (n, peer) = tokio::time::timeout(Duration::from_secs(5), server.recv_from(&mut buf))
+            .await
+            .expect("datagram to the gateway must reach host loopback")
+            .unwrap();
+        assert_eq!(&buf[..n], b"ping");
+        server.send_to(b"pong", peer).await.unwrap();
+
+        let frame = wait_for_rx_frame(&relay.shared).await;
+        let eth = EthernetFrame::new_checked(&frame).unwrap();
+        let ipv4 = Ipv4Packet::new_checked(eth.payload()).unwrap();
+        assert_eq!(ipv4.src_addr(), GATEWAY);
+        let udp = UdpPacket::new_checked(ipv4.payload()).unwrap();
+        assert_eq!(udp.src_port(), port);
+        assert_eq!(udp.payload(), b"pong");
     }
 
     /// A guest spraying source ports must not get one host socket per
@@ -504,6 +543,7 @@ mod tests {
             outbound_rx,
             guest_src,
             server_addr,
+            server_addr,
             shared.clone(),
             gateway_mac,
             guest_mac,
@@ -553,6 +593,7 @@ mod tests {
             outbound_rx,
             guest_src,
             server_addr,
+            server_addr,
             shared.clone(),
             EthernetAddress([0x02, 0, 0, 0, 0, 1]),
             EthernetAddress([0x02, 0, 0, 0, 0, 2]),
@@ -585,6 +626,7 @@ mod tests {
         let _task = tokio::spawn(udp_relay_task(
             outbound_rx,
             guest_src,
+            server_addr,
             server_addr,
             shared.clone(),
             EthernetAddress([0x02, 0, 0, 0, 0, 1]),

@@ -47,7 +47,7 @@ pub fn spawn_tcp_proxy(
 /// Rewrite the destination address: if the guest targeted the gateway IP,
 /// connect to localhost instead (the gateway is the host from the guest's
 /// perspective).
-fn resolve_host_dst(dst: SocketAddr, gateway_ipv4: Ipv4Addr) -> SocketAddr {
+pub(crate) fn resolve_host_dst(dst: SocketAddr, gateway_ipv4: Ipv4Addr) -> SocketAddr {
     match dst.ip() {
         std::net::IpAddr::V4(ip) if ip == gateway_ipv4 => {
             SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), dst.port())
