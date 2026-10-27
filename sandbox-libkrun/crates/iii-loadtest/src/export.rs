@@ -518,11 +518,12 @@ pub fn rfc3339(unix: u64) -> String {
     )
 }
 
-/// `2026-10-19T18:04:05Z` → `20261019T1804`.
+/// `2026-10-19T18:04:05Z` → `20261019T180405`. Seconds included: two runs
+/// of a version started in the same minute must not share an id.
 fn compact_date(date: &str) -> String {
     date.chars()
         .filter(|c| c.is_ascii_digit() || *c == 'T')
-        .take(13)
+        .take(15)
         .collect()
 }
 
@@ -733,7 +734,7 @@ mod tests {
         assert_eq!(summary.schema, SCHEMA);
         assert_eq!(summary.version, "0.25.0");
         assert_eq!(summary.date, "2026-10-19T20:04:05Z");
-        assert_eq!(summary.id, "0.25.0-20261019T2004");
+        assert_eq!(summary.id, "0.25.0-20261019T200405");
         assert_eq!(
             summary.profiles,
             vec![ProfileInfo {
