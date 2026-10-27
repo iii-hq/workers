@@ -158,8 +158,9 @@ async fn resolve_query(
     raw_query: &[u8],
     resolver: &hickory_resolver::TokioResolver,
 ) -> Option<Bytes> {
-    use hickory_proto::op::Message;
+    use hickory_proto::op::{Message, ResponseCode};
     use hickory_proto::serialize::binary::BinDecodable;
+    use hickory_resolver::net::{DnsError, NetError};
 
     let query_msg = Message::from_bytes(raw_query).ok()?;
     let query_id = query_msg.id;
@@ -167,19 +168,31 @@ async fn resolve_query(
     let question = query_msg.queries.first()?;
     let record_type = question.query_type();
 
-    let lookup = resolver
-        .lookup(question.name().clone(), record_type)
-        .await
-        .ok()?;
-
     let mut response_msg = Message::response(query_id, query_msg.op_code);
-    response_msg.metadata.response_code = hickory_proto::op::ResponseCode::NoError;
     response_msg.metadata.recursion_desired = query_msg.recursion_desired;
     response_msg.metadata.recursion_available = true;
     response_msg.add_query(question.clone());
 
-    let answers: Vec<_> = lookup.answers().to_vec();
-    response_msg.insert_answers(answers);
+    // Every outcome gets an answer: a dropped query leaves the guest's stub
+    // resolver waiting out its full timeout before it moves on.
+    response_msg.metadata.response_code =
+        match resolver.lookup(question.name().clone(), record_type).await {
+            Ok(lookup) => {
+                response_msg.insert_answers(lookup.answers().to_vec());
+                ResponseCode::NoError
+            }
+            // NXDOMAIN, or NODATA (NoError, empty answer section).
+            Err(NetError::Dns(DnsError::NoRecordsFound(no_records))) => {
+                if let Some(soa) = no_records.soa {
+                    response_msg.add_authority(soa.into_record_of_rdata());
+                }
+                no_records.response_code
+            }
+            Err(e) => {
+                tracing::debug!(name = %question.name(), error = %e, "DNS lookup failed");
+                ResponseCode::ServFail
+            }
+        };
 
     use hickory_proto::serialize::binary::BinEncodable;
     let response_bytes = response_msg.to_bytes().ok()?;
@@ -219,6 +232,66 @@ mod tests {
         };
         assert_eq!(response.data.len(), 2);
         assert_eq!(response.dest.port, 12345);
+    }
+
+    fn query_bytes(name: &str, record_type: hickory_proto::rr::RecordType) -> Vec<u8> {
+        use hickory_proto::op::{Message, Query};
+        use hickory_proto::rr::Name;
+        use hickory_proto::serialize::binary::BinEncodable;
+        let mut msg = Message::query();
+        msg.metadata.id = 0x4242;
+        msg.metadata.recursion_desired = true;
+        msg.add_query(Query::query(Name::from_ascii(name).unwrap(), record_type));
+        msg.to_bytes().unwrap()
+    }
+
+    async fn answer_for(
+        name: &str,
+        record_type: hickory_proto::rr::RecordType,
+        resolver: &hickory_resolver::TokioResolver,
+    ) -> hickory_proto::op::Message {
+        use hickory_proto::serialize::binary::BinDecodable;
+        let response = resolve_query(&query_bytes(name, record_type), resolver)
+            .await
+            .expect("every well-formed query must get an answer");
+        let msg = hickory_proto::op::Message::from_bytes(&response).unwrap();
+        assert_eq!(msg.id, 0x4242);
+        assert_eq!(msg.queries.len(), 1, "the question must be echoed");
+        assert!(msg.answers.is_empty());
+        msg
+    }
+
+    /// Negative answers must reach the guest: dropping them leaves its stub
+    /// resolver waiting out its whole timeout (about 5s per try on glibc).
+    #[tokio::test]
+    async fn resolve_query_answers_nxdomain_and_nodata() {
+        use hickory_proto::op::ResponseCode;
+        use hickory_proto::rr::RecordType;
+        let resolver = hickory_resolver::Resolver::builder_tokio()
+            .and_then(|b| b.build())
+            .unwrap();
+
+        // Both are answered inside hickory (RFC 6761), with no network.
+        let nx = answer_for("nothing.invalid.", RecordType::A, &resolver).await;
+        assert_eq!(nx.response_code, ResponseCode::NXDomain);
+        let nodata = answer_for("localhost.", RecordType::MX, &resolver).await;
+        assert_eq!(nodata.response_code, ResponseCode::NoError);
+    }
+
+    /// Any other resolver failure is SERVFAIL, so the guest moves on now.
+    #[tokio::test]
+    async fn resolve_query_answers_servfail_on_resolver_error() {
+        use hickory_resolver::config::ResolverConfig;
+        use hickory_resolver::net::runtime::TokioRuntimeProvider;
+        let resolver = hickory_resolver::Resolver::builder_with_config(
+            ResolverConfig::from_name_servers(vec![]),
+            TokioRuntimeProvider::default(),
+        )
+        .build()
+        .unwrap();
+
+        let msg = answer_for("example.com.", hickory_proto::rr::RecordType::A, &resolver).await;
+        assert_eq!(msg.response_code, hickory_proto::op::ResponseCode::ServFail);
     }
 
     #[test]
