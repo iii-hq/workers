@@ -441,23 +441,29 @@ pub fn extract_layer_with_limits(
     layer_count: usize,
     total_size: &mut u64,
 ) -> Result<()> {
+    let gzip = media_type.ends_with("tar+gzip") || media_type.ends_with("tar.gzip");
+    if !(gzip || media_type.ends_with("tar")) {
+        anyhow::bail!(
+            "Layer {}/{}: unsupported layer media type {media_type:?} \
+             (only uncompressed and gzip tar layers can be extracted)",
+            layer_index + 1,
+            layer_count
+        );
+    }
+
+    let start_total = *total_size;
     // Whiteouts hide lower-layer files only (OCI image spec), so all of this
     // layer's are applied before any of its own entries land: a whiteout
     // listed after a same-layer file or directory must not delete it.
     for whiteout_pass in [true, false] {
-        let reader: Box<dyn std::io::Read + '_> =
-            if media_type.ends_with("tar+gzip") || media_type.ends_with("tar.gzip") {
-                Box::new(flate2::read::GzDecoder::new(data))
-            } else if media_type.ends_with("tar") {
-                Box::new(data)
-            } else {
-                anyhow::bail!(
-                    "Layer {}/{}: unsupported layer media type {media_type:?} \
-                     (only uncompressed and gzip tar layers can be extracted)",
-                    layer_index + 1,
-                    layer_count
-                );
-            };
+        // Both passes enforce the size limits before tar reads a payload;
+        // the second pass's count is the one that stands.
+        *total_size = start_total;
+        let reader: Box<dyn std::io::Read + '_> = if gzip {
+            Box::new(flate2::read::GzDecoder::new(data))
+        } else {
+            Box::new(data)
+        };
         let mut archive = tar::Archive::new(reader);
         archive.set_preserve_permissions(true);
         // Applied when tar sets the mode, so the bits never exist on disk.
@@ -518,20 +524,6 @@ pub fn extract_layer_with_limits(
                 );
             }
 
-            let whiteout = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .and_then(|n| n.strip_prefix(".wh."));
-            if whiteout_pass {
-                if let Some(target_name) = whiteout {
-                    apply_whiteout(dest, &path, target_name, layer_index);
-                }
-                continue;
-            }
-            if whiteout.is_some() {
-                continue;
-            }
-
             let entry_size = entry.size();
             if entry_size > MAX_FILE_SIZE {
                 anyhow::bail!(
@@ -551,6 +543,20 @@ pub fn extract_layer_with_limits(
                     layer_count,
                     MAX_TOTAL_SIZE
                 );
+            }
+
+            let whiteout = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_prefix(".wh."));
+            if whiteout_pass {
+                if let Some(target_name) = whiteout {
+                    apply_whiteout(dest, &path, target_name, layer_index);
+                }
+                continue;
+            }
+            if whiteout.is_some() {
+                continue;
             }
 
             // Reserved metadata name: iii writes `<rootfs>/.oci-config.json`
@@ -2209,6 +2215,56 @@ mod tests {
         assert!(
             !rootfs.join("a/sub/old").exists(),
             "the lower-layer child of a whited-out dir stays hidden"
+        );
+    }
+
+    /// The whiteout pass used to read past every entry before any size
+    /// check, so an oversized entry was inflated in full, and a whiteout's
+    /// own payload was never counted.
+    #[test]
+    fn size_limits_hold_in_the_whiteout_pass_and_for_whiteouts() {
+        use oci_client::manifest::IMAGE_LAYER_MEDIA_TYPE;
+
+        // A header declaring more than MAX_FILE_SIZE, with no payload behind it.
+        let mut h = tar::Header::new_gnu();
+        h.set_path("huge").unwrap();
+        h.set_size(MAX_FILE_SIZE + 1);
+        h.set_mode(0o644);
+        h.set_entry_type(tar::EntryType::Regular);
+        h.set_cksum();
+        let dir = tempfile::tempdir().unwrap();
+        let mut total_size = 0u64;
+        let err = extract_layer_with_limits(
+            h.as_bytes(),
+            IMAGE_LAYER_MEDIA_TYPE,
+            dir.path(),
+            0,
+            1,
+            &mut total_size,
+        )
+        .expect_err("an oversized entry must be refused");
+        assert!(err.to_string().contains("file too large"), "got: {err:#}");
+
+        let layer = layer_with(|b| {
+            let mut h = tar::Header::new_gnu();
+            h.set_size(1);
+            h.set_mode(0o644);
+            h.set_entry_type(tar::EntryType::Regular);
+            b.append_data(&mut h, ".wh.x", &b"x"[..]).unwrap();
+        });
+        let mut total_size = MAX_TOTAL_SIZE;
+        let err = extract_layer_with_limits(
+            &layer,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            dir.path(),
+            0,
+            1,
+            &mut total_size,
+        )
+        .expect_err("a whiteout's payload counts toward the total");
+        assert!(
+            err.to_string().contains("total extraction size exceeded"),
+            "got: {err:#}"
         );
     }
 
