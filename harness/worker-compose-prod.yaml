@@ -78,6 +78,7 @@ containers:
     config_override:
       function_search_mode: lexical
       function_search_model_download: false
+      auto_download: false
   judge-typesafe:
     worker: package://judge-typesafe
     version: "0.2.6"

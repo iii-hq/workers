@@ -31,6 +31,10 @@ operator can test registration, session lifecycle and missing-provider errors
 through a private connection to this environment. ADE's own UI listener is not
 published by this manifest.
 
+Use a new Cloud environment with an empty Router configuration. Upgrading a
+legacy entry containing `providers.*.system_prompt` still requires the
+privileged configuration migration; application workers cannot run it.
+
 ## Storage limitation
 
 Cloud currently gives each application pod an ephemeral working directory.
