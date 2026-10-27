@@ -21,9 +21,12 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use iii_supervisor::source_sync::{self, EntryHeader, EntryKind};
+use notify::event::ModifyKind;
 use notify::{Event, EventKind, Watcher};
 
-use super::source_watcher::{DEBOUNCE_MS, register_new_dirs, should_ignore_path, watch_pruned};
+use super::source_watcher::{
+    DEBOUNCE_MS, forget_watches, register_new_dirs, should_ignore_path, watch_pruned,
+};
 
 const FILE_READ_ATTEMPTS: usize = 3;
 
@@ -87,11 +90,12 @@ fn run_loop(
             Ok(event) => event,
             Err(_) => return Ok(()),
         };
-        let Some(paths) = collect_burst(first, &rx, MAX_BURST) else {
+        let Some((paths, gone)) = collect_burst(first, &rx, MAX_BURST) else {
             return Ok(());
         };
         let paths: Vec<PathBuf> = paths.into_iter().collect();
 
+        forget_watches(&mut registered, &gone);
         register_new_dirs(&mut watcher, &paths, &source_root, &mut registered);
         for path in coalesce_paths(paths, &source_root) {
             send_current_entry(&mut stream, &source_root, &path)?;
@@ -100,23 +104,35 @@ fn run_loop(
 }
 
 /// Gathers the paths of `first` and of the events after it until the tree is
-/// quiet for DEBOUNCE_MS or the burst is `max_burst` old. None once the
-/// watcher is gone.
+/// quiet for DEBOUNCE_MS or the burst is `max_burst` old, plus the paths that
+/// were removed or renamed (see [`forget_watches`]). None once the watcher is
+/// gone.
 fn collect_burst(
     first: Event,
     rx: &mpsc::Receiver<Event>,
     max_burst: Duration,
-) -> Option<BTreeSet<PathBuf>> {
+) -> Option<(BTreeSet<PathBuf>, BTreeSet<PathBuf>)> {
     let deadline = Instant::now() + max_burst;
-    let mut paths: BTreeSet<PathBuf> = first.paths.into_iter().collect();
-    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
-        match rx.recv_timeout(left.min(Duration::from_millis(DEBOUNCE_MS))) {
-            Ok(event) => paths.extend(event.paths),
+    let (mut paths, mut gone) = (BTreeSet::new(), BTreeSet::new());
+    let mut event = first;
+    loop {
+        if matches!(
+            event.kind,
+            EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
+        ) {
+            gone.extend(event.paths.iter().cloned());
+        }
+        paths.extend(event.paths);
+        let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+            break;
+        };
+        event = match rx.recv_timeout(left.min(Duration::from_millis(DEBOUNCE_MS))) {
+            Ok(event) => event,
             Err(RecvTimeoutError::Timeout) => break,
             Err(RecvTimeoutError::Disconnected) => return None,
-        }
+        };
     }
-    Some(paths)
+    Some((paths, gone))
 }
 
 fn coalesce_paths(paths: Vec<PathBuf>, root: &Path) -> Vec<PathBuf> {
@@ -379,12 +395,36 @@ mod tests {
         });
 
         let started = Instant::now();
-        let paths = collect_burst(event(), &rx, Duration::from_millis(300)).unwrap();
+        let (paths, gone) = collect_burst(event(), &rx, Duration::from_millis(300)).unwrap();
 
         assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(paths, BTreeSet::from([PathBuf::from("/project/app.log")]));
+        assert!(gone.is_empty());
         drop(rx);
         writer.join().unwrap();
+    }
+
+    /// Removed or renamed paths are reported, so their stale watch
+    /// registrations get forgotten; a content change is not.
+    #[test]
+    fn burst_reports_removed_and_renamed_paths() {
+        use notify::event::{DataChange, RemoveKind, RenameMode};
+        let event = |kind, path: &str| Event::new(kind).add_path(PathBuf::from(path));
+        let (tx, rx) = mpsc::channel();
+        let renamed = EventKind::Modify(ModifyKind::Name(RenameMode::From));
+        let edited = EventKind::Modify(ModifyKind::Data(DataChange::Any));
+        tx.send(event(renamed, "/p/old")).unwrap();
+        tx.send(event(edited, "/p/edited")).unwrap();
+
+        let removed = event(EventKind::Remove(RemoveKind::Folder), "/p/src");
+        let (paths, gone) = collect_burst(removed, &rx, Duration::from_millis(100)).unwrap();
+
+        assert_eq!(paths.len(), 3);
+        assert_eq!(
+            gone,
+            BTreeSet::from([PathBuf::from("/p/old"), PathBuf::from("/p/src")])
+        );
+        drop(tx);
     }
 
     #[test]
