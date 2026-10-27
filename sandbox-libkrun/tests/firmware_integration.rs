@@ -257,7 +257,7 @@ fn libkrunfw_filename_is_platform_correct() {
             "macOS should end with '.dylib': {name}"
         );
     } else {
-        // Linux: libkrunfw.so.5.2.1 -- ends with a version number
+        // Linux: libkrunfw.so.5.6.2 -- ends with a version number
         assert!(name.contains(".so."), "Linux should contain '.so.': {name}");
     }
 }

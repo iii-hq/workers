@@ -38,7 +38,7 @@ fn test_libkrunfw_resolves() {
     let filename = if cfg!(target_os = "macos") {
         "libkrunfw.5.dylib"
     } else {
-        "libkrunfw.so.5.2.1"
+        "libkrunfw.so.5.6.2"
     };
 
     let candidates: Vec<std::path::PathBuf> = [
