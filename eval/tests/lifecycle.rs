@@ -884,7 +884,9 @@ impl Rig {
     }
 
     /// [`Self::reach_validation`] with the actor writing `files`.
-    async fn reach_validation_changing(&mut self, files: &[&str]) -> (String, String) {
+    /// … to the candidate committed and published with `files`: its next
+    /// step is the validation.
+    async fn commit_candidate(&mut self, files: &[&str]) -> String {
         let cycle_id = self.begin_source().await;
         let record = self.cycle(&cycle_id).await;
         assert_eq!(
@@ -978,6 +980,11 @@ impl Rig {
         .await
         .unwrap();
         self.tick().await;
+        cycle_id
+    }
+
+    async fn reach_validation_changing(&mut self, files: &[&str]) -> (String, String) {
+        let cycle_id = Box::pin(self.commit_candidate(files)).await;
         let record = self.cycle(&cycle_id).await;
         assert_eq!(
             record.stage,
@@ -1828,4 +1835,30 @@ async fn the_candidate_is_compared_with_base_rounds_run_beside_it_not_the_earlie
             .count(),
         5
     );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_change_no_proof_run_could_measure_stops_before_the_paid_proof() {
+    let Some(mut rig) = Rig::start("unbuilt").await else {
+        return;
+    };
+    rig.configure().await;
+    // The validation stack builds only the Harness from the commit.
+    let cycle_id = Box::pin(rig.commit_candidate(&["ide/src/lib.rs"])).await;
+    let record = rig.cycle(&cycle_id).await;
+    let outcome = record.outcome.clone().expect("ended");
+    assert_eq!(
+        outcome.code,
+        OutcomeCodeV1::Inconclusive,
+        "{}",
+        outcome.detail
+    );
+    assert!(
+        outcome.detail.contains("the candidate changes ide")
+            && outcome.detail.contains("add `ide: {worker: package://ide"),
+        "{}",
+        outcome.detail
+    );
+    assert_eq!(rig.world().e2e.dispatched.len(), 1, "the baseline alone");
 }

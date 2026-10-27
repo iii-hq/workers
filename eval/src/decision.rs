@@ -1254,6 +1254,66 @@ fn meters(worker: &str) -> bool {
 /// candidate commit by the source stack, some built worker runs the change,
 /// and a total the changed code reports itself never qualifies it.
 /// Dependents the stack does not build are named: not measured.
+/// The workers the validation stack builds from the candidate commit.
+fn built_from_commit(record: &CycleRecordV1) -> std::collections::BTreeSet<String> {
+    record
+        .config
+        .as_ref()
+        .and_then(|stored| stored.config.validation.as_ref())
+        .map(ValidationConfigV1::built_from_commit)
+        .unwrap_or_default()
+}
+
+/// Why no validation run could measure `commit`: a unit it changes that the
+/// stack does not build from the commit, or no built worker running it.
+fn unmeasurable(
+    commit: &crate::candidate::CandidateCommitV1,
+    built: &std::collections::BTreeSet<String>,
+) -> Option<String> {
+    let unbuilt: Vec<&str> = commit
+        .units
+        .iter()
+        .filter(|unit| !crate::candidate::is_shared(unit) && !built.contains(*unit))
+        .map(String::as_str)
+        .collect();
+    if !unbuilt.is_empty() {
+        return Some(format!(
+            "the candidate changes {} and the validation stack does not build it from the \
+             candidate commit, so no run measured that change",
+            unbuilt.join(", ")
+        ));
+    }
+    commit.measured_in(built).is_empty().then(|| {
+        "no worker the validation stack builds from the candidate commit runs this change".into()
+    })
+}
+
+/// Read before the paid proof: why its runs could not measure the candidate,
+/// with what to add to the validation stack template.
+pub fn proof_gap(record: &CycleRecordV1) -> Option<String> {
+    let commit = record
+        .candidate
+        .as_ref()
+        .and_then(|state| state.candidate.as_ref()?.commit.as_ref())?;
+    let built = built_from_commit(record);
+    unmeasurable(commit, &built).map(|gap| {
+        let missing: Vec<String> = commit
+            .units
+            .iter()
+            .filter(|unit| !crate::candidate::is_shared(unit) && !built.contains(*unit))
+            .map(|unit| format!("`{unit}: {{worker: package://{unit}, commit: \"{{commit}}\", repository: iii-hq/workers, path: {unit}}}`"))
+            .collect();
+        if missing.is_empty() {
+            format!("{gap}; the proof was not run")
+        } else {
+            format!(
+                "{gap}; the proof was not run: add {} to the validation stack template",
+                missing.join(" and ")
+            )
+        }
+    })
+}
+
 fn measured(
     mut decision: CycleDecisionV1,
     plan: &CyclePlanV1,
@@ -1269,31 +1329,13 @@ fn measured(
     if decision.outcome != DecisionOutcomeV1::Accepted {
         return decision;
     }
-    let built = record
-        .config
-        .as_ref()
-        .and_then(|stored| stored.config.validation.as_ref())
-        .map(ValidationConfigV1::built_from_commit)
-        .unwrap_or_default();
-    let unbuilt: Vec<&str> = commit
-        .units
-        .iter()
-        .filter(|unit| !crate::candidate::is_shared(unit) && !built.contains(*unit))
-        .map(String::as_str)
-        .collect();
+    let built = built_from_commit(record);
     let self_reported = matches!(
         plan.criterion.metric,
         CriterionMetricV1::Tokens | CriterionMetricV1::CostUsd | CriterionMetricV1::FunctionCalls
     );
-    let measured = commit.measured_in(&built);
-    let gap = if !unbuilt.is_empty() {
-        format!(
-            "the candidate changes {} and the validation stack does not build it from the \
-             candidate commit, so no run measured that change",
-            unbuilt.join(", ")
-        )
-    } else if measured.is_empty() {
-        "no worker the validation stack builds from the candidate commit runs this change".into()
+    let gap = if let Some(gap) = unmeasurable(commit, &built) {
+        gap
     } else if let Some(meter) = commit
         .units
         .iter()

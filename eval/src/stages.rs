@@ -1354,6 +1354,18 @@ pub async fn validation_stage(
     else {
         return fail(deps, record, "a validation needs config.candidate.base_sha").await;
     };
+    // Nothing paid is run for a change no proof run could measure.
+    let proving = record.executions.iter().any(|entry| {
+        matches!(
+            entry.role,
+            ExecutionRoleV1::Candidate | ExecutionRoleV1::Control
+        )
+    });
+    if !proving {
+        if let Some(gap) = crate::decision::proof_gap(record) {
+            return end(deps, record, OutcomeCodeV1::Inconclusive, &gap).await;
+        }
+    }
     let runs = plan.sampling.runs_per_side;
     let batched = validation.where_ == WhereV1::Github;
     let Some((role, name)) = proof_schedule(runs, batched)
