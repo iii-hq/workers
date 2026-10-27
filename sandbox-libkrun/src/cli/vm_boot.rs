@@ -295,9 +295,11 @@ fn raise_fd_limit() {
 }
 
 pub fn shell_quote(s: &str) -> String {
-    if s.chars().all(|c| {
-        c.is_alphanumeric() || c == '-' || c == '_' || c == '/' || c == '.' || c == ':' || c == '='
-    }) {
+    // An empty word must still be quoted, or the shell drops it.
+    if !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_alphanumeric() || "-_/.:=".contains(c))
+    {
         s.to_string()
     } else {
         format!("'{}'", s.replace('\'', "'\\''"))
