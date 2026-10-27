@@ -121,6 +121,11 @@ struct Part {
 pub fn spend(bundle: &Value, scenarios: &[String]) -> (Vec<ImprovementPointV1>, String) {
     let mut parts: BTreeMap<String, Part> = BTreeMap::new();
     let (mut runs, mut steps, mut input, mut output) = (0u32, 0usize, 0.0, 0.0);
+    // What a proposal must know before cutting what is sent: the model, how
+    // much the provider already serves from its cache, and whether the
+    // window ever shrank (a prune or a compaction).
+    let (mut cached, mut shrank) = (0.0, 0u32);
+    let mut models = std::collections::BTreeSet::new();
     for (scenario, run) in evidence::runs(bundle) {
         if !scenarios
             .iter()
@@ -149,6 +154,14 @@ pub fn spend(bundle: &Value, scenarios: &[String]) -> (Vec<ImprovementPointV1>, 
         };
         let chars = |entry: &Value| entry["message"]["content"].to_string().len() as f64;
         let run_input: f64 = at.iter().map(|&i| used(&entries[i])).sum();
+        for pair in at.windows(2) {
+            shrank += u32::from(used(&entries[pair[1]]) < used(&entries[pair[0]]));
+        }
+        for &i in &at {
+            let message = &entries[i]["message"];
+            cached += message["usage"]["cache_read"].as_f64().unwrap_or(0.0);
+            models.extend(message["model"].as_str().map(str::to_string));
+        }
         let before: f64 = entries[..first]
             .iter()
             .filter(|entry| entry["message"].is_object())
@@ -259,10 +272,17 @@ pub fn spend(bundle: &Value, scenarios: &[String]) -> (Vec<ImprovementPointV1>, 
     (
         points,
         format!(
-            "the transcripts of {runs} run(s) send ~{:.0} input tokens a run over {steps_a_run:.1} \
-             steps and write ~{:.0}; the largest shares: {}",
+            "the transcripts of {runs} run(s) of {} send ~{:.0} input tokens a run over \
+             {steps_a_run:.1} steps and write ~{:.0}; {:.0}% of the input was read from the \
+             provider's cache; {}; the largest shares: {}",
+            models.into_iter().collect::<Vec<_>>().join(", "),
             per_run(input),
             per_run(output),
+            100.0 * cached / input.max(1.0),
+            match shrank {
+                0 => "the window never shrank between steps (no prune or compaction)".to_string(),
+                n => format!("the window shrank between steps {n} time(s) (prune or compaction)"),
+            },
             largest.join(", ")
         ),
     )
@@ -782,9 +802,11 @@ mod tests {
             {"scenario_id": "s", "runs": [spending_run()]}]}}]}});
         let (points, reason) = spend(&bundle, &["s".into()]);
         assert!(
-            reason.contains("1 run(s) send ~27000 input tokens a run over 3.0 steps"),
+            reason.contains("1 run(s) of m send ~27000 input tokens a run over 3.0 steps"),
             "{reason}"
         );
+        assert!(reason.contains("0% of the input was read"), "{reason}");
+        assert!(reason.contains("never shrank"), "{reason}");
         let names: Vec<&str> = points
             .iter()
             .map(|point| point.function_id.as_str())

@@ -854,6 +854,14 @@ fn proposal_input(
             })
         })
         .collect();
+    // What the insight read across every run: the model, the cache, the window.
+    evidence.extend(record.insight.iter().map(|insight| CandidateEvidenceV1 {
+        source: format!(
+            "insight over the transcripts of {}",
+            plan.criterion.scenario_id
+        ),
+        excerpt: insight.reason.clone(),
+    }));
     evidence.extend(transcript.map(|(run_id, text)| CandidateEvidenceV1 {
         source: format!(
             "e2e baseline run {run_id} of {}: its transcript, one line per message",
@@ -899,9 +907,11 @@ fn proposal_input(
         case_ids: plan.sampling.seeds.clone(),
         objective: plan.objective.clone(),
         occurrence: format!(
-            "cycle {} over E2E executions {}",
+            "cycle {} over E2E executions {}, run by {}/{}",
             record.cycle_id,
-            executions.join(", ")
+            executions.join(", "),
+            plan.parameters.provider,
+            plan.parameters.model
         ),
         evidence,
         criteria: std::iter::once(&plan.criterion)
