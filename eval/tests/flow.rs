@@ -1583,3 +1583,61 @@ async fn with_admission_off_a_finished_execution_is_data_not_a_cycle() {
     h.drain().await;
     assert!(!h.cycle(&cycle_id).await.analyses.is_empty());
 }
+
+#[tokio::test]
+async fn with_history_days_the_cycle_measures_the_github_runs_already_made_and_dispatches_nothing()
+{
+    let mut world = World::new();
+    world.jev_class = Some("preventable");
+    world
+        .histories
+        .insert("context_pressure".into(), history("m", &[5.0]));
+    let edit = (
+        "coder::update-file",
+        "did not run: the arguments were truncated",
+    );
+    let mut ci = bundle(
+        "ci-1",
+        "Essential checks before merge",
+        "passed",
+        vec![failed_all("r1", &[edit; 5])],
+    );
+    ci["manifest"]["executions"][0]["source"] = json!({"kind": "github"});
+    world.executions.insert("ci-1".into(), ci);
+    let h = Harness::start(world).await;
+    let config = json!({
+        "subject": {"provider": "p", "model": "m"}, "where": "harness",
+        "runs_per_side": 1, "technical_retries": 0, "max_scenarios": 1,
+        "estimated_usd_per_run": 0.5,
+        "min_effect": {"tokens": 1000.0, "pass_rate_pp": 10.0},
+        "budget": {"max_spend_usd": 10.0, "max_duration_ms": 3_600_000,
+                   "max_calls": 10, "max_candidates": 1},
+        "judge": {"provider": "typesafe", "estimated_usd": 0.5},
+        "admit_executions": false, "history_days": 7});
+    runtime::configure(
+        &h.deps,
+        serde_json::from_value(json!({"config": config})).unwrap(),
+    )
+    .await
+    .unwrap();
+    let cycle_id = h
+        .start_cycle(json!({"objective": "fewer function call errors"}))
+        .await;
+    h.drain().await;
+    let record = h.cycle(&cycle_id).await;
+    assert_eq!(h.world().starts, 0, "nothing dispatched");
+    let baseline = record.baseline.clone().unwrap();
+    assert!(baseline.usable, "{}", baseline.reason);
+    assert_eq!(baseline.execution_id, "history:1");
+    assert_eq!(baseline.primary.mean, Some(5.0));
+    let insight = record.insight.clone().unwrap();
+    assert_eq!(insight.points.len(), 1, "{}", insight.reason);
+    // Without candidate work, the points are the result.
+    let outcome = record.outcome.unwrap();
+    assert_eq!(
+        outcome.code,
+        OutcomeCodeV1::Inconclusive,
+        "{}",
+        outcome.detail
+    );
+}

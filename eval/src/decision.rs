@@ -491,6 +491,42 @@ pub fn measure(
     evidence.baseline
 }
 
+/// The baseline read from runs already made (`history_days`): any number of
+/// them, usable when the primary criterion has a value on one at least. The
+/// preserved criteria are kept as measured, since past runs may carry
+/// another definition of the test.
+pub fn baseline_from_history(
+    plan: &CyclePlanV1,
+    execution_id: &str,
+    bundle: &serde_json::Value,
+) -> BaselineV1 {
+    let primary = measure(plan, &plan.criterion, execution_id, bundle);
+    let preserved = plan
+        .preserved
+        .iter()
+        .map(|criterion| measure(plan, criterion, execution_id, bundle))
+        .collect();
+    let usable = primary.mean.is_some() && primary.n > 0;
+    BaselineV1 {
+        execution_id: execution_id.into(),
+        usable,
+        reason: if usable {
+            format!(
+                "measured on {} past run(s) of {}",
+                primary.n, plan.criterion.scenario_id
+            )
+        } else {
+            format!(
+                "no past run of {} measured {}",
+                plan.criterion.scenario_id,
+                metric_label(&plan.criterion)
+            )
+        },
+        primary,
+        preserved,
+    }
+}
+
 /// The baseline measured against the frozen plan: usable only when every
 /// criterion has its minimum of measured runs with a value.
 pub fn baseline(plan: &CyclePlanV1, execution_id: &str, bundle: &serde_json::Value) -> BaselineV1 {

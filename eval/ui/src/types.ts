@@ -39,6 +39,8 @@ export interface LoopConfig {
   controls?: string[]
   /** Whether a finished E2E execution opens a cycle on its own; absent is on. */
   admit_executions?: boolean
+  /** Measure from the GitHub runs of the last this many days; absent dispatches. */
+  history_days?: number
   /** Semantic triage of ambiguous findings; absent: they stay inconclusive. */
   judge?: JudgeConfig
   /** The read-only proposal and the isolated candidate actor; absent: no proposal. */

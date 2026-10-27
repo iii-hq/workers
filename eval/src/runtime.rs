@@ -812,6 +812,30 @@ async fn coverage_stage(
                 .map(|stored| stored.config.subject.model.as_str());
             let mut observed = std::collections::BTreeMap::new();
             let mut unread = Vec::new();
+            // Measured from history, a test counts only if the window's runs
+            // ran it: nothing will be dispatched to measure another.
+            let mut rows = rows.clone();
+            if let (Some(days), Some(model)) = (
+                stored
+                    .as_ref()
+                    .and_then(|stored| stored.config.history_days),
+                model,
+            ) {
+                let ran: std::collections::BTreeSet<String> = history_window(deps, days, model)
+                    .await?
+                    .into_iter()
+                    .flat_map(|(_, scenarios)| scenarios)
+                    .collect();
+                rows.retain(|row| {
+                    row["test_id"]
+                        .as_str()
+                        .is_some_and(|test_id| ran.contains(test_id))
+                });
+                unread.push(format!(
+                    "history_days: only the {} test(s) the GitHub runs of the last {days} day(s) ran are considered",
+                    rows.len()
+                ));
+            }
             if let (Some(true), Some(model)) = (
                 coverage::need_of(objective).map(|need| need.observed),
                 model,
@@ -1151,6 +1175,13 @@ async fn baseline_stage(
     let Some(plan) = record.plan.clone() else {
         return fail(deps, record, "a baseline needs a frozen plan").await;
     };
+    if let Some(days) = record
+        .config
+        .as_ref()
+        .and_then(|stored| stored.config.history_days)
+    {
+        return Box::pin(history_stage(deps, record, &plan, days)).await;
+    }
     dispatch(
         deps,
         record,
@@ -1168,6 +1199,226 @@ async fn baseline_stage(
 /// again never dispatches twice: an entry already `dispatching` is
 /// reconciled by its idempotency key in the E2E listing. Answered, the cycle waits
 /// for the execution; unanswered, it waits at its current stage, polled.
+/// At most this many past executions are read into one history baseline.
+const MAX_HISTORY: usize = 30;
+
+/// The past E2E runs the loop reads instead of dispatching: finished GitHub
+/// executions (the release-control campaigns) of `model`, completed in the
+/// last `days`, newest first, each with the scenarios it ran.
+pub(crate) async fn history_window(
+    deps: &Deps,
+    days: u32,
+    model: &str,
+) -> Result<Vec<(String, Vec<String>)>, EvalError> {
+    let since = ids::date_days_before(ids::now_ms(), days);
+    let mut found = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..MAX_PAGES {
+        let page: Value = call(
+            deps,
+            "e2e::dashboard::executions-list",
+            json!({ "limit": EXECUTIONS_PAGE, "cursor": cursor }),
+            BUS_TIMEOUT_MS,
+        )
+        .await?;
+        let rows = page["executions"].as_array().cloned().unwrap_or_default();
+        let mut older = false;
+        for row in &rows {
+            let completed = row["completed_at"].as_str().unwrap_or_default();
+            if !completed.is_empty() && completed < since.as_str() {
+                older = true;
+                continue;
+            }
+            let finished = matches!(
+                row["status"].as_str(),
+                Some("passed" | "failed" | "incomplete")
+            );
+            if row["source"]["kind"] == "github" && finished && row["parameters"]["model"] == model
+            {
+                let scenarios = row["parameters"]["scenarios"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect();
+                found.push((
+                    row["id"].as_str().unwrap_or_default().to_string(),
+                    scenarios,
+                ));
+            }
+        }
+        cursor = page["next_cursor"].as_str().map(str::to_string);
+        if cursor.is_none()
+            || (older
+                && rows.iter().all(|row| {
+                    row["completed_at"]
+                        .as_str()
+                        .is_some_and(|at| !at.is_empty() && at < since.as_str())
+                }))
+        {
+            break;
+        }
+    }
+    Ok(found)
+}
+
+/// The baseline from runs already made: every execution of the window that
+/// ran a planned scenario, read into one evidence the insight and the room
+/// check read like a dispatched baseline's. Nothing is dispatched.
+async fn history_stage(
+    deps: &Deps,
+    record: &CycleRecordV1,
+    plan: &CyclePlanV1,
+    days: u32,
+) -> Result<Option<CycleRecordV1>, EvalError> {
+    let window = history_window(deps, days, &plan.parameters.model).await?;
+    let wanted: Vec<&String> = window
+        .iter()
+        .filter(|(_, scenarios)| {
+            scenarios
+                .iter()
+                .any(|scenario| plan.parameters.scenarios.contains(scenario))
+        })
+        .map(|(execution_id, _)| execution_id)
+        .take(MAX_HISTORY)
+        .collect();
+    if wanted.is_empty() {
+        let detail = format!(
+            "no GitHub execution of {} with {} finished in the last {days} day(s): import the \
+             release-control runs, or widen history_days",
+            plan.parameters.scenarios.join(", "),
+            plan.parameters.model
+        );
+        return end(deps, record, OutcomeCodeV1::Inconclusive, &detail).await;
+    }
+    let mut reports = Vec::new();
+    let mut summaries = Vec::new();
+    for execution_id in &wanted {
+        let bundle = execution_get(deps, execution_id).await?;
+        reports.extend(
+            bundle["detail"]["reports"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default(),
+        );
+        summaries.extend(
+            bundle["manifest"]["executions"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default(),
+        );
+    }
+    let execution_id = format!("history:{}", wanted.len());
+    let merged = json!({"manifest": {"executions": summaries}, "detail": {"reports": reports}});
+    let evidence = ExecutionEvidenceV1 {
+        admission_key: format!("{}:history", record.cycle_id),
+        execution_id: execution_id.clone(),
+        imported_at: ids::now_ms(),
+        bundle_digest: ids::sha256_json(&merged),
+        identity: evidence::identity(&merged, &execution_id),
+        bundle: merged,
+    };
+    state::put_evidence_once(&deps.iii, &evidence).await?;
+    let measured = decision::baseline_from_history(plan, &execution_id, &evidence.bundle);
+    let analysis = analysis_of(&evidence, ExecutionRoleV1::Baseline, None);
+    let reads = reads_transcripts(plan);
+    let room = (!reads)
+        .then(|| {
+            decision::no_room(
+                &plan.criterion,
+                plan.sampling.runs_per_side,
+                &measured.primary,
+            )
+        })
+        .flatten();
+    let candidate_work = record
+        .config
+        .as_ref()
+        .is_some_and(|stored| stored.config.candidate.is_some());
+    let (status, stage, outcome) = if !measured.usable {
+        (
+            CycleStatusV1::Completed,
+            CycleStageV1::Done,
+            Some((
+                OutcomeCodeV1::Inconclusive,
+                format!("history unusable: {}", measured.reason),
+            )),
+        )
+    } else if reads {
+        (CycleStatusV1::Running, CycleStageV1::Insight, None)
+    } else if !candidate_work {
+        (
+            CycleStatusV1::Completed,
+            CycleStageV1::Done,
+            Some((
+                OutcomeCodeV1::Inconclusive,
+                format!(
+                    "history measured ({}); candidate work is not configured (config.candidate)",
+                    measured.reason
+                ),
+            )),
+        )
+    } else if let Some(reason) = room {
+        (
+            CycleStatusV1::Completed,
+            CycleStageV1::Done,
+            Some((
+                OutcomeCodeV1::NoAction,
+                format!("history measured; {reason}"),
+            )),
+        )
+    } else {
+        (CycleStatusV1::Running, CycleStageV1::Proposal, None)
+    };
+    let detail = outcome.as_ref().map_or_else(
+        || {
+            format!(
+                "history measured from {} past execution(s): {}",
+                wanted.len(),
+                measured.reason
+            )
+        },
+        |(_, detail)| detail.clone(),
+    );
+    transition(
+        deps,
+        &record.cycle_id,
+        record.step,
+        status,
+        stage,
+        &detail,
+        |next| {
+            next.executions.push(CycleExecutionV1 {
+                role: ExecutionRoleV1::Baseline,
+                state: ExecutionStateV1::Imported,
+                execution_id: Some(execution_id.clone()),
+                label: Some(format!("history of {days} day(s)")),
+                work_id: None,
+                dispatched_at: None,
+                admission_key: Some(evidence.admission_key.clone()),
+                detail: Some(
+                    wanted
+                        .iter()
+                        .map(|id| id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                ),
+            });
+            next.analyses.push(analysis.clone());
+            next.baseline = Some(measured.clone());
+            if let Some((code, detail)) = &outcome {
+                next.outcome = Some(CycleOutcomeV1 {
+                    code: *code,
+                    detail: detail.clone(),
+                });
+            }
+            Ok(())
+        },
+    )
+    .await
+}
+
 /// A plan on a Harness metric the insight reads in the transcripts: it runs
 /// before the room and candidate checks, since what the runs show is its own
 /// result.

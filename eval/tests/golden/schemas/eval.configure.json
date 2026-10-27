@@ -165,6 +165,15 @@
             "format": "double",
             "type": "number"
           },
+          "history_days": {
+            "description": "Measure from the E2E runs already made instead of dispatching a baseline: the GitHub executions (the release-control campaigns) of the subject completed in the last this many days. Absent: dispatch.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "judge": {
             "anyOf": [
               {
@@ -544,6 +553,15 @@
             "description": "What one run is reserved at before dispatch; an unreported actual cost stays charged at it, never at zero.",
             "format": "double",
             "type": "number"
+          },
+          "history_days": {
+            "description": "Measure from the E2E runs already made instead of dispatching a baseline: the GitHub executions (the release-control campaigns) of the subject completed in the last this many days. Absent: dispatch.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "judge": {
             "anyOf": [

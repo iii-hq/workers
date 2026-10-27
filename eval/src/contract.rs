@@ -123,6 +123,11 @@ pub struct LoopConfigV1 {
     /// data the loop reads, and a cycle starts only when a person asks.
     #[serde(default = "admit_by_default")]
     pub admit_executions: bool,
+    /// Measure from the E2E runs already made instead of dispatching a
+    /// baseline: the GitHub executions (the release-control campaigns) of the
+    /// subject completed in the last this many days. Absent: dispatch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_days: Option<u32>,
 }
 
 fn admit_by_default() -> bool {
@@ -202,6 +207,12 @@ impl LoopConfigV1 {
         }
         if self.runs_per_side == 0 || self.max_scenarios == 0 {
             return invalid("runs_per_side and max_scenarios must be at least 1");
+        }
+        if self
+            .history_days
+            .is_some_and(|days| !(1..=90).contains(&days))
+        {
+            return invalid("history_days must be 1 to 90 (GitHub keeps run artifacts 90 days)");
         }
         if !positive(self.estimated_usd_per_run) {
             return invalid("estimated_usd_per_run must be a positive number of US dollars");

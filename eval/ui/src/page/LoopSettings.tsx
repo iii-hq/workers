@@ -491,6 +491,11 @@ export function LoopSettings({
                       'Must keep passing whatever the change; comma separated. They count toward the scenarios per cycle.',
                       true,
                     )}
+                    {field(
+                      'history_days',
+                      'Measure from past runs (days)',
+                      'Read the GitHub runs (the release-control campaigns) of the last N days instead of dispatching a baseline. Empty: dispatch.',
+                    )}
                     <SettingsField
                       label="Start a cycle for every finished execution"
                       description="Off, executions (imported CI runs among them) are data the loop reads, and a cycle starts only when you ask for one."

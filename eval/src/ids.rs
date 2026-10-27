@@ -35,6 +35,21 @@ pub fn sha256_json(value: &impl serde::Serialize) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+/// The UTC calendar date `days` before `now_ms`, as `YYYY-MM-DD` (Howard
+/// Hinnant's civil-from-days): RFC 3339 times compare to it as text.
+pub fn date_days_before(now_ms: i64, days: u32) -> String {
+    let z = now_ms.div_euclid(86_400_000) - i64::from(days) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -120,5 +135,19 @@ mod tests {
         assert_eq!(parse_ms(""), None);
         assert_eq!(parse_ms("2026-13-02T00:00:00Z"), None);
         assert_eq!(parse_ms("yesterday"), None);
+    }
+}
+
+#[cfg(test)]
+mod date_tests {
+    #[test]
+    fn a_date_some_days_before_crosses_months_years_and_leap_days() {
+        // 2026-10-27T01:00:00Z
+        let now = 1_793_062_800_000;
+        assert_eq!(super::date_days_before(now, 0), "2026-10-27");
+        assert_eq!(super::date_days_before(now, 27), "2026-09-30");
+        assert_eq!(super::date_days_before(now, 299), "2026-01-01");
+        assert_eq!(super::date_days_before(now, 300), "2025-12-31");
+        assert_eq!(super::date_days_before(951_782_400_000, 0), "2000-02-29");
     }
 }

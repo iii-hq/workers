@@ -236,6 +236,11 @@ describe('loop config', () => {
     expect(validateConfig(CONFIG)).toBeNull()
   })
 
+  it('keeps the history window through the form, and omits it when empty', () => {
+    expect(configFromDraft(draftFromConfig({ ...CONFIG, history_days: 7 }))?.history_days).toBe(7)
+    expect('history_days' in (configFromDraft(draftFromConfig(CONFIG)) ?? {})).toBe(false)
+  })
+
   it('keeps automatic admission off through the form, and writes it only when off', () => {
     const off = configFromDraft(draftFromConfig({ ...CONFIG, admit_executions: false }))
     expect(off?.admit_executions).toBe(false)
