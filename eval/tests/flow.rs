@@ -803,13 +803,14 @@ async fn a_function_call_error_objective_measures_the_test_whose_recorded_runs_s
             "{}",
             coverage.selected[0].rationale
         );
+        // Half the recorded rate: 5 errors per run, so 2.5 fewer.
         let criterion = record.plan.unwrap().criterion;
         assert_eq!(
             (criterion.metric, criterion.direction, criterion.min_effect),
             (
                 CriterionMetricV1::FunctionCallErrors,
                 DirectionV1::Decrease,
-                1.0
+                2.5
             )
         );
     }

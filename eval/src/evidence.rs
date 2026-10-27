@@ -252,6 +252,13 @@ fn fixed_stack_sha256(stack: &Value) -> Option<String> {
     }
     let mut fixed = versions.clone();
     fixed.remove(HARNESS_STACK_WORKER);
+    // A worker built from a commit (`@<sha>`) is what each side builds from
+    // its own commit: the stack proof checks it against the template.
+    fixed.retain(|_, version| {
+        !version
+            .as_str()
+            .is_some_and(|version| version.starts_with('@'))
+    });
     (!fixed.is_empty()).then(|| native_sha256(&Value::Object(fixed)))
 }
 
@@ -1033,6 +1040,22 @@ mod tests {
         let (_, cut) = transcript_excerpt(&bundle, "s", Some("two_turns"), 30).unwrap();
         assert_eq!(cut, "user: Store it once.\n…");
         assert!(transcript_excerpt(&bundle, "other", None, 1000).is_none());
+    }
+
+    #[test]
+    fn workers_built_from_each_sides_commit_leave_the_fixed_stack_alike() {
+        let stack = |ide: &str, state: &str| {
+            json!({"mode": "registry", "stack_versions": {"harness": "@0068cc1",
+                "ide": ide, "state": state, "harness-e2e": "@5ecf8be"}})
+        };
+        assert_eq!(
+            fixed_stack_sha256(&stack("@0068cc1", "0.22.22")),
+            fixed_stack_sha256(&stack("@3a05d1b", "0.22.22"))
+        );
+        assert_ne!(
+            fixed_stack_sha256(&stack("@0068cc1", "0.22.22")),
+            fixed_stack_sha256(&stack("@0068cc1", "0.22.23"))
+        );
     }
 
     #[test]

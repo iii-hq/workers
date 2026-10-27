@@ -1072,8 +1072,18 @@ async fn coverage_stage(
     let Some(mut plan) = coverage::plan(&objective, &found, goal, &stored, now) else {
         return fail(deps, record, "the coverage maps to no plan").await;
     };
-    // A rare count is proven only over enough rounds: measured from history,
-    // as many as give the base about PROOF_EVENTS events, within bounds.
+    // A count's effect is relative to how often it happens: one error fewer
+    // per run is out of reach when a run makes 0.35. Measured from history,
+    // it is proven over as many rounds as give the base about PROOF_EVENTS.
+    if decision::is_count(plan.criterion.metric) {
+        if let Some(rate) = observed_rate
+            .get(plan.criterion.scenario_id.as_str())
+            .copied()
+            .filter(|rate| *rate > 0.0)
+        {
+            plan.criterion.min_effect = (rate * COUNT_EFFECT).max(0.01);
+        }
+    }
     if stored.config.history_days.is_some() && decision::is_count(plan.criterion.metric) {
         if let Some(rate) = observed_rate
             .get(plan.criterion.scenario_id.as_str())
@@ -1234,6 +1244,8 @@ async fn baseline_stage(
 /// again never dispatches twice: an entry already `dispatching` is
 /// reconciled by its idempotency key in the E2E listing. Answered, the cycle waits
 /// for the execution; unanswered, it waits at its current stage, polled.
+/// A count's minimum effect: this share of its recorded rate per run.
+const COUNT_EFFECT: f64 = 0.5;
 /// Events a count's proof is sized to expect on the base.
 const PROOF_EVENTS: f64 = 8.0;
 /// The most rounds per side a sized proof runs.
