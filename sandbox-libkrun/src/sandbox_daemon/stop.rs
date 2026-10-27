@@ -55,7 +55,7 @@ pub async fn handle_stop<S: VmStopper>(
 }
 
 /// Stop every live sandbox and remove its directory, for a graceful exit: the
-/// lifeline ends the VMs anyway, but only this cleans `/tmp/iii-sandbox`.
+/// lifeline ends the VMs anyway, but only this cleans `overlay::sandbox_root`.
 pub async fn stop_all<S: VmStopper>(registry: &SandboxRegistry, stopper: &S) {
     let states = registry.list().await;
     futures::future::join_all(states.into_iter().map(|state| async move {

@@ -266,9 +266,9 @@ impl VmLauncher for VmBootLauncher {
 
         // Capture stderr to a per-sandbox log. Dropping to /dev/null
         // masked clap parse errors and libkrun panics as opaque 30s
-        // timeouts.
+        // timeouts. A new file only: never follow a planted symlink.
         let log_path = params.shell_sock.with_file_name("vm-boot.stderr.log");
-        let stderr = std::fs::File::create(&log_path).map_err(|e| {
+        let stderr = crate::sandbox_daemon::overlay::create_private(&log_path).map_err(|e| {
             SandboxError::BootFailed(format!(
                 "cannot create vm-boot stderr log at {}: {e}",
                 log_path.display()

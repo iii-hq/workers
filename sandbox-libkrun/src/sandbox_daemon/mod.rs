@@ -197,7 +197,7 @@ fn start(iii: &IIIClient, config: SandboxConfig, config_name: &str) -> Arc<Sandb
              number of simultaneous execs a guest of default_memory_mb can hold."
         );
     }
-    overlay::sweep_stale(std::path::Path::new(overlay::SANDBOX_ROOT));
+    overlay::sweep_stale(&overlay::sandbox_root());
     let registry = Arc::new(SandboxRegistry::with_max_exec_in_flight(
         config.max_concurrent_exec_per_sandbox,
     ));
