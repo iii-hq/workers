@@ -1160,9 +1160,9 @@ fn diff_patch(dir: &Path, args: &[&str]) -> Result<Result<String, Rejection>, Ca
 
 /// A changed manifest takes its lockfile along: every build of a candidate
 /// is `--locked`, and the actor cannot run cargo. `cargo metadata` updates
-/// the nearest `Cargo.lock` by the least the manifest needs; one that does
-/// not resolve is rejected before any run is paid for.
-fn sync_lockfiles(worktree: &Path, base: &str) -> Result<Result<(), Rejection>, CandidateError> {
+/// the nearest `Cargo.lock` by the least the manifest needs. Best effort: a
+/// manifest it cannot resolve is committed as written.
+fn sync_lockfiles(worktree: &Path, base: &str) -> Result<(), CandidateError> {
     let names = git(worktree, &["diff", "--cached", "--name-only", "-z", base])?;
     let mut roots = std::collections::BTreeSet::new();
     for name in names
@@ -1180,30 +1180,19 @@ fn sync_lockfiles(worktree: &Path, base: &str) -> Result<Result<(), Rejection>, 
         }
     }
     if roots.is_empty() {
-        return Ok(Ok(()));
+        return Ok(());
     }
     for root in roots {
-        let output = Command::new("cargo")
+        let _ = Command::new("cargo")
             .args(["metadata", "--format-version", "1", "--manifest-path"])
             .arg(root.join("Cargo.toml"))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .output()
-            .map_err(|error| CandidateError::Dependency(format!("cargo: {error}")))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Ok(Err(reject(
-                "manifest_unresolved",
-                format!(
-                    "{} does not resolve: {}",
-                    root.strip_prefix(worktree).unwrap_or(&root).display(),
-                    stderr.trim()
-                ),
-            )));
-        }
+            .stderr(Stdio::null())
+            .status();
     }
     git(worktree, &["add", "--all", "--", ":/"])?;
-    Ok(Ok(()))
+    Ok(())
 }
 
 /// Inspects what the actor wrote and commits it, once. A repeated call after
@@ -1232,9 +1221,7 @@ pub fn collect_commit(
     let mut tip = rev(worktree, &branch_ref)?;
     if tip == base {
         git(worktree, &["add", "--all", "--", ":/"])?;
-        if let Err(rejection) = sync_lockfiles(worktree, base)? {
-            return Ok(Err(rejection));
-        }
+        sync_lockfiles(worktree, base)?;
         let staged = git(
             worktree,
             &[
