@@ -205,6 +205,21 @@ pub fn compare(
     );
     // A mean gain of the minimum effect is not enough on its own: the paired
     // runs must show it in a consistent direction (see [`directional`]).
+    // A loss counts only when shown: a criterion that wanders by chance
+    // between two runs of the same binary must not reject every candidate.
+    if outcome == ValidationOutcomeV1::Regression && !gross_loss(evidence, criterion) {
+        let (p, test) = worse_test(evidence, criterion);
+        if p > SIGN_TEST_ALPHA + EFFECT_TOLERANCE {
+            return (
+                ValidationOutcomeV1::NoImprovement,
+                format!(
+                    "{reason}; held: the drop is not shown beyond chance ({test}, p={p:.5} above \
+                     {SIGN_TEST_ALPHA})"
+                ),
+            );
+        }
+        reason = format!("{reason}; the drop is shown ({test}, p={p:.5})");
+    }
     // A count is judged on its totals: one run without the event says
     // nothing against the others (see [`rate_test_p`]).
     if outcome == ValidationOutcomeV1::ValidatedImprovement
@@ -300,6 +315,65 @@ impl SignTest {
             self.p
         )
     }
+}
+
+/// A rate or score that falls by this much or more is lost whatever a test
+/// says: with 3 to 5 runs no test can show a loss, and a condition every run
+/// kept and the candidate broke must still reject it.
+const GROSS_LOSS: f64 = 0.5;
+
+/// A pass rate or criterion score down by [`GROSS_LOSS`] or more.
+fn gross_loss(evidence: &EvidenceV1, criterion: &CriterionV1) -> bool {
+    matches!(
+        criterion.metric,
+        CriterionMetricV1::PassRate | CriterionMetricV1::CriterionScore
+    ) && criterion.direction == DirectionV1::Increase
+        && evidence
+            .baseline
+            .mean
+            .zip(evidence.candidate.mean)
+            .is_some_and(|(before, after)| before - after + EFFECT_TOLERANCE >= GROSS_LOSS)
+}
+
+/// How likely a drop this clear is by chance: for a count, its totals (more
+/// events on the candidate); otherwise the paired runs with a difference,
+/// those worse against those better. With no pairing the drop is unshown.
+fn worse_test(evidence: &EvidenceV1, criterion: &CriterionV1) -> (f64, &'static str) {
+    if is_count(criterion.metric) {
+        let (baseline, candidate) = (
+            count_total(&evidence.baseline, criterion),
+            count_total(&evidence.candidate, criterion),
+        );
+        return (
+            rate_test_p(candidate, baseline),
+            "conditional binomial test of the totals",
+        );
+    }
+    let value = |run: &EvidenceRunV1| {
+        run.measurable()
+            .then(|| metric_value(run, criterion))
+            .flatten()
+    };
+    let (mut worse, mut better) = (0, 0);
+    for (before, after) in evidence.baseline.runs.iter().zip(&evidence.candidate.runs) {
+        let (Some(before), Some(after)) = (value(before), value(after)) else {
+            continue;
+        };
+        let change = after - before;
+        let wanted = match criterion.direction {
+            DirectionV1::Decrease => -change,
+            DirectionV1::Increase => change,
+        };
+        if wanted < -EFFECT_TOLERANCE {
+            worse += 1;
+        } else if wanted > EFFECT_TOLERANCE {
+            better += 1;
+        }
+    }
+    (
+        sign_test_p(worse, worse + better),
+        "one-sided sign test of the pairs that differ",
+    )
 }
 
 /// The rule for a count (function-call errors): the two sides' totals over
@@ -1126,7 +1200,26 @@ pub fn decide(
         judged
     };
     let primary = judged(&plan.criterion);
-    let preserved: Vec<EvidenceV1> = plan.preserved.iter().map(judged).collect();
+    let mut preserved: Vec<EvidenceV1> = plan.preserved.iter().map(judged).collect();
+    // Many conditions each tested at alpha lose one by chance often (8 at
+    // 0.05: a third of the time): a loss counts at alpha / their number.
+    let alpha = SIGN_TEST_ALPHA / preserved.len().max(1) as f64;
+    for (evidence, criterion) in preserved.iter_mut().zip(&plan.preserved) {
+        if evidence.computed_outcome == ValidationOutcomeV1::Regression
+            && !gross_loss(evidence, criterion)
+        {
+            let (p, test) = worse_test(evidence, criterion);
+            if p > alpha + EFFECT_TOLERANCE {
+                evidence.computed_outcome = ValidationOutcomeV1::NoImprovement;
+                evidence.reason = format!(
+                    "{}; held: {} conditions are kept, so a loss counts at p <= {alpha:.5} \
+                     ({test}, p={p:.5})",
+                    evidence.reason,
+                    plan.preserved.len()
+                );
+            }
+        }
+    }
     let (outcome, reason) = verdict(&comparability, &plan.criterion, &primary, &preserved);
     CycleDecisionV1 {
         outcome,
@@ -1580,7 +1673,7 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_threshold_holds_an_unchanged_mean_and_rejects_any_loss() {
+    fn a_zero_threshold_holds_an_unchanged_mean_and_rejects_a_shown_loss() {
         use ValidationOutcomeV1::*;
         let held = CriterionV1 {
             min_effect: 0.0,
@@ -1592,7 +1685,9 @@ mod tests {
                 .collect()
         };
         assert_eq!(outcome(runs(5), runs(5), &held).0, NoImprovement);
-        assert_eq!(outcome(runs(5), runs(4), &held).0, Regression);
+        // One run of five lost is within chance; all five lost is not.
+        assert_eq!(outcome(runs(5), runs(4), &held).0, NoImprovement);
+        assert_eq!(outcome(runs(5), runs(0), &held).0, Regression);
     }
 
     #[test]
@@ -1809,7 +1904,11 @@ mod tests {
             ValidatedImprovement
         );
         assert_eq!(outcome(passing(5), passing(5), &pass).0, NoImprovement);
-        assert_eq!(outcome(passing(6), passing(5), &pass).0, Regression);
+        // A loss must be shown too: one pair worse is chance, six are not.
+        let (found, reason, _) = outcome(passing(6), passing(5), &pass);
+        assert_eq!(found, NoImprovement, "{reason}");
+        assert!(reason.contains("held: the drop is not shown"), "{reason}");
+        assert_eq!(outcome(passing(10), passing(4), &pass).0, Regression);
     }
 
     #[test]

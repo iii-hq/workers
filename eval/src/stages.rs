@@ -1379,7 +1379,7 @@ pub async fn validation_stage(
         )
         .await;
     };
-    let parameters = ExecutionParametersV1 {
+    let parameters = |role: ExecutionRoleV1| ExecutionParametersV1 {
         where_: validation.where_,
         stack: Some(
             validation.source_stack(if role == ExecutionRoleV1::Control {
@@ -1391,21 +1391,40 @@ pub async fn validation_stage(
         runs: if batched { runs } else { 1 },
         ..plan.parameters.clone()
     };
-    let share = if batched { 1 } else { runs.max(1) };
-    dispatch(
-        deps,
-        record,
-        role,
-        &name,
-        &parameters,
-        plan.estimated_usd / f64::from(share),
-    )
-    .await
+    let estimated = plan.estimated_usd / f64::from(if batched { 1 } else { runs.max(1) });
+    let first = dispatch(deps, record, role, &name, &parameters(role), estimated).await?;
+    // On GitHub the other side starts at once: a provider's bad spell then
+    // falls on both sides alike, as ABBA spreads it over Docker's rounds.
+    if batched {
+        if let Some(next) = &first {
+            let started = |name: &str| {
+                let work_id = format!("{}:{name}", next.cycle_id);
+                next.executions
+                    .iter()
+                    .any(|entry| entry.work_id.as_deref() == Some(work_id.as_str()))
+            };
+            if let Some((other, other_name)) = proof_schedule(runs, true)
+                .into_iter()
+                .find(|(_, other_name)| !started(other_name))
+            {
+                return dispatch(
+                    deps,
+                    next,
+                    other,
+                    &other_name,
+                    &parameters(other),
+                    estimated,
+                )
+                .await;
+            }
+        }
+    }
+    Ok(first)
 }
 
 /// The validation's executions in dispatch order. `batched` (GitHub, where
 /// an execution runs its rounds as parallel jobs): one candidate execution
-/// of every round, then one of the base commit (`control`), back to back.
+/// of every round and one of the base commit (`control`), started together.
 /// Otherwise one round of every planned case per execution, the base and
 /// the candidate alternating as ABBA (candidate first in odd rounds), so
 /// drift over time and a warmed provider cache fall on both sides alike.

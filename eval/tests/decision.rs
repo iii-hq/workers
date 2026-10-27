@@ -732,7 +732,8 @@ fn the_sample_must_be_exactly_the_frozen_one() {
 #[test]
 fn a_lost_control_rejects_whatever_the_metric_did() {
     let (baseline, candidate) = pair();
-    for passed in [4, 0] {
+    // A control broken on every run is lost, whatever the sample size.
+    for passed in [0] {
         let evidence = vec![
             evidence_for("s", "base", runs(5, 5, 0.10), "cand", runs(5, 5, 0.05)),
             evidence_for(
@@ -811,7 +812,7 @@ fn cheaper_candidate_losing_correctness_is_rejected() {
         &plan(),
         &baseline,
         &candidate,
-        &with_control(runs(5, 5, 0.10), runs(5, 4, 0.05)),
+        &with_control(runs(5, 5, 0.10), runs(5, 1, 0.05)),
         NOW,
     );
     assert_eq!(
@@ -1774,4 +1775,42 @@ fn need_words_only_in_a_prompts_code_or_paths_are_no_coverage() {
         .map(|test| test.scenario_id.as_str())
         .collect();
     assert_eq!(selected, ["context_pressure"]);
+}
+
+#[test]
+fn a_small_loss_of_a_kept_condition_is_held_unless_shown_and_a_gross_one_rejects() {
+    let (baseline, candidate) = pair();
+    // One run of five lost on the control: within chance, the change stands.
+    let decided = decision::decide(
+        &plan(),
+        &baseline,
+        &candidate,
+        &with_control(runs(5, 5, 0.10), runs(5, 4, 0.05)),
+        NOW,
+    );
+    assert_eq!(
+        decided.preserved[0].computed_outcome,
+        ValidationOutcomeV1::NoImprovement,
+        "{}",
+        decided.preserved[0].reason
+    );
+    assert!(
+        decided.preserved[0].reason.contains("held"),
+        "{}",
+        decided.preserved[0].reason
+    );
+    // Three of five lost is a gross loss: rejected.
+    let decided = decision::decide(
+        &plan(),
+        &baseline,
+        &candidate,
+        &with_control(runs(5, 5, 0.10), runs(5, 2, 0.05)),
+        NOW,
+    );
+    assert_eq!(
+        decided.outcome,
+        DecisionOutcomeV1::Rejected,
+        "{}",
+        decided.reason
+    );
 }
