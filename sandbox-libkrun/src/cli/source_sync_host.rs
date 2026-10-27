@@ -109,14 +109,21 @@ fn coalesce_paths(paths: Vec<PathBuf>, root: &Path) -> Vec<PathBuf> {
         .collect();
     unique.sort_by_key(|path| path.components().count());
 
-    let mut selected: Vec<PathBuf> = Vec::new();
+    // A directory resend re-sends what exists but cannot express a removed
+    // child, so a child collapses only if it still exists or its parent was
+    // removed too (that Remove covers the whole subtree).
+    let mut selected: Vec<(PathBuf, bool)> = Vec::new();
     for path in unique {
-        if selected.iter().any(|parent| path.starts_with(parent)) {
+        let gone = std::fs::symlink_metadata(&path).is_err();
+        if selected
+            .iter()
+            .any(|(parent, parent_gone)| path.starts_with(parent) && (*parent_gone || !gone))
+        {
             continue;
         }
-        selected.push(path);
+        selected.push((path, gone));
     }
-    selected
+    selected.into_iter().map(|(path, _)| path).collect()
 }
 
 fn send_current_entry(stream: &mut UnixStream, root: &Path, path: &Path) -> io::Result<()> {
@@ -303,6 +310,29 @@ mod tests {
         ];
 
         assert_eq!(coalesce_paths(paths, root), vec![root.join("src")]);
+    }
+
+    /// A directory resend cannot say that a child is gone, so a removed child
+    /// of a directory that still exists keeps its own entry (a Remove); under
+    /// a removed directory it collapses, as that Remove covers it.
+    #[test]
+    fn removed_children_are_not_collapsed_under_an_existing_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(root.join("src/kept.ts"), "").unwrap();
+        let paths = vec![
+            root.join("src/old.ts"),
+            root.join("src"),
+            root.join("src/kept.ts"),
+            root.join("gone/child.ts"),
+            root.join("gone"),
+        ];
+
+        assert_eq!(
+            coalesce_paths(paths, &root),
+            vec![root.join("gone"), root.join("src"), root.join("src/old.ts")]
+        );
     }
 
     #[test]
