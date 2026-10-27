@@ -129,7 +129,7 @@ pub struct ExecRequest {
     /// smaller value (e.g. 10_000) for probes and version checks.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
-    /// Working directory inside the sandbox; image default when omitted.
+    /// Working directory inside the sandbox; `/` when omitted.
     #[serde(default)]
     pub workdir: Option<String>,
 }

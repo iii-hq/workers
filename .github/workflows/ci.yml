@@ -512,7 +512,7 @@ jobs:
       - name: Contract drift check
         run: |
           set -euo pipefail
-          for f in sandbox_error_codes.json wire_examples.json; do
+          for f in sandbox_error_codes.json wire_examples.json operation_schemas.json; do
             curl -fsSL "https://raw.githubusercontent.com/iii-hq/iii/main/crates/iii-sandbox-contract/tests/fixtures/$f" \
               | diff -u - "tests/fixtures/$f"
           done
