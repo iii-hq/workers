@@ -15,32 +15,45 @@ use super::symlinks;
 /// 1. Check local resolution chain (env var, `~/.iii/lib/`, system paths)
 /// 2. Extract from embedded bytes (compile-time `embed-libkrunfw` feature)
 ///
+/// A copy in `~/.iii/lib/` that differs from the embedded bytes (another build's
+/// firmware; the macOS name carries no version) is replaced by the embedded one.
+///
 /// Fails closed when neither has it; nothing is downloaded.
 pub async fn ensure_libkrunfw() -> anyhow::Result<PathBuf> {
+    ensure_libkrunfw_from(super::libkrunfw_bytes::LIBKRUNFW_BYTES).await
+}
+
+async fn ensure_libkrunfw_from(bytes: &[u8]) -> anyhow::Result<PathBuf> {
+    let home_lib = dirs::home_dir().map(|h| h.join(".iii").join("lib"));
+    let filename = libkrunfw_filename();
+
     if let Some(dir) = resolve_libkrunfw_dir() {
-        tracing::debug!(dir = %dir.display(), "libkrunfw found via resolution chain");
-        return Ok(dir);
+        let ours = !bytes.is_empty() && Some(&dir) == home_lib.as_ref();
+        if !ours || tokio::fs::read(dir.join(&filename)).await.ok().as_deref() == Some(bytes) {
+            tracing::debug!(dir = %dir.display(), "libkrunfw found via resolution chain");
+            return Ok(dir);
+        }
+        tracing::info!(dir = %dir.display(), "replacing libkrunfw extracted by another build");
     }
 
-    let bytes = super::libkrunfw_bytes::LIBKRUNFW_BYTES;
     if !bytes.is_empty() {
-        let lib_dir = dirs::home_dir()
-            .ok_or_else(|| anyhow::anyhow!("cannot determine home directory"))?
-            .join(".iii")
-            .join("lib");
+        let lib_dir = home_lib.ok_or_else(|| anyhow::anyhow!("cannot determine home directory"))?;
         tokio::fs::create_dir_all(&lib_dir).await?;
 
-        let filename = libkrunfw_filename();
         let dest = lib_dir.join(&filename);
+        // Write aside, then rename: a running VM keeps the old inode, and macOS kills a
+        // process that loads a signed dylib rewritten in place.
+        let tmp = lib_dir.join(format!(".{filename}.{}", std::process::id()));
 
         tracing::info!("extracting embedded libkrunfw to {}", dest.display());
-        tokio::fs::write(&dest, bytes).await?;
+        tokio::fs::write(&tmp, bytes).await?;
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))?;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
         }
+        tokio::fs::rename(&tmp, &dest).await?;
 
         #[cfg(unix)]
         symlinks::create_libkrunfw_symlinks(&lib_dir);
@@ -92,9 +105,7 @@ pub async fn ensure_init_binary() -> anyhow::Result<PathBuf> {
     )
 }
 
-// Both tests check what a build WITHOUT the embed does; with both embeds on this
-// module would be empty and its helpers dead code under `clippy -D warnings`.
-#[cfg(all(test, any(not(has_libkrunfw), not(feature = "embed-init"))))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::cli::test_support::lock_home;
@@ -127,6 +138,29 @@ mod tests {
             .build()
             .unwrap()
             .block_on(f)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_libkrunfw_replaces_a_copy_extracted_by_another_build() {
+        use std::os::unix::fs::MetadataExt;
+        let _g = lock_home();
+        with_clean_env(|| {
+            let lib = dirs::home_dir().unwrap().join(".iii").join("lib");
+            std::fs::create_dir_all(&lib).unwrap();
+            let file = lib.join(libkrunfw_filename());
+            std::fs::write(&file, b"old firmware").unwrap();
+
+            assert_eq!(
+                block_on(ensure_libkrunfw_from(b"new firmware")).unwrap(),
+                lib
+            );
+            assert_eq!(std::fs::read(&file).unwrap(), b"new firmware");
+            // A matching copy is left alone.
+            let ino = std::fs::metadata(&file).unwrap().ino();
+            block_on(ensure_libkrunfw_from(b"new firmware")).unwrap();
+            assert_eq!(std::fs::metadata(&file).unwrap().ino(), ino);
+        });
     }
 
     #[cfg(not(has_libkrunfw))]

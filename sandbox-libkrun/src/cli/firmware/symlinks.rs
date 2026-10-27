@@ -58,7 +58,7 @@ mod tests {
         } else {
             assert_eq!(pairs.len(), 2);
             assert_eq!(pairs[0].0, "libkrunfw.so.5");
-            assert_eq!(pairs[0].1, "libkrunfw.so.5.2.1");
+            assert_eq!(pairs[0].1, "libkrunfw.so.5.6.2");
             assert_eq!(pairs[1].0, "libkrunfw.so");
             assert_eq!(pairs[1].1, "libkrunfw.so.5");
         }

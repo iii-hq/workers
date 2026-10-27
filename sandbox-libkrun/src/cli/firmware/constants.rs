@@ -6,7 +6,7 @@
 //! The VMM (msb_krun) is compiled directly as a Rust dependency.
 
 /// libkrunfw release version.
-pub const LIBKRUNFW_VERSION: &str = "5.2.1";
+pub const LIBKRUNFW_VERSION: &str = "5.6.2";
 
 /// libkrunfw ABI version (soname major).
 pub const LIBKRUNFW_ABI: &str = "5";
@@ -14,7 +14,7 @@ pub const LIBKRUNFW_ABI: &str = "5";
 /// Returns the platform-specific libkrunfw filename (the installed soname).
 ///
 /// - macOS: `libkrunfw.5.dylib`
-/// - Linux: `libkrunfw.so.5.2.1`
+/// - Linux: `libkrunfw.so.5.6.2`
 pub fn libkrunfw_filename() -> String {
     if cfg!(target_os = "macos") {
         format!("libkrunfw.{LIBKRUNFW_ABI}.dylib")
@@ -29,7 +29,7 @@ mod tests {
 
     #[test]
     fn test_libkrunfw_version_constants() {
-        assert_eq!(LIBKRUNFW_VERSION, "5.2.1");
+        assert_eq!(LIBKRUNFW_VERSION, "5.6.2");
         assert_eq!(LIBKRUNFW_ABI, "5");
     }
 
@@ -39,7 +39,7 @@ mod tests {
         if cfg!(target_os = "macos") {
             assert_eq!(name, "libkrunfw.5.dylib");
         } else {
-            assert_eq!(name, "libkrunfw.so.5.2.1");
+            assert_eq!(name, "libkrunfw.so.5.6.2");
         }
     }
 }

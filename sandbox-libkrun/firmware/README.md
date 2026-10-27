@@ -5,9 +5,9 @@ with `--features embed-libkrunfw`.
 
 | | |
 |---|---|
-| libkrunfw version | 5.2.1 |
+| libkrunfw version | 5.6.2 |
 | ABI | 5 |
-| Guest kernel | 6.12.68 |
+| Guest kernel | 6.12.109 |
 
 | File | Platform |
 |---|---|
@@ -35,12 +35,25 @@ The same check runs in `tests/firmware_check.rs`.
 
 ## Rebuilding a blob
 
-Upstream is <https://github.com/containers/libkrunfw>, tag `v5.2.1`.
+Upstream is <https://github.com/libkrun/libkrunfw> (formerly
+`containers/libkrunfw`), tag `v5.6.2`. The blobs come from that release's
+assets; check each download against the sha256 GitHub lists for it.
 
-1. Build on the target platform (the Linux blobs on Linux, the dylib on macOS)
-   following the upstream README (`make`).
-2. Copy the resulting shared library over the matching file here, keeping the
-   name from the table above.
+- Linux: `libkrunfw-x86_64.tgz` and `libkrunfw-aarch64.tgz` each hold
+  `lib/<arch>-linux-gnu/libkrunfw.so.5.6.2`. Copy that file over
+  `libkrunfw-linux-<arch>.so`.
+- macOS: `libkrunfw-prebuilt-aarch64.tgz` holds `libkrunfw/kernel.c` (the
+  aarch64 guest kernel as a C array). On an Apple Silicon Mac, compile it
+  the way its Makefile does, pinning the deployment target so older macOS
+  loads it, and copy the result over `libkrunfw-darwin-aarch64.dylib`:
+
+  ```sh
+  /usr/bin/cc -mmacosx-version-min=14.0 -fPIC -DABI_VERSION=5 -shared \
+    -Wl,-install_name,libkrunfw.5.dylib -o libkrunfw.5.dylib libkrunfw/kernel.c
+  ```
+
+Or build from source on the target platform following the upstream README
+(`make`) and copy the shared library over the matching file here.
 
 ## Refreshing `SHA256SUMS`
 
