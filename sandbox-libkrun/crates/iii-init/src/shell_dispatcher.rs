@@ -42,7 +42,7 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -94,13 +94,18 @@ pub(crate) struct Window {
     /// Frames it may still send, and whether the host cancelled the session.
     state: Mutex<(u32, bool)>,
     granted: Condvar,
+    /// An eventfd that `cancel` makes readable, so an output stream waiting
+    /// in `poll` wakes at once. `None` if none could be opened.
+    cancel_fd: Option<OwnedFd>,
 }
 
 impl Window {
     pub(crate) fn new(credit: u32) -> Arc<Self> {
+        let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC) };
         Arc::new(Self {
             state: Mutex::new((credit, false)),
             granted: Condvar::new(),
+            cancel_fd: (fd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(fd) }),
         })
     }
 
@@ -127,6 +132,10 @@ impl Window {
     pub(crate) fn cancel(&self) {
         self.state.lock().expect("window mutex poisoned").1 = true;
         self.granted.notify_all();
+        if let Some(fd) = &self.cancel_fd {
+            let one = 1u64;
+            unsafe { libc::write(fd.as_raw_fd(), (&one as *const u64).cast(), 8) };
+        }
     }
 
     fn cancelled(&self) -> bool {
@@ -1065,7 +1074,8 @@ enum OutputKind {
     Stderr,
 }
 
-/// How often an idle output stream checks whether the host cancelled it.
+/// How often an idle output stream checks whether the host cancelled it,
+/// when its window has no eventfd to wake it.
 const CANCEL_POLL_MS: libc::c_int = 100;
 
 fn stream_fd<R: Read + AsRawFd>(
@@ -1077,21 +1087,26 @@ fn stream_fd<R: Read + AsRawFd>(
 ) {
     let mut buf = vec![0u8; IO_CHUNK_SIZE];
     loop {
-        // Wait for output in slices: a process the kill cannot reach (outside
-        // the group) may hold the pipe open, and the host's cancel must still
-        // end the stream, so the waiter can send `Exited`.
-        let mut pfd = libc::pollfd {
-            fd: src.as_raw_fd(),
+        // Wait for output or the host's cancel: a process the kill cannot
+        // reach (outside the group) may hold the pipe open, and the cancel
+        // must still end the stream, so the waiter can send `Exited`.
+        let (cancel_fd, timeout) = match &window.cancel_fd {
+            Some(fd) => (fd.as_raw_fd(), -1),
+            None => (-1, CANCEL_POLL_MS),
+        };
+        // `poll` skips a negative fd.
+        let mut pfds = [src.as_raw_fd(), cancel_fd].map(|fd| libc::pollfd {
+            fd,
             events: libc::POLLIN,
             revents: 0,
-        };
-        let ready = unsafe { libc::poll(&mut pfd, 1, CANCEL_POLL_MS) };
+        });
+        let ready = unsafe { libc::poll(pfds.as_mut_ptr(), 2, timeout) };
         let interrupted =
             ready < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted;
+        if window.cancelled() {
+            break;
+        }
         if ready == 0 || interrupted {
-            if window.cancelled() {
-                break;
-            }
             continue;
         }
         match src.read(&mut buf) {
