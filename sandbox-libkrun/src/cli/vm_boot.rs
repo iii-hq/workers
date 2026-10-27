@@ -694,10 +694,13 @@ fn boot_vm(
             // released automatically when this __vm-boot process exits.
             // ponytail: flock is per-host; a cross-host lock manager only if
             // workers ever share storage across machines.
+            use std::os::unix::fs::OpenOptionsExt;
             use std::os::unix::io::AsRawFd;
+            // The upper sits in a guest-writable dir: never follow a link there.
             match std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
+                .custom_flags(libc::O_NOFOLLOW)
                 .open(&upper)
             {
                 Ok(lock) => {

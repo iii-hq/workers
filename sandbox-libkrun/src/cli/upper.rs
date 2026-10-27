@@ -62,9 +62,12 @@ pub fn has_golden() -> bool {
 /// the embedded golden on first call. Idempotent: an existing image is
 /// returned untouched (that's where the worker's persisted deps live).
 /// Returns the image path to attach as `/dev/vdb`.
+///
+/// The guest can write this dir, so anything at `dest` that is not a regular
+/// file (a symlink to another worker's upper) is replaced, never followed.
 pub fn ensure_upper_ext4(managed_dir: &Path) -> io::Result<PathBuf> {
     let dest = managed_dir.join(UPPER_NAME);
-    if dest.exists() {
+    if std::fs::symlink_metadata(&dest).is_ok_and(|m| m.file_type().is_file()) {
         return Ok(dest);
     }
     std::fs::create_dir_all(managed_dir)?;
@@ -266,6 +269,29 @@ mod tests {
         assert_eq!(path, again);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A guest that replaced its upper with a symlink to another worker's
+    /// upper must get a fresh image, not the other worker's disk.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_upper_is_replaced_not_followed() {
+        let t = tempfile::tempdir().unwrap();
+        let victim = t.path().join("other-worker-upper.ext4");
+        std::fs::write(&victim, b"victim").unwrap();
+        let managed = t.path().join("managed");
+        std::fs::create_dir_all(&managed).unwrap();
+        std::os::unix::fs::symlink(&victim, managed.join(UPPER_NAME)).unwrap();
+
+        let path = ensure_upper_ext4(&managed).unwrap();
+
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_file()
+        );
+        assert_eq!(std::fs::read(&victim).unwrap(), b"victim");
     }
 
     #[test]
