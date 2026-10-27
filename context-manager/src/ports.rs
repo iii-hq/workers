@@ -13,7 +13,7 @@ use tokio::sync::RwLock;
 
 use crate::config::WorkerConfig;
 use crate::configuration::ConfigCell;
-use crate::types::Model;
+use crate::types::{AgentFunction, AgentMessage, Model};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelBudget {
@@ -32,6 +32,20 @@ pub trait ModelResolver: Send + Sync {
         provider: Option<&str>,
         id: &str,
     ) -> Result<Option<ModelBudget>, String>;
+
+    /// The prompt tokens the model's provider counts for this request
+    /// (`router::count_tokens`). `Err` when nothing can count it; callers
+    /// keep their own estimate.
+    async fn count_prompt_tokens(
+        &self,
+        _provider: Option<&str>,
+        _id: &str,
+        _system_prompt: &str,
+        _tools: &[AgentFunction],
+        _messages: &[AgentMessage],
+    ) -> Result<u64, String> {
+        Err("no prompt token counter".into())
+    }
 }
 
 /// One summariser call. The core renders the prompts (template,
