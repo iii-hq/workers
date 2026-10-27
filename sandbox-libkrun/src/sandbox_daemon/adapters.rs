@@ -31,6 +31,10 @@ const BOOT_SOCKET_TIMEOUT: Duration = Duration::from_secs(30);
 /// Calls that should fail fast (probes, version checks, "is this
 /// service up") should still pass an explicit `timeout_ms`.
 pub const DEFAULT_EXEC_TIMEOUT_MS: u64 = 300_000;
+/// How long a create waits for the guest once the relay is up: the default
+/// exec deadline, which covered a slow boot when the first exec paid for it.
+/// A VM that dies closes the relay, so it fails the create at once.
+const GUEST_READY_TIMEOUT: Duration = Duration::from_millis(DEFAULT_EXEC_TIMEOUT_MS);
 /// Grace between SIGTERM and SIGKILL. Kept short because the sandbox VM
 /// is ephemeral — nothing needs to flush to persistent storage. Values
 /// larger than a few hundred ms directly translate into user-visible
@@ -381,7 +385,7 @@ impl VmLauncher for VmBootLauncher {
         // the guest itself, so the first exec's deadline does not pay for the
         // boot and a guest that never comes up fails the create.
         let t_guest = Instant::now();
-        guest_answers(&sock, BOOT_SOCKET_TIMEOUT)
+        guest_answers(&sock, GUEST_READY_TIMEOUT)
             .await
             .map_err(|e| {
                 let hint = read_stderr_tail(&log_path);
@@ -939,6 +943,22 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("no answer"), "{err}");
+    }
+
+    /// The long readiness bound never holds a create for a VM that died: its
+    /// relay closes, and the probe fails at once.
+    #[tokio::test]
+    async fn a_closed_relay_fails_readiness_at_once() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("shell.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::thread::spawn(move || drop(listener.accept()));
+        let started = Instant::now();
+        let err = guest_answers(&sock, GUEST_READY_TIMEOUT).await.unwrap_err();
+        assert!(!err.contains("no answer"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5), "{err}");
     }
 
     #[test]
