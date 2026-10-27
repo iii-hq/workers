@@ -134,9 +134,11 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
         setInstalling(false)
         // The add may have actually landed even though the call rejected
         // (e.g. a late timeout) — re-check before surfacing the error.
+        // Numbered before the read, so a re-read issued meanwhile wins.
+        const seq = ++reads.current.issued
         try {
           if (await checkHarnessPresent(client)) {
-            applyPresence(++reads.current.issued, true)
+            applyPresence(seq, true)
             setError(null)
             return
           }

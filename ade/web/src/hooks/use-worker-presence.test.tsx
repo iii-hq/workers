@@ -19,8 +19,12 @@ const client = vi.hoisted(() => {
     },
     registerTrigger: vi.fn(() => vi.fn()),
     // Every `engine::workers::list` read stays pending until the test
-    // resolves it, so replies can be delivered in any order.
-    trigger: vi.fn(() => new Promise<Reply>((resolve) => reads.push(resolve))),
+    // resolves it, so replies can be delivered in any order. An add fails.
+    trigger: vi.fn((fn: string) =>
+      fn === 'compose::add'
+        ? Promise.reject(new Error('timed out'))
+        : new Promise<Reply>((resolve) => reads.push(resolve)),
+    ),
   }
 })
 vi.mock('@/lib/iii-client', () => ({ getIiiClient: async () => client }))
@@ -87,5 +91,34 @@ describe('presence re-reads', () => {
       'harness',
     )
     expect(seen.at(-1)).toBe(true)
+  })
+
+  it('useHarnessStatus lets a re-read issued during the install re-check win', async () => {
+    client.handlers.clear()
+    client.reads.length = 0
+    let status: ReturnType<typeof useHarnessStatus> | undefined
+    function Probe() {
+      status = useHarnessStatus(true)
+      return null
+    }
+    const root = createRoot(document.createElement('div'))
+    await act(async () => root.render(<Probe />))
+    await flush()
+    await act(async () => client.reads.shift()?.(listed()))
+
+    // The add fails, so install re-checks presence; a workers-available
+    // event starts a newer read before that re-check answers.
+    await act(async () => status?.install())
+    await flush()
+    const [handler] = client.handlers.values()
+    handler?.({ event: 'worker_disconnected', worker_id: 'w-1' })
+    await flush()
+    expect(client.reads).toHaveLength(2)
+    const [recheck, newer] = client.reads.splice(0)
+    await act(async () => recheck?.(listed('harness')))
+    await act(async () => newer?.(listed()))
+
+    expect(status?.present).toBe(false)
+    act(() => root.unmount())
   })
 })
