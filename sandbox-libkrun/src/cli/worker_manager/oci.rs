@@ -432,7 +432,8 @@ const SETID_BITS: u32 = 0o6000;
 ///
 /// `media_type` is the layer descriptor's: uncompressed and gzip tar layers
 /// are supported (OCI spells gzip `tar+gzip`, Docker `tar.gzip`); anything
-/// else, zstd included, is refused by name.
+/// else, zstd included, is refused by name. Gzip or zstd magic bytes at the
+/// start of `data` override the label.
 pub fn extract_layer_with_limits(
     data: &[u8],
     media_type: &str,
@@ -441,13 +442,23 @@ pub fn extract_layer_with_limits(
     layer_count: usize,
     total_size: &mut u64,
 ) -> Result<()> {
-    let gzip = media_type.ends_with("tar+gzip") || media_type.ends_with("tar.gzip");
-    if !(gzip || media_type.ends_with("tar")) {
+    // A magic number in the bytes beats the label, as in containerd, so a
+    // gzip layer labelled plain `tar` still extracts.
+    let zstd = data.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]);
+    let gzip = data.starts_with(&[0x1f, 0x8b])
+        || media_type.ends_with("tar+gzip")
+        || media_type.ends_with("tar.gzip");
+    if zstd || !(gzip || media_type.ends_with("tar")) {
         anyhow::bail!(
-            "Layer {}/{}: unsupported layer media type {media_type:?} \
+            "Layer {}/{}: unsupported {} {media_type:?} \
              (only uncompressed and gzip tar layers can be extracted)",
             layer_index + 1,
-            layer_count
+            layer_count,
+            if zstd {
+                "zstd layer"
+            } else {
+                "layer media type"
+            }
         );
     }
 
@@ -1975,7 +1986,8 @@ mod tests {
     }
 
     /// Uncompressed layers are valid OCI and Docker layers; they used to fail
-    /// with a gzip header error because every layer went through gunzip.
+    /// with a gzip header error because every layer went through gunzip. A
+    /// gzip layer labelled plain `tar` is still read as gzip.
     #[test]
     fn extract_layer_reads_uncompressed_and_docker_gzip_layers() {
         use oci_client::manifest::{
@@ -1991,6 +2003,7 @@ mod tests {
             (IMAGE_LAYER_MEDIA_TYPE, &raw_tar),
             (IMAGE_DOCKER_LAYER_TAR_MEDIA_TYPE, &raw_tar),
             (IMAGE_DOCKER_LAYER_GZIP_MEDIA_TYPE, &gzip),
+            (IMAGE_LAYER_MEDIA_TYPE, &gzip),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let mut total_size = 0u64;
@@ -2002,15 +2015,19 @@ mod tests {
 
     #[test]
     fn extract_layer_rejects_unsupported_media_types_by_name() {
-        let layer = layer_with(|b| append_empty_file(b, "f"));
-        for media_type in [
-            "application/vnd.oci.image.layer.v1.tar+zstd",
-            "application/vnd.oci.image.layer.v1.tar+gzip+encrypted",
+        let zstd: &[u8] = &[0x28, 0xb5, 0x2f, 0xfd, 0, 0];
+        for (media_type, data) in [
+            ("application/vnd.oci.image.layer.v1.tar+zstd", zstd),
+            ("application/vnd.oci.image.layer.v1.tar", zstd),
+            (
+                "application/vnd.oci.image.layer.v1.tar+gzip+encrypted",
+                &b"ciphertext"[..],
+            ),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let mut total_size = 0u64;
             let err =
-                extract_layer_with_limits(&layer, media_type, dir.path(), 0, 1, &mut total_size)
+                extract_layer_with_limits(data, media_type, dir.path(), 0, 1, &mut total_size)
                     .expect_err(media_type);
             assert!(err.to_string().contains(media_type), "got: {err}");
         }
