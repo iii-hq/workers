@@ -332,6 +332,36 @@ fn mv_overwrite_true_replaces_dst() {
     assert_eq!(std::fs::read(&dst).unwrap(), b"A");
 }
 
+/// A cross-filesystem move keeps a symlink a symlink instead of copying
+/// its target's bytes. Needs /dev/shm on another filesystem than TMPDIR.
+#[test]
+fn mv_across_filesystems_keeps_a_symlink() {
+    use std::os::unix::fs::MetadataExt;
+    let src_dir = tmpdir();
+    let Ok(dst_dir) = tempfile::tempdir_in("/dev/shm") else {
+        eprintln!("[skip] mv_across_filesystems_keeps_a_symlink: no /dev/shm");
+        return;
+    };
+    let dev = |p: &std::path::Path| std::fs::metadata(p).unwrap().dev();
+    if dev(src_dir.path()) == dev(dst_dir.path()) {
+        eprintln!("[skip] mv_across_filesystems_keeps_a_symlink: same filesystem");
+        return;
+    }
+    let target = src_dir.path().join("target");
+    std::fs::write(&target, b"T").unwrap();
+    let src = src_dir.path().join("link");
+    std::os::unix::fs::symlink(&target, &src).unwrap();
+    let dst = dst_dir.path().join("link");
+    ops::mv(
+        src.to_string_lossy().into(),
+        dst.to_string_lossy().into(),
+        false,
+    )
+    .unwrap();
+    assert!(std::fs::symlink_metadata(&src).is_err(), "source link left");
+    assert_eq!(std::fs::read_link(&dst).unwrap(), target);
+}
+
 /// `overwrite=false` is enforced by the rename itself, not a prior check:
 /// a dst that `exists()` misses (a dangling symlink) is not replaced either.
 #[test]

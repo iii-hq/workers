@@ -486,9 +486,14 @@ pub fn mv(src: String, dst: String, overwrite: bool) -> FsCallResult {
     match rename(src_p, dst_p) {
         Ok(()) => Ok(FsResult::Mv { moved: true }),
         Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
-            // Cross-fs: copy to temp sibling of dst, then rename.
+            // Cross-fs: copy to temp sibling of dst, then rename. A symlink
+            // is recreated, not followed (read_link fails on anything else).
             let tmp = temp_sibling(dst_p);
-            std::fs::copy(src_p, &tmp).map_err(|e| FsError::from_io(&dst, e))?;
+            match std::fs::read_link(src_p) {
+                Ok(target) => std::os::unix::fs::symlink(target, &tmp),
+                Err(_) => std::fs::copy(src_p, &tmp).map(drop),
+            }
+            .map_err(|e| FsError::from_io(&dst, e))?;
             if let Err(e) = rename(&tmp, dst_p) {
                 let _ = std::fs::remove_file(&tmp);
                 return Err(FsError::from_io(&dst, e));
