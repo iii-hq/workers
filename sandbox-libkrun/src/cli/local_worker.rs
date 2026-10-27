@@ -15,6 +15,22 @@ use super::rootfs::clone_rootfs;
 
 const PREPARED_MARKER_VERSION: &str = "workspace-copy-in-v1";
 
+/// Re-sync deletions: /workspace lives on the persistent ext4 upper and tar -x
+/// only adds/overwrites (never deletes), so a source file removed on the host
+/// would keep running across a watcher restart. Remove every file outside the
+/// VM-local dep/build dirs, at any depth like the tar excludes (they are not
+/// re-copied and install is skipped once prepared, so a nested
+/// `service/node_modules` must persist), then the directories left empty, and
+/// re-extract the current source. On first boot /workspace is empty so this
+/// is a no-op. (Both name lists MUST match the tar --exclude list.)
+const WORKSPACE_RESYNC_CLEANUP: &str = r#"find /workspace -mindepth 1 \( -name node_modules -o -name .venv -o -name target \
+  -o -name dist -o -name __pycache__ -o -name .pytest_cache -o -name .next -o -name .git \) -prune \
+  -o ! -type d -exec rm -f {} +
+find /workspace -mindepth 1 -depth -type d -empty \
+  ! -path '*/node_modules/*' ! -path '*/.venv/*' ! -path '*/target/*' ! -path '*/dist/*' \
+  ! -path '*/__pycache__/*' ! -path '*/.pytest_cache/*' ! -path '*/.next/*' ! -path '*/.git/*' \
+  -exec rmdir {} \;"#;
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Shared helpers
 // ──────────────────────────────────────────────────────────────────────────────
@@ -135,18 +151,12 @@ fi
 if ! command -v tar >/dev/null 2>&1; then
   echo "iii: ERROR workspace copy-in requires 'tar' in the base image" >&2
   exit 1
-fi
-# Re-sync deletions: /workspace lives on the persistent ext4 upper and tar -x
-# only adds/overwrites (never deletes), so a source file removed on the host
-# would keep running across a watcher restart. Clear every top-level entry
-# EXCEPT the VM-local dep/build dirs (excluded from the copy, must persist),
-# then re-extract the current source. On first boot /workspace is empty so this
-# is a no-op. (Exclusion list MUST match the tar --exclude list below.)
-find /workspace -mindepth 1 -maxdepth 1 \
-  ! -name node_modules ! -name .venv ! -name target ! -name dist \
-  ! -name __pycache__ ! -name .pytest_cache ! -name .next ! -name .git \
-  -exec rm -rf {} +
-# Copy host source into the VM-local /workspace, excluding dep/build dirs (at
+fi"#
+            .to_string(),
+        );
+        parts.push(WORKSPACE_RESYNC_CLEANUP.to_string());
+        parts.push(
+            r#"# Copy host source into the VM-local /workspace, excluding dep/build dirs (at
 # any depth) so VM-local installs persist across a re-copy and host clutter
 # isn't pulled in. Only /mnt/host-src is read; the host project is never
 # written, so no empty dep folders appear there.
@@ -921,6 +931,43 @@ mod tests {
         assert!(prepared_marker_matches_current_workspace(&marker));
     }
 
+    /// Install is skipped once the marker exists, so the restart cleanup must
+    /// keep dep dirs at any depth (a monorepo's `service/node_modules`), the
+    /// same names tar excludes, while still dropping files the host deleted.
+    #[test]
+    fn workspace_cleanup_keeps_nested_dep_dirs() {
+        let temp = tempfile::tempdir().unwrap();
+        let ws = temp.path();
+        for file in [
+            "service/node_modules/dep/index.js",
+            "service/old.js",
+            "gone/sub/old.js",
+            "node_modules/top.js",
+            "pkg/.venv/lib/site.py",
+        ] {
+            std::fs::create_dir_all(ws.join(file).parent().unwrap()).unwrap();
+            std::fs::write(ws.join(file), "x").unwrap();
+        }
+        std::fs::create_dir_all(ws.join("pkg/.venv/include")).unwrap();
+
+        // Run from inside the workspace so the temp dir's own path cannot
+        // match a dep-dir pattern.
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(WORKSPACE_RESYNC_CLEANUP.replace("/workspace", "."))
+            .current_dir(ws)
+            .status()
+            .unwrap();
+
+        assert!(status.success());
+        assert!(ws.join("service/node_modules/dep/index.js").is_file());
+        assert!(ws.join("node_modules/top.js").is_file());
+        assert!(ws.join("pkg/.venv/lib/site.py").is_file());
+        assert!(ws.join("pkg/.venv/include").is_dir());
+        assert!(!ws.join("service/old.js").exists());
+        assert!(!ws.join("gone").exists());
+    }
+
     /// In legacy mode the marker sits on the guest root: a planted symlink
     /// must not be followed and a FIFO must not block the daemon.
     #[test]
@@ -970,8 +1017,7 @@ mod tests {
         assert!(script.contains("tar -cf -"));
         // Re-sync deletions: clear /workspace (minus dep dirs) before extract so
         // host-deleted files don't keep running on the persistent upper.
-        assert!(script.contains("find /workspace -mindepth 1 -maxdepth 1"));
-        assert!(script.contains("! -name node_modules"));
+        assert!(script.contains(WORKSPACE_RESYNC_CLEANUP));
         // Host-untouched: the unmount is FATAL, not best-effort.
         assert!(script.contains("refusing to run with host source writable"));
         assert!(
