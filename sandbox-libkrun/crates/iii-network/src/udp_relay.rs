@@ -24,7 +24,6 @@ const SESSION_TIMEOUT: Duration = Duration::from_secs(60);
 /// guest cannot drain the host's shared ephemeral port range.
 const MAX_SESSIONS: usize = 256;
 const OUTBOUND_CHANNEL_CAPACITY: usize = 64;
-const RECV_BUF_SIZE: usize = 4096;
 const ETH_HDR_LEN: usize = 14;
 const IPV4_HDR_LEN: usize = 20;
 const UDP_HDR_LEN: usize = 8;
@@ -146,7 +145,9 @@ async fn udp_relay_task(
     let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0u16)).await?;
     socket.connect(guest_dst).await?;
 
-    let mut recv_buf = vec![0u8; RECV_BUF_SIZE];
+    // Room for any IPv4 datagram: `recv` truncates silently otherwise. One
+    // too big for the guest's rx buffers is dropped, with a log, by the backend.
+    let mut recv_buf = vec![0u8; MAX_UDP_PAYLOAD];
 
     loop {
         tokio::select! {
@@ -537,6 +538,36 @@ mod tests {
             .expect("relay task must exit once the outbound channel closes")
             .unwrap()
             .unwrap();
+    }
+
+    /// A reply larger than a small receive buffer must arrive whole, never
+    /// as a well-formed frame carrying a silently truncated prefix.
+    #[tokio::test]
+    async fn relay_task_delivers_large_datagram_whole() {
+        let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let server_addr = server.local_addr().unwrap();
+        let guest_src: SocketAddr = (Ipv4Addr::new(100, 96, 0, 2), 40000).into();
+        let shared = Arc::new(SharedState::new(64));
+        let (outbound_tx, outbound_rx) = mpsc::channel(OUTBOUND_CHANNEL_CAPACITY);
+        let _task = tokio::spawn(udp_relay_task(
+            outbound_rx,
+            guest_src,
+            server_addr,
+            shared.clone(),
+            EthernetAddress([0x02, 0, 0, 0, 0, 1]),
+            EthernetAddress([0x02, 0, 0, 0, 0, 2]),
+        ));
+
+        outbound_tx.send(Bytes::from_static(b"ping")).await.unwrap();
+        let mut buf = [0u8; 64];
+        let (_, peer) = server.recv_from(&mut buf).await.unwrap();
+        let reply: Vec<u8> = (0..9000u32).map(|i| i as u8).collect();
+        server.send_to(&reply, peer).await.unwrap();
+
+        let frame = wait_for_rx_frame(&shared).await;
+        let payload = extract_udp_payload(&frame).unwrap();
+        assert_eq!(payload.len(), reply.len(), "datagram was truncated");
+        assert_eq!(payload, &reply[..]);
     }
 
     /// When frame construction refuses (here: non-IPv4 guest address), no
