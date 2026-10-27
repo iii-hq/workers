@@ -1004,12 +1004,14 @@ fn boot_vm(
 
     // Capture an exit handle BEFORE `enter()` moves `vm`. SIGTERM or
     // SIGINT delivered to this __vm-boot process now triggers the
-    // VMM's clean shutdown path (event-loop reads the exit eventfd,
-    // notifies on_exit observers, `_exit`s with the current exit
-    // code) instead of the process being killed mid-guest-write.
-    // Without this, `stop → SIGTERM` from the host leaves the guest
-    // no chance to fsync or flush stdout logs; the on_exit closure
-    // installed above unlinks the shell socket.
+    // VMM's shutdown path (event-loop reads the exit eventfd, notifies
+    // on_exit observers, `_exit`s with the current exit code), so the
+    // on_exit closure installed above unlinks the shell socket.
+    // Nothing reaches the guest: the worker gets no SIGTERM and
+    // iii-init's sync-on-exit does not run, so guest writes still in
+    // its page cache (the ext4 upper) are lost.
+    // shortcut: there is no host-to-iii-init shutdown port; add one if a
+    // stop must flush the guest.
     //
     // Register the two signal streams SYNCHRONOUSLY before spawning
     // the awaiter task. Doing registration inside the spawned task
