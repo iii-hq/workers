@@ -2203,6 +2203,18 @@ pub async fn admit_execution(
             false,
         ));
     }
+    if state::get_config(&deps.iii)
+        .await?
+        .is_some_and(|stored| !stored.config.admit_executions)
+    {
+        return Ok((
+            not_admitted(
+                "automatic admission is off (config.admit_executions): a cycle starts only when asked",
+                None,
+            ),
+            false,
+        ));
+    }
     let claim = claim_of(
         &bundle,
         execution_id,

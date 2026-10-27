@@ -118,6 +118,15 @@ pub struct LoopConfigV1 {
     /// base commit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validation: Option<ValidationConfigV1>,
+    /// Whether a finished E2E execution nobody started from the loop opens
+    /// a cycle on its own. Off, executions (imported CI runs among them) are
+    /// data the loop reads, and a cycle starts only when a person asks.
+    #[serde(default = "admit_by_default")]
+    pub admit_executions: bool,
+}
+
+fn admit_by_default() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

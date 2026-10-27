@@ -1941,6 +1941,11 @@
         "additionalProperties": false,
         "description": "Everything a cycle needs to spend on the E2E. Nothing has a default: an unconfigured loop selects coverage but dispatches nothing.",
         "properties": {
+          "admit_executions": {
+            "default": true,
+            "description": "Whether a finished E2E execution nobody started from the loop opens a cycle on its own. Off, executions (imported CI runs among them) are data the loop reads, and a cycle starts only when a person asks.",
+            "type": "boolean"
+          },
           "budget": {
             "$ref": "#/definitions/CycleBudgetV1"
           },

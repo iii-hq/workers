@@ -491,6 +491,18 @@ export function LoopSettings({
                       'Must keep passing whatever the change; comma separated. They count toward the scenarios per cycle.',
                       true,
                     )}
+                    <SettingsField
+                      label="Start a cycle for every finished execution"
+                      description="Off, executions (imported CI runs among them) are data the loop reads, and a cycle starts only when you ask for one."
+                      controlSize="fit"
+                      renderControl={(props) => (
+                        <Switch
+                          {...props}
+                          checked={draft.admit_executions}
+                          onChange={(event) => set({ admit_executions: event.target.checked })}
+                        />
+                      )}
+                    />
                   </SettingsList>
                   {json === null ? (
                     <Button

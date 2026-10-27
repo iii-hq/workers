@@ -23,6 +23,8 @@ export interface ConfigDraft {
   max_candidates: string
   /** Control scenario ids, comma or newline separated. */
   controls: string
+  /** Whether a finished execution opens a cycle on its own. */
+  admit_executions: boolean
   /** Each optional section: `null` when off, else its fields as typed. */
   sections: Record<SectionId, Record<string, string> | null>
 }
@@ -135,6 +137,7 @@ const TOP_LEVEL = new Set([
   'min_effect',
   'budget',
   'controls',
+  'admit_executions',
   'judge',
   'candidate',
   'validation',
@@ -207,6 +210,8 @@ export const EMPTY_DRAFT: ConfigDraft = {
   max_calls: '',
   max_candidates: '',
   controls: '',
+  // A new loop starts cycles only when asked: executions are data.
+  admit_executions: false,
   sections: NO_SECTIONS,
 }
 
@@ -229,6 +234,7 @@ export function draftFromConfig(config: LoopConfig): ConfigDraft {
     max_calls: String(config.budget.max_calls),
     max_candidates: String(config.budget.max_candidates),
     controls: (config.controls ?? []).join(', '),
+    admit_executions: config.admit_executions ?? true,
     sections: {
       judge: sectionDraft('judge', config.judge),
       candidate: sectionDraft('candidate', config.candidate),
@@ -266,6 +272,8 @@ export function configFromDraft(draft: ConfigDraft): LoopConfig | null {
       .split(/[,\n]/)
       .map((control) => control.trim())
       .filter(Boolean),
+    // Absent is on (the backend's default): only off is written.
+    ...(draft.admit_executions ? {} : { admit_executions: false }),
     ...optional('judge', sectionValue('judge', draft.sections.judge) as JudgeConfig | undefined),
     ...optional('candidate', sectionValue('candidate', draft.sections.candidate) as CandidateConfig | undefined),
     ...optional('validation', sectionValue('validation', draft.sections.validation) as ValidationConfig | undefined),

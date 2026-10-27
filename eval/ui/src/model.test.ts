@@ -236,6 +236,12 @@ describe('loop config', () => {
     expect(validateConfig(CONFIG)).toBeNull()
   })
 
+  it('keeps automatic admission off through the form, and writes it only when off', () => {
+    const off = configFromDraft(draftFromConfig({ ...CONFIG, admit_executions: false }))
+    expect(off?.admit_executions).toBe(false)
+    expect('admit_executions' in (configFromDraft(draftFromConfig(CONFIG)) ?? {})).toBe(false)
+  })
+
   it('an empty draft saves nothing; it starts at 3 runs per side', () => {
     expect(EMPTY_DRAFT.runs_per_side).toBe('3')
     expect(configFromDraft(EMPTY_DRAFT)).toBeNull()

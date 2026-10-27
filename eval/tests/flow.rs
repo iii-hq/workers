@@ -1548,3 +1548,38 @@ fn h_evaluations(insight: &InsightV1) -> usize {
         .and_then(|count| count.parse().ok())
         .unwrap_or(0)
 }
+
+#[tokio::test]
+async fn with_admission_off_a_finished_execution_is_data_not_a_cycle() {
+    let h = Harness::start(World::new()).await;
+    let config = json!({
+        "subject": {"provider": "p", "model": "m"}, "where": "harness",
+        "runs_per_side": 1, "technical_retries": 0, "max_scenarios": 1,
+        "estimated_usd_per_run": 0.5,
+        "min_effect": {"tokens": 1000.0, "pass_rate_pp": 10.0},
+        "budget": {"max_spend_usd": 10.0, "max_duration_ms": 3_600_000,
+                   "max_calls": 10, "max_candidates": 1},
+        "admit_executions": false});
+    runtime::configure(
+        &h.deps,
+        serde_json::from_value(json!({"config": config})).unwrap(),
+    )
+    .await
+    .unwrap();
+    h.world()
+        .executions
+        .insert("imported".into(), bundle("imported", "", "passed", full()));
+    let answer = h.changed("imported").await;
+    assert!(!answer.admitted);
+    assert!(
+        answer.reason.contains("automatic admission is off"),
+        "{}",
+        answer.reason
+    );
+    h.drain().await;
+    assert_eq!(h.count(state::CYCLE_SCOPE), 0, "no cycle");
+    // Asked for, a cycle still starts from it.
+    let cycle_id = h.start_cycle(json!({"execution_id": "imported"})).await;
+    h.drain().await;
+    assert!(!h.cycle(&cycle_id).await.analyses.is_empty());
+}
