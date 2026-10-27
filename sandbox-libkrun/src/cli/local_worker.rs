@@ -19,8 +19,27 @@ const PREPARED_MARKER_VERSION: &str = "workspace-copy-in-v1";
 // Shared helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// In legacy mode the marker is on the guest root, so the guest may have
+/// planted a symlink (to `/dev/zero`, say), a FIFO or a huge file there:
+/// never follow it, never block on it, and read only a marker's worth.
 fn prepared_marker_matches_current_workspace(marker: &Path) -> bool {
-    std::fs::read_to_string(marker).is_ok_and(|contents| contents.trim() == PREPARED_MARKER_VERSION)
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let Ok(file) = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(marker)
+    else {
+        return false;
+    };
+    let mut contents = String::new();
+    file.metadata().is_ok_and(|meta| meta.is_file())
+        && file
+            .take(PREPARED_MARKER_VERSION.len() as u64 + 1)
+            .read_to_string(&mut contents)
+            .is_ok()
+        && contents.trim() == PREPARED_MARKER_VERSION
 }
 
 /// Write `dev-run.sh` (mode 0755) into the share and return its dir:
@@ -900,6 +919,22 @@ mod tests {
         std::fs::write(&marker, PREPARED_MARKER_VERSION).unwrap();
 
         assert!(prepared_marker_matches_current_workspace(&marker));
+    }
+
+    /// In legacy mode the marker sits on the guest root: a planted symlink
+    /// must not be followed and a FIFO must not block the daemon.
+    #[test]
+    fn prepared_marker_refuses_symlinks_and_fifos() {
+        let temp = tempfile::tempdir().unwrap();
+        let real = temp.path().join("real");
+        std::fs::write(&real, PREPARED_MARKER_VERSION).unwrap();
+        let marker = temp.path().join(".iii-prepared");
+        std::os::unix::fs::symlink(&real, &marker).unwrap();
+        assert!(!prepared_marker_matches_current_workspace(&marker));
+
+        std::fs::remove_file(&marker).unwrap();
+        nix::unistd::mkfifo(&marker, nix::sys::stat::Mode::S_IRWXU).unwrap();
+        assert!(!prepared_marker_matches_current_workspace(&marker));
     }
 
     #[test]
