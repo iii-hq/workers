@@ -102,11 +102,13 @@ pub fn build_libkrun_local_script(
     is_bundle: bool,
     overlay: bool,
 ) -> String {
-    let env_exports = build_env_exports(&project.env);
+    // The script never re-exports the manifest env: the VM env already holds
+    // it merged with the caller's overrides and the gateway rewrite. The
+    // system dirs go after PATH so a PATH from that env keeps precedence.
     let mut parts = vec![
         "set -e".to_string(),
         "export HOME=${HOME:-/root}".to_string(),
-        "export PATH=/usr/local/bin:/usr/bin:/bin:$PATH".to_string(),
+        "export PATH=${PATH:+$PATH:}/usr/local/bin:/usr/bin:/bin".to_string(),
         "export LANG=${LANG:-C.UTF-8}".to_string(),
     ];
 
@@ -236,33 +238,8 @@ fi"#
     // simple commands anyway, so single-command starts keep their PID
     // semantics.
     let quoted_run_cmd = format!("'{}'", project.run_cmd.replace('\'', "'\\''"));
-    parts.push(format!(
-        "{} && exec /bin/sh -c {}",
-        env_exports, quoted_run_cmd
-    ));
+    parts.push(format!("exec /bin/sh -c {quoted_run_cmd}"));
     parts.join("\n")
-}
-
-pub fn build_env_exports(env: &HashMap<String, String>) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    for (k, v) in env {
-        if k == "III_ENGINE_URL" || k == "III_URL" || k == "III_WORKER_NAME" {
-            continue;
-        }
-        if !k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') || k.is_empty() {
-            continue;
-        }
-        parts.push(format!("export {}='{}'", k, shell_escape(v)));
-    }
-    if parts.is_empty() {
-        "true".to_string()
-    } else {
-        parts.join(" && ")
-    }
-}
-
-pub fn shell_escape(s: &str) -> String {
-    s.replace('\'', "'\\''")
 }
 
 pub fn build_local_env(
@@ -922,6 +899,27 @@ mod tests {
         assert!(script.contains("touch /run/iii/source-ready"));
     }
 
+    /// The VM env already holds the manifest env with the caller's overrides
+    /// and the gateway rewrite applied; re-exporting the raw manifest values
+    /// in the script would revert both.
+    #[test]
+    fn build_libkrun_local_script_does_not_reexport_manifest_env() {
+        let project = ProjectInfo {
+            name: "test".to_string(),
+            kind: Some("typescript".to_string()),
+            setup_cmd: String::new(),
+            install_cmd: String::new(),
+            run_cmd: "node server.js".to_string(),
+            env: HashMap::from([("API_URL".to_string(), "http://localhost:3000".to_string())]),
+            base_image: None,
+        };
+        let script = build_libkrun_local_script(
+            &project, /*prepared=*/ true, /*is_bundle=*/ false, false,
+        );
+        assert!(!script.contains("API_URL"), "{script}");
+        assert!(script.ends_with("exec /bin/sh -c 'node server.js'"));
+    }
+
     #[test]
     fn current_prepared_marker_matches_copy_in_workspace() {
         let temp = tempfile::tempdir().unwrap();
@@ -1078,30 +1076,6 @@ mod tests {
         project_env.insert("III_WORKER_NAME".to_string(), "impostor".to_string());
         let env = build_local_env("ws://localhost:49134", "my-worker", &project_env);
         assert_eq!(env.get("III_WORKER_NAME").unwrap(), "my-worker");
-    }
-
-    #[test]
-    fn build_env_exports_excludes_engine_urls_and_worker_name() {
-        let mut env = HashMap::new();
-        env.insert(
-            "III_ENGINE_URL".to_string(),
-            "ws://localhost:49134".to_string(),
-        );
-        env.insert("III_URL".to_string(), "ws://localhost:49134".to_string());
-        env.insert("III_WORKER_NAME".to_string(), "my-worker".to_string());
-        env.insert("CUSTOM_VAR".to_string(), "custom-val".to_string());
-
-        let exports = build_env_exports(&env);
-        assert!(!exports.contains("III_ENGINE_URL"));
-        assert!(!exports.contains("III_URL"));
-        assert!(!exports.contains("III_WORKER_NAME"));
-        assert!(exports.contains("CUSTOM_VAR='custom-val'"));
-    }
-
-    #[test]
-    fn shell_escape_single_quote() {
-        let result = shell_escape("it's");
-        assert_eq!(result, "it'\\''s");
     }
 
     #[test]
