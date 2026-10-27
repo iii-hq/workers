@@ -17,6 +17,23 @@ containers:
   queue:
     worker: package://queue
     version: "0.21.26"
+    config_override:
+      queue_configs:
+        harness-turn:
+          type: fifo
+          message_group_field: session_id
+          concurrency: 10
+          max_retries: 3
+          backoff_ms: 1000
+          redeliver_on_engine_restart: true
+        harness-session-deletion:
+          type: fifo
+          message_group_field: operation_id
+          concurrency: 2
+          max_retries: 3
+          backoff_ms: 1000
+          timeout_ms: 600000
+          redeliver_on_engine_restart: true
   session-manager:
     worker: package://session-manager
     version: "1.0.35"

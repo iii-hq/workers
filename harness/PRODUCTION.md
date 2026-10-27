@@ -17,6 +17,10 @@ Set the environment's build configuration to:
 - one fixed replica for the application group;
 - no release command and no application healthcheck override.
 
+The two Harness queues are declared in the Compose because Cloud application
+configuration is immutable. Their definitions match Harness exactly, so boot
+can ensure them without attempting `configuration::set`.
+
 Cloud provisions the State Redis and Queue RabbitMQ resources. Review and
 confirm those resources in the deployment plan. It supplies configuration and
 observability through its managed engine; do not add those engine workers as
