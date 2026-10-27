@@ -332,6 +332,26 @@ fn mv_overwrite_true_replaces_dst() {
     assert_eq!(std::fs::read(&dst).unwrap(), b"A");
 }
 
+/// `overwrite=false` is enforced by the rename itself, not a prior check:
+/// a dst that `exists()` misses (a dangling symlink) is not replaced either.
+#[test]
+fn mv_overwrite_false_never_replaces_dst() {
+    let dir = tmpdir();
+    let src = dir.path().join("a");
+    let dst = dir.path().join("b");
+    std::fs::write(&src, b"A").unwrap();
+    std::os::unix::fs::symlink(dir.path().join("missing"), &dst).unwrap();
+    let err = ops::mv(
+        src.to_string_lossy().into(),
+        dst.to_string_lossy().into(),
+        false,
+    )
+    .unwrap_err();
+    assert_eq!(err.code, "S213");
+    assert!(src.exists(), "source should survive failed mv");
+    assert!(std::fs::symlink_metadata(&dst).unwrap().is_symlink());
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // write streaming
 // ──────────────────────────────────────────────────────────────────────────────

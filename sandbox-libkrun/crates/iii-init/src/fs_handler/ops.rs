@@ -49,6 +49,31 @@ pub(super) fn temp_sibling(target: &Path) -> std::path::PathBuf {
     t.into()
 }
 
+/// `rename` that fails with `EEXIST` instead of replacing an existing `dst`.
+/// virtio-fs passes `RENAME_NOREPLACE` through to the host (FUSE rename2),
+/// and overlayfs, ext4 and tmpfs support it natively.
+fn rename_noreplace(src: &Path, dst: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let src = std::ffi::CString::new(src.as_os_str().as_bytes())?;
+    let dst = std::ffi::CString::new(dst.as_os_str().as_bytes())?;
+    // The raw syscall: older musl has no renameat2 wrapper.
+    let res = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            src.as_ptr(),
+            libc::AT_FDCWD,
+            dst.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if res == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
 /// Match a glob `pattern` against a relative path with gitignore-style
 /// semantics:
 ///
@@ -445,17 +470,26 @@ pub fn mv(src: String, dst: String, overwrite: bool) -> FsCallResult {
     if !src_p.exists() {
         return Err(FsError::new("S211", format!("src not found: {src}")));
     }
+    // Fast path only: a dst created after this check is caught by the
+    // no-replace rename below.
     if dst_p.exists() && !overwrite {
         return Err(FsError::new("S213", format!("dst already exists: {dst}")));
     }
+    let rename = |from: &Path, to: &Path| {
+        if overwrite {
+            std::fs::rename(from, to)
+        } else {
+            rename_noreplace(from, to)
+        }
+    };
 
-    match std::fs::rename(src_p, dst_p) {
+    match rename(src_p, dst_p) {
         Ok(()) => Ok(FsResult::Mv { moved: true }),
         Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
             // Cross-fs: copy to temp sibling of dst, then rename.
             let tmp = temp_sibling(dst_p);
             std::fs::copy(src_p, &tmp).map_err(|e| FsError::from_io(&dst, e))?;
-            if let Err(e) = std::fs::rename(&tmp, dst_p) {
+            if let Err(e) = rename(&tmp, dst_p) {
                 let _ = std::fs::remove_file(&tmp);
                 return Err(FsError::from_io(&dst, e));
             }
