@@ -372,6 +372,7 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         &req.model,
         usable_budget,
         token_count,
+        request_overhead_tokens,
         &system_prompt,
         tools,
         &working,
@@ -512,11 +513,13 @@ const PROVIDER_COUNT_SHARE: u64 = 3;
 /// The budget, in estimate units, that keeps the provider's count of the
 /// request within `usable`: the window itself while the estimate is small,
 /// when nothing can count the request, or when the count is no larger.
+#[allow(clippy::too_many_arguments)]
 async fn gate_budget(
     deps: &Deps,
     model: &ModelInput,
     usable: u64,
     estimate: u64,
+    request_overhead_tokens: u64,
     system_prompt: &str,
     tools: &[AgentFunction],
     messages: &[AgentMessage],
@@ -524,6 +527,8 @@ async fn gate_budget(
     if messages.is_empty() || estimate.saturating_mul(PROVIDER_COUNT_SHARE) < usable {
         return usable;
     }
+    // The estimate carries the request overhead; the provider's count of
+    // the prompt, messages and tools does not.
     match deps
         .resolver
         .count_prompt_tokens(
@@ -534,6 +539,7 @@ async fn gate_budget(
             messages,
         )
         .await
+        .map(|counted| counted.saturating_add(request_overhead_tokens))
     {
         Ok(counted) if counted > estimate => {
             let budget = (u128::from(usable) * u128::from(estimate) / u128::from(counted)) as u64;
