@@ -195,8 +195,9 @@ pub fn agent_trigger_schema(language: Option<&ResponseLanguage>) -> AgentFunctio
                       when directory::search_functions is unavailable. \
                       Fixed-prefix inventory checks for a documented surface or after an install still apply. \
                       Before first use, get selected contracts with engine::functions::info. Ordinary calls in one \
-                      assistant response execute sequentially in content order. For independent same-function \
-                      work, use that function's supported bulk input."
+                      assistant response execute sequentially in content order. Put independent \
+                      calls in the same response (bulk input when the function offers one); split \
+                      responses only when a later call needs an earlier result."
                 .to_string(),
         parameters: json!({
             "type": "object",
@@ -629,8 +630,9 @@ mod tests {
         assert!(
             description.contains("one assistant response execute sequentially in content order")
         );
-        assert!(description.contains("independent same-function work"));
-        assert!(description.contains("supported bulk input"));
+        assert!(description.contains("Put independent calls in the same response"));
+        assert!(description.contains("bulk input when the function offers one"));
+        assert!(description.contains("only when a later call needs an earlier result"));
     }
 
     #[test]
