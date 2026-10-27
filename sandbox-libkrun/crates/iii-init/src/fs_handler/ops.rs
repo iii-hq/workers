@@ -726,7 +726,8 @@ fn collect_files_to_sed(
 /// - Per-file failures are isolated; the handler continues to the next
 ///   file and reports `success=false` in that entry's result.
 /// - Writes are atomic: content goes to a temp sibling and is renamed
-///   over the original only on success.
+///   over the original only on success. A file without a match is not
+///   rewritten.
 ///
 /// Returns `Err` for: bad regex (S217), empty literal pattern (S210),
 /// missing `path` form root (S211), invalid input form (S210), or
@@ -869,6 +870,16 @@ pub fn sed(
             output.push_str(&full_line[line.len()..]);
         }
 
+        if replacements == 0 {
+            results.push(FsSedFileResult {
+                path: file,
+                replacements: 0,
+                success: true,
+                error: None,
+            });
+            continue;
+        }
+
         // Atomic write-to-temp + rename. On any failure we report
         // per-file failure and leave the original intact.
         let tmp = temp_sibling(p);
@@ -881,6 +892,12 @@ pub fn sed(
                 .mode(0o600)
                 .open(&tmp)?;
             f.write_all(output.as_bytes())?;
+            // Keep the owner (before the mode: chown clears setuid bits).
+            // EPERM: only root may give a file away; it then stays ours.
+            match std::os::unix::fs::fchown(&f, Some(original_md.uid()), Some(original_md.gid())) {
+                Err(e) if e.raw_os_error() != Some(libc::EPERM) => return Err(e),
+                _ => {}
+            }
             f.set_permissions(std::fs::Permissions::from_mode(
                 original_md.permissions().mode(),
             ))?;

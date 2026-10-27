@@ -1088,6 +1088,69 @@ fn sed_regex_matches_lines_without_their_terminator() {
     assert_eq!(std::fs::read_to_string(&f).unwrap(), "X\nbar\nX\r\nX");
 }
 
+/// A file without a match is left alone, not rewritten.
+#[test]
+fn sed_without_matches_leaves_the_file_untouched() {
+    use std::os::unix::fs::MetadataExt;
+    let dir = tmpdir();
+    let f = dir.path().join("x.txt");
+    std::fs::write(&f, "keep\n").unwrap();
+    let ino = std::fs::metadata(&f).unwrap().ino();
+    let res = ops::sed(
+        vec![f.to_string_lossy().into()],
+        None,
+        true,
+        Vec::new(),
+        Vec::new(),
+        "absent".into(),
+        "X".into(),
+        false,
+        false,
+        false,
+    )
+    .unwrap();
+    let FsResult::Sed { results, .. } = res else {
+        panic!();
+    };
+    assert!(results[0].success);
+    assert_eq!(results[0].replacements, 0);
+    assert_eq!(
+        std::fs::metadata(&f).unwrap().ino(),
+        ino,
+        "file was rewritten"
+    );
+}
+
+/// A rewritten file keeps its owner (root-only: chown needs privilege).
+#[test]
+fn sed_preserves_the_file_owner() {
+    use std::os::unix::fs::MetadataExt;
+    if unsafe { libc::geteuid() } != 0 {
+        eprintln!("[skip] sed_preserves_the_file_owner: needs root");
+        return;
+    }
+    let dir = tmpdir();
+    let f = dir.path().join("x.txt");
+    std::fs::write(&f, "old\n").unwrap();
+    std::os::unix::fs::chown(&f, Some(1234), Some(4321)).unwrap();
+    ops::sed(
+        vec![f.to_string_lossy().into()],
+        None,
+        true,
+        Vec::new(),
+        Vec::new(),
+        "old".into(),
+        "new".into(),
+        false,
+        false,
+        false,
+    )
+    .unwrap();
+    let md = std::fs::metadata(&f).unwrap();
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "new\n");
+    assert_eq!((md.uid(), md.gid()), (1234, 4321));
+}
+
 /// A literal replacement is written as given: `$` is not a capture
 /// reference, with or without `ignore_case`.
 #[test]
