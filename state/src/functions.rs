@@ -261,11 +261,20 @@ pub struct PrivateCompareAndSetInput {
     pub durable: bool,
 }
 
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct PrivateCompareAndSetResult {
+    pub swapped: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current: Option<Value>,
+    /// Explicitly acknowledge the requested flush; older workers omit this field.
+    pub durable: bool,
+}
+
 async fn private_compare_and_set(
     ctx: &StateCtx,
     prefix: &str,
     input: PrivateCompareAndSetInput,
-) -> Result<CompareAndSetResult, Error> {
+) -> Result<PrivateCompareAndSetResult, Error> {
     let update = input.update;
     require_owned_scope(&ctx.private.owned_scopes(prefix), prefix, &update.scope)?;
     let outcome = ctx
@@ -286,13 +295,15 @@ async fn private_compare_and_set(
         })?;
     }
     Ok(match outcome {
-        CompareAndSetOutcome::Swapped { .. } => CompareAndSetResult {
+        CompareAndSetOutcome::Swapped { .. } => PrivateCompareAndSetResult {
             swapped: true,
             current: None,
+            durable: input.durable,
         },
-        CompareAndSetOutcome::NotSwapped { current } => CompareAndSetResult {
+        CompareAndSetOutcome::NotSwapped { current } => PrivateCompareAndSetResult {
             swapped: false,
             current: Some(current),
+            durable: input.durable,
         },
     })
 }
@@ -1308,6 +1319,7 @@ mod private_namespace_tests {
         let retried = private_compare_and_set(&ctx, "provider-openai-codex", request())
             .await
             .unwrap();
+        assert!(retried.durable);
         assert!(!retried.swapped);
         assert_eq!(retried.current, Some(Value::Null));
         assert_eq!(adapter.flush_calls.load(Ordering::SeqCst), 2);
