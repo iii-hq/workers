@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::ports::{Clock, ModelBudget, ModelResolver};
+use crate::types::{AgentFunction, AgentMessage};
 
 const MODELS_CHANGED_FN_ID: &str = "context::on-models-changed";
 
@@ -95,6 +96,20 @@ impl ModelResolver for CachingModelResolver {
                 },
             );
         Ok(budget)
+    }
+
+    /// Never cached: the count is of this request.
+    async fn count_prompt_tokens(
+        &self,
+        provider: Option<&str>,
+        id: &str,
+        system_prompt: &str,
+        tools: &[AgentFunction],
+        messages: &[AgentMessage],
+    ) -> Result<u64, String> {
+        self.inner
+            .count_prompt_tokens(provider, id, system_prompt, tools, messages)
+            .await
     }
 }
 
@@ -172,6 +187,18 @@ mod tests {
         ) -> Result<Option<ModelBudget>, String> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.response.clone()
+        }
+
+        async fn count_prompt_tokens(
+            &self,
+            _provider: Option<&str>,
+            _id: &str,
+            _system_prompt: &str,
+            _tools: &[AgentFunction],
+            messages: &[AgentMessage],
+        ) -> Result<u64, String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(messages.len() as u64)
         }
     }
 
@@ -262,6 +289,22 @@ mod tests {
         let (inner, _clock, cache) = harness(Err("router unreachable".into()));
         assert!(cache.get_model_budget(Some("p"), "m").await.is_err());
         assert!(cache.get_model_budget(Some("p"), "m").await.is_err());
+        assert_eq!(inner.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn prompt_counts_reach_the_inner_resolver_every_time() {
+        let (inner, _clock, cache) = harness(Ok(Some(budget())));
+        let messages: Vec<AgentMessage> = serde_json::from_value(serde_json::json!([
+            { "role": "user", "content": [{ "type": "text", "text": "hi" }], "timestamp": 1 }
+        ]))
+        .unwrap();
+        for _ in 0..2 {
+            let counted = cache
+                .count_prompt_tokens(Some("p"), "m", "", &[], &messages)
+                .await;
+            assert_eq!(counted, Ok(1));
+        }
         assert_eq!(inner.calls.load(Ordering::SeqCst), 2);
     }
 

@@ -1,5 +1,6 @@
 //! `llm-router` adapters: model-limit resolution via
-//! `router::models::budget` and the summariser via `router::chat`.
+//! `router::models::budget`, the provider's prompt count via
+//! `router::count_tokens`, and the summariser via `router::chat`.
 //!
 //! Both are soft dependencies — when the router is absent the resolver
 //! errors (callers degrade to the conservative fallback) and the
@@ -18,9 +19,12 @@ use serde_json::{json, Value};
 
 use crate::configuration::ConfigCell;
 use crate::ports::{ModelBudget, ModelResolver, SummarizeError, SummarizeRequest, Summarizer};
-use crate::types::Model;
+use crate::types::{AgentFunction, AgentMessage, Model};
 
 const MODELS_GET_TIMEOUT_MS: u64 = 5_000;
+/// A local tokenizer answers in milliseconds; a provider's metering API is a
+/// network call. Past this the assembly keeps its own estimate.
+const COUNT_TOKENS_TIMEOUT_MS: u64 = 10_000;
 /// Grace period for the stream reader to drain after `router::chat`
 /// returns; the terminal `done`/`error` event lands before or with the
 /// trigger response, so this only covers socket latency.
@@ -124,6 +128,38 @@ impl ModelResolver for RouterModelResolver {
                 })
             })
             .map_err(|e| format!("router::models::budget returned an unparseable model: {e}"))
+    }
+
+    async fn count_prompt_tokens(
+        &self,
+        provider: Option<&str>,
+        id: &str,
+        system_prompt: &str,
+        tools: &[AgentFunction],
+        messages: &[AgentMessage],
+    ) -> Result<u64, String> {
+        let mut payload = json!({
+            "model": id,
+            "system_prompt": system_prompt,
+            "tools": tools,
+            "messages": messages,
+        });
+        if let Some(p) = provider {
+            payload["provider"] = json!(p);
+        }
+        let resp = self
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "router::count_tokens".to_string(),
+                payload,
+                action: None,
+                timeout_ms: Some(COUNT_TOKENS_TIMEOUT_MS),
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        resp.get("tokens")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "router::count_tokens response has no `tokens` field".to_string())
     }
 }
 
