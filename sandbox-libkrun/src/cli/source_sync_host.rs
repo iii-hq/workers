@@ -177,7 +177,10 @@ fn send_current_entry(stream: &mut UnixStream, root: &Path, path: &Path) -> io::
     };
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
-            let link = std::fs::read_link(path)?;
+            let link = match std::fs::read_link(path) {
+                Ok(link) => link,
+                Err(error) => return send_path_error(stream, relative, path, error),
+            };
             let bytes = link.as_os_str().as_bytes();
             send_header(
                 stream,
@@ -199,7 +202,11 @@ fn send_current_entry(stream: &mut UnixStream, root: &Path, path: &Path) -> io::
             )?;
             finish_entry(stream)?;
 
-            let mut children = std::fs::read_dir(path)?.collect::<Result<Vec<_>, _>>()?;
+            let children = std::fs::read_dir(path).and_then(|entries| entries.collect());
+            let mut children: Vec<std::fs::DirEntry> = match children {
+                Ok(children) => children,
+                Err(error) => return send_path_error(stream, relative, path, error),
+            };
             children.sort_by_key(|entry| entry.file_name());
             for child in children {
                 send_current_entry(stream, root, &child.path())?;
@@ -209,20 +216,7 @@ fn send_current_entry(stream: &mut UnixStream, root: &Path, path: &Path) -> io::
         Ok(metadata) if metadata.is_file() => {
             let snapshot = match read_stable_file(path) {
                 Ok(snapshot) => snapshot,
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        io::ErrorKind::InvalidData | io::ErrorKind::WouldBlock
-                    ) =>
-                {
-                    tracing::warn!(path = %path.display(), %error, "source sync: file skipped");
-                    return Ok(());
-                }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    send_header(stream, EntryKind::Remove, relative, 0, 0)?;
-                    return finish_entry(stream);
-                }
-                Err(error) => return Err(error),
+                Err(error) => return send_path_error(stream, relative, path, error),
             };
             send_header(
                 stream,
@@ -238,12 +232,25 @@ fn send_current_entry(stream: &mut UnixStream, root: &Path, path: &Path) -> io::
             tracing::debug!(path = %path.display(), "source sync: unsupported file type skipped");
             Ok(())
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            send_header(stream, EntryKind::Remove, relative, 0, 0)?;
-            finish_entry(stream)
-        }
-        Err(error) => Err(error),
+        Err(error) => send_path_error(stream, relative, path, error),
     }
+}
+
+/// A filesystem error on `path` itself: a path that vanished mid-walk is
+/// sent as a Remove, and any other error skips the path, since only stream
+/// errors may end the sync thread.
+fn send_path_error(
+    stream: &mut UnixStream,
+    relative: &str,
+    path: &Path,
+    error: io::Error,
+) -> io::Result<()> {
+    if error.kind() == io::ErrorKind::NotFound {
+        send_header(stream, EntryKind::Remove, relative, 0, 0)?;
+        return finish_entry(stream);
+    }
+    tracing::warn!(path = %path.display(), %error, "source sync: path skipped");
+    Ok(())
 }
 
 fn read_stable_file(path: &Path) -> io::Result<FileSnapshot> {
@@ -472,6 +479,34 @@ mod tests {
             .join(std::ffi::OsStr::from_bytes(b"bad-\xff.ts"));
 
         send_current_entry(&mut host, temp.path(), &path).unwrap();
+    }
+
+    /// One unreadable directory (or one that vanishes mid-walk) is skipped:
+    /// only a stream error may end the sync thread for the VM's life.
+    #[test]
+    fn an_unreadable_directory_does_not_stop_sync() {
+        let temp = tempfile::tempdir().unwrap();
+        let locked = temp.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let (mut host, mut guest) = UnixStream::pair().unwrap();
+        let receiver = std::thread::spawn(move || {
+            let mut paths = Vec::new();
+            while let Ok(header) = source_sync::read_header(&mut guest) {
+                let mut payload = vec![0u8; header.payload_len as usize];
+                guest.read_exact(&mut payload).unwrap();
+                source_sync::write_ack(&mut guest, Ok(())).unwrap();
+                paths.push(header.path);
+            }
+            paths
+        });
+
+        let sent = send_current_entry(&mut host, temp.path(), &locked);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        drop(host);
+
+        sent.unwrap();
+        assert_eq!(receiver.join().unwrap(), vec!["locked".to_string()]);
     }
 
     #[test]
