@@ -873,6 +873,80 @@ async fn coverage_stage(
                 }
                 provided = (!run.is_empty()).then_some(run);
             }
+            // Jev judges how well each test with recorded runs exercises the
+            // objective: many calls, a complex task. Without Jev the
+            // recorded failures alone rank them.
+            if let Some(judge) = stored
+                .as_ref()
+                .and_then(|stored| stored.config.judge.clone())
+                .filter(|_| !observed.is_empty())
+            {
+                open_ledger(deps, record).await?;
+                let work = CycleWorkV1 {
+                    work_id: format!("{}:fit", record.cycle_id),
+                    kind: CycleWorkKindV1::Jev,
+                    estimated_usd: judge.estimated_usd,
+                    candidate: false,
+                };
+                if let cost::Reservation::OverLimit(detail) = reserve(deps, record, &work).await? {
+                    return end(deps, record, OutcomeCodeV1::Budget, &detail).await;
+                }
+                let question = coverage::fit_question();
+                let evaluations: Vec<judge_contract::Evaluation> = rows
+                    .iter()
+                    .filter_map(|row| {
+                        let test_id = row["test_id"].as_str()?;
+                        let seen = observed.get(test_id).filter(|seen| seen.runs > 0)?;
+                        Some(judge_contract::Evaluation {
+                            id: test_id.into(),
+                            state: coverage::fit_state(objective, row, seen),
+                            questions: std::collections::BTreeMap::from([(
+                                "fit".into(),
+                                question.clone(),
+                            )]),
+                        })
+                    })
+                    .collect();
+                let mut payload = serde_json::to_value(judge_contract::EvaluateRequest {
+                    options: Default::default(),
+                    request_id: Some(format!("{}-fit", record.cycle_id)),
+                    model: None,
+                    timeout_ms: 60_000,
+                    expires_at_unix_ms: None,
+                    evaluations,
+                })?;
+                payload["provider"] = json!(judge.provider);
+                let answered: Result<judge_contract::EvaluateResponse, EvalError> = call(
+                    deps,
+                    judge_contract::FUNCTION_ID,
+                    payload,
+                    60_000 + BUS_TIMEOUT_MS,
+                )
+                .await;
+                settle(deps, &record.cycle_id, &work.work_id, None).await?;
+                match answered {
+                    Ok(judge_contract::EvaluateResponse::Ok { results, .. }) => {
+                        for (test_id, result) in results {
+                            let answer = result.answers.get("fit").filter(|answer| {
+                                judge_contract::validate_answer(&question, answer).is_ok()
+                            });
+                            if let (Some(judge_contract::Answer::Score { score, .. }), Some(seen)) =
+                                (answer, observed.get_mut(&test_id))
+                            {
+                                seen.fit = Some(*score);
+                            }
+                        }
+                    }
+                    Ok(judge_contract::EvaluateResponse::Error { code, .. }) => {
+                        unread.push(format!(
+                            "Jev did not rank the tests ({code:?}); ranked by recorded failures"
+                        ))
+                    }
+                    Err(error) => unread.push(format!(
+                        "Jev did not rank the tests ({error}); ranked by recorded failures"
+                    )),
+                }
+            }
             let mut found = coverage::select(
                 objective,
                 &rows,

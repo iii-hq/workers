@@ -43,6 +43,8 @@ struct World {
     histories: BTreeMap<String, Value>,
     /// What Jev answers of every failed call, or `None`: it does not answer.
     jev_class: Option<&'static str>,
+    /// Jev's fit of each test to the objective (0–3), by test id.
+    fits: BTreeMap<String, f64>,
     /// What the default LLM replies, or `None`: it does not answer.
     analyst_reply: Option<String>,
 }
@@ -118,6 +120,7 @@ impl World {
             executions_next_cursor: None,
             histories: BTreeMap::new(),
             jev_class: None,
+            fits: BTreeMap::new(),
             analyst_reply: None,
         }
     }
@@ -250,6 +253,35 @@ impl World {
                     .unwrap()
                     .iter()
                     .map(|evaluation| {
+                        // A test's fit to the objective is a score.
+                        if evaluation["questions"].get("fit").is_some() {
+                            let id = evaluation["id"].as_str().unwrap().to_string();
+                            let score = self.fits.get(&id).copied().unwrap_or(0.0);
+                            let levels = evaluation["questions"]["fit"]["criteria"]
+                                .as_array()
+                                .unwrap();
+                            let legend: serde_json::Map<String, Value> = levels
+                                .iter()
+                                .enumerate()
+                                .map(|(at, level)| (at.to_string(), level.clone()))
+                                .collect();
+                            let probabilities: serde_json::Map<String, Value> = (0..levels.len())
+                                .map(|at| {
+                                    let mass = if at == score.round() as usize {
+                                        1.0
+                                    } else {
+                                        0.0
+                                    };
+                                    (at.to_string(), json!(mass))
+                                })
+                                .collect();
+                            return (
+                                id,
+                                json!({"answers": {"fit": {"type": "score", "score": score,
+                                    "confidence": 0.9, "probabilities": probabilities,
+                                    "legend": legend}}}),
+                            );
+                        }
                         let class = class_of(evaluation);
                         let question = evaluation["questions"]
                             .as_object()
@@ -1459,4 +1491,42 @@ async fn the_default_llm_reads_the_failed_calls_jev_left_unclear() {
     assert_eq!(insight.points.len(), 1);
     assert_eq!(insight.points[0].source, InsightSourceV1::Llm);
     assert_eq!(insight.points[0].sites, std::slice::from_ref(&timed_out));
+}
+
+#[tokio::test]
+async fn jev_picks_the_test_that_exercises_the_objective_over_the_one_with_most_recorded_errors() {
+    let mut world = World::new();
+    world.jev_class = Some("one_off");
+    world
+        .histories
+        .insert("context_pressure".into(), history("m", &[4.0, 6.0]));
+    world
+        .histories
+        .insert("tool_contract_recovery".into(), history("m", &[1.0, 0.0]));
+    world.fits = BTreeMap::from([
+        ("tool_contract_recovery".into(), 2.8),
+        ("context_pressure".into(), 0.4),
+    ]);
+    let h = Harness::start(world).await;
+    h.configure_judged().await;
+    let cycle_id = h
+        .start_cycle(json!({"objective": "fewer function call errors"}))
+        .await;
+    h.drain().await;
+    let coverage = h.cycle(&cycle_id).await.coverage.unwrap();
+    assert_eq!(coverage.selected[0].scenario_id, "tool_contract_recovery");
+    assert!(
+        coverage.selected[0]
+            .rationale
+            .contains("Jev judged it exercises the objective at 2.8 of 3"),
+        "{}",
+        coverage.selected[0].rationale
+    );
+    // Jev read each test's task with the subject's recorded numbers.
+    let asked = h.world().calls_to("judge::evaluate");
+    let evaluations = asked[0]["evaluations"].as_array().unwrap();
+    assert_eq!(evaluations.len(), 2, "{evaluations:?}");
+    assert!(evaluations
+        .iter()
+        .all(|evaluation| evaluation["state"]["recorded_runs_of_the_subject"]["runs"] == 2));
 }

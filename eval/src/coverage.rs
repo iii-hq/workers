@@ -7,7 +7,7 @@
 //! `scenarios-list` scenario's `behavior_sha256`. Selection is a coverage
 //! hypothesis; the baseline and the decision prove it.
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::contract::*;
 
@@ -272,11 +272,67 @@ fn add_controls(
 }
 
 /// What a test's recorded runs of the subject model show: runs with a value
-/// and the sum of their values.
+/// and the sums of their errors, calls and turns.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Observed {
     pub runs: u32,
     pub total: f64,
+    pub calls: f64,
+    pub turns: f64,
+    /// How well Jev judged the test exercises the objective, on
+    /// [`fit_question`]'s 0–3 scale; absent when Jev was not asked.
+    pub fit: Option<f64>,
+}
+
+impl Observed {
+    fn per_run(&self, sum: f64) -> f64 {
+        sum / f64::from(self.runs.max(1))
+    }
+}
+
+/// The highest [`fit_question`] level.
+pub const FIT_TOP: f64 = 3.0;
+
+/// How well a test exercises an objective about the Harness, judged by Jev
+/// from the test's task and the subject's recorded runs.
+pub fn fit_question() -> judge_contract::Question {
+    judge_contract::Question::Score {
+        instructions: "The objective is about how the Harness, the agent runtime, behaves. \
+            Judge how well this E2E test exercises that behavior, from its task and the \
+            subject model's recorded runs, so that a change to the Harness would show in its \
+            numbers. A long, complex task with many calls of the kind the objective is about \
+            exercises it most; a test whose recorded runs never show the behavior measures it \
+            poorly."
+            .into(),
+        criteria: [
+            "It does not exercise it: few or none of the calls or situations the objective is about.",
+            "It touches it: some such calls, in a simple task.",
+            "It exercises it: many such calls, and the recorded runs show the behavior.",
+            "It exercises it heavily: a long, complex task with many such calls, and the recorded runs show the behavior often.",
+        ]
+        .into_iter()
+        .map(|level| level.into())
+        .collect(),
+    }
+}
+
+/// What Jev reads of one test: its task and the subject's recorded numbers.
+pub fn fit_state(objective: &str, row: &Value, seen: &Observed) -> Value {
+    let clip = |text: &str| text.chars().take(1_200).collect::<String>();
+    json!({
+        "objective": objective,
+        "test": {
+            "id": row["test_id"],
+            "summary": row["spec"]["summary"],
+            "task": clip(row["spec"]["prompt"].as_str().unwrap_or_default()),
+        },
+        "recorded_runs_of_the_subject": {
+            "runs": seen.runs,
+            "function_calls_per_run": seen.per_run(seen.calls),
+            "function_call_errors_per_run": seen.per_run(seen.total),
+            "turns_per_run": seen.per_run(seen.turns),
+        },
+    })
 }
 
 /// The function-call errors `test-history-get` records for one test's passed
@@ -295,8 +351,16 @@ pub fn observed_errors(history: &Value) -> Observed {
             .as_f64()
             .filter(|errors| errors.is_finite() && *errors >= 0.0)
         {
+            let count = |field: &str| {
+                run[field]
+                    .as_f64()
+                    .filter(|value| value.is_finite() && *value >= 0.0)
+                    .unwrap_or(0.0)
+            };
             observed.runs += 1;
             observed.total += errors;
+            observed.calls += count("function_calls");
+            observed.turns += count("turns");
         }
     }
     observed
@@ -358,18 +422,28 @@ pub fn select(
         };
         let (matched, why, rank) = if need.observed {
             let seen = observed.get(&test_id).copied().unwrap_or_default();
-            if seen.runs == 0 || seen.total <= 0.0 {
+            // Without Jev's judgment a test must have shown the failure;
+            // with it, Jev weighs what the runs show against the task.
+            if seen.runs == 0 || (seen.fit.is_none() && seen.total <= 0.0) {
                 continue;
             }
-            let mean = seen.total / f64::from(seen.runs);
-            (
-                Vec::new(),
-                format!(
-                    "its recorded runs of the subject show {mean:.2} {:?} per run ({} run(s), any definition of the test)",
-                    need.metric, seen.runs
+            let mean = seen.per_run(seen.total);
+            let recorded = format!(
+                "its recorded runs of the subject show {mean:.2} {:?} per run ({} run(s), any definition of the test)",
+                need.metric, seen.runs
+            );
+            match seen.fit {
+                // Jev's fit leads; the recorded failures break ties.
+                Some(fit) => (
+                    Vec::new(),
+                    format!(
+                        "Jev judged it exercises the objective at {fit:.1} of {FIT_TOP} ({:.0} calls per run); {recorded}",
+                        seen.per_run(seen.calls)
+                    ),
+                    fit * 1_000.0 + mean,
                 ),
-                mean,
-            )
+                None => (Vec::new(), recorded, mean),
+            }
         } else {
             let Some(matched) = matches(&words(&spec_text(row, scenario)), need.evidence) else {
                 continue;
