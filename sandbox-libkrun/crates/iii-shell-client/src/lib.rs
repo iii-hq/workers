@@ -600,12 +600,28 @@ impl Session {
         // shell.sock, the relay's SIGKILL fan-out cascades into the
         // supervisor, the temp file gets unlinked, and the caller sees
         // a typed S218 error well before any outer SDK trigger timeout.
+        let mut frames = Frames::default();
         let mut credit = SEND_WINDOW;
         let mut buf = vec![0u8; STDIN_CHUNK];
         loop {
-            let n = match tokio::time::timeout(FS_WRITE_READ_IDLE_TIMEOUT, reader.read(&mut buf))
-                .await
-            {
+            let read = {
+                let mut read = std::pin::pin!(tokio::time::timeout(
+                    FS_WRITE_READ_IDLE_TIMEOUT,
+                    reader.read(&mut buf)
+                ));
+                loop {
+                    tokio::select! {
+                        read = &mut read => break read,
+                        // The guest may fail the write (S211) before it takes a
+                        // byte: its reply ends the upload now, not after the
+                        // caller's idle timeout reports S218 over it.
+                        frame = frames.next(&mut self.stream) => {
+                            upload_credit(frame?, &mut credit)?
+                        }
+                    }
+                }
+            };
+            let n = match read {
                 Ok(Ok(n)) => n,
                 Ok(Err(e)) => {
                     return Err(VmClientError::Io(format!("read from caller: {e}")));
@@ -631,17 +647,19 @@ impl Session {
                 },
             )
             .map_err(|e| VmClientError::Encode(e.to_string()))?;
-            self.send_upload_frame(&chunk_frame, &mut credit).await?;
+            self.send_upload_frame(&mut frames, &chunk_frame, &mut credit)
+                .await?;
         }
 
         // Terminate the upload sequence.
         let end_frame = encode_frame(self.corr_id, FLAG_TERMINAL, &ShellMessage::FsEnd)
             .map_err(|e| VmClientError::Encode(e.to_string()))?;
-        self.send_upload_frame(&end_frame, &mut credit).await?;
+        self.send_upload_frame(&mut frames, &end_frame, &mut credit)
+            .await?;
 
         // The reply, after any Credit still on its way.
         loop {
-            match read_frame_async(&mut self.stream).await? {
+            match frames.next(&mut self.stream).await? {
                 Some((_, _, ShellMessage::Credit { .. })) => {}
                 reply => return write_reply(reply),
             }
@@ -653,20 +671,12 @@ impl Session {
     /// comes first ends the upload: the guest failed the write.
     async fn send_upload_frame(
         &mut self,
+        frames: &mut Frames,
         frame: &[u8],
         credit: &mut u32,
     ) -> Result<(), VmClientError> {
         while *credit == 0 {
-            match read_frame_async(&mut self.stream).await? {
-                Some((_, _, ShellMessage::Credit { frames })) => {
-                    *credit = credit.saturating_add(frames)
-                }
-                reply => {
-                    return Err(write_reply(reply).err().unwrap_or_else(|| {
-                        VmClientError::ProtocolViolation("fs write reply before FsEnd".into())
-                    }));
-                }
-            }
+            upload_credit(frames.next(&mut self.stream).await?, credit)?;
         }
         write_frame_bounded(&mut self.stream, frame).await?;
         *credit -= 1;
@@ -859,6 +869,23 @@ impl tokio::io::AsyncRead for FsStreamReader {
                 Poll::Ready(Ok(()))
             }
         }
+    }
+}
+
+/// Adds a Credit frame that arrives mid-upload to `credit`. Any other frame
+/// is the guest ending the upload early: it failed the write.
+fn upload_credit(
+    frame: Option<(u32, u8, ShellMessage)>,
+    credit: &mut u32,
+) -> Result<(), VmClientError> {
+    match frame {
+        Some((_, _, ShellMessage::Credit { frames })) => {
+            *credit = credit.saturating_add(frames);
+            Ok(())
+        }
+        reply => Err(write_reply(reply).err().unwrap_or_else(|| {
+            VmClientError::ProtocolViolation("fs write reply before FsEnd".into())
+        })),
     }
 }
 

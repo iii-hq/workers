@@ -103,6 +103,20 @@ where
     })
 }
 
+/// AsyncRead that never makes progress — models a
+/// hard-terminated data-channel reader where the SDK's
+/// `next_binary()` neither errors nor returns Some/None.
+struct StalledReader;
+impl tokio::io::AsyncRead for StalledReader {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        _buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Pending
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -517,24 +531,6 @@ async fn fs_read_stream_handles_partial_frame_reads() {
 /// the SDK's outer 30s default.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fs_write_stream_aborts_on_stalled_reader() {
-    use std::pin::Pin;
-    use std::task::{Context, Poll};
-    use tokio::io::{AsyncRead, ReadBuf};
-
-    /// AsyncRead that never makes progress — models a
-    /// hard-terminated data-channel reader where the SDK's
-    /// `next_binary()` neither errors nor returns Some/None.
-    struct StalledReader;
-    impl AsyncRead for StalledReader {
-        fn poll_read(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-            _buf: &mut ReadBuf<'_>,
-        ) -> Poll<std::io::Result<()>> {
-            Poll::Pending
-        }
-    }
-
     let (_dir, sock, listener) = bind_socket();
 
     let relay = spawn_relay(listener, |mut s| async move {
@@ -585,5 +581,59 @@ async fn fs_write_stream_aborts_on_stalled_reader() {
     );
 
     // Don't await the relay — it's intentionally still sleeping.
+    relay.abort();
+}
+
+/// The guest refusing a write before it takes a byte (S211) ends the upload
+/// at once, even while the caller has no data yet: the caller's idle timeout
+/// (S218) must not mask the real error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fs_write_stream_reports_a_guest_error_while_the_caller_stalls() {
+    let (_dir, sock, listener) = bind_socket();
+
+    let relay = spawn_relay(listener, |mut s| async move {
+        write_handshake(&mut s, 0).await.expect("handshake");
+        let (_, _, msg) = read_one_frame(&mut s).await.expect("read").expect("frame");
+        assert!(matches!(
+            msg,
+            ShellMessage::FsRequest(FsOp::WriteStart { .. })
+        ));
+        write_framed(
+            &mut s,
+            1,
+            FLAG_TERMINAL,
+            &ShellMessage::FsError {
+                code: "S211".into(),
+                message: "permission denied".into(),
+            },
+        )
+        .await
+        .expect("fs error");
+        // Hold the relay open; the host will drop us first.
+        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+    });
+
+    let session = Session::connect(&sock).await.expect("connect");
+    let started = std::time::Instant::now();
+    let err = session
+        .fs_write_stream(
+            "/workspace/denied.bin".into(),
+            "0644".into(),
+            false,
+            StalledReader,
+        )
+        .await
+        .expect_err("the guest refused the write");
+
+    assert!(
+        matches!(&err, VmClientError::FsError { code, .. } if code == "S211"),
+        "expected the guest's S211, got {err:?}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(4),
+        "waited {:?} for the caller instead of reading the guest's reply",
+        started.elapsed()
+    );
+
     relay.abort();
 }
