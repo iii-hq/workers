@@ -372,7 +372,8 @@ pub fn rm(path: String, recursive: bool) -> FsCallResult {
 /// Change mode (and optionally ownership) of a path.
 ///
 /// - `recursive=true` → walks the entire tree via `walkdir`; the root
-///   entry itself counts in the returned `updated` tally.
+///   entry itself counts in the returned `updated` tally. Symlinks
+///   inside the tree are skipped, as `chmod -R` does.
 /// - `uid` / `gid` of `None` means "do not change that field".
 ///
 /// Errors:
@@ -412,6 +413,11 @@ pub fn chmod(
             .into_iter()
             .filter_map(|e| e.ok())
         {
+            // chmod and chown follow links: a link inside the tree would
+            // change its target. The root follows, as without `recursive`.
+            if entry.depth() > 0 && entry.path_is_symlink() {
+                continue;
+            }
             apply(entry.path())?;
             updated += 1;
         }

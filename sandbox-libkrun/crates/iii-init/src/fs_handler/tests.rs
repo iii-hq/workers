@@ -242,6 +242,35 @@ fn chmod_recursive_counts_every_entry() {
     assert_eq!(updated, 4);
 }
 
+/// Like `chmod -R`, a recursive chmod leaves symlinks inside the tree and
+/// their targets alone.
+#[test]
+fn chmod_recursive_skips_symlinks() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tmpdir();
+    let outside = dir.path().join("outside");
+    std::fs::write(&outside, b"x").unwrap();
+    std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let tree = dir.path().join("tree");
+    std::fs::create_dir(&tree).unwrap();
+    std::fs::write(tree.join("f"), b"y").unwrap();
+    std::os::unix::fs::symlink(&outside, tree.join("link")).unwrap();
+    let res = ops::chmod(
+        tree.to_string_lossy().into(),
+        "0700".into(),
+        None,
+        None,
+        true,
+    )
+    .unwrap();
+    let FsResult::Chmod { updated } = res else {
+        panic!("expected Chmod result");
+    };
+    assert_eq!(updated, 2, "tree + f, not the link");
+    let mode = std::fs::metadata(&outside).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o644, "the link's target changed");
+}
+
 #[test]
 fn chmod_missing_returns_s211() {
     let err = ops::chmod("/nonexistent/xyz".into(), "0755".into(), None, None, false).unwrap_err();
