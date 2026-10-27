@@ -35,7 +35,8 @@ fn cache_root() -> PathBuf {
 /// image the user already added. While that dir is empty a pin pulls into
 /// it, so a later unpinned use reuses that pull. Any other pin gets a dir
 /// of its own: a changed pin must miss, not be served another digest's
-/// rootfs.
+/// rootfs. A digest-only pin (`foo@sha256:...`) names no tag, so it never
+/// shares or fills `foo:latest`'s dir.
 // shortcut: per-digest dirs are never evicted, add a cache GC if pin churn grows ~/.iii/cache.
 pub fn canonical_path(oci_ref: &str) -> PathBuf {
     let shared = shared_path(oci_ref);
@@ -228,6 +229,37 @@ mod tests {
             lock_path_for_image(tag),
             lock_path_for_image(&format!("{tag}@{other}"))
         );
+    }
+
+    /// A digest-only pin pulled first used to fill `repo:latest`'s empty dir,
+    /// so the tag was then served that digest whatever `latest` pointed to.
+    #[test]
+    fn a_digest_only_pin_never_fills_the_latest_dir() {
+        let _g = crate::cli::test_support::lock_home();
+        let home = tempdir().unwrap();
+        let prior = std::env::var_os("HOME");
+        // SAFETY: the caller holds TEST_HOME_LOCK, which serializes all env mutation.
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        let digest = format!("sha256:{}", "d".repeat(64));
+        let pinned = format!("docker.io/iiidev/node@{digest}");
+        let pin_dir = canonical_path(&pinned);
+        populate(&pin_dir);
+        std::fs::write(digest_path(&pin_dir), &digest).unwrap();
+        let pin_hit = resolve_cached(&pinned);
+        let latest_hit = resolve_cached("docker.io/iiidev/node:latest");
+        let bare_hit = resolve_cached("docker.io/iiidev/node");
+
+        match prior {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert_eq!(pin_hit, Some(pin_dir));
+        assert_eq!(
+            latest_hit, None,
+            "the tag was served a digest-only pin's rootfs"
+        );
+        assert_eq!(bare_hit, None);
     }
 
     #[test]
