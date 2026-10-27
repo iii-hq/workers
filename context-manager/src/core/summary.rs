@@ -98,7 +98,9 @@ fn normalize_instructions(instructions: Option<&str>) -> Option<String> {
 }
 
 /// User prompt: the head messages rendered as a `<conversation>` block
-/// (text blocks verbatim, function calls as terse one-liners).
+/// (text and thinking blocks verbatim, function calls as terse one-liners).
+/// Thinking is where an agent notes what it read: dropping it lost every
+/// fact a truncated result no longer showed.
 pub fn render_user_prompt(older: &[AgentMessage]) -> String {
     let mut out = String::from(
         "Summarise the conversation below following the system-prompt structure exactly. \
@@ -111,6 +113,10 @@ pub fn render_user_prompt(older: &[AgentMessage]) -> String {
                 ContentBlock::Text { text } => {
                     out.push_str(text);
                     out.push('\n');
+                }
+                // Signed blocks with omitted display carry no text.
+                ContentBlock::Thinking { text, .. } if !text.trim().is_empty() => {
+                    out.push_str(&format!("[thinking] {text}\n"));
                 }
                 ContentBlock::FunctionCall {
                     function_id,
@@ -307,6 +313,28 @@ mod tests {
         assert!(prompt.contains("[user]\nfind the bug"));
         assert!(prompt.contains("[tool_call] coder::search {\"q\":\"panic\"}"));
         assert!(prompt.contains("<conversation>") && prompt.contains("</conversation>"));
+    }
+
+    #[test]
+    fn user_prompt_renders_thinking_notes() {
+        let messages = vec![message(json!({
+            "role": "assistant",
+            "content": [
+                { "type": "thinking", "text": "Segment 7: CTX-N7-e624f1463731.", "signature": "sig" },
+                { "type": "thinking", "text": "", "signature": "omitted" },
+                { "type": "function_call", "id": "c8", "function_id": "e2etest::segment",
+                  "arguments": { "index": 8 } }
+            ],
+            "stop_reason": "function_call", "model": "m", "provider": "p", "timestamp": 1
+        }))];
+        let prompt = render_user_prompt(&messages);
+        assert!(prompt.contains("[assistant]\n[thinking] Segment 7: CTX-N7-e624f1463731.\n"));
+        assert!(!prompt.contains("sig"), "signatures stay out of the prompt");
+        assert_eq!(
+            prompt.matches("[thinking]").count(),
+            1,
+            "blank thinking adds no line"
+        );
     }
 
     #[test]
