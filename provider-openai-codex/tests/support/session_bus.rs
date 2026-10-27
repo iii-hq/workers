@@ -21,6 +21,7 @@ pub struct Failure {
 pub struct BusState {
     pub legacy: Value,
     pub secret: Option<String>,
+    pub secret_read_back: bool,
     pub calls: Vec<String>,
     pub failure: Option<Failure>,
     pub resolve_error: Option<&'static str>,
@@ -56,7 +57,12 @@ impl BusState {
                     return Err(code);
                 }
                 match &self.secret {
-                    Some(value) => json!({"name":"PROVIDER_OPENAI_CODEX_SESSION", "value":value}),
+                    Some(value) => {
+                        if failure.is_none() {
+                            self.secret_read_back = true;
+                        }
+                        json!({"name":"PROVIDER_OPENAI_CODEX_SESSION", "value":value})
+                    }
                     None => return Err("SECRET_NOT_FOUND"),
                 }
             }
@@ -68,6 +74,7 @@ impl BusState {
                         assert_eq!(data["consumers"], json!(["provider-openai-codex"]));
                     }
                     self.secret = Some(data["value"].as_str().unwrap().into());
+                    self.secret_read_back = false;
                 }
                 json!({"swapped":swapped})
             }
@@ -75,7 +82,10 @@ impl BusState {
                 assert_eq!(data["durable"], true);
                 assert!(data["value"].is_null());
                 // Cleanup must follow successful readback of the copied secret.
-                assert!(self.secret.is_some());
+                assert!(
+                    self.secret_read_back,
+                    "cleanup preceded successful vault readback"
+                );
                 if self.change_before_cleanup {
                     self.legacy["revision"] = json!("concurrent-revision");
                     self.change_before_cleanup = false;

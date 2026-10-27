@@ -47,10 +47,72 @@ async fn migrates_session_and_clears_state() {
     assert!(state.legacy.is_null() && state.flushed);
     let stored: Value = serde_json::from_str(state.secret.as_ref().unwrap()).unwrap();
     assert_eq!(stored["migration_complete"], true);
-    assert!(
-        state.calls.iter().position(|s| s == STATE_CAS).unwrap()
-            > state.calls.iter().position(|s| s == RESOLVE).unwrap()
+    let cleanup = state.calls.iter().position(|s| s == STATE_CAS).unwrap();
+    let creation = state.calls.iter().position(|s| s == SECRET_CAS).unwrap();
+    assert!(state.calls[creation + 1..cleanup]
+        .iter()
+        .any(|call| call == RESOLVE));
+}
+
+#[tokio::test]
+async fn failed_vault_readback_preserves_state_until_migration_can_resume() {
+    let record = session();
+    let original = serde_json::to_value(&record).unwrap();
+    let bus = SessionBus::start(original.clone(), None).await;
+    bus.state.lock().unwrap().failure = Some(Failure {
+        function: RESOLVE,
+        after_write: false,
+        // The first resolve finds no secret; fail the read after its creation.
+        skip: 1,
+    });
+    let store = SecretsSessionStore::new(bus.client.clone());
+    assert_eq!(
+        store.load().await.err().unwrap().code,
+        "storage_unavailable"
     );
+    {
+        let state = bus.state.lock().unwrap();
+        assert!(
+            state.legacy == original,
+            "readback failure changed the original session"
+        );
+        assert!(!state.flushed);
+        assert!(!state.secret_read_back);
+        assert!(!state.calls.iter().any(|call| call == STATE_CAS));
+        assert_eq!(
+            state
+                .calls
+                .iter()
+                .filter(|call| *call == SECRET_CAS)
+                .count(),
+            1
+        );
+        let stored: Value = serde_json::from_str(state.secret.as_ref().unwrap()).unwrap();
+        assert!(stored["session"] == original);
+        assert_eq!(stored["migration_complete"], false);
+    }
+
+    // A fresh process resumes from the copied secret, confirms readability,
+    // and only then clears the original and marks the migration complete.
+    let restarted = SecretsSessionStore::new(bus.client.clone());
+    let loaded = restarted.load().await.unwrap().unwrap();
+    assert!(serde_json::to_value(loaded).unwrap() == original);
+    let state = bus.state.lock().unwrap();
+    assert!(state.legacy.is_null() && state.flushed && state.secret_read_back);
+    assert_eq!(
+        state
+            .calls
+            .iter()
+            .filter(|call| *call == SECRET_CAS)
+            .count(),
+        2
+    );
+    assert_eq!(
+        state.calls.iter().filter(|call| *call == STATE_CAS).count(),
+        1
+    );
+    let stored: Value = serde_json::from_str(state.secret.as_ref().unwrap()).unwrap();
+    assert_eq!(stored["migration_complete"], true);
 }
 
 #[tokio::test]
