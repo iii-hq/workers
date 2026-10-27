@@ -1,0 +1,68 @@
+name: Harness Cloud production
+
+on:
+  pull_request:
+    paths:
+      - harness/worker-compose-prod.yaml
+      - harness/worker-compose-prod.lock
+      - harness/PRODUCTION.md
+      - llm-router/**
+      - .github/workflows/harness-cloud-production.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harness-cloud-production-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lock:
+    name: Harness Cloud package lock
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: Install the Cloud engine version
+        env:
+          III_TELEMETRY_ENABLED: "false"
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/iii-hq/iii/releases/download/iii/v0.24.6/iii-x86_64-unknown-linux-gnu.tar.gz -o "$RUNNER_TEMP/iii.tar.gz"
+          printf '%s  %s\n' ed6862004c85d75ecc09fd326578d6f6c7e8b4d8b639470dc126821fc070dd76 "$RUNNER_TEMP/iii.tar.gz" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/iii-bin"
+          tar -xzf "$RUNNER_TEMP/iii.tar.gz" -C "$RUNNER_TEMP/iii-bin"
+          echo "$RUNNER_TEMP/iii-bin" >> "$GITHUB_PATH"
+      - name: Resolve and verify pinned packages without starting workers
+        env:
+          III_TELEMETRY_ENABLED: "false"
+        run: |
+          set -euo pipefail
+          iii --version
+          if test -f harness/worker-compose-prod.lock; then
+            iii compose build -f harness/worker-compose-prod.yaml --frozen
+          else
+            iii compose build -f harness/worker-compose-prod.yaml
+          fi
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: harness-cloud-production-lock
+          path: harness/worker-compose-prod.lock
+          if-no-files-found: error
+          retention-days: 7
+  router:
+    name: Harness Cloud Rust compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: Install the Cloud Rust version
+        run: rustup toolchain install 1.89.0 --profile minimal
+      - name: Verify restricted configuration boot and compile the deployed binary
+        run: |
+          cargo +1.89.0 test --manifest-path llm-router/Cargo.toml --locked --no-default-features --release --test cloud_boot
+          cargo +1.89.0 build --manifest-path llm-router/Cargo.toml --locked --no-default-features --release --bin llm-router

@@ -1,0 +1,96 @@
+startup_timeout: 10m
+stop_timeout: 10s
+
+containers:
+  http:
+    worker: package://http
+    version: "0.22.7"
+  mcp:
+    worker: package://mcp
+    version: "0.5.11"
+    start_after: [http]
+    config_override:
+      require_expose: true
+  state:
+    worker: package://state
+    version: "0.22.22"
+  queue:
+    worker: package://queue
+    version: "0.21.26"
+  session-manager:
+    worker: package://session-manager
+    version: "1.0.35"
+  secrets:
+    worker: package://secrets
+    version: "0.1.5"
+  llm-router:
+    worker: path://../llm-router
+    start_after: [state, secrets]
+    environment: &no_provider_credentials
+      ANTHROPIC_API_KEY: ""
+      OPENAI_API_KEY: ""
+      DEEPSEEK_API_KEY: ""
+      OPENROUTER_API_KEY: ""
+      COMMAND_CODE_API_KEY: ""
+      MOONSHOT_API_KEY: ""
+      OPENCODE_GO_API_KEY: ""
+      XAI_API_KEY: ""
+      ZAI_API_KEY: ""
+      LLAMACPP_API_KEY: ""
+      GITHUB_COPILOT_TOKEN: ""
+      GITHUB_COPILOT_OAUTH_TOKEN: ""
+      CLAUDE_CONFIG_DIR: /nonexistent/iii-no-provider-credentials/claude
+      CODEX_HOME: /nonexistent/iii-no-provider-credentials/codex
+      GITHUB_COPILOT_NO_LOCAL_IMPORT: "1"
+    scripts:
+      run: target/release/llm-router
+  provider-anthropic:
+    worker: package://provider-anthropic
+    version: "1.2.28"
+    start_after: [state, llm-router]
+    environment: *no_provider_credentials
+  provider-openai:
+    worker: package://provider-openai
+    version: "1.2.27"
+    start_after: [state, llm-router]
+    environment: *no_provider_credentials
+  provider-openai-codex:
+    worker: package://provider-openai-codex
+    version: "0.4.28"
+    start_after: [state, llm-router]
+    environment: *no_provider_credentials
+  context-manager:
+    worker: package://context-manager
+    version: "1.1.23"
+    start_after: [llm-router]
+  cron:
+    worker: package://cron
+    version: "0.21.27"
+  fp:
+    worker: package://fp
+    version: "0.2.24"
+  ide:
+    worker: package://ide
+    version: "0.12.35"
+  iii-directory:
+    worker: package://iii-directory
+    version: "1.2.43"
+    config_override:
+      function_search_mode: lexical
+      function_search_model_download: false
+  judge-typesafe:
+    worker: package://judge-typesafe
+    version: "0.2.6"
+    environment:
+      TYPESAFE_API_KEY: ""
+  judge:
+    worker: package://judge
+    version: "0.2.12"
+    start_after: [judge-typesafe]
+  ade:
+    worker: package://ade
+    version: "1.9.70"
+  harness:
+    worker: package://harness
+    version: "1.8.62"
+    start_after: [state, queue, session-manager, llm-router, provider-anthropic, provider-openai, provider-openai-codex, context-manager, cron, fp, ide, iii-directory, judge, ade]
