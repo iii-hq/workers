@@ -178,22 +178,13 @@ mod mixed_density {
         }
     }
 
-    /// 30 prose documents, then 20 hex documents, with the summariser down:
-    /// only the emergency pass relieves, and it removes the largest
-    /// estimates first, the prose.
-    #[tokio::test]
-    async fn what_relief_keeps_is_counted_again_and_fits_the_window() {
+    /// One user prompt, then one call per document, answered by it.
+    fn read(prompt: String, documents: Vec<String>) -> Vec<Value> {
         let mut messages = vec![json!({
-            "role": "user", "content": [{ "type": "text", "text": "Read every document in order." }],
-            "timestamp": 1
+            "role": "user", "content": [{ "type": "text", "text": prompt }], "timestamp": 1
         })];
-        for i in 0..50 {
+        for (i, text) in documents.into_iter().enumerate() {
             let id = format!("c{i}");
-            let text = if i < 30 {
-                "plain words ".repeat(700)
-            } else {
-                "a3f9 ".repeat(1_640)
-            };
             messages.push(json!({
                 "role": "assistant",
                 "content": [{ "type": "function_call", "id": id, "function_id": "e2etest::segment",
@@ -205,6 +196,11 @@ mod mixed_density {
                 "content": [{ "type": "text", "text": text }], "timestamp": 3
             }));
         }
+        messages
+    }
+
+    /// With the summariser down only the emergency pass relieves.
+    async fn assemble_without_summariser(messages: Vec<Value>) -> Result<Value, String> {
         let summarizer = Arc::new(FakeSummarizer::new());
         summarizer.set_script(SummarizerScript::Unavailable);
         let deps = Deps {
@@ -222,13 +218,52 @@ mod mixed_density {
             "options": { "reserved_tokens": RESERVED },
         }))
         .unwrap();
-        let response =
-            serde_json::to_value(assemble::handle(&deps, request).await.unwrap()).unwrap();
+        assemble::handle(&deps, request)
+            .await
+            .map(|response| serde_json::to_value(response).unwrap())
+            .map_err(|error| format!("{error:?}"))
+    }
+
+    fn sent_billed(response: &Value) -> f64 {
+        let sent: Vec<AgentMessage> = serde_json::from_value(response["messages"].clone()).unwrap();
+        sent.iter().map(billed).sum()
+    }
+
+    /// 30 prose documents, then 20 hex documents: the emergency pass removes
+    /// the largest estimates first, the prose.
+    #[tokio::test]
+    async fn what_relief_keeps_is_counted_again_and_fits_the_window() {
+        let documents = (0..50)
+            .map(|i| {
+                if i < 30 {
+                    "plain words ".repeat(700)
+                } else {
+                    "a3f9 ".repeat(1_640)
+                }
+            })
+            .collect();
+        let messages = read("Read every document in order.".into(), documents);
+        let response = assemble_without_summariser(messages).await.unwrap();
 
         assert_eq!(response["applied"]["compacted"], false);
         assert_eq!(response["applied"]["pruned"], true);
-        let sent: Vec<AgentMessage> = serde_json::from_value(response["messages"].clone()).unwrap();
-        let billed = sent.iter().map(billed).sum::<f64>();
+        let billed = sent_billed(&response);
+        assert!(billed <= 128_000.0, "sent {billed} provider tokens");
+    }
+
+    /// A 120k prose prompt and five hex documents. The first count is over
+    /// the window; the emergency pass reduces results, not prompts, so it
+    /// cannot reach the tightened budget, but what it leaves fits as counted.
+    #[tokio::test]
+    async fn a_reduced_request_that_fits_as_counted_is_not_an_overflow() {
+        let documents = (0..5).map(|_| "a3f9 ".repeat(1_640)).collect();
+        let messages = read("plain words ".repeat(40_000), documents);
+        let response = assemble_without_summariser(messages)
+            .await
+            .unwrap_or_else(|error| panic!("assemble failed: {error}"));
+
+        assert_eq!(response["applied"]["pruned"], true);
+        let billed = sent_billed(&response);
         assert!(billed <= 128_000.0, "sent {billed} provider tokens");
     }
 }

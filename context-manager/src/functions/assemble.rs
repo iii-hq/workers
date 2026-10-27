@@ -454,7 +454,9 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
     // relief keeps what it did not remove, and the emergency pass removes the
     // largest estimates first: the least dense content, about one billed
     // token per estimate unit. Count what is left; while it is over the
-    // window, take the excess off in estimate units.
+    // window, take the excess off in estimate units. Once it fits, the
+    // estimate decides against `usable` again: content the emergency pass
+    // cannot reduce (long prose prompts) may never reach the tight budget.
     if !options.preview_only && gate_budget < usable_budget && token_count < gated_estimate {
         for round in 0..=MAX_RECOUNTS {
             let Ok(counted) = deps
@@ -472,6 +474,7 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
             };
             let counted = counted.saturating_add(request_overhead_tokens);
             if counted <= usable_budget {
+                gate_budget = usable_budget;
                 break;
             }
             gate_budget = token_count.saturating_sub(counted - usable_budget);
@@ -481,14 +484,16 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
                 budget = gate_budget,
                 "assemble: the reduced request still counts over the window; reducing further"
             );
-            // Out of rounds, or nothing left to reduce: the check below answers.
+            // Out of rounds, or (below) nothing left to reduce: the check
+            // after the loop answers.
             if round == MAX_RECOUNTS {
                 break;
             }
             let excess = token_count.saturating_sub(gate_budget);
+            let before = token_count;
             reduce_results(&mut working, &mut sizes, excess, estimator, &mut applied);
             token_count = total(&sizes, prompt_tokens);
-            if token_count > gate_budget {
+            if token_count == before {
                 break;
             }
         }
