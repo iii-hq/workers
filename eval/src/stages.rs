@@ -1856,13 +1856,11 @@ async fn replay_sizes(
             let Some(entry) = b["entry_id"].as_str().and_then(|id| recorded_of.get(id)) else {
                 continue;
             };
-            let usage = &entry["message"]["usage"];
-            recorded += ["input", "cache_read", "cache_write"]
-                .iter()
-                .filter_map(|key| usage[key].as_f64())
-                .sum::<f64>();
-            base += b["chars"].as_f64().unwrap_or(0.0);
-            candidate += c["chars"].as_f64().unwrap_or(0.0);
+            // In the metric's units: uncached input, against what a prefix
+            // cache cannot serve. A change that breaks the cache pays more.
+            recorded += entry["message"]["usage"]["input"].as_f64().unwrap_or(0.0);
+            base += b["fresh"].as_f64().unwrap_or(0.0);
+            candidate += c["fresh"].as_f64().unwrap_or(0.0);
             steps += 1;
             changed += u32::from(b != c);
             let matched = replay::exact(&b["req"], &entry["origin"]["req"]);

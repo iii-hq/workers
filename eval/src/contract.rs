@@ -778,7 +778,7 @@ pub struct ReplayV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub p_more: Option<f64>,
     /// A token objective: every recorded step rebuilt by both builds, and
-    /// the input tokens a run each sends at the recorded trajectory.
+    /// the uncached input tokens a run each pays at the recorded trajectory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub steps: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

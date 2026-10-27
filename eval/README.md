@@ -182,16 +182,20 @@ cycle runs these steps:
    the runs show the criterion worse; anything else leaves the runs to
    decide it. The runs always follow and always decide the kept criteria.
    A token objective (`context_consumption`: an objective naming tokens or
-   context) reads the transcripts in code instead of judging failures:
-   every model-facing entry is sent again in each later step's request, so
-   it costs its size once per later step, and the system prompt and tools
-   (what the first request held beyond its messages) cost once per step;
-   the largest shares of the recorded input, and identical repeat calls,
-   are the points (`insight::spend`). Its level 1 rebuilds every recorded
-   step of the baseline runs under both builds (`harness-replay` sizes) and
-   compares the input tokens a run each sends at the recorded trajectory,
-   characters turned into tokens at the rate the base rebuild matches the
-   recorded input (~0.27 a character on DeepSeek Flash). It is exact and
+   context) reads the transcripts in code instead of judging failures, in
+   the E2E tokens metric's units (uncached input plus output; what the
+   provider reads from its cache is not counted): each step pays uncached
+   for what is new since the step before, and the system prompt and tools
+   at the first step; what a step pays beyond that is a cache miss. The
+   largest shares, and identical repeat calls, are the points
+   (`insight::spend`), with the model, the cache share and whether the
+   window ever shrank. Its level 1 rebuilds every recorded step of the
+   baseline runs under both builds (`harness-replay` sizes) and compares
+   the uncached input a run each pays at the recorded trajectory: each
+   step's characters past the prefix the previous request shares (what a
+   prefix cache cannot serve, so a change that breaks the cache costs
+   more), turned into tokens at the rate the base matches the recorded
+   uncached input. It is exact and
    samples nothing: a change of at least the minimum effect either way is
    shown. The runs still decide whether the trajectory itself changed.
 4. A source validation runs under the frozen plan: the base commit

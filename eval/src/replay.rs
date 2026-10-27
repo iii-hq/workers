@@ -240,8 +240,8 @@ pub fn verdict(base: (u32, u32), candidate: (u32, u32)) -> (ValidationOutcomeV1,
     }
 }
 
-/// What a token objective's rebuilt requests show, in input tokens a run
-/// at the recorded trajectory. Exact, so a change of at least `min_effect`
+/// What a token objective's rebuilt requests show, in uncached input tokens
+/// a run at the recorded trajectory. Exact, so a change of at least `min_effect`
 /// either way is shown.
 pub fn size_verdict(
     base: f64,
@@ -252,8 +252,8 @@ pub fn size_verdict(
 ) -> (ValidationOutcomeV1, String) {
     use ValidationOutcomeV1::*;
     let said = format!(
-        "rebuilt at {steps} recorded step(s), the base sends ~{base:.0} input tokens a run and \
-         the candidate ~{candidate:.0} ({:+.1}%)",
+        "rebuilt at {steps} recorded step(s), the base pays ~{base:.0} uncached input tokens a \
+         run and the candidate ~{candidate:.0} ({:+.1}%)",
         100.0 * (candidate / base.max(1.0) - 1.0)
     );
     if changed == 0 {

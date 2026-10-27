@@ -778,7 +778,7 @@ function steps(cycle: CycleRecord, current: LoopConfig | null): Step[][] {
               label: 'Replayed',
               fact:
                 cycle.replay.base_tokens !== undefined && cycle.replay.candidate_tokens !== undefined
-                  ? `input tokens a run: base ${Math.round(cycle.replay.base_tokens)}, candidate ${Math.round(
+                  ? `uncached input tokens a run: base ${Math.round(cycle.replay.base_tokens)}, candidate ${Math.round(
                       cycle.replay.candidate_tokens,
                     )}`
                   : cycle.replay.base_samples

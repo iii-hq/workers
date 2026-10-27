@@ -96,14 +96,17 @@ fn step_end(message: &Value) -> String {
     )
 }
 
-/// Tokens per character of what the model reads (recorded DeepSeek Flash
-/// runs: 0.27 ± 0.01). Only estimates the system prompt and the tools, which
-/// the transcript does not hold, from the first step's input.
+/// Tokens per character of what the model reads, when a run has too few
+/// steps to measure its own (DeepSeek Flash: 0.27 on code and prose, 0.58
+/// on the dense segments of `context_pressure`).
 const TOKENS_PER_CHAR: f64 = 0.27;
 /// A smaller share of the input is no point.
 const MIN_SHARE: f64 = 0.05;
 const MAX_SPEND_POINTS: usize = 6;
 const SYSTEM: &str = "system prompt and tools";
+const OWN: &str = "the model's own turns";
+const MISSED: &str = "cache misses";
+const OUTPUT: &str = "the model's output";
 
 #[derive(Default)]
 struct Part {
@@ -112,12 +115,13 @@ struct Part {
     repeats: u32,
 }
 
-/// Where `scenarios`' recorded runs spend their input. Every model-facing
-/// entry is sent again in each later step's request, so it costs its size
-/// once per later step; the system prompt and the tools (all the first
-/// request held beyond its messages) cost once per step. Shares are by
-/// characters, tokens by each run's recorded input. The largest shares are
-/// the points.
+/// Where `scenarios`' recorded runs spend the tokens the E2E metric counts
+/// (`efficiency.total_tokens`: uncached input plus output; what the provider
+/// reads from its cache is not counted). Each step pays uncached for what is
+/// new since the step before, by characters: the content logged between
+/// them, and at the first step the system prompt and the tools too. What a
+/// step pays beyond that is earlier context its cache missed. The largest
+/// shares are the points.
 pub fn spend(bundle: &Value, scenarios: &[String]) -> (Vec<ImprovementPointV1>, String) {
     let mut parts: BTreeMap<String, Part> = BTreeMap::new();
     let (mut runs, mut steps, mut input, mut output) = (0u32, 0usize, 0.0, 0.0);
@@ -145,77 +149,106 @@ pub fn spend(bundle: &Value, scenarios: &[String]) -> (Vec<ImprovementPointV1>, 
         let Some(&first) = at.first() else {
             continue;
         };
-        let used = |entry: &Value| {
-            let usage = &entry["message"]["usage"];
-            ["input", "cache_read", "cache_write"]
-                .iter()
-                .filter_map(|key| usage[key].as_f64())
-                .sum::<f64>()
-        };
+        let usage =
+            |i: usize, key: &str| entries[i]["message"]["usage"][key].as_f64().unwrap_or(0.0);
+        let sent = |i: usize| usage(i, "input") + usage(i, "cache_read") + usage(i, "cache_write");
         let chars = |entry: &Value| entry["message"]["content"].to_string().len() as f64;
-        let run_input: f64 = at.iter().map(|&i| used(&entries[i])).sum();
         for pair in at.windows(2) {
-            shrank += u32::from(used(&entries[pair[1]]) < used(&entries[pair[0]]));
+            shrank += u32::from(sent(pair[1]) < sent(pair[0]));
         }
-        for &i in &at {
-            let message = &entries[i]["message"];
-            cached += message["usage"]["cache_read"].as_f64().unwrap_or(0.0);
-            models.extend(message["model"].as_str().map(str::to_string));
-        }
-        let before: f64 = entries[..first]
-            .iter()
-            .filter(|entry| entry["message"].is_object())
-            .map(chars)
-            .sum();
-        let mut sent: BTreeMap<String, (f64, u32)> = BTreeMap::new();
-        let system = (used(&entries[first]) / TOKENS_PER_CHAR - before).max(0.0);
-        sent.insert(SYSTEM.into(), (system * at.len() as f64, at.len() as u32));
         let mut called = std::collections::BTreeSet::new();
-        for (i, entry) in entries.iter().enumerate() {
-            let message = &entry["message"];
-            let key = match message["role"].as_str() {
-                Some("function_result") => {
-                    message["function_id"].as_str().unwrap_or("?").to_string()
-                }
-                Some("assistant") => {
-                    if let Ok(AgentMessage::Assistant(assistant)) =
-                        serde_json::from_value(message.clone())
-                    {
-                        for call in plan_calls(&assistant, ExposeMode::AgentTrigger) {
-                            if call.kind == CallKind::Trigger
-                                && !called
-                                    .insert((call.function_id.clone(), call.arguments.to_string()))
-                            {
-                                parts.entry(call.function_id).or_default().repeats += 1;
+        let keys: Vec<Option<String>> = entries
+            .iter()
+            .map(|entry| {
+                let message = &entry["message"];
+                Some(match message["role"].as_str()? {
+                    "function_result" => message["function_id"].as_str().unwrap_or("?").to_string(),
+                    "assistant" => {
+                        if let Ok(AgentMessage::Assistant(assistant)) =
+                            serde_json::from_value(message.clone())
+                        {
+                            for call in plan_calls(&assistant, ExposeMode::AgentTrigger) {
+                                if call.kind == CallKind::Trigger
+                                    && !called.insert((
+                                        call.function_id.clone(),
+                                        call.arguments.to_string(),
+                                    ))
+                                {
+                                    parts.entry(call.function_id).or_default().repeats += 1;
+                                }
                             }
                         }
+                        OWN.into()
                     }
-                    "the model's own turns".into()
+                    "user" if entry["origin"]["skill_update"] == true => {
+                        "skills list messages".into()
+                    }
+                    "user" => "user messages".into(),
+                    _ => return None,
+                })
+            })
+            .collect();
+        // Characters the model read beyond the system prompt and the tools
+        // at each step, and the line through the first and the last step's
+        // whole input (cache reads included): its slope is this run's tokens
+        // a character, its intercept the system prompt and the tools.
+        let mut window = Vec::with_capacity(at.len());
+        let mut read = 0.0;
+        let mut next = 0;
+        for &step in &at {
+            for i in next..step {
+                if keys[i].is_some() {
+                    read += chars(&entries[i]);
                 }
-                Some("user") if entry["origin"]["skill_update"] == true => {
-                    "skills list messages".into()
-                }
-                Some("user") => "user messages".into(),
-                _ => continue,
-            };
-            let later = at.iter().filter(|&&step| step > i).count() as f64;
-            let slot = sent.entry(key).or_default();
-            slot.0 += chars(entry) * later;
-            slot.1 += 1;
+            }
+            next = step;
+            window.push(read);
         }
-        let total: f64 = sent.values().map(|(chars, _)| chars).sum::<f64>().max(1.0);
-        for (key, (chars, count)) in sent {
-            let part = parts.entry(key).or_default();
-            part.tokens += chars / total * run_input;
-            part.count += count;
+        let last = at.len() - 1;
+        let rate = match (sent(at[last]) - sent(first)) / (window[last] - window[0]) {
+            rate if rate.is_finite() && rate > 0.0 => rate,
+            _ => TOKENS_PER_CHAR,
+        };
+        let system = (sent(first) - rate * window[0]).max(0.0);
+        let mut from = 0;
+        for &step in &at {
+            let mut new: Vec<(String, f64)> = (from..step)
+                .filter_map(|i| Some((keys[i].clone()?, rate * chars(&entries[i]))))
+                .collect();
+            if step == first {
+                new.push((SYSTEM.into(), system));
+            }
+            from = step;
+            let estimate = new.iter().map(|(_, tokens)| tokens).sum::<f64>();
+            let paid = usage(step, "input");
+            let scale = if estimate > 0.0 {
+                (paid / estimate).min(1.0)
+            } else {
+                0.0
+            };
+            for (key, tokens) in new {
+                let part = parts.entry(key).or_default();
+                part.tokens += tokens * scale;
+                part.count += 1;
+            }
+            if paid > estimate {
+                let part = parts.entry(MISSED.into()).or_default();
+                part.tokens += paid - estimate;
+                part.count += 1;
+            }
+            let part = parts.entry(OUTPUT.into()).or_default();
+            part.tokens += usage(step, "output");
+            input += paid;
+            output += usage(step, "output");
+            cached += usage(step, "cache_read");
+            models.extend(
+                entries[step]["message"]["model"]
+                    .as_str()
+                    .map(str::to_string),
+            );
         }
         runs += 1;
         steps += at.len();
-        input += run_input;
-        output += at
-            .iter()
-            .filter_map(|&i| entries[i]["message"]["usage"]["output"].as_f64())
-            .sum::<f64>();
     }
     if runs == 0 {
         return (
@@ -229,7 +262,8 @@ pub fn spend(bundle: &Value, scenarios: &[String]) -> (Vec<ImprovementPointV1>, 
         .filter(|(_, part)| part.tokens > 0.0)
         .collect();
     ranked.sort_by(|a, b| b.1.tokens.total_cmp(&a.1.tokens));
-    let share = |part: &Part| part.tokens / input.max(1.0);
+    let counted = input + output;
+    let share = |part: &Part| part.tokens / counted.max(1.0);
     let steps_a_run = steps as f64 / f64::from(runs);
     let points = ranked
         .iter()
@@ -237,24 +271,33 @@ pub fn spend(bundle: &Value, scenarios: &[String]) -> (Vec<ImprovementPointV1>, 
         .take(MAX_SPEND_POINTS)
         .map(|(key, part)| {
             let head = format!(
-                "~{:.0} input tokens a run ({:.0}% of the input)",
+                "~{:.0} counted tokens a run ({:.0}% of the metric)",
                 per_run(part.tokens),
                 100.0 * share(part)
             );
-            let what = if key == SYSTEM {
-                format!(
-                    "about {:.0} at each of {steps_a_run:.1} steps, sent again whole every step",
-                    part.tokens / steps as f64
-                )
-            } else {
-                let repeats = match part.repeats {
-                    0 => String::new(),
-                    n => format!("; {:.1} identical repeat call(s) a run", per_run(f64::from(n))),
-                };
-                format!(
-                    "{:.1} a run, each kept in the context and sent again at every later step{repeats}",
+            let what = match key.as_str() {
+                SYSTEM => "paid uncached at the first step, read from the provider's cache after"
+                    .to_string(),
+                MISSED => format!(
+                    "at {:.1} step(s) a run the provider's cache missed and earlier context was \
+                     paid again",
                     per_run(f64::from(part.count))
-                )
+                ),
+                OUTPUT => "written by the model, thinking included".to_string(),
+                _ => {
+                    let repeats = match part.repeats {
+                        0 => String::new(),
+                        n => format!(
+                            "; {:.1} identical repeat call(s) a run",
+                            per_run(f64::from(n))
+                        ),
+                    };
+                    format!(
+                        "{:.1} a run, each paid uncached once, at the step after it was added \
+                         (later steps read it from the provider's cache){repeats}",
+                        per_run(f64::from(part.count))
+                    )
+                }
             };
             ImprovementPointV1 {
                 function_id: key.clone(),
@@ -272,13 +315,15 @@ pub fn spend(bundle: &Value, scenarios: &[String]) -> (Vec<ImprovementPointV1>, 
     (
         points,
         format!(
-            "the transcripts of {runs} run(s) of {} send ~{:.0} input tokens a run over \
-             {steps_a_run:.1} steps and write ~{:.0}; {:.0}% of the input was read from the \
-             provider's cache; {}; the largest shares: {}",
+            "the transcripts of {runs} run(s) of {} count ~{:.0} tokens a run as the E2E tokens \
+             metric does: ~{:.0} uncached input over {steps_a_run:.1} steps and ~{:.0} output; \
+             ~{:.0} more a run were read from the provider's cache and are not counted; {}; the \
+             largest shares: {}",
             models.into_iter().collect::<Vec<_>>().join(", "),
+            per_run(counted),
             per_run(input),
             per_run(output),
-            100.0 * cached / input.max(1.0),
+            per_run(cached),
             match shrank {
                 0 => "the window never shrank between steps (no prune or compaction)".to_string(),
                 n => format!("the window shrank between steps {n} time(s) (prune or compaction)"),
@@ -774,10 +819,10 @@ mod tests {
                 "arguments": {"function": "engine::functions::info", "description": "Contracts",
                 "payload": {"function_ids": ["coder::read-file"]}}})
         };
-        let step = |at: u32, input: u32, content: Value| {
+        let step = |at: u32, input: u32, cache_read: u32, content: Value| {
             json!({"entry_id": format!("e_t_1_{at}_assistant"), "message": {"role": "assistant",
                 "timestamp": 0, "model": "m", "provider": "p", "stop_reason": "function_call",
-                "usage": {"input": input, "cache_read": 0, "output": 50}, "content": content}})
+                "usage": {"input": input, "cache_read": cache_read, "output": 50}, "content": content}})
         };
         let result = |id: &str| {
             json!({"entry_id": format!("e_t_1_call_{id}"), "message": {"role": "function_result",
@@ -788,11 +833,11 @@ mod tests {
         json!({"run_id": "r1", "transcript": {"messages": [
             {"entry_id": "u", "message": {"role": "user", "timestamp": 0,
                 "content": [{"type": "text", "text": "Read the contracts, then report."}]}},
-            step(0, 3000, json!([info("c1")])),
+            step(0, 3000, 0, json!([info("c1")])),
             result("c1"),
-            step(1, 9000, json!([info("c2")])),
+            step(1, 5500, 3500, json!([info("c2")])),
             result("c2"),
-            step(2, 15000, json!([{"type": "text", "text": "Done."}])),
+            step(2, 5500, 9500, json!([{"type": "text", "text": "Done."}])),
         ]}})
     }
 
@@ -802,10 +847,12 @@ mod tests {
             {"scenario_id": "s", "runs": [spending_run()]}]}}]}});
         let (points, reason) = spend(&bundle, &["s".into()]);
         assert!(
-            reason.contains("1 run(s) of m send ~27000 input tokens a run over 3.0 steps"),
+            reason.contains(
+                "1 run(s) of m count ~14150 tokens a run as the E2E tokens metric \
+                 does: ~14000 uncached input over 3.0 steps and ~150 output; ~13000 more"
+            ),
             "{reason}"
         );
-        assert!(reason.contains("0% of the input was read"), "{reason}");
         assert!(reason.contains("never shrank"), "{reason}");
         let names: Vec<&str> = points
             .iter()
@@ -823,6 +870,16 @@ mod tests {
             .iter()
             .all(|point| point.source == InsightSourceV1::Transcripts));
         assert_eq!(spend(&bundle, &["other".into()]).0, Vec::new());
+        // Without a cache every step pays its whole window again: the misses lead.
+        let mut uncached = spending_run();
+        for (at, input) in [(3, 9000), (5, 15000)] {
+            let usage = &mut uncached["transcript"]["messages"][at]["message"]["usage"];
+            usage["input"] = json!(input);
+            usage["cache_read"] = json!(0);
+        }
+        let bundle = json!({"detail": {"reports": [{"report": {"scenarios": [
+            {"scenario_id": "s", "runs": [uncached]}]}}]}});
+        assert_eq!(spend(&bundle, &["s".into()]).0[0].function_id, MISSED);
     }
 }
 
@@ -841,6 +898,11 @@ mod real {
             .collect();
         for site in super::sites("real", &bundle, &scenarios) {
             println!("{}", serde_json::to_string_pretty(&site).unwrap());
+        }
+        let (points, reason) = super::spend(&bundle, &scenarios);
+        println!("{reason}");
+        for point in points {
+            println!("- {}", point.summary);
         }
     }
 }

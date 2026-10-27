@@ -2577,7 +2577,7 @@
             "type": "string"
           },
           "steps": {
-            "description": "A token objective: every recorded step rebuilt by both builds, and the input tokens a run each sends at the recorded trajectory.",
+            "description": "A token objective: every recorded step rebuilt by both builds, and the uncached input tokens a run each pays at the recorded trajectory.",
             "format": "uint32",
             "minimum": 0.0,
             "type": [

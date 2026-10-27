@@ -151,39 +151,60 @@ pub struct StepSize {
     /// Characters the model reads: the system prompt, the tools and each
     /// message's content.
     pub chars: usize,
+    /// Of those, the ones past the prefix the previous step's request shares:
+    /// what a provider's prefix cache cannot serve.
+    pub fresh: usize,
     pub req: Value,
 }
 
 /// Every step of a recorded run rebuilt, at the recorded trajectory.
 pub fn sizes(input: &SizesInput) -> Vec<StepSize> {
-    input
-        .entries
-        .iter()
-        .enumerate()
-        .filter_map(|(at, entry)| {
-            let (turn_id, step) = step_of(&entry.entry_id)?;
-            let request = rebuild(&ReplayInput {
-                entries: input.entries[..at].to_vec(),
-                turn_id,
-                step,
-                model: input.model.clone(),
-                provider: input.provider.clone(),
-                skills: input.skills.clone(),
-            });
-            let chars = request.system_prompt.as_ref().map_or(0, String::len)
-                + serde_json::to_string(&request.tools).map_or(0, |text| text.len())
-                + request
-                    .messages
+    let content = |messages: &[Value]| {
+        messages
+            .iter()
+            .map(|message| message["content"].to_string().len())
+            .sum::<usize>()
+    };
+    let mut previous: Option<(Option<String>, String, Vec<Value>)> = None;
+    let mut measured = Vec::new();
+    for (at, entry) in input.entries.iter().enumerate() {
+        let Some((turn_id, step)) = step_of(&entry.entry_id) else {
+            continue;
+        };
+        let request = rebuild(&ReplayInput {
+            entries: input.entries[..at].to_vec(),
+            turn_id,
+            step,
+            model: input.model.clone(),
+            provider: input.provider.clone(),
+            skills: input.skills.clone(),
+        });
+        let tools = serde_json::to_string(&request.tools).unwrap_or_default();
+        let chars = request.system_prompt.as_ref().map_or(0, String::len)
+            + tools.len()
+            + content(&request.messages);
+        let fresh = match &previous {
+            Some((system, tools_before, messages))
+                if *system == request.system_prompt && *tools_before == tools =>
+            {
+                let shared = messages
                     .iter()
-                    .map(|message| message["content"].to_string().len())
-                    .sum::<usize>();
-            Some(StepSize {
-                entry_id: entry.entry_id.clone(),
-                chars,
-                req: request.req,
-            })
-        })
-        .collect()
+                    .zip(&request.messages)
+                    .take_while(|(before, now)| before == now)
+                    .count();
+                content(&request.messages[shared..])
+            }
+            _ => chars,
+        };
+        measured.push(StepSize {
+            entry_id: entry.entry_id.clone(),
+            chars,
+            fresh,
+            req: request.req,
+        });
+        previous = Some((request.system_prompt, tools, request.messages));
+    }
+    measured
 }
 
 /// `e_<turn>_<step>_assistant`.
@@ -251,6 +272,24 @@ mod tests {
         assert_eq!(measured.len(), 1, "one assistant step");
         assert_eq!(measured[0].entry_id, "e_t_0_assistant");
         assert!(measured[0].chars > crate::prompt::DEFAULT.len());
+        assert_eq!(measured[0].fresh, measured[0].chars, "nothing before it");
+
+        // A later step pays fresh only for what came after the shared prefix.
+        let mut longer = input.entries.clone();
+        longer.extend(entries(json!([
+            {"entry_id": "e_t_1_assistant", "message": {"role": "assistant", "timestamp": 3,
+                "model": "m", "provider": "p", "stop_reason": "end",
+                "content": [{"type": "text", "text": "Done."}]}},
+        ])));
+        let measured = sizes(&SizesInput {
+            entries: longer,
+            model: "m".into(),
+            provider: None,
+            skills: None,
+        });
+        assert_eq!(measured.len(), 2);
+        let added = measured[1].chars - measured[0].chars;
+        assert_eq!(measured[1].fresh, added, "{measured:?}");
     }
 
     #[test]

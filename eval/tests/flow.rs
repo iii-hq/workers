@@ -1742,10 +1742,10 @@ async fn a_token_objective_reads_where_the_recorded_runs_spend_their_input() {
             "arguments": {"function": "engine::functions::info", "description": "Contracts",
             "payload": {"function_ids": ["coder::read-file"]}}})
     };
-    let step = |at: u32, input: u32, content: Value| {
+    let step = |at: u32, input: u32, cache_read: u32, content: Value| {
         json!({"entry_id": format!("e_t_1_{at}_assistant"), "message": {"role": "assistant",
             "timestamp": 0, "model": "m", "provider": "p", "stop_reason": "function_call",
-            "usage": {"input": input, "cache_read": 0, "output": 50}, "content": content}})
+            "usage": {"input": input, "cache_read": cache_read, "output": 50}, "content": content}})
     };
     let result = |id: &str| {
         json!({"entry_id": format!("e_t_1_call_{id}"), "message": {"role": "function_result",
@@ -1759,11 +1759,11 @@ async fn a_token_objective_reads_where_the_recorded_runs_spend_their_input() {
         json!({"messages": [
             {"entry_id": "u", "message": {"role": "user", "timestamp": 0,
                 "content": [{"type": "text", "text": "Read the contracts, then report."}]}},
-            step(0, 3000, json!([info("c1")])),
+            step(0, 3000, 0, json!([info("c1")])),
             result("c1"),
-            step(1, 9000, json!([info("c2")])),
+            step(1, 5500, 3500, json!([info("c2")])),
             result("c2"),
-            step(2, 15000, json!([{"type": "text", "text": "Done."}])),
+            step(2, 5500, 9500, json!([{"type": "text", "text": "Done."}])),
         ]}),
     );
     run["transcript"].take();
@@ -1811,7 +1811,9 @@ async fn a_token_objective_reads_where_the_recorded_runs_spend_their_input() {
         outcome.detail
     );
     assert!(
-        outcome.detail.contains("send ~27000 input tokens a run"),
+        outcome
+            .detail
+            .contains("count ~14150 tokens a run as the E2E tokens metric does"),
         "{}",
         outcome.detail
     );
