@@ -15,6 +15,13 @@ use super::rootfs::clone_rootfs;
 
 const PREPARED_MARKER_VERSION: &str = "workspace-copy-in-v1";
 
+/// The worker command. A valid base image may lack bash (`node:20-alpine`);
+/// its `sh` then runs the script, whose only bash-ism, `set -o pipefail`,
+/// busybox ash supports. Images with bash keep running the script under it,
+/// as their setup/install commands may rely on bash syntax.
+const RUN_SCRIPT_CMD: &str =
+    "command -v bash >/dev/null && exec bash /opt/iii/dev-run.sh; exec sh /opt/iii/dev-run.sh";
+
 /// Re-sync deletions: /workspace lives on the persistent ext4 upper and tar -x
 /// only adds/overwrites (never deletes), so a source file removed on the host
 /// would keep running across a watcher restart. Remove every file outside the
@@ -624,7 +631,7 @@ pub(crate) async fn start_worker_impl(
     //    `iii-init` binary absorbs that role (see iii_init::supervisor).
     let script = build_libkrun_local_script(&project, is_prepared, is_bundle, overlay);
 
-    // Both modes exec `bash /opt/iii/dev-run.sh`; only the SOURCE of that file
+    // Both modes run `/opt/iii/dev-run.sh`; only the SOURCE of that file
     // differs:
     //   - legacy: written into the per-worker clone at managed_dir/opt/iii,
     //     which IS the guest root (PassthroughFs) — directly visible.
@@ -637,17 +644,14 @@ pub(crate) async fn start_worker_impl(
     // The script is delivered as a FILE, never inlined into III_WORKER_CMD:
     // with an on-disk (not embedded) init the guest env rides the kernel
     // cmdline (krun_env), whose size `vm_boot` caps. Keeping III_WORKER_CMD
-    // tiny (`exec bash /opt/iii/dev-run.sh`) keeps the env within that budget
+    // tiny (RUN_SCRIPT_CMD) keeps the env within that budget
     // for both modes.
     let script_dir = write_run_script(&managed_dir, overlay, &script)
         .map_err(|e| format!("Failed to write run script: {}", e))?;
     // The script sets up the workspace; no pre-cd needed (and /workspace is
     // empty until virtiofs mounts, so cd-before-exec would be racy).
     let exec_path = "/bin/sh";
-    let args = vec![
-        "-c".to_string(),
-        "exec bash /opt/iii/dev-run.sh".to_string(),
-    ];
+    let args = vec!["-c".to_string(), RUN_SCRIPT_CMD.to_string()];
 
     // 8. Copy iii-init if needed
     let init_path = match super::firmware::provision::ensure_init_binary().await {
@@ -897,6 +901,27 @@ mod tests {
         assert!(script.contains("node server.js"));
         assert!(script.contains("SRC=/mnt/host-src"));
         assert!(script.contains("touch /run/iii/source-ready"));
+    }
+
+    /// A valid base image without bash (`node:20-alpine`) must still run the
+    /// script, through the image's own `sh`.
+    #[test]
+    fn run_script_command_falls_back_to_sh_without_bash() {
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        std::os::unix::fs::symlink("/bin/sh", bin.join("sh")).unwrap();
+        let script = temp.path().join("dev-run.sh");
+        std::fs::write(&script, "exit 7\n").unwrap();
+
+        let status = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(RUN_SCRIPT_CMD.replace("/opt/iii/dev-run.sh", script.to_str().unwrap()))
+            .env("PATH", &bin)
+            .status()
+            .unwrap();
+
+        assert_eq!(status.code(), Some(7));
     }
 
     /// The VM env already holds the manifest env with the caller's overrides
