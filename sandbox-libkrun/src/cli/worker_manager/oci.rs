@@ -423,145 +423,157 @@ pub fn extract_layer_with_limits(
     layer_count: usize,
     total_size: &mut u64,
 ) -> Result<()> {
-    let reader: Box<dyn std::io::Read + '_> =
-        if media_type.ends_with("tar+gzip") || media_type.ends_with("tar.gzip") {
-            Box::new(flate2::read::GzDecoder::new(data))
-        } else if media_type.ends_with("tar") {
-            Box::new(data)
-        } else {
-            anyhow::bail!(
-                "Layer {}/{}: unsupported layer media type {media_type:?} \
-                 (only uncompressed and gzip tar layers can be extracted)",
-                layer_index + 1,
-                layer_count
-            );
-        };
-    let mut archive = tar::Archive::new(reader);
-    archive.set_preserve_permissions(true);
-    // Applied when tar sets the mode, so the bits never exist on disk.
-    archive.set_mask(SETID_BITS);
-    archive.set_overwrite(true);
-
-    let mut entry_count: u64 = 0;
-
-    for entry in archive.entries().context("Failed to read layer tar")? {
-        let mut entry = entry.context("Failed to read tar entry")?;
-
-        entry_count += 1;
-        if entry_count > MAX_ENTRY_COUNT {
-            anyhow::bail!(
-                "Layer {}/{}: exceeded max entry count ({})",
-                layer_index + 1,
-                layer_count,
-                MAX_ENTRY_COUNT
-            );
-        }
-
-        let path = entry
-            .path()
-            .context("Failed to get entry path")?
-            .into_owned();
-
-        if path.is_absolute() {
-            anyhow::bail!(
-                "Layer {}/{}: absolute path in tar entry: {}",
-                layer_index + 1,
-                layer_count,
-                path.display()
-            );
-        }
-
-        for component in path.components() {
-            if matches!(component, Component::ParentDir) {
+    // Whiteouts hide lower-layer files only (OCI image spec), so all of this
+    // layer's are applied before any of its own entries land: a whiteout
+    // listed after a same-layer file or directory must not delete it.
+    for whiteout_pass in [true, false] {
+        let reader: Box<dyn std::io::Read + '_> =
+            if media_type.ends_with("tar+gzip") || media_type.ends_with("tar.gzip") {
+                Box::new(flate2::read::GzDecoder::new(data))
+            } else if media_type.ends_with("tar") {
+                Box::new(data)
+            } else {
                 anyhow::bail!(
-                    "Layer {}/{}: path traversal in tar entry: {}",
+                    "Layer {}/{}: unsupported layer media type {media_type:?} \
+                     (only uncompressed and gzip tar layers can be extracted)",
+                    layer_index + 1,
+                    layer_count
+                );
+            };
+        let mut archive = tar::Archive::new(reader);
+        archive.set_preserve_permissions(true);
+        // Applied when tar sets the mode, so the bits never exist on disk.
+        archive.set_mask(SETID_BITS);
+        archive.set_overwrite(true);
+
+        let mut entry_count: u64 = 0;
+
+        for entry in archive.entries().context("Failed to read layer tar")? {
+            let mut entry = entry.context("Failed to read tar entry")?;
+
+            entry_count += 1;
+            if entry_count > MAX_ENTRY_COUNT {
+                anyhow::bail!(
+                    "Layer {}/{}: exceeded max entry count ({})",
+                    layer_index + 1,
+                    layer_count,
+                    MAX_ENTRY_COUNT
+                );
+            }
+
+            let path = entry
+                .path()
+                .context("Failed to get entry path")?
+                .into_owned();
+
+            if path.is_absolute() {
+                anyhow::bail!(
+                    "Layer {}/{}: absolute path in tar entry: {}",
                     layer_index + 1,
                     layer_count,
                     path.display()
                 );
             }
-        }
 
-        let depth = path
-            .components()
-            .filter(|c| matches!(c, Component::Normal(_)))
-            .count();
-        if depth > MAX_PATH_DEPTH {
-            anyhow::bail!(
-                "Layer {}/{}: path too deep ({} components): {}",
-                layer_index + 1,
-                layer_count,
-                depth,
-                path.display()
+            for component in path.components() {
+                if matches!(component, Component::ParentDir) {
+                    anyhow::bail!(
+                        "Layer {}/{}: path traversal in tar entry: {}",
+                        layer_index + 1,
+                        layer_count,
+                        path.display()
+                    );
+                }
+            }
+
+            let depth = path
+                .components()
+                .filter(|c| matches!(c, Component::Normal(_)))
+                .count();
+            if depth > MAX_PATH_DEPTH {
+                anyhow::bail!(
+                    "Layer {}/{}: path too deep ({} components): {}",
+                    layer_index + 1,
+                    layer_count,
+                    depth,
+                    path.display()
+                );
+            }
+
+            let whiteout = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_prefix(".wh."));
+            if whiteout_pass {
+                if let Some(target_name) = whiteout {
+                    apply_whiteout(dest, &path, target_name, layer_index);
+                }
+                continue;
+            }
+            if whiteout.is_some() {
+                continue;
+            }
+
+            let entry_size = entry.size();
+            if entry_size > MAX_FILE_SIZE {
+                anyhow::bail!(
+                    "Layer {}/{}: file too large: {} bytes (max {})",
+                    layer_index + 1,
+                    layer_count,
+                    entry_size,
+                    MAX_FILE_SIZE
+                );
+            }
+
+            *total_size += entry_size;
+            if *total_size > MAX_TOTAL_SIZE {
+                anyhow::bail!(
+                    "Layer {}/{}: total extraction size exceeded {} bytes",
+                    layer_index + 1,
+                    layer_count,
+                    MAX_TOTAL_SIZE
+                );
+            }
+
+            // Reserved metadata name: iii writes `<rootfs>/.oci-config.json`
+            // itself after extraction, so skip any entry at that root name or
+            // beneath it (a leading `./` included) — above all a symlink. Defense
+            // in depth behind the no-follow write in pull_and_extract_rootfs.
+            let is_reserved_root = matches!(
+                path.components().find(|c| !matches!(c, Component::CurDir)),
+                Some(Component::Normal(first))
+                    if first == std::ffi::OsStr::new(RESERVED_ROOTFS_NAME_OCI_CONFIG)
             );
-        }
+            if is_reserved_root {
+                tracing::warn!(
+                    layer = layer_index + 1,
+                    path = %path.display(),
+                    "layer entry uses the reserved name .oci-config.json; skipping"
+                );
+                continue;
+            }
 
-        let entry_size = entry.size();
-        if entry_size > MAX_FILE_SIZE {
-            anyhow::bail!(
-                "Layer {}/{}: file too large: {} bytes (max {})",
-                layer_index + 1,
-                layer_count,
-                entry_size,
-                MAX_FILE_SIZE
-            );
-        }
+            let entry_type = entry.header().entry_type();
 
-        *total_size += entry_size;
-        if *total_size > MAX_TOTAL_SIZE {
-            anyhow::bail!(
-                "Layer {}/{}: total extraction size exceeded {} bytes",
-                layer_index + 1,
-                layer_count,
-                MAX_TOTAL_SIZE
-            );
-        }
+            let unpacked = entry
+                .unpack_in(dest)
+                .with_context(|| format!("Failed to extract: {}", path.display()))?;
 
-        // Reserved metadata name: iii writes `<rootfs>/.oci-config.json`
-        // itself after extraction, so skip any entry at that root name or
-        // beneath it (a leading `./` included) — above all a symlink. Defense
-        // in depth behind the no-follow write in pull_and_extract_rootfs.
-        let is_reserved_root = matches!(
-            path.components().find(|c| !matches!(c, Component::CurDir)),
-            Some(Component::Normal(first))
-                if first == std::ffi::OsStr::new(RESERVED_ROOTFS_NAME_OCI_CONFIG)
-        );
-        if is_reserved_root {
-            tracing::warn!(
-                layer = layer_index + 1,
-                path = %path.display(),
-                "layer entry uses the reserved name .oci-config.json; skipping"
-            );
-            continue;
-        }
+            // `unpack_in` returns Ok(false) when it intentionally skips an entry
+            // (e.g. path traversal, no parent). Don't touch the dest path in
+            // that case — the file wasn't written and the resolved path could
+            // point outside the rootfs.
+            if !unpacked {
+                continue;
+            }
 
-        if let Some(name) = path.file_name().and_then(|n| n.to_str())
-            && let Some(target_name) = name.strip_prefix(".wh.")
-        {
-            apply_whiteout(dest, &path, target_name, layer_index);
-            continue;
-        }
-
-        let entry_type = entry.header().entry_type();
-
-        let unpacked = entry
-            .unpack_in(dest)
-            .with_context(|| format!("Failed to extract: {}", path.display()))?;
-
-        // `unpack_in` returns Ok(false) when it intentionally skips an entry
-        // (e.g. path traversal, no parent). Don't touch the dest path in
-        // that case — the file wasn't written and the resolved path could
-        // point outside the rootfs.
-        if !unpacked {
-            continue;
-        }
-
-        // Keep extracted directories writable for the extracting user, or a
-        // directory shipped as 0555 refuses its own entries (see
-        // `keep_dir_owner_writable`).
-        if entry_type.is_dir() {
-            keep_dir_owner_writable(&dest.join(&path))
-                .with_context(|| format!("Failed to keep {} owner-writable", path.display()))?;
+            // Keep extracted directories writable for the extracting user, or a
+            // directory shipped as 0555 refuses its own entries (see
+            // `keep_dir_owner_writable`).
+            if entry_type.is_dir() {
+                keep_dir_owner_writable(&dest.join(&path))
+                    .with_context(|| format!("Failed to keep {} owner-writable", path.display()))?;
+            }
         }
     }
 
@@ -2014,6 +2026,41 @@ mod tests {
 
         assert!(!rootfs.join("a/gone").exists());
         assert!(rootfs.join("a/stays").exists());
+    }
+
+    /// A whiteout hides lower-layer files only, so a same-layer file or
+    /// subtree listed before it must survive.
+    #[test]
+    fn whiteout_keeps_same_layer_entries_listed_before_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(rootfs.join("a/sub")).unwrap();
+        std::fs::write(rootfs.join("a/gone"), b"lower").unwrap();
+        std::fs::write(rootfs.join("a/sub/old"), b"lower").unwrap();
+        let layer = layer_with(|b| {
+            append_empty_file(b, "a/gone");
+            append_empty_file(b, "a/sub/new");
+            append_empty_file(b, "a/.wh.gone");
+            append_empty_file(b, "a/.wh.sub");
+        });
+
+        let mut total_size = 0u64;
+        extract_layer_with_limits(
+            &layer,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(rootfs.join("a/gone")).unwrap(), b"");
+        assert!(rootfs.join("a/sub/new").exists());
+        assert!(
+            !rootfs.join("a/sub/old").exists(),
+            "the lower-layer child of a whited-out dir stays hidden"
+        );
     }
 
     #[test]
