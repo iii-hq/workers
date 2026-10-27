@@ -411,15 +411,32 @@ const SETID_BITS: u32 = 0o6000;
 /// the PID-1 euid (root) on exec, which is what a single-tenant microVM
 /// guest actually wants. There is no privilege boundary *inside* the VM
 /// for setuid to defend, so removing the bit is strictly a fix.
+///
+/// `media_type` is the layer descriptor's: uncompressed and gzip tar layers
+/// are supported (OCI spells gzip `tar+gzip`, Docker `tar.gzip`); anything
+/// else, zstd included, is refused by name.
 pub fn extract_layer_with_limits(
     data: &[u8],
+    media_type: &str,
     dest: &std::path::Path,
     layer_index: usize,
     layer_count: usize,
     total_size: &mut u64,
 ) -> Result<()> {
-    let decoder = flate2::read::GzDecoder::new(data);
-    let mut archive = tar::Archive::new(decoder);
+    let reader: Box<dyn std::io::Read + '_> =
+        if media_type.ends_with("tar+gzip") || media_type.ends_with("tar.gzip") {
+            Box::new(flate2::read::GzDecoder::new(data))
+        } else if media_type.ends_with("tar") {
+            Box::new(data)
+        } else {
+            anyhow::bail!(
+                "Layer {}/{}: unsupported layer media type {media_type:?} \
+                 (only uncompressed and gzip tar layers can be extracted)",
+                layer_index + 1,
+                layer_count
+            );
+        };
+    let mut archive = tar::Archive::new(reader);
     archive.set_preserve_permissions(true);
     // Applied when tar sets the mode, so the bits never exist on disk.
     archive.set_mask(SETID_BITS);
@@ -803,7 +820,14 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
     let mut total_size: u64 = 0;
     let extract_result: Result<()> = (|| {
         for (i, layer) in image_data.layers.iter().enumerate() {
-            extract_layer_with_limits(&layer.data, &extract_root, i, layer_count, &mut total_size)?;
+            extract_layer_with_limits(
+                &layer.data,
+                &layer.media_type,
+                &extract_root,
+                i,
+                layer_count,
+                &mut total_size,
+            )?;
             eprintln!(
                 "  Extracted layer {}/{} ({:.1} MiB total)",
                 i + 1,
@@ -1179,6 +1203,7 @@ async fn pull_image_manifest_resolved(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oci_client::manifest::IMAGE_LAYER_GZIP_MEDIA_TYPE;
 
     /// Regression: the streaming pull's `verify_sha256_digest` must
     /// accept a hasher whose finalize matches the descriptor's hex
@@ -1488,7 +1513,14 @@ mod tests {
         let gz_data = gz.finish().unwrap();
 
         let mut total_size = 0u64;
-        let result = extract_layer_with_limits(&gz_data, dir.path(), 0, 1, &mut total_size);
+        let result = extract_layer_with_limits(
+            &gz_data,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            dir.path(),
+            0,
+            1,
+            &mut total_size,
+        );
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());
         assert!(err_msg.contains("path traversal"), "got: {}", err_msg);
@@ -1514,7 +1546,15 @@ mod tests {
         let gz_data = gz.finish().unwrap();
 
         let mut total_size = 0u64;
-        extract_layer_with_limits(&gz_data, dir.path(), 0, 1, &mut total_size).unwrap();
+        extract_layer_with_limits(
+            &gz_data,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            dir.path(),
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
 
         let content = std::fs::read_to_string(dir.path().join("test.txt")).unwrap();
         assert_eq!(content, "hello world");
@@ -1698,7 +1738,15 @@ mod tests {
         let rootfs = dir.path().join("rootfs");
         std::fs::create_dir_all(&rootfs).unwrap();
         let mut total_size = 0u64;
-        extract_layer_with_limits(&gz_data, &rootfs, 0, 1, &mut total_size).unwrap();
+        extract_layer_with_limits(
+            &gz_data,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
 
         assert!(std::fs::symlink_metadata(rootfs.join(".oci-config.json")).is_err());
     }
@@ -1729,7 +1777,15 @@ mod tests {
         let rootfs = dir.path().join("rootfs");
         std::fs::create_dir_all(&rootfs).unwrap();
         let mut total_size = 0u64;
-        extract_layer_with_limits(&gz_data, &rootfs, 0, 1, &mut total_size).unwrap();
+        extract_layer_with_limits(
+            &gz_data,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
 
         assert!(std::fs::symlink_metadata(rootfs.join(".oci-config.json")).is_err());
     }
@@ -1755,7 +1811,15 @@ mod tests {
         let rootfs = dir.path().join("rootfs");
         std::fs::create_dir_all(&rootfs).unwrap();
         let mut total_size = 0u64;
-        extract_layer_with_limits(&gz_data, &rootfs, 0, 1, &mut total_size).unwrap();
+        extract_layer_with_limits(
+            &gz_data,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
 
         assert!(std::fs::symlink_metadata(rootfs.join(".oci-config.json")).is_err());
     }
@@ -1787,6 +1851,48 @@ mod tests {
         b.append_data(&mut h, path, std::io::empty()).unwrap();
     }
 
+    /// Uncompressed layers are valid OCI and Docker layers; they used to fail
+    /// with a gzip header error because every layer went through gunzip.
+    #[test]
+    fn extract_layer_reads_uncompressed_and_docker_gzip_layers() {
+        use oci_client::manifest::{
+            IMAGE_DOCKER_LAYER_GZIP_MEDIA_TYPE, IMAGE_DOCKER_LAYER_TAR_MEDIA_TYPE,
+            IMAGE_LAYER_MEDIA_TYPE,
+        };
+        let mut builder = tar::Builder::new(Vec::new());
+        append_empty_file(&mut builder, "plain");
+        let raw_tar = builder.into_inner().unwrap();
+        let gzip = layer_with(|b| append_empty_file(b, "plain"));
+
+        for (media_type, data) in [
+            (IMAGE_LAYER_MEDIA_TYPE, &raw_tar),
+            (IMAGE_DOCKER_LAYER_TAR_MEDIA_TYPE, &raw_tar),
+            (IMAGE_DOCKER_LAYER_GZIP_MEDIA_TYPE, &gzip),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut total_size = 0u64;
+            extract_layer_with_limits(data, media_type, dir.path(), 0, 1, &mut total_size)
+                .unwrap_or_else(|e| panic!("{media_type}: {e:#}"));
+            assert!(dir.path().join("plain").is_file(), "{media_type}");
+        }
+    }
+
+    #[test]
+    fn extract_layer_rejects_unsupported_media_types_by_name() {
+        let layer = layer_with(|b| append_empty_file(b, "f"));
+        for media_type in [
+            "application/vnd.oci.image.layer.v1.tar+zstd",
+            "application/vnd.oci.image.layer.v1.tar+gzip+encrypted",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut total_size = 0u64;
+            let err =
+                extract_layer_with_limits(&layer, media_type, dir.path(), 0, 1, &mut total_size)
+                    .expect_err(media_type);
+            assert!(err.to_string().contains(media_type), "got: {err}");
+        }
+    }
+
     /// tar writes FIFO, device and unknown typeflags as regular files, so the
     /// setuid strip must not depend on the entry type.
     #[test]
@@ -1810,7 +1916,15 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let mut total_size = 0u64;
-        extract_layer_with_limits(&layer, dir.path(), 0, 1, &mut total_size).unwrap();
+        extract_layer_with_limits(
+            &layer,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            dir.path(),
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
 
         for (path, _) in kinds {
             let meta = std::fs::symlink_metadata(dir.path().join(path)).unwrap();
@@ -1833,7 +1947,15 @@ mod tests {
         let rootfs = dir.path().join("rootfs");
         std::fs::create_dir_all(&rootfs).unwrap();
         let mut total_size = 0u64;
-        extract_layer_with_limits(&layer, &rootfs, 0, 1, &mut total_size).unwrap();
+        extract_layer_with_limits(
+            &layer,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
 
         assert!(
             outside.join("victim/keep").exists(),
@@ -1853,7 +1975,15 @@ mod tests {
         let rootfs = cache.join("rootfs");
         std::fs::create_dir_all(&rootfs).unwrap();
         let mut total_size = 0u64;
-        extract_layer_with_limits(&layer, &rootfs, 0, 1, &mut total_size).unwrap();
+        extract_layer_with_limits(
+            &layer,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
 
         assert!(
             cache.join("other/keep").exists(),
@@ -1872,7 +2002,15 @@ mod tests {
         let layer = layer_with(|b| append_empty_file(b, "a/.wh.gone"));
 
         let mut total_size = 0u64;
-        extract_layer_with_limits(&layer, &rootfs, 0, 1, &mut total_size).unwrap();
+        extract_layer_with_limits(
+            &layer,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
 
         assert!(!rootfs.join("a/gone").exists());
         assert!(rootfs.join("a/stays").exists());
@@ -1928,7 +2066,15 @@ mod tests {
         let layer = layer_with(|b| append_empty_file(b, "a/.wh.link"));
 
         let mut total_size = 0u64;
-        extract_layer_with_limits(&layer, &rootfs, 0, 1, &mut total_size).unwrap();
+        extract_layer_with_limits(
+            &layer,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
 
         assert!(std::fs::symlink_metadata(rootfs.join("a/link")).is_err());
         assert!(
