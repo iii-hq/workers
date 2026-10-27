@@ -1467,6 +1467,16 @@ fn rand_suffix() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    /// The published example keeps declaration order (serde_json preserve_order),
+    /// so `path` precedes the bulky `ops` and `op` leads each op.
+    #[test]
+    fn example_keeps_path_before_ops() {
+        let text = super::example_update_file_input().to_string();
+        let path_at = text.find("\"path\"").expect("path key");
+        let ops_at = text.find("\"ops\"").expect("ops key");
+        assert!(path_at < ops_at, "path must precede ops: {text}");
+    }
+
     use super::*;
 
     fn lines_of(s: &str) -> Vec<String> {
