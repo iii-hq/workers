@@ -122,6 +122,7 @@ fn record() -> CycleRecordV1 {
         pull_request: None,
         retry_of: None,
         insight: None,
+        replay: None,
     }
 }
 

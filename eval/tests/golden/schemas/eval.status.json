@@ -1183,6 +1183,17 @@
             ],
             "description": "The accepted candidate's pull request, once opened or found."
           },
+          "replay": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ReplayV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The failed steps replayed under both builds, before the runs."
+          },
           "retry_of": {
             "description": "The ended cycle this one measures again, from its finding.",
             "type": [
@@ -1273,6 +1284,13 @@
             "description": "The isolated candidate actor.",
             "enum": [
               "candidate"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The steps whose calls failed, replayed under the base and the candidate build (`replay`).",
+            "enum": [
+              "replay"
             ],
             "type": "string"
           },
@@ -2350,6 +2368,131 @@
           "head_sha",
           "number",
           "url"
+        ],
+        "type": "object"
+      },
+      "ReplayPointV1": {
+        "additionalProperties": false,
+        "description": "One recorded step whose call failed, sampled under both builds. A sample is a mistake when one of its calls would be refused before it runs: arguments that are not valid JSON, or that do not match the target's request schema.",
+        "properties": {
+          "after": {
+            "default": false,
+            "description": "The step after the failed call, which saw its error; else the step that made it.",
+            "type": "boolean"
+          },
+          "base_mistakes": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "candidate_mistakes": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "changed": {
+            "description": "The candidate build sends this step a different request.",
+            "type": "boolean"
+          },
+          "exact": {
+            "default": [],
+            "description": "Parts of the base build's request that equal the recorded one (`system`, `tools`, `messages`).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "samples": {
+            "description": "Answers sampled on each side; zero when unchanged.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "site_id": {
+            "description": "The first failed call of the step.",
+            "type": "string"
+          },
+          "step": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "base_mistakes",
+          "candidate_mistakes",
+          "changed",
+          "run_id",
+          "samples",
+          "site_id",
+          "step"
+        ],
+        "type": "object"
+      },
+      "ReplayV1": {
+        "additionalProperties": false,
+        "description": "Level 1: the failed steps replayed. Its outcome decides the counted criterion when it shows a change; the runs still decide the rest.",
+        "properties": {
+          "base_mistakes": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "base_samples": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "candidate_mistakes": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "candidate_samples": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "outcome": {
+            "$ref": "#/definitions/ValidationOutcomeV1"
+          },
+          "p_fewer": {
+            "description": "Fisher's exact test, one-sided: the candidate makes fewer mistakes.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "p_more": {
+            "description": "The same, the candidate makes more.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "points": {
+            "default": [],
+            "items": {
+              "$ref": "#/definitions/ReplayPointV1"
+            },
+            "type": "array"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "reason"
         ],
         "type": "object"
       },

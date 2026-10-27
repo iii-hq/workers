@@ -160,7 +160,28 @@ cycle runs these steps:
    by a relative path (Cargo `path`, `#[path]`, `include_str!`, an import,
    a build script, a symlink) or a `workspace:` package. Its changed paths
    are recorded and it is published to its own branch.
-3. A source validation runs under the frozen plan: the base commit
+3. When the insight read failed calls, they are replayed first (level 1,
+   `src/replay.rs`). The base and the candidate commits are each built once
+   as `harness-replay` (a sparse worktree of `harness/` and `crates/` and
+   one cargo target under `worktrees_dir`; about 650 MB the first time,
+   1 GiB free required, 400 MiB after). Each rebuilds, with its own code,
+   the request the step that made a failed call sent, and the request of
+   the step after it, which read the call's error, from the recorded
+   transcript: its identity prompt, the `agent_trigger` tool, the window,
+   and its own refusal of any call it refuses before running. The tools and
+   the messages reproduce the recording exactly; the system prompt lacks
+   the session's skills index and hook additions, the same on both sides.
+   A step the candidate sends the same request is skipped; the others are
+   sampled on `router::complete` with the recorded model, ~60 answers a
+   side spread over the steps (4 to 16 each). An answer is a mistake when
+   one of its calls would be refused before it runs: arguments that are not
+   valid JSON, or that do not match the target's request schema after the
+   Harness's deterministic repair. Equal samples per step make one pooled
+   Fisher exact test sound. Fewer by half or more (p <= 0.05) decides the
+   counted criterion as improved, more (p <= 0.05) as a regression, unless
+   the runs show the criterion worse; anything else leaves the runs to
+   decide it. The runs always follow and always decide the kept criteria.
+4. A source validation runs under the frozen plan: the base commit
    (`control`) runs again beside the candidate, one round of every planned
    case per execution, alternating ABBA (candidate first in odd rounds) so
    drift over time and a warmed provider cache fall on both sides alike.
@@ -170,8 +191,8 @@ cycle runs these steps:
    conditional binomial test for two Poisson rates, since a round without
    the event is no evidence against the others; a baseline needs at least 5
    events in all before a proposal is paid for.
-4. The source decision is made.
-5. An accepted change becomes a pull request from its branch to `main`,
+5. The source decision is made.
+6. An accepted change becomes a pull request from its branch to `main`,
    ready for review, and the cycle ends `proposed`. The body carries the
    evidence: objective, hypothesis and change, each criterion on both sides
    with its runs and result, the E2E executions, the transcript findings,
@@ -187,7 +208,7 @@ merges. The GitHub token comes only from the deployment's environment
 
 ## Decision and budget
 
-Decisions are made once, in code, by the frozen plan (`e2e-loop-rules/5`):
+Decisions are made once, in code, by the frozen plan (`e2e-loop-rules/10`):
 
 - An incompatible pair, a side that did not run what it had to, a technical
   failure or a missing measure is inconclusive.

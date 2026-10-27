@@ -17,7 +17,7 @@ use crate::pull_request::PullRequestV1;
 
 /// Identity of the detectors, first pass and coverage rules; part of every
 /// `policy_revision`.
-pub const RULES_VERSION: &str = "e2e-loop-rules/9";
+pub const RULES_VERSION: &str = "e2e-loop-rules/10";
 pub const CYCLE_SCHEMA_VERSION: u32 = 1;
 pub const DEFAULT_LIST_LIMIT: u32 = 50;
 pub const MAX_LIST_LIMIT: u32 = 200;
@@ -341,6 +341,9 @@ pub enum CycleStageV1 {
     Proposal,
     /// The isolated candidate actor.
     Candidate,
+    /// The steps whose calls failed, replayed under the base and the
+    /// candidate build (`replay`).
+    Replay,
     /// The candidate's source validation execution.
     Validation,
     /// The accepted candidate's pull request, ready for review.
@@ -631,6 +634,9 @@ pub struct CycleRecordV1 {
     /// What the measured runs' transcripts show, read before the proposal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub insight: Option<InsightV1>,
+    /// The failed steps replayed under both builds, before the runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay: Option<ReplayV1>,
 }
 
 /// Whose doing one errored function call is, as the insight judged it.
@@ -717,6 +723,58 @@ pub struct InsightV1 {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Value>,
+}
+
+/// One recorded step whose call failed, sampled under both builds. A
+/// sample is a mistake when one of its calls would be refused before it
+/// runs: arguments that are not valid JSON, or that do not match the
+/// target's request schema.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReplayPointV1 {
+    /// The first failed call of the step.
+    pub site_id: String,
+    pub run_id: String,
+    pub step: u64,
+    /// The step after the failed call, which saw its error; else the step
+    /// that made it.
+    #[serde(default)]
+    pub after: bool,
+    /// The candidate build sends this step a different request.
+    pub changed: bool,
+    /// Parts of the base build's request that equal the recorded one
+    /// (`system`, `tools`, `messages`).
+    #[serde(default)]
+    pub exact: Vec<String>,
+    /// Answers sampled on each side; zero when unchanged.
+    pub samples: u32,
+    pub base_mistakes: u32,
+    pub candidate_mistakes: u32,
+}
+
+/// Level 1: the failed steps replayed. Its outcome decides the counted
+/// criterion when it shows a change; the runs still decide the rest.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReplayV1 {
+    pub outcome: ValidationOutcomeV1,
+    pub reason: String,
+    #[serde(default)]
+    pub points: Vec<ReplayPointV1>,
+    #[serde(default)]
+    pub base_samples: u32,
+    #[serde(default)]
+    pub base_mistakes: u32,
+    #[serde(default)]
+    pub candidate_samples: u32,
+    #[serde(default)]
+    pub candidate_mistakes: u32,
+    /// Fisher's exact test, one-sided: the candidate makes fewer mistakes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p_fewer: Option<f64>,
+    /// The same, the candidate makes more.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p_more: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -255,6 +255,7 @@ fn new_cycle(
         pull_request: None,
         retry_of: None,
         insight: None,
+        replay: None,
     }
 }
 
@@ -726,6 +727,7 @@ pub async fn step(deps: &Deps, request: StepRequestV1) -> Result<StepResponseV1,
         CycleStageV1::Insight => Box::pin(crate::stages::insight_stage(deps, &record)).await?,
         CycleStageV1::Proposal => Box::pin(crate::stages::proposal_stage(deps, &record)).await?,
         CycleStageV1::Candidate => Box::pin(crate::stages::candidate_stage(deps, &record)).await?,
+        CycleStageV1::Replay => Box::pin(crate::stages::replay_stage(deps, &record)).await?,
         CycleStageV1::Validation => {
             Box::pin(crate::stages::validation_stage(deps, &record)).await?
         }

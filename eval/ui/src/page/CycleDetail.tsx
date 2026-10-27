@@ -70,6 +70,7 @@ import type {
   Evidence,
   Insight,
   LoopConfig,
+  Replay,
   SiteClass,
 } from '../types'
 import { ago, Caret, MarkIcon, PANEL, StatusChip, ToneIcon, usd } from './bits'
@@ -393,6 +394,7 @@ function Cycle({
           // The result above already says what an insight that ended the cycle read.
           <Transcripts insight={cycle.insight} said={cycle.outcome?.detail === cycle.insight.reason} />
         ) : null}
+        {cycle.replay?.points?.some((point) => point.changed) ? <Replayed replay={cycle.replay} /> : null}
         {narrow ? <Budget usage={usage} /> : null}
         <Path cycle={cycle} current={current} narrow={narrow} />
         {/* The rule matters once a change can be judged; an ended cycle that never got one keeps it in the record. */}
@@ -583,6 +585,53 @@ function Transcripts({ insight, said }: { insight: Insight; said: boolean }) {
   )
 }
 
+/** Level 1: each failed step replayed under both builds, and how often each made a call refused before it runs. */
+function Replayed({ replay }: { replay: Replay }) {
+  const sampled = (replay.points ?? []).filter((point) => point.changed)
+  return (
+    <Panel>
+      <PanelHeader className="eval-ui-panel-head">
+        <span>Replayed where calls failed</span>
+        <Badge className="eval-ui-num">{sampled.length}</Badge>
+      </PanelHeader>
+      <PanelBody className="eval-ui-stack">
+        <p className="eval-ui-lead">{sentence(replay.reason)}.</p>
+        <details className="eval-ui-details">
+          <summary>
+            <span>
+              Steps · <span className="eval-ui-num">{sampled.length}</span>
+            </span>
+            <Caret />
+          </summary>
+          <ul className="eval-ui-lost">
+            {sampled.map((point) => (
+              <li key={`${point.run_id}:${point.step}`}>
+                <p>
+                  <span className="eval-ui-mono">
+                    run {point.run_id.slice(0, 8)} · step {point.step}
+                  </span>
+                  <span className="eval-ui-faint">{point.after ? ' · after the error' : ' · where it failed'}</span>
+                </p>
+                <p className="eval-ui-num eval-ui-faint">
+                  base {point.base_mistakes}/{point.samples} · candidate {point.candidate_mistakes}/{point.samples}
+                  {point.exact?.length === 3 ? '' : ` · rebuilt exactly: ${point.exact?.join(', ') || 'nothing'}`}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </details>
+      </PanelBody>
+    </Panel>
+  )
+}
+
+const REPLAY_MARK = {
+  validated_improvement: 'done',
+  regression: 'fail',
+  no_improvement: 'stop',
+  inconclusive: 'off',
+} as const
+
 // ── where the cycle is ──────────────────────────────────────────────────
 
 interface Step {
@@ -705,6 +754,17 @@ function steps(cycle: CycleRecord, current: LoopConfig | null): Step[][] {
               mark: 'done',
               label: 'Published',
               fact: <span className="eval-ui-mono">{cycle.candidate.publish.branch}</span>,
+            }
+          : null,
+        cycle.replay
+          ? {
+              mark: REPLAY_MARK[cycle.replay.outcome],
+              label: 'Replayed',
+              fact: cycle.replay.base_samples
+                ? `refused calls: base ${cycle.replay.base_mistakes}/${cycle.replay.base_samples}, candidate ${
+                    cycle.replay.candidate_mistakes
+                  }/${cycle.replay.candidate_samples}`
+                : cycle.replay.reason,
             }
           : null,
       ]

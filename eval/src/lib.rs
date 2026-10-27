@@ -17,6 +17,7 @@ pub mod locks;
 pub mod manifest;
 pub mod pull_request;
 pub mod queue;
+pub mod replay;
 pub mod runtime;
 pub mod stages;
 pub mod state;

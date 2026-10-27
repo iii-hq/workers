@@ -102,6 +102,7 @@ export type CycleStage =
   | 'insight'
   | 'proposal'
   | 'candidate'
+  | 'replay'
   | 'validation'
   | 'pull_request'
   | 'done'
@@ -407,6 +408,8 @@ export interface CycleRecord {
   retry_of?: string
   /** What the measured runs' transcripts show, read before the proposal. */
   insight?: Insight
+  /** The failed steps replayed under both builds, before the runs. */
+  replay?: Replay
 }
 
 /** `SiteClassV1`: whether a Harness change, instructing the model included, could prevent a failed call. */
@@ -444,6 +447,35 @@ export interface Insight {
   source?: 'jev' | 'llm'
   reason: string
   model?: string
+}
+
+/** `ReplayPointV1`: one recorded step around a failed call, sampled under both builds. */
+export interface ReplayPoint {
+  site_id: string
+  run_id: string
+  step: number
+  /** The step after the failed call, which saw its error; else the step that made it. */
+  after?: boolean
+  /** The candidate build sends this step a different request. */
+  changed: boolean
+  /** Parts of the base build's request equal to the recorded one. */
+  exact?: string[]
+  samples: number
+  base_mistakes: number
+  candidate_mistakes: number
+}
+
+/** `ReplayV1`: level 1, the failed steps replayed; a mistake is a call refused before it runs. */
+export interface Replay {
+  outcome: ValidationOutcome
+  reason: string
+  points?: ReplayPoint[]
+  base_samples?: number
+  base_mistakes?: number
+  candidate_samples?: number
+  candidate_mistakes?: number
+  p_fewer?: number
+  p_more?: number
 }
 
 /** `PullRequestV1` (eval/src/pull_request.rs). `created`: opened by this cycle rather than found. */

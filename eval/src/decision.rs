@@ -1299,6 +1299,30 @@ fn verdict(
     }
 }
 
+/// Level 1 decides the counted criterion when it shows a change and the
+/// runs do not show it worse: the runs alone rarely see a rare mistake move.
+/// The kept conditions and comparability stay the runs' to decide.
+pub fn with_replay(decision: &mut CycleDecisionV1, plan: &CyclePlanV1, replay: &ReplayV1) {
+    let shown = matches!(
+        replay.outcome,
+        ValidationOutcomeV1::ValidatedImprovement | ValidationOutcomeV1::Regression
+    );
+    if !shown || decision.primary.computed_outcome == ValidationOutcomeV1::Regression {
+        return;
+    }
+    decision.primary.computed_outcome = replay.outcome;
+    decision.primary.reason = format!(
+        "{}; in the runs: {}",
+        replay.reason, decision.primary.reason
+    );
+    (decision.outcome, decision.reason) = verdict(
+        &decision.comparability,
+        &plan.criterion,
+        &decision.primary,
+        &decision.preserved,
+    );
+}
+
 /// Decides the cycle's pair once by its frozen plan and stores the decision
 /// in the record: a repeated event never starts another comparison. While
 /// any work of the cycle has an unknown cost, a cost reduction is never
@@ -1320,16 +1344,11 @@ pub fn decide_cycle(
     if let Some(decided) = &record.decision {
         return Ok(decided.clone());
     }
-    let decision = measured(
-        spent(
-            decide(plan, baseline, candidate, evidence, now),
-            plan,
-            ledger,
-            now,
-        ),
-        plan,
-        record,
-    );
+    let mut decided = decide(plan, baseline, candidate, evidence, now);
+    if let Some(replay) = &record.replay {
+        with_replay(&mut decided, plan, replay);
+    }
+    let decision = measured(spent(decided, plan, ledger, now), plan, record);
     record.decision = Some(decision.clone());
     record.updated_at = now;
     Ok(decision)

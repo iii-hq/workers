@@ -365,6 +365,7 @@ dependencies = [
  "iii-console-ui",
  "iii-helpers",
  "iii-sdk",
+ "jsonschema",
  "judge-contract",
  "libc",
  "reqwest",

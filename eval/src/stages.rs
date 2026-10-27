@@ -19,11 +19,15 @@ use crate::error::EvalError;
 use crate::runtime::{
     call, dispatch, end, fail, reserve, settle, transition, Deps, BUS_TIMEOUT_MS,
 };
-use crate::{cost, ids, insight, state};
+use crate::{cost, ids, insight, replay, state};
 
 const JUDGE_TIMEOUT_MS: u64 = 60_000;
 /// The default LLM reads every site in one completion.
 const ANALYST_TIMEOUT_MS: u64 = 180_000;
+/// One replayed answer: a single generation of a recorded step.
+const REPLAY_TIMEOUT_MS: u64 = 180_000;
+/// Replayed answers in flight at once.
+const REPLAY_CONCURRENCY: usize = 6;
 const TRIAGE_EVALUATION: &str = "findings";
 const TRIAGE_QUESTION: &str = "opportunity";
 /// The least the judge's choice must lead the next option by before the
@@ -1295,12 +1299,17 @@ pub async fn candidate_stage(
             }
         },
     };
+    // Failed calls the insight read are replayed first (level 1).
+    let next_stage = match record.insight.as_ref() {
+        Some(insight) if !insight.sites.is_empty() => CycleStageV1::Replay,
+        _ => CycleStageV1::Validation,
+    };
     transition(
         deps,
         &record.cycle_id,
         record.step,
         CycleStatusV1::Running,
-        CycleStageV1::Validation,
+        next_stage,
         &format!(
             "candidate {} on {} changes {}",
             commit.candidate_sha,
@@ -1489,6 +1498,312 @@ pub async fn stop_actors(deps: &Deps, record: &CycleRecordV1) {
         .await
         {
             tracing::warn!(%session_id, %error, "could not stop a cancelled cycle's actor");
+        }
+    }
+}
+
+/// Level 1 (`crate::replay`): the base's failed steps rebuilt by the base
+/// and the candidate build and sampled on both, before the runs. The runs
+/// follow whatever it finds; it decides the counted criterion only when it
+/// shows a change.
+pub async fn replay_stage(
+    deps: &Deps,
+    record: &CycleRecordV1,
+) -> Result<Option<CycleRecordV1>, EvalError> {
+    let measured = Box::pin(replay_steps(deps, record)).await?;
+    transition(
+        deps,
+        &record.cycle_id,
+        record.step,
+        CycleStatusV1::Running,
+        CycleStageV1::Validation,
+        &measured.reason.clone(),
+        |next| {
+            next.replay = Some(measured.clone());
+            Ok(())
+        },
+    )
+    .await
+}
+
+fn unmeasured(reason: impl Into<String>) -> ReplayV1 {
+    ReplayV1 {
+        outcome: ValidationOutcomeV1::Inconclusive,
+        reason: reason.into(),
+        points: Vec::new(),
+        base_samples: 0,
+        base_mistakes: 0,
+        candidate_samples: 0,
+        candidate_mistakes: 0,
+        p_fewer: None,
+        p_more: None,
+    }
+}
+
+async fn replay_steps(deps: &Deps, record: &CycleRecordV1) -> Result<ReplayV1, EvalError> {
+    let commit = record
+        .candidate
+        .as_ref()
+        .and_then(|state| state.candidate.as_ref())
+        .and_then(|candidate| candidate.commit.as_ref());
+    let (Some(config), Some(commit), Some(insight)) =
+        (candidate_config(record), commit, record.insight.as_ref())
+    else {
+        return Ok(unmeasured("no candidate commit or failed calls to replay"));
+    };
+    let key = record
+        .executions
+        .iter()
+        .find(|entry| {
+            entry.role == ExecutionRoleV1::Baseline && entry.state == ExecutionStateV1::Imported
+        })
+        .and_then(|entry| entry.admission_key.clone());
+    let Some(evidence) = (match key {
+        Some(key) => state::get_evidence(&deps.iii, &key).await?,
+        None => None,
+    }) else {
+        return Ok(unmeasured("the baseline's transcripts are not stored"));
+    };
+    let mut points = replay::points(&evidence.bundle, &insight.sites);
+    let mut schemas = BTreeMap::new();
+    fetch_schemas(
+        deps,
+        points
+            .iter()
+            .flat_map(|point| replay::targets(&point.cause)),
+        &mut schemas,
+    )
+    .await;
+    // Only a mistake the replay can see again: a call refused before it ran.
+    points.retain(|point| replay::mistake(&point.cause, &schemas).is_some());
+    if points.is_empty() {
+        return Ok(unmeasured(
+            "no failed call was refused for its arguments, the only mistake a replay judges",
+        ));
+    }
+
+    let (base_sha, candidate_sha) = (commit.base_sha.clone(), commit.candidate_sha.clone());
+    let built = {
+        let (config, base_sha, candidate_sha) =
+            (config.clone(), base_sha.clone(), candidate_sha.clone());
+        tokio::task::spawn_blocking(move || {
+            let built = candidate::replay_binary(&config, &base_sha)
+                .and_then(|base| Ok((base, candidate::replay_binary(&config, &candidate_sha)?)));
+            candidate::prune_replay_binaries(&config, &[&base_sha, &candidate_sha]);
+            built
+        })
+        .await
+        .map_err(|error| EvalError::Dependency(format!("replay build: {error}")))?
+    };
+    let (base_bin, candidate_bin) = match built {
+        Ok(bins) => bins,
+        Err(error) => {
+            return Ok(unmeasured(format!(
+                "the replay could not be built: {error}"
+            )))
+        }
+    };
+
+    // Each step's request under both builds; a step the candidate leaves
+    // alone cannot tell the builds apart and is not sampled.
+    let mut rebuilt = Vec::new();
+    let mut measured: Vec<ReplayPointV1> = Vec::new();
+    let planned_model = record_model(record);
+    for point in &points {
+        if rebuilt.len() == replay::MAX_POINTS {
+            break;
+        }
+        let model = point.cause["model"].as_str().unwrap_or(&planned_model);
+        let provider = point.cause["provider"].as_str().unwrap_or_default();
+        let input = replay::input(point, model, provider);
+        let (base, candidate) = match (
+            harness_replay(&base_bin, &input).await,
+            harness_replay(&candidate_bin, &input).await,
+        ) {
+            (Ok(base), Ok(candidate)) => (base, candidate),
+            (Err(error), _) | (_, Err(error)) => {
+                return Ok(unmeasured(format!(
+                    "step {} of run {} could not be rebuilt: {error}",
+                    point.step, point.run_id
+                )))
+            }
+        };
+        let changed = base != candidate;
+        measured.push(ReplayPointV1 {
+            site_id: point.site_id.clone(),
+            run_id: point.run_id.clone(),
+            step: point.step,
+            after: point.after,
+            changed,
+            exact: replay::exact(&base["req"], &point.recorded),
+            samples: 0,
+            base_mistakes: 0,
+            candidate_mistakes: 0,
+        });
+        if changed {
+            rebuilt.push((measured.len() - 1, request(base), request(candidate)));
+        }
+    }
+    if rebuilt.is_empty() {
+        let mut found = unmeasured(
+            "the candidate sends the failed steps the same request as the base, so a replay \
+             cannot tell them apart",
+        );
+        found.points = measured;
+        return Ok(found);
+    }
+
+    let per_step = replay::per_step(rebuilt.len());
+    let work = CycleWorkV1 {
+        work_id: format!("{}:replay", record.cycle_id),
+        kind: CycleWorkKindV1::Investigation,
+        estimated_usd: f64::from(per_step)
+            * rebuilt.len() as f64
+            * 2.0
+            * replay::ESTIMATED_USD_PER_SAMPLE,
+        candidate: false,
+    };
+    if let cost::Reservation::OverLimit(detail) = reserve(deps, record, &work).await? {
+        return Ok(unmeasured(format!("the replay is over budget: {detail}")));
+    }
+    let jobs: Vec<(usize, bool, Value)> = rebuilt
+        .iter()
+        .flat_map(|(at, base, candidate)| {
+            (0..per_step)
+                .flat_map(move |_| [(*at, false, base.clone()), (*at, true, candidate.clone())])
+        })
+        .collect();
+    use futures_util::StreamExt as _;
+    let answers: Vec<(usize, bool, Value)> = futures_util::stream::iter(jobs)
+        .map(|(at, is_candidate, request)| async move {
+            let answer = call::<_, Value>(deps, "router::complete", request, REPLAY_TIMEOUT_MS)
+                .await
+                .ok();
+            (at, is_candidate, answer)
+        })
+        .buffer_unordered(REPLAY_CONCURRENCY)
+        .filter_map(|(at, is_candidate, answer)| async move {
+            answer.map(|answer| (at, is_candidate, answer))
+        })
+        .collect()
+        .await;
+    let cost: f64 = answers
+        .iter()
+        .filter_map(|(_, _, answer)| answer["usage"]["cost_usd"].as_f64())
+        .sum();
+    settle(deps, &record.cycle_id, &work.work_id, Some(cost)).await?;
+
+    fetch_schemas(
+        deps,
+        answers
+            .iter()
+            .flat_map(|(_, _, answer)| replay::targets(&answer["message"])),
+        &mut schemas,
+    )
+    .await;
+    let (mut base, mut candidate) = ((0, 0), (0, 0));
+    for (at, is_candidate, answer) in &answers {
+        let wrong = u32::from(replay::mistake(&answer["message"], &schemas).is_some());
+        let point = &mut measured[*at];
+        point.samples = per_step;
+        let side = if *is_candidate {
+            point.candidate_mistakes += wrong;
+            &mut candidate
+        } else {
+            point.base_mistakes += wrong;
+            &mut base
+        };
+        side.0 += wrong;
+        side.1 += 1;
+    }
+    let (outcome, reason) = replay::verdict(base, candidate);
+    let (p_fewer, p_more) = replay::fisher(base, candidate);
+    Ok(ReplayV1 {
+        outcome,
+        reason,
+        points: measured,
+        base_samples: base.1,
+        base_mistakes: base.0,
+        candidate_samples: candidate.1,
+        candidate_mistakes: candidate.0,
+        p_fewer: Some(p_fewer),
+        p_more: Some(p_more),
+    })
+}
+
+fn record_model(record: &CycleRecordV1) -> String {
+    record
+        .plan
+        .as_ref()
+        .map(|plan| plan.parameters.model.clone())
+        .unwrap_or_default()
+}
+
+/// A rebuilt request as `router::complete` takes it.
+fn request(mut rebuilt: Value) -> Value {
+    if let Some(object) = rebuilt.as_object_mut() {
+        object.remove("req");
+    }
+    rebuilt
+}
+
+/// Runs one `harness-replay` build on `input`.
+async fn harness_replay(binary: &std::path::Path, input: &Value) -> Result<Value, String> {
+    use tokio::io::AsyncWriteExt as _;
+    let mut child = tokio::process::Command::new(binary)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| error.to_string())?;
+    let bytes = serde_json::to_vec(input).map_err(|error| error.to_string())?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(&bytes)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    let output = child
+        .wait_with_output()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    serde_json::from_slice(&output.stdout).map_err(|error| error.to_string())
+}
+
+/// Adds the request schemas of `targets` not in `into` yet, as the registry
+/// reports them; one it does not know stays out.
+async fn fetch_schemas(
+    deps: &Deps,
+    targets: impl Iterator<Item = String>,
+    into: &mut BTreeMap<String, Value>,
+) {
+    let wanted: std::collections::BTreeSet<String> =
+        targets.filter(|id| !into.contains_key(id)).collect();
+    if wanted.is_empty() {
+        return;
+    }
+    let Ok(info) = call::<_, Value>(
+        deps,
+        "engine::functions::info",
+        json!({ "function_ids": wanted }),
+        BUS_TIMEOUT_MS,
+    )
+    .await
+    else {
+        return;
+    };
+    for function in info["functions"].as_array().into_iter().flatten() {
+        if let (Some(id), Some(schema)) = (
+            function["function_id"].as_str(),
+            function
+                .get("request_schema")
+                .filter(|schema| schema.is_object()),
+        ) {
+            into.insert(id.to_string(), schema.clone());
         }
     }
 }

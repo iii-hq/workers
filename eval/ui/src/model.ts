@@ -66,6 +66,7 @@ const STAGE: Record<CycleStage, string> = {
   insight: 'Insight',
   proposal: 'Proposal',
   candidate: 'Candidate',
+  replay: 'Replay',
   validation: 'Validation',
   pull_request: 'Pull request',
   done: 'Done',
@@ -96,7 +97,11 @@ const OUTCOME: Record<OutcomeCode, { label: string; tone: Tone }> = {
 export function outcomeView(record: CycleRecord): { label: string; tone: Tone; reason: string } | null {
   const outcome = record.outcome
   if (outcome?.code === 'proposed' && !record.pull_request) {
-    return { label: 'Pull request unconfirmed', tone: 'warn', reason: `${outcome.detail} (the record holds no pull request)` }
+    return {
+      label: 'Pull request unconfirmed',
+      tone: 'warn',
+      reason: `${outcome.detail} (the record holds no pull request)`,
+    }
   }
   if (outcome && outcome.code !== 'decided') return { ...OUTCOME[outcome.code], reason: outcome.detail }
   if (record.decision) return { ...DECISION[record.decision.outcome], reason: record.decision.reason }
@@ -270,6 +275,7 @@ const DOING: Record<CycleStage, string> = {
   insight: 'Reading the transcripts for what the Harness could improve',
   proposal: 'Proposing one change',
   candidate: 'Writing the candidate change',
+  replay: 'Replaying the failed steps under the base and the candidate',
   validation: 'Running the candidate on the E2E',
   pull_request: 'Opening the pull request',
   done: 'Finishing',
@@ -295,12 +301,7 @@ export function nowView(
 ): { tone: Tone; headline: string; detail: string; fix: Setup | null } {
   if (isActive(record.status)) {
     const running = runningExecution(record)
-    const headline =
-      record.status === 'queued'
-        ? 'Queued'
-        : running
-          ? RUNNING[running.role]
-          : DOING[record.stage]
+    const headline = record.status === 'queued' ? 'Queued' : running ? RUNNING[running.role] : DOING[record.stage]
     return {
       tone: 'accent',
       headline,
@@ -666,10 +667,7 @@ export function validateConfig(config: LoopConfig): string | null {
   if (validation) {
     if (!candidate) return 'validation needs candidate: only a candidate is validated'
     if (validation.where === 'harness') return 'validation pins the Harness: where must be docker or github'
-    if (
-      !validation.source_stack_template.includes('{commit}') ||
-      !validation.stack_name.trim()
-    ) {
+    if (!validation.source_stack_template.includes('{commit}') || !validation.stack_name.trim()) {
       return 'validation needs a stack_name and a source template with {commit}'
     }
   }

@@ -705,6 +705,159 @@ fn ensure_checkout(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// The replay build (level 1)
+// ---------------------------------------------------------------------------
+
+/// The replay module and its binary, written into a commit that predates them.
+const REPLAY_MODULE: &str = include_str!("../../harness/src/turn_loop/replay.rs");
+const REPLAY_BIN: &str = include_str!("../../harness/src/bin/harness-replay.rs");
+/// What a first build needs free (its target holds the Harness's
+/// dependencies, ~650 MB), and what a later one needs (~150 MB rebuilt).
+const REPLAY_FIRST_FREE: u64 = 1 << 30;
+const REPLAY_NEXT_FREE: u64 = 400 << 20;
+/// One replay build at a time: the checkout and the target are shared.
+static REPLAY_BUILD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The `harness-replay` binary of `sha`, built once per commit. Every commit
+/// is checked out in one sparse worktree (`harness/`, `crates/`) and built
+/// into one target, both under `worktrees_dir`; a commit that predates the
+/// replay module gets this build's copy of it. Blocking.
+pub fn replay_binary(cfg: &CandidateConfigV1, sha: &str) -> Result<PathBuf, CandidateError> {
+    let _one = REPLAY_BUILD
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let root = Path::new(&cfg.worktrees_dir);
+    let binary = root
+        .join("replay-bin")
+        .join(format!("harness-replay-{sha}"));
+    if binary.exists() {
+        return Ok(binary);
+    }
+    let target = root.join("replay-target");
+    let needed = if target.exists() {
+        REPLAY_NEXT_FREE
+    } else {
+        REPLAY_FIRST_FREE
+    };
+    if free_bytes(root) < needed {
+        return Err(CandidateError::Dependency(format!(
+            "less than {} MiB is free in {} to build the replay",
+            needed >> 20,
+            root.display()
+        )));
+    }
+    let tree = root.join("replay");
+    if !tree.exists() {
+        let repo = Path::new(&cfg.repository);
+        let path = tree.display().to_string();
+        git(repo, &["worktree", "prune"])?;
+        git(
+            repo,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "--no-checkout",
+                "--detach",
+                &path,
+                sha,
+            ],
+        )?;
+        git(
+            &tree,
+            &["sparse-checkout", "set", "--cone", "harness", "crates"],
+        )?;
+    }
+    git(&tree, &["checkout", "--quiet", "--force", "--detach", sha])?;
+    let harness = tree.join("harness");
+    let turn_loop = harness.join("src/turn_loop.rs");
+    let source = std::fs::read_to_string(&turn_loop).map_err(|error| io(&turn_loop, error))?;
+    let mut files = vec![];
+    if !source.contains("pub mod replay;") {
+        files.push((
+            harness.join("src/turn_loop/replay.rs"),
+            REPLAY_MODULE.to_string(),
+        ));
+        files.push((
+            harness.join("src/bin/harness-replay.rs"),
+            REPLAY_BIN.to_string(),
+        ));
+        files.push((turn_loop, format!("{source}\npub mod replay;\n")));
+    }
+    // The console UI is embedded, never served: empty assets skip its build.
+    for asset in ["page.js", "styles.css"] {
+        let path = harness.join("ui/dist").join(asset);
+        if !path.exists() {
+            files.push((path, String::new()));
+        }
+    }
+    let scratch = root.join("replay-tmp");
+    for (path, text) in files {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|error| io(dir, error))?;
+        }
+        std::fs::write(&path, text).map_err(|error| io(&path, error))?;
+    }
+    std::fs::create_dir_all(&scratch).map_err(|error| io(&scratch, error))?;
+    let output = Command::new("cargo")
+        .args(["build", "--locked", "--bin", "harness-replay"])
+        .current_dir(&harness)
+        .env("CARGO_TARGET_DIR", &target)
+        .env("CARGO_INCREMENTAL", "0")
+        .env("SKIP_UI_BUILD", "1")
+        .env("TMPDIR", &scratch)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| CandidateError::Dependency(format!("cargo: {error}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let lines: Vec<&str> = stderr.lines().collect();
+        return Err(CandidateError::Dependency(format!(
+            "building harness-replay at {sha} failed: {}",
+            lines[lines.len().saturating_sub(12)..].join("\n")
+        )));
+    }
+    let bin_dir = root.join("replay-bin");
+    std::fs::create_dir_all(&bin_dir).map_err(|error| io(&bin_dir, error))?;
+    let staged = bin_dir.join(format!("harness-replay-{sha}.partial"));
+    std::fs::copy(target.join("debug/harness-replay"), &staged)
+        .map_err(|error| io(&staged, error))?;
+    std::fs::rename(&staged, &binary).map_err(|error| io(&binary, error))?;
+    Ok(binary)
+}
+
+/// Removes every replay binary but those of `keep`.
+pub fn prune_replay_binaries(cfg: &CandidateConfigV1, keep: &[&str]) {
+    let dir = Path::new(&cfg.worktrees_dir).join("replay-bin");
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let kept = keep
+            .iter()
+            .any(|sha| name == format!("harness-replay-{sha}"));
+        if name.starts_with("harness-replay-") && !kept {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+fn io(path: &Path, error: std::io::Error) -> CandidateError {
+    CandidateError::Dependency(format!("{}: {error}", path.display()))
+}
+
+fn free_bytes(path: &Path) -> u64 {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return 0;
+    };
+    // SAFETY: a valid C string and a zeroed out-parameter statvfs fills.
+    let mut stats: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(path.as_ptr(), &mut stats) } != 0 {
+        return 0;
+    }
+    stats.f_bavail as u64 * stats.f_frsize as u64
+}
+
 fn check_path(path: &str) -> Result<(), Rejection> {
     if path.starts_with('/') || path.contains('\\') {
         return Err(reject(

@@ -37,6 +37,8 @@ libc = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 futures-util = "0.3"
 base64 = "0.22"
+# Same as the Harness: a replayed call checked against its request schema.
+jsonschema = { version = "0.18", default-features = false }
 
 [dev-dependencies]
 tokio-tungstenite = "0.28"
