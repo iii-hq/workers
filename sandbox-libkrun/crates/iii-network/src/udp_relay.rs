@@ -429,6 +429,14 @@ mod tests {
             send_outbound(&mut relay, src, dst, b"x");
         }
         assert_eq!(relay.sessions.len(), MAX_SESSIONS);
+
+        // At the cap, a session whose task exited (its channel closed) gives
+        // its slot to a new flow.
+        *relay.sessions.values_mut().next().unwrap() = mpsc::channel(1).0;
+        let newcomer: SocketAddr = (Ipv4Addr::new(100, 96, 0, 2), 9999).into();
+        send_outbound(&mut relay, newcomer, dst, b"x");
+        assert!(relay.sessions.contains_key(&(newcomer, dst)));
+        assert_eq!(relay.sessions.len(), MAX_SESSIONS);
     }
 
     #[test]
