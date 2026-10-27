@@ -54,24 +54,37 @@ pub(super) fn temp_sibling(target: &Path) -> std::path::PathBuf {
 /// and overlayfs, ext4 and tmpfs support it natively.
 fn rename_noreplace(src: &Path, dst: &Path) -> std::io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
-    let src = std::ffi::CString::new(src.as_os_str().as_bytes())?;
-    let dst = std::ffi::CString::new(dst.as_os_str().as_bytes())?;
+    let c_src = std::ffi::CString::new(src.as_os_str().as_bytes())?;
+    let c_dst = std::ffi::CString::new(dst.as_os_str().as_bytes())?;
     // The raw syscall: older musl has no renameat2 wrapper.
     let res = unsafe {
         libc::syscall(
             libc::SYS_renameat2,
             libc::AT_FDCWD,
-            src.as_ptr(),
+            c_src.as_ptr(),
             libc::AT_FDCWD,
-            dst.as_ptr(),
+            c_dst.as_ptr(),
             libc::RENAME_NOREPLACE,
         )
     };
     if res == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
+        return Ok(());
     }
+    let err = std::io::Error::last_os_error();
+    // A filesystem without the flag: EINVAL (a FUSE server without rename2),
+    // EOPNOTSUPP, or EIO (a macOS host has no Linux errno for its ENOTSUP).
+    // shortcut: such a filesystem gets the racy check-then-rename; make it
+    // race-free only if one must hold concurrent no-replace moves.
+    if !matches!(
+        err.raw_os_error(),
+        Some(libc::EINVAL | libc::EOPNOTSUPP | libc::EIO)
+    ) {
+        return Err(err);
+    }
+    if dst.symlink_metadata().is_ok() {
+        return Err(std::io::Error::from_raw_os_error(libc::EEXIST));
+    }
+    std::fs::rename(src, dst)
 }
 
 /// Match a glob `pattern` against a relative path with gitignore-style
