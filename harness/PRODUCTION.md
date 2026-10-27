@@ -1,5 +1,9 @@
 # Harness on iii Cloud without provider credentials
 
+Cloud rejects symlinks in the repository archive. Keep
+`harness/iii-permissions.yaml` as a regular copy of the root permissions file;
+CI verifies they match.
+
 Deploy `harness/worker-compose-prod.yaml` with its generated
 `harness/worker-compose-prod.lock`. Packages are pinned; only LLM Router is
 built from this repository so its configuration initialization uses the

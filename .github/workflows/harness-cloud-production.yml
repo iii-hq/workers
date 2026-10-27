@@ -40,6 +40,8 @@ jobs:
           III_TELEMETRY_ENABLED: "false"
         run: |
           set -euo pipefail
+          test ! -L harness/iii-permissions.yaml
+          cmp iii-permissions.yaml harness/iii-permissions.yaml
           iii --version
           if test -f harness/worker-compose-prod.lock; then
             iii compose build -f harness/worker-compose-prod.yaml --frozen
