@@ -142,6 +142,37 @@ impl tokio::io::AsyncRead for ChannelReaderAdapter {
     }
 }
 
+/// Bumps the sandbox's `last_exec_at` as upload bytes arrive, as `fs::read`
+/// does per chunk: an upload longer than the idle timeout is activity, and
+/// without this the reaper killed the VM mid-transfer. A stalled upload stops
+/// bumping, so it still ages out.
+struct ActivityReader {
+    inner: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
+    registry: SandboxRegistry,
+    id: Uuid,
+    /// At most one bump in flight, so a fast upload does not queue a task per chunk.
+    bump: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl tokio::io::AsyncRead for ActivityReader {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        let before = buf.filled().len();
+        let polled = Pin::new(&mut this.inner).poll_read(cx, buf);
+        if buf.filled().len() > before && this.bump.as_ref().is_none_or(|b| b.is_finished()) {
+            let (registry, id) = (this.registry.clone(), this.id);
+            this.bump = Some(tokio::spawn(
+                async move { registry.bump_last_exec(id).await },
+            ));
+        }
+        polled
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Request / response types
 // ---------------------------------------------------------------------------
@@ -239,6 +270,12 @@ pub async fn handle_write_with_reader<R: FsRunner + ?Sized>(
         return Err(SandboxError::AlreadyStopped(id.to_string()));
     }
     registry.bump_last_exec(id).await;
+    let reader = Box::new(ActivityReader {
+        inner: reader,
+        registry: registry.clone(),
+        id,
+        bump: None,
+    });
 
     let result = runner
         .fs_write_stream(state.shell_sock, path.clone(), mode, parents, reader)
@@ -478,6 +515,84 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err.code().as_str(), "S002");
+    }
+
+    /// Reads the upload only after ageing the sandbox past any idle timeout,
+    /// as a transfer longer than that timeout would.
+    struct LongUploadRunner {
+        registry: SandboxRegistry,
+        id: Uuid,
+    }
+
+    #[async_trait::async_trait]
+    impl FsRunner for LongUploadRunner {
+        async fn fs_call(&self, _shell_sock: PathBuf, _op: FsOp) -> Result<FsResult, SandboxError> {
+            unimplemented!()
+        }
+
+        async fn fs_write_stream(
+            &self,
+            _shell_sock: PathBuf,
+            path: String,
+            _mode: String,
+            _parents: bool,
+            mut reader: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
+        ) -> Result<FsResult, SandboxError> {
+            use tokio::io::AsyncReadExt;
+            let mut state = self.registry.get(self.id).await?;
+            state.last_exec_at = std::time::Instant::now() - std::time::Duration::from_secs(600);
+            self.registry.insert(state).await;
+            let mut buf = Vec::new();
+            reader.read_to_end(&mut buf).await.unwrap();
+            Ok(FsResult::Write {
+                bytes_written: buf.len() as u64,
+                path,
+            })
+        }
+
+        async fn fs_read_stream(
+            &self,
+            _shell_sock: PathBuf,
+            _path: String,
+        ) -> Result<(FsReadMeta, Box<dyn tokio::io::AsyncRead + Unpin + Send>), SandboxError>
+        {
+            unimplemented!()
+        }
+    }
+
+    /// Upload bytes are activity: the reaper must not see a sandbox mid-upload as idle.
+    #[tokio::test]
+    async fn upload_bytes_keep_the_sandbox_active() {
+        let reg = SandboxRegistry::new();
+        let id = Uuid::new_v4();
+        reg.insert(make_state(id)).await;
+        let runner = LongUploadRunner {
+            registry: reg.clone(),
+            id,
+        };
+        handle_write_with_reader(
+            id.to_string(),
+            "/x".into(),
+            "0644".into(),
+            false,
+            Box::new(Cursor::new(b"data".to_vec())),
+            &reg,
+            &runner,
+        )
+        .await
+        .unwrap();
+        let mut idle = std::time::Duration::MAX;
+        for _ in 0..100 {
+            idle = reg.get(id).await.unwrap().last_exec_at.elapsed();
+            if idle < std::time::Duration::from_secs(60) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            idle < std::time::Duration::from_secs(60),
+            "idle for {idle:?}"
+        );
     }
 
     // ── public handle_write — body-shape dispatch (option A) ────────────
