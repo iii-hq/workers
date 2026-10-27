@@ -441,7 +441,7 @@ pub fn stop_children_on_signal() {
         unsafe { libc::sigwait(&set, &mut sig) };
         let pgid = CHILD_PGID.load(std::sync::atomic::Ordering::SeqCst);
         if pgid > 0 {
-            stop_group(pgid);
+            stop_group(pgid, Duration::from_secs(10));
         }
         std::process::exit(128 + sig);
     });
@@ -465,31 +465,29 @@ pub fn unblock_stop_signals() {
     unsafe { libc::pthread_sigmask(libc::SIG_UNBLOCK, &stop_signals(), std::ptr::null_mut()) };
 }
 
-/// SIGTERM to group `pgid`, SIGKILL if its leader (a child of this process)
-/// has not exited 10 s later: exiting first would orphan it.
-fn stop_group(pgid: i32) {
+/// SIGTERM to group `pgid`, then SIGKILL to what is left of it once its
+/// leader (a child of this process) exits, or `grace` later: exiting first
+/// would orphan the group.
+fn stop_group(pgid: i32, grace: Duration) {
     unsafe { libc::kill(-pgid, libc::SIGTERM) };
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
-        // Not 0: reaped here, or (ECHILD) by the thread that spawned it.
-        if unsafe { libc::waitpid(pgid, std::ptr::null_mut(), libc::WNOHANG) } != 0 {
-            return;
-        }
+    let deadline = Instant::now() + grace;
+    // Not 0: reaped here, or (ECHILD) by the thread that spawned it.
+    while Instant::now() < deadline
+        && unsafe { libc::waitpid(pgid, std::ptr::null_mut(), libc::WNOHANG) } == 0
+    {
         std::thread::sleep(Duration::from_millis(50));
     }
+    // Members that outlive the leader too.
     unsafe { libc::kill(-pgid, libc::SIGKILL) };
 }
 
-/// SIGTERM to the engine's process group, SIGKILL if it is still there 5 s
-/// later.
+/// SIGTERM to the engine's process group, then SIGKILL to what is left of it
+/// once the engine exits, or 5 s later.
 fn stop(child: &mut Child) {
     let pgid = child.id() as i32;
     unsafe { libc::kill(-pgid, libc::SIGTERM) };
     let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        if let Ok(Some(_)) = child.try_wait() {
-            return;
-        }
+    while Instant::now() < deadline && !matches!(child.try_wait(), Ok(Some(_))) {
         std::thread::sleep(Duration::from_millis(50));
     }
     unsafe { libc::kill(-pgid, libc::SIGKILL) };
@@ -628,6 +626,33 @@ mod tests {
         };
 
         assert_eq!(status.and_then(|s| s.signal()), Some(libc::SIGTERM));
+    }
+
+    /// `stop_group` kills a leader that ignores SIGTERM once the grace is
+    /// over, and a member that ignores it once the leader is gone.
+    #[test]
+    fn stop_group_leaves_nothing_of_the_group() {
+        use std::io::{BufRead, Read};
+        for script in [
+            "trap '' TERM; echo up; exec sleep 30",
+            "(trap '' TERM; echo up; exec sleep 30) & exec sleep 30",
+        ] {
+            let mut child = Command::new("sh")
+                .args(["-c", script])
+                .process_group(0)
+                .stdout(Stdio::piped())
+                .spawn()
+                .expect("spawn sh");
+            let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
+            out.read_line(&mut String::new()).unwrap();
+
+            let started = Instant::now();
+            stop_group(child.id() as i32, Duration::from_millis(300));
+            // EOF once no process of the group holds the pipe.
+            out.read_to_end(&mut Vec::new()).unwrap();
+            let _ = child.wait();
+            assert!(started.elapsed() < Duration::from_secs(10), "{script}");
+        }
     }
 
     #[test]
