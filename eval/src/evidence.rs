@@ -114,6 +114,23 @@ fn scenarios(bundle: &Value) -> impl Iterator<Item = &Value> {
     native_reports(bundle).flat_map(|report| report["scenarios"].as_array().into_iter().flatten())
 }
 
+/// The Harness commit a GitHub campaign built: it records it only in its
+/// resolved stack (`harness: "@<sha7>"`), beside the built binary's digest,
+/// not as `harness_source`. A short revision, matched as a prefix.
+fn github_built_revision(system: &Value) -> Option<String> {
+    let short = system["stack"]["stack_versions"]["harness"]
+        .as_str()?
+        .strip_prefix('@')?;
+    let hex = |text: &str| text.bytes().all(|byte| byte.is_ascii_hexdigit());
+    (short.len() >= 7
+        && hex(short)
+        && system["harness_binary_sha256"]
+            .as_str()
+            .and_then(|digest| digest.strip_prefix("sha256:"))
+            .is_some_and(|digest| digest.len() == 64 && hex(digest)))
+    .then(|| short.to_string())
+}
+
 /// The one value every report agrees on, or `None` (absent or disagreeing).
 fn agreed(values: impl Iterator<Item = Option<String>>) -> Option<String> {
     let mut seen = BTreeSet::new();
@@ -320,6 +337,9 @@ pub fn identity(bundle: &Value, execution_id: &str) -> EvidenceIdentityV1 {
         ),
         workers_revision: agreed(natives.iter().map(|report| {
             let source = &report["system_under_test"]["harness_source"];
+            if source.is_null() {
+                return github_built_revision(&report["system_under_test"]);
+            }
             let revision = source["revision"].as_str()?;
             let binary = source["binary_sha256"].as_str()?.strip_prefix("sha256:")?;
             (source["repository"] == "iii-hq/workers"
@@ -1013,6 +1033,24 @@ mod tests {
         let (_, cut) = transcript_excerpt(&bundle, "s", Some("two_turns"), 30).unwrap();
         assert_eq!(cut, "user: Store it once.\n…");
         assert!(transcript_excerpt(&bundle, "other", None, 1000).is_none());
+    }
+
+    #[test]
+    fn a_github_campaign_attests_the_commit_it_built_by_its_resolved_stack() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let system = json!({"stack": {"stack_versions": {"harness": "@0068cc1"}},
+            "harness_binary_sha256": digest});
+        assert_eq!(github_built_revision(&system).as_deref(), Some("0068cc1"));
+        // A released version, or no built binary, attests no commit.
+        assert_eq!(
+            github_built_revision(&json!({"stack": {"stack_versions": {"harness": "1.8.62"}},
+                "harness_binary_sha256": digest})),
+            None
+        );
+        assert_eq!(
+            github_built_revision(&json!({"stack": {"stack_versions": {"harness": "@0068cc1"}}})),
+            None
+        );
     }
 
     #[test]

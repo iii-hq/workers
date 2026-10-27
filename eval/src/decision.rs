@@ -1043,9 +1043,16 @@ pub fn compatibility(
             ("stack", &side.expected_stack, &side.observed_stack),
         ] {
             if let Some(expected) = expected {
+                // A GitHub campaign records the commit it built abbreviated.
+                let short_revision = |seen: &str| {
+                    what == "revision"
+                        && (7..40).contains(&seen.len())
+                        && expected.starts_with(seen)
+                };
                 checks.push(ComparabilityCheckV1 {
                     field: format!("{name}_{what}"),
-                    matches: observed.as_deref() == Some(expected.as_str()),
+                    matches: observed.as_deref() == Some(expected.as_str())
+                        || observed.as_deref().is_some_and(short_revision),
                     baseline: Some(expected.clone()),
                     candidate: observed.clone(),
                 });
