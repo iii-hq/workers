@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getIiiClient, type IiiClient } from '@/lib/iii-client'
 import { useWorkersChanged } from './use-workers-changed'
 
@@ -56,17 +56,27 @@ export function useWorkerPresence({
   const [present, setPresent] = useState<boolean>(!enabled)
   const [loading, setLoading] = useState<boolean>(enabled)
 
+  // Overlapping reads can resolve out of order: a reply older than one
+  // already applied is dropped so it never overwrites newer presence.
+  const reads = useRef({ issued: 0, applied: 0 })
+  const applyPresence = useCallback((seq: number, found: boolean) => {
+    if (seq <= reads.current.applied) return
+    reads.current.applied = seq
+    setPresent(found)
+  }, [])
+
   // A re-read after a worker change keeps the last answer when it fails.
   const recheck = useCallback(() => {
+    const seq = ++reads.current.issued
     void (async () => {
       try {
         const client = await getIiiClient()
-        setPresent(await checkWorkerPresent(client, workerName))
+        applyPresence(seq, await checkWorkerPresent(client, workerName))
       } catch {
         // keep the last known presence
       }
     })()
-  }, [workerName])
+  }, [workerName, applyPresence])
 
   useWorkersChanged({ enabled, fnId: watchFnId, onChange: recheck })
 
@@ -78,13 +88,14 @@ export function useWorkerPresence({
       return
     }
     let cancelled = false
+    const seq = ++reads.current.issued
     void (async () => {
       try {
         const client = await getIiiClient()
         const found = await checkWorkerPresent(client, workerName)
-        if (!cancelled) setPresent(found)
+        if (!cancelled) applyPresence(seq, found)
       } catch {
-        if (!cancelled) setPresent(false)
+        if (!cancelled) applyPresence(seq, false)
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -92,7 +103,7 @@ export function useWorkerPresence({
     return () => {
       cancelled = true
     }
-  }, [enabled, workerName])
+  }, [enabled, workerName, applyPresence])
 
   return useMemo(() => ({ present, loading }), [present, loading])
 }

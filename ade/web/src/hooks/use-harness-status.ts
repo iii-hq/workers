@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getIiiClient, type IiiClient } from '@/lib/iii-client'
 import { normalizeErrorMessage } from '@/lib/providers'
 import { useWorkersChanged } from './use-workers-changed'
@@ -66,18 +66,28 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
   const [installing, setInstalling] = useState<boolean>(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Overlapping reads can resolve out of order: a reply older than one
+  // already applied is dropped so it never overwrites newer presence.
+  const reads = useRef({ issued: 0, applied: 0 })
+  const applyPresence = useCallback((seq: number, found: boolean) => {
+    if (seq <= reads.current.applied) return
+    reads.current.applied = seq
+    setPresent(found)
+  }, [])
+
   // Harness added or removed out of band (a CLI `compose::add`): read the
   // worker list again. A failed re-read keeps the last answer.
   const recheck = useCallback(() => {
+    const seq = ++reads.current.issued
     void (async () => {
       try {
         const client = await getIiiClient()
-        setPresent(await checkHarnessPresent(client))
+        applyPresence(seq, await checkHarnessPresent(client))
       } catch {
         // keep the last known presence
       }
     })()
-  }, [])
+  }, [applyPresence])
 
   useWorkersChanged({ enabled, fnId: HARNESS_WATCH_FN, onChange: recheck })
 
@@ -90,13 +100,14 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
       return
     }
     let cancelled = false
+    const seq = ++reads.current.issued
     void (async () => {
       const client = await getIiiClient()
       try {
         const found = await checkHarnessPresent(client)
-        if (!cancelled) setPresent(found)
+        if (!cancelled) applyPresence(seq, found)
       } catch {
-        if (!cancelled) setPresent(false)
+        if (!cancelled) applyPresence(seq, false)
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -104,7 +115,7 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
     return () => {
       cancelled = true
     }
-  }, [enabled])
+  }, [enabled, applyPresence])
 
   const install = useCallback(() => {
     if (!enabled) return
@@ -115,8 +126,9 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
       try {
         await addHarnessToCompose(client)
         // Terminal success. A workers-available event may have already set
-        // present; setting it again is harmless.
-        setPresent(true)
+        // present; setting it again is harmless. Reads still in flight are
+        // older than this and must not undo it.
+        applyPresence(++reads.current.issued, true)
         setInstalling(false)
       } catch (err) {
         setInstalling(false)
@@ -124,7 +136,7 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
         // (e.g. a late timeout) — re-check before surfacing the error.
         try {
           if (await checkHarnessPresent(client)) {
-            setPresent(true)
+            applyPresence(++reads.current.issued, true)
             setError(null)
             return
           }
@@ -134,7 +146,7 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
         setError(normalizeErrorMessage(err))
       }
     })()
-  }, [enabled])
+  }, [enabled, applyPresence])
 
   return useMemo(
     () => ({
