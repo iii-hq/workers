@@ -461,6 +461,7 @@ impl VmRun<'_> {
         unsafe {
             cmd.pre_exec(move || {
                 libc::setpgid(0, 0);
+                runner::unblock_stop_signals();
                 // Every VM thread starts on the load generator's half; the
                 // engine's vCPUs are moved to the other once they exist.
                 libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set);

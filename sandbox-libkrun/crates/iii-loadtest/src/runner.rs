@@ -347,6 +347,7 @@ fn spawn_engine(args: &RunArgs, cpus: &[usize], cgroup: Option<&Path>) -> Result
             // Own process group, so stopping it reaches every engine thread's
             // children too.
             libc::setpgid(0, 0);
+            unblock_stop_signals();
             libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set);
             if let Some(path) = &procs {
                 // "0" moves the writing process: the engine-to-be.
@@ -433,22 +434,50 @@ pub fn track(child: &Child) {
 /// thread starts: the signals are blocked in the caller, so every thread
 /// inherits that and only the waiting thread receives them.
 pub fn stop_children_on_signal() {
+    let set = stop_signals();
+    unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut()) };
+    std::thread::spawn(move || {
+        let mut sig: libc::c_int = 0;
+        unsafe { libc::sigwait(&set, &mut sig) };
+        let pgid = CHILD_PGID.load(std::sync::atomic::Ordering::SeqCst);
+        if pgid > 0 {
+            stop_group(pgid);
+        }
+        std::process::exit(128 + sig);
+    });
+}
+
+/// SIGTERM and SIGINT.
+fn stop_signals() -> libc::sigset_t {
     unsafe {
         let mut set: libc::sigset_t = std::mem::zeroed();
         libc::sigemptyset(&mut set);
         libc::sigaddset(&mut set, libc::SIGTERM);
         libc::sigaddset(&mut set, libc::SIGINT);
-        libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
-        std::thread::spawn(move || {
-            let mut sig: libc::c_int = 0;
-            libc::sigwait(&set, &mut sig);
-            let pgid = CHILD_PGID.load(std::sync::atomic::Ordering::SeqCst);
-            if pgid > 0 {
-                libc::kill(-pgid, libc::SIGTERM);
-            }
-            std::process::exit(128 + sig);
-        });
+        set
     }
+}
+
+/// For a child's `pre_exec`: spawn keeps the parent's signal mask, so a child
+/// of `stop_children_on_signal`'s process would never act on SIGTERM.
+/// Async-signal-safe.
+pub fn unblock_stop_signals() {
+    unsafe { libc::pthread_sigmask(libc::SIG_UNBLOCK, &stop_signals(), std::ptr::null_mut()) };
+}
+
+/// SIGTERM to group `pgid`, SIGKILL if its leader (a child of this process)
+/// has not exited 10 s later: exiting first would orphan it.
+fn stop_group(pgid: i32) {
+    unsafe { libc::kill(-pgid, libc::SIGTERM) };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        // Not 0: reaped here, or (ECHILD) by the thread that spawned it.
+        if unsafe { libc::waitpid(pgid, std::ptr::null_mut(), libc::WNOHANG) } != 0 {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    unsafe { libc::kill(-pgid, libc::SIGKILL) };
 }
 
 /// SIGTERM to the engine's process group, SIGKILL if it is still there 5 s
@@ -564,6 +593,42 @@ fn bring_up_loopback() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A child spawned while the stop signals are blocked, as they are on
+    /// every thread after `stop_children_on_signal`, still dies on SIGTERM.
+    #[test]
+    fn a_child_acts_on_the_sigterm_its_parent_blocks() {
+        use std::os::unix::process::ExitStatusExt;
+        let mut old: libc::sigset_t = unsafe { std::mem::zeroed() };
+        unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &stop_signals(), &mut old) };
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        unsafe {
+            cmd.pre_exec(|| {
+                unblock_stop_signals();
+                Ok(())
+            });
+        }
+        let spawned = cmd.spawn();
+        unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &old, std::ptr::null_mut()) };
+        let mut child = spawned.expect("spawn sleep");
+
+        unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("try_wait") {
+                break Some(status);
+            }
+            if Instant::now() > deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+
+        assert_eq!(status.and_then(|s| s.signal()), Some(libc::SIGTERM));
+    }
 
     #[test]
     fn cpu_lists_parse_and_format() {
