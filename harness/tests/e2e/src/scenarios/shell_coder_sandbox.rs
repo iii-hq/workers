@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Component, Path, PathBuf},
 };
 
@@ -320,6 +320,9 @@ fn registry_add_evidence(
     let sandbox_calls = registry_add_call_ids(invocations, "iii-sandbox");
     let mut seen_calls = HashSet::new();
     let mut ordered_sandbox_calls = HashSet::new();
+    // A named-worker compose::add answers `accepted` and finishes in the
+    // background; it counts once compose::operation reports it succeeded.
+    let mut accepted_adds: HashMap<String, String> = HashMap::new();
     let mut evidence = RegistryAddEvidence::default();
 
     let Some(messages) = transcript.get("messages").and_then(Value::as_array) else {
@@ -357,12 +360,43 @@ fn registry_add_evidence(
                 if !seen_calls.contains(call_id) {
                     continue;
                 }
+                if message.pointer("/details/status").and_then(Value::as_str) == Some("accepted") {
+                    if let Some(operation_id) = message
+                        .pointer("/details/operation_id")
+                        .and_then(Value::as_str)
+                    {
+                        accepted_adds.insert(operation_id.to_string(), call_id.to_string());
+                    }
+                    continue;
+                }
                 if shell_calls.contains(call_id) && compose_add_succeeded(message, "ide") {
                     evidence.shell_succeeded = true;
                 }
                 if sandbox_calls.contains(call_id)
                     && compose_add_succeeded(message, "sandbox-libkrun")
                 {
+                    evidence.sandbox_succeeded = true;
+                    evidence.ordered |= ordered_sandbox_calls.contains(call_id);
+                }
+            }
+            Some("function_result")
+                if message.get("function_id").and_then(Value::as_str)
+                    == Some("compose::operation")
+                    && message.get("is_error").and_then(Value::as_bool) == Some(false)
+                    && message.pointer("/details/status").and_then(Value::as_str)
+                        == Some("succeeded") =>
+            {
+                let Some(call_id) = message
+                    .pointer("/details/operation_id")
+                    .and_then(Value::as_str)
+                    .and_then(|operation_id| accepted_adds.get(operation_id))
+                else {
+                    continue;
+                };
+                if shell_calls.contains(call_id) {
+                    evidence.shell_succeeded = true;
+                }
+                if sandbox_calls.contains(call_id) {
                     evidence.sandbox_succeeded = true;
                     evidence.ordered |= ordered_sandbox_calls.contains(call_id);
                 }
@@ -886,6 +920,93 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn accepted_registry_adds_count_once_their_operation_succeeds() {
+        let cases = [
+            (
+                "both operations succeeded in sequence",
+                transcript(vec![
+                    assistant_calls(vec![add_call("call-shell", "ide")]),
+                    accepted_result("call-shell", "op-shell"),
+                    operation_result("op-shell", "succeeded"),
+                    assistant_calls(vec![add_call("call-sandbox", "iii-sandbox")]),
+                    accepted_result("call-sandbox", "op-sandbox"),
+                    operation_result("op-sandbox", "running"),
+                    operation_result("op-sandbox", "succeeded"),
+                ]),
+                RegistryAddEvidence {
+                    shell_succeeded: true,
+                    sandbox_succeeded: true,
+                    ordered: true,
+                },
+            ),
+            (
+                "accepted but never finished",
+                transcript(vec![
+                    assistant_calls(vec![add_call("call-shell", "ide")]),
+                    accepted_result("call-shell", "op-shell"),
+                    operation_result("op-shell", "failed"),
+                    assistant_calls(vec![add_call("call-sandbox", "iii-sandbox")]),
+                    accepted_result("call-sandbox", "op-sandbox"),
+                ]),
+                RegistryAddEvidence::default(),
+            ),
+            (
+                "sandbox added before the shell operation finished",
+                transcript(vec![
+                    assistant_calls(vec![add_call("call-shell", "ide")]),
+                    accepted_result("call-shell", "op-shell"),
+                    assistant_calls(vec![add_call("call-sandbox", "iii-sandbox")]),
+                    accepted_result("call-sandbox", "op-sandbox"),
+                    operation_result("op-shell", "succeeded"),
+                    operation_result("op-sandbox", "succeeded"),
+                ]),
+                RegistryAddEvidence {
+                    shell_succeeded: true,
+                    sandbox_succeeded: true,
+                    ordered: false,
+                },
+            ),
+        ];
+
+        for (name, transcript, expected) in cases {
+            let invocations = common::function_invocations(&transcript);
+            assert_eq!(
+                registry_add_evidence(&transcript, &invocations),
+                expected,
+                "{name}"
+            );
+        }
+    }
+
+    fn accepted_result(call_id: &str, operation_id: &str) -> Value {
+        json!({
+            "message": {
+                "role": "function_result",
+                "function_call_id": call_id,
+                "function_id": "compose::add",
+                "is_error": false,
+                "details": {
+                    "operation_id": operation_id,
+                    "status": "accepted",
+                    "requested": 1
+                }
+            }
+        })
+    }
+
+    fn operation_result(operation_id: &str, status: &str) -> Value {
+        json!({
+            "message": {
+                "role": "function_result",
+                "function_call_id": format!("poll-{operation_id}-{status}"),
+                "function_id": "compose::operation",
+                "is_error": false,
+                "details": { "operation_id": operation_id, "status": status }
+            }
+        })
     }
 
     fn transcript(messages: Vec<Value>) -> Value {
