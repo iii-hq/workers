@@ -661,15 +661,32 @@ fn stored_instance(dir: &Path) -> Result<u64, SandboxError> {
     read.map_err(|e| SandboxError::BootFailed(format!("{}: {e}", path.display())))
 }
 
+/// Replace `<dir>/state.json` with one recording `instance`. Written to a
+/// temp file and renamed over it, so a crash or a full disk mid-write leaves
+/// the previous file whole: a truncated one failed every later start.
+fn store_instance(dir: &Path, instance: u64) -> io::Result<()> {
+    let tmp = dir.join("state.json.tmp");
+    // A crash between the create and the rename leaves it behind.
+    match std::fs::remove_file(&tmp) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)?;
+    serde_json::to_writer(&mut file, &StateFile { instance })?;
+    file.sync_all()?;
+    std::fs::rename(&tmp, dir.join(STATE_FILE))
+}
+
 /// Record `instance` in `state.json`, truncate `console.log` and spawn `cmd`
 /// with piped stdin (the env frame) and output, and a lifeline.
 fn spawn(dir: &Path, instance: u64, mut cmd: Command) -> io::Result<(File, Lifeline, Child)> {
     std::fs::create_dir_all(dir)?;
     let console = open_private(&dir.join(CONSOLE_LOG), true)?;
-    serde_json::to_writer(
-        open_private(&dir.join(STATE_FILE), true)?,
-        &StateFile { instance },
-    )?;
+    store_instance(dir, instance)?;
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1222,6 +1239,32 @@ mod tests {
             "S300"
         );
         assert_eq!(std::fs::read_to_string(t.join("target")).unwrap(), "keep");
+    }
+
+    /// `state.json` is replaced, never rewritten in place: a write cut short
+    /// must leave the previous instance readable, not an empty file.
+    #[tokio::test]
+    async fn state_json_is_replaced_not_rewritten_in_place() {
+        let t = tempfile::tempdir().unwrap();
+        let vms = vms(t.path(), Some("t"), vec![]);
+        let id = vms
+            .launch("k", sh("exit 0"), Vec::new(), None)
+            .unwrap()
+            .vm_id;
+        wait_ended(&vms, &id, 1).await;
+        let dir = t.path().join("workers").join(&id);
+        // Same inode as state.json: an in-place rewrite would show through it.
+        std::fs::hard_link(dir.join(STATE_FILE), dir.join("old")).unwrap();
+        // A temp file left by a crash mid-write must not block the next boot.
+        std::fs::write(dir.join("state.json.tmp"), r#"{"inst"#).unwrap();
+
+        let again = vms.launch("k", sh("exit 0"), Vec::new(), None).unwrap();
+        assert_eq!(again.instance, 2);
+        assert_eq!(stored_instance(&dir).unwrap(), 2);
+        let old: StateFile =
+            serde_json::from_slice(&std::fs::read(dir.join("old")).unwrap()).unwrap();
+        assert_eq!(old.instance, 1);
+        assert!(!dir.join("state.json.tmp").exists());
     }
 
     #[tokio::test]
