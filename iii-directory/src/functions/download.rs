@@ -686,6 +686,28 @@ pub fn reconcile_decision(
     }
 }
 
+/// Decide whether a worker whose skills are already present needs them
+/// again because Compose now runs `installed`, another version than the one
+/// they came from. Returns that version's spec. A local override, an
+/// unknown installed version, or a marker that records no version
+/// (schema 1) keeps the skills as they are.
+pub fn refresh_decision(
+    name: &str,
+    installed: &str,
+    local_root: &Path,
+    global_root: &Path,
+) -> Option<VersionSpec> {
+    if installed.is_empty()
+        || crate::sources::registry::validate_worker_name(name).is_err()
+        || local_root.join(name).is_dir()
+    {
+        return None;
+    }
+    let raw = std::fs::read_to_string(global_root.join(name).join(COMPLETION_MARKER)).ok()?;
+    let downloaded = serde_json::from_str::<WorkerMarker>(&raw).ok()?.version?;
+    (downloaded != installed).then(|| VersionSpec::Version(installed.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1251,6 +1273,56 @@ mod tests {
             result,
             Some(VersionSpec::Tag("latest".to_string())),
             "should return latest tag when no version"
+        );
+    }
+
+    #[test]
+    fn refresh_pulls_the_installed_version_once_the_worker_moved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global_root = tmp.path().join("global");
+        let local_root = tmp.path().join("local");
+        let mut result = DownloadResult::new("resend");
+        result.version = Some("1.0.0".into());
+        let latest = VersionSpec::Tag("latest".into());
+        write_completion_marker(&global_root, "resend", &latest, &result).unwrap();
+
+        assert_eq!(
+            refresh_decision("resend", "1.1.0", &local_root, &global_root),
+            Some(VersionSpec::Version("1.1.0".into())),
+            "an updated worker gets the skills of its new version"
+        );
+        for (installed, why) in [("1.0.0", "same version"), ("", "unknown version")] {
+            assert_eq!(
+                refresh_decision("resend", installed, &local_root, &global_root),
+                None,
+                "{why}"
+            );
+        }
+        assert_eq!(
+            refresh_decision("other", "1.1.0", &local_root, &global_root),
+            None,
+            "no marker is the first download's job"
+        );
+
+        // A marker that records no version cannot be compared.
+        write_completion_marker(
+            &global_root,
+            "resend",
+            &latest,
+            &DownloadResult::new("resend"),
+        )
+        .unwrap();
+        assert_eq!(
+            refresh_decision("resend", "1.1.0", &local_root, &global_root),
+            None
+        );
+
+        // A local override is never replaced.
+        write_completion_marker(&global_root, "resend", &latest, &result).unwrap();
+        std::fs::create_dir_all(local_root.join("resend")).unwrap();
+        assert_eq!(
+            refresh_decision("resend", "1.1.0", &local_root, &global_root),
+            None
         );
     }
 

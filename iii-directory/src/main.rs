@@ -41,7 +41,7 @@ use serde_json::json;
 
 use iii_directory::config::{FunctionSearchMode, SharedConfig, SkillsConfig};
 use iii_directory::functions::download::{
-    download_worker_skills, reconcile_decision, InFlightGuard,
+    download_worker_skills, reconcile_decision, refresh_decision, InFlightGuard,
 };
 use iii_directory::functions::registry::RegistryCache;
 use iii_directory::functions::skills::{
@@ -528,8 +528,9 @@ async fn worker_pass(
 }
 
 /// Download skills for each of `workers` (container, version) whose
-/// namespace is missing or incomplete, not overridden locally, and not
-/// tried at that version yet. Returns how many it downloaded.
+/// namespace is missing, incomplete, or from another version than the one
+/// Compose runs, not overridden locally, and not tried at that version yet.
+/// Returns how many it downloaded.
 async fn reconcile_workers(
     cfg: &SkillsConfig,
     in_flight: &Arc<InFlightGuard>,
@@ -539,9 +540,11 @@ async fn reconcile_workers(
     let local_root = cfg.local_skills_folder();
     let mut reconciled = 0;
     for (name, version) in workers {
-        // The version keys the attempt; the download takes the latest
-        // skill tag.
-        let Some(spec) = reconcile_decision(name, None, &local_root, &global_root) else {
+        // The version keys the attempt; a first download takes the latest
+        // skill tag, an updated worker the skills of its new version.
+        let Some(spec) = reconcile_decision(name, None, &local_root, &global_root)
+            .or_else(|| refresh_decision(name, version, &local_root, &global_root))
+        else {
             continue;
         };
         if !in_flight.first_try(name, version) {
