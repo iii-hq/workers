@@ -11,6 +11,7 @@
 use std::ffi::CString;
 use std::fs::File;
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::time::Duration;
 
@@ -871,4 +872,26 @@ fn create_read_only_file_returns_a_writable_handle() {
     let path = h._dir.path().join("obj");
     assert_eq!(std::fs::read(&path).unwrap(), b"blob");
     assert_eq!(std::fs::metadata(&path).unwrap().mode() & 0o777, 0o444);
+}
+
+/// Unlinking a FIFO that nobody writes to returns at once: the one worker
+/// thread that serves the filesystem must never block on it.
+#[test]
+fn unlink_fifo_does_not_block() {
+    let h = setup_fs();
+    let path = h._dir.path().join("pipe");
+    let c_path = CString::new(path.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let res = h.fs.unlink(test_ctx(), ROOT_ID, &cstr("pipe"));
+        tx.send((res.map_err(|e| e.raw_os_error()), path.exists()))
+            .unwrap();
+    });
+    let (res, exists) = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("unlink blocked on the FIFO");
+    assert_eq!(res, Ok(()));
+    assert!(!exists);
 }

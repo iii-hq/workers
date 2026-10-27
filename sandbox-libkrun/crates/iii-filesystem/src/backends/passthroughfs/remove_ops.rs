@@ -42,13 +42,14 @@ pub(crate) fn do_unlink(
     let parent_fd = inode::get_inode_fd(fs, parent)?;
 
     // On macOS, grab an fd before unlink to keep the file data alive (Pitfall 4).
+    // O_NONBLOCK: opening a FIFO with no writer would block the fs worker thread.
     #[cfg(target_os = "macos")]
     let pre_unlink_fd = {
         let fd = unsafe {
             libc::openat(
                 parent_fd.raw(),
                 name.as_ptr(),
-                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
             )
         };
         if fd >= 0 { Some(fd) } else { None }
