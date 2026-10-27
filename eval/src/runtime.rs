@@ -1287,7 +1287,14 @@ pub(crate) async fn history_window(
                 row["status"].as_str(),
                 Some("passed" | "failed" | "incomplete")
             );
-            if row["source"]["kind"] == "github" && finished && row["parameters"]["model"] == model
+            // A cycle's own executions ran its candidates: not today's Harness.
+            let owned = evidence::text_at(row, "/idempotency_key")
+                .and_then(|key| key.split_once(':').map(|(owner, _)| ids::is_cycle(owner)))
+                .unwrap_or(false);
+            if row["source"]["kind"] == "github"
+                && finished
+                && !owned
+                && row["parameters"]["model"] == model
             {
                 let scenarios = row["parameters"]["scenarios"]
                     .as_array()

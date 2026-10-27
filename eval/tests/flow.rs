@@ -1631,12 +1631,19 @@ async fn with_history_days_the_cycle_measures_the_github_runs_already_made_and_d
     );
     ci["manifest"]["executions"][0]["status"] = json!("passed");
     ci["manifest"]["executions"][0]["source"] = json!({"kind": "github"});
-    world.executions.insert("ci-1".into(), ci);
+    world.executions.insert("ci-1".into(), ci.clone());
+    // A cycle's own GitHub proof ran its candidate, not today's Harness.
+    ci["manifest"]["executions"][0]["id"] = json!("proof-1");
+    ci["manifest"]["executions"][0]["idempotency_key"] = json!("cycle_0f:candidate-1");
+    world.executions.insert("proof-1".into(), ci);
     world.histories.insert(
         "context_pressure".into(),
         json!({"observations": [{"subject_model": "m", "plan_execution_id": "ci-1",
             "execution_id": "native-1", "runs": [{"run_id": "r1", "attempt_id": "a1",
-            "status": "passed", "function_call_errors": 5.0}]}]}),
+            "status": "passed", "function_call_errors": 5.0}]},
+            {"subject_model": "m", "plan_execution_id": "proof-1",
+            "execution_id": "native-2", "runs": [{"run_id": "r2", "attempt_id": "a2",
+            "status": "passed", "function_call_errors": 50.0}]}]}),
     );
     let edit = (
         "coder::update-file",
@@ -1648,6 +1655,12 @@ async fn with_history_days_the_cycle_measures_the_github_runs_already_made_and_d
     world
         .transcripts
         .insert("native-1/evidence/r1/a1/transcript.json".into(), transcript);
+    let mut proof = failed_all("r2", &[edit; 9]);
+    let transcript = proof["transcript"].take();
+    world.attempts.insert("native-2/r2/a2".into(), proof);
+    world
+        .transcripts
+        .insert("native-2/evidence/r2/a2/transcript.json".into(), transcript);
     let h = Harness::start(world).await;
     let config = json!({
         "subject": {"provider": "p", "model": "m"}, "where": "harness",
