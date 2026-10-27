@@ -20,6 +20,7 @@ use smoltcp::time::Instant;
 use smoltcp::wire::{
     ArpOperation, ArpPacket, ArpRepr, EthernetAddress, EthernetFrame, EthernetProtocol,
     EthernetRepr, IpProtocol, Ipv4Packet, Ipv4Repr, TcpControl, TcpPacket, TcpRepr, TcpSeqNumber,
+    UdpPacket, UdpRepr,
 };
 
 /// Test 3: Network connectivity — frame flow from backend through shared state to device.
@@ -273,6 +274,76 @@ async fn poll_iteration_dns_no_tcp_connection() {
 
     let result = poll_iteration(&mut state, &shared, &config, &handle);
     assert_eq!(result.new_connections, 0);
+}
+
+/// A DNS query sent to an explicit server (here 8.8.8.8) is intercepted, so
+/// its reply must come from that server's address: connected resolvers
+/// (glibc, Go) drop a reply from any other source, such as the gateway.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dns_reply_comes_from_the_queried_server() {
+    let shared = Arc::new(SharedState::new(64));
+    let config = test_config();
+    let handle = tokio::runtime::Handle::current();
+    let mut state = build_state(&shared, &config, &handle);
+    let server_ip = Ipv4Addr::new(8, 8, 8, 8);
+
+    // `localhost.` is answered inside hickory, so no network is needed.
+    let query: &[u8] = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\
+        \x09localhost\x00\x00\x01\x00\x01";
+    let udp = UdpRepr {
+        src_port: 33333,
+        dst_port: 53,
+    };
+    let ip = Ipv4Repr {
+        src_addr: config.guest_ipv4,
+        dst_addr: server_ip,
+        next_header: IpProtocol::Udp,
+        payload_len: udp.header_len() + query.len(),
+        hop_limit: 64,
+    };
+    let eth = EthernetRepr {
+        src_addr: EthernetAddress(config.guest_mac),
+        dst_addr: EthernetAddress(config.gateway_mac),
+        ethertype: EthernetProtocol::Ipv4,
+    };
+    let mut frame = vec![0u8; 14 + ip.buffer_len() + udp.header_len() + query.len()];
+    let caps = ChecksumCapabilities::default();
+    eth.emit(&mut EthernetFrame::new_unchecked(&mut frame));
+    ip.emit(&mut Ipv4Packet::new_unchecked(&mut frame[14..]), &caps);
+    udp.emit(
+        &mut UdpPacket::new_unchecked(&mut frame[14 + ip.buffer_len()..]),
+        &config.guest_ipv4.into(),
+        &server_ip.into(),
+        query.len(),
+        |buf| buf.copy_from_slice(query),
+        &caps,
+    );
+
+    let guest = TestGuest::new(&config, server_ip, 33333, 53);
+    shared.tx_ring.push(guest.arp_announce()).unwrap();
+    shared.tx_ring.push(frame).unwrap();
+
+    for _ in 0..1000 {
+        poll_iteration(&mut state, &shared, &config, &handle);
+        while let Some(out) = shared.rx_ring.pop() {
+            let eth = EthernetFrame::new_checked(&out[..]).unwrap();
+            if eth.ethertype() != EthernetProtocol::Ipv4 {
+                continue;
+            }
+            let ip = Ipv4Packet::new_checked(eth.payload()).unwrap();
+            let udp = UdpPacket::new_checked(ip.payload()).unwrap();
+            assert_eq!(udp.src_port(), 53);
+            assert_eq!(&udp.payload()[..2], b"\x12\x34", "reply to our query");
+            assert_eq!(
+                ip.src_addr(),
+                server_ip,
+                "reply must come from the queried server"
+            );
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("no DNS reply reached the guest");
 }
 
 /// Multiple SYN frames in a single iteration create independent connections.

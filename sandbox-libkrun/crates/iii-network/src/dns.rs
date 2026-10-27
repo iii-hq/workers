@@ -11,7 +11,7 @@ use bytes::Bytes;
 use smoltcp::iface::SocketSet;
 use smoltcp::socket::udp;
 use smoltcp::storage::PacketMetadata;
-use smoltcp::wire::{IpEndpoint, IpListenEndpoint};
+use smoltcp::wire::IpListenEndpoint;
 use tokio::sync::mpsc;
 
 use crate::shared::SharedState;
@@ -36,12 +36,14 @@ pub struct DnsInterceptor {
 
 struct DnsQuery {
     data: Bytes,
-    source: IpEndpoint,
+    /// Guest endpoint plus the address it queried (`local_address`): the
+    /// reply must come from there, or connected resolvers discard it.
+    source: udp::UdpMetadata,
 }
 
 struct DnsResponse {
     data: Bytes,
-    dest: IpEndpoint,
+    dest: udp::UdpMetadata,
 }
 
 impl DnsInterceptor {
@@ -98,7 +100,7 @@ impl DnsInterceptor {
                 Ok((n, meta)) => {
                     let query = DnsQuery {
                         data: Bytes::copy_from_slice(&buf[..n]),
-                        source: meta.endpoint,
+                        source: meta,
                     };
                     if self.query_tx.try_send(query).is_err() {
                         tracing::debug!("DNS query channel full, dropping query");
@@ -203,6 +205,7 @@ async fn resolve_query(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use smoltcp::wire::IpEndpoint;
 
     #[test]
     fn dns_port_is_53() {
@@ -218,20 +221,20 @@ mod tests {
     fn dns_query_struct_holds_data() {
         let query = DnsQuery {
             data: Bytes::from_static(b"\x00\x01\x02"),
-            source: IpEndpoint::new(smoltcp::wire::IpAddress::v4(10, 0, 2, 100), 12345),
+            source: IpEndpoint::new(smoltcp::wire::IpAddress::v4(10, 0, 2, 100), 12345).into(),
         };
         assert_eq!(query.data.len(), 3);
-        assert_eq!(query.source.port, 12345);
+        assert_eq!(query.source.endpoint.port, 12345);
     }
 
     #[test]
     fn dns_response_struct_holds_data() {
         let response = DnsResponse {
             data: Bytes::from_static(b"\x00\x01"),
-            dest: IpEndpoint::new(smoltcp::wire::IpAddress::v4(10, 0, 2, 100), 12345),
+            dest: IpEndpoint::new(smoltcp::wire::IpAddress::v4(10, 0, 2, 100), 12345).into(),
         };
         assert_eq!(response.data.len(), 2);
-        assert_eq!(response.dest.port, 12345);
+        assert_eq!(response.dest.endpoint.port, 12345);
     }
 
     fn query_bytes(name: &str, record_type: hickory_proto::rr::RecordType) -> Vec<u8> {
