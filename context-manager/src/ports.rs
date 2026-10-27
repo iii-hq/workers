@@ -35,17 +35,16 @@ pub trait ModelResolver: Send + Sync {
 
     /// The prompt tokens the model's provider counts for this request
     /// (`router::count_tokens`). `Err` when nothing can count it; callers
-    /// keep their own estimate.
+    /// keep their own estimate. No default: a decorator that forgot to
+    /// forward it silently kept the estimate in production.
     async fn count_prompt_tokens(
         &self,
-        _provider: Option<&str>,
-        _id: &str,
-        _system_prompt: &str,
-        _tools: &[AgentFunction],
-        _messages: &[AgentMessage],
-    ) -> Result<u64, String> {
-        Err("no prompt token counter".into())
-    }
+        provider: Option<&str>,
+        id: &str,
+        system_prompt: &str,
+        tools: &[AgentFunction],
+        messages: &[AgentMessage],
+    ) -> Result<u64, String>;
 }
 
 /// One summariser call. The core renders the prompts (template,
