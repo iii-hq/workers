@@ -96,20 +96,13 @@ async fn tcp_proxy_task(
         Ok::<_, io::Error>(())
     };
 
+    let guest = to_smoltcp.clone();
     let download = async move {
         let mut server_buf = vec![0u8; SERVER_READ_BUF_SIZE];
         loop {
-            let n = tokio::select! {
-                result = server_rx.read(&mut server_buf) => result?,
-                // The guest connection was reaped (e.g. RST): without this a
-                // server that never writes again pins the task and its socket.
-                () = to_smoltcp.closed() => return Err(io::ErrorKind::ConnectionAborted.into()),
-            };
+            let n = server_rx.read(&mut server_buf).await?;
             if n == 0 {
-                // Server EOF: dropping the sender FINs the guest, while the
-                // upload keeps relaying whatever the guest still sends.
-                drop(to_smoltcp);
-                return Ok(());
+                break;
             }
             // Response payload toward the guest counts too — a
             // slow server reply keeps its sandbox alive.
@@ -120,9 +113,20 @@ async fn tcp_proxy_task(
             }
             shared.proxy_wake.wake();
         }
+        // Server EOF: an empty chunk tells conn.rs to FIN the guest once the
+        // response is flushed, while the upload keeps relaying guest bytes.
+        let _ = to_smoltcp.send(Bytes::new()).await;
+        shared.proxy_wake.wake();
+        Ok(())
     };
 
-    tokio::try_join!(upload, download).map(|_| ())
+    tokio::select! {
+        result = async { tokio::try_join!(upload, download) } => result.map(|_| ()),
+        // The guest connection was reaped (RST, or a close after server EOF).
+        // Without this, a server that neither writes nor reads pins the task,
+        // its socket and any upload stuck in `write_all`.
+        () = guest.closed() => Err(io::ErrorKind::ConnectionAborted.into()),
+    }
 }
 
 #[cfg(test)]
@@ -313,8 +317,8 @@ mod tests {
             .ok();
     }
 
-    /// Server EOF ends only the download: the guest is told (its channel
-    /// closes) while bytes it sends afterwards still reach the server.
+    /// Server EOF ends only the download: the guest is told (an empty chunk)
+    /// while bytes it sends afterwards still reach the server.
     #[tokio::test]
     async fn server_eof_keeps_upload_flowing() {
         let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
@@ -323,7 +327,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let (to_task_tx, to_task_rx) = mpsc::channel(8);
         let (from_task_tx, mut from_task_rx) = mpsc::channel(8);
-        let _task = tokio::spawn(tcp_proxy_task(
+        let task = tokio::spawn(tcp_proxy_task(
             addr,
             to_task_rx,
             from_task_tx,
@@ -336,8 +340,8 @@ mod tests {
         server_conn.shutdown().await.unwrap();
         assert_eq!(&from_task_rx.recv().await.unwrap()[..], b"bye");
         assert!(
-            from_task_rx.recv().await.is_none(),
-            "server EOF must close the guest-bound channel"
+            from_task_rx.recv().await.unwrap().is_empty(),
+            "server EOF must reach the guest as an empty chunk"
         );
 
         to_task_tx.send(Bytes::from_static(b"late")).await.unwrap();
@@ -348,6 +352,50 @@ mod tests {
             .expect("guest EOF must reach the server")
             .unwrap();
         assert_eq!(got, b"late");
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("both directions closed: the proxy must exit")
+            .unwrap()
+            .unwrap();
+    }
+
+    /// After server EOF the upload can sit in `write_all` forever on a server
+    /// that never reads. Reaping the guest connection must still end the
+    /// task: once the slot is freed the connection cap no longer counts it.
+    #[tokio::test]
+    async fn proxy_exits_when_guest_is_reaped_after_server_eof() {
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (to_task_tx, to_task_rx) = mpsc::channel(8);
+        let (from_task_tx, mut from_task_rx) = mpsc::channel(8);
+        let task = tokio::spawn(tcp_proxy_task(
+            addr,
+            to_task_rx,
+            from_task_tx,
+            Arc::new(SharedState::new(64)),
+            Ipv4Addr::new(10, 0, 2, 2),
+        ));
+        let (mut server_conn, _) = listener.accept().await.unwrap();
+        server_conn.shutdown().await.unwrap();
+        assert!(from_task_rx.recv().await.unwrap().is_empty());
+
+        // Upload until the unread server side backs up into the proxy.
+        let chunk = Bytes::from(vec![0u8; 64 << 10]);
+        while let Ok(sent) =
+            tokio::time::timeout(Duration::from_millis(500), to_task_tx.send(chunk.clone())).await
+        {
+            sent.expect("proxy exited while the server was still open");
+        }
+
+        drop(to_task_tx);
+        drop(from_task_rx);
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("proxy task leaked after the guest connection was reaped")
+            .unwrap()
+            .ok();
     }
 
     #[test]

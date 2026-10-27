@@ -53,7 +53,8 @@ struct Connection {
     from_proxy: mpsc::Receiver<Bytes>,
     proxy_channels: Option<ProxyChannels>,
     proxy_spawned: bool,
-    /// Set when `from_proxy` disconnects — the proxy task has exited.
+    /// Set once the proxy has nothing more to send: it relayed server EOF
+    /// (an empty chunk) or exited (`from_proxy` disconnected).
     proxy_gone: bool,
     write_buf: Option<(Bytes, usize)>,
     /// When the deferred close last stopped making progress.
@@ -188,9 +189,9 @@ impl ConnectionTracker {
 
             let socket = sockets.get_mut::<tcp::Socket>(handle);
 
-            // Proxy task gone: it died (host connect/IO failure) or finished
-            // after a propagated guest FIN. Flush remaining proxy→guest bytes,
-            // then close; abort if the guest never drains us.
+            // Proxy done: it died (host connect/IO failure), or the guest FIN
+            // was propagated and the server sent EOF. Flush remaining
+            // proxy→guest bytes, then close; abort if the guest never drains us.
             let proxy_dead = conn
                 .to_proxy
                 .as_ref()
@@ -246,8 +247,8 @@ impl ConnectionTracker {
             }
 
             write_proxy_data(socket, conn);
-            // Server EOF: the proxy dropped only its sender. FIN the guest once
-            // flushed; smoltcp still receives in FinWait1/2, so the upload goes on.
+            // Server EOF: FIN the guest once flushed; smoltcp still receives in
+            // FinWait1/2, so the upload goes on.
             if conn.proxy_gone && conn.write_buf.is_none() {
                 socket.close();
             }
@@ -351,6 +352,10 @@ fn write_proxy_data(socket: &mut tcp::Socket<'_>, conn: &mut Connection) {
 
     while conn.write_buf.is_none() {
         match conn.from_proxy.try_recv() {
+            Ok(data) if data.is_empty() => {
+                conn.proxy_gone = true;
+                break;
+            }
             Ok(data) => {
                 if socket.can_send() {
                     match socket.send_slice(&data) {
