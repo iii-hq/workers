@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bytes::Bytes;
 use smoltcp::wire::{
@@ -20,6 +20,9 @@ use tokio::sync::mpsc;
 use crate::shared::SharedState;
 
 const SESSION_TIMEOUT: Duration = Duration::from_secs(60);
+/// Each session holds a host UDP port; capped like TCP connections so a
+/// guest cannot drain the host's shared ephemeral port range.
+const MAX_SESSIONS: usize = 256;
 const OUTBOUND_CHANNEL_CAPACITY: usize = 64;
 const RECV_BUF_SIZE: usize = 4096;
 const ETH_HDR_LEN: usize = 14;
@@ -40,15 +43,11 @@ const MAX_UDP_PAYLOAD: usize = u16::MAX as usize - IPV4_HDR_LEN - UDP_HDR_LEN;
 /// [`relay_outbound()`]: UdpRelay::relay_outbound
 pub struct UdpRelay {
     shared: Arc<SharedState>,
-    sessions: HashMap<(SocketAddr, SocketAddr), UdpSession>,
+    /// Outbound channel of each session's relay task; closed once it exits.
+    sessions: HashMap<(SocketAddr, SocketAddr), mpsc::Sender<Bytes>>,
     gateway_mac: EthernetAddress,
     guest_mac: EthernetAddress,
     tokio_handle: tokio::runtime::Handle,
-}
-
-struct UdpSession {
-    outbound_tx: mpsc::Sender<Bytes>,
-    last_active: Instant,
 }
 
 impl UdpRelay {
@@ -75,36 +74,37 @@ impl UdpRelay {
 
         let key = (src, dst);
 
-        if self
-            .sessions
-            .get(&key)
-            .is_none_or(|s| s.last_active.elapsed() > SESSION_TIMEOUT)
-        {
+        // A closed channel means the relay task exited (idle timeout, or a
+        // socket error such as ICMP port-unreachable): start a fresh one.
+        if self.sessions.get(&key).is_none_or(mpsc::Sender::is_closed) {
             self.sessions.remove(&key);
-            if let Some(session) = self.create_session(src, dst) {
-                self.sessions.insert(key, session);
-            } else {
+            if self.sessions.len() >= MAX_SESSIONS {
+                self.cleanup_expired();
+            }
+            if self.sessions.len() >= MAX_SESSIONS {
+                tracing::debug!(%src, %dst, "UDP session limit reached, dropping datagram");
                 return;
             }
+            let outbound_tx = self.create_session(src, dst);
+            self.sessions.insert(key, outbound_tx);
         }
 
-        if let Some(session) = self.sessions.get_mut(&key) {
-            session.last_active = Instant::now();
-            let _ = session
-                .outbound_tx
-                .try_send(Bytes::copy_from_slice(payload));
+        if let Some(outbound_tx) = self.sessions.get(&key) {
+            let _ = outbound_tx.try_send(Bytes::copy_from_slice(payload));
         }
     }
 
-    /// Remove expired sessions.
+    /// Forget sessions whose relay task has exited. The task owns expiry:
+    /// its idle timer is reset by traffic in either direction, so a flow
+    /// that only receives stays alive.
     pub fn cleanup_expired(&mut self) {
         self.sessions
-            .retain(|_, session| session.last_active.elapsed() <= SESSION_TIMEOUT);
+            .retain(|_, outbound_tx| !outbound_tx.is_closed());
     }
 }
 
 impl UdpRelay {
-    fn create_session(&self, guest_src: SocketAddr, guest_dst: SocketAddr) -> Option<UdpSession> {
+    fn create_session(&self, guest_src: SocketAddr, guest_dst: SocketAddr) -> mpsc::Sender<Bytes> {
         let (outbound_tx, outbound_rx) = mpsc::channel(OUTBOUND_CHANNEL_CAPACITY);
 
         let shared = self.shared.clone();
@@ -131,10 +131,7 @@ impl UdpRelay {
             }
         });
 
-        Some(UdpSession {
-            outbound_tx,
-            last_active: Instant::now(),
-        })
+        outbound_tx
     }
 }
 
@@ -296,6 +293,86 @@ mod tests {
         })
         .await
         .expect("relay task never injected a response frame into rx_ring")
+    }
+
+    fn test_relay() -> UdpRelay {
+        UdpRelay::new(
+            Arc::new(SharedState::new(64)),
+            [0x02, 0, 0, 0, 0, 1],
+            [0x02, 0, 0, 0, 0, 2],
+            tokio::runtime::Handle::current(),
+        )
+    }
+
+    fn send_outbound(relay: &mut UdpRelay, src: SocketAddr, dst: SocketAddr, payload: &[u8]) {
+        let frame = construct_udp_response_v4(
+            src,
+            dst,
+            payload,
+            EthernetAddress([0; 6]),
+            EthernetAddress([0; 6]),
+        );
+        relay.relay_outbound(&frame, src, dst);
+    }
+
+    /// A relay task that died (here: ICMP port-unreachable before the host
+    /// service was up) must not blackhole the tuple: the guest's next
+    /// datagram from the same socket gets a fresh session.
+    #[tokio::test]
+    async fn relay_replaces_session_whose_task_exited() {
+        let placeholder = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let dst = placeholder.local_addr().unwrap();
+        drop(placeholder);
+        let src: SocketAddr = (Ipv4Addr::new(100, 96, 0, 2), 40000).into();
+        let mut relay = test_relay();
+
+        async fn wait_task_exit(relay: &UdpRelay, key: (SocketAddr, SocketAddr)) {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !relay.sessions[&key].is_closed() {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("relay task should exit on ECONNREFUSED");
+        }
+
+        send_outbound(&mut relay, src, dst, b"early");
+        wait_task_exit(&relay, (src, dst)).await;
+
+        let server = UdpSocket::bind(dst).await.unwrap();
+        send_outbound(&mut relay, src, dst, b"late");
+        let mut buf = [0u8; 16];
+        let n = tokio::time::timeout(Duration::from_secs(5), server.recv(&mut buf))
+            .await
+            .expect("datagram sent after the service came up must be relayed")
+            .unwrap();
+        assert_eq!(&buf[..n], b"late");
+        relay.cleanup_expired();
+        assert_eq!(relay.sessions.len(), 1, "a live session must be kept");
+
+        drop(server);
+        send_outbound(&mut relay, src, dst, b"gone");
+        wait_task_exit(&relay, (src, dst)).await;
+        relay.cleanup_expired();
+        assert!(
+            relay.sessions.is_empty(),
+            "an exited session must be reaped"
+        );
+    }
+
+    /// A guest spraying source ports must not get one host socket per
+    /// tuple without bound.
+    #[tokio::test]
+    async fn relay_caps_concurrent_sessions() {
+        let mut relay = test_relay();
+        let dst: SocketAddr = (Ipv4Addr::new(192, 0, 2, 1), 9).into();
+        // Current-thread runtime and no await: the spawned relay tasks never
+        // run, so no host sockets are bound here.
+        for port in 0..MAX_SESSIONS as u16 + 10 {
+            let src: SocketAddr = (Ipv4Addr::new(100, 96, 0, 2), 10000 + port).into();
+            send_outbound(&mut relay, src, dst, b"x");
+        }
+        assert_eq!(relay.sessions.len(), MAX_SESSIONS);
     }
 
     #[test]
