@@ -9,15 +9,15 @@
 #![allow(clippy::unnecessary_cast)]
 
 use std::ffi::CString;
-use std::fs::File;
+use std::fs::{File, Permissions};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::time::Duration;
 
 use iii_filesystem::{
     CachePolicy, Context, DynFileSystem, Extensions, FsOptions, PassthroughConfig, PassthroughFs,
-    ZeroCopyReader, ZeroCopyWriter,
+    SetattrValid, ZeroCopyReader, ZeroCopyWriter, stat64,
 };
 
 const ROOT_ID: u64 = 1;
@@ -917,4 +917,57 @@ fn unlink_one_hard_link_keeps_the_file_writable() {
     h.fs.release(ctx, a.inode, 0, fh, false, false, None)
         .unwrap();
     assert_eq!(std::fs::read(h._dir.path().join("b")).unwrap(), b"new");
+}
+
+/// chmod needs ownership, truncate needs write access, and lutimes changes
+/// the link itself: none of them may require opening the file for reading.
+#[test]
+fn setattr_does_not_need_read_access() {
+    let h = setup_fs();
+    let ctx = test_ctx();
+    let root = h._dir.path();
+    std::fs::write(root.join("locked"), b"x").unwrap();
+    std::fs::set_permissions(root.join("locked"), Permissions::from_mode(0o000)).unwrap();
+    std::fs::write(root.join("wonly"), b"data").unwrap();
+    std::fs::set_permissions(root.join("wonly"), Permissions::from_mode(0o200)).unwrap();
+    std::os::unix::fs::symlink("wonly", root.join("link")).unwrap();
+
+    let locked = h.fs.lookup(ctx, ROOT_ID, &cstr("locked")).unwrap();
+    let mut attr: stat64 = unsafe { std::mem::zeroed() };
+    attr.st_mode = 0o600;
+    h.fs.setattr(ctx, locked.inode, attr, None, SetattrValid::MODE)
+        .unwrap();
+    assert_eq!(
+        std::fs::metadata(root.join("locked")).unwrap().mode() & 0o777,
+        0o600
+    );
+
+    let wonly = h.fs.lookup(ctx, ROOT_ID, &cstr("wonly")).unwrap();
+    let mut attr: stat64 = unsafe { std::mem::zeroed() };
+    attr.st_size = 1;
+    h.fs.setattr(ctx, wonly.inode, attr, None, SetattrValid::SIZE)
+        .unwrap();
+    assert_eq!(
+        std::fs::symlink_metadata(root.join("wonly")).unwrap().len(),
+        1
+    );
+
+    let link = h.fs.lookup(ctx, ROOT_ID, &cstr("link")).unwrap();
+    let mut attr: stat64 = unsafe { std::mem::zeroed() };
+    attr.st_mtime = 1_000_000;
+    h.fs.setattr(ctx, link.inode, attr, None, SetattrValid::MTIME)
+        .unwrap();
+    assert_eq!(
+        std::fs::symlink_metadata(root.join("link"))
+            .unwrap()
+            .mtime(),
+        1_000_000
+    );
+    assert_ne!(
+        std::fs::symlink_metadata(root.join("wonly"))
+            .unwrap()
+            .mtime(),
+        1_000_000,
+        "lutimes must not follow the link"
+    );
 }
