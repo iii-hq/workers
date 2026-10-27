@@ -252,6 +252,51 @@ pub struct CompareAndSetResult {
     pub current: Option<Value>,
 }
 
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct PrivateCompareAndSetInput {
+    #[serde(flatten)]
+    pub update: CompareAndSetInput,
+    /// Flush the adapter before acknowledging, including an unmatched retry.
+    #[serde(default)]
+    pub durable: bool,
+}
+
+async fn private_compare_and_set(
+    ctx: &StateCtx,
+    prefix: &str,
+    input: PrivateCompareAndSetInput,
+) -> Result<CompareAndSetResult, Error> {
+    let update = input.update;
+    require_owned_scope(&ctx.private.owned_scopes(prefix), prefix, &update.scope)?;
+    let outcome = ctx
+        .adapter
+        .compare_and_set(
+            &update.scope,
+            &update.key,
+            update.expected.as_ref(),
+            update.value,
+        )
+        .await
+        .map_err(|_| Error::Handler("CAS_ERROR: private state update failed".into()))?;
+    if input.durable {
+        // A previous attempt may have cleared memory but failed to persist it.
+        // Flush even when this retry's expected value no longer matches.
+        ctx.adapter.flush().await.map_err(|_| {
+            Error::Handler("FLUSH_ERROR: private state could not be persisted".into())
+        })?;
+    }
+    Ok(match outcome {
+        CompareAndSetOutcome::Swapped { .. } => CompareAndSetResult {
+            swapped: true,
+            current: None,
+        },
+        CompareAndSetOutcome::NotSwapped { current } => CompareAndSetResult {
+            swapped: false,
+            current: Some(current),
+        },
+    })
+}
+
 /// The condition-contract envelope. `event` is the fired event; the rest of
 /// the envelope (binding, context) is accepted and ignored so the same
 /// function works as a condition and as a direct call.
@@ -1012,32 +1057,10 @@ fn register_private_namespace_functions(
         let ctx = ctx.clone();
         iii.register_function(
             &cas_id,
-            RegisterFunction::new_async(move |input: CompareAndSetInput| {
+            RegisterFunction::new_async(move |input: PrivateCompareAndSetInput| {
                 let ctx = ctx.clone();
                 let prefix = prefix.clone();
-                async move {
-                    require_owned_scope(&ctx.private.owned_scopes(&prefix), &prefix, &input.scope)?;
-                    let swapped = ctx
-                        .adapter
-                        .compare_and_set(
-                            &input.scope,
-                            &input.key,
-                            input.expected.as_ref(),
-                            input.value,
-                        )
-                        .await
-                        .map_err(|e| Error::Handler(format!("CAS_ERROR: {e}")))?;
-                    Ok(match swapped {
-                        CompareAndSetOutcome::Swapped { .. } => CompareAndSetResult {
-                            swapped: true,
-                            current: None,
-                        },
-                        CompareAndSetOutcome::NotSwapped { current } => CompareAndSetResult {
-                            swapped: false,
-                            current: Some(current),
-                        },
-                    })
-                }
+                async move { private_compare_and_set(&ctx, &prefix, input).await }
             })
             .description(format!(
                 "Internal: atomically update private `{}` bookkeeping state",
@@ -1052,6 +1075,57 @@ fn register_private_namespace_functions(
 mod private_namespace_tests {
     use super::*;
 
+    #[test]
+    fn durable_private_cas_is_opt_in() {
+        let input: PrivateCompareAndSetInput = serde_json::from_value(serde_json::json!({
+            "scope":"provider-openai-codex-auth", "key":"session", "value":null
+        }))
+        .unwrap();
+        assert!(!input.durable);
+    }
+
+    #[tokio::test]
+    async fn durable_private_cas_flushes_cleanup_before_a_reload() {
+        let dir =
+            std::env::temp_dir().join(format!("codex-state-cleanup-{}", uuid::Uuid::new_v4()));
+        let config = serde_json::json!({
+            "store_method":"file_based", "file_path":dir, "save_interval_ms":3_600_000
+        });
+        let adapter = Arc::new(crate::adapters::KvStoreAdapter::new(Some(config.clone())));
+        let scope = "provider-openai-codex-auth";
+        let old = serde_json::json!({"credential":{"access_token":"synthetic-token"}});
+        adapter.set(scope, "session", old.clone()).await.unwrap();
+        adapter.flush().await.unwrap();
+        let ctx = test_ctx(adapter.clone());
+        ctx.private.claim("provider-openai-codex", &[scope.into()]);
+        let input = serde_json::from_value(serde_json::json!({
+            "scope":scope, "key":"session", "expected":old, "value":null, "durable":true
+        }))
+        .unwrap();
+        assert!(
+            private_compare_and_set(&ctx, "provider-openai-codex", input)
+                .await
+                .unwrap()
+                .swapped
+        );
+        let reopened = crate::adapters::KvStoreAdapter::new(Some(config));
+        assert_eq!(
+            reopened.get(scope, "session").await.unwrap().as_deref(),
+            Some(&Value::Null)
+        );
+        for file in std::fs::read_dir(&dir).unwrap().flatten() {
+            assert!(
+                !std::fs::read(file.path())
+                    .unwrap()
+                    .windows(b"synthetic-token".len())
+                    .any(|part| part == b"synthetic-token")
+            );
+        }
+        adapter.destroy().await.unwrap();
+        reopened.destroy().await.unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     fn scopes(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
     }
@@ -1062,6 +1136,9 @@ mod private_namespace_tests {
     #[derive(Default)]
     struct FailFirstAdapter {
         failed: std::sync::atomic::AtomicBool,
+        cas_value: tokio::sync::Mutex<Option<Value>>,
+        flush_calls: std::sync::atomic::AtomicUsize,
+        fail_flush: std::sync::atomic::AtomicBool,
     }
 
     #[async_trait::async_trait]
@@ -1102,10 +1179,30 @@ mod private_namespace_tests {
             &self,
             _: &str,
             _: &str,
-            _: Option<&Value>,
-            _: Value,
+            expected: Option<&Value>,
+            value: Value,
         ) -> anyhow::Result<CompareAndSetOutcome> {
-            unreachable!()
+            let mut current = self.cas_value.lock().await;
+            if crate::adapters::cas_matches(expected, current.as_ref()) {
+                Ok(CompareAndSetOutcome::Swapped {
+                    old_value: current.replace(value),
+                })
+            } else {
+                Ok(CompareAndSetOutcome::NotSwapped {
+                    current: current.clone().unwrap_or(Value::Null),
+                })
+            }
+        }
+        async fn flush(&self) -> anyhow::Result<()> {
+            self.flush_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self
+                .fail_flush
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                anyhow::bail!("test flush failure");
+            }
+            Ok(())
         }
         async fn barrier_arrive(
             &self,
@@ -1185,6 +1282,52 @@ mod private_namespace_tests {
 
     fn test_ctx(adapter: Arc<dyn StateAdapter>) -> Arc<StateCtx> {
         ctx_with(adapter, Arc::new(NullInvoker), Arc::default())
+    }
+
+    #[tokio::test]
+    async fn durable_private_cas_retries_flush_after_cleanup_in_memory() {
+        use std::sync::atomic::Ordering;
+        let adapter = Arc::new(FailFirstAdapter::default());
+        let old = serde_json::json!({"credential":"synthetic-token"});
+        *adapter.cas_value.lock().await = Some(old.clone());
+        adapter.fail_flush.store(true, Ordering::SeqCst);
+        let ctx = test_ctx(adapter.clone());
+        ctx.private.claim("provider-openai-codex", &["auth".into()]);
+        let request = || {
+            serde_json::from_value(serde_json::json!({
+                "scope":"auth", "key":"session", "expected":old, "value":null, "durable":true
+            }))
+            .unwrap()
+        };
+        assert!(
+            private_compare_and_set(&ctx, "provider-openai-codex", request())
+                .await
+                .is_err()
+        );
+        assert_eq!(*adapter.cas_value.lock().await, Some(Value::Null));
+        let retried = private_compare_and_set(&ctx, "provider-openai-codex", request())
+            .await
+            .unwrap();
+        assert!(!retried.swapped);
+        assert_eq!(retried.current, Some(Value::Null));
+        assert_eq!(adapter.flush_calls.load(Ordering::SeqCst), 2);
+        assert!(
+            private_compare_and_set(&ctx, "intruder", request())
+                .await
+                .is_err()
+        );
+        assert_eq!(adapter.flush_calls.load(Ordering::SeqCst), 2);
+        let nondurable = serde_json::from_value(serde_json::json!({
+            "scope":"auth", "key":"session", "value":"next"
+        }))
+        .unwrap();
+        assert!(
+            private_compare_and_set(&ctx, "provider-openai-codex", nondurable)
+                .await
+                .unwrap()
+                .swapped
+        );
+        assert_eq!(adapter.flush_calls.load(Ordering::SeqCst), 2);
     }
 
     fn ctx_with(

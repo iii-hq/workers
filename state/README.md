@@ -15,6 +15,13 @@ built-in state service.
 
 ## Install
 
+Workers can reserve private scopes with `state::claim-namespace`. Their internal
+`<worker>::state::compare-and-set` accessor accepts `durable: true` to flush the
+adapter before acknowledging the operation. It also flushes an unmatched retry,
+so a cleanup that previously changed memory but failed to persist can be retried
+safely. The default is `false`; the public state API is unchanged. Durability
+follows the configured adapter's existing flush guarantees.
+
 ```bash
 iii trigger compose::add worker=state
 ```
