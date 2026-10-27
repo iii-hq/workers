@@ -147,8 +147,8 @@ fn role_label(message: &AgentMessage) -> &'static str {
 
 /// Copy of `messages` fit for the summariser: images become
 /// `[image stripped]` placeholders everywhere; `function_result` text
-/// blocks are truncated to `max_output_chars`.
-pub fn strip_media(messages: &[AgentMessage], max_output_chars: usize) -> Vec<AgentMessage> {
+/// blocks are truncated to `max_chars`.
+pub fn strip_media(messages: &[AgentMessage], max_chars: usize) -> Vec<AgentMessage> {
     messages
         .iter()
         .map(|message| {
@@ -160,7 +160,7 @@ pub fn strip_media(messages: &[AgentMessage], max_output_chars: usize) -> Vec<Ag
                 .map(|block| {
                     let block = strip_image(block);
                     if truncate {
-                        truncate_text(block, max_output_chars)
+                        truncate_text(block, max_chars)
                     } else {
                         block
                     }

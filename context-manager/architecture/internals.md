@@ -340,11 +340,13 @@ renders what the caller gets back.
   block: text verbatim, non-blank thinking as `[thinking] <text>` lines (where
   an agent notes what it read), `function_call`s as terse
   `[tool_call] <id> <args>` one-liners; other block kinds dropped.
-- **`strip_media(head, max_output_chars)`** — a copy fed to the summariser with
+- **`strip_media(head, max_chars)`** — a copy fed to the summariser with
   images replaced by `[image stripped]` everywhere and `function_result` text
-  truncated to `max_output_chars` (+ `... [truncated]`). The original
-  transcript the caller holds is never mutated. This keeps base64 blobs and
-  one giant tool dump from dominating the summariser's input.
+  truncated to `max_result_tokens × 4` chars (+ `... [truncated]`): the cap the
+  agent saw each result under, not the prune threshold, which cut away
+  whatever a result said past its first 2,000 chars. The original transcript
+  the caller holds is never mutated. This keeps base64 blobs and one giant
+  tool dump from dominating the summariser's input.
 - **`render_system_prompt(base, summary)`** — what assemble returns: the base
   prompt, then a `# Conversation summary` section with the summary. Empty base
   → just the section; no summary → just the base.
@@ -504,8 +506,8 @@ protect_recent_tokens: 40000   # newest function-output tokens never pruned
 decay_user_turns: 0            # prune after this many subsequent user turns; 0 disables decay
 protected_user_turns: 2        # recent user turns exempt from normal pruning; 0 disables this guard
 min_free_tokens: 20000         # skip pruning when it would free less
-max_output_chars: 2000         # larger outputs immediately eligible; smaller ones may decay; also summariser cap
-max_result_tokens: 20000       # per-result ceiling for assemble's unconditional cap pass; 0 disables
+max_output_chars: 2000         # larger outputs immediately eligible; smaller ones may decay
+max_result_tokens: 20000       # per-result ceiling for assemble's cap pass and the summariser's input; 0 disables
 lease_ttl_secs: 300            # compaction mutual-exclusion lease TTL
 allow_fallback_limits: true    # conservative 8192/1024 when limits can't resolve
 summarizer_timeout_ms: 320000  # outer budget for one router::chat summariser call
