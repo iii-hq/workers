@@ -217,3 +217,107 @@ async fn a_provider_counting_no_more_than_the_estimate_changes_nothing() {
     assert_eq!(response["applied"]["compacted"], false);
     assert_eq!(resolver.counts.load(Ordering::SeqCst), 1);
 }
+
+/// A provider that bills prose at one token per estimate unit and the hex
+/// documents at 2.25: the budget scales the whole request by its mean
+/// density, and relief can keep the denser part.
+mod mixed_density {
+    use super::*;
+    use async_trait::async_trait;
+    use context_manager::core::estimate::{Estimator, HeuristicEstimator};
+    use context_manager::ports::{ModelBudget, ModelResolver};
+    use context_manager::types::{AgentFunction, AgentMessage, ContentBlock};
+    use fakes::SummarizerScript;
+
+    struct MixedDensity;
+
+    fn billed(message: &AgentMessage) -> f64 {
+        let dense = message
+            .content()
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Text { text } if text.contains("a3f9")));
+        HeuristicEstimator.message(message) as f64 * if dense { 2.25 } else { 1.0 }
+    }
+
+    #[async_trait]
+    impl ModelResolver for MixedDensity {
+        async fn get_model_budget(
+            &self,
+            _provider: Option<&str>,
+            _id: &str,
+        ) -> Result<Option<ModelBudget>, String> {
+            Ok(None)
+        }
+
+        async fn count_prompt_tokens(
+            &self,
+            _provider: Option<&str>,
+            _id: &str,
+            system_prompt: &str,
+            tools: &[AgentFunction],
+            messages: &[AgentMessage],
+        ) -> Result<u64, String> {
+            let estimator = HeuristicEstimator;
+            let tools = tools
+                .iter()
+                .map(|tool| estimator.function(tool))
+                .sum::<u64>();
+            let messages = messages.iter().map(billed).sum::<f64>() as u64;
+            Ok(messages + estimator.text(system_prompt) + tools)
+        }
+    }
+
+    /// 30 prose documents, then 20 hex documents, with the summariser down:
+    /// only the emergency pass relieves, and it removes the largest
+    /// estimates first, the prose.
+    #[tokio::test]
+    async fn what_relief_keeps_is_counted_again_and_fits_the_window() {
+        let mut messages = vec![json!({
+            "role": "user", "content": [{ "type": "text", "text": "Read every document in order." }],
+            "timestamp": 1
+        })];
+        for i in 0..50 {
+            let id = format!("c{i}");
+            let text = if i < 30 {
+                "plain words ".repeat(700)
+            } else {
+                "a3f9 ".repeat(1_640)
+            };
+            messages.push(json!({
+                "role": "assistant",
+                "content": [{ "type": "function_call", "id": id, "function_id": "e2etest::segment",
+                              "arguments": { "index": i } }],
+                "stop_reason": "end", "model": "deepseek-flash", "provider": "deepseek", "timestamp": 2
+            }));
+            messages.push(json!({
+                "role": "function_result", "function_call_id": id, "function_id": "e2etest::segment",
+                "content": [{ "type": "text", "text": text }], "timestamp": 3
+            }));
+        }
+        let summarizer = Arc::new(FakeSummarizer::new());
+        summarizer.set_script(SummarizerScript::Unavailable);
+        let deps = Deps {
+            config: Arc::new(RwLock::new(Arc::new(WorkerConfig::default()))),
+            resolver: Arc::new(MixedDensity),
+            summarizer,
+            leases: lease_cell(Arc::new(InMemoryLeaseStore::new())),
+            clock: Arc::new(FakeClock::new()),
+        };
+        let request = serde_json::from_value(json!({
+            "messages": messages,
+            "model": { "id": "deepseek-flash", "provider": "deepseek",
+                       "limits": { "context_window": 1_000_000, "max_output_tokens": 384_000 } },
+            "system_prompt": "You are an iii agent worker.",
+            "options": { "reserved_tokens": RESERVED },
+        }))
+        .unwrap();
+        let response =
+            serde_json::to_value(assemble::handle(&deps, request).await.unwrap()).unwrap();
+
+        assert_eq!(response["applied"]["compacted"], false);
+        assert_eq!(response["applied"]["pruned"], true);
+        let sent: Vec<AgentMessage> = serde_json::from_value(response["messages"].clone()).unwrap();
+        let billed = sent.iter().map(billed).sum::<f64>();
+        assert!(billed <= 128_000.0, "sent {billed} provider tokens");
+    }
+}

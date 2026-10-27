@@ -367,7 +367,8 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
     // about 2.25x, so a 128k window took a 256k prompt without compacting.
     // Past a third of the window the provider's own count sets the budget
     // the steps below hold the estimate to.
-    let gate_budget = gate_budget(
+    let gated_estimate = token_count;
+    let mut gate_budget = gate_budget(
         deps,
         &req.model,
         usable_budget,
@@ -444,17 +445,53 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
     // messages, including latest/protected results and their details.
     // This pass is intentionally independent of all normal-prune knobs.
     if !options.preview_only && token_count > gate_budget {
-        let emergency = emergency_reduce_with_sizes(
-            &mut working,
-            &mut sizes,
-            token_count.saturating_sub(gate_budget),
-            estimator,
-        );
-        applied.pruned |= emergency.pruned_parts > 0;
-        applied.pruned_tokens = applied
-            .pruned_tokens
-            .saturating_add(emergency.pruned_tokens);
+        let excess = token_count.saturating_sub(gate_budget);
+        reduce_results(&mut working, &mut sizes, excess, estimator, &mut applied);
         token_count = total(&sizes, prompt_tokens);
+    }
+
+    // Step 4: the provider's count scaled the whole request's estimate, but
+    // relief keeps what it did not remove, and the emergency pass removes the
+    // largest estimates first: the least dense content, about one billed
+    // token per estimate unit. Count what is left; while it is over the
+    // window, take the excess off in estimate units.
+    if !options.preview_only && gate_budget < usable_budget && token_count < gated_estimate {
+        for round in 0..=MAX_RECOUNTS {
+            let Ok(counted) = deps
+                .resolver
+                .count_prompt_tokens(
+                    req.model.provider.as_deref(),
+                    &req.model.id,
+                    &system_prompt,
+                    tools,
+                    &working,
+                )
+                .await
+            else {
+                break;
+            };
+            let counted = counted.saturating_add(request_overhead_tokens);
+            if counted <= usable_budget {
+                break;
+            }
+            gate_budget = token_count.saturating_sub(counted - usable_budget);
+            tracing::info!(
+                counted,
+                usable = usable_budget,
+                budget = gate_budget,
+                "assemble: the reduced request still counts over the window; reducing further"
+            );
+            // Out of rounds, or nothing left to reduce: the check below answers.
+            if round == MAX_RECOUNTS {
+                break;
+            }
+            let excess = token_count.saturating_sub(gate_budget);
+            reduce_results(&mut working, &mut sizes, excess, estimator, &mut applied);
+            token_count = total(&sizes, prompt_tokens);
+            if token_count > gate_budget {
+                break;
+            }
+        }
     }
 
     debug_assert_eq!(
@@ -509,6 +546,25 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
 /// The provider is asked once the estimate passes this share (1/N) of the
 /// window; content billing more than N times its estimate still slips past.
 const PROVIDER_COUNT_SHARE: u64 = 3;
+
+/// Reductions after relief left a request the provider counts over the
+/// window; past them the request is an overflow.
+const MAX_RECOUNTS: usize = 3;
+
+/// Step 3's emergency pass: reduce complete function results by `excess`.
+fn reduce_results(
+    working: &mut [AgentMessage],
+    sizes: &mut [u64],
+    excess: u64,
+    estimator: &dyn Estimator,
+    applied: &mut Applied,
+) {
+    let emergency = emergency_reduce_with_sizes(working, sizes, excess, estimator);
+    applied.pruned |= emergency.pruned_parts > 0;
+    applied.pruned_tokens = applied
+        .pruned_tokens
+        .saturating_add(emergency.pruned_tokens);
+}
 
 /// The budget, in estimate units, that keeps the provider's count of the
 /// request within `usable`: the window itself while the estimate is small,
