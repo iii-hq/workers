@@ -1669,6 +1669,9 @@ async fn with_history_days_the_cycle_measures_the_github_runs_already_made_and_d
     h.drain().await;
     let record = h.cycle(&cycle_id).await;
     assert_eq!(h.world().starts, 0, "nothing dispatched");
+    // 5 errors per recorded run: 2 rounds give the base about 8 to prove on.
+    let plan = record.plan.clone().unwrap();
+    assert_eq!((plan.sampling.runs_per_side, plan.parameters.runs), (2, 2));
     let baseline = record.baseline.clone().unwrap();
     assert!(baseline.usable, "{}", baseline.reason);
     assert_eq!(baseline.execution_id, "history:1");

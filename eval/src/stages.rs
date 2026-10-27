@@ -1355,7 +1355,8 @@ pub async fn validation_stage(
         return fail(deps, record, "a validation needs config.candidate.base_sha").await;
     };
     let runs = plan.sampling.runs_per_side;
-    let Some((role, name)) = proof_schedule(runs)
+    let batched = validation.where_ == WhereV1::Github;
+    let Some((role, name)) = proof_schedule(runs, batched)
         .into_iter()
         .find(|(_, name)| !proof_imported(record, name))
     else {
@@ -1375,25 +1376,34 @@ pub async fn validation_stage(
                 &sha
             }),
         ),
-        runs: 1,
+        runs: if batched { runs } else { 1 },
         ..plan.parameters.clone()
     };
+    let share = if batched { 1 } else { runs.max(1) };
     dispatch(
         deps,
         record,
         role,
         &name,
         &parameters,
-        plan.estimated_usd / f64::from(runs.max(1)),
+        plan.estimated_usd / f64::from(share),
     )
     .await
 }
 
-/// The validation's executions in dispatch order, one round of every planned
-/// case each: the base commit (`control`) and the candidate alternate as
-/// ABBA (candidate first in odd rounds), so drift over time and a provider
-/// cache the first run of a round warms fall on both sides alike.
-pub fn proof_schedule(runs: u32) -> Vec<(ExecutionRoleV1, String)> {
+/// The validation's executions in dispatch order. `batched` (GitHub, where
+/// an execution runs its rounds as parallel jobs): one candidate execution
+/// of every round, then one of the base commit (`control`), back to back.
+/// Otherwise one round of every planned case per execution, the base and
+/// the candidate alternating as ABBA (candidate first in odd rounds), so
+/// drift over time and a warmed provider cache fall on both sides alike.
+pub fn proof_schedule(runs: u32, batched: bool) -> Vec<(ExecutionRoleV1, String)> {
+    if batched {
+        return vec![
+            (ExecutionRoleV1::Candidate, "candidate-1".into()),
+            (ExecutionRoleV1::Control, "control-1".into()),
+        ];
+    }
     (1..=runs)
         .flat_map(|round| {
             let candidate = (ExecutionRoleV1::Candidate, format!("candidate-{round}"));
@@ -1455,6 +1465,21 @@ pub async fn stop_actors(deps: &Deps, record: &CycleRecordV1) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_github_proof_is_one_execution_a_side_and_a_docker_one_alternates() {
+        let names = |runs, batched| -> Vec<String> {
+            proof_schedule(runs, batched)
+                .into_iter()
+                .map(|(_, name)| name)
+                .collect()
+        };
+        assert_eq!(names(17, true), ["candidate-1", "control-1"]);
+        assert_eq!(
+            names(2, false),
+            ["candidate-1", "control-1", "control-2", "candidate-2"]
+        );
+    }
 
     fn choice(
         choice: &str,

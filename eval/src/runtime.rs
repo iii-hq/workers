@@ -805,6 +805,8 @@ async fn coverage_stage(
         )
     });
     let now = ids::now_ms();
+    // Recorded events per run of each test, which size a count's proof.
+    let mut observed_rate: std::collections::BTreeMap<String, f64> = Default::default();
     let (found, goal) = match &record.input {
         CycleInputV1::Objective(objective) => {
             let model = stored
@@ -971,6 +973,11 @@ async fn coverage_stage(
                     )),
                 }
             }
+            observed_rate = observed
+                .iter()
+                .filter(|(_, seen)| seen.runs > 0)
+                .map(|(test_id, seen)| (test_id.clone(), seen.total / f64::from(seen.runs)))
+                .collect();
             let mut found = coverage::select(
                 objective,
                 &rows,
@@ -1049,9 +1056,24 @@ async fn coverage_stage(
         )
         .await;
     };
-    let Some(plan) = coverage::plan(&objective, &found, goal, &stored, now) else {
+    let Some(mut plan) = coverage::plan(&objective, &found, goal, &stored, now) else {
         return fail(deps, record, "the coverage maps to no plan").await;
     };
+    // A rare count is proven only over enough rounds: measured from history,
+    // as many as give the base about PROOF_EVENTS events, within bounds.
+    if stored.config.history_days.is_some() && decision::is_count(plan.criterion.metric) {
+        if let Some(rate) = observed_rate
+            .get(plan.criterion.scenario_id.as_str())
+            .copied()
+            .filter(|rate| *rate > 0.0)
+        {
+            let planned = plan.sampling.runs_per_side;
+            let rounds = ((PROOF_EVENTS / rate).ceil() as u32).clamp(planned, MAX_PROOF_ROUNDS);
+            plan.estimated_usd *= f64::from(rounds) / f64::from(planned.max(1));
+            plan.sampling.runs_per_side = rounds;
+            plan.parameters.runs = rounds;
+        }
+    }
     open_ledger(deps, record).await?;
     let detail = format!(
         "plan frozen under policy {} over {}",
@@ -1199,6 +1221,11 @@ async fn baseline_stage(
 /// again never dispatches twice: an entry already `dispatching` is
 /// reconciled by its idempotency key in the E2E listing. Answered, the cycle waits
 /// for the execution; unanswered, it waits at its current stage, polled.
+/// Events a count's proof is sized to expect on the base.
+const PROOF_EVENTS: f64 = 8.0;
+/// The most rounds per side a sized proof runs.
+const MAX_PROOF_ROUNDS: u32 = 20;
+
 /// At most this many past runs are read into one history baseline.
 const MAX_HISTORY_RUNS: usize = 40;
 
@@ -2095,7 +2122,10 @@ async fn analysis_stage(
                 .ok_or_else(|| EvalError::State("a comparison without a plan".into()))?;
             // Every round of both sides, in round order; this import is not
             // in `record` yet.
-            let schedule = crate::stages::proof_schedule(plan.sampling.runs_per_side);
+            let batched = config
+                .and_then(|config| config.validation.as_ref())
+                .is_some_and(|validation| validation.where_ == WhereV1::Github);
+            let schedule = crate::stages::proof_schedule(plan.sampling.runs_per_side, batched);
             let this = entry.work_id.clone();
             let mut rounds: Vec<(ExecutionRoleV1, Option<ExecutionEvidenceV1>)> = Vec::new();
             for (role, name) in &schedule {
