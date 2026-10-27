@@ -96,6 +96,178 @@ fn step_end(message: &Value) -> String {
     )
 }
 
+/// Tokens per character of what the model reads (recorded DeepSeek Flash
+/// runs: 0.27 ± 0.01). Only estimates the system prompt and the tools, which
+/// the transcript does not hold, from the first step's input.
+const TOKENS_PER_CHAR: f64 = 0.27;
+/// A smaller share of the input is no point.
+const MIN_SHARE: f64 = 0.05;
+const MAX_SPEND_POINTS: usize = 6;
+const SYSTEM: &str = "system prompt and tools";
+
+#[derive(Default)]
+struct Part {
+    tokens: f64,
+    count: u32,
+    repeats: u32,
+}
+
+/// Where `scenarios`' recorded runs spend their input. Every model-facing
+/// entry is sent again in each later step's request, so it costs its size
+/// once per later step; the system prompt and the tools (all the first
+/// request held beyond its messages) cost once per step. Shares are by
+/// characters, tokens by each run's recorded input. The largest shares are
+/// the points.
+pub fn spend(bundle: &Value, scenarios: &[String]) -> (Vec<ImprovementPointV1>, String) {
+    let mut parts: BTreeMap<String, Part> = BTreeMap::new();
+    let (mut runs, mut steps, mut input, mut output) = (0u32, 0usize, 0.0, 0.0);
+    for (scenario, run) in evidence::runs(bundle) {
+        if !scenarios
+            .iter()
+            .any(|wanted| scenario["scenario_id"] == wanted.as_str())
+        {
+            continue;
+        }
+        let Some(entries) = run["transcript"]["messages"].as_array() else {
+            continue;
+        };
+        let at: Vec<usize> = (0..entries.len())
+            .filter(|&i| {
+                entries[i]["message"]["role"] == "assistant"
+                    && entries[i]["message"]["usage"].is_object()
+            })
+            .collect();
+        let Some(&first) = at.first() else {
+            continue;
+        };
+        let used = |entry: &Value| {
+            let usage = &entry["message"]["usage"];
+            ["input", "cache_read", "cache_write"]
+                .iter()
+                .filter_map(|key| usage[key].as_f64())
+                .sum::<f64>()
+        };
+        let chars = |entry: &Value| entry["message"]["content"].to_string().len() as f64;
+        let run_input: f64 = at.iter().map(|&i| used(&entries[i])).sum();
+        let before: f64 = entries[..first]
+            .iter()
+            .filter(|entry| entry["message"].is_object())
+            .map(chars)
+            .sum();
+        let mut sent: BTreeMap<String, (f64, u32)> = BTreeMap::new();
+        let system = (used(&entries[first]) / TOKENS_PER_CHAR - before).max(0.0);
+        sent.insert(SYSTEM.into(), (system * at.len() as f64, at.len() as u32));
+        let mut called = std::collections::BTreeSet::new();
+        for (i, entry) in entries.iter().enumerate() {
+            let message = &entry["message"];
+            let key = match message["role"].as_str() {
+                Some("function_result") => {
+                    message["function_id"].as_str().unwrap_or("?").to_string()
+                }
+                Some("assistant") => {
+                    if let Ok(AgentMessage::Assistant(assistant)) =
+                        serde_json::from_value(message.clone())
+                    {
+                        for call in plan_calls(&assistant, ExposeMode::AgentTrigger) {
+                            if call.kind == CallKind::Trigger
+                                && !called
+                                    .insert((call.function_id.clone(), call.arguments.to_string()))
+                            {
+                                parts.entry(call.function_id).or_default().repeats += 1;
+                            }
+                        }
+                    }
+                    "the model's own turns".into()
+                }
+                Some("user") if entry["origin"]["skill_update"] == true => {
+                    "skills list messages".into()
+                }
+                Some("user") => "user messages".into(),
+                _ => continue,
+            };
+            let later = at.iter().filter(|&&step| step > i).count() as f64;
+            let slot = sent.entry(key).or_default();
+            slot.0 += chars(entry) * later;
+            slot.1 += 1;
+        }
+        let total: f64 = sent.values().map(|(chars, _)| chars).sum::<f64>().max(1.0);
+        for (key, (chars, count)) in sent {
+            let part = parts.entry(key).or_default();
+            part.tokens += chars / total * run_input;
+            part.count += count;
+        }
+        runs += 1;
+        steps += at.len();
+        input += run_input;
+        output += at
+            .iter()
+            .filter_map(|&i| entries[i]["message"]["usage"]["output"].as_f64())
+            .sum::<f64>();
+    }
+    if runs == 0 {
+        return (
+            Vec::new(),
+            "no run of the plan's tests kept a transcript to read".into(),
+        );
+    }
+    let per_run = |value: f64| value / f64::from(runs);
+    let mut ranked: Vec<(String, Part)> = parts
+        .into_iter()
+        .filter(|(_, part)| part.tokens > 0.0)
+        .collect();
+    ranked.sort_by(|a, b| b.1.tokens.total_cmp(&a.1.tokens));
+    let share = |part: &Part| part.tokens / input.max(1.0);
+    let steps_a_run = steps as f64 / f64::from(runs);
+    let points = ranked
+        .iter()
+        .filter(|(_, part)| share(part) >= MIN_SHARE)
+        .take(MAX_SPEND_POINTS)
+        .map(|(key, part)| {
+            let head = format!(
+                "~{:.0} input tokens a run ({:.0}% of the input)",
+                per_run(part.tokens),
+                100.0 * share(part)
+            );
+            let what = if key == SYSTEM {
+                format!(
+                    "about {:.0} at each of {steps_a_run:.1} steps, sent again whole every step",
+                    part.tokens / steps as f64
+                )
+            } else {
+                let repeats = match part.repeats {
+                    0 => String::new(),
+                    n => format!("; {:.1} identical repeat call(s) a run", per_run(f64::from(n))),
+                };
+                format!(
+                    "{:.1} a run, each kept in the context and sent again at every later step{repeats}",
+                    per_run(f64::from(part.count))
+                )
+            };
+            ImprovementPointV1 {
+                function_id: key.clone(),
+                summary: format!("{key}: {head}: {what}"),
+                sites: Vec::new(),
+                source: InsightSourceV1::Transcripts,
+            }
+        })
+        .collect();
+    let largest: Vec<String> = ranked
+        .iter()
+        .take(3)
+        .map(|(key, part)| format!("{key} {:.0}%", 100.0 * share(part)))
+        .collect();
+    (
+        points,
+        format!(
+            "the transcripts of {runs} run(s) send ~{:.0} input tokens a run over {steps_a_run:.1} \
+             steps and write ~{:.0}; the largest shares: {}",
+            per_run(input),
+            per_run(output),
+            largest.join(", ")
+        ),
+    )
+}
+
 /// Every errored function call of `scenarios`' runs in `bundle`, in run
 /// order, at most [`MAX_SITES`].
 pub fn sites(execution_id: &str, bundle: &Value, scenarios: &[String]) -> Vec<ErrorSiteV1> {
@@ -573,6 +745,62 @@ mod tests {
         assert_eq!(found[0].sites, ["s1"]);
         assert_eq!(found[0].source, InsightSourceV1::Llm);
         assert!(parse_points("no json", &[site]).is_err());
+    }
+
+    /// A run that asks the registry twice for the same contracts.
+    pub(crate) fn spending_run() -> Value {
+        let info = |id: &str| {
+            json!({"type": "function_call", "id": id, "function_id": "agent_trigger",
+                "arguments": {"function": "engine::functions::info", "description": "Contracts",
+                "payload": {"function_ids": ["coder::read-file"]}}})
+        };
+        let step = |at: u32, input: u32, content: Value| {
+            json!({"entry_id": format!("e_t_1_{at}_assistant"), "message": {"role": "assistant",
+                "timestamp": 0, "model": "m", "provider": "p", "stop_reason": "function_call",
+                "usage": {"input": input, "cache_read": 0, "output": 50}, "content": content}})
+        };
+        let result = |id: &str| {
+            json!({"entry_id": format!("e_t_1_call_{id}"), "message": {"role": "function_result",
+                "timestamp": 0, "function_call_id": id, "function_id": "engine::functions::info",
+                "is_error": false, "details": {},
+                "content": [{"type": "text", "text": "x".repeat(20_000)}]}})
+        };
+        json!({"run_id": "r1", "transcript": {"messages": [
+            {"entry_id": "u", "message": {"role": "user", "timestamp": 0,
+                "content": [{"type": "text", "text": "Read the contracts, then report."}]}},
+            step(0, 3000, json!([info("c1")])),
+            result("c1"),
+            step(1, 9000, json!([info("c2")])),
+            result("c2"),
+            step(2, 15000, json!([{"type": "text", "text": "Done."}])),
+        ]}})
+    }
+
+    #[test]
+    fn spend_names_what_the_runs_send_again_and_again() {
+        let bundle = json!({"detail": {"reports": [{"report": {"scenarios": [
+            {"scenario_id": "s", "runs": [spending_run()]}]}}]}});
+        let (points, reason) = spend(&bundle, &["s".into()]);
+        assert!(
+            reason.contains("1 run(s) send ~27000 input tokens a run over 3.0 steps"),
+            "{reason}"
+        );
+        let names: Vec<&str> = points
+            .iter()
+            .map(|point| point.function_id.as_str())
+            .collect();
+        assert_eq!(names, ["engine::functions::info", SYSTEM], "{points:?}");
+        assert!(
+            points[0]
+                .summary
+                .contains("1.0 identical repeat call(s) a run"),
+            "{}",
+            points[0].summary
+        );
+        assert!(points
+            .iter()
+            .all(|point| point.source == InsightSourceV1::Transcripts));
+        assert_eq!(spend(&bundle, &["other".into()]).0, Vec::new());
     }
 }
 

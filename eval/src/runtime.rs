@@ -1539,7 +1539,10 @@ async fn history_stage(
 /// before the room and candidate checks, since what the runs show is its own
 /// result.
 fn reads_transcripts(plan: &CyclePlanV1) -> bool {
-    plan.criterion.metric == CriterionMetricV1::FunctionCallErrors
+    matches!(
+        plan.criterion.metric,
+        CriterionMetricV1::FunctionCallErrors | CriterionMetricV1::Tokens
+    )
 }
 
 pub(crate) async fn dispatch(

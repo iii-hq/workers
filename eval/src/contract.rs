@@ -692,6 +692,8 @@ pub enum InsightSourceV1 {
     /// The default LLM, when Jev was not configured, did not answer or
     /// decided no site.
     Llm,
+    /// Measured from the transcripts in code: where a run's tokens go.
+    Transcripts,
 }
 
 /// A Harness change worth trying, with the sites that show it.
@@ -775,6 +777,14 @@ pub struct ReplayV1 {
     /// The same, the candidate makes more.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub p_more: Option<f64>,
+    /// A token objective: every recorded step rebuilt by both builds, and
+    /// the input tokens a run each sends at the recorded trajectory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steps: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_tokens: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_tokens: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

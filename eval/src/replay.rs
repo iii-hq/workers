@@ -240,6 +240,45 @@ pub fn verdict(base: (u32, u32), candidate: (u32, u32)) -> (ValidationOutcomeV1,
     }
 }
 
+/// What a token objective's rebuilt requests show, in input tokens a run
+/// at the recorded trajectory. Exact, so a change of at least `min_effect`
+/// either way is shown.
+pub fn size_verdict(
+    base: f64,
+    candidate: f64,
+    min_effect: f64,
+    steps: u32,
+    changed: u32,
+) -> (ValidationOutcomeV1, String) {
+    use ValidationOutcomeV1::*;
+    let said = format!(
+        "rebuilt at {steps} recorded step(s), the base sends ~{base:.0} input tokens a run and \
+         the candidate ~{candidate:.0} ({:+.1}%)",
+        100.0 * (candidate / base.max(1.0) - 1.0)
+    );
+    if changed == 0 {
+        (
+            Inconclusive,
+            format!("{said}: the candidate sends every recorded step the same request"),
+        )
+    } else if base - candidate >= min_effect {
+        (
+            ValidatedImprovement,
+            format!("{said}: fewer by the minimum effect ({min_effect:.0}) or more"),
+        )
+    } else if candidate - base >= min_effect {
+        (
+            Regression,
+            format!("{said}: more by the minimum effect ({min_effect:.0}) or more"),
+        )
+    } else {
+        (
+            NoImprovement,
+            format!("{said}: within the minimum effect ({min_effect:.0})"),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,6 +310,27 @@ mod tests {
         assert_eq!(
             verdict((2, 60), (0, 60)).0,
             ValidationOutcomeV1::Inconclusive
+        );
+    }
+
+    #[test]
+    fn rebuilt_sizes_show_any_change_of_the_minimum_effect() {
+        use ValidationOutcomeV1::*;
+        assert_eq!(
+            size_verdict(300_000.0, 280_000.0, 1000.0, 15, 15).0,
+            ValidatedImprovement
+        );
+        assert_eq!(
+            size_verdict(300_000.0, 299_500.0, 1000.0, 15, 15).0,
+            NoImprovement
+        );
+        assert_eq!(
+            size_verdict(300_000.0, 310_000.0, 1000.0, 15, 15).0,
+            Regression
+        );
+        assert_eq!(
+            size_verdict(300_000.0, 300_000.0, 1000.0, 15, 0).0,
+            Inconclusive
         );
     }
 

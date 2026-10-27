@@ -1881,6 +1881,13 @@
               "llm"
             ],
             "type": "string"
+          },
+          {
+            "description": "Measured from the transcripts in code: where a run's tokens go.",
+            "enum": [
+              "transcripts"
+            ],
+            "type": "string"
           }
         ]
       },
@@ -2448,6 +2455,13 @@
             "minimum": 0.0,
             "type": "integer"
           },
+          "base_tokens": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
           "candidate_mistakes": {
             "default": 0,
             "format": "uint32",
@@ -2459,6 +2473,13 @@
             "format": "uint32",
             "minimum": 0.0,
             "type": "integer"
+          },
+          "candidate_tokens": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
           },
           "outcome": {
             "$ref": "#/definitions/ValidationOutcomeV1"
@@ -2488,6 +2509,15 @@
           },
           "reason": {
             "type": "string"
+          },
+          "steps": {
+            "description": "A token objective: every recorded step rebuilt by both builds, and the input tokens a run each sends at the recorded trajectory.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         },
         "required": [

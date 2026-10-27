@@ -1701,3 +1701,103 @@ async fn with_history_days_the_cycle_measures_the_github_runs_already_made_and_d
         outcome.detail
     );
 }
+
+#[tokio::test]
+async fn a_token_objective_reads_where_the_recorded_runs_spend_their_input() {
+    let mut world = World::new();
+    let mut ci = bundle(
+        "ci-1",
+        "Essential checks before merge",
+        "passed",
+        Vec::new(),
+    );
+    ci["manifest"]["executions"][0]["status"] = json!("passed");
+    ci["manifest"]["executions"][0]["source"] = json!({"kind": "github"});
+    world.executions.insert("ci-1".into(), ci);
+    world.histories.insert(
+        "context_pressure".into(),
+        json!({"observations": [{"subject_model": "m", "plan_execution_id": "ci-1",
+            "execution_id": "native-1", "runs": [{"run_id": "r1", "attempt_id": "a1",
+            "status": "passed"}]}]}),
+    );
+    // The registry asked twice for the same contracts: 20 000 characters
+    // sent again at every later step.
+    let info = |id: &str| {
+        json!({"type": "function_call", "id": id, "function_id": "agent_trigger",
+            "arguments": {"function": "engine::functions::info", "description": "Contracts",
+            "payload": {"function_ids": ["coder::read-file"]}}})
+    };
+    let step = |at: u32, input: u32, content: Value| {
+        json!({"entry_id": format!("e_t_1_{at}_assistant"), "message": {"role": "assistant",
+            "timestamp": 0, "model": "m", "provider": "p", "stop_reason": "function_call",
+            "usage": {"input": input, "cache_read": 0, "output": 50}, "content": content}})
+    };
+    let result = |id: &str| {
+        json!({"entry_id": format!("e_t_1_call_{id}"), "message": {"role": "function_result",
+            "timestamp": 0, "function_call_id": id, "function_id": "engine::functions::info",
+            "is_error": false, "details": {},
+            "content": [{"type": "text", "text": "x".repeat(20_000)}]}})
+    };
+    let mut run = run("r1", "passed", "completed", 27_150.0, &[Some(10); 4]);
+    world.transcripts.insert(
+        "native-1/evidence/r1/a1/transcript.json".into(),
+        json!({"messages": [
+            {"entry_id": "u", "message": {"role": "user", "timestamp": 0,
+                "content": [{"type": "text", "text": "Read the contracts, then report."}]}},
+            step(0, 3000, json!([info("c1")])),
+            result("c1"),
+            step(1, 9000, json!([info("c2")])),
+            result("c2"),
+            step(2, 15000, json!([{"type": "text", "text": "Done."}])),
+        ]}),
+    );
+    run["transcript"].take();
+    world.attempts.insert("native-1/r1/a1".into(), run);
+    let h = Harness::start(world).await;
+    let config = json!({
+        "subject": {"provider": "p", "model": "m"}, "where": "harness",
+        "runs_per_side": 1, "technical_retries": 0, "max_scenarios": 1,
+        "estimated_usd_per_run": 0.5,
+        "min_effect": {"tokens": 1000.0, "pass_rate_pp": 10.0},
+        "budget": {"max_spend_usd": 10.0, "max_duration_ms": 3_600_000,
+                   "max_calls": 10, "max_candidates": 1},
+        "admit_executions": false, "history_days": 7});
+    runtime::configure(
+        &h.deps,
+        serde_json::from_value(json!({"config": config})).unwrap(),
+    )
+    .await
+    .unwrap();
+    let cycle_id = h
+        .start_cycle(json!({"objective": "Reduzir o gasto de tokens do Harness"}))
+        .await;
+    h.drain().await;
+    let record = h.cycle(&cycle_id).await;
+    assert_eq!(h.world().starts, 0, "nothing dispatched");
+    let plan = record.plan.clone().unwrap();
+    assert_eq!(plan.criterion.metric, CriterionMetricV1::Tokens);
+    let baseline = record.baseline.clone().unwrap();
+    assert!(baseline.usable, "{}", baseline.reason);
+    assert_eq!(baseline.primary.mean, Some(27_150.0));
+    let insight = record.insight.clone().unwrap();
+    assert_eq!(insight.source, Some(InsightSourceV1::Transcripts));
+    assert_eq!(
+        insight.points[0].function_id, "engine::functions::info",
+        "{}",
+        insight.reason
+    );
+    assert!(insight.points[0].summary.contains("identical repeat call"));
+    // Without candidate work, the points are the result.
+    let outcome = record.outcome.unwrap();
+    assert_eq!(
+        outcome.code,
+        OutcomeCodeV1::Inconclusive,
+        "{}",
+        outcome.detail
+    );
+    assert!(
+        outcome.detail.contains("send ~27000 input tokens a run"),
+        "{}",
+        outcome.detail
+    );
+}

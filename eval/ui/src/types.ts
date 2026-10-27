@@ -432,19 +432,22 @@ export interface ErrorSite {
   probability?: number
 }
 
+/** `InsightSourceV1`: who found the points; `transcripts` measured them in code (where the tokens go). */
+export type InsightSource = 'jev' | 'llm' | 'transcripts'
+
 /** `ImprovementPointV1`: a Harness change worth trying, with the sites that show it. */
 export interface ImprovementPoint {
   function_id: string
   summary: string
   sites: string[]
-  source: 'jev' | 'llm'
+  source: InsightSource
 }
 
 /** `InsightV1`. */
 export interface Insight {
   sites: ErrorSite[]
   points?: ImprovementPoint[]
-  source?: 'jev' | 'llm'
+  source?: InsightSource
   reason: string
   model?: string
 }
@@ -476,6 +479,11 @@ export interface Replay {
   candidate_mistakes?: number
   p_fewer?: number
   p_more?: number
+  /** A token objective: every recorded step rebuilt by both builds. */
+  steps?: number
+  /** Input tokens a run each build sends at the recorded trajectory. */
+  base_tokens?: number
+  candidate_tokens?: number
 }
 
 /** `PullRequestV1` (eval/src/pull_request.rs). `created`: opened by this cycle rather than found. */

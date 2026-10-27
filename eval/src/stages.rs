@@ -541,6 +541,13 @@ pub async fn insight_stage(
         )
         .await
     };
+    if plan.criterion.metric == CriterionMetricV1::Tokens {
+        (found.points, found.reason) = insight::spend(&evidence.bundle, &plan.parameters.scenarios);
+        found.source = Some(InsightSourceV1::Transcripts);
+        // The objective names the spend itself: no point stops nothing.
+        let next = after_points(record, &plan, &mut found, false);
+        return close(found, next).await;
+    }
     if sites.is_empty() {
         found.reason = "the measured runs made no failed function call to read".into();
         return close(found, Err(OutcomeCodeV1::NoAction)).await;
@@ -754,9 +761,23 @@ pub async fn insight_stage(
             "{}; none is a failure a Harness change could prevent",
             found.reason
         );
-        return close(found, Err(OutcomeCodeV1::NoAction)).await;
     }
-    // The points stand; whether a change can be proven or tried is next.
+    let next = after_points(record, &plan, &mut found, true);
+    close(found, next).await
+}
+
+/// Where a cycle goes once its points stand: without any (when they are
+/// `required`), room to prove a change or candidate work, nowhere; else to
+/// the proposal.
+fn after_points(
+    record: &CycleRecordV1,
+    plan: &CyclePlanV1,
+    found: &mut InsightV1,
+    required: bool,
+) -> Result<CycleStageV1, OutcomeCodeV1> {
+    if required && found.points.is_empty() {
+        return Err(OutcomeCodeV1::NoAction);
+    }
     if let Some(reason) = record.baseline.as_ref().and_then(|baseline| {
         crate::decision::no_room(
             &plan.criterion,
@@ -765,16 +786,16 @@ pub async fn insight_stage(
         )
     }) {
         found.reason = format!("{}; {reason}", found.reason);
-        return close(found, Err(OutcomeCodeV1::NoAction)).await;
+        return Err(OutcomeCodeV1::NoAction);
     }
     if candidate_config(record).is_none() {
         found.reason = format!(
             "{}; candidate work is not configured (config.candidate), so no change is tried",
             found.reason
         );
-        return close(found, Err(OutcomeCodeV1::Inconclusive)).await;
+        return Err(OutcomeCodeV1::Inconclusive);
     }
-    close(found, Ok(CycleStageV1::Proposal)).await
+    Ok(CycleStageV1::Proposal)
 }
 
 /// The proposal input, all of it supplied by the cycle: the frozen
@@ -805,12 +826,18 @@ fn proposal_input(
                     "improvement point ({:?}) on {}: {}",
                     point.source, point.function_id, point.summary
                 ),
-                excerpt: insight
+                excerpt: point
                     .sites
-                    .iter()
-                    .filter(|site| point.sites.contains(&site.site_id))
-                    .map(|site| {
-                        format!(
+                    .is_empty()
+                    .then(|| point.summary.clone())
+                    .into_iter()
+                    .chain(
+                        insight
+                            .sites
+                            .iter()
+                            .filter(|site| point.sites.contains(&site.site_id))
+                            .map(|site| {
+                                format!(
                             "run {} entry {}: called {} with {}\nerror: {}\nbefore: {}\nnext: {}",
                             site.run_id,
                             site.entry_id,
@@ -820,7 +847,8 @@ fn proposal_input(
                             site.before,
                             site.after
                         )
-                    })
+                            }),
+                    )
                     .collect::<Vec<_>>()
                     .join("\n\n"),
             })
@@ -1302,10 +1330,10 @@ pub async fn candidate_stage(
             }
         },
     };
-    // Failed calls the insight read are replayed first (level 1).
-    let next_stage = match record.insight.as_ref() {
-        Some(insight) if !insight.sites.is_empty() => CycleStageV1::Replay,
-        _ => CycleStageV1::Validation,
+    // What the insight pointed at is replayed first (level 1).
+    let next_stage = match record.insight {
+        Some(_) => CycleStageV1::Replay,
+        None => CycleStageV1::Validation,
     };
     transition(
         deps,
@@ -1540,6 +1568,9 @@ fn unmeasured(reason: impl Into<String>) -> ReplayV1 {
         candidate_mistakes: 0,
         p_fewer: None,
         p_more: None,
+        steps: None,
+        base_tokens: None,
+        candidate_tokens: None,
     }
 }
 
@@ -1567,6 +1598,13 @@ async fn replay_steps(deps: &Deps, record: &CycleRecordV1) -> Result<ReplayV1, E
     }) else {
         return Ok(unmeasured("the baseline's transcripts are not stored"));
     };
+    if let Some(plan) = record
+        .plan
+        .as_ref()
+        .filter(|plan| plan.criterion.metric == CriterionMetricV1::Tokens)
+    {
+        return Box::pin(replay_sizes(plan, config, commit, &evidence.bundle)).await;
+    }
     let mut points = replay::points(&evidence.bundle, &insight.sites);
     let mut schemas = BTreeMap::new();
     fetch_schemas(
@@ -1585,26 +1623,9 @@ async fn replay_steps(deps: &Deps, record: &CycleRecordV1) -> Result<ReplayV1, E
         ));
     }
 
-    let (base_sha, candidate_sha) = (commit.base_sha.clone(), commit.candidate_sha.clone());
-    let built = {
-        let (config, base_sha, candidate_sha) =
-            (config.clone(), base_sha.clone(), candidate_sha.clone());
-        tokio::task::spawn_blocking(move || {
-            let built = candidate::replay_binary(&config, &base_sha)
-                .and_then(|base| Ok((base, candidate::replay_binary(&config, &candidate_sha)?)));
-            candidate::prune_replay_binaries(&config, &[&base_sha, &candidate_sha]);
-            built
-        })
-        .await
-        .map_err(|error| EvalError::Dependency(format!("replay build: {error}")))?
-    };
-    let (base_bin, candidate_bin) = match built {
+    let (base_bin, candidate_bin) = match build_pair(config, commit).await? {
         Ok(bins) => bins,
-        Err(error) => {
-            return Ok(unmeasured(format!(
-                "the replay could not be built: {error}"
-            )))
-        }
+        Err(reason) => return Ok(unmeasured(reason)),
     };
 
     // Each step's request under both builds; a step the candidate leaves
@@ -1731,6 +1752,7 @@ async fn replay_steps(deps: &Deps, record: &CycleRecordV1) -> Result<ReplayV1, E
         candidate_mistakes: candidate.0,
         p_fewer: Some(p_fewer),
         p_more: Some(p_more),
+        ..unmeasured("")
     })
 }
 
@@ -1739,6 +1761,125 @@ async fn replay_steps(deps: &Deps, record: &CycleRecordV1) -> Result<ReplayV1, E
 fn billed(reply: &Value) -> Option<f64> {
     let usage = reply.get("usage")?;
     Some(usage["cost_usd"].as_f64().unwrap_or(0.0))
+}
+
+/// `harness-replay` of the base and of the candidate commit.
+async fn build_pair(
+    config: &CandidateConfigV1,
+    commit: &candidate::CandidateCommitV1,
+) -> Result<Result<(std::path::PathBuf, std::path::PathBuf), String>, EvalError> {
+    let (config, base_sha, candidate_sha) = (
+        config.clone(),
+        commit.base_sha.clone(),
+        commit.candidate_sha.clone(),
+    );
+    tokio::task::spawn_blocking(move || {
+        let built = candidate::replay_binary(&config, &base_sha)
+            .and_then(|base| Ok((base, candidate::replay_binary(&config, &candidate_sha)?)));
+        candidate::prune_replay_binaries(&config, &[&base_sha, &candidate_sha]);
+        built.map_err(|error| format!("the replay could not be built: {error}"))
+    })
+    .await
+    .map_err(|error| EvalError::Dependency(format!("replay build: {error}")))
+}
+
+/// A token objective's level 1: every recorded step of the baseline runs
+/// rebuilt by both builds (`harness-replay` sizes), at the recorded
+/// trajectory. Deterministic: nothing is sampled. Characters become tokens
+/// at the rate the base rebuild matches the recorded input.
+async fn replay_sizes(
+    plan: &CyclePlanV1,
+    config: &CandidateConfigV1,
+    commit: &candidate::CandidateCommitV1,
+    bundle: &Value,
+) -> Result<ReplayV1, EvalError> {
+    let (base_bin, candidate_bin) = match build_pair(config, commit).await? {
+        Ok(bins) => bins,
+        Err(reason) => return Ok(unmeasured(reason)),
+    };
+    let (mut base, mut candidate, mut recorded) = (0.0, 0.0, 0.0);
+    let (mut steps, mut changed, mut exact, mut runs) = (0u32, 0u32, 0u32, 0u32);
+    for (scenario, run) in crate::evidence::runs(bundle) {
+        if !plan
+            .parameters
+            .scenarios
+            .iter()
+            .any(|wanted| scenario["scenario_id"] == wanted.as_str())
+        {
+            continue;
+        }
+        let Some(entries) = run["transcript"]["messages"].as_array() else {
+            continue;
+        };
+        let Some(answer) = entries
+            .iter()
+            .map(|entry| &entry["message"])
+            .find(|message| message["role"] == "assistant")
+        else {
+            continue;
+        };
+        let input = json!({"sizes": {"entries": entries,
+            "model": answer["model"].as_str().unwrap_or(&plan.parameters.model),
+            "provider": answer["provider"]}});
+        let (rebuilt_base, rebuilt_candidate) = match (
+            harness_replay(&base_bin, &input).await,
+            harness_replay(&candidate_bin, &input).await,
+        ) {
+            (Ok(b), Ok(c)) => (b, c),
+            (Err(error), _) | (_, Err(error)) => {
+                return Ok(unmeasured(format!(
+                    "run {} could not be rebuilt: {error}",
+                    run["run_id"].as_str().unwrap_or_default()
+                )))
+            }
+        };
+        let recorded_of: BTreeMap<&str, &Value> = entries
+            .iter()
+            .filter_map(|entry| Some((entry["entry_id"].as_str()?, entry)))
+            .collect();
+        for (b, c) in rebuilt_base
+            .as_array()
+            .into_iter()
+            .flatten()
+            .zip(rebuilt_candidate.as_array().into_iter().flatten())
+        {
+            let Some(entry) = b["entry_id"].as_str().and_then(|id| recorded_of.get(id)) else {
+                continue;
+            };
+            let usage = &entry["message"]["usage"];
+            recorded += ["input", "cache_read", "cache_write"]
+                .iter()
+                .filter_map(|key| usage[key].as_f64())
+                .sum::<f64>();
+            base += b["chars"].as_f64().unwrap_or(0.0);
+            candidate += c["chars"].as_f64().unwrap_or(0.0);
+            steps += 1;
+            changed += u32::from(b != c);
+            let matched = replay::exact(&b["req"], &entry["origin"]["req"]);
+            exact += u32::from(matched.iter().any(|part| part == "messages"));
+        }
+        runs += 1;
+    }
+    if steps == 0 || base <= 0.0 {
+        return Ok(unmeasured("no recorded step to rebuild"));
+    }
+    let per_run = recorded / base / f64::from(runs);
+    let (base_tokens, candidate_tokens) = (base * per_run, candidate * per_run);
+    let (outcome, reason) = replay::size_verdict(
+        base_tokens,
+        candidate_tokens,
+        plan.criterion.min_effect,
+        steps,
+        changed,
+    );
+    Ok(ReplayV1 {
+        outcome,
+        reason: format!("{reason} ({exact} of {steps} step(s) rebuilt exactly as recorded)"),
+        steps: Some(steps),
+        base_tokens: Some(base_tokens),
+        candidate_tokens: Some(candidate_tokens),
+        ..unmeasured("")
+    })
 }
 
 fn record_model(record: &CycleRecordV1) -> String {

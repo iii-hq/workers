@@ -394,7 +394,9 @@ function Cycle({
           // The result above already says what an insight that ended the cycle read.
           <Transcripts insight={cycle.insight} said={cycle.outcome?.detail === cycle.insight.reason} />
         ) : null}
-        {cycle.replay?.points?.some((point) => point.changed) ? <Replayed replay={cycle.replay} /> : null}
+        {cycle.replay?.points?.some((point) => point.changed) || cycle.replay?.base_tokens !== undefined ? (
+          <Replayed replay={cycle.replay} />
+        ) : null}
         {narrow ? <Budget usage={usage} /> : null}
         <Path cycle={cycle} current={current} narrow={narrow} />
         {/* The rule matters once a change can be judged; an ended cycle that never got one keeps it in the record. */}
@@ -517,7 +519,12 @@ const pointText = (summary: string) => summary.replace(/^\d+ failed call\(s\) to
 /** What the insight read in the measured runs' transcripts: the points a change starts from, and each failed call. */
 function Transcripts({ insight, said }: { insight: Insight; said: boolean }) {
   const points = insight.points ?? []
-  const by = insight.source === 'llm' ? `the default LLM${insight.model ? ` (${insight.model})` : ''}` : 'Jev'
+  const by =
+    insight.source === 'transcripts'
+      ? 'the transcripts, measured'
+      : insight.source === 'llm'
+        ? `the default LLM${insight.model ? ` (${insight.model})` : ''}`
+        : 'Jev'
   return (
     <Panel>
       <PanelHeader className="eval-ui-panel-head">
@@ -534,10 +541,12 @@ function Transcripts({ insight, said }: { insight: Insight; said: boolean }) {
                 <li key={`${point.function_id}:${point.sites[0]}`}>
                   <p>
                     <span className="eval-ui-mono">{point.function_id}</span>
-                    <span className="eval-ui-num eval-ui-faint">
-                      {' · '}
-                      {plural(point.sites.length, 'failed call')} · {point.source === 'llm' ? 'default LLM' : 'Jev'}
-                    </span>
+                    {point.sites.length ? (
+                      <span className="eval-ui-num eval-ui-faint">
+                        {' · '}
+                        {plural(point.sites.length, 'failed call')} · {point.source === 'llm' ? 'default LLM' : 'Jev'}
+                      </span>
+                    ) : null}
                   </p>
                   <p className="eval-ui-faint" title={point.summary}>
                     {clipText(pointText(point.summary), 180)}
@@ -588,38 +597,42 @@ function Transcripts({ insight, said }: { insight: Insight; said: boolean }) {
 /** Level 1: each failed step replayed under both builds, and how often each made a call refused before it runs. */
 function Replayed({ replay }: { replay: Replay }) {
   const sampled = (replay.points ?? []).filter((point) => point.changed)
+  // A token objective rebuilds every recorded step and samples none.
+  const sized = replay.steps !== undefined
   return (
     <Panel>
       <PanelHeader className="eval-ui-panel-head">
-        <span>Replayed where calls failed</span>
-        <Badge className="eval-ui-num">{sampled.length}</Badge>
+        <span>{sized ? 'Replayed every recorded step' : 'Replayed where calls failed'}</span>
+        <Badge className="eval-ui-num">{sized ? replay.steps : sampled.length}</Badge>
       </PanelHeader>
       <PanelBody className="eval-ui-stack">
         <p className="eval-ui-lead">{sentence(replay.reason)}.</p>
-        <details className="eval-ui-details">
-          <summary>
-            <span>
-              Steps · <span className="eval-ui-num">{sampled.length}</span>
-            </span>
-            <Caret />
-          </summary>
-          <ul className="eval-ui-lost">
-            {sampled.map((point) => (
-              <li key={`${point.run_id}:${point.step}`}>
-                <p>
-                  <span className="eval-ui-mono">
-                    run {point.run_id.slice(0, 8)} · step {point.step}
-                  </span>
-                  <span className="eval-ui-faint">{point.after ? ' · after the error' : ' · where it failed'}</span>
-                </p>
-                <p className="eval-ui-num eval-ui-faint">
-                  base {point.base_mistakes}/{point.samples} · candidate {point.candidate_mistakes}/{point.samples}
-                  {point.exact?.length === 3 ? '' : ` · rebuilt exactly: ${point.exact?.join(', ') || 'nothing'}`}
-                </p>
-              </li>
-            ))}
-          </ul>
-        </details>
+        {sized ? null : (
+          <details className="eval-ui-details">
+            <summary>
+              <span>
+                Steps · <span className="eval-ui-num">{sampled.length}</span>
+              </span>
+              <Caret />
+            </summary>
+            <ul className="eval-ui-lost">
+              {sampled.map((point) => (
+                <li key={`${point.run_id}:${point.step}`}>
+                  <p>
+                    <span className="eval-ui-mono">
+                      run {point.run_id.slice(0, 8)} · step {point.step}
+                    </span>
+                    <span className="eval-ui-faint">{point.after ? ' · after the error' : ' · where it failed'}</span>
+                  </p>
+                  <p className="eval-ui-num eval-ui-faint">
+                    base {point.base_mistakes}/{point.samples} · candidate {point.candidate_mistakes}/{point.samples}
+                    {point.exact?.length === 3 ? '' : ` · rebuilt exactly: ${point.exact?.join(', ') || 'nothing'}`}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
       </PanelBody>
     </Panel>
   )
@@ -716,10 +729,13 @@ function steps(cycle: CycleRecord, current: LoopConfig | null): Step[][] {
       ? {
           mark: cycle.insight.points?.length ? 'done' : 'stop',
           label: 'Transcripts read',
-          fact: `${plural(cycle.insight.points?.length ?? 0, 'improvement point')} in ${plural(
-            cycle.insight.sites.length,
-            'failed call',
-          )} · ${cycle.insight.source === 'llm' ? 'default LLM' : 'Jev'}`,
+          fact:
+            cycle.insight.source === 'transcripts'
+              ? `${plural(cycle.insight.points?.length ?? 0, 'improvement point')} · where the tokens go`
+              : `${plural(cycle.insight.points?.length ?? 0, 'improvement point')} in ${plural(
+                  cycle.insight.sites.length,
+                  'failed call',
+                )} · ${cycle.insight.source === 'llm' ? 'default LLM' : 'Jev'}`,
         }
       : null,
   ]
@@ -760,11 +776,16 @@ function steps(cycle: CycleRecord, current: LoopConfig | null): Step[][] {
           ? {
               mark: REPLAY_MARK[cycle.replay.outcome],
               label: 'Replayed',
-              fact: cycle.replay.base_samples
-                ? `refused calls: base ${cycle.replay.base_mistakes}/${cycle.replay.base_samples}, candidate ${
-                    cycle.replay.candidate_mistakes
-                  }/${cycle.replay.candidate_samples}`
-                : cycle.replay.reason,
+              fact:
+                cycle.replay.base_tokens !== undefined && cycle.replay.candidate_tokens !== undefined
+                  ? `input tokens a run: base ${Math.round(cycle.replay.base_tokens)}, candidate ${Math.round(
+                      cycle.replay.candidate_tokens,
+                    )}`
+                  : cycle.replay.base_samples
+                    ? `refused calls: base ${cycle.replay.base_mistakes}/${cycle.replay.base_samples}, candidate ${
+                        cycle.replay.candidate_mistakes
+                      }/${cycle.replay.candidate_samples}`
+                    : cycle.replay.reason,
             }
           : null,
       ]

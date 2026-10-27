@@ -709,7 +709,8 @@ fn ensure_checkout(
 // The replay build (level 1)
 // ---------------------------------------------------------------------------
 
-/// The replay module and its binary, written into a commit that predates them.
+/// The replay module and its binary, written into every commit built: the
+/// instrument is this build's, the Harness under it the commit's.
 const REPLAY_MODULE: &str = include_str!("../../harness/src/turn_loop/replay.rs");
 const REPLAY_BIN: &str = include_str!("../../harness/src/bin/harness-replay.rs");
 /// What a first build needs free (its target holds the Harness's
@@ -719,18 +720,22 @@ const REPLAY_NEXT_FREE: u64 = 400 << 20;
 /// One replay build at a time: the checkout and the target are shared.
 static REPLAY_BUILD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// One binary per commit and replay module version.
+fn replay_name(sha: &str) -> String {
+    let version = crate::ids::sha256_json(&json!([REPLAY_MODULE, REPLAY_BIN]));
+    format!("harness-replay-{sha}-{}", &version[..8])
+}
+
 /// The `harness-replay` binary of `sha`, built once per commit. Every commit
 /// is checked out in one sparse worktree (`harness/`, `crates/`) and built
-/// into one target, both under `worktrees_dir`; a commit that predates the
-/// replay module gets this build's copy of it. Blocking.
+/// into one target, both under `worktrees_dir`, with this build's replay
+/// module. Blocking.
 pub fn replay_binary(cfg: &CandidateConfigV1, sha: &str) -> Result<PathBuf, CandidateError> {
     let _one = REPLAY_BUILD
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let root = Path::new(&cfg.worktrees_dir);
-    let binary = root
-        .join("replay-bin")
-        .join(format!("harness-replay-{sha}"));
+    let binary = root.join("replay-bin").join(replay_name(sha));
     if binary.exists() {
         return Ok(binary);
     }
@@ -773,16 +778,17 @@ pub fn replay_binary(cfg: &CandidateConfigV1, sha: &str) -> Result<PathBuf, Cand
     let harness = tree.join("harness");
     let turn_loop = harness.join("src/turn_loop.rs");
     let source = std::fs::read_to_string(&turn_loop).map_err(|error| io(&turn_loop, error))?;
-    let mut files = vec![];
-    if !source.contains("pub mod replay;") {
-        files.push((
+    let mut files = vec![
+        (
             harness.join("src/turn_loop/replay.rs"),
             REPLAY_MODULE.to_string(),
-        ));
-        files.push((
+        ),
+        (
             harness.join("src/bin/harness-replay.rs"),
             REPLAY_BIN.to_string(),
-        ));
+        ),
+    ];
+    if !source.contains("pub mod replay;") {
         files.push((turn_loop, format!("{source}\npub mod replay;\n")));
     }
     // The console UI is embedded, never served: empty assets skip its build.
@@ -820,7 +826,7 @@ pub fn replay_binary(cfg: &CandidateConfigV1, sha: &str) -> Result<PathBuf, Cand
     }
     let bin_dir = root.join("replay-bin");
     std::fs::create_dir_all(&bin_dir).map_err(|error| io(&bin_dir, error))?;
-    let staged = bin_dir.join(format!("harness-replay-{sha}.partial"));
+    let staged = bin_dir.join(format!("{}.partial", replay_name(sha)));
     std::fs::copy(target.join("debug/harness-replay"), &staged)
         .map_err(|error| io(&staged, error))?;
     std::fs::rename(&staged, &binary).map_err(|error| io(&binary, error))?;
@@ -832,9 +838,7 @@ pub fn prune_replay_binaries(cfg: &CandidateConfigV1, keep: &[&str]) {
     let dir = Path::new(&cfg.worktrees_dir).join("replay-bin");
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        let kept = keep
-            .iter()
-            .any(|sha| name == format!("harness-replay-{sha}"));
+        let kept = keep.iter().any(|sha| name == replay_name(sha));
         if name.starts_with("harness-replay-") && !kept {
             let _ = std::fs::remove_file(entry.path());
         }

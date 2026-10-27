@@ -1,7 +1,8 @@
 //! The request one recorded step sent to the model, rebuilt from the
 //! session's transcript with THIS build's code: the eval loop's level-1
 //! replay samples it under two builds to see whether a change keeps the
-//! model from a mistake it made there.
+//! model from a mistake it made there, or ([`sizes`]) measures every step
+//! of a run to see what a change does to what the model is sent.
 //!
 //! Pure — no engine, no context worker. The system prompt is this build's
 //! identity, the recorded skills index and the frozen runtime aid; the tools
@@ -132,6 +133,68 @@ fn refuse_as_this_build(entries: &mut [LoadedEntry]) {
     }
 }
 
+/// A whole recorded run, for [`sizes`].
+#[derive(Debug, Deserialize)]
+pub struct SizesInput {
+    pub entries: Vec<LoadedEntry>,
+    pub model: String,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub skills: Option<String>,
+}
+
+/// One recorded step's rebuilt request, measured.
+#[derive(Debug, Serialize)]
+pub struct StepSize {
+    pub entry_id: String,
+    /// Characters the model reads: the system prompt, the tools and each
+    /// message's content.
+    pub chars: usize,
+    pub req: Value,
+}
+
+/// Every step of a recorded run rebuilt, at the recorded trajectory.
+pub fn sizes(input: &SizesInput) -> Vec<StepSize> {
+    input
+        .entries
+        .iter()
+        .enumerate()
+        .filter_map(|(at, entry)| {
+            let (turn_id, step) = step_of(&entry.entry_id)?;
+            let request = rebuild(&ReplayInput {
+                entries: input.entries[..at].to_vec(),
+                turn_id,
+                step,
+                model: input.model.clone(),
+                provider: input.provider.clone(),
+                skills: input.skills.clone(),
+            });
+            let chars = request.system_prompt.as_ref().map_or(0, String::len)
+                + serde_json::to_string(&request.tools).map_or(0, |text| text.len())
+                + request
+                    .messages
+                    .iter()
+                    .map(|message| message["content"].to_string().len())
+                    .sum::<usize>();
+            Some(StepSize {
+                entry_id: entry.entry_id.clone(),
+                chars,
+                req: request.req,
+            })
+        })
+        .collect()
+}
+
+/// `e_<turn>_<step>_assistant`.
+fn step_of(entry_id: &str) -> Option<(String, u64)> {
+    let (turn, step) = entry_id
+        .strip_prefix("e_")?
+        .strip_suffix("_assistant")?
+        .rsplit_once('_')?;
+    Some((turn.to_string(), step.parse().ok()?))
+}
+
 /// The watermark the previous step kept: the last entry it loaded, the one
 /// before the first it wrote (`e_<turn>_<step>_…`).
 fn watermark(entries: &[LoadedEntry], turn_id: &str, step: u64) -> Option<String> {
@@ -178,6 +241,16 @@ mod tests {
         assert_eq!(request.req["n"], 2);
         assert_eq!(watermark(&input.entries, "t", 1).as_deref(), Some("u0"));
         assert_eq!(watermark(&input.entries, "t", 0), None);
+
+        let measured = sizes(&SizesInput {
+            entries: input.entries.clone(),
+            model: "m".into(),
+            provider: None,
+            skills: None,
+        });
+        assert_eq!(measured.len(), 1, "one assistant step");
+        assert_eq!(measured[0].entry_id, "e_t_0_assistant");
+        assert!(measured[0].chars > crate::prompt::DEFAULT.len());
     }
 
     #[test]
