@@ -15,6 +15,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
+use futures::future::BoxFuture;
 use iii_sdk::RegisterFunction;
 use iii_sdk::channels::{ChannelReader, StreamChannelRef};
 use iii_shell_proto::FsResult;
@@ -43,16 +44,29 @@ use crate::sandbox_daemon::{
 /// keeps the `AsyncRead` impl `Unpin` without unsafe and avoids storing a
 /// `Pin<Box<dyn Future>>` inline (which would require `unsafe Unpin`).
 pub struct ChannelReaderAdapter {
-    reader: Arc<ChannelReader>,
+    /// Starts the read of the next frame: `ChannelReader::next_binary`, or a
+    /// scripted source in tests.
+    next: Box<dyn Fn() -> BoxFuture<'static, Frame> + Send>,
     pending_buf: Vec<u8>,
-    pending_task: Option<tokio::task::JoinHandle<Result<Option<Vec<u8>>, iii_sdk::Error>>>,
+    pending_task: Option<tokio::task::JoinHandle<Frame>>,
     eof: bool,
 }
 
+/// One `next_binary` result: a frame, `None` at the end of the stream.
+type Frame = Result<Option<Vec<u8>>, iii_sdk::Error>;
+
 impl ChannelReaderAdapter {
     pub fn new(reader: ChannelReader) -> Self {
+        let reader = Arc::new(reader);
+        Self::from_source(move || {
+            let reader = reader.clone();
+            Box::pin(async move { reader.next_binary().await })
+        })
+    }
+
+    fn from_source(next: impl Fn() -> BoxFuture<'static, Frame> + Send + 'static) -> Self {
         Self {
-            reader: Arc::new(reader),
+            next: Box::new(next),
             pending_buf: Vec::new(),
             pending_task: None,
             eof: false,
@@ -80,40 +94,40 @@ impl tokio::io::AsyncRead for ChannelReaderAdapter {
             return Poll::Ready(Ok(()));
         }
 
-        // Spawn a task if we don't have one in flight.
-        if this.pending_task.is_none() {
-            let reader = this.reader.clone();
-            this.pending_task = Some(tokio::spawn(async move { reader.next_binary().await }));
-        }
+        loop {
+            // Spawn a task if we don't have one in flight.
+            let task = this
+                .pending_task
+                .get_or_insert_with(|| tokio::spawn((this.next)()));
 
-        // Poll the in-flight task.
-        let task = this.pending_task.as_mut().unwrap();
-        match Pin::new(task).poll(cx) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(join_result) => {
-                this.pending_task = None;
-                let chunk_result = join_result.map_err(|e| {
-                    io::Error::new(io::ErrorKind::BrokenPipe, format!("channel task: {e}"))
-                })?;
-                match chunk_result {
-                    Ok(None) => {
-                        this.eof = true;
-                        Poll::Ready(Ok(()))
-                    }
-                    Ok(Some(data)) => {
-                        let n = data.len().min(buf.remaining());
-                        buf.put_slice(&data[..n]);
-                        if n < data.len() {
-                            this.pending_buf.extend_from_slice(&data[n..]);
-                        }
-                        Poll::Ready(Ok(()))
-                    }
-                    Err(e) => Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        format!("channel read error: {e}"),
-                    ))),
+            // Poll the in-flight task.
+            let join_result = std::task::ready!(Pin::new(task).poll(cx));
+            this.pending_task = None;
+            let chunk_result = join_result.map_err(|e| {
+                io::Error::new(io::ErrorKind::BrokenPipe, format!("channel task: {e}"))
+            })?;
+            return match chunk_result {
+                Ok(None) => {
+                    this.eof = true;
+                    Poll::Ready(Ok(()))
                 }
-            }
+                // An empty frame (the Python SDK sends one for `write(b"")`) is
+                // no data: returning it would fill 0 bytes, which reads as EOF
+                // and commits a truncated file.
+                Ok(Some(data)) if data.is_empty() => continue,
+                Ok(Some(data)) => {
+                    let n = data.len().min(buf.remaining());
+                    buf.put_slice(&data[..n]);
+                    if n < data.len() {
+                        this.pending_buf.extend_from_slice(&data[n..]);
+                    }
+                    Poll::Ready(Ok(()))
+                }
+                Err(e) => Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    format!("channel read error: {e}"),
+                ))),
+            };
         }
     }
 }
@@ -576,6 +590,28 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code().as_str(), "S001");
         assert!(err.to_string().contains("missing file body"), "got: {err}");
+    }
+
+    /// A channel whose reads return `frames`, then the end of the stream.
+    fn scripted(frames: &'static [&'static [u8]]) -> ChannelReaderAdapter {
+        let frames = std::sync::Mutex::new(frames.iter().copied());
+        ChannelReaderAdapter::from_source(move || {
+            let frame = frames.lock().unwrap().next().map(<[u8]>::to_vec);
+            Box::pin(async move { Ok(frame) })
+        })
+    }
+
+    /// An empty frame (the Python SDK sends one for `write(b"")`) is no data,
+    /// not the end: the upload must go on past it.
+    #[tokio::test]
+    async fn an_empty_frame_does_not_end_the_upload() {
+        use tokio::io::AsyncReadExt;
+        let mut got = Vec::new();
+        scripted(&[b"ab", b"", b"cd"])
+            .read_to_end(&mut got)
+            .await
+            .unwrap();
+        assert_eq!(got, b"abcd");
     }
 
     /// Serde dispatch: a bare JSON string lands as `Utf8`; an object
