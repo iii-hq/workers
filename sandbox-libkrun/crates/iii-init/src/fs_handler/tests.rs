@@ -1167,6 +1167,36 @@ fn sed_regex_matches_lines_without_their_terminator() {
     assert_eq!(std::fs::read_to_string(&f).unwrap(), "X\nbar\nX\r\nX");
 }
 
+/// Only a CRLF's CR is part of the terminator, as in `lines()`: a lone CR
+/// at the end of the file is still matched.
+#[test]
+fn sed_matches_a_lone_cr_but_not_a_crlf_terminator() {
+    let dir = tmpdir();
+    let f = dir.path().join("x.txt");
+    std::fs::write(&f, "a\r\nb\r").unwrap();
+    let res = ops::sed(
+        vec![f.to_string_lossy().into()],
+        None,
+        true,
+        Vec::new(),
+        Vec::new(),
+        "\r".into(),
+        "".into(),
+        false,
+        false,
+        false,
+    )
+    .unwrap();
+    let FsResult::Sed {
+        total_replacements, ..
+    } = res
+    else {
+        panic!();
+    };
+    assert_eq!(total_replacements, 1);
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "a\r\nb");
+}
+
 /// A file without a match is left alone, not rewritten.
 #[test]
 fn sed_without_matches_leaves_the_file_untouched() {

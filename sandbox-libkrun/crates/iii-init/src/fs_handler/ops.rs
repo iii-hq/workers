@@ -781,6 +781,9 @@ fn collect_files_to_sed(
 ///   capture references in `replacement`.
 /// - `regex=false` → literal string match.
 /// - `first_only=true` → replace only the first match per line.
+/// - Each line is matched without its terminator (`\n` or `\r\n`), as
+///   grep reads it, so `$` anchors before a CRLF and `\s+$` keeps it; a
+///   pattern can never match the terminator, the CR of a CRLF included.
 /// - Per-file failures are isolated; the handler continues to the next
 ///   file and reports `success=false` in that entry's result.
 /// - Writes are atomic: content goes to a temp sibling and is renamed
@@ -901,8 +904,10 @@ pub fn sed(
 
         for full_line in original.split_inclusive('\n') {
             // Match the line without its terminator, as grep's `lines()` does.
-            let line = full_line.strip_suffix('\n').unwrap_or(full_line);
-            let line = line.strip_suffix('\r').unwrap_or(line);
+            let line = full_line
+                .strip_suffix("\r\n")
+                .or_else(|| full_line.strip_suffix('\n'))
+                .unwrap_or(full_line);
             let (new_line, n) = match &matcher {
                 Some(re) => {
                     let mut count_here = 0u64;
