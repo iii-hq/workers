@@ -82,6 +82,8 @@ tokio = { version = "1", features = ["test-util"] }
 tempfile = "3"
 iii-shell-proto = { path = "crates/iii-shell-proto" }
 serial_test = "4"
+# Loopback engine for the fs::read channel tests; the version iii-sdk already resolves.
+tokio-tungstenite = "0.28"
 
 [profile.release]
 strip = true
