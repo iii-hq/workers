@@ -64,6 +64,11 @@ pub struct WorkerVms {
     /// Notified as each `start` drops its reservation, for a `stop` that
     /// waits out the build it cancelled.
     unreserved: tokio::sync::Notify,
+    /// The last instance of each `vm_id` this process destroyed, so its next
+    /// boot still follows it and a stale stop gets S503.
+    /// shortcut: in memory, so a daemon restart forgets it; persist it outside
+    /// `<base>` if a stale stop can ever outlive the daemon.
+    destroyed: Mutex<HashMap<String, u64>>,
 }
 
 #[derive(Clone)]
@@ -110,6 +115,7 @@ impl WorkerVms {
             slots: Mutex::default(),
             starts: AtomicU64::new(0),
             unreserved: tokio::sync::Notify::new(),
+            destroyed: Mutex::default(),
         }
     }
 
@@ -167,7 +173,7 @@ impl WorkerVms {
         {
             let mut slots = self.slots();
             refuse_busy(&id, slots.get(&id))?;
-            let next = stored_instance(&self.base.join(&id))? + 1;
+            let next = self.next_instance(&id)?;
             slots.insert(id.clone(), Slot::Preparing(next, start, false));
         }
         let _unreserve = Unreserve(self, &id, start);
@@ -209,7 +215,7 @@ impl WorkerVms {
                 ));
             }
         }
-        let instance = stored_instance(&dir)? + 1;
+        let instance = self.next_instance(&id)?;
         let (console, lifeline, mut child) = spawn(&dir, instance, cmd).map_err(|e| {
             SandboxError::BootFailed(format!("cannot launch VM in {}: {e}", dir.display()))
         })?;
@@ -409,18 +415,24 @@ impl WorkerVms {
     ) -> Result<WorkerDestroyResponse, SandboxError> {
         self.authorize(&req.auth)?;
         let id = vm_id(&req.state_key);
+        let dir = self.base.join(&id);
         // The marker, not the lock, keeps a `start` out of a half-removed dir:
         // a legacy rootfs clone takes seconds to remove.
-        let prev = {
+        let (prev, last) = {
             let mut slots = self.slots();
             refuse_busy(&id, slots.get(&id))?;
             let instance = slots.get(&id).map_or(0, Slot::instance);
-            slots.insert(id.clone(), Slot::Destroying(instance))
+            // A daemon restarted since the last boot knows it only from disk.
+            let last = instance.max(stored_instance(&dir).unwrap_or(0));
+            (slots.insert(id.clone(), Slot::Destroying(instance)), last)
         };
-        let dir = self.base.join(&id);
         let removed = std::fs::remove_dir_all(&dir);
         let mut slots = self.slots();
         slots.remove(&id);
+        // Even on failure: the removal may have reached `state.json` already.
+        if last > 0 {
+            self.destroyed().insert(id.clone(), last);
+        }
         let destroyed = match removed {
             Ok(()) => true,
             Err(e) if e.kind() == io::ErrorKind::NotFound => false,
@@ -436,6 +448,19 @@ impl WorkerVms {
             }
         };
         Ok(WorkerDestroyResponse { destroyed })
+    }
+
+    /// The instance the next boot of `vm_id` gets. Call it holding `slots`.
+    fn next_instance(&self, vm_id: &str) -> Result<u64, SandboxError> {
+        let floor = self.destroyed().get(vm_id).copied().unwrap_or(0);
+        Ok(stored_instance(&self.base.join(vm_id))?.max(floor) + 1)
+    }
+
+    /// Taken only while `slots` is held, so the two locks cannot deadlock.
+    fn destroyed(&self) -> MutexGuard<'_, HashMap<String, u64>> {
+        self.destroyed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// `vm_id`'s entry: S504 when there is none, S503 when it is on another instance.
@@ -945,6 +970,28 @@ mod tests {
         assert!(!dir.exists());
     }
 
+    /// A stop delayed past a destroy and a new boot must not reach that boot,
+    /// even when the destroying daemon never booted the VM itself.
+    #[tokio::test]
+    async fn instance_survives_a_destroy() {
+        let t = tempfile::tempdir().unwrap();
+        let first = vms(t.path(), Some("t"), vec![]);
+        let id = first
+            .launch("k", sh("exit 0"), Vec::new(), None)
+            .unwrap()
+            .vm_id;
+        wait_ended(&first, &id, 1).await;
+        drop(first);
+
+        let vms = vms(t.path(), Some("t"), vec![]);
+        assert!(vms.destroy(destroy_req("t", "k")).unwrap().destroyed);
+        assert!(!t.path().join("workers").join(&id).exists());
+        let again = vms.launch("k", sh("sleep 30"), Vec::new(), None).unwrap();
+        assert_eq!(again.instance, 2);
+        assert_eq!(code(vms.stop(stop_req("t", &id, 1, 0)).await), "S503");
+        vms.stop(stop_req("t", &id, 2, 0)).await.unwrap();
+    }
+
     #[tokio::test]
     async fn instance_survives_an_adapter_restart() {
         let t = tempfile::tempdir().unwrap();
@@ -1089,6 +1136,34 @@ mod tests {
         assert_eq!(code(vms.destroy(destroy_req("t", "k"))), "S216");
         let status = vms.status(status_req("t", &id, 1)).unwrap();
         assert_eq!(status.exit_code, Some(7), "{status:?}");
+    }
+
+    /// `remove_dir_all` stops at the first entry it cannot remove, possibly
+    /// after `state.json`: the next boot must still follow the old one.
+    #[tokio::test]
+    async fn a_partly_failed_destroy_keeps_the_instance_order() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let vms = vms(t.path(), Some("t"), vec![]);
+        let id = vms
+            .launch("k", sh("exit 0"), Vec::new(), None)
+            .unwrap()
+            .vm_id;
+        wait_ended(&vms, &id, 1).await;
+        // A non-empty read-only dir in the guest's share: unremovable unless root.
+        let stuck = t.path().join("workers").join(&id).join("root").join("ro");
+        std::fs::create_dir_all(&stuck).unwrap();
+        std::fs::write(stuck.join("f"), "").unwrap();
+        std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let destroyed = vms.destroy(destroy_req("t", "k"));
+        if stuck.exists() {
+            assert_eq!(code(destroyed), "S216");
+            std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::remove_dir_all(&stuck).unwrap();
+        }
+        let again = vms.launch("k", sh("exit 0"), Vec::new(), None).unwrap();
+        assert_eq!(again.instance, 2);
     }
 
     #[tokio::test]
