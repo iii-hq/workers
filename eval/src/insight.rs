@@ -23,7 +23,7 @@ pub const MAX_SITES: usize = 64;
 /// triage.
 pub const MARGIN: f64 = 0.2;
 /// The one question each site is asked.
-pub const QUESTION: &str = "whose";
+pub const QUESTION: &str = "preventable";
 /// The default LLM, when Jev cannot tell.
 pub const ANALYST_PROVIDER: &str = "anthropic";
 pub const ANALYST_MODEL: &str = "claude-sonnet-5-5";
@@ -171,24 +171,27 @@ pub fn sites(execution_id: &str, bundle: &Value, scenarios: &[String]) -> Vec<Er
 
 pub fn question() -> Question {
     Question::Choice {
-        instructions: "A function call an agent made through the Harness failed. The Harness \
-            is the agent runtime: it gives the model its system prompt, the functions and \
-            their contracts, notices, each call's result or error, and the limits of each \
-            step (output size, time, file scope). Decide whose doing this failure is."
+        instructions: "Function calls an agent made through the Harness failed, in this \
+            pattern: the same function and error, with how often it happened. The Harness is \
+            the agent runtime: it gives the model its system prompt, the functions with their \
+            contracts and descriptions, notices, each call's result or error message, and the \
+            limits of each step (output size, time, file scope). Decide whether a change to the \
+            Harness could prevent this failure or its repetition. Instructing the model better \
+            counts: a mistake the model repeats can be prevented by a clearer prompt, \
+            description, contract or error message, even when what it needed was in view."
             .into(),
         criteria: BTreeMap::from([
             (
-                "harness".into(),
-                "A Harness change could have prevented it or its repetition: a missing, unclear \
-                 or misleading contract, description, prompt or notice; an error message that \
-                 misleads or does not say how to recover; or a limit the Harness sets that the \
-                 task needs past."
+                "preventable".into(),
+                "A Harness change could prevent it or its repetition: a clearer instruction, \
+                 description, contract or error message that teaches the model the right call, \
+                 or a different limit or behavior of the Harness."
                     .into(),
             ),
             (
-                "model".into(),
-                "The model's own slip: what it needed was in view and clear, and it called \
-                 wrongly anyway."
+                "one_off".into(),
+                "A one-off slip no instruction would plausibly prevent: it happened once, for \
+                 no visible reason, and the agent recovered."
                     .into(),
             ),
             (
@@ -199,28 +202,71 @@ pub fn question() -> Question {
             ),
             (
                 "unclear".into(),
-                "The excerpt does not show enough to tell.".into(),
+                "The excerpts do not show enough to tell.".into(),
             ),
         ]),
     }
 }
 
-/// What the judge reads of one site.
-pub fn site_state(objective: &str, scenario: Option<&str>, site: &ErrorSiteV1) -> Value {
+/// The failed calls of one function with one error shape: what Jev judges
+/// as a whole, since a repeated mistake is what an instruction prevents.
+pub struct Pattern<'a> {
+    /// The first site's id, which names the pattern in a judge request.
+    pub id: String,
+    pub function_id: &'a str,
+    pub sites: Vec<&'a ErrorSiteV1>,
+}
+
+/// The sites grouped by function and error shape, in first-seen order.
+pub fn patterns(sites: &[ErrorSiteV1]) -> Vec<Pattern<'_>> {
+    let mut found: Vec<(String, Pattern<'_>)> = Vec::new();
+    for site in sites {
+        let key = format!("{}\u{0}{}", site.function_id, signature(&site.error));
+        match found.iter_mut().find(|(seen, _)| *seen == key) {
+            Some((_, pattern)) => pattern.sites.push(site),
+            None => found.push((
+                key,
+                Pattern {
+                    id: site.site_id.clone(),
+                    function_id: &site.function_id,
+                    sites: vec![site],
+                },
+            )),
+        }
+    }
+    found.into_iter().map(|(_, pattern)| pattern).collect()
+}
+
+/// What the judge reads of one pattern: how often it happened, in how many
+/// runs, and up to three of its calls.
+pub fn pattern_state(
+    objective: &str,
+    scenario: impl Fn(&str) -> Option<String>,
+    pattern: &Pattern<'_>,
+) -> Value {
+    let runs: std::collections::BTreeSet<&str> = pattern
+        .sites
+        .iter()
+        .map(|site| site.run_id.as_str())
+        .collect();
     json!({
         "objective": objective,
-        "scenario": scenario,
-        "function_id": site.function_id,
-        "arguments": site.arguments,
-        "error": site.error,
-        "said_before_the_call": site.before,
-        "did_next": site.after,
-        "step_that_made_the_call": site.step,
+        "function_id": pattern.function_id,
+        "occurrences": pattern.sites.len(),
+        "runs_with_it": runs.len(),
+        "examples": pattern.sites.iter().take(3).map(|site| json!({
+            "scenario": scenario(&site.scenario_id),
+            "arguments": site.arguments,
+            "error": site.error,
+            "said_before_the_call": site.before,
+            "did_next": site.after,
+            "step_that_made_the_call": site.step,
+        })).collect::<Vec<_>>(),
     })
 }
 
-/// The class a choice answer gives a site: its top choice with a lead of
-/// [`MARGIN`], else unclear; with the top choice's probability.
+/// The class a choice answer gives a pattern: its top choice with a lead
+/// of [`MARGIN`], else unclear; with the top choice's probability.
 pub fn verdict(answer: &Answer) -> (SiteClassV1, f64) {
     let Answer::Choice { probabilities, .. } = answer else {
         return (SiteClassV1::Unclear, 0.0);
@@ -236,8 +282,8 @@ pub fn verdict(answer: &Answer) -> (SiteClassV1, f64) {
     let next = ranked.get(1).map_or(0.0, |(_, p)| *p);
     let class = match top {
         _ if p - next < MARGIN => SiteClassV1::Unclear,
-        "harness" => SiteClassV1::Harness,
-        "model" => SiteClassV1::Model,
+        "preventable" => SiteClassV1::Preventable,
+        "one_off" => SiteClassV1::OneOff,
         "task" => SiteClassV1::Task,
         _ => SiteClassV1::Unclear,
     };
@@ -251,7 +297,7 @@ fn signature(error: &str) -> String {
         .map(|c| if c.is_ascii_digit() { '#' } else { c })
         .collect();
     shape
-        .split(['(', '{', '"'])
+        .split(['(', '{', '"', '`', '['])
         .next()
         .unwrap_or_default()
         .trim()
@@ -260,36 +306,38 @@ fn signature(error: &str) -> String {
         .collect()
 }
 
-/// The sites Jev judged the Harness's, one point per function and error
-/// shape, most frequent first.
+/// The patterns Jev judged preventable, one point each, most frequent first.
 pub fn points(sites: &[ErrorSiteV1]) -> Vec<ImprovementPointV1> {
-    let mut groups: BTreeMap<(String, String), Vec<&ErrorSiteV1>> = BTreeMap::new();
-    for site in sites
-        .iter()
-        .filter(|site| site.class == Some(SiteClassV1::Harness))
-    {
-        groups
-            .entry((site.function_id.clone(), signature(&site.error)))
-            .or_default()
-            .push(site);
-    }
-    let mut found: Vec<ImprovementPointV1> = groups
+    let mut found: Vec<ImprovementPointV1> = patterns(sites)
         .into_iter()
-        .map(|((function_id, _), group)| {
-            let mean = group
+        .filter(|pattern| {
+            pattern
+                .sites
                 .iter()
-                .filter_map(|site| site.probability)
-                .sum::<f64>()
-                / group.len() as f64;
+                .all(|site| site.class == Some(SiteClassV1::Preventable))
+        })
+        .map(|pattern| {
+            let runs: std::collections::BTreeSet<&str> = pattern
+                .sites
+                .iter()
+                .map(|site| site.run_id.as_str())
+                .collect();
+            let p = pattern.sites[0].probability.unwrap_or_default();
             ImprovementPointV1 {
                 summary: format!(
-                    "{} failed call(s) to {function_id} the Harness could have prevented \
-                     (Jev, p≈{mean:.2}): {}",
-                    group.len(),
-                    clip(&group[0].error, 240)
+                    "{} failed call(s) to {} in {} run(s) that a Harness change could prevent, \
+                     instructing the model included (Jev, p≈{p:.2}): {}",
+                    pattern.sites.len(),
+                    pattern.function_id,
+                    runs.len(),
+                    clip(&pattern.sites[0].error, 240)
                 ),
-                function_id,
-                sites: group.iter().map(|site| site.site_id.clone()).collect(),
+                function_id: pattern.function_id.to_string(),
+                sites: pattern
+                    .sites
+                    .iter()
+                    .map(|site| site.site_id.clone())
+                    .collect(),
                 source: InsightSourceV1::Jev,
             }
         })
@@ -298,7 +346,7 @@ pub fn points(sites: &[ErrorSiteV1]) -> Vec<ImprovementPointV1> {
     found
 }
 
-/// How Jev split the sites, for the record.
+/// How Jev split the failed calls, for the record.
 pub fn tally(sites: &[ErrorSiteV1]) -> String {
     let count = |class: SiteClassV1| {
         sites
@@ -307,10 +355,12 @@ pub fn tally(sites: &[ErrorSiteV1]) -> String {
             .count()
     };
     format!(
-        "Jev judged {} failed call(s): {} the Harness's, {} the model's, {} the task's, {} unclear",
+        "Jev judged {} failure pattern(s) over {} failed call(s): {} preventable, {} one-off, \
+         {} the task's, {} unclear",
+        patterns(sites).len(),
         sites.len(),
-        count(SiteClassV1::Harness),
-        count(SiteClassV1::Model),
+        count(SiteClassV1::Preventable),
+        count(SiteClassV1::OneOff),
         count(SiteClassV1::Task),
         count(SiteClassV1::Unclear)
     )
@@ -336,9 +386,11 @@ pub fn analyst_prompt(objective: &str, sites: &[ErrorSiteV1]) -> (String, String
         format!(
             "Objective: {objective}\n\nThese function calls failed in measured runs. For each, \
              decide whether a change to the Harness (its prompt, contracts or descriptions, \
-             notices, error messages, limits or scope handling) could have prevented it or \
-             its repetition. Group those into improvement points; leave out the model's own \
-             slips and failures the task expects.\n\nReply exactly: {{\"points\": \
+             notices, error messages, limits or scope handling) could prevent it or its \
+             repetition. Instructing the model better counts: a mistake it repeats is \
+             preventable by a clearer prompt, description, contract or error message, even \
+             when what it needed was in view. Group the preventable ones into improvement \
+             points; leave out one-off slips and failures the task expects.\n\nReply exactly: {{\"points\": \
              [{{\"function_id\": \"...\", \"summary\": \"what the Harness should change and \
              why, in one or two sentences\", \"sites\": [\"<site_id>\"]}}]}} with only the \
              site ids below; an empty list when none.\n\nSites:\n{}",
@@ -440,16 +492,16 @@ mod tests {
     #[test]
     fn a_class_stands_only_with_a_clear_lead_and_harness_sites_group_by_function_and_error() {
         let choice = |harness: f64, model: f64| Answer::Choice {
-            choice: "harness".into(),
+            choice: "preventable".into(),
             probabilities: BTreeMap::from([
-                ("harness".into(), harness),
-                ("model".into(), model),
+                ("preventable".into(), harness),
+                ("one_off".into(), model),
                 ("task".into(), 0.0),
                 ("unclear".into(), 1.0 - harness - model),
             ]),
             confidence: harness,
         };
-        assert_eq!(verdict(&choice(0.8, 0.1)), (SiteClassV1::Harness, 0.8));
+        assert_eq!(verdict(&choice(0.8, 0.1)), (SiteClassV1::Preventable, 0.8));
         assert_eq!(verdict(&choice(0.5, 0.4)).0, SiteClassV1::Unclear);
         let site = |id: &str, function: &str, error: &str, class| ErrorSiteV1 {
             site_id: id.into(),
@@ -471,16 +523,16 @@ mod tests {
                 "a",
                 "f",
                 "truncated after 12 bytes (x)",
-                SiteClassV1::Harness,
+                SiteClassV1::Preventable,
             ),
             site(
                 "b",
                 "f",
                 "truncated after 40 bytes (y)",
-                SiteClassV1::Harness,
+                SiteClassV1::Preventable,
             ),
-            site("c", "g", "denied", SiteClassV1::Harness),
-            site("d", "f", "truncated after 1 bytes", SiteClassV1::Model),
+            site("c", "g", "denied", SiteClassV1::Preventable),
+            site("d", "h", "truncated after 1 bytes", SiteClassV1::OneOff),
         ];
         let found = points(&all);
         assert_eq!(found.len(), 2);
@@ -488,7 +540,12 @@ mod tests {
             (found[0].function_id.as_str(), found[0].sites.len()),
             ("f", 2)
         );
-        assert!(tally(&all).contains("3 the Harness's, 1 the model's"));
+        assert!(
+            tally(&all)
+                .contains("3 failure pattern(s) over 4 failed call(s): 3 preventable, 1 one-off"),
+            "{}",
+            tally(&all)
+        );
     }
 
     #[test]

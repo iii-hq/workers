@@ -251,8 +251,15 @@ impl World {
                     .iter()
                     .map(|evaluation| {
                         let class = class_of(evaluation);
+                        let question = evaluation["questions"]
+                            .as_object()
+                            .unwrap()
+                            .keys()
+                            .next()
+                            .unwrap()
+                            .clone();
                         let probabilities: serde_json::Map<String, Value> =
-                            ["harness", "model", "task", "unclear"]
+                            ["preventable", "one_off", "task", "unclear"]
                                 .iter()
                                 .map(|choice| {
                                     (
@@ -263,7 +270,7 @@ impl World {
                                 .collect();
                         (
                             evaluation["id"].as_str().unwrap().to_string(),
-                            json!({"answers": {"whose": {"type": "choice", "choice": class,
+                            json!({"answers": {question: {"type": "choice", "choice": class,
                                 "confidence": 0.9, "probabilities": probabilities}}}),
                         )
                     })
@@ -1344,7 +1351,7 @@ async fn read_runs(world: World, judged: bool, runs: Vec<Value>) -> CycleRecordV
 #[tokio::test]
 async fn jev_reads_each_failed_call_and_the_harness_ones_become_improvement_points() {
     let mut world = World::new();
-    world.jev_class = Some("harness");
+    world.jev_class = Some("preventable");
     let record = read_failed_call(world, true).await;
     let insight = record.insight.clone().expect("the transcripts were read");
     assert_eq!(
@@ -1356,7 +1363,7 @@ async fn jev_reads_each_failed_call_and_the_harness_ones_become_improvement_poin
     assert_eq!(insight.sites.len(), 1);
     let site = &insight.sites[0];
     assert_eq!(site.function_id, "coder::update-file");
-    assert_eq!(site.class, Some(SiteClassV1::Harness));
+    assert_eq!(site.class, Some(SiteClassV1::Preventable));
     assert!(site.step.contains("output_tokens=2000"), "{}", site.step);
     assert_eq!(insight.points.len(), 1);
     assert_eq!(insight.points[0].sites, std::slice::from_ref(&site.site_id));
@@ -1364,7 +1371,7 @@ async fn jev_reads_each_failed_call_and_the_harness_ones_become_improvement_poin
     let outcome = record.outcome.unwrap();
     assert_eq!(outcome.code, OutcomeCodeV1::Inconclusive);
     assert!(
-        outcome.detail.contains("1 the Harness's") && outcome.detail.contains("config.candidate"),
+        outcome.detail.contains("1 preventable") && outcome.detail.contains("config.candidate"),
         "{}",
         outcome.detail
     );
@@ -1373,14 +1380,14 @@ async fn jev_reads_each_failed_call_and_the_harness_ones_become_improvement_poin
 #[tokio::test]
 async fn failed_calls_jev_lays_on_the_model_end_the_cycle_before_any_proposal() {
     let mut world = World::new();
-    world.jev_class = Some("model");
+    world.jev_class = Some("one_off");
     let record = read_failed_call(world, true).await;
     let insight = record.insight.unwrap();
     assert!(insight.points.is_empty());
     let outcome = record.outcome.unwrap();
     assert_eq!(outcome.code, OutcomeCodeV1::NoAction);
     assert!(
-        outcome.detail.contains("1 the model's") && outcome.detail.contains("none is a failure"),
+        outcome.detail.contains("1 one-off") && outcome.detail.contains("none is a failure"),
         "{}",
         outcome.detail
     );
@@ -1437,7 +1444,7 @@ async fn the_default_llm_reads_the_failed_calls_jev_left_unclear() {
     let probe = read_runs(World::new(), false, runs()).await;
     let timed_out = probe.insight.unwrap().sites[1].site_id.clone();
     let mut world = World::new();
-    world.jev_class = Some("model");
+    world.jev_class = Some("one_off");
     world.analyst_reply = Some(format!(
         "{{\"points\": [{{\"function_id\": \"shell::exec\", \"summary\": \"The call timeout is shorter than a build.\", \"sites\": [\"{timed_out}\"]}}]}}"
     ));
@@ -1445,7 +1452,7 @@ async fn the_default_llm_reads_the_failed_calls_jev_left_unclear() {
     let insight = record.insight.unwrap();
     assert_eq!(insight.source, Some(InsightSourceV1::Jev));
     assert!(
-        insight.reason.contains("1 the model's") && insight.reason.contains("read the 1 unclear"),
+        insight.reason.contains("1 one-off") && insight.reason.contains("read the 1 unclear"),
         "{}",
         insight.reason
     );

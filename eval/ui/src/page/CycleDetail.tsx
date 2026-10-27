@@ -489,8 +489,8 @@ function Result({
 }
 
 const WHOSE: Record<SiteClass, { label: string; tone: Tone }> = {
-  harness: { label: 'Harness', tone: 'warn' },
-  model: { label: 'Model', tone: 'neutral' },
+  preventable: { label: 'Preventable', tone: 'warn' },
+  one_off: { label: 'One-off', tone: 'neutral' },
   task: { label: 'Task', tone: 'neutral' },
   unclear: { label: 'Unclear', tone: 'neutral' },
 }

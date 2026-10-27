@@ -2628,16 +2628,16 @@
         "description": "Whose doing one errored function call is, as the insight judged it.",
         "oneOf": [
           {
-            "description": "What the Harness showed the model, or did with the call, could have prevented it.",
+            "description": "A Harness change could prevent it or its repetition, instructing the model better included: the prompt, a function's description or contract, the error message, a limit.",
             "enum": [
-              "harness"
+              "preventable"
             ],
             "type": "string"
           },
           {
-            "description": "The model's own slip, with what it needed in view.",
+            "description": "A one-off slip no instruction would plausibly prevent.",
             "enum": [
-              "model"
+              "one_off"
             ],
             "type": "string"
           },

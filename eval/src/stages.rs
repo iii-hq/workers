@@ -475,7 +475,7 @@ fn criterion_text(criterion: &CriterionV1) -> String {
 /// Reads the measured runs' transcripts before any proposal: each errored
 /// call is a site Jev judges (whose doing it is); when Jev is not
 /// configured, does not answer or decides no site, the default LLM reads the
-/// sites. The Harness's sites become improvement points; none ends the cycle
+/// sites. The preventable patterns become improvement points; none ends the cycle
 /// `no_action` before any paid proposal.
 pub async fn insight_stage(
     deps: &Deps,
@@ -566,6 +566,26 @@ pub async fn insight_stage(
                 return end(deps, record, OutcomeCodeV1::Budget, &detail).await;
             }
             let question = insight::question();
+            // One evaluation per failure pattern; its verdict holds for every
+            // call in it.
+            let patterns: Vec<(String, Vec<String>, Value)> = insight::patterns(&sites)
+                .iter()
+                .map(|pattern| {
+                    (
+                        pattern.id.clone(),
+                        pattern
+                            .sites
+                            .iter()
+                            .map(|site| site.site_id.clone())
+                            .collect(),
+                        insight::pattern_state(
+                            &plan.objective,
+                            |scenario| summaries.get(scenario).map(|summary| summary.to_string()),
+                            pattern,
+                        ),
+                    )
+                })
+                .collect();
             let request_id = format!("{}-insight", record.cycle_id);
             found.request_id = Some(request_id.clone());
             let request = EvaluateRequest {
@@ -574,15 +594,11 @@ pub async fn insight_stage(
                 model: None,
                 timeout_ms: JUDGE_TIMEOUT_MS,
                 expires_at_unix_ms: None,
-                evaluations: sites
+                evaluations: patterns
                     .iter()
-                    .map(|site| Evaluation {
-                        id: site.site_id.clone(),
-                        state: insight::site_state(
-                            &plan.objective,
-                            summaries.get(site.scenario_id.as_str()).copied(),
-                            site,
-                        ),
+                    .map(|(id, _, state)| Evaluation {
+                        id: id.clone(),
+                        state: state.clone(),
                         questions: BTreeMap::from([(insight::QUESTION.into(), question.clone())]),
                     })
                     .collect(),
@@ -605,17 +621,22 @@ pub async fn insight_stage(
                 }) => {
                     found.model = Some(model);
                     found.usage = Some(serde_json::to_value(&stats)?);
-                    for site in &mut sites {
+                    for (id, members, _) in &patterns {
                         let answer = results
-                            .remove(&site.site_id)
+                            .remove(id)
                             .and_then(|mut result| result.answers.remove(insight::QUESTION))
                             .filter(|answer| {
                                 judge_contract::validate_answer(&question, answer).is_ok()
                             });
                         if let Some(answer) = answer {
                             let (class, probability) = insight::verdict(&answer);
-                            site.class = Some(class);
-                            site.probability = Some(probability);
+                            for site in sites
+                                .iter_mut()
+                                .filter(|site| members.contains(&site.site_id))
+                            {
+                                site.class = Some(class);
+                                site.probability = Some(probability);
+                            }
                         }
                     }
                     if sites.iter().any(|site| {

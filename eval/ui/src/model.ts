@@ -767,7 +767,7 @@ export function resultHeadline(record: CycleRecord, lost: number): string {
   switch (record.outcome?.code) {
     case 'no_action':
       if (record.insight)
-        return 'The transcripts show no failure a Harness change could prevent.'
+        return 'The transcripts show no failure a Harness change, or a better instruction, could prevent.'
       return lost
         ? 'The runs lost points, but the cycle stopped before proposing a change.'
         : 'Nothing in the runs was worth changing.'

@@ -617,11 +617,14 @@ pub struct CycleRecordV1 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SiteClassV1 {
-    /// What the Harness showed the model, or did with the call, could have
-    /// prevented it.
-    Harness,
-    /// The model's own slip, with what it needed in view.
-    Model,
+    /// A Harness change could prevent it or its repetition, instructing the
+    /// model better included: the prompt, a function's description or
+    /// contract, the error message, a limit.
+    #[serde(alias = "harness")]
+    Preventable,
+    /// A one-off slip no instruction would plausibly prevent.
+    #[serde(alias = "model")]
+    OneOff,
     /// The task expects it: a probe, a negative test, a recovery it asks for.
     Task,
     /// No clear lead.

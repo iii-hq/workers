@@ -405,8 +405,8 @@ export interface CycleRecord {
   insight?: Insight
 }
 
-/** `SiteClassV1`: whose doing one failed call is. */
-export type SiteClass = 'harness' | 'model' | 'task' | 'unclear'
+/** `SiteClassV1`: whether a Harness change, instructing the model included, could prevent a failed call. */
+export type SiteClass = 'preventable' | 'one_off' | 'task' | 'unclear'
 
 /** `ErrorSiteV1`: one failed function call of a measured run. */
 export interface ErrorSite {
