@@ -1,7 +1,7 @@
 //! `provider-openai-codex` binary entry.
 //!
 //! `api_url` and `max_tokens` settings arrive from the router. The provider
-//! manages its OAuth session in private state.
+//! manages its OAuth session in the encrypted secrets vault.
 //! `--config` is still accepted per the binary-worker CLI contract (the
 //! engine passes it when an operator sets a config block); keys found there
 //! are warned about instead of silently dropped.

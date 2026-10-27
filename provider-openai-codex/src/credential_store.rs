@@ -1,11 +1,13 @@
-//! Provider-owned credential state. This scope is reserved before any read or
-//! write: public state APIs and state-change subscriptions cannot expose it.
+//! Session storage contract and the private state source used during migration.
 use crate::oauth::Credential;
 use crate::session::SessionError;
 use futures::future::BoxFuture;
 use iii_sdk::{protocol::TriggerRequest, IIIClient};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+
+mod secrets;
+pub use secrets::SecretsSessionStore;
 
 pub const AUTH_SCOPE: &str = "provider-openai-codex-auth";
 const PREFIX: &str = "provider-openai-codex";
@@ -54,6 +56,32 @@ pub struct PrivateStateStore {
 impl PrivateStateStore {
     pub fn new(iii: IIIClient) -> Self {
         Self { iii }
+    }
+
+    /// Clear only the copied session and confirm persistence, including retries
+    /// after an earlier flush failed with the in-memory value already null.
+    pub fn clear<'a>(
+        &'a self,
+        expected: Option<&'a SessionRecord>,
+    ) -> BoxFuture<'a, Result<bool, SessionError>> {
+        Box::pin(async move {
+            self.claim().await?;
+            let response = self.call(
+                "provider-openai-codex::state::compare-and-set",
+                json!({"scope":AUTH_SCOPE,"key":KEY,"expected":expected,"value":null,"durable":true}),
+            ).await?;
+            if response.get("durable").and_then(Value::as_bool) != Some(true) {
+                return Err(SessionError::storage());
+            }
+            match response.get("swapped").and_then(Value::as_bool) {
+                Some(true) => Ok(true),
+                Some(false) => match response.get("current") {
+                    Some(current) => Ok(current.is_null()),
+                    None => Err(SessionError::storage()),
+                },
+                None => Err(SessionError::storage()),
+            }
+        })
     }
 
     async fn call(&self, id: &str, payload: Value) -> Result<Value, SessionError> {

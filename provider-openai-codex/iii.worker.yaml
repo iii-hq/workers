@@ -6,8 +6,9 @@ manifest: Cargo.toml
 license: Apache-2.0
 bin: provider-openai-codex
 tags: [llm, openai, codex, chatgpt, subscription, provider]
-description: OpenAI Codex (ChatGPT subscription) provider; implements provider::openai-codex::stream and provider::openai-codex::refresh_models behind llm-router, with ChatGPT device-code sign-in and automatic session renewal backed by private state.
+description: OpenAI Codex (ChatGPT subscription) provider; implements provider::openai-codex::stream and provider::openai-codex::refresh_models behind llm-router, with ChatGPT device-code sign-in and automatic session renewal backed by the encrypted secrets vault.
 
 dependencies:
+  secrets: "latest"
   state: "latest"
   llm-router: "latest"
