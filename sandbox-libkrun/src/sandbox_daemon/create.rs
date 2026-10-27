@@ -455,7 +455,12 @@ mod tests {
             };
             let reg = SandboxRegistry::new();
             let create = handle_create(req, &cfg, &reg, &launcher, |_| {});
-            let wait = std::time::Duration::from_millis(200);
+            // Only the hanging boot needs cutting short; a tight bound on the others flakes on slow runners.
+            let wait = std::time::Duration::from_millis(if matches!(boot, Boot::Hangs) {
+                200
+            } else {
+                10_000
+            });
             let _ = rt.block_on(async { tokio::time::timeout(wait, create).await });
             let base = launcher.base.lock().unwrap().take();
             kept.push(base.as_ref().map(|b| b.exists()));
