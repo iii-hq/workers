@@ -32,12 +32,15 @@ fn cache_root() -> PathBuf {
 /// Digest-pinned refs (`foo:tag@sha256:...`) collapse to the unpinned
 /// form's dir via `canonical_cache_key` while that dir's digest sidecar
 /// lists the pin, so engine-resolved pins never trigger a re-pull of an
-/// image the user already added. Any other pin gets a dir of its own: a
-/// changed pin must miss, not be served the rootfs of another digest.
+/// image the user already added. While that dir is empty a pin pulls into
+/// it, so a later unpinned use reuses that pull. Any other pin gets a dir
+/// of its own: a changed pin must miss, not be served another digest's
+/// rootfs.
+// shortcut: per-digest dirs are never evicted, add a cache GC if pin churn grows ~/.iii/cache.
 pub fn canonical_path(oci_ref: &str) -> PathBuf {
     let shared = shared_path(oci_ref);
     match pinned_digest(oci_ref) {
-        Some(pin) if !(is_populated(&shared) && pulled_from(&shared, pin)) => {
+        Some(pin) if is_populated(&shared) && !pulled_from(&shared, pin) => {
             cache_root().join(rootfs_slug_for_image(oci_ref))
         }
         _ => shared,
@@ -217,7 +220,10 @@ mod tests {
             "a changed pin was served another digest's rootfs"
         );
         assert_ne!(other_path, shared);
-        assert_ne!(pinned_before_pull, shared, "no sidecar yet, so no collapse");
+        assert_eq!(
+            pinned_before_pull, shared,
+            "a pin's first pull fills the tag's empty dir"
+        );
         assert_eq!(
             lock_path_for_image(tag),
             lock_path_for_image(&format!("{tag}@{other}"))
