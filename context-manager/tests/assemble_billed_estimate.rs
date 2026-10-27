@@ -4,8 +4,9 @@
 //! billed, so the estimate never crossed the window. Past a third of the
 //! window the provider's count now sets the budget the relief steps use.
 //! Once it compacted, the summary kept only the markers the summariser could
-//! see in results cut to `max_output_chars`; the agent had noted them all in
-//! its thinking, which the summariser never got.
+//! see in results cut to `max_output_chars` (2,000 chars); the agent had noted
+//! them all in its thinking, which the summariser never got. It now gets the
+//! thinking, and each result under the `max_result_tokens` cap the agent saw.
 
 #[path = "common/fakes.rs"]
 #[allow(dead_code)]
@@ -76,12 +77,23 @@ async fn assemble_messages(
     messages: Vec<Value>,
     request_overhead_tokens: u64,
 ) -> Value {
+    let options =
+        json!({ "reserved_tokens": RESERVED, "request_overhead_tokens": request_overhead_tokens });
+    assemble_with_options(resolver, summarizer, messages, options).await
+}
+
+async fn assemble_with_options(
+    resolver: Arc<FakeModelResolver>,
+    summarizer: Arc<FakeSummarizer>,
+    messages: Vec<Value>,
+    options: Value,
+) -> Value {
     let request = serde_json::from_value(json!({
         "messages": messages,
         "model": { "id": "deepseek-flash", "provider": "deepseek",
                    "limits": { "context_window": 1_000_000, "max_output_tokens": 384_000 } },
         "system_prompt": "You are an iii agent worker.",
-        "options": { "reserved_tokens": RESERVED, "request_overhead_tokens": request_overhead_tokens },
+        "options": options,
     }))
     .unwrap();
     serde_json::to_value(
@@ -98,7 +110,7 @@ fn marker(i: usize) -> String {
 
 /// `context_pressure` as the agent ran it: each step notes the previous
 /// document's marker in its thinking, and the marker sits past the first
-/// 2,000 characters of its ~8 KiB document.
+/// 2,000 characters (the prune threshold) of its ~8 KiB document.
 fn noted_long_turn(documents: usize) -> Vec<Value> {
     let mut messages = vec![json!({
         "role": "user", "content": [{ "type": "text", "text": "Read every document in order." }],
@@ -181,7 +193,7 @@ async fn a_small_context_is_not_counted_by_the_provider() {
 }
 
 #[tokio::test]
-async fn markers_noted_in_thinking_reach_the_summary_when_results_are_cut() {
+async fn markers_noted_in_thinking_reach_the_summary() {
     let summarizer = Arc::new(FakeSummarizer::new());
     let response = assemble_messages(
         Arc::new(FakeModelResolver::billing(2.25)),
@@ -197,16 +209,77 @@ async fn markers_noted_in_thinking_reach_the_summary_when_results_are_cut() {
         .iter()
         .map(|call| call.user_prompt.as_str())
         .collect();
-    // The results the summariser sees end at 2,000 characters, before any
-    // marker; only the agent's notes carry them.
-    assert!(prompts.contains("... [truncated]"));
-    assert!(!prompts.contains(&format!("{} a3f9", marker(0))));
     for i in 0..10 {
         assert!(
             prompts.contains(&format!("[thinking] Segment {i}: {}.", marker(i))),
             "the note for segment {i} never reached the summariser"
         );
     }
+}
+
+/// The same turn from a model whose reasoning comes back without text
+/// (hidden or summarised): only the results carry the markers.
+fn unnoted_long_turn(documents: usize) -> Vec<Value> {
+    let mut messages = noted_long_turn(documents);
+    for message in &mut messages {
+        if let Some(content) = message["content"].as_array_mut() {
+            content.retain(|block| block["type"] != "thinking");
+        }
+    }
+    messages
+}
+
+#[tokio::test]
+async fn markers_past_the_prune_threshold_reach_the_summary_without_notes() {
+    let summarizer = Arc::new(FakeSummarizer::new());
+    let response = assemble_messages(
+        Arc::new(FakeModelResolver::billing(2.25)),
+        summarizer.clone(),
+        unnoted_long_turn(48),
+        0,
+    )
+    .await;
+
+    assert_eq!(response["applied"]["compacted"], true);
+    let prompts: String = summarizer
+        .calls()
+        .iter()
+        .map(|call| call.user_prompt.as_str())
+        .collect();
+    for i in 0..10 {
+        assert!(
+            prompts.contains(&marker(i)),
+            "segment {i}'s marker never reached the summariser"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_request_without_a_result_cap_reaches_the_summariser_whole() {
+    // The first document runs to 100,000 chars, its marker past the
+    // configured cap (20,000 tokens, 80,000 chars); the request disables it.
+    let mut messages = unnoted_long_turn(48);
+    let text = format!("{}{}", "a3f9 ".repeat(20_000), marker(0));
+    messages[2]["content"] = json!([{ "type": "text", "text": text }]);
+    let summarizer = Arc::new(FakeSummarizer::new());
+    let response = assemble_with_options(
+        Arc::new(FakeModelResolver::billing(2.25)),
+        summarizer.clone(),
+        messages,
+        json!({ "reserved_tokens": RESERVED, "max_result_tokens": 0 }),
+    )
+    .await;
+
+    assert_eq!(response["applied"]["compacted"], true);
+    let prompts: String = summarizer
+        .calls()
+        .iter()
+        .map(|call| call.user_prompt.as_str())
+        .collect();
+    assert!(
+        prompts.contains(&marker(0)),
+        "the summariser cut a result the agent saw whole"
+    );
 }
 
 #[tokio::test]
