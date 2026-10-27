@@ -717,9 +717,11 @@ export interface Lost {
 /** The first pass writes `run <scenario>/<run>: criterion <id> awarded <n> of <m>: <why>`. */
 const AWARD = /^run ([^/\s]+)\/\S+: criterion (\S+) awarded [^:]*:? ?(.*)$/
 
-/** The lost criteria, one entry each, most often lost first. */
+/** The lost criteria the measured runs show (the source's and the baseline's, never the proof's), one entry each, most often lost first. */
 export function lostCriteria(record: CycleRecord): Lost[] {
-  const analyses = record.analyses ?? []
+  const analyses = (record.analyses ?? []).filter(
+    (analysis) => analysis.role === 'source' || analysis.role === 'baseline',
+  )
   const tests = record.coverage?.selected ?? record.plan?.tests ?? []
   const found = new Map<string, Lost>()
   for (const finding of analyses.flatMap((analysis) => analysis.findings)) {

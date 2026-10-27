@@ -434,7 +434,8 @@ function Result({
       <PanelHeader>Result</PanelHeader>
       <PanelBody className="eval-ui-stack">
         <p className="eval-ui-lead eval-ui-strong">{resultHeadline(cycle, lost.length)}</p>
-        {lost.length ? (
+        {/* An insight reads the transcripts instead: its panel below says what the runs show. */}
+        {lost.length && !cycle.insight ? (
           <div className="eval-ui-stack-sm">
             <Eyebrow as="p">What the runs lost</Eyebrow>
             <ul className="eval-ui-lost">
@@ -456,6 +457,19 @@ function Result({
                 </li>
               ))}
             </ul>
+          </div>
+        ) : null}
+        {cycle.proposal?.proposal?.change ? (
+          <div className="eval-ui-stack-sm">
+            <Eyebrow as="p">What was tried</Eyebrow>
+            <p className="eval-ui-lead" title={cycle.proposal.proposal.hypothesis ?? undefined}>
+              {clipText(cycle.proposal.proposal.change, 320)}
+            </p>
+            {cycle.candidate?.publish ? (
+              <p className="eval-ui-faint">
+                On branch <span className="eval-ui-mono">{cycle.candidate.publish.branch}</span>
+              </p>
+            ) : null}
           </div>
         ) : null}
         {why ? (
@@ -495,6 +509,8 @@ const WHOSE: Record<SiteClass, { label: string; tone: Tone }> = {
   unclear: { label: 'Unclear', tone: 'neutral' },
 }
 const clipText = (text: string, at: number) => (text.length > at ? `${text.slice(0, at)}…` : text)
+/** A Jev point's error after its count line (`N failed call(s) … (Jev, p≈x): <error>`); an LLM point as written. */
+const pointText = (summary: string) => summary.replace(/^\d+ failed call\(s\) to .*?\(Jev, p≈[\d.]+\): /, '')
 
 /** What the insight read in the measured runs' transcripts: the points a change starts from, and each failed call. */
 function Transcripts({ insight, said }: { insight: Insight; said: boolean }) {
@@ -518,10 +534,12 @@ function Transcripts({ insight, said }: { insight: Insight; said: boolean }) {
                     <span className="eval-ui-mono">{point.function_id}</span>
                     <span className="eval-ui-num eval-ui-faint">
                       {' · '}
-                      {plural(point.sites.length, 'failed call')}
+                      {plural(point.sites.length, 'failed call')} · {point.source === 'llm' ? 'default LLM' : 'Jev'}
                     </span>
                   </p>
-                  <p className="eval-ui-faint">{point.summary}</p>
+                  <p className="eval-ui-faint" title={point.summary}>
+                    {clipText(pointText(point.summary), 180)}
+                  </p>
                 </li>
               ))}
             </ul>
@@ -950,7 +968,16 @@ function Decision({
         ) : (
           <p className="eval-ui-lead">{decision.reason}</p>
         )}
-        {criterion && !brief ? <Pairs criterion={criterion} evidence={primary} /> : null}
+        {/* A count is decided on its totals, not run by run. */}
+        {criterion && !brief && criterion.metric === 'function_call_errors' ? (
+          <p className="eval-ui-faint">
+            In total, <span className="eval-ui-num">{countTotal(primary.baseline.runs, criterion)}</span> on the base
+            and <span className="eval-ui-num">{countTotal(primary.candidate.runs, criterion)}</span> on the candidate,
+            over {plural(primary.baseline.runs.length, 'run')} each.
+          </p>
+        ) : criterion && !brief ? (
+          <Pairs criterion={criterion} evidence={primary} />
+        ) : null}
         {decision.preserved.length && !brief ? (
           <div className="eval-ui-stack-sm">
             <Eyebrow as="p">
@@ -1023,6 +1050,8 @@ function Decision({
 }
 
 const RATES = new Set(['pass_rate', 'criterion_score'])
+const countTotal = (runs: Evidence['baseline']['runs'], criterion: Criterion) =>
+  runs.reduce((sum, run) => sum + (runValue(run, criterion) ?? 0), 0)
 
 /** Each baseline run beside its paired candidate run, on one scale. */
 function Pairs({ criterion, evidence }: { criterion: Criterion; evidence: Evidence }) {
