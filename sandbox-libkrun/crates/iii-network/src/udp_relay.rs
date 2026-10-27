@@ -387,6 +387,56 @@ mod tests {
         );
     }
 
+    /// Expiry is idle time in either direction: a flow that only receives
+    /// outlives SESSION_TIMEOUT, and a silent one still expires.
+    #[tokio::test(start_paused = true)]
+    async fn receive_only_session_outlives_session_timeout() {
+        // A std socket polled every 1ms: awaiting tokio IO here would let the
+        // paused clock jump straight to the relay's idle timer.
+        let server = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        server.set_nonblocking(true).unwrap();
+        let dst = server.local_addr().unwrap();
+        let src: SocketAddr = (Ipv4Addr::new(100, 96, 0, 2), 40000).into();
+        let mut relay = test_relay();
+
+        send_outbound(&mut relay, src, dst, b"subscribe");
+        let peer = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match server.recv_from(&mut [0u8; 16]) {
+                    Ok((_, peer)) => return peer,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                    Err(e) => panic!("{e}"),
+                }
+            }
+        })
+        .await
+        .expect("relay never sent the guest datagram");
+
+        for _ in 0..4 {
+            tokio::time::advance(SESSION_TIMEOUT / 2).await;
+            server.send_to(b"tick", peer).unwrap();
+            wait_for_rx_frame(&relay.shared).await;
+            relay.cleanup_expired();
+        }
+        assert!(
+            relay.sessions.contains_key(&(src, dst)),
+            "a flow that keeps receiving must not expire"
+        );
+
+        tokio::time::advance(SESSION_TIMEOUT).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !relay.sessions[&(src, dst)].is_closed() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("a silent session must expire");
+        relay.cleanup_expired();
+        assert!(relay.sessions.is_empty());
+    }
+
     /// UDP to the gateway (the guest's `localhost`) must reach the host's
     /// loopback service, like TCP does, and replies must still come from
     /// the address the guest sent to.
