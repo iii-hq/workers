@@ -485,9 +485,8 @@ mod tests {
 
     #[tokio::test]
     async fn remote_s301_keeps_router_fix_text() {
-        // The router's S301 (adapter not connected) carries its own fix text;
-        // the ide must forward it verbatim even though S301 is not one of its
-        // canonical codes and collapses to S216.
+        // The router's S301 (adapter not connected) is retryable and carries
+        // its own fix text: the ide must keep both the code and the text.
         let stub = StubFwd::remote_err(
             "invocation_failed",
             r#"{"type":"transient","code":"S301","message":"adapter sandbox-libkrun not connected in namespace my-proj; compose::add iii-sandbox in that project installs it","retryable":true}"#,
@@ -497,7 +496,7 @@ mod tests {
             .run(&["echo".into()], 1000, &ExecOverrides::default())
             .await
             .unwrap_err();
-        assert_eq!(err.code, "S216");
+        assert_eq!(err.code, "S301");
         assert!(err
             .message
             .contains("compose::add iii-sandbox in that project installs it"));
