@@ -815,16 +815,19 @@ async fn coverage_stage(
             let mut observed = std::collections::BTreeMap::new();
             let mut unread = Vec::new();
             // Measured from history, a test counts only if the window's runs
-            // ran it: nothing will be dispatched to measure another.
+            // ran it, and only those runs are counted: nothing will be
+            // dispatched to measure another.
             let mut rows = rows.clone();
+            let mut window: Option<std::collections::BTreeSet<String>> = None;
             if let (Some(days), Some(model)) = (
                 stored
                     .as_ref()
                     .and_then(|stored| stored.config.history_days),
                 model,
             ) {
-                let ran: std::collections::BTreeSet<String> = history_window(deps, days, model)
-                    .await?
+                let listed = history_window(deps, days, model).await?;
+                window = Some(listed.iter().map(|(id, _)| id.clone()).collect());
+                let ran: std::collections::BTreeSet<String> = listed
                     .into_iter()
                     .flat_map(|(_, scenarios)| scenarios)
                     .collect();
@@ -852,7 +855,17 @@ async fn coverage_stage(
                     )
                     .await
                     {
-                        Ok(history) => {
+                        Ok(mut history) => {
+                            if let Some(window) = &window {
+                                if let Some(observations) = history["observations"].as_array_mut()
+                                {
+                                    observations.retain(|observation| {
+                                        observation["plan_execution_id"]
+                                            .as_str()
+                                            .is_some_and(|id| window.contains(id))
+                                    });
+                                }
+                            }
                             observed
                                 .insert(test_id.to_string(), coverage::observed_errors(&history));
                         }
