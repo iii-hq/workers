@@ -393,6 +393,87 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy, Debug)]
+    enum Boot {
+        Fails,
+        Hangs,
+        Succeeds,
+    }
+
+    /// Records the sandbox dir boot was handed, then boots as scripted.
+    struct Scripted {
+        boot: Boot,
+        base: std::sync::Mutex<Option<PathBuf>>,
+    }
+    #[async_trait::async_trait]
+    impl VmLauncher for Scripted {
+        async fn boot(&self, p: &BootParams) -> Result<BootHandle, SandboxError> {
+            *self.base.lock().unwrap() = p.shell_sock.parent().map(PathBuf::from);
+            match self.boot {
+                Boot::Fails => Err(SandboxError::BootFailed("the guest died".into())),
+                Boot::Hangs => std::future::pending().await,
+                Boot::Succeeds => Ok(BootHandle {
+                    vm_pid: 1,
+                    lifeline: None,
+                }),
+            }
+        }
+    }
+
+    /// Only a finished create keeps its sandbox dir: a failed boot and a
+    /// create dropped mid-boot remove it.
+    #[test]
+    fn only_a_finished_create_keeps_its_sandbox_dir() {
+        let _g = crate::cli::test_support::lock_home();
+        let home = tempfile::tempdir().unwrap();
+        let prior = std::env::var_os("HOME");
+        // SAFETY: TEST_HOME_LOCK serializes all env mutation.
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let oci_ref = "ghcr.io/acme/my-app:1";
+        std::fs::create_dir_all(rootfs_cache::canonical_path(oci_ref).join("bin")).unwrap();
+        let mut cfg = cfg_with_python_allowed();
+        cfg.custom_images.insert("my-app".into(), oci_ref.into());
+        cfg.image_allowlist.push("my-app".into());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut kept = vec![];
+        for boot in [Boot::Fails, Boot::Hangs, Boot::Succeeds] {
+            let launcher = Scripted {
+                boot,
+                base: Default::default(),
+            };
+            let req = CreateRequest {
+                image: "my-app".into(),
+                cpus: None,
+                memory_mb: None,
+                name: None,
+                network: None,
+                idle_timeout_secs: None,
+                env: crate::sandbox_daemon::exec::EnvShape::default(),
+            };
+            let reg = SandboxRegistry::new();
+            let create = handle_create(req, &cfg, &reg, &launcher, |_| {});
+            let wait = std::time::Duration::from_millis(200);
+            let _ = rt.block_on(async { tokio::time::timeout(wait, create).await });
+            let base = launcher.base.lock().unwrap().take();
+            kept.push(base.as_ref().map(|b| b.exists()));
+            if let Some(base) = base {
+                let _ = std::fs::remove_dir_all(base);
+            }
+        }
+        match prior {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert_eq!(
+            kept,
+            [Some(false), Some(false), Some(true)],
+            "fails, hangs, succeeds"
+        );
+    }
+
     /// A bad env name is caught with the other request checks, before any
     /// pull or sandbox dir: found after `ensure_dirs`, it leaked those dirs.
     #[tokio::test]
