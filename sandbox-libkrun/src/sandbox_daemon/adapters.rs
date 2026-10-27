@@ -316,7 +316,7 @@ impl VmLauncher for VmBootLauncher {
         // refused" on the next `sandbox::exec`.
         //
         // Three ways this loop exits:
-        //   1. a test connect() succeeds — VM is live; return Ok.
+        //   1. a test connect() succeeds — the relay is up; go on to the guest.
         //   2. the child PID is no longer alive — VM died; bail with
         //      the tail of the stderr log so the user can see why.
         //   3. 30 s elapsed — bail with a useful error.
@@ -377,10 +377,48 @@ impl VmLauncher for VmBootLauncher {
             "boot_phase: shell_sock_wait (boot total)"
         );
 
+        // The relay binds `shell.sock` before the VM is even built: wait for
+        // the guest itself, so the first exec's deadline does not pay for the
+        // boot and a guest that never comes up fails the create.
+        let t_guest = Instant::now();
+        guest_answers(&sock, BOOT_SOCKET_TIMEOUT)
+            .await
+            .map_err(|e| {
+                let hint = read_stderr_tail(&log_path);
+                SandboxError::BootFailed(format!(
+                    "the guest behind {} did not answer: {e}. Last stderr:\n{hint}",
+                    sock.display()
+                ))
+            })?;
+        tracing::info!(
+            ms = t_guest.elapsed().as_millis() as u64,
+            total_ms = t_boot_start.elapsed().as_millis() as u64,
+            "boot_phase: guest_ready"
+        );
+
         Ok(BootHandle {
             vm_pid,
             lifeline: Some(std::sync::Arc::new(lifeline)),
         })
+    }
+}
+
+/// One fs round trip through the relay at `sock`, within `within`: proof the
+/// guest is up, which a connect to the relay is not.
+async fn guest_answers(sock: &Path, within: Duration) -> Result<(), String> {
+    let round_trip = async {
+        let session = Session::connect(sock).await?;
+        session
+            .fs_call(iii_shell_proto::FsOp::Stat {
+                path: "/".to_string(),
+            })
+            .await
+    };
+    match tokio::time::timeout(within, round_trip).await {
+        // An fs error is an answer too: the guest is up.
+        Ok(Ok(_)) | Ok(Err(iii_shell_client::VmClientError::FsError { .. })) => Ok(()),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err(format!("no answer within {within:?}")),
     }
 }
 
@@ -846,6 +884,61 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("the VM was not stopped and reaped");
+    }
+
+    /// A relay on `shell.sock` that hands out id range 0 and reads one
+    /// request; `reply` then answers it, or the guest stays silent.
+    fn fake_relay(reply: Option<Duration>) -> (tempfile::TempDir, PathBuf) {
+        use iii_shell_proto::{
+            FsEntry, FsResult, ShellMessage, encode_frame, flags::FLAG_TERMINAL,
+        };
+        use std::io::{Read, Write};
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("shell.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            s.write_all(&0u32.to_be_bytes()).unwrap();
+            let mut len = [0u8; 4];
+            s.read_exact(&mut len).unwrap();
+            let mut body = vec![0u8; u32::from_be_bytes(len) as usize];
+            s.read_exact(&mut body).unwrap();
+            let Some(delay) = reply else {
+                std::thread::sleep(Duration::from_secs(2));
+                return;
+            };
+            std::thread::sleep(delay);
+            let root = FsResult::Stat(FsEntry {
+                name: "/".into(),
+                is_dir: true,
+                size: 0,
+                mode: "0755".into(),
+                mtime: 0,
+                is_symlink: false,
+            });
+            let frame = encode_frame(1, FLAG_TERMINAL, &ShellMessage::FsResponse(root)).unwrap();
+            s.write_all(&frame).unwrap();
+        });
+        (dir, sock)
+    }
+
+    /// The relay accepts before the guest is up; readiness waits for the guest's answer.
+    #[tokio::test]
+    async fn a_guest_is_ready_once_it_answers() {
+        let (_dir, sock) = fake_relay(Some(Duration::from_millis(100)));
+        guest_answers(&sock, Duration::from_secs(5)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_relay_whose_guest_never_answers_is_not_ready() {
+        let (_dir, sock) = fake_relay(None);
+        let err = guest_answers(&sock, Duration::from_millis(200))
+            .await
+            .unwrap_err();
+        assert!(err.contains("no answer"), "{err}");
     }
 
     #[test]
