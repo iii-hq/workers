@@ -844,6 +844,13 @@ impl Harness {
             "harness::metrics" => {
                 json!({ "totals": { "cost_usd": 0.42, "input_tokens": 9000, "output_tokens": 700 } })
             }
+            // A subscription provider's models carry no catalog price.
+            "router::models::get" if data["provider"] == "claude-code" => {
+                json!({ "model": { "id": data["id"] } })
+            }
+            "router::models::get" => {
+                json!({ "model": { "id": data["id"], "pricing": { "input": 1.0, "output": 5.0 } } })
+            }
             other => json!({ "unexpected": other }),
         }
     }
@@ -925,6 +932,27 @@ async fn start_fails_closed_when_the_root_only_anchors_paths() {
 }
 
 #[tokio::test]
+async fn a_subscription_model_is_sent_without_the_cost_cap_it_cannot_price() {
+    let (_scratch, mut cfg) = setup();
+    cfg.provider = "claude-code".into();
+    let rig = Rig::start("workspace").await;
+    start(&rig.iii, &cfg, "cycle_sub", &brief("window grew"))
+        .await
+        .unwrap();
+    let harness = rig.harness.lock().unwrap();
+    let (_, sent) = harness
+        .calls
+        .iter()
+        .find(|(id, _)| id == "harness::send")
+        .unwrap();
+    assert!(sent["options"]["max_cost_usd"].is_null(), "{sent}");
+    assert_eq!(
+        sent["options"]["max_total_tokens"],
+        json!(cfg.max_total_tokens)
+    );
+}
+
+#[tokio::test]
 async fn start_reconciles_before_sending_and_poll_commits_with_measured_cost() {
     let (_scratch, cfg) = setup();
     let rig = Rig::start("workspace").await;
@@ -951,6 +979,7 @@ async fn start_reconciles_before_sending_and_poll_commits_with_measured_cost() {
         sent["idempotency_key"],
         json!(first.identity.idempotency_key)
     );
+    assert_eq!(sent["options"]["max_cost_usd"], json!(cfg.max_cost_usd));
 
     assert!(matches!(
         poll(&rig.iii, &cfg, &first).await.unwrap().status,

@@ -1516,7 +1516,7 @@ async fn turn_status(
 /// a lost reply or a restart never dispatches (and pays for) a second turn.
 async fn dispatch(
     iii: &IIIClient,
-    request: SendRequest,
+    mut request: SendRequest,
 ) -> Result<(CandidateStatusV1, Option<String>), CandidateError> {
     let session_id = request.session_id.clone().unwrap_or_default();
     let running = || pending("the turn is running");
@@ -1525,6 +1525,19 @@ async fn dispatch(
         .and_then(|status| status.turn_id)
     {
         return Ok((running(), Some(turn_id)));
+    }
+    // A subscription model has no catalog price: the Harness refuses a cost
+    // cap it cannot enforce, so the turn runs under its token caps alone.
+    let found: Result<Value, CallError> = call(
+        iii,
+        "router::models::get",
+        json!({"id": request.model, "provider": request.provider}),
+    )
+    .await;
+    if let (Ok(found), Some(options)) = (found, request.options.as_mut()) {
+        if found["model"]["pricing"].is_null() {
+            options.max_cost_usd = None;
+        }
     }
     let response: Result<SendResponse, CallError> = call(iii, "harness::send", request).await;
     Ok(match response {
