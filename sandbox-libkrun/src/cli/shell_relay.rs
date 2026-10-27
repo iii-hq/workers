@@ -99,10 +99,17 @@ type FrameBytes = Vec<u8>;
 /// for the queue to drain; its frame is never dropped.
 const PER_CLIENT_VM_BYTES_CAP: usize = 64 * 1024 * 1024;
 
-/// A frame waiting in the shared client→VM queue. The optional permit
+/// Per-client cap on frame bytes queued from the VM to the client. A
+/// guest within its credit queues a few MiB per session; one that
+/// ignores it reaches this long before [`CLIENT_WRITE_CAPACITY`] large
+/// frames (4.5 GiB at max size), and its session fails as for a full queue.
+const PER_CLIENT_OUT_BYTES_CAP: usize = 64 * 1024 * 1024;
+
+/// A queued frame. In the shared client→VM queue the optional permit
 /// returns its bytes to the owning client's [`PER_CLIENT_VM_BYTES_CAP`]
-/// when `vm_writer_task` consumes the frame. `None` for internal frames
-/// (credit, SIGKILL fan-out on disconnect).
+/// when `vm_writer_task` consumes the frame (`None` for internal frames:
+/// credit, SIGKILL fan-out on disconnect); in a VM→client queue, to its
+/// [`PER_CLIENT_OUT_BYTES_CAP`] once the frame is written to the client.
 struct QueuedFrame {
     bytes: FrameBytes,
     _permit: Option<tokio::sync::OwnedSemaphorePermit>,
@@ -115,7 +122,9 @@ struct QueuedFrame {
 /// that legitimately runs [`MAX_OWNED_IDS_PER_CLIENT`] sessions to
 /// completion would stay locked at the cap forever.
 struct RouteEntry {
-    sender: mpsc::Sender<FrameBytes>,
+    sender: mpsc::Sender<QueuedFrame>,
+    /// The owning client's [`PER_CLIENT_OUT_BYTES_CAP`].
+    out_bytes: Arc<tokio::sync::Semaphore>,
     owner_ids: Arc<Mutex<HashSet<u32>>>,
     /// Ends the owning client's session; see [`CLIENT_WRITE_CAPACITY`].
     kick: Arc<tokio::sync::Notify>,
@@ -162,7 +171,8 @@ const VM_WRITE_CAPACITY: usize = 1024;
 /// Bound on each VM → client channel. Flow control keeps a session
 /// within [`SEND_WINDOW`] output frames, [`SEND_WINDOW`] input credits
 /// and a few others (`Started`, `FsMeta`, its end), so only a guest that
-/// ignores its credit fills it. `vm_reader_task` then fails that session
+/// ignores its credit fills it, or its [`PER_CLIENT_OUT_BYTES_CAP`] first
+/// with large frames. `vm_reader_task` then fails that session
 /// alone: it drops its frames from there on and disconnects its client,
 /// whose read or exec reports the cut.
 const CLIENT_WRITE_CAPACITY: usize = MAX_OWNED_IDS_PER_CLIENT * (2 * SEND_WINDOW as usize + 4);
@@ -384,12 +394,22 @@ async fn vm_reader_task(
             let map = routes.lock().expect("routes mutex poisoned");
             map.get(&corr_id)
                 .filter(|e| !e.overrun)
-                .map(|e| (e.sender.clone(), e.kick.clone()))
+                .map(|e| (e.sender.clone(), e.out_bytes.clone(), e.kick.clone()))
         };
-        if let Some((tx, kick)) = route {
+        if let Some((tx, out_bytes, kick)) = route {
             // Never waits for a client: that would stall every session.
             // Closed means the client left; its cleanup prunes the route.
-            if let Err(mpsc::error::TrySendError::Full(_)) = tx.try_send(frame) {
+            let overrun = match out_bytes.try_acquire_many_owned(frame.len() as u32) {
+                Ok(permit) => matches!(
+                    tx.try_send(QueuedFrame {
+                        bytes: frame,
+                        _permit: Some(permit),
+                    }),
+                    Err(mpsc::error::TrySendError::Full(_))
+                ),
+                Err(_) => true,
+            };
+            if overrun {
                 if let Some(entry) = routes
                     .lock()
                     .expect("routes mutex poisoned")
@@ -543,14 +563,19 @@ async fn client_session(
 
     // Per-client response channel. vm_reader_task pushes here (see
     // [`CLIENT_WRITE_CAPACITY`]); we forward everything to the socket below.
-    let (client_tx, mut client_rx) = mpsc::channel::<FrameBytes>(CLIENT_WRITE_CAPACITY);
+    let (client_tx, mut client_rx) = mpsc::channel::<QueuedFrame>(CLIENT_WRITE_CAPACITY);
+    let out_bytes = Arc::new(tokio::sync::Semaphore::new(PER_CLIENT_OUT_BYTES_CAP));
 
     // Writer: drain mpsc into client socket, and give each session's
     // guest side credit for the frames its client took.
     let vm_write_tx_for_writer = vm_write_tx.clone();
     let writer_fut = async move {
         let mut delivered: HashMap<u32, u32> = HashMap::new();
-        while let Some(frame) = client_rx.recv().await {
+        while let Some(QueuedFrame {
+            bytes: frame,
+            _permit,
+        }) = client_rx.recv().await
+        {
             match tokio::time::timeout(CLIENT_STALL, client_write.write_all(&frame)).await {
                 Ok(Ok(())) => {}
                 Ok(Err(_)) => break,
@@ -672,6 +697,7 @@ async fn client_session(
                     }
                     slot.insert(RouteEntry {
                         sender: client_tx.clone(),
+                        out_bytes: out_bytes.clone(),
                         owner_ids: owned_ids_for_reader.clone(),
                         kick: kick_for_reader.clone(),
                         overrun: false,
@@ -1305,6 +1331,57 @@ mod tests {
         .await
         .expect("the overrun session was never cut");
         assert!(cut, "the overrun session ended as if whole");
+    }
+
+    /// Large frames overrun a session long before CLIENT_WRITE_CAPACITY of
+    /// them: 1152 max-size frames would queue 4.5 GiB for one client.
+    #[tokio::test]
+    async fn a_guest_flooding_large_frames_is_cut_at_the_byte_cap() {
+        const FRAME_BYTES: usize = 3 * 1024 * 1024;
+        const FRAMES: usize = PER_CLIENT_OUT_BYTES_CAP / FRAME_BYTES + 4;
+        let (sock, vm_guest_sim, _tmp) = boot().await;
+        let mut writer = vm_guest_sim.try_clone().unwrap();
+        let (flooded_tx, flooded_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let mut reader = std::io::BufReader::new(vm_guest_sim);
+            let Ok(Some((corr_id, _, _))) = read_frame_blocking(&mut reader) else {
+                return;
+            };
+            let chunk = ShellMessage::Stdout {
+                data_b64: "A".repeat(FRAME_BYTES),
+            };
+            let chunk = encode_frame(corr_id, 0, &chunk).unwrap();
+            for _ in 0..FRAMES {
+                if writer.write_all(&chunk).is_err() {
+                    return;
+                }
+            }
+            let end = encode_frame(corr_id, FLAG_TERMINAL, &ShellMessage::Exited { code: 0 });
+            let _ = writer.write_all(&end.unwrap());
+            let _ = flooded_tx.send(());
+            // Keep the VM end open: its EOF would end the client too.
+            while let Ok(Some(_)) = read_frame_blocking(&mut reader) {}
+        });
+        let (mut client, _) = open_session(&sock, &cat_request()).await;
+        // Read nothing until the whole flood reached the relay.
+        tokio::task::spawn_blocking(move || flooded_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        let cut = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match read_frame(&mut client).await {
+                    Ok(Some(frame)) if frame[8] & FLAG_TERMINAL != 0 => return false,
+                    Ok(Some(_)) => {}
+                    Ok(None) | Err(_) => return true,
+                }
+            }
+        })
+        .await
+        .expect("the flooded session was never cut");
+        assert!(cut, "the relay queued the whole flood for one client");
     }
 
     /// A client that takes no frame for CLIENT_STALL is ended and its
