@@ -733,7 +733,8 @@ fn the_sample_must_be_exactly_the_frozen_one() {
 fn a_lost_control_rejects_whatever_the_metric_did() {
     let (baseline, candidate) = pair();
     // A control broken on every run is lost, whatever the sample size.
-    for passed in [0] {
+    {
+        let passed = 0;
         let evidence = vec![
             evidence_for("s", "base", runs(5, 5, 0.10), "cand", runs(5, 5, 0.05)),
             evidence_for(
