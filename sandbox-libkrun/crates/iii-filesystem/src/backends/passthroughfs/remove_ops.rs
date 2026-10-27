@@ -64,11 +64,15 @@ pub(crate) fn do_unlink(
         return Err(platform::linux_error(io::Error::last_os_error()));
     }
 
-    // Store the fd in InodeData so open_inode_fd can use it after unlink.
+    // Store the fd in InodeData so open_inode_fd can use it after unlink. Only
+    // once no link is left: until then /.vol still opens the file with the
+    // access each open asks for, which this read-only fd would replace.
     #[cfg(target_os = "macos")]
     if let Some(fd) = pre_unlink_fd {
         let st = platform::fstat(fd);
-        if let Ok(st) = st {
+        if let Ok(st) = st
+            && st.st_nlink == 0
+        {
             let alt_key = crate::backends::shared::inode_table::InodeAltKey::new(
                 st.st_ino,
                 platform::stat_dev(&st),

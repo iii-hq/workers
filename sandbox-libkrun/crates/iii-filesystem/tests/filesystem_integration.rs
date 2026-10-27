@@ -895,3 +895,26 @@ fn unlink_fifo_does_not_block() {
     assert_eq!(res, Ok(()));
     assert!(!exists);
 }
+
+/// Unlinking one of two hard links leaves the file reachable through the
+/// other, and opening it for writing still gives a writable handle.
+#[test]
+fn unlink_one_hard_link_keeps_the_file_writable() {
+    let h = setup_fs();
+    let ctx = test_ctx();
+    std::fs::write(h._dir.path().join("a"), b"old").unwrap();
+    let a = h.fs.lookup(ctx, ROOT_ID, &cstr("a")).unwrap();
+    h.fs.link(ctx, a.inode, ROOT_ID, &cstr("b")).unwrap();
+    h.fs.unlink(ctx, ROOT_ID, &cstr("a")).unwrap();
+
+    let (fh, _) = h.fs.open(ctx, a.inode, false, libc::O_RDWR as u32).unwrap();
+    let fh = fh.unwrap();
+    let mut reader = TestReader::new(b"new".to_vec());
+    let n =
+        h.fs.write(ctx, a.inode, fh, &mut reader, 3, 0, None, false, false, 0)
+            .unwrap();
+    assert_eq!(n, 3);
+    h.fs.release(ctx, a.inode, 0, fh, false, false, None)
+        .unwrap();
+    assert_eq!(std::fs::read(h._dir.path().join("b")).unwrap(), b"new");
+}
