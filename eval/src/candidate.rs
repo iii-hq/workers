@@ -1158,6 +1158,54 @@ fn diff_patch(dir: &Path, args: &[&str]) -> Result<Result<String, Rejection>, Ca
     Ok(Ok(patch))
 }
 
+/// A changed manifest takes its lockfile along: every build of a candidate
+/// is `--locked`, and the actor cannot run cargo. `cargo metadata` updates
+/// the nearest `Cargo.lock` by the least the manifest needs; one that does
+/// not resolve is rejected before any run is paid for.
+fn sync_lockfiles(worktree: &Path, base: &str) -> Result<Result<(), Rejection>, CandidateError> {
+    let names = git(worktree, &["diff", "--cached", "--name-only", "-z", base])?;
+    let mut roots = std::collections::BTreeSet::new();
+    for name in names
+        .split('\0')
+        .filter(|name| name.ends_with("Cargo.toml"))
+    {
+        let manifest = worktree.join(name);
+        if let Some(root) = manifest
+            .ancestors()
+            .skip(1)
+            .take_while(|dir| dir.starts_with(worktree))
+            .find(|dir| dir.join("Cargo.lock").is_file())
+        {
+            roots.insert(root.to_path_buf());
+        }
+    }
+    if roots.is_empty() {
+        return Ok(Ok(()));
+    }
+    for root in roots {
+        let output = Command::new("cargo")
+            .args(["metadata", "--format-version", "1", "--manifest-path"])
+            .arg(root.join("Cargo.toml"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .output()
+            .map_err(|error| CandidateError::Dependency(format!("cargo: {error}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Ok(Err(reject(
+                "manifest_unresolved",
+                format!(
+                    "{} does not resolve: {}",
+                    root.strip_prefix(worktree).unwrap_or(&root).display(),
+                    stderr.trim()
+                ),
+            )));
+        }
+    }
+    git(worktree, &["add", "--all", "--", ":/"])?;
+    Ok(Ok(()))
+}
+
 /// Inspects what the actor wrote and commits it, once. A repeated call after
 /// a lost confirmation finds the commit on the candidate branch instead of
 /// committing again. An `Err` is a controller failure; `Ok(Err)` a terminal
@@ -1184,6 +1232,9 @@ pub fn collect_commit(
     let mut tip = rev(worktree, &branch_ref)?;
     if tip == base {
         git(worktree, &["add", "--all", "--", ":/"])?;
+        if let Err(rejection) = sync_lockfiles(worktree, base)? {
+            return Ok(Err(rejection));
+        }
         let staged = git(
             worktree,
             &[

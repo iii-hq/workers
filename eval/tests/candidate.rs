@@ -389,6 +389,36 @@ fn allowed_change_commits_once_and_survives_a_lost_worktree() {
 }
 
 #[test]
+fn a_changed_manifest_commits_with_its_lockfile_in_step() {
+    let (_scratch, mut cfg) = setup();
+    let repo = Path::new(&cfg.repository).to_path_buf();
+    let manifest = |version: &str| {
+        format!("[package]\nname = \"tool\"\nversion = \"{version}\"\nedition = \"2021\"\n\n[workspace]\n")
+    };
+    write(&repo.join("tool/Cargo.toml"), &manifest("0.1.0"));
+    write(&repo.join("tool/src/lib.rs"), "pub fn tool() {}\n");
+    let status = std::process::Command::new("cargo")
+        .args(["generate-lockfile", "--offline", "--manifest-path"])
+        .arg(repo.join("tool/Cargo.toml"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    sh(&repo, &["add", "tool"]);
+    sh(&repo, &["commit", "-q", "-m", "tool"]);
+    cfg.base_sha = sh(&repo, &["rev-parse", "HEAD"]);
+    let id = prepared(&cfg, "cycle_lock");
+    write(
+        &Path::new(&id.root).join("tool/Cargo.toml"),
+        &manifest("0.2.0"),
+    );
+
+    let commit = collect_commit(&cfg, &id).unwrap().unwrap();
+    let paths: Vec<_> = commit.paths.iter().map(|p| p.path.as_str()).collect();
+    assert_eq!(paths, ["tool/Cargo.lock", "tool/Cargo.toml"]);
+    assert!(commit.patch.contains("+version = \"0.2.0\""));
+}
+
+#[test]
 fn hostile_or_empty_diffs_are_rejected_without_a_commit() {
     let (_scratch, cfg) = setup();
     let before = active_state(&cfg);
