@@ -51,12 +51,14 @@ The provider's separate router registration token continues to use `state`.
 Existing managed logins migrate automatically from the private
 `provider-openai-codex-auth` state scope. The provider confirms that it can read
 the encrypted session before clearing the old session to `null` and flushing
-the state adapter. Interrupted migrations resume on the next access. Logout
-and expiry are preserved; an existing vault session is never overwritten by an
-old state session. Once complete, session access no longer consults that state
-scope. Update the `secrets` and `state` workers with the provider, and stop the
-old provider instance before starting the new one. Cleanup removes active
-session data; existing backups and snapshots follow their own retention policy.
+the state adapter. Interrupted migrations resume on the next access. If the
+legacy session changes before cleanup, migration copies the current session
+and retries. Logout and expiry are preserved; a completed vault migration is
+never overwritten by an old state session. Once complete, session access no
+longer consults that state scope. Update the `secrets` and `state` workers with
+the provider, and stop the old provider instance before starting the new one.
+Cleanup removes active session data; existing backups and snapshots follow
+their own retention policy.
 
 Managed credentials renew automatically within 60 seconds of expiry. Refresh
 requests are serialized and token rotations are persisted atomically. A

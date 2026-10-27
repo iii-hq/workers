@@ -108,8 +108,10 @@ impl SecretsSessionStore {
             match self.read().await? {
                 Some((raw, envelope)) if envelope.migration_complete => return Ok((raw, envelope)),
                 Some((raw, mut envelope)) => {
-                    if !self.legacy.clear(envelope.session.as_ref()).await? {
-                        return Err(SessionError::changed());
+                    if let Some(current) = self.legacy.clear(envelope.session.as_ref()).await? {
+                        envelope.session = Some(current);
+                        self.swap(Some(&raw), &envelope).await?;
+                        continue;
                     }
                     envelope.migration_complete = true;
                     self.swap(Some(&raw), &envelope).await?;

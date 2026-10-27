@@ -197,17 +197,92 @@ async fn existing_vault_logout_wins_and_does_not_read_state() {
 }
 
 #[tokio::test]
-async fn changed_legacy_session_is_not_deleted() {
-    let bus = SessionBus::start(serde_json::to_value(session()).unwrap(), None).await;
-    bus.state.lock().unwrap().change_before_cleanup = true;
-    assert!(SecretsSessionStore::new(bus.client.clone())
-        .load()
-        .await
-        .is_err());
-    assert_eq!(
-        bus.state.lock().unwrap().legacy["revision"],
-        "concurrent-revision"
-    );
+async fn migration_recovers_when_legacy_session_changes_after_vault_copy() {
+    let mut refreshed = session();
+    refreshed.revision = "refreshed-revision".into();
+    refreshed.credential.as_mut().unwrap().access_token = "refreshed-access".into();
+    refreshed.credential.as_mut().unwrap().refresh_token = Some("refreshed-refresh".into());
+    let mut expired = session();
+    expired.needs_login = true;
+    for current in [refreshed, SessionRecord::logged_out(), expired] {
+        let current = serde_json::to_value(current).unwrap();
+        let bus = SessionBus::start(serde_json::to_value(session()).unwrap(), None).await;
+        bus.state.lock().unwrap().change_before_cleanup = Some(current.clone());
+        let store = SecretsSessionStore::new(bus.client.clone());
+        let loaded = store.load().await.unwrap().unwrap();
+        assert!(serde_json::to_value(loaded).unwrap() == current);
+        {
+            let state = bus.state.lock().unwrap();
+            assert!(state.legacy.is_null() && state.flushed);
+            let stored: Value = serde_json::from_str(state.secret.as_ref().unwrap()).unwrap();
+            assert!(stored["session"] == current);
+            assert_eq!(stored["migration_complete"], true);
+        }
+        // Recovery also leaves the store usable for the next login or logout.
+        let loaded = store.load().await.unwrap().unwrap();
+        let next = session();
+        assert!(store.compare_and_set(Some(&loaded), &next).await.unwrap());
+        assert_eq!(store.load().await.unwrap().unwrap().revision, next.revision);
+    }
+}
+
+#[tokio::test]
+async fn changed_legacy_session_survives_failed_recopy_and_resumes_after_restart() {
+    for failure in [
+        Failure {
+            function: SECRET_CAS,
+            after_write: false,
+            skip: 1,
+        },
+        Failure {
+            function: SECRET_CAS,
+            after_write: true,
+            skip: 1,
+        },
+        Failure {
+            function: RESOLVE,
+            after_write: false,
+            skip: 2,
+        },
+    ] {
+        let original = session();
+        let mut refreshed = session();
+        refreshed.credential.as_mut().unwrap().access_token = "refreshed-access".into();
+        let current = serde_json::to_value(&refreshed).unwrap();
+        let expected_copy = if failure.function == SECRET_CAS && !failure.after_write {
+            serde_json::to_value(&original).unwrap()
+        } else {
+            current.clone()
+        };
+        let bus = SessionBus::start(serde_json::to_value(&original).unwrap(), None).await;
+        {
+            let mut state = bus.state.lock().unwrap();
+            state.change_before_cleanup = Some(current.clone());
+            state.failure = Some(failure);
+        }
+        let store = SecretsSessionStore::new(bus.client.clone());
+        assert_eq!(
+            store.load().await.err().unwrap().code,
+            "storage_unavailable"
+        );
+        {
+            let state = bus.state.lock().unwrap();
+            assert!(
+                state.legacy == current,
+                "failed recopy discarded the newer session"
+            );
+            let stored: Value = serde_json::from_str(state.secret.as_ref().unwrap()).unwrap();
+            assert!(stored["session"] == expected_copy);
+            assert_eq!(stored["migration_complete"], false);
+        }
+        let restarted = SecretsSessionStore::new(bus.client.clone());
+        assert!(serde_json::to_value(restarted.load().await.unwrap().unwrap()).unwrap() == current);
+        let state = bus.state.lock().unwrap();
+        assert!(state.legacy.is_null() && state.flushed);
+        let stored: Value = serde_json::from_str(state.secret.as_ref().unwrap()).unwrap();
+        assert!(stored["session"] == current);
+        assert_eq!(stored["migration_complete"], true);
+    }
 }
 
 #[tokio::test]

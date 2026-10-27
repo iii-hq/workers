@@ -25,7 +25,7 @@ pub struct BusState {
     pub calls: Vec<String>,
     pub failure: Option<Failure>,
     pub resolve_error: Option<&'static str>,
-    pub change_before_cleanup: bool,
+    pub change_before_cleanup: Option<Value>,
     pub flushed: bool,
     pub omit_durable_ack: bool,
 }
@@ -86,9 +86,8 @@ impl BusState {
                     self.secret_read_back,
                     "cleanup preceded successful vault readback"
                 );
-                if self.change_before_cleanup {
-                    self.legacy["revision"] = json!("concurrent-revision");
-                    self.change_before_cleanup = false;
+                if let Some(current) = self.change_before_cleanup.take() {
+                    self.legacy = current;
                 }
                 let swapped = data["expected"] == self.legacy;
                 if swapped {

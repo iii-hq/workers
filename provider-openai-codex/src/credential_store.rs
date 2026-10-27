@@ -60,10 +60,11 @@ impl PrivateStateStore {
 
     /// Clear only the copied session and confirm persistence, including retries
     /// after an earlier flush failed with the in-memory value already null.
+    /// Return a conflicting session for recopying, or None when cleanup is durable.
     pub fn clear<'a>(
         &'a self,
         expected: Option<&'a SessionRecord>,
-    ) -> BoxFuture<'a, Result<bool, SessionError>> {
+    ) -> BoxFuture<'a, Result<Option<SessionRecord>, SessionError>> {
         Box::pin(async move {
             self.claim().await?;
             let response = self.call(
@@ -74,9 +75,12 @@ impl PrivateStateStore {
                 return Err(SessionError::storage());
             }
             match response.get("swapped").and_then(Value::as_bool) {
-                Some(true) => Ok(true),
+                Some(true) => Ok(None),
                 Some(false) => match response.get("current") {
-                    Some(current) => Ok(current.is_null()),
+                    Some(current) if current.is_null() => Ok(None),
+                    Some(current) => serde_json::from_value(current.clone())
+                        .map(Some)
+                        .map_err(|_| SessionError::storage()),
                     None => Err(SessionError::storage()),
                 },
                 None => Err(SessionError::storage()),
