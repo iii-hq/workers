@@ -21,9 +21,10 @@
 //!   - `sandbox-libkrun` built with the `integration-vm` feature
 //!
 //! Gaps tracked here are post-merge work; the test bodies are skeleton
-//! stubs that emit a `[todo]` message and exit cleanly so the test count
-//! stays honest. A Linux contributor with libkrun set up can replace
-//! each `[todo]` with the driver code without touching the gating.
+//! stubs that fail with `todo!()` past the rootfs gate, so an explicit
+//! `--ignored` run cannot pass green. A Linux contributor with libkrun set
+//! up can replace each `todo!()` with the driver code without touching the
+//! gating.
 
 use std::path::PathBuf;
 
@@ -72,8 +73,8 @@ fn full_surface_e2e_walks_all_14_triggers() {
     let Some(rootfs) = integration_rootfs() else {
         return;
     };
-    eprintln!(
-        "[todo] sandbox_integration_e2e: full_surface_e2e_walks_all_14_triggers \
+    todo!(
+        "full_surface_e2e_walks_all_14_triggers \
          has a rootfs at {} but the driver body is not yet implemented. \
          Build out using VmBootLauncher + ShellProtoRunner + SignalStopper, \
          install a SandboxGuard RAII helper for panic-safe teardown.",
@@ -89,8 +90,8 @@ fn create_with_network_disabled_yields_no_host_egress() {
     let Some(rootfs) = integration_rootfs() else {
         return;
     };
-    eprintln!(
-        "[todo] sandbox_integration_e2e: create_with_network_disabled_yields_no_host_egress \
+    todo!(
+        "create_with_network_disabled_yields_no_host_egress \
          has a rootfs at {} but the driver body is not yet implemented. \
          Shape: create network=false, exec `nc -w 2 <host_ip> <listening_port>`, \
          assert connection refused or unreachable.",
@@ -106,8 +107,8 @@ fn raii_guard_reaps_vm_on_panic_mid_scenario() {
     let Some(rootfs) = integration_rootfs() else {
         return;
     };
-    eprintln!(
-        "[todo] sandbox_integration_e2e: raii_guard_reaps_vm_on_panic_mid_scenario \
+    todo!(
+        "raii_guard_reaps_vm_on_panic_mid_scenario \
          has a rootfs at {} but the driver body is not yet implemented. \
          Shape: SandboxGuard wraps a created sandbox; spawn a child process \
          that runs the test logic + panics; parent verifies VM pid is gone.",

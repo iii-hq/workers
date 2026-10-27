@@ -18,9 +18,9 @@
 //!
 //! All tests are `#[ignore]`'d so `cargo test` in CI doesn't spin up
 //! VMs by default. Each test checks env gates at entry and returns
-//! with a visible skip message when its prerequisites aren't met, so
-//! `cargo test -- --ignored` on a bare host prints which gaps
-//! remain uncovered rather than panicking with `todo!()`. Run with
+//! with a visible skip message when its prerequisites aren't met. Past
+//! the gate the bodies are still `todo!()`, so a capable host fails
+//! instead of passing a test that checks nothing. Run with
 //! `cargo test --test vm_lifecycle_integration -- --ignored` on a
 //! capable host.
 //!
@@ -71,8 +71,8 @@ fn exit_handle_sigterm_triggers_clean_shutdown() {
     let Some(rootfs) = integration_rootfs("III_VM_INTEGRATION_ROOTFS") else {
         return;
     };
-    eprintln!(
-        "[todo] vm_lifecycle_integration: exit_handle_sigterm_triggers_clean_shutdown \
+    todo!(
+        "exit_handle_sigterm_triggers_clean_shutdown \
          has a rootfs at {} but the driver body is not yet implemented. \
          Tracked as Gap #1 (ExitHandle).",
         rootfs.display()
@@ -99,8 +99,8 @@ fn meminfo_override_caps_memtotal_for_guest_reader() {
     let Some(rootfs) = integration_rootfs("III_VM_INTEGRATION_BUN_ROOTFS") else {
         return;
     };
-    eprintln!(
-        "[todo] vm_lifecycle_integration: meminfo_override_caps_memtotal_for_guest_reader \
+    todo!(
+        "meminfo_override_caps_memtotal_for_guest_reader \
          has a rootfs at {} but the driver body is not yet implemented. \
          Tracked as Gap #2 (Bun meminfo).",
         rootfs.display()
@@ -123,8 +123,8 @@ fn nofile_rlimit_applies_to_guest_worker_process() {
     let Some(rootfs) = integration_rootfs("III_VM_INTEGRATION_ROOTFS") else {
         return;
     };
-    eprintln!(
-        "[todo] vm_lifecycle_integration: nofile_rlimit_applies_to_guest_worker_process \
+    todo!(
+        "nofile_rlimit_applies_to_guest_worker_process \
          has a rootfs at {} but the driver body is not yet implemented. \
          Tracked as Gap #3 (rlimit).",
         rootfs.display()
