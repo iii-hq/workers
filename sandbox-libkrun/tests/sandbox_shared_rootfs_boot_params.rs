@@ -17,6 +17,7 @@ use sandbox_libkrun::sandbox_daemon::{
     SandboxError, catalog,
     create::{BootHandle, BootParams, CreateRequest, VmLauncher, handle_create},
     exec::EnvShape,
+    overlay::sandbox_root,
     registry::SandboxRegistry,
 };
 use serial_test::serial;
@@ -92,9 +93,9 @@ async fn two_sandboxes_must_not_share_the_cached_image_as_writable_root() {
     eprintln!("sandbox B {} rootfs = {}", b.sandbox_id, seen[1].display());
     eprintln!("shared cached image  = {}", cached.display());
 
-    // cleanup overlay dirs created under /tmp/iii-sandbox
+    // cleanup overlay dirs created under the per-user sandbox root
     for s in [&a.sandbox_id, &b.sandbox_id] {
-        let _ = std::fs::remove_dir_all(PathBuf::from("/tmp/iii-sandbox").join(s));
+        let _ = std::fs::remove_dir_all(sandbox_root().join(s));
     }
 
     assert_ne!(

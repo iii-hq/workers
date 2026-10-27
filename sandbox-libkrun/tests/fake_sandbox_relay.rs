@@ -346,7 +346,7 @@ async fn list_returns_every_sandbox() {
     assert_eq!(resp.sandboxes.len(), 2);
 }
 
-/// Removes the dirs `handle_create` makes under /tmp/iii-sandbox for the
+/// Removes the dirs `handle_create` makes under the sandbox root for the
 /// sandboxes a test never stops.
 struct SandboxDirs(Vec<String>);
 impl Drop for SandboxDirs {

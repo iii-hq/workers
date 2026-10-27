@@ -14,7 +14,7 @@
 
 use sandbox_libkrun::cli::rootfs_cache;
 use sandbox_libkrun::sandbox_daemon::config::SandboxConfig;
-use sandbox_libkrun::sandbox_daemon::overlay::TRAMPOLINE_STAGING_DIRS;
+use sandbox_libkrun::sandbox_daemon::overlay::{TRAMPOLINE_STAGING_DIRS, sandbox_root};
 use sandbox_libkrun::sandbox_daemon::{
     SandboxError, catalog,
     create::{BootHandle, BootParams, CreateRequest, VmLauncher, handle_create},
@@ -145,7 +145,7 @@ async fn canonical_cache_is_only_the_lower_never_the_guest_root() {
     }
 
     for s in [&a.sandbox_id, &b.sandbox_id] {
-        let _ = std::fs::remove_dir_all(PathBuf::from("/tmp/iii-sandbox").join(s));
+        let _ = std::fs::remove_dir_all(sandbox_root().join(s));
     }
 
     let mut staging: Vec<String> = TRAMPOLINE_STAGING_DIRS
@@ -228,8 +228,7 @@ async fn parallel_creates_stop_at_max_concurrent_sandboxes() {
         .map(|r| r.as_ref().map_or_else(|e| e.code().as_str(), |_| "ok"))
         .collect();
     for created in results.iter().flatten() {
-        let _ =
-            std::fs::remove_dir_all(PathBuf::from("/tmp/iii-sandbox").join(&created.sandbox_id));
+        let _ = std::fs::remove_dir_all(sandbox_root().join(&created.sandbox_id));
     }
     assert_eq!(codes.iter().filter(|c| **c == "ok").count(), 2, "{codes:?}");
     assert_eq!(
