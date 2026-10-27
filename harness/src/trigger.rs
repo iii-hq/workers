@@ -1092,9 +1092,27 @@ pub fn wrapper_without_target_result(arguments: &Value) -> ResultData {
 }
 
 /// Salvaged (`_partial`/`_raw`) or non-object arguments must never reach dispatch.
+/// A `files` array with an entry holding only `path` or only `content`: a
+/// long string closed early and split one file object in two. It parses, but
+/// dispatching it only yields a misleading `missing field path` error.
+fn split_files_entry(map: &serde_json::Map<String, Value>) -> bool {
+    let Some(files) = map.get("files").and_then(Value::as_array) else {
+        return false;
+    };
+    files.len() > 1
+        && files.iter().any(|entry| {
+            entry.as_object().is_some_and(|entry| {
+                let has = |k: &str| entry.contains_key(k);
+                has("path") != (has("content") || has("ops"))
+            })
+        })
+}
+
 pub fn arguments_degraded(arguments: &Value) -> bool {
     match arguments {
-        Value::Object(map) => map.contains_key("_partial") || map.contains_key("_raw"),
+        Value::Object(map) => {
+            map.contains_key("_partial") || map.contains_key("_raw") || split_files_entry(map)
+        }
         _ => true,
     }
 }
@@ -1172,7 +1190,10 @@ pub fn truncated_arguments_result(
         (
             format!(
                 "{function_id} did not run: its arguments stopped before the JSON object was \
-                 complete (received {got}). Nothing ran. Re-send the complete call."
+                 complete (received {got}). Nothing ran. Re-send the complete call; a large \
+                 edit is easier to get right as several smaller calls, and a script is safer \
+                 written to a file with coder::create-file and run with `shell::exec python3 \
+                 <file>` than passed inline with `-c`."
             ),
             "incomplete_json",
         )
@@ -1455,6 +1476,22 @@ mod tests {
         );
         // Short args pass through whole.
         assert_eq!(arguments_preview(&json!({"a": 1})), r#"{"a":1}"#);
+    }
+
+    #[test]
+    fn a_files_entry_split_in_two_is_degraded() {
+        let split = json!({ "files": [{ "content": "x" }, { "path": "a.md" }] });
+        assert!(arguments_degraded(&split));
+        let ok = json!({ "files": [{ "path": "a.md", "content": "x" }, { "path": "b.md", "content": "" }] });
+        assert!(!arguments_degraded(&ok));
+        let text = truncated_arguments_result(
+            "coder::create-file",
+            &split,
+            crate::types::event::StopReason::End,
+        )
+        .details
+        .to_string();
+        assert!(text.contains("several smaller calls"), "{text}");
     }
 
     #[test]
