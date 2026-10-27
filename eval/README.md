@@ -166,6 +166,10 @@ cycle runs these steps:
    drift over time and a warmed provider cache fall on both sides alike.
    The candidate is compared round by round with these controls, never with
    the baseline measured before the proposal, which was chosen for losing.
+   A count (function-call errors) is compared on its totals instead: the
+   conditional binomial test for two Poisson rates, since a round without
+   the event is no evidence against the others; a baseline needs at least 5
+   events in all before a proposal is paid for.
 4. The source decision is made.
 5. An accepted change becomes a pull request from its branch to `main`,
    ready for review, and the cycle ends `proposed`. The body carries the

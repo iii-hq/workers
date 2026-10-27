@@ -17,7 +17,7 @@ use crate::pull_request::PullRequestV1;
 
 /// Identity of the detectors, first pass and coverage rules; part of every
 /// `policy_revision`.
-pub const RULES_VERSION: &str = "e2e-loop-rules/7";
+pub const RULES_VERSION: &str = "e2e-loop-rules/8";
 pub const CYCLE_SCHEMA_VERSION: u32 = 1;
 pub const DEFAULT_LIST_LIMIT: u32 = 50;
 pub const MAX_LIST_LIMIT: u32 = 200;

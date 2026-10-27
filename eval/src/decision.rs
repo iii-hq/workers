@@ -205,6 +205,31 @@ pub fn compare(
     );
     // A mean gain of the minimum effect is not enough on its own: the paired
     // runs must show it in a consistent direction (see [`directional`]).
+    // A count is judged on its totals: one run without the event says
+    // nothing against the others (see [`rate_test_p`]).
+    if outcome == ValidationOutcomeV1::ValidatedImprovement
+        && criterion.min_effect > 0.0
+        && is_count(criterion.metric)
+    {
+        let (baseline, candidate) = (
+            count_total(&evidence.baseline, criterion),
+            count_total(&evidence.candidate, criterion),
+        );
+        let p = rate_test_p(baseline, candidate);
+        let described = format!(
+            "{RATE_TEST_RULE}: {baseline} {label} on the baseline against {candidate} on the \
+             candidate over the same runs; were the change no change, each would fall on either \
+             side alike, one-sided binomial p={p:.5}",
+            label = metric_label(criterion)
+        );
+        return if p <= SIGN_TEST_ALPHA + EFFECT_TOLERANCE {
+            (outcome, format!("{reason}; {described}"))
+        } else {
+            inconclusive(format!(
+                "{reason}; but {described}, above {SIGN_TEST_ALPHA}: the totals do not show the change"
+            ))
+        };
+    }
     if outcome == ValidationOutcomeV1::ValidatedImprovement && criterion.min_effect > 0.0 {
         match directional(evidence, criterion) {
             Ok(test) if test.passes() => {
@@ -275,6 +300,38 @@ impl SignTest {
             self.p
         )
     }
+}
+
+/// The rule for a count (function-call errors): the two sides' totals over
+/// the same number of runs, with the conditional binomial test for two
+/// Poisson rates of equal exposure.
+pub const RATE_TEST_RULE: &str = "poisson-rate-test/conditional-binomial/one-sided/alpha-0.05";
+
+/// A metric that counts events per run: judged on totals, since a run
+/// without the event is no evidence against the runs with it.
+pub fn is_count(metric: CriterionMetricV1) -> bool {
+    metric == CriterionMetricV1::FunctionCallErrors
+}
+
+/// A side's total of a count, over its measured runs.
+fn count_total(side: &EvidenceSideV1, criterion: &CriterionV1) -> u32 {
+    side.runs
+        .iter()
+        .filter_map(|run| {
+            run.measurable()
+                .then(|| metric_value(run, criterion))
+                .flatten()
+        })
+        .sum::<f64>()
+        .round() as u32
+}
+
+/// P(the candidate has `candidate` events or fewer | `baseline + candidate`
+/// events, each on either side with probability 1/2): how likely totals this
+/// far apart are if the change did nothing.
+pub fn rate_test_p(baseline: u32, candidate: u32) -> f64 {
+    // P(X <= c) for X ~ Bin(b + c, 1/2) is P(X >= b) by symmetry.
+    sign_test_p(baseline, baseline + candidate)
 }
 
 /// The one-sided exact binomial tail P(X >= k), X ~ Binomial(n, 1/2).
@@ -473,12 +530,28 @@ pub fn baseline(plan: &CyclePlanV1, execution_id: &str, bundle: &serde_json::Val
     }
 }
 
-/// Why no candidate could pass the sign test on this baseline, if none
-/// could: a pair reaches the effect only when its baseline run leaves room
+/// Why no candidate could pass the decision rule on this baseline, if none
+/// could. A count needs enough events in total (see [`rate_test_p`]); any
+/// other metric is paired: a pair reaches the effect only when its baseline run leaves room
 /// for it (a total cannot fall below 0, a rate or score cannot rise above
 /// 1), so too few runs with room cannot reach p <= alpha even if every one
 /// improved. Read before any paid proposal.
 pub fn no_room(criterion: &CriterionV1, pairs: u32, baseline: &EvidenceSideV1) -> Option<String> {
+    // A count needs enough events in total: even a change that removed
+    // every one shows only with p = 1/2^total.
+    if is_count(criterion.metric) {
+        let total = count_total(baseline, criterion);
+        let best = rate_test_p(total, 0);
+        return (best > SIGN_TEST_ALPHA + EFFECT_TOLERANCE).then(|| {
+            format!(
+                "the baseline runs made only {total} {} in total: even if a change removed every \
+                 one, the totals could not show it at p <= {SIGN_TEST_ALPHA} (here p={best:.5} at \
+                 best; it takes at least 5). Not even a perfect change could be proven, so the \
+                 cycle stopped before paying for a proposal",
+                metric_label(criterion)
+            )
+        });
+    }
     let (unit, scale) = effect_unit(criterion.metric);
     let ceiling = matches!(
         criterion.metric,
@@ -1480,34 +1553,23 @@ mod tests {
             n: values.len() as u32,
             mean: None,
         };
-        let errors = CriterionV1 {
-            min_effect: 1.0,
-            ..criterion(FunctionCallErrors, DirectionV1::Decrease)
+        let tokens = CriterionV1 {
+            min_effect: 1_000.0,
+            ..criterion(Tokens, DirectionV1::Decrease)
         };
-        // Zero errors, or too few runs with one to lose: no candidate can pass.
-        let none = no_room(&errors, 5, &side(FunctionCallErrors, &[0.0; 5])).unwrap();
+        // Paired: no run with room, or too few, and no candidate can pass.
+        let none = no_room(&tokens, 5, &side(Tokens, &[0.0; 5])).unwrap();
         assert!(
-            none.contains("5 of the 5 baseline runs were already within 1 errors of zero"),
+            none.contains("5 of the 5 baseline runs were already within"),
             "{none}"
         );
-        assert!(no_room(
-            &errors,
-            5,
-            &side(FunctionCallErrors, &[0.0, 0.5, 3.0, 4.0, 5.0])
-        )
-        .is_some());
-        // Every run has an error to lose: a candidate may still pass.
-        assert!(no_room(
-            &errors,
-            5,
-            &side(FunctionCallErrors, &[1.0, 2.0, 3.0, 4.0, 5.0])
-        )
-        .is_none());
+        assert!(no_room(&tokens, 5, &side(Tokens, &[0.0, 500.0, 3e3, 4e3, 5e3])).is_some());
+        assert!(no_room(&tokens, 5, &side(Tokens, &[1e3, 2e3, 3e3, 4e3, 5e3])).is_none());
         // Seven of eight pairs can pass; six cannot.
         let eight = |zeros: usize| {
-            let mut values = vec![2.0; 8];
+            let mut values = vec![2e3; 8];
             values[..zeros].fill(0.0);
-            no_room(&errors, 8, &side(FunctionCallErrors, &values))
+            no_room(&tokens, 8, &side(Tokens, &values))
         };
         assert!(eight(1).is_none());
         assert!(eight(2).is_some());
@@ -1519,20 +1581,67 @@ mod tests {
         };
         assert!(no_room(&score, 5, &side(CriterionScore, &[1.0; 5])).is_some());
         assert!(no_room(&score, 5, &side(CriterionScore, &[0.8; 5])).is_none());
-        let tokens = CriterionV1 {
-            min_effect: 1_000.0,
-            ..criterion(Tokens, DirectionV1::Decrease)
-        };
         assert!(no_room(&tokens, 5, &side(Tokens, &[9_000.0; 5])).is_none());
         // Too few pairs for p <= 0.05 can still be unanimous: room on each is
         // enough; one without room is not.
         assert!(no_room(&tokens, 1, &side(Tokens, &[9_000.0])).is_none());
-        assert!(no_room(&errors, 3, &side(FunctionCallErrors, &[2.0, 1.0, 3.0])).is_none());
-        let short = no_room(&errors, 3, &side(FunctionCallErrors, &[2.0, 0.0, 3.0])).unwrap();
+        assert!(no_room(&tokens, 3, &side(Tokens, &[2e3, 1e3, 3e3])).is_none());
+        let short = no_room(&tokens, 3, &side(Tokens, &[2e3, 0.0, 3e3])).unwrap();
         assert!(
             short.contains("1 of the 3 baseline runs") && short.contains("at most 2 of 3 pairs"),
             "{short}"
         );
+        // A count goes by its total: a run without errors costs nothing,
+        // five in all are the fewest a perfect change can show.
+        let errors = CriterionV1 {
+            min_effect: 1.0,
+            ..criterion(FunctionCallErrors, DirectionV1::Decrease)
+        };
+        assert!(no_room(&errors, 3, &side(FunctionCallErrors, &[4.0, 0.0, 3.0])).is_none());
+        assert!(no_room(&errors, 3, &side(FunctionCallErrors, &[5.0, 0.0, 0.0])).is_none());
+        let few = no_room(&errors, 3, &side(FunctionCallErrors, &[2.0, 0.0, 2.0])).unwrap();
+        assert!(
+            few.contains("only 4 function call errors in total") && few.contains("p=0.06250"),
+            "{few}"
+        );
+    }
+
+    #[test]
+    fn a_count_is_decided_on_its_totals_not_run_by_run() {
+        use ValidationOutcomeV1::*;
+        let errors = CriterionV1 {
+            min_effect: 1.0,
+            ..criterion(CriterionMetricV1::FunctionCallErrors, DirectionV1::Decrease)
+        };
+        let side = |values: &[f64]| -> Vec<EvidenceRunV1> {
+            values
+                .iter()
+                .map(|value| {
+                    let mut run = run(true, None, "passed");
+                    run.function_call_errors = Some(*value);
+                    run
+                })
+                .collect()
+        };
+        // A base round without errors does not block it: 7 against 0.
+        let (found, reason, _) = outcome(side(&[4.0, 0.0, 3.0]), side(&[0.0, 0.0, 0.0]), &errors);
+        assert_eq!(found, ValidatedImprovement, "{reason}");
+        assert!(
+            reason.contains(RATE_TEST_RULE) && reason.contains("p=0.00781"),
+            "{reason}"
+        );
+        // 7 against 1 still shows it; 7 against 2 does not.
+        assert_eq!(
+            outcome(side(&[4.0, 0.0, 3.0]), side(&[1.0, 0.0, 0.0]), &errors).0,
+            ValidatedImprovement
+        );
+        let (found, reason, _) = outcome(side(&[4.0, 0.0, 3.0]), side(&[2.0, 0.0, 0.0]), &errors);
+        assert_eq!(found, Inconclusive, "{reason}");
+        assert!(
+            reason.contains("the totals do not show the change"),
+            "{reason}"
+        );
+        assert!((rate_test_p(7, 1) - 9.0 / 256.0).abs() < 1e-12);
     }
 
     #[test]
@@ -1559,7 +1668,9 @@ mod tests {
             (Duration, 5.0, 30_000.0, 25_000.0, "s"),
             (Tokens, 1_000.0, 9_000.0, 8_000.0, "tokens"),
             (FunctionCalls, 2.0, 9.0, 7.0, "calls"),
-            (FunctionCallErrors, 1.0, 3.0, 2.0, "errors"),
+            // A count is decided on its totals: 5 errors against none is
+            // the smallest difference over 5 runs that p <= 0.05 shows.
+            (FunctionCallErrors, 1.0, 1.0, 0.0, "errors"),
         ] {
             let wanted = CriterionV1 {
                 min_effect,

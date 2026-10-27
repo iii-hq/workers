@@ -865,9 +865,11 @@ function Rule({ cycle }: { cycle: CycleRecord }) {
         </div>
         <p className="eval-ui-faint">
           The base runs again beside the candidate: {plural(plan.sampling.runs_per_side, 'round')} each, alternating one
-          round at a time, compared round by round. The change is accepted only if every round improves or the rounds
-          agree at p ≤ 0.05, and nothing below drops. Model, provider, engine, stack, cases and policy must match on
-          both sides.
+          round at a time.{' '}
+          {plan.criterion.metric === 'function_call_errors'
+            ? 'Errors are compared in total: the change is accepted only if the candidate makes fewer than the base at p ≤ 0.05 (were it no change, each error would fall on either side alike), and nothing below drops.'
+            : 'They are compared round by round: the change is accepted only if every round improves or the rounds agree at p ≤ 0.05, and nothing below drops.'}{' '}
+          Model, provider, engine, stack, cases and policy must match on both sides.
         </p>
         {plan.preserved?.length ? (
           <div className="eval-ui-stack-sm">

@@ -1384,7 +1384,12 @@ async fn read_runs(world: World, judged: bool, runs: Vec<Value>) -> CycleRecordV
 async fn jev_reads_each_failed_call_and_the_harness_ones_become_improvement_points() {
     let mut world = World::new();
     world.jev_class = Some("preventable");
-    let record = read_failed_call(world, true).await;
+    // Five failed edits: the fewest errors a perfect change can prove.
+    let edit = (
+        "coder::update-file",
+        "did not run: the arguments were truncated",
+    );
+    let record = read_runs(world, true, vec![failed_all("r1", &[edit; 5])]).await;
     let insight = record.insight.clone().expect("the transcripts were read");
     assert_eq!(
         insight.source,
@@ -1392,18 +1397,20 @@ async fn jev_reads_each_failed_call_and_the_harness_ones_become_improvement_poin
         "{}",
         insight.reason
     );
-    assert_eq!(insight.sites.len(), 1);
+    assert_eq!(insight.sites.len(), 5);
     let site = &insight.sites[0];
     assert_eq!(site.function_id, "coder::update-file");
     assert_eq!(site.class, Some(SiteClassV1::Preventable));
     assert!(site.step.contains("output_tokens=2000"), "{}", site.step);
+    // One pattern, judged once, is one point with every call in it.
+    assert_eq!(h_evaluations(&insight), 1);
     assert_eq!(insight.points.len(), 1);
-    assert_eq!(insight.points[0].sites, std::slice::from_ref(&site.site_id));
+    assert_eq!(insight.points[0].sites.len(), 5);
     // Without candidate work the points are the result: nothing is tried.
     let outcome = record.outcome.unwrap();
     assert_eq!(outcome.code, OutcomeCodeV1::Inconclusive);
     assert!(
-        outcome.detail.contains("1 preventable") && outcome.detail.contains("config.candidate"),
+        outcome.detail.contains("5 preventable") && outcome.detail.contains("config.candidate"),
         "{}",
         outcome.detail
     );
@@ -1529,4 +1536,15 @@ async fn jev_picks_the_test_that_exercises_the_objective_over_the_one_with_most_
     assert!(evaluations
         .iter()
         .all(|evaluation| evaluation["state"]["recorded_runs_of_the_subject"]["runs"] == 2));
+}
+
+/// How many failure patterns the insight's reason says Jev judged.
+fn h_evaluations(insight: &InsightV1) -> usize {
+    insight
+        .reason
+        .split(" failure pattern(s)")
+        .next()
+        .and_then(|head| head.rsplit(' ').next())
+        .and_then(|count| count.parse().ok())
+        .unwrap_or(0)
 }
