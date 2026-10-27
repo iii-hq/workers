@@ -474,12 +474,26 @@ fn handle_frame(
                             let result = dispatch_one_shot(one_shot);
                             match result {
                                 Ok(fs_result) => {
-                                    send_frame(
+                                    // A reply over the frame limit fails to encode
+                                    // (e.g. a broad grep); the host still needs an end.
+                                    if !send_frame(
                                         &writer,
                                         corr_id,
                                         FLAG_TERMINAL,
                                         &ShellMessage::FsResponse(fs_result),
-                                    );
+                                    ) {
+                                        send_frame(
+                                            &writer,
+                                            corr_id,
+                                            FLAG_TERMINAL,
+                                            &ShellMessage::FsError {
+                                                code: "S216".to_string(),
+                                                message: "response exceeds the frame limit; \
+                                                          narrow the request"
+                                                    .to_string(),
+                                            },
+                                        );
+                                    }
                                 }
                                 Err(e) => {
                                     send_frame(
@@ -1266,6 +1280,46 @@ mod tests {
         assert_eq!(last.len(), 1, "a killed read sent more: {last:?}");
         assert!(last[0].1 & FLAG_TERMINAL != 0);
         assert!(matches!(&last[0].2, ShellMessage::FsError { code, .. } if code == "S218"));
+    }
+
+    /// A one-shot reply too large for a frame still ends its session, with
+    /// a terminal S216; nothing at all left the host waiting forever.
+    #[test]
+    fn an_oversized_fs_reply_ends_with_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("big.txt");
+        // ~5 MiB of matches: over the 4 MiB frame limit.
+        std::fs::write(&file, ("a".repeat(1000) + "\n").repeat(5000)).unwrap();
+        let (writer, frames) = sync_channel::<Vec<u8>>(16);
+        let (sessions, fs_writes) = (SessionRegistry::default(), FsWriteRegistry::default());
+        let grep = iii_shell_proto::FsOp::Grep {
+            path: file.to_string_lossy().into_owned(),
+            pattern: "a".into(),
+            recursive: false,
+            ignore_case: false,
+            include_glob: vec![],
+            exclude_glob: vec![],
+            max_matches: 10_000,
+            max_line_bytes: 4096,
+        };
+        let windows = Windows::default();
+        handle_frame(
+            3,
+            ShellMessage::FsRequest(grep),
+            &sessions,
+            &writer,
+            &fs_writes,
+            &windows,
+        );
+        let frame = frames
+            .recv_timeout(Duration::from_secs(10))
+            .expect("no reply");
+        let (_, flags, msg) = sp::decode_frame_body(&frame[4..]).unwrap();
+        assert!(flags & FLAG_TERMINAL != 0);
+        assert!(
+            matches!(&msg, ShellMessage::FsError { code, .. } if code == "S216"),
+            "{msg:?}"
+        );
     }
 
     /// Drive the dispatcher over an in-process socketpair and assert
