@@ -840,7 +840,10 @@ pub fn sed(
         let mut replacements: u64 = 0;
         let mut output = String::with_capacity(original.len());
 
-        for line in original.split_inclusive('\n') {
+        for full_line in original.split_inclusive('\n') {
+            // Match the line without its terminator, as grep's `lines()` does.
+            let line = full_line.strip_suffix('\n').unwrap_or(full_line);
+            let line = line.strip_suffix('\r').unwrap_or(line);
             let (new_line, n) = match &matcher {
                 Some(re) => {
                     let mut count_here = 0u64;
@@ -863,6 +866,7 @@ pub fn sed(
             };
             replacements += n;
             output.push_str(&new_line);
+            output.push_str(&full_line[line.len()..]);
         }
 
         // Atomic write-to-temp + rename. On any failure we report

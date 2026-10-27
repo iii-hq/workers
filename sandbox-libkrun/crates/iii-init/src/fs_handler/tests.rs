@@ -1023,6 +1023,36 @@ fn sed_regex_mode_supports_captures() {
     );
 }
 
+/// sed matches a line without its terminator, as grep does: `$` anchors
+/// before `\n` or `\r\n`, and `\s` never eats the newline.
+#[test]
+fn sed_regex_matches_lines_without_their_terminator() {
+    let dir = tmpdir();
+    let f = dir.path().join("x.txt");
+    std::fs::write(&f, "foo  \nbar\nfoo\r\nfoo").unwrap();
+    let res = ops::sed(
+        vec![f.to_string_lossy().into()],
+        None,
+        true,
+        Vec::new(),
+        Vec::new(),
+        r"^foo\s*$".into(),
+        "X".into(),
+        true,
+        false,
+        false,
+    )
+    .unwrap();
+    let FsResult::Sed {
+        total_replacements, ..
+    } = res
+    else {
+        panic!();
+    };
+    assert_eq!(total_replacements, 3);
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "X\nbar\nX\r\nX");
+}
+
 /// A literal replacement is written as given: `$` is not a capture
 /// reference, with or without `ignore_case`.
 #[test]
