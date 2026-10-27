@@ -765,6 +765,62 @@ async fn relay_backpressure_loses_no_bytes() {
     }
 }
 
+/// A proxy that exits with more response queued than the guest window holds
+/// must not reset the guest just because the poll loop spun many times while
+/// the guest was not reading: the tail must still arrive, then a clean FIN.
+#[tokio::test]
+async fn proxy_exit_flushes_tail_across_many_idle_polls() {
+    let shared = Arc::new(SharedState::new(2048));
+    let config = test_config();
+    let handle = tokio::runtime::Handle::current();
+    let mut state = build_state(&shared, &config, &handle);
+    let mut guest = TestGuest::new(&config, Ipv4Addr::new(93, 184, 216, 34), 46000, 9999);
+
+    shared.tx_ring.push(guest.arp_announce()).unwrap();
+    poll_no_proxy(&mut state);
+    let syn = guest.syn();
+    shared.tx_ring.push(syn).unwrap();
+    let mut conn = None;
+    for _ in 0..20 {
+        if let Some(c) = poll_no_proxy(&mut state).pop() {
+            conn = Some(c);
+        }
+        guest.drain_egress(&shared);
+        if guest.established && conn.is_some() {
+            break;
+        }
+    }
+    let conn = conn.expect("connection should be established and handed to the proxy");
+
+    // Queue more than the guest's 64 KiB window, then exit like a proxy
+    // whose server closed: both channel ends drop.
+    let pattern = |i: usize| (i % 251) as u8;
+    let total = 8 * 16384;
+    for c in 0..8 {
+        let chunk: Vec<u8> = (c * 16384..(c + 1) * 16384).map(pattern).collect();
+        conn.to_smoltcp.try_send(chunk.into()).unwrap();
+    }
+    drop(conn);
+
+    // The guest stalls (reads nothing) across many loop wakeups.
+    for _ in 0..200 {
+        poll_no_proxy(&mut state);
+    }
+
+    for _ in 0..2000 {
+        if guest.peer_fin {
+            break;
+        }
+        guest.drain_egress(&shared);
+        poll_no_proxy(&mut state);
+    }
+    assert!(guest.peer_fin, "the gateway never finished the close");
+    assert_eq!(guest.received.len(), total, "response tail was cut short");
+    for (i, &b) in guest.received.iter().enumerate() {
+        assert_eq!(b, pattern(i), "stream corrupted at offset {i}");
+    }
+}
+
 /// Poll + let proxy tasks run, until `done` or the deadline expires.
 async fn pump_until(
     state: &mut PollLoopState,

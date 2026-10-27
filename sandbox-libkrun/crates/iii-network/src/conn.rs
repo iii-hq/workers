@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use smoltcp::iface::{SocketHandle, SocketSet};
@@ -18,7 +19,10 @@ const TCP_TX_BUF_SIZE: usize = 65536;
 const DEFAULT_MAX_CONNECTIONS: usize = 256;
 const CHANNEL_CAPACITY: usize = 32;
 const RELAY_BUF_SIZE: usize = 16384;
-const DEFERRED_CLOSE_LIMIT: u16 = 64;
+/// How long a closing connection may sit with proxy bytes left to flush and
+/// none accepted by the guest before it is reset. Wall time, not poll
+/// iterations: the loop also wakes for other connections' traffic.
+const DEFERRED_CLOSE_STALL: Duration = Duration::from_secs(30);
 
 /// Tracks TCP connections between guest and proxy tasks.
 ///
@@ -48,7 +52,8 @@ struct Connection {
     /// Set when `from_proxy` disconnects — the proxy task has exited.
     proxy_gone: bool,
     write_buf: Option<(Bytes, usize)>,
-    close_attempts: u16,
+    /// When the deferred close last stopped making progress.
+    close_stalled_since: Option<Instant>,
 }
 
 struct ProxyChannels {
@@ -155,7 +160,7 @@ impl ConnectionTracker {
                 proxy_spawned: false,
                 proxy_gone: false,
                 write_buf: None,
-                close_attempts: 0,
+                close_stalled_since: None,
             },
         );
 
@@ -185,6 +190,7 @@ impl ConnectionTracker {
                 .as_ref()
                 .map_or(conn.proxy_gone, |tx| tx.is_closed());
             if proxy_dead {
+                let queued = socket.send_queue();
                 write_proxy_data(socket, conn);
                 if conn.write_buf.is_none() {
                     if !matches!(
@@ -194,11 +200,16 @@ impl ConnectionTracker {
                         tracing::debug!(src = %conn.src, dst = %conn.dst, state = ?socket.state(), "proxy gone; closing socket");
                     }
                     socket.close();
-                } else {
-                    conn.close_attempts += 1;
-                    if conn.close_attempts >= DEFERRED_CLOSE_LIMIT {
-                        socket.abort();
-                    }
+                } else if socket.send_queue() > queued {
+                    // The guest is draining, however slowly.
+                    conn.close_stalled_since = None;
+                } else if conn
+                    .close_stalled_since
+                    .get_or_insert_with(Instant::now)
+                    .elapsed()
+                    >= DEFERRED_CLOSE_STALL
+                {
+                    socket.abort();
                 }
                 continue;
             }
