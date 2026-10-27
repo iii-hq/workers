@@ -15,9 +15,9 @@ use serde_json::Value;
 
 use crate::access::CallerDirectory;
 use crate::api::{
-    ids, AccessRequest, DeleteResponse, DetectRequest, DetectResponse, EmptyRequest, ImportRequest,
-    ListResponse, NameRequest, ResolveRequest, ResolveResponse, SecretMeta, SetRequest,
-    StatusResponse, StoreKind,
+    ids, AccessRequest, CompareAndSetRequest, CompareAndSetResponse, DeleteResponse, DetectRequest,
+    DetectResponse, EmptyRequest, ImportRequest, ListResponse, NameRequest, ResolveRequest,
+    ResolveResponse, SecretMeta, SetRequest, StatusResponse, StoreKind,
 };
 use crate::detect::{Detector, SourceKind};
 use crate::envwatch::EnvWatch;
@@ -62,6 +62,12 @@ pub fn register(ctx: &Arc<Ctx>) {
         ids::SET,
         "Store a credential under NAME (create, or rotate an existing one) and return its metadata. store \"vault\" (default) encrypts it, referenced as secret://NAME; store \"env\" writes NAME=value to the project's .env, referenced as env://NAME. The value is never returned by this or any metadata function. Omitted consumers keep the current allowlist ([] for a new secret).",
         set,
+    );
+    register_fn::<CompareAndSetRequest, CompareAndSetResponse, _, _>(
+        ctx,
+        ids::COMPARE_AND_SET,
+        "Atomically replace a vault secret if its value matches expected; null expects absence. Only an authorized consumer may update; creation requires consumers including the calling worker. Existing consumers are preserved. Returns only swapped, never a value.",
+        compare_and_set,
     );
     register_fn::<AccessRequest, SecretMeta, _, _>(
         ctx,
@@ -195,6 +201,32 @@ async fn set(ctx: Arc<Ctx>, request: SetRequest) -> Result<SecretMeta, SecretsEr
     };
     ctx.changed(&event);
     Ok(meta)
+}
+
+async fn compare_and_set(
+    ctx: Arc<Ctx>,
+    request: CompareAndSetRequest,
+) -> Result<CompareAndSetResponse, SecretsError> {
+    let caller = ctx
+        .callers
+        .name_of(request.caller_worker_id.as_deref())
+        .await?;
+    let event = ctx
+        .store
+        .compare_and_set(
+            &request.name,
+            request.expected.as_ref(),
+            &request.value,
+            request.consumers,
+            caller.as_deref(),
+        )
+        .await?;
+    if let Some(event) = &event {
+        ctx.changed(event);
+    }
+    Ok(CompareAndSetResponse {
+        swapped: event.is_some(),
+    })
 }
 
 async fn access(ctx: Arc<Ctx>, request: AccessRequest) -> Result<SecretMeta, SecretsError> {

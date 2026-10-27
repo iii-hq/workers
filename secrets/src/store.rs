@@ -152,6 +152,62 @@ impl State {
     }
 }
 
+fn write_value(
+    state: &mut State,
+    env_key: &EnvKey,
+    name: &str,
+    value: &SecretString,
+    consumers: Option<Vec<String>>,
+    description: Option<Option<String>>,
+) -> Result<(SecretMeta, ChangedEvent), SecretsError> {
+    let (sealed, fingerprint) = {
+        let key = state.key(env_key, true)?;
+        let plaintext = value.expose().as_bytes();
+        (key.seal(name, plaintext)?, key.fingerprint(plaintext))
+    };
+    let at = now();
+    let mut next = state.vault()?.clone();
+    let action = match next.secrets.get_mut(name) {
+        Some(record) => {
+            if let Some(consumers) = consumers {
+                record.consumers = consumers;
+            }
+            if let Some(description) = description {
+                record.description = description;
+            }
+            record.hint = mask(value.expose());
+            record.fingerprint = fingerprint.clone();
+            record.set_sealed(&sealed);
+            record.updated_at = at.clone();
+            ChangeAction::Rotated
+        }
+        None => {
+            let mut record = SecretRecord {
+                name: name.to_owned(),
+                description: description.flatten(),
+                consumers: consumers.unwrap_or_default(),
+                created_at: at.clone(),
+                updated_at: at.clone(),
+                last_resolved_at: None,
+                last_resolved_by: None,
+                hint: mask(value.expose()),
+                fingerprint: fingerprint.clone(),
+                nonce: String::new(),
+                ciphertext: String::new(),
+            };
+            record.set_sealed(&sealed);
+            next.secrets.insert(name.to_owned(), record);
+            ChangeAction::Created
+        }
+    };
+    let meta = next.secrets[name].meta();
+    state.commit(next)?;
+    Ok((
+        meta,
+        ChangedEvent::new(name, action, Some(fingerprint), &at),
+    ))
+}
+
 fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
@@ -278,52 +334,49 @@ impl Store {
         let description = normalize_description(description)?;
         let mut guard = self.state.lock().await;
         let state = &mut *guard;
-        let (sealed, fingerprint) = {
-            let key = state.key(&self.env_key, true)?;
-            let plaintext = value.expose().as_bytes();
-            (key.seal(name, plaintext)?, key.fingerprint(plaintext))
-        };
-        let at = now();
-        let mut next = state.vault()?.clone();
-        let action = match next.secrets.get_mut(name) {
-            Some(record) => {
-                if let Some(consumers) = consumers {
-                    record.consumers = consumers;
+        write_value(state, &self.env_key, name, value, consumers, description)
+    }
+
+    /// Authorize, compare and commit under the same vault lock.
+    pub async fn compare_and_set(
+        &self,
+        name: &str,
+        expected: Option<&SecretString>,
+        value: &SecretString,
+        consumers: Option<Vec<String>>,
+        caller: Option<&str>,
+    ) -> Result<Option<ChangedEvent>, SecretsError> {
+        validate_name(name)?;
+        validate_value(value)?;
+        if let Some(expected) = expected {
+            validate_value(expected)?;
+        }
+        let consumers = consumers.map(normalize_consumers).transpose()?;
+        let mut state = self.state.lock().await;
+        let current = state.vault()?.secrets.get(name).cloned();
+        let grants = current
+            .as_ref()
+            .map(|r| r.consumers.as_slice())
+            .unwrap_or_else(|| consumers.as_deref().unwrap_or_default());
+        if !is_authorized(grants, caller) {
+            return Err(forbidden(StoreKind::Vault, name, caller, grants.is_empty()));
+        }
+        match (current.as_ref(), expected) {
+            (None, None) => {}
+            (Some(record), Some(expected)) => {
+                let plaintext = state
+                    .key(&self.env_key, false)?
+                    .open(name, &record.sealed()?)?;
+                if plaintext.as_slice() != expected.expose().as_bytes() {
+                    return Ok(None);
                 }
-                if let Some(description) = description {
-                    record.description = description;
-                }
-                record.hint = mask(value.expose());
-                record.fingerprint = fingerprint.clone();
-                record.set_sealed(&sealed);
-                record.updated_at = at.clone();
-                ChangeAction::Rotated
             }
-            None => {
-                let mut record = SecretRecord {
-                    name: name.to_owned(),
-                    description: description.flatten(),
-                    consumers: consumers.unwrap_or_default(),
-                    created_at: at.clone(),
-                    updated_at: at.clone(),
-                    last_resolved_at: None,
-                    last_resolved_by: None,
-                    hint: mask(value.expose()),
-                    fingerprint: fingerprint.clone(),
-                    nonce: String::new(),
-                    ciphertext: String::new(),
-                };
-                record.set_sealed(&sealed);
-                next.secrets.insert(name.to_owned(), record);
-                ChangeAction::Created
-            }
-        };
-        let meta = next.secrets[name].meta();
-        state.commit(next)?;
-        Ok((
-            meta,
-            ChangedEvent::new(name, action, Some(fingerprint), &at),
-        ))
+            _ => return Ok(None),
+        }
+        // An update cannot use this API to change the existing read allowlist.
+        let consumers = current.is_none().then_some(consumers).flatten();
+        let (_, event) = write_value(&mut state, &self.env_key, name, value, consumers, None)?;
+        Ok(Some(event))
     }
 
     /// Replace the allowlist.
@@ -792,6 +845,172 @@ mod tests {
     }
 
     const VALUE: &str = "sk-ant-api03-abcdefghijklmnop-9f2c";
+
+    const CONSUMER: &str = "provider-openai-codex";
+
+    #[tokio::test]
+    async fn compare_and_set_creates_rotates_and_preserves_consumers() {
+        let fx = fixture();
+        let store = Store::new(fx.paths.clone(), EnvKey::default());
+        let first = SecretString::from(VALUE);
+        let next = SecretString::from("rotated-synthetic-session");
+        let grants = Some(vec![CONSUMER.into()]);
+        let created = store
+            .compare_and_set("SESSION", None, &first, grants, Some(CONSUMER))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(created.action, ChangeAction::Created);
+        let before = std::fs::read(fx.paths.vault_path()).unwrap();
+        assert!(store
+            .compare_and_set("SESSION", None, &next, None, Some(CONSUMER))
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(std::fs::read(fx.paths.vault_path()).unwrap(), before);
+        let event = store
+            .compare_and_set(
+                "SESSION",
+                Some(&first),
+                &next,
+                Some(vec!["intruder".into()]),
+                Some(CONSUMER),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.action, ChangeAction::Rotated);
+        assert_eq!(
+            store.consumers_of("SESSION").await.unwrap().unwrap(),
+            [CONSUMER]
+        );
+        let reopened = Store::new(fx.paths.clone(), EnvKey::default());
+        assert_eq!(
+            reopened
+                .resolve("SESSION", Some(CONSUMER))
+                .await
+                .unwrap()
+                .expose(),
+            next.expose()
+        );
+        let disk = std::fs::read_to_string(fx.paths.vault_path()).unwrap();
+        assert!(!disk.contains(VALUE));
+        assert!(!disk.contains(next.expose()));
+    }
+
+    #[tokio::test]
+    async fn compare_and_set_authorizes_before_comparison_and_rechecks_revocation() {
+        let fx = fixture();
+        let store = Store::new(fx.paths, EnvKey::default());
+        let value = SecretString::from(VALUE);
+        for caller in [None, Some("intruder")] {
+            let error = store
+                .compare_and_set("SESSION", None, &value, Some(vec![CONSUMER.into()]), caller)
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, codes::SECRET_FORBIDDEN);
+        }
+        store
+            .set("SESSION", &value, Some(vec![CONSUMER.into()]), None)
+            .await
+            .unwrap();
+        for caller in [None, Some("intruder")] {
+            assert_eq!(
+                store
+                    .compare_and_set("SESSION", None, &value, None, caller)
+                    .await
+                    .unwrap_err()
+                    .code,
+                codes::SECRET_FORBIDDEN
+            );
+        }
+        store.access("SESSION", vec![]).await.unwrap();
+        assert_eq!(
+            store
+                .compare_and_set("SESSION", Some(&value), &value, None, Some(CONSUMER))
+                .await
+                .unwrap_err()
+                .code,
+            codes::SECRET_FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn compare_and_set_has_one_concurrent_winner_and_validates_values() {
+        let fx = fixture();
+        let store = Store::new(fx.paths, EnvKey::default());
+        let value = SecretString::from(VALUE);
+        store
+            .set("SESSION", &value, Some(vec![CONSUMER.into()]), None)
+            .await
+            .unwrap();
+        let a = SecretString::from("candidate-a");
+        let b = SecretString::from("candidate-b");
+        let (a, b) = tokio::join!(
+            store.compare_and_set("SESSION", Some(&value), &a, None, Some(CONSUMER)),
+            store.compare_and_set("SESSION", Some(&value), &b, None, Some(CONSUMER)),
+        );
+        assert_eq!(
+            usize::from(a.unwrap().is_some()) + usize::from(b.unwrap().is_some()),
+            1
+        );
+        for invalid in [
+            SecretString::from(""),
+            SecretString::from("x".repeat(MAX_VALUE_BYTES + 1)),
+        ] {
+            assert_eq!(
+                store
+                    .compare_and_set("SESSION", None, &invalid, None, Some(CONSUMER))
+                    .await
+                    .unwrap_err()
+                    .code,
+                codes::INVALID_REQUEST
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn compare_and_set_failed_write_keeps_previous_value() {
+        let fx = fixture();
+        let store = Store::new(fx.paths.clone(), EnvKey::default());
+        let value = SecretString::from(VALUE);
+        store
+            .set("SESSION", &value, Some(vec![CONSUMER.into()]), None)
+            .await
+            .unwrap();
+        let path = fx.paths.vault_path();
+        let previous = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(store
+            .compare_and_set(
+                "SESSION",
+                Some(&value),
+                &"replacement".into(),
+                None,
+                Some(CONSUMER)
+            )
+            .await
+            .is_err());
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::write(&path, previous).unwrap();
+        assert_eq!(
+            store
+                .resolve("SESSION", Some(CONSUMER))
+                .await
+                .unwrap()
+                .expose(),
+            VALUE
+        );
+        assert_eq!(
+            Store::new(fx.paths, EnvKey::default())
+                .resolve("SESSION", Some(CONSUMER))
+                .await
+                .unwrap()
+                .expose(),
+            VALUE
+        );
+    }
 
     #[tokio::test]
     async fn set_list_resolve_round_trip_never_exposes_the_value() {

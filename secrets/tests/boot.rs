@@ -82,6 +82,30 @@ fn steps() -> Vec<Value> {
         ),
         invocation(9, "secrets::get", json!({"name":"OPENAI_API_KEY"}), CONSOLE),
         invocation(10, "secrets::status", json!({}), CONSOLE),
+        invocation(
+            11,
+            "secrets::compare-and-set",
+            json!({
+                "name":"OPENAI_API_KEY", "expected":DOTENV_VALUE, "value":"rotated-openai-secret"
+            }),
+            ROUTER,
+        ),
+        invocation(
+            12,
+            "secrets::compare-and-set",
+            json!({
+                "name":"OPENAI_API_KEY", "expected":null, "value":"wrong-session"
+            }),
+            ROUTER,
+        ),
+        invocation(
+            13,
+            "secrets::compare-and-set",
+            json!({
+                "name":"OPENAI_API_KEY", "expected":null, "value":"intruder-session"
+            }),
+            FOREIGN_ROUTER,
+        ),
     ]
 }
 
@@ -185,7 +209,7 @@ async fn check(signal: Option<&str>) {
     let mut results = std::collections::BTreeMap::new();
     let mut delivered = Vec::new();
     tokio::time::timeout(Duration::from_secs(30), async {
-        while results.len() < 10 || delivered.is_empty() {
+        while results.len() < steps().len() || delivered.is_empty() {
             let frame = rx.recv().await.expect("engine connection stays open");
             if frame["type"] == "invocationresult" {
                 let step: u32 = frame["invocation_id"].as_str().unwrap()[24..]
@@ -203,7 +227,7 @@ async fn check(signal: Option<&str>) {
     .await
     .unwrap_or_else(|_| panic!("scripted conversation finished; frames so far: {frames:#?}"));
 
-    // Catalog: nine functions, the reload sink, the trigger type with schemas.
+    // Catalog, reload sink and trigger type all expose typed schemas.
     let functions: BTreeSet<&str> = frames
         .iter()
         .filter(|f| f["type"] == "registerfunction")
@@ -309,6 +333,9 @@ async fn check(signal: Option<&str>) {
     assert_eq!(status["key_source"], "file");
     assert_eq!(status["count"], 2);
     assert_eq!(status["version"], 1);
+    assert_eq!(result(11), json!({"swapped":true}));
+    assert_eq!(result(12), json!({"swapped":false}));
+    assert_eq!(error(13)["code"], "SECRET_FORBIDDEN");
     let key_path = std::path::PathBuf::from(status["key_path"].as_str().unwrap());
     assert!(
         key_path.starts_with(xdg.join("iii/secrets")),
