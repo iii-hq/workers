@@ -20,6 +20,9 @@ const DNS_PORT: u16 = 53;
 const DNS_MAX_SIZE: usize = 4096;
 const DNS_SOCKET_PACKET_SLOTS: usize = 16;
 const CHANNEL_CAPACITY: usize = 64;
+/// A lookup can take ~10s to time out (2 tries x 5s); this bounds the work
+/// a guest flooding unresolvable names can park on the runtime.
+const MAX_INFLIGHT_QUERIES: usize = 64;
 
 /// DNS query/response interceptor.
 ///
@@ -122,7 +125,7 @@ impl DnsInterceptor {
 }
 
 async fn dns_resolver_task(
-    mut query_rx: mpsc::Receiver<DnsQuery>,
+    query_rx: mpsc::Receiver<DnsQuery>,
     response_tx: mpsc::Sender<DnsResponse>,
     shared: Arc<SharedState>,
 ) {
@@ -133,16 +136,30 @@ async fn dns_resolver_task(
             return;
         }
     };
+    serve_queries(query_rx, response_tx, shared, resolver).await;
+}
 
+async fn serve_queries(
+    mut query_rx: mpsc::Receiver<DnsQuery>,
+    response_tx: mpsc::Sender<DnsResponse>,
+    shared: Arc<SharedState>,
+    resolver: hickory_resolver::TokioResolver,
+) {
+    let inflight = Arc::new(tokio::sync::Semaphore::new(MAX_INFLIGHT_QUERIES));
     while let Some(query) = query_rx.recv().await {
         // A DNS query is guest activity whether or not it resolves —
         // refresh the idle-reaper beacon at arrival, not at response.
         shared.note_activity();
+        let Ok(permit) = inflight.clone().try_acquire_owned() else {
+            tracing::debug!("too many DNS lookups in flight, dropping query");
+            continue;
+        };
         let response_tx = response_tx.clone();
         let shared = shared.clone();
         let resolver = resolver.clone();
 
         tokio::spawn(async move {
+            let _permit = permit;
             if let Some(response_data) = resolve_query(&query.data, &resolver).await {
                 let response = DnsResponse {
                     data: response_data,
@@ -235,6 +252,57 @@ mod tests {
         };
         assert_eq!(response.data.len(), 2);
         assert_eq!(response.dest.endpoint.port, 12345);
+    }
+
+    /// Lookups that hang (upstream never answers) must not pile up without
+    /// bound: past the cap, queries are dropped instead of spawning work.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inflight_lookups_are_capped() {
+        use hickory_resolver::config::{NameServerConfig, ResolverConfig};
+        use hickory_resolver::net::runtime::TokioRuntimeProvider;
+        use std::time::Duration;
+
+        // Receives queries and never answers.
+        let blackhole = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mut server = NameServerConfig::udp(std::net::Ipv4Addr::LOCALHOST.into());
+        server.connections[0].port = blackhole.local_addr().unwrap().port();
+        let mut builder = hickory_resolver::Resolver::builder_with_config(
+            ResolverConfig::from_name_servers(vec![server]),
+            TokioRuntimeProvider::default(),
+        );
+        builder.options_mut().timeout = Duration::from_millis(500);
+        builder.options_mut().attempts = 1;
+        let resolver = builder.build().unwrap();
+
+        let total = MAX_INFLIGHT_QUERIES + 16;
+        let (query_tx, query_rx) = mpsc::channel(total);
+        let (response_tx, mut response_rx) = mpsc::channel(total);
+        tokio::spawn(serve_queries(
+            query_rx,
+            response_tx,
+            Arc::new(SharedState::new(64)),
+            resolver,
+        ));
+        for i in 0..total {
+            let name = format!("q{i}.example.");
+            query_tx
+                .send(DnsQuery {
+                    data: query_bytes(&name, hickory_proto::rr::RecordType::A).into(),
+                    source: IpEndpoint::new(smoltcp::wire::IpAddress::v4(10, 0, 2, 2), 5353).into(),
+                })
+                .await
+                .unwrap();
+        }
+
+        // Every admitted lookup times out into a SERVFAIL, all at about the
+        // same moment; count them until the channel goes quiet.
+        let mut answered = 0;
+        let mut wait = Duration::from_secs(10);
+        while let Ok(Some(_)) = tokio::time::timeout(wait, response_rx.recv()).await {
+            answered += 1;
+            wait = Duration::from_secs(1);
+        }
+        assert_eq!(answered, MAX_INFLIGHT_QUERIES);
     }
 
     fn query_bytes(name: &str, record_type: hickory_proto::rr::RecordType) -> Vec<u8> {
