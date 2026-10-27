@@ -193,8 +193,17 @@ pub fn read_manifest_doc(
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
 
-    // A FIFO or device reports length 0: O_NONBLOCK keeps a FIFO from
-    // blocking the open, and only a regular file is read, through a bound.
+    let not_regular = || format!("{} is not a regular file", manifest_path.display());
+    // A FIFO or device reports length 0 and some devices act on open(2):
+    // check the followed type (a symlinked manifest stays valid) before the
+    // open, and again on the descriptor in case of a swap, where O_NONBLOCK
+    // keeps a FIFO from blocking. Only a regular file is read, through a bound.
+    match std::fs::metadata(manifest_path) {
+        Ok(meta) if !meta.is_file() => return Err(not_regular()),
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("cannot stat {}: {e}", manifest_path.display())),
+    }
     let file = match std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
@@ -208,7 +217,7 @@ pub fn read_manifest_doc(
         .metadata()
         .map_err(|e| format!("cannot stat {}: {e}", manifest_path.display()))?;
     if !meta.is_file() {
-        return Err(format!("{} is not a regular file", manifest_path.display()));
+        return Err(not_regular());
     }
     let too_big = |len: u64| {
         format!(
@@ -963,5 +972,12 @@ resources:
         let err = read_manifest_doc(&path).unwrap_err();
         assert!(err.contains("not a regular file"), "got: {err}");
         assert!(load_from_manifest(&path).is_none());
+
+        // open(2) fails on a socket, so this error proves the type check ran
+        // before the open (a device such as /dev/watchdog acts on open).
+        std::fs::remove_file(&path).unwrap();
+        let _socket = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let err = read_manifest_doc(&path).unwrap_err();
+        assert!(err.contains("not a regular file"), "got: {err}");
     }
 }
