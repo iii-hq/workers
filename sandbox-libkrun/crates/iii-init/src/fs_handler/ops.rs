@@ -11,8 +11,8 @@
 //! All handlers are **sync** (`fn`, not `async fn`) and use only
 //! `std::fs` / `std::io` — no tokio anywhere in this file.
 
-use std::io::{BufRead, Read};
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::io::{BufRead, Read, Write};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
 use iii_shell_proto::{FsEntry, FsMatch, FsResult, FsSedFileResult};
@@ -874,11 +874,17 @@ pub fn sed(
         let tmp = temp_sibling(p);
         let write_result: Result<(), std::io::Error> = (|| {
             let original_md = std::fs::metadata(p)?;
-            std::fs::write(&tmp, output.as_bytes())?;
-            std::fs::set_permissions(
-                &tmp,
-                std::fs::Permissions::from_mode(original_md.permissions().mode()),
-            )?;
+            // Private until complete, like an upload's temp file.
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&tmp)?;
+            f.write_all(output.as_bytes())?;
+            f.set_permissions(std::fs::Permissions::from_mode(
+                original_md.permissions().mode(),
+            ))?;
+            drop(f);
             std::fs::rename(&tmp, p)?;
             Ok(())
         })();

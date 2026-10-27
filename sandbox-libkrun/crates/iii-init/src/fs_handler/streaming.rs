@@ -20,7 +20,7 @@
 //! that feeds the wire writer thread).
 
 use std::io::{Read, Write};
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
@@ -110,7 +110,13 @@ pub(crate) fn handle_write_start_with_timeout(
     }
 
     let tmp = temp_sibling(&target);
-    let mut f = match std::fs::File::create(&tmp) {
+    // Private until complete: the requested mode is applied just before the rename.
+    let mut f = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)
+    {
         Ok(f) => f,
         Err(e) => return Err(FsError::from_io(&path, e)),
     };
@@ -186,12 +192,12 @@ pub(crate) fn handle_write_start_with_timeout(
         let _ = std::fs::remove_file(&tmp);
         return Err(FsError::from_io(&path, e));
     }
-    drop(f);
-
-    if let Err(e) = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(bits)) {
+    if let Err(e) = f.set_permissions(std::fs::Permissions::from_mode(bits)) {
         let _ = std::fs::remove_file(&tmp);
         return Err(FsError::from_io(&path, e));
     }
+    drop(f);
+
     if let Err(e) = std::fs::rename(&tmp, &target) {
         let _ = std::fs::remove_file(&tmp);
         return Err(FsError::from_io(&path, e));

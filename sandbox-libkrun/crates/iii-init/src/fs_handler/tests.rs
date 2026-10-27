@@ -355,6 +355,41 @@ fn write_stream_happy_path_atomic() {
     assert_eq!(md.permissions().mode() & 0o777, 0o600);
 }
 
+/// The upload's temp file is private until it is complete; the requested
+/// mode applies only to the finished file.
+#[test]
+fn write_stream_temp_file_is_private_until_renamed() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tmpdir();
+    let target = dir.path().join("secret.env");
+    let (tx, rx) = std::sync::mpsc::sync_channel::<ShellMessage>(8);
+    let path = target.to_string_lossy().into_owned();
+    let writer = std::thread::spawn(move || {
+        streaming::handle_write_start(path, "0644".into(), false, rx, &|| {})
+    });
+    tx.send(ShellMessage::FsChunk {
+        data_b64: b64_encode(b"TOKEN=1"),
+    })
+    .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let temp_mode = loop {
+        let temp = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .find(|e| e.file_name().to_string_lossy().contains(".iii-tmp-"));
+        if let Some(temp) = temp {
+            break temp.metadata().unwrap().permissions().mode() & 0o777;
+        }
+        assert!(std::time::Instant::now() < deadline, "no temp file");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    tx.send(ShellMessage::FsEnd).unwrap();
+    writer.join().unwrap().unwrap();
+    assert_eq!(temp_mode, 0o600);
+    let md = std::fs::metadata(&target).unwrap();
+    assert_eq!(md.permissions().mode() & 0o777, 0o644);
+}
+
 #[test]
 fn write_stream_early_channel_close_unlinks_temp() {
     let dir = tmpdir();
