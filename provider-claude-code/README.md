@@ -78,8 +78,10 @@ provider id `anthropic`.
   `authorization: Bearer`, `anthropic-version: 2023-06-01`,
   `anthropic-beta: oauth-2025-04-20`.
 - **Token counting:** `provider::claude-code::count_tokens` (behind
-  `router::count_tokens`) posts the assembled prompt (identity block included;
-  no `max_tokens`, `stream` or cache markers) to the messages endpoint's
+  `router::count_tokens`) posts the stream body (identity block, the
+  `thinking` / `output_config.effort` mapped from an optional `thinking_level`,
+  the trailing-assistant drop; no `max_tokens`, `stream` or cache markers) to
+  the messages endpoint's
   `count_tokens` sibling (`/v1/messages/count_tokens`) with the same OAuth
   credential and headers as streaming, for an exact provider-metered count
   (`estimator: "provider"`). It never runs the model and costs nothing; a
