@@ -484,6 +484,38 @@ containers:
         x86_64-unknown-linux-musl:
           sha256: 6b63e1a6c1f1f6dd1eca4921d2cf0456d536c0d0e7f19826c1b4da98d619110b
           url: https://api.workers.iii.dev/download/provider-anthropic/1.2.28/x86_64-unknown-linux-musl
+  provider-deepseek:
+    worker: package://provider-deepseek
+    requested: 0.1.22
+    resolved:
+      name: provider-deepseek
+      version: 0.1.22
+      type: binary
+      artifacts:
+        aarch64-apple-darwin:
+          sha256: 23bea475bb845c374a2f629af5b93aabf866c21917fb887eafb4c5b31aea6d98
+          url: https://api.workers.iii.dev/download/provider-deepseek/0.1.22/aarch64-apple-darwin
+        aarch64-pc-windows-msvc:
+          sha256: 1bc18350dd64077bca2b4c30d39934f52569f2d6b8b4e0afd93e9d2cd55fda41
+          url: https://api.workers.iii.dev/download/provider-deepseek/0.1.22/aarch64-pc-windows-msvc
+        aarch64-unknown-linux-gnu:
+          sha256: 34cb15ded2498da9e14f52c6c4cddc95404c3120f7b03bb3d3a49e35a61afc65
+          url: https://api.workers.iii.dev/download/provider-deepseek/0.1.22/aarch64-unknown-linux-gnu
+        armv7-unknown-linux-gnueabihf:
+          sha256: 9001b758478a79cf97e12eaebd3df70086d944b1f170485f1d7c292ec70fde9a
+          url: https://api.workers.iii.dev/download/provider-deepseek/0.1.22/armv7-unknown-linux-gnueabihf
+        x86_64-apple-darwin:
+          sha256: 369eea03f1dba7195a759c01ceebcbd4a6a7cbd02c70f75c8f38d7c49a8b3f51
+          url: https://api.workers.iii.dev/download/provider-deepseek/0.1.22/x86_64-apple-darwin
+        x86_64-pc-windows-msvc:
+          sha256: 5da094a4be65c19fbcfdfb76c2222d99ff6fa68708c08824f8ce2c124cbd6d16
+          url: https://api.workers.iii.dev/download/provider-deepseek/0.1.22/x86_64-pc-windows-msvc
+        x86_64-unknown-linux-gnu:
+          sha256: a5617ff62a144882cd5e13c1e20e3da146d46cfdc2e0b5cbc4e7a01cbd4cf855
+          url: https://api.workers.iii.dev/download/provider-deepseek/0.1.22/x86_64-unknown-linux-gnu
+        x86_64-unknown-linux-musl:
+          sha256: 5359d53bbf525e404824708a8223bf7714559764f8b9785210888bdce947c55c
+          url: https://api.workers.iii.dev/download/provider-deepseek/0.1.22/x86_64-unknown-linux-musl
   provider-openai:
     worker: package://provider-openai
     requested: 1.2.27
@@ -516,38 +548,6 @@ containers:
         x86_64-unknown-linux-musl:
           sha256: c8b02ae701d482cb2134c7e2f5a4699f188c31100d0f664f9e1633777fafd080
           url: https://api.workers.iii.dev/download/provider-openai/1.2.27/x86_64-unknown-linux-musl
-  provider-openai-codex:
-    worker: package://provider-openai-codex
-    requested: 0.4.28
-    resolved:
-      name: provider-openai-codex
-      version: 0.4.28
-      type: binary
-      artifacts:
-        aarch64-apple-darwin:
-          sha256: 276b502f0149d183fdf5528ad9328e5efbeb6456cc2d150bd1b5ba10d7a79995
-          url: https://api.workers.iii.dev/download/provider-openai-codex/0.4.28/aarch64-apple-darwin
-        aarch64-pc-windows-msvc:
-          sha256: 2975e1e4c53fb7b740922fb52c1ce76365249f3b9cd9663b701b309084ae51b8
-          url: https://api.workers.iii.dev/download/provider-openai-codex/0.4.28/aarch64-pc-windows-msvc
-        aarch64-unknown-linux-gnu:
-          sha256: 1e0ce6b592f400837fde2582c98ae4a7212b9c3296138a0c2042f2fa1e06f79a
-          url: https://api.workers.iii.dev/download/provider-openai-codex/0.4.28/aarch64-unknown-linux-gnu
-        armv7-unknown-linux-gnueabihf:
-          sha256: f8bb4b5a11ea821b5d6977b132e951683a24a002956b6b1c8301a8df72151aed
-          url: https://api.workers.iii.dev/download/provider-openai-codex/0.4.28/armv7-unknown-linux-gnueabihf
-        x86_64-apple-darwin:
-          sha256: 1e97515c6bc47862a14f40f98cfc81c1734390e70559c8846a8601bacaae6428
-          url: https://api.workers.iii.dev/download/provider-openai-codex/0.4.28/x86_64-apple-darwin
-        x86_64-pc-windows-msvc:
-          sha256: 754353948f4e4fcc3888253cbf6213108fd04c74998698075bf20cdad51521ed
-          url: https://api.workers.iii.dev/download/provider-openai-codex/0.4.28/x86_64-pc-windows-msvc
-        x86_64-unknown-linux-gnu:
-          sha256: 53ab0cef40269833b099ff62609ee40e57d8538eca192c8c9fe661a58eaf9f52
-          url: https://api.workers.iii.dev/download/provider-openai-codex/0.4.28/x86_64-unknown-linux-gnu
-        x86_64-unknown-linux-musl:
-          sha256: c858fce9027bd5265c48e6da67c9e46dcbfdfa5f639025b3d1f12d74be47900c
-          url: https://api.workers.iii.dev/download/provider-openai-codex/0.4.28/x86_64-unknown-linux-musl
   queue:
     worker: package://queue
     requested: 0.21.26

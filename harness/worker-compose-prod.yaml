@@ -43,10 +43,12 @@ containers:
   llm-router:
     worker: path://../llm-router
     start_after: [state, secrets]
-    environment: &no_provider_credentials
-      ANTHROPIC_API_KEY: ""
-      OPENAI_API_KEY: ""
-      DEEPSEEK_API_KEY: ""
+    # The three providers below read their key from the environment's secrets in iii cloud
+    # (Variables); unset, it is empty and the provider stays unconfigured.
+    environment: &provider_credentials
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       OPENROUTER_API_KEY: ""
       COMMAND_CODE_API_KEY: ""
       MOONSHOT_API_KEY: ""
@@ -65,17 +67,17 @@ containers:
     worker: package://provider-anthropic
     version: "1.2.28"
     start_after: [state, llm-router]
-    environment: *no_provider_credentials
+    environment: *provider_credentials
   provider-openai:
     worker: package://provider-openai
     version: "1.2.27"
     start_after: [state, llm-router]
-    environment: *no_provider_credentials
-  provider-openai-codex:
-    worker: package://provider-openai-codex
-    version: "0.4.28"
+    environment: *provider_credentials
+  provider-deepseek:
+    worker: package://provider-deepseek
+    version: "0.1.22"
     start_after: [state, llm-router]
-    environment: *no_provider_credentials
+    environment: *provider_credentials
   context-manager:
     worker: package://context-manager
     version: "1.1.23"
@@ -111,4 +113,4 @@ containers:
   harness:
     worker: package://harness
     version: "1.8.62"
-    start_after: [state, queue, session-manager, llm-router, provider-anthropic, provider-openai, provider-openai-codex, context-manager, cron, fp, ide, iii-directory, judge, ade]
+    start_after: [state, queue, session-manager, llm-router, provider-anthropic, provider-openai, provider-deepseek, context-manager, cron, fp, ide, iii-directory, judge, ade]
