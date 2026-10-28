@@ -199,7 +199,8 @@ async fn indexes_the_imports_of_a_workspace_reached_through_a_symlink() {
     };
     let tmp = tempfile::tempdir().unwrap();
     let link = tmp.path().join("link");
-    std::os::unix::fs::symlink(&fixture, &link).unwrap();
+    // A relative target would resolve from the link's own directory.
+    std::os::unix::fs::symlink(std::path::absolute(&fixture).unwrap(), &link).unwrap();
     let workspace: WorkspaceConfig =
         serde_json::from_value(serde_json::json!({ "name": "ws", "path": link })).unwrap();
     let config = StoriesConfig {
