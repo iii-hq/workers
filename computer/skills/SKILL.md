@@ -179,14 +179,33 @@ not reflexively after each action; a `computer::act` returns a short confirming
 
 ## Reactive triggers
 
-Bind a `computer::*` trigger when another function should react to session
-activity instead of polling. The types: `computer::session-started` (payload
-carries `endpoint`, `os`, `screen`), `computer::session-stopped` (payload
-carries `reason`) and `computer::activity` (a `computer::act` call reached the
-session, or a `computer::run` started on it; payload carries `function`). All accept an
-optional `session_id` equality filter.
+React to session activity instead of polling. On an iii 0.25 engine, observe
+the observable function; the `computer::*` trigger types stay for consumers
+that bind them (0.24 and 0.25 engines). The events: session started
+(`computer::on-session-started` / trigger `computer::session-started`, payload
+carries `endpoint`, `os`, `screen`), session stopped
+(`computer::on-session-stopped` / `computer::session-stopped`, payload carries
+`reason`) and activity (`computer::on-activity` / `computer::activity`: a
+`computer::act` call reached the session, or a `computer::run` started on it;
+payload carries `function`). All accept an optional `session_id` equality
+filter, as args or as trigger config.
 
-### How to bind
+### How to observe (iii 0.25)
+
+1. Register a handler: `registerFunction('mywatcher::on-desktop', handler)`.
+2. Observe the function:
+
+```typescript
+iii.observe(
+  { function_id: 'computer::on-session-stopped', args: { session_id: 'c1' } },
+  'mywatcher::on-desktop',
+)
+```
+
+Never invoke a `computer::on-*` function yourself: only the computer worker
+emits its events, and a direct call is refused with `FORBIDDEN`.
+
+### How to bind (trigger type)
 
 1. Register a handler: `registerFunction('mywatcher::on-desktop', handler)`.
 2. Register the trigger:

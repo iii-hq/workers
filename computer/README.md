@@ -261,16 +261,31 @@ and size the VM (memory, CPUs); a new OCI image goes into `custom_images`
 first, since iii-sandbox only boots names from its catalog.
 iii-sandbox boots on macOS Apple Silicon (libkrun) and Linux (`/dev/kvm`).
 
-## Custom trigger types
+## Custom trigger types and observable functions
 
 Sibling workers (and the console page) subscribe to session activity instead of
-polling. Every binding accepts an optional `{ "session_id": "..." }` filter.
+polling. On an iii 0.25 engine, observe the `computer::on-*` function next to
+each trigger type; the trigger types stay, unchanged, for consumers that bind
+them on 0.24 and 0.25 engines. Every binding config and every observer's args
+accept an optional `{ "session_id": "..." }` filter (unknown keys are refused).
 
-| Trigger type | Fires when | Payload to subscribers |
-|---|---|---|
-| `computer::session-started` | A session connected and is ready | `{ session_id, endpoint, os, screen, timestamp }` |
-| `computer::session-stopped` | A session ended | `{ session_id, reason: "stopped" \| "idle", timestamp }` |
-| `computer::activity` | A `computer::act` call reached a session, or a `computer::run` started on it | `{ session_id, function, timestamp }` |
+| Observable function | Trigger type | Fires when | Payload to subscribers |
+|---|---|---|---|
+| `computer::on-session-started` | `computer::session-started` | A session connected and is ready | `{ session_id, endpoint, os, screen, timestamp }` |
+| `computer::on-session-stopped` | `computer::session-stopped` | A session ended | `{ session_id, reason: "stopped" \| "idle", timestamp }` |
+| `computer::on-activity` | `computer::activity` | A `computer::act` call reached a session, or a `computer::run` started on it | `{ session_id, function, timestamp }` |
+
+```typescript
+iii.observe(
+  { function_id: 'computer::on-session-stopped', args: { session_id: 'c1' } },
+  'mywatcher::on-desktop',
+)
+```
+
+The on-* functions are owner-delivered event sources: the worker hands each
+event to the observers whose `session_id` matches, in-process. Invoking one
+directly is refused with `FORBIDDEN`, so nobody can forge an event; malformed
+args reject the observer with `INVALID_ARGS`.
 
 ## Live screen
 
@@ -288,12 +303,15 @@ when it opens and `stop` when it closes; the capture runs while one remains,
 and one nobody follows any more (a window closed without a `stop`) stops by
 itself after 10 seconds.
 
-| Trigger type | Fires when | Payload to subscribers |
-|---|---|---|
-| `computer::frame-changed` | A new frame was stored (`change: "updated"`), or the frame was dropped because the screencast or session stopped (`change: "cleared"`) | `{ session_id, epoch, frame_seq, change, width, height, mime?, bytes?, timestamp }` |
+| Observable function | Trigger type | Fires when | Payload to subscribers |
+|---|---|---|---|
+| `computer::on-frame-changed` | `computer::frame-changed` | A new frame was stored (`change: "updated"`), or the frame was dropped because the screencast or session stopped (`change: "cleared"`) | `{ session_id, epoch, frame_seq, change, width, height, mime?, bytes?, timestamp }` |
 
-The binding config `{ "session_id": "..." }` is **required** (a viewer follows
-one desktop). Order frames by `(epoch, frame_seq)`; `epoch` changes when the
+The binding config (or observer args) `{ "session_id": "..." }` is
+**required** (a viewer follows one desktop). Bindings and observers share the
+64-subscriber cap (`LIMIT_REACHED` for an observer past it) and the same
+latest-wins coalescing; invoking `computer::on-frame-changed` is refused with
+`FORBIDDEN`. Order frames by `(epoch, frame_seq)`; `epoch` changes when the
 worker restarts or restores the session. Bind first, then read
 `computer::frame` once for the current frame; read it again after each
 notification (pass `since_frame` to skip an unchanged image) and after a

@@ -6,7 +6,7 @@ manifest: Cargo.toml
 license: Apache-2.0
 bin: computer
 tags: [computer-use, desktop, screenshot, gui, automation]
-description: Drive a full desktop on the iii bus. Start a session on the local machine, a sandboxed desktop, or a remote one, screenshot it, click and type by coordinate, read app accessibility trees and act on elements by reference (native sessions), and stream the live screen.
+description: Drive a full desktop on the iii bus. Start a session on the local machine, a sandboxed desktop, or a remote one, screenshot it, click and type by coordinate, read app accessibility trees and act on elements by reference (native sessions), and stream the live screen. Registers the `computer::session-started`, `computer::session-stopped`, `computer::activity` and `computer::frame-changed` trigger types and, next to them, the observable functions `computer::on-session-started`, `computer::on-session-stopped`, `computer::on-activity` and `computer::on-frame-changed` (iii 0.25).
 
 dependencies:
   configuration: "latest"
