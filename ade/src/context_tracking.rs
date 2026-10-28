@@ -373,7 +373,11 @@ pub fn register(iii: &Arc<IIIClient>, store: Arc<WorkspaceStore>) {
             json!({"on_error":"fail_open"}),
         ),
     ] {
-        if let Err(e) = iii.register_trigger(RegisterTriggerInput::new(kind, function, config)) {
+        // Deprecated in 0.25 (observe the hook function instead) and still
+        // served by 0.24 and 0.25 engines.
+        #[allow(deprecated)]
+        let bound = iii.register_trigger(RegisterTriggerInput::new(kind, function, config));
+        if let Err(e) = bound {
             tracing::warn!(%e, "failed to bind Context tracking hook");
         }
     }

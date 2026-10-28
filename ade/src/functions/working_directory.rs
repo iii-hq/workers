@@ -251,6 +251,9 @@ pub fn register(iii: &Arc<IIIClient>) {
     );
 }
 
+// register_trigger is deprecated in 0.25 and still served by 0.24 and 0.25
+// engines.
+#[allow(deprecated)]
 pub fn bind(iii: &IIIClient) -> Result<(), Error> {
     iii.register_trigger(RegisterTriggerInput::new(
         "harness::hook::pre-trigger",

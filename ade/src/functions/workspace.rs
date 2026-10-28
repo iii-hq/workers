@@ -31,12 +31,16 @@ use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::{TriggerRequest, TriggerRequestWithMetadata};
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterFunction, RegisterTriggerType, TriggerAction};
+use iii_sdk::{
+    IIIClient, Observe, ObserveHandler, ObserveRejection, Observer, RegisterFunction,
+    RegisterTriggerType, TriggerAction,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tokio::sync::mpsc;
 
+use crate::observe::{deliver_when_active, observer_key, refuse_invocation, EventObserver};
 use crate::workspace_store::{self, WorkspaceStore};
 
 pub const CHAT_SCREEN: &str = "chat";
@@ -53,6 +57,14 @@ const CODE_CONFLICT: &str = "WORKSPACE_CONFLICT";
 
 /// Rung after every layout write; the event is empty, re-read with `list`.
 pub const CHANGED_TRIGGER: &str = "console::workspace::changed";
+/// The observable function next to [`CHANGED_TRIGGER`].
+pub const ON_CHANGED_FN: &str = "console::on-workspace-changed";
+const ON_CHANGED_DESCRIPTION: &str =
+    "Fires after every change to the console workspace layout (open, close, or a browser's \
+     own edit), and once when an observer is added. Observe it with args {}; the event is \
+     empty, as for console::workspace::changed bindings: re-read the layout with \
+     console::workspace::list. Only the console worker fires it: invoking it directly is \
+     refused (FORBIDDEN).";
 const RING_GAP: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -844,7 +856,15 @@ struct Binding {
     namespace: Option<String>,
 }
 
-type Bindings = Arc<RwLock<HashMap<String, Binding>>>;
+/// One entry of the trigger type's registry: a `console::workspace::changed`
+/// binding or a `console::on-workspace-changed` observer.
+#[derive(Clone)]
+enum Target {
+    Binding(Binding),
+    Observer(Arc<dyn EventObserver>),
+}
+
+type Bindings = Arc<RwLock<HashMap<String, Target>>>;
 
 /// The map mirrors the engine's register/unregister callbacks. They reach this
 /// handler in arrival order (the SDK's connection runtime is single-threaded
@@ -878,7 +898,7 @@ impl TriggerHandler for ChangedHandler {
         self.bindings
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(config.id, binding.clone());
+            .insert(config.id, Target::Binding(binding.clone()));
         let _ = self.joined.send(binding);
         Ok(())
     }
@@ -892,6 +912,57 @@ impl TriggerHandler for ChangedHandler {
     }
 }
 
+/// Observers of `console::on-workspace-changed`, filed in the registry the
+/// `console::workspace::changed` bindings live in: each one is rung after
+/// every store write, and once as soon as it is live, exactly like a binding.
+struct OnChangedHandler {
+    bindings: Bindings,
+}
+
+impl OnChangedHandler {
+    fn add(&self, observer: Arc<dyn EventObserver>) {
+        let key = observer_key(observer.id());
+        self.bindings
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(key, Target::Observer(observer.clone()));
+        // The SDK acks the observer after this hook returns: the first ring
+        // waits until the engine marks it active.
+        tokio::spawn(async move {
+            deliver_when_active(observer.as_ref(), json!({})).await;
+        });
+    }
+
+    fn remove(&self, id: &str) {
+        self.bindings
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&observer_key(id));
+    }
+}
+
+#[async_trait]
+impl ObserveHandler for OnChangedHandler {
+    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
+        // Checked by the engine against args_format.
+        let _: ChangedSpec = obs.args()?;
+        self.add(Arc::new(obs.clone()));
+        tracing::info!(observer = %obs.id(), target = %obs.target(), "{ON_CHANGED_FN} observer added");
+        Ok(())
+    }
+
+    async fn on_observer_removed(&self, obs: &Observer) {
+        self.remove(obs.id());
+        tracing::info!(observer = %obs.id(), "{ON_CHANGED_FN} observer removed");
+    }
+}
+
+/// The handler of `console::on-workspace-changed`: its events come only from
+/// the store's writes.
+fn refuse_on_changed(_event: Value) -> Result<(), Error> {
+    Err(refuse_invocation(ON_CHANGED_FN))
+}
+
 /// Ring every `console::workspace::changed` binding after each store write:
 /// browsers do not poll the layout, they re-read it on the ring. The writer's
 /// own tab is rung too: an injected page (learn-iii) calling `open` over the
@@ -899,6 +970,9 @@ impl TriggerHandler for ChangedHandler {
 fn register_changed(iii: &Arc<IIIClient>, store: &WorkspaceStore) {
     let bindings = Bindings::default();
     let (joined, mut joined_rx) = mpsc::unbounded_channel();
+    // Deprecated in 0.25 and still served by 0.24 and 0.25 engines: kept for
+    // the browsers that bind the trigger type.
+    #[allow(deprecated)]
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
             CHANGED_TRIGGER,
@@ -913,6 +987,18 @@ fn register_changed(iii: &Arc<IIIClient>, store: &WorkspaceStore) {
         .trigger_request_format::<ChangedSpec>()
         .call_request_format::<ChangedEvent>(),
     );
+    iii.register_function(
+        ON_CHANGED_FN,
+        RegisterFunction::new(refuse_on_changed)
+            .description(ON_CHANGED_DESCRIPTION)
+            .observe(
+                Observe::owner()
+                    .args_format::<ChangedSpec>()
+                    .handler(OnChangedHandler {
+                        bindings: bindings.clone(),
+                    }),
+            ),
+    );
     let joined_iii = iii.clone();
     tokio::spawn(async move {
         while let Some(target) = joined_rx.recv().await {
@@ -924,19 +1010,32 @@ fn register_changed(iii: &Arc<IIIClient>, store: &WorkspaceStore) {
     let iii = iii.clone();
     tokio::spawn(async move {
         while changed.changed().await.is_ok() {
-            let targets: Vec<Binding> = bindings
+            let targets: Vec<Target> = bindings
                 .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .values()
                 .cloned()
                 .collect();
             for target in targets {
-                ring(&iii, target).await;
+                match target {
+                    Target::Binding(binding) => ring(&iii, binding).await,
+                    Target::Observer(observer) => ring_observer(observer),
+                }
             }
             // ponytail: a fixed gap bounds a burst (the divider writes on every
             // keydown) to ~10 rings/s per browser; the watch channel still rings
             // once more after the burst ends.
             tokio::time::sleep(RING_GAP).await;
+        }
+    });
+}
+
+/// Rings one observer without holding up the others (fire-and-forget, like
+/// a binding's `Void` ring).
+fn ring_observer(observer: Arc<dyn EventObserver>) {
+    tokio::spawn(async move {
+        if let Err(error) = observer.deliver(json!({})).await {
+            tracing::debug!(observer = %observer.id(), %error, "workspace observer ring failed");
         }
     });
 }
@@ -1806,5 +1905,94 @@ mod tests {
         assert_eq!(doc["tabs"][0]["screens"], json!(["chat"]));
         assert_eq!(workspace_store::revision(&doc), 4);
         let _ = std::fs::remove_dir_all(store.dir().await);
+    }
+
+    /// A `console::on-workspace-changed` observer that records its rings.
+    struct Recorder {
+        id: String,
+        events: mpsc::UnboundedSender<Value>,
+    }
+
+    #[async_trait]
+    impl EventObserver for Recorder {
+        fn id(&self) -> &str {
+            &self.id
+        }
+
+        async fn deliver(&self, event: Value) -> Result<(), String> {
+            self.events.send(event).map_err(|error| error.to_string())
+        }
+    }
+
+    async fn next_ring(received: &mut mpsc::UnboundedReceiver<Value>) -> Value {
+        tokio::time::timeout(Duration::from_secs(5), received.recv())
+            .await
+            .expect("the observer is rung")
+            .expect("one ring")
+    }
+
+    #[test]
+    fn on_workspace_changed_refuses_direct_invocation() {
+        for payload in [json!({}), json!({ "forged": true }), Value::Null] {
+            let error = refuse_on_changed(payload).unwrap_err();
+            assert!(
+                matches!(&error, Error::Remote { code, message, .. }
+                    if code == "FORBIDDEN" && message.contains(ON_CHANGED_FN)),
+                "{error:?}"
+            );
+        }
+        assert_eq!(ON_CHANGED_FN, "console::on-workspace-changed");
+    }
+
+    #[tokio::test]
+    async fn an_observer_is_rung_with_the_event_a_binding_receives() {
+        let bindings = Bindings::default();
+        let (joined, mut joined_rx) = mpsc::unbounded_channel();
+        let bound = ChangedHandler {
+            bindings: bindings.clone(),
+            joined,
+        };
+        bound
+            .register_trigger(changed_binding("tab", json!({})))
+            .await
+            .unwrap();
+        joined_rx.try_recv().unwrap();
+
+        let (events, mut received) = mpsc::unbounded_channel();
+        let observers = OnChangedHandler {
+            bindings: bindings.clone(),
+        };
+        observers.add(Arc::new(Recorder {
+            id: "obs-1".to_string(),
+            events,
+        }));
+
+        // Rung once as soon as it is live, as a joining binding is, with the
+        // empty ChangedEvent a binding's ring carries.
+        let binding_event = serde_json::to_value(ChangedEvent {}).unwrap();
+        assert_eq!(binding_event, json!({}));
+        assert_eq!(next_ring(&mut received).await, binding_event);
+        {
+            let registry = bindings.read().unwrap();
+            assert!(registry.contains_key("tab"), "the binding is kept");
+            assert!(registry.contains_key(&observer_key("obs-1")));
+        }
+
+        // A store write rings every target of the shared registry.
+        let targets: Vec<Target> = bindings.read().unwrap().values().cloned().collect();
+        let mut rung = 0;
+        for target in targets {
+            if let Target::Observer(observer) = target {
+                ring_observer(observer);
+                rung += 1;
+            }
+        }
+        assert_eq!(rung, 1);
+        assert_eq!(next_ring(&mut received).await, binding_event);
+
+        observers.remove("obs-1");
+        let registry = bindings.read().unwrap();
+        assert!(!registry.contains_key(&observer_key("obs-1")));
+        assert!(registry.contains_key("tab"));
     }
 }

@@ -125,6 +125,16 @@ changes.
   Empty config, empty event: a page that watches the layout binds it and
   re-reads `console::workspace::list`.
 
+On a 0.25 engine new code observes the owner-delivered function next to a
+change trigger instead of binding it: `console::on-workspace-changed` and
+`console::on-compose-changed`, both with args `{}`, deliver the same event as
+`console::workspace::changed` and `console::compose::changed`. Invoking them
+directly is refused with `FORBIDDEN`; the trigger types keep working. The
+same holds for the injectable UI: `console::on-script`, `console::on-style`
+and `console::on-module` (args `{ path }`; the console calls the observer with
+`{ path }` for `{ content, content_type? }`) and `console::on-assets` (args
+`{}`; the observer receives the `sync`/`set`/`delete` events).
+
 Bind the first two once per asset at worker startup, after the content
 function is registered. Re-registering the same path with different bytes
 hot-swaps the asset in every open tab; identical bytes are a no-op. Rust
