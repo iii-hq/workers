@@ -40,7 +40,7 @@ uuid = { version = "1", features = ["v4"] }
 iii-worker-paths = { path = "../crates/worker-paths" }
 # Inline preview: the harness counts a result's base64 twice against its
 # 256 KiB cap, so the chat gets a downscaled JPEG while data/ keeps the original.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["net", "io-util", "test-util"] }

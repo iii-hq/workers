@@ -51,7 +51,7 @@ const IMAGE_MAX_TILES: u64 = 8;
 // The most patches a model bills: gpt-5/5.1 mini and nano shrink an image to
 // 4096, gpt-5.2 to 5.5 to 10000, and gpt-5.6 and gpt-6 reject one over 30000.
 const IMAGE_PATCH_BUDGETS: [u64; 3] = [4096, 10000, 30000];
-// Base64 that holds a png/webp header and most jpeg ones (EXIF comes first);
+// Base64 that holds a png/webp/gif header and most jpeg ones (EXIF comes first);
 // a multiple of 4 so it decodes alone. The whole image is the fallback.
 const IMAGE_HEADER_B64: usize = 128 * 1024;
 
@@ -472,6 +472,21 @@ mod tests {
         let data = base64::engine::general_purpose::STANDARD.encode(bytes) + "!";
         let url = format!("data:image/png;base64,{data}");
         assert_eq!(image_tokens("codex/gpt-5.5", &url), 297);
+    }
+
+    #[test]
+    fn every_input_format_openai_accepts_is_sized() {
+        use image::ImageFormat::{Gif, Jpeg, Png, WebP};
+        for format in [Png, Jpeg, WebP, Gif] {
+            let mut bytes = Vec::new();
+            image::DynamicImage::new_rgb8(256, 256)
+                .write_to(&mut std::io::Cursor::new(&mut bytes), format)
+                .unwrap();
+            let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+            let url = format!("data:{};base64,{data}", format.to_mime_type());
+            // 8x8 patches at gpt-5.5's rate, not the 12001 of an unread image.
+            assert_eq!(image_tokens("codex/gpt-5.5", &url), 77, "{format:?}");
+        }
     }
 
     #[test]
