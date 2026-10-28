@@ -33,59 +33,61 @@ pub fn bundle_workers_disabled() -> bool {
     std::env::var(ENV_BUNDLE_WORKERS_DISABLED).ok().as_deref() == Some("1")
 }
 
+/// Read `<manifest_dir>/iii.worker.yaml`, at most
+/// [`MAX_BUNDLE_MANIFEST_BYTES`] of it.
+///
+/// The cap keeps a publisher-controlled billion-laughs YAML (chained
+/// `&anchor` / `*alias` expansion) from reaching serde_yaml::from_str:
+/// serde_yaml 0.9.x is libyaml-based and does not gate exponential alias
+/// expansion in-tree. 64 KiB is plenty for a real manifest and bounds
+/// worst-case expansion to a few MiB. The install dir is the guest's
+/// read-write /workspace, so the manifest may also be a planted symlink to
+/// a host file or to a device such as /dev/zero: it is opened without
+/// following links, must be a regular file, and the read itself stops past
+/// the cap rather than trusting a size checked beforehand.
+fn read_bundle_manifest(manifest_dir: &std::path::Path) -> Result<String, WorkerOpError> {
+    use std::io::Read;
+
+    let name = std::path::Path::new("iii.worker.yaml");
+    let manifest_path = manifest_dir.join(name);
+    let io_error = |source| WorkerOpError::ConfigIo {
+        path: manifest_path.clone(),
+        source,
+    };
+    let file = match crate::cli::worker_manager::oci::open_rootfs_file_no_follow(manifest_dir, name)
+    {
+        Ok(file) => file,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            return Err(WorkerOpError::BundleManifestRejected {
+                field: "iii.worker.yaml".into(),
+                reason: "manifest must exist at archive root".into(),
+            });
+        }
+        Err(source) => return Err(io_error(source)),
+    };
+    let mut bytes = Vec::new();
+    file.take(MAX_BUNDLE_MANIFEST_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(io_error)?;
+    if bytes.len() as u64 > MAX_BUNDLE_MANIFEST_BYTES {
+        return Err(WorkerOpError::BundleManifestRejected {
+            field: "iii.worker.yaml".into(),
+            reason: format!(
+                "manifest is over {MAX_BUNDLE_MANIFEST_BYTES} bytes; bundle manifests are \
+                 capped at {MAX_BUNDLE_MANIFEST_BYTES} bytes (billion-laughs YAML defense)"
+            ),
+        });
+    }
+    String::from_utf8(bytes)
+        .map_err(|e| io_error(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
+}
+
 pub fn validate_bundle_manifest(
     manifest_dir: &std::path::Path,
     expected_name: &str,
 ) -> Result<String, WorkerOpError> {
     let manifest_path = manifest_dir.join("iii.worker.yaml");
-    // Cap manifest size BEFORE the read so a publisher-controlled
-    // billion-laughs YAML (chained `&anchor` / `*alias` expansion) can
-    // never reach serde_yaml::from_str. serde_yaml 0.9.x is libyaml-
-    // based and does not gate exponential alias expansion in-tree.
-    // 64 KiB is plenty for a real manifest and bounds worst-case
-    // expansion to a few MiB.
-    match std::fs::metadata(&manifest_path) {
-        Ok(meta) if meta.len() > MAX_BUNDLE_MANIFEST_BYTES => {
-            return Err(WorkerOpError::BundleManifestRejected {
-                field: "iii.worker.yaml".into(),
-                reason: format!(
-                    "manifest is {} bytes; bundle manifests are capped at {} bytes \
-                     (billion-laughs YAML defense)",
-                    meta.len(),
-                    MAX_BUNDLE_MANIFEST_BYTES,
-                ),
-            });
-        }
-        Ok(_) => {}
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-            return Err(WorkerOpError::BundleManifestRejected {
-                field: "iii.worker.yaml".into(),
-                reason: "manifest must exist at archive root".into(),
-            });
-        }
-        Err(source) => {
-            return Err(WorkerOpError::ConfigIo {
-                path: manifest_path,
-                source,
-            });
-        }
-    }
-
-    let content = match std::fs::read_to_string(&manifest_path) {
-        Ok(c) => c,
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-            return Err(WorkerOpError::BundleManifestRejected {
-                field: "iii.worker.yaml".into(),
-                reason: "manifest must exist at archive root".into(),
-            });
-        }
-        Err(source) => {
-            return Err(WorkerOpError::ConfigIo {
-                path: manifest_path,
-                source,
-            });
-        }
-    };
+    let content = read_bundle_manifest(manifest_dir)?;
 
     let doc: serde_yaml::Value =
         serde_yaml::from_str(&content).map_err(|e| WorkerOpError::ConfigParse {
@@ -235,26 +237,7 @@ pub fn parse_bundle_resources(
     caps: ResourceCaps,
 ) -> Result<ResolvedBundleResources, WorkerOpError> {
     let manifest_path = manifest_dir.join("iii.worker.yaml");
-    // Same billion-laughs defense as validate_bundle_manifest: refuse
-    // to even read a manifest larger than MAX_BUNDLE_MANIFEST_BYTES.
-    if let Ok(meta) = std::fs::metadata(&manifest_path)
-        && meta.len() > MAX_BUNDLE_MANIFEST_BYTES
-    {
-        return Err(WorkerOpError::BundleManifestRejected {
-            field: "iii.worker.yaml".into(),
-            reason: format!(
-                "manifest is {} bytes; bundle manifests are capped at {} bytes \
-                 (billion-laughs YAML defense)",
-                meta.len(),
-                MAX_BUNDLE_MANIFEST_BYTES,
-            ),
-        });
-    }
-    let content =
-        std::fs::read_to_string(&manifest_path).map_err(|source| WorkerOpError::ConfigIo {
-            path: manifest_path.clone(),
-            source,
-        })?;
+    let content = read_bundle_manifest(manifest_dir)?;
     let doc: serde_yaml::Value =
         serde_yaml::from_str(&content).map_err(|e| WorkerOpError::ConfigParse {
             path: manifest_path,
@@ -415,6 +398,30 @@ mod tests {
                 assert_eq!(field, "iii.worker.yaml");
             }
             other => panic!("expected BundleManifestRejected iii.worker.yaml, got {other:?}"),
+        }
+    }
+
+    /// The install dir is the guest's read-write /workspace. A manifest it
+    /// symlinks to a host file or to /dev/zero must be refused, not followed:
+    /// the device passed the size check (length 0) and was read without bound.
+    #[test]
+    fn manifest_readers_refuse_symlinked_manifests() {
+        let tmp = tempfile::tempdir().unwrap();
+        let host = tmp.path().join("host.yaml");
+        std::fs::write(&host, "name: foo\nscripts:\n  start: node x.js\n").unwrap();
+        for target in [host.as_path(), std::path::Path::new("/dev/zero")] {
+            let dir = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink(target, dir.path().join("iii.worker.yaml")).unwrap();
+            assert!(
+                validate_bundle_manifest(dir.path(), "foo").is_err(),
+                "validate followed a symlink to {}",
+                target.display()
+            );
+            assert!(
+                parse_bundle_resources(dir.path(), ResourceCaps::default()).is_err(),
+                "parse_bundle_resources followed a symlink to {}",
+                target.display()
+            );
         }
     }
 

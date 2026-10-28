@@ -153,8 +153,12 @@ fn shell_quote_special_chars() {
 
 #[test]
 fn shell_quote_empty_string() {
-    // Empty string has no unsafe chars, passes through unchanged.
-    assert_eq!(shell_quote(""), "");
+    // Unquoted, an empty arg vanishes and every later arg shifts.
+    assert_eq!(shell_quote(""), "''");
+    assert_eq!(
+        build_worker_cmd("x", &[String::new(), "tail".to_string()]),
+        "x '' tail"
+    );
 }
 
 #[test]

@@ -48,6 +48,8 @@ const DRAIN_GRACE: Duration = Duration::from_secs(1);
 /// How often a following `worker::logs` looks for new records.
 const FOLLOW_POLL: Duration = Duration::from_millis(200);
 const CONSOLE_LOG: &str = "console.log";
+/// Where `console.log` rotates to; one rotated file is kept.
+const CONSOLE_LOG_OLD: &str = "console.log.1";
 const STATE_FILE: &str = "state.json";
 
 /// The worker VMs of one project, behind its token and host roots.
@@ -92,6 +94,8 @@ struct Vm {
     reaped: AtomicBool,
     /// `None` until the waiter records the exit, after the pumps drain.
     ended: watch::Sender<Option<Ended>>,
+    /// The log its pumps append to; `worker::logs` reads it under this lock.
+    console: Arc<Mutex<Console>>,
 }
 
 #[derive(Clone, Copy)]
@@ -219,6 +223,12 @@ impl WorkerVms {
         let (console, lifeline, mut child) = spawn(&dir, instance, cmd).map_err(|e| {
             SandboxError::BootFailed(format!("cannot launch VM in {}: {e}", dir.display()))
         })?;
+        let console = Arc::new(Mutex::new(Console {
+            dir,
+            file: console,
+            len: 0,
+            base: 0,
+        }));
         let vm = Arc::new(Vm {
             instance,
             pid: Pid::from_raw(child.id().expect("a just-spawned child has a pid") as i32),
@@ -226,6 +236,7 @@ impl WorkerVms {
             stopping: AtomicBool::new(false),
             reaped: AtomicBool::new(false),
             ended: watch::Sender::new(None),
+            console: console.clone(),
         });
         let stdin = child.stdin.take();
         tokio::spawn(async move {
@@ -237,11 +248,6 @@ impl WorkerVms {
                 tracing::warn!(error = %e, "cannot send the worker environment to the VM");
             }
         });
-        let console = Arc::new(Mutex::new(Console {
-            dir,
-            file: console,
-            len: 0,
-        }));
         let pumps = [
             tokio::spawn(pump(
                 child.stdout.take().expect("stdout is piped"),
@@ -387,9 +393,9 @@ impl WorkerVms {
             // Sampled before the read: the waiter records the exit after the
             // log is complete, so a read that follows it is the last one.
             let exited = ended.borrow().is_some();
-            // shortcut: a blocking read, bounded by `CONSOLE_LOG_CAP`; move it
-            // to `spawn_blocking` if the cap grows.
-            match read_records(&path, cursor) {
+            // shortcut: a blocking read, bounded by twice `CONSOLE_LOG_CAP`;
+            // move it to `spawn_blocking` if the cap grows.
+            match read_records(&vm.console, cursor) {
                 Ok((records, next)) => {
                     cursor = next;
                     for record in records {
@@ -661,15 +667,32 @@ fn stored_instance(dir: &Path) -> Result<u64, SandboxError> {
     read.map_err(|e| SandboxError::BootFailed(format!("{}: {e}", path.display())))
 }
 
+/// Replace `<dir>/state.json` with one recording `instance`. Written to a
+/// temp file and renamed over it, so a crash or a full disk mid-write leaves
+/// the previous file whole: a truncated one failed every later start.
+fn store_instance(dir: &Path, instance: u64) -> io::Result<()> {
+    let tmp = dir.join("state.json.tmp");
+    // A crash between the create and the rename leaves it behind.
+    match std::fs::remove_file(&tmp) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)?;
+    serde_json::to_writer(&mut file, &StateFile { instance })?;
+    file.sync_all()?;
+    std::fs::rename(&tmp, dir.join(STATE_FILE))
+}
+
 /// Record `instance` in `state.json`, truncate `console.log` and spawn `cmd`
 /// with piped stdin (the env frame) and output, and a lifeline.
 fn spawn(dir: &Path, instance: u64, mut cmd: Command) -> io::Result<(File, Lifeline, Child)> {
     std::fs::create_dir_all(dir)?;
     let console = open_private(&dir.join(CONSOLE_LOG), true)?;
-    serde_json::to_writer(
-        open_private(&dir.join(STATE_FILE), true)?,
-        &StateFile { instance },
-    )?;
+    store_instance(dir, instance)?;
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -678,10 +701,14 @@ fn spawn(dir: &Path, instance: u64, mut cmd: Command) -> io::Result<(File, Lifel
 }
 
 /// A VM's `console.log`, rotated to `console.log.1` past `CONSOLE_LOG_CAP`.
+///
+/// A log offset counts every byte this instance logged, across rotations: the
+/// current file holds the offsets from `base` on, the rotated one those below.
 struct Console {
     dir: PathBuf,
     file: File,
     len: u64,
+    base: u64,
 }
 
 impl Console {
@@ -697,8 +724,9 @@ impl Console {
         self.len += record.len() as u64;
         if self.len > CONSOLE_LOG_CAP {
             let path = self.dir.join(CONSOLE_LOG);
-            std::fs::rename(&path, self.dir.join("console.log.1"))?;
+            std::fs::rename(&path, self.dir.join(CONSOLE_LOG_OLD))?;
             self.file = open_private(&path, true)?;
+            self.base += self.len;
             self.len = 0;
         }
         Ok(())
@@ -740,22 +768,51 @@ struct Entry {
     ts_ms: u64,
 }
 
-/// The records of `path` from byte offset `from`, and the offset after the last
-/// whole line read. A cursor past the end means the file rotated, so it reads
-/// from 0. A partial last line waits for its newline; a line that does not parse
-/// (a cursor into the middle of one) is skipped, not an error.
-pub(crate) fn read_records(path: &Path, from: u64) -> io::Result<(Vec<LogRecord>, u64)> {
-    let mut file = open_private(path, false)?;
-    let from = if from > file.metadata()?.len() {
+/// The records from log offset `from` on (see `Console`), and the offset after
+/// the last whole line read. Offsets survive a rotation: a cursor into the
+/// rotated file reads its rest, then the new file. A cursor past the end is
+/// another instance's, so it reads from the oldest record kept. A partial last
+/// line waits for its newline; a line that does not parse is skipped.
+fn read_records(console: &Mutex<Console>, from: u64) -> io::Result<(Vec<LogRecord>, u64)> {
+    // Opened under the lock, so no rotation falls between the opens and `base`.
+    let (rotated, current, base) = {
+        let console = console.lock().unwrap_or_else(PoisonError::into_inner);
+        let rotated = (console.base > 0)
+            .then(|| open_private(&console.dir.join(CONSOLE_LOG_OLD), false))
+            .transpose()?;
+        let current = open_private(&console.dir.join(CONSOLE_LOG), false)?;
+        (rotated, current, console.base)
+    };
+    let mut from = if from > base + current.metadata()?.len() {
         0
     } else {
         from
     };
-    file.seek(SeekFrom::Start(from))?;
+    let mut records = Vec::new();
+    if let Some(rotated) = rotated
+        && from < base
+    {
+        let start = base.saturating_sub(rotated.metadata()?.len());
+        read_lines(rotated, start, from.max(start), &mut records)?;
+        // Nothing more is written to a rotated file: its rest is done.
+        from = base;
+    }
+    let end = read_lines(current, base, from.max(base), &mut records)?;
+    Ok((records, end))
+}
+
+/// Append to `records` the whole lines of `file`, which holds the log offsets
+/// from `start` on, from offset `from`; returns the offset after the last one.
+fn read_lines(
+    mut file: File,
+    start: u64,
+    from: u64,
+    records: &mut Vec<LogRecord>,
+) -> io::Result<u64> {
+    file.seek(SeekFrom::Start(from - start))?;
     // Bounded: `Console` rotates the file past `CONSOLE_LOG_CAP`.
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
-    let mut records = Vec::new();
     let mut end = from;
     for raw in bytes.split_inclusive(|&b| b == b'\n') {
         if !raw.ends_with(b"\n") {
@@ -776,7 +833,7 @@ pub(crate) fn read_records(path: &Path, from: u64) -> io::Result<(Vec<LogRecord>
             });
         }
     }
-    Ok((records, end))
+    Ok(end)
 }
 
 fn now_ms() -> u64 {
@@ -1224,6 +1281,32 @@ mod tests {
         assert_eq!(std::fs::read_to_string(t.join("target")).unwrap(), "keep");
     }
 
+    /// `state.json` is replaced, never rewritten in place: a write cut short
+    /// must leave the previous instance readable, not an empty file.
+    #[tokio::test]
+    async fn state_json_is_replaced_not_rewritten_in_place() {
+        let t = tempfile::tempdir().unwrap();
+        let vms = vms(t.path(), Some("t"), vec![]);
+        let id = vms
+            .launch("k", sh("exit 0"), Vec::new(), None)
+            .unwrap()
+            .vm_id;
+        wait_ended(&vms, &id, 1).await;
+        let dir = t.path().join("workers").join(&id);
+        // Same inode as state.json: an in-place rewrite would show through it.
+        std::fs::hard_link(dir.join(STATE_FILE), dir.join("old")).unwrap();
+        // A temp file left by a crash mid-write must not block the next boot.
+        std::fs::write(dir.join("state.json.tmp"), r#"{"inst"#).unwrap();
+
+        let again = vms.launch("k", sh("exit 0"), Vec::new(), None).unwrap();
+        assert_eq!(again.instance, 2);
+        assert_eq!(stored_instance(&dir).unwrap(), 2);
+        let old: StateFile =
+            serde_json::from_slice(&std::fs::read(dir.join("old")).unwrap()).unwrap();
+        assert_eq!(old.instance, 1);
+        assert!(!dir.join("state.json.tmp").exists());
+    }
+
     #[tokio::test]
     async fn console_log_rotates_past_the_cap() {
         let t = tempfile::tempdir().unwrap();
@@ -1329,7 +1412,6 @@ mod tests {
     #[test]
     fn records_resume_from_a_cursor() {
         let t = tempfile::tempdir().unwrap();
-        let path = t.path().join(CONSOLE_LOG);
         let text = concat!(
             r#"{"stream":"stdout","line":"a","ts_ms":1}"#,
             "\n",
@@ -1338,35 +1420,111 @@ mod tests {
             r#"{"stream":"stdout","line":"c","ts_ms":3}"#,
             "\n",
         );
-        std::fs::write(&path, text).unwrap();
+        // An earlier instance's rotated file is not this one's.
+        std::fs::write(t.path().join(CONSOLE_LOG_OLD), record("stale")).unwrap();
+        let console = console_over(t.path(), "", text);
         let len = text.len() as u64;
 
-        let (all, end) = read_records(&path, 0).unwrap();
+        let (all, end) = read_records(&console, 0).unwrap();
         assert_eq!(lines(&all), ["a", "b", "c"]);
         assert_eq!(all[1].ts_ms, 2);
         assert!(matches!(all[1].stream, LogStream::Stderr));
         assert!(all.windows(2).all(|w| w[0].cursor < w[1].cursor));
         assert_eq!((all[2].cursor, end), (len, len));
 
-        let (rest, _) = read_records(&path, all[0].cursor).unwrap();
+        let (rest, _) = read_records(&console, all[0].cursor).unwrap();
         assert_eq!(lines(&rest), ["b", "c"]);
-        assert!(read_records(&path, len).unwrap().0.is_empty());
+        assert!(read_records(&console, len).unwrap().0.is_empty());
 
-        // A cursor past the end means the file rotated: read the new file from its start.
-        let (rotated, _) = read_records(&path, len + 1).unwrap();
-        assert_eq!(lines(&rotated), ["a", "b", "c"]);
+        // A cursor past the end is another instance's: read from the start.
+        let (other, _) = read_records(&console, len + 1).unwrap();
+        assert_eq!(lines(&other), ["a", "b", "c"]);
     }
 
     #[test]
     fn a_partial_last_line_is_left_for_the_next_read() {
         let t = tempfile::tempdir().unwrap();
-        let path = t.path().join(CONSOLE_LOG);
         let whole = r#"{"stream":"stdout","line":"a","ts_ms":1}"#;
-        std::fs::write(&path, format!("{whole}\n{{\"stream\":\"std")).unwrap();
+        let console = console_over(t.path(), "", &format!("{whole}\n{{\"stream\":\"std"));
 
-        let (recs, end) = read_records(&path, 0).unwrap();
+        let (recs, end) = read_records(&console, 0).unwrap();
         assert_eq!(lines(&recs), ["a"]);
         assert_eq!(end, whole.len() as u64 + 1);
+    }
+
+    /// One `console.log` line holding `line`.
+    fn record(line: &str) -> String {
+        let record = serde_json::json!({"stream": "stdout", "line": line, "ts_ms": 1});
+        format!("{record}\n")
+    }
+
+    /// A `Console` over `dir` that rotated out `rotated` (never, when empty)
+    /// and holds `current` now.
+    fn console_over(dir: &Path, rotated: &str, current: &str) -> Mutex<Console> {
+        if !rotated.is_empty() {
+            std::fs::write(dir.join(CONSOLE_LOG_OLD), rotated).unwrap();
+        }
+        std::fs::write(dir.join(CONSOLE_LOG), current).unwrap();
+        Mutex::new(Console {
+            dir: dir.to_path_buf(),
+            file: File::open(dir.join(CONSOLE_LOG)).unwrap(),
+            len: current.len() as u64,
+            base: rotated.len() as u64,
+        })
+    }
+
+    /// A cursor into the rotated file reads its rest, then the new file, even
+    /// once the new file has grown past the cursor's position in the old one.
+    #[test]
+    fn a_cursor_survives_a_rotation() {
+        let t = tempfile::tempdir().unwrap();
+        let old = ["a", "b", "c"].map(record).concat();
+        let new = ["d", "e", "f", "g", "h"].map(record).concat();
+        let console = console_over(t.path(), &old, &new);
+
+        let (all, end) = read_records(&console, 0).unwrap();
+        assert_eq!(lines(&all), ["a", "b", "c", "d", "e", "f", "g", "h"]);
+        assert!(all.windows(2).all(|w| w[0].cursor < w[1].cursor));
+        assert_eq!(end, (old.len() + new.len()) as u64);
+
+        let (rest, _) = read_records(&console, all[0].cursor).unwrap();
+        assert_eq!(lines(&rest), ["b", "c", "d", "e", "f", "g", "h"]);
+        let (rest, _) = read_records(&console, all[2].cursor).unwrap();
+        assert_eq!(lines(&rest), ["d", "e", "f", "g", "h"]);
+        assert!(read_records(&console, end).unwrap().0.is_empty());
+        // Another instance's cursor reads from the oldest record kept.
+        assert_eq!(read_records(&console, end + 1).unwrap().0.len(), 8);
+    }
+
+    /// Through `Console::append`: a reader a whole rotation behind still gets
+    /// every record after its cursor, in order.
+    #[test]
+    fn a_reader_behind_a_rotation_loses_no_record() {
+        let t = tempfile::tempdir().unwrap();
+        let console = Mutex::new(Console {
+            dir: t.path().to_path_buf(),
+            file: open_private(&t.path().join(CONSOLE_LOG), true).unwrap(),
+            len: 0,
+            base: 0,
+        });
+        let append = |line: &str| {
+            let mut console = console.lock().unwrap();
+            console.append(&LogStream::Stdout, line.as_bytes()).unwrap();
+        };
+        append("first");
+        let (_, cursor) = read_records(&console, 0).unwrap();
+        // About 11.5 MB: past CONSOLE_LOG_CAP once.
+        let filler = "x".repeat(1000);
+        let n = 11_000;
+        for i in 0..n {
+            append(&format!("{i} {filler}"));
+        }
+        assert!(console.lock().unwrap().base > 0, "the log did not rotate");
+
+        let (recs, _) = read_records(&console, cursor).unwrap();
+        assert_eq!(recs.len(), n);
+        assert!(recs[0].line.starts_with("0 "));
+        assert!(recs[n - 1].line.starts_with(&format!("{} ", n - 1)));
     }
 
     #[tokio::test]

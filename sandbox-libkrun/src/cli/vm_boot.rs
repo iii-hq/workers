@@ -11,6 +11,13 @@
 //!
 //! Uses msb_krun VmBuilder for type-safe VM configuration.
 
+use iii_filesystem::{
+    Context, DirEntry, DynFileSystem, Entry, FsOptions, OpenOptions, ZeroCopyWriter, stat64,
+    statvfs64,
+};
+use msb_krun::backends::fs::{AddDirEntry, AddDirEntryPlus};
+use std::{ffi::CStr, io, time::Duration};
+
 /// Arguments for the `__vm-boot` hidden subcommand.
 #[derive(clap::Args, Debug)]
 pub struct VmBootArgs {
@@ -214,16 +221,9 @@ pub fn build_virtiofs_mount_plan(mounts: &[String]) -> Result<VirtiofsMountPlan,
     Ok(VirtiofsMountPlan { entries, env_var })
 }
 
-/// Compose the full libkrunfw file path from the resolved directory and platform filename.
+/// The libkrunfw file to load; a file override keeps its own name.
 pub fn resolve_krunfw_file_path() -> Option<std::path::PathBuf> {
-    let dir = crate::cli::firmware::resolve::resolve_libkrunfw_dir()?;
-    let filename = crate::cli::firmware::constants::libkrunfw_filename();
-    let file_path = dir.join(&filename);
-    if file_path.exists() {
-        Some(file_path)
-    } else {
-        None
-    }
+    crate::cli::firmware::resolve::resolve_libkrunfw_file()
 }
 
 /// Pre-flight check for KVM availability on Linux.
@@ -256,11 +256,186 @@ fn check_kvm_at_path(kvm: &std::path::Path) -> Result<(), String> {
 /// The guest's `/dev/root` share: `--rootfs` served by PassthroughFs,
 /// read-only under `--rootfs-readonly` (the sandbox trampoline).
 pub(crate) fn root_share(args: &VmBootArgs) -> Result<iii_filesystem::PassthroughFs, String> {
+    passthrough_share(&args.rootfs, args.rootfs_readonly)
+}
+
+fn passthrough_share(dir: &str, read_only: bool) -> Result<iii_filesystem::PassthroughFs, String> {
     iii_filesystem::PassthroughFs::builder()
-        .root_dir(&args.rootfs)
-        .read_only(args.rootfs_readonly)
+        .root_dir(dir)
+        .read_only(read_only)
         .build()
-        .map_err(|e| format!("PassthroughFs failed for '{}': {}", args.rootfs, e))
+        .map_err(|e| format!("PassthroughFs failed for '{}': {}", dir, e))
+}
+
+/// The read-only backend for a `--mount` entry that shares the
+/// `--source-sync` dir, `None` for any other mount. The guest unmounts that
+/// share after its copy-in, but guest root can mount the tag again, so only
+/// the backend can keep it from writing the host project (`.git/hooks`).
+fn source_share(
+    entry: &VirtiofsMountEntry,
+    source_sync: Option<&str>,
+) -> Result<Option<SourceShareFs>, String> {
+    if source_sync != Some(entry.host_path.as_str()) {
+        return Ok(None);
+    }
+    passthrough_share(&entry.host_path, true).map(|fs| Some(SourceShareFs(fs)))
+}
+
+/// The source share: the read-only PassthroughFs without the virtual
+/// `init.krun` it lists at every share root, which dev-run.sh's
+/// `tar -cf - .` would copy into `/workspace` (msb_krun's `fs.path` only
+/// answered lookups for it). Only the read path is passed on; every op that
+/// could change the host keeps the trait's ENOSYS.
+struct SourceShareFs(iii_filesystem::PassthroughFs);
+
+fn is_listed_init(dir: u64, name: &[u8]) -> bool {
+    dir == 1 && iii_filesystem::init::has_init() && name == b"init.krun"
+}
+
+impl DynFileSystem for SourceShareFs {
+    fn init(&self, capable: FsOptions) -> io::Result<FsOptions> {
+        self.0.init(capable)
+    }
+
+    fn destroy(&self) {
+        self.0.destroy()
+    }
+
+    fn lookup(&self, ctx: Context, parent: u64, name: &CStr) -> io::Result<Entry> {
+        self.0.lookup(ctx, parent, name)
+    }
+
+    fn forget(&self, ctx: Context, ino: u64, count: u64) {
+        self.0.forget(ctx, ino, count)
+    }
+
+    fn batch_forget(&self, ctx: Context, requests: Vec<(u64, u64)>) {
+        self.0.batch_forget(ctx, requests)
+    }
+
+    fn getattr(
+        &self,
+        ctx: Context,
+        ino: u64,
+        handle: Option<u64>,
+    ) -> io::Result<(stat64, Duration)> {
+        self.0.getattr(ctx, ino, handle)
+    }
+
+    fn readlink(&self, ctx: Context, ino: u64) -> io::Result<Vec<u8>> {
+        self.0.readlink(ctx, ino)
+    }
+
+    fn access(&self, ctx: Context, ino: u64, mask: u32) -> io::Result<()> {
+        self.0.access(ctx, ino, mask)
+    }
+
+    fn statfs(&self, ctx: Context, ino: u64) -> io::Result<statvfs64> {
+        self.0.statfs(ctx, ino)
+    }
+
+    fn open(
+        &self,
+        ctx: Context,
+        ino: u64,
+        kill_priv: bool,
+        flags: u32,
+    ) -> io::Result<(Option<u64>, OpenOptions)> {
+        self.0.open(ctx, ino, kill_priv, flags)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn read(
+        &self,
+        ctx: Context,
+        ino: u64,
+        handle: u64,
+        w: &mut dyn ZeroCopyWriter,
+        size: u32,
+        offset: u64,
+        lock_owner: Option<u64>,
+        flags: u32,
+    ) -> io::Result<usize> {
+        self.0
+            .read(ctx, ino, handle, w, size, offset, lock_owner, flags)
+    }
+
+    fn flush(&self, ctx: Context, ino: u64, handle: u64, lock_owner: u64) -> io::Result<()> {
+        self.0.flush(ctx, ino, handle, lock_owner)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn release(
+        &self,
+        ctx: Context,
+        ino: u64,
+        flags: u32,
+        handle: u64,
+        flush: bool,
+        flock_release: bool,
+        lock_owner: Option<u64>,
+    ) -> io::Result<()> {
+        self.0
+            .release(ctx, ino, flags, handle, flush, flock_release, lock_owner)
+    }
+
+    fn opendir(
+        &self,
+        ctx: Context,
+        ino: u64,
+        flags: u32,
+    ) -> io::Result<(Option<u64>, OpenOptions)> {
+        self.0.opendir(ctx, ino, flags)
+    }
+
+    // Skipped entries report 1 byte: 0 would tell the server its page is full.
+    fn readdir_for_each(
+        &self,
+        ctx: Context,
+        ino: u64,
+        handle: u64,
+        size: u32,
+        offset: u64,
+        add_entry: &mut AddDirEntry<'_>,
+    ) -> io::Result<()> {
+        self.0
+            .readdir_for_each(ctx, ino, handle, size, offset, &mut |e: DirEntry<'_>| {
+                if is_listed_init(ino, e.name) {
+                    Ok(1)
+                } else {
+                    add_entry(e)
+                }
+            })
+    }
+
+    fn readdirplus_for_each(
+        &self,
+        ctx: Context,
+        ino: u64,
+        handle: u64,
+        size: u32,
+        offset: u64,
+        add_entry: &mut AddDirEntryPlus<'_>,
+    ) -> io::Result<()> {
+        self.0.readdirplus_for_each(
+            ctx,
+            ino,
+            handle,
+            size,
+            offset,
+            &mut |d: DirEntry<'_>, e: Entry| {
+                if is_listed_init(ino, d.name) {
+                    Ok(1)
+                } else {
+                    add_entry(d, e)
+                }
+            },
+        )
+    }
+
+    fn releasedir(&self, ctx: Context, ino: u64, flags: u32, handle: u64) -> io::Result<()> {
+        self.0.releasedir(ctx, ino, flags, handle)
+    }
 }
 
 /// Raise the process fd limit (RLIMIT_NOFILE) to accommodate PassthroughFs.
@@ -277,9 +452,11 @@ fn raise_fd_limit() {
 }
 
 pub fn shell_quote(s: &str) -> String {
-    if s.chars().all(|c| {
-        c.is_alphanumeric() || c == '-' || c == '_' || c == '/' || c == '.' || c == ':' || c == '='
-    }) {
+    // An empty word must still be quoted, or the shell drops it.
+    if !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_alphanumeric() || "-_/.:=".contains(c))
+    {
         s.to_string()
     } else {
         format!("'{}'", s.replace('\'', "'\\''"))
@@ -633,14 +810,17 @@ fn boot_vm(
     let shm_bytes_per_mount: usize =
         (args.virtiofs_shm_size_mib as usize).saturating_mul(1024 * 1024);
     for entry in mount_plan.entries {
-        let tag = entry.tag.clone();
-        let host_path = entry.host_path.clone();
+        let ro_share = source_share(&entry, args.source_sync.as_deref())?;
+        let VirtiofsMountEntry { tag, host_path, .. } = entry;
         builder = builder.fs(move |fs| {
             let mut fs = fs.tag(&tag);
             if shm_bytes_per_mount > 0 {
                 fs = fs.shm_size(shm_bytes_per_mount);
             }
-            fs.path(&host_path)
+            match ro_share {
+                Some(share) => fs.custom(Box::new(share)),
+                None => fs.path(&host_path),
+            }
         });
     }
 
@@ -673,10 +853,13 @@ fn boot_vm(
             // released automatically when this __vm-boot process exits.
             // ponytail: flock is per-host; a cross-host lock manager only if
             // workers ever share storage across machines.
+            use std::os::unix::fs::OpenOptionsExt;
             use std::os::unix::io::AsRawFd;
+            // The upper sits in a guest-writable dir: never follow a link there.
             match std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
+                .custom_flags(libc::O_NOFOLLOW)
                 .open(&upper)
             {
                 Ok(lock) => {
@@ -985,12 +1168,14 @@ fn boot_vm(
 
     // Capture an exit handle BEFORE `enter()` moves `vm`. SIGTERM or
     // SIGINT delivered to this __vm-boot process now triggers the
-    // VMM's clean shutdown path (event-loop reads the exit eventfd,
-    // notifies on_exit observers, `_exit`s with the current exit
-    // code) instead of the process being killed mid-guest-write.
-    // Without this, `stop → SIGTERM` from the host leaves the guest
-    // no chance to fsync or flush stdout logs; the on_exit closure
-    // installed above unlinks the shell socket.
+    // VMM's shutdown path (event-loop reads the exit eventfd, notifies
+    // on_exit observers, `_exit`s with the current exit code), so the
+    // on_exit closure installed above unlinks the shell socket.
+    // Nothing reaches the guest: the worker gets no SIGTERM and
+    // iii-init's sync-on-exit does not run, so guest writes still in
+    // its page cache (the ext4 upper) are lost.
+    // shortcut: there is no host-to-iii-init shutdown port; add one if a
+    // stop must flush the guest.
     //
     // Register the two signal streams SYNCHRONOUSLY before spawning
     // the awaiter task. Doing registration inside the spawned task
@@ -1216,6 +1401,102 @@ mod tests {
     fn build_virtiofs_mount_plan_rejects_empty_guest() {
         let err = build_virtiofs_mount_plan(&["/host:".to_string()]).unwrap_err();
         assert!(err.contains("Invalid mount format"));
+    }
+
+    /// Guest root can remount the source tag after dev-run.sh unmounts it,
+    /// so the share itself must refuse writes to the host project.
+    #[test]
+    fn source_sync_share_refuses_guest_writes() {
+        use iii_filesystem::Extensions;
+
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("a"), b"src").unwrap();
+        let host = project.path().to_str().unwrap();
+        let plan = build_virtiofs_mount_plan(&[
+            format!("{host}:/mnt/host-src"),
+            "/elsewhere:/opt/iii".to_string(),
+        ])
+        .unwrap();
+
+        assert!(
+            source_share(&plan.entries[1], Some(host))
+                .unwrap()
+                .is_none()
+        );
+        assert!(source_share(&plan.entries[0], None).unwrap().is_none());
+        let fs = source_share(&plan.entries[0], Some(host))
+            .unwrap()
+            .expect("the source-sync share gets its own backend");
+        fs.init(FsOptions::empty()).unwrap();
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        let name = std::ffi::CString::new(".git").unwrap();
+        assert!(
+            fs.mkdir(ctx, 1, &name, 0o755, 0, Extensions::default())
+                .is_err(),
+            "mkdir on the source share must fail"
+        );
+        let a = fs
+            .lookup(ctx, 1, &std::ffi::CString::new("a").unwrap())
+            .unwrap();
+        let err = fs
+            .open(ctx, a.inode, false, libc::O_RDWR as u32)
+            .expect_err("a writable open on the source share must fail");
+        assert_eq!(err.raw_os_error(), Some(30), "expected EROFS, got {err:?}");
+        let entries: Vec<_> = std::fs::read_dir(project.path()).unwrap().collect();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(std::fs::read(project.path().join("a")).unwrap(), b"src");
+    }
+
+    /// dev-run.sh copies the whole share root into /workspace, so the share
+    /// must not list the virtual init.krun that PassthroughFs adds there in
+    /// `embed-init` builds (the backend alone does: checked below).
+    #[test]
+    fn source_sync_share_does_not_list_init_krun() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("a"), b"src").unwrap();
+        let host = project.path().to_str().unwrap();
+        let plan = build_virtiofs_mount_plan(&[format!("{host}:/mnt/host-src")]).unwrap();
+        let fs = source_share(&plan.entries[0], Some(host)).unwrap().unwrap();
+        fs.init(FsOptions::empty()).unwrap();
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        let list = |fs: &dyn DynFileSystem, plus: bool| {
+            let (handle, _) = fs.opendir(ctx, 1, 0).unwrap();
+            let handle = handle.unwrap();
+            let mut names = Vec::new();
+            if plus {
+                fs.readdirplus_for_each(ctx, 1, handle, 64 * 1024, 0, &mut |d, _| {
+                    names.push(d.name.to_vec());
+                    Ok(1)
+                })
+            } else {
+                fs.readdir_for_each(ctx, 1, handle, 64 * 1024, 0, &mut |d| {
+                    names.push(d.name.to_vec());
+                    Ok(1)
+                })
+            }
+            .unwrap();
+            fs.releasedir(ctx, 1, 0, handle).unwrap();
+            names
+        };
+        let init = b"init.krun".to_vec();
+        for plus in [false, true] {
+            let names = list(&fs, plus);
+            assert!(names.contains(&b"a".to_vec()), "{names:?}");
+            assert!(!names.contains(&init), "readdirplus={plus}: {names:?}");
+            assert_eq!(
+                list(&fs.0, plus).contains(&init),
+                iii_filesystem::init::has_init(),
+                "the backend lists init.krun only with an embedded init"
+            );
+        }
     }
 
     // --- 6.1: check_kvm_nonexistent_path (Linux only) ---

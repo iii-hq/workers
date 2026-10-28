@@ -11,6 +11,7 @@
 //! - Ungated: extract_layer_with_limits safety, oci_image_for_kind, OCI config env reading
 //! - Gated (#[cfg(feature = "integration-oci")]): pull_and_extract_rootfs end-to-end
 
+use oci_client::manifest::IMAGE_LAYER_GZIP_MEDIA_TYPE;
 use sandbox_libkrun::cli::worker_manager::oci::{
     extract_layer_with_limits, oci_image_for_kind, read_oci_env,
 };
@@ -86,7 +87,15 @@ fn extract_layer_valid_single_file() {
     let layer = make_layer_targz(&[("test.txt", b"hello world", 0o644)]);
 
     let mut total_size = 0u64;
-    extract_layer_with_limits(&layer, dir.path(), 0, 1, &mut total_size).unwrap();
+    extract_layer_with_limits(
+        &layer,
+        IMAGE_LAYER_GZIP_MEDIA_TYPE,
+        dir.path(),
+        0,
+        1,
+        &mut total_size,
+    )
+    .unwrap();
 
     let content = std::fs::read_to_string(dir.path().join("test.txt")).unwrap();
     assert_eq!(content, "hello world");
@@ -102,7 +111,15 @@ fn extract_layer_valid_multiple_files() {
     ]);
 
     let mut total_size = 0u64;
-    extract_layer_with_limits(&layer, dir.path(), 0, 1, &mut total_size).unwrap();
+    extract_layer_with_limits(
+        &layer,
+        IMAGE_LAYER_GZIP_MEDIA_TYPE,
+        dir.path(),
+        0,
+        1,
+        &mut total_size,
+    )
+    .unwrap();
 
     let app_content = std::fs::read_to_string(dir.path().join("bin/app")).unwrap();
     assert_eq!(app_content, "binary");
@@ -131,7 +148,15 @@ fn extract_layer_strips_setuid_and_setgid_bits() {
     ]);
 
     let mut total_size = 0u64;
-    extract_layer_with_limits(&layer, dir.path(), 0, 1, &mut total_size).unwrap();
+    extract_layer_with_limits(
+        &layer,
+        IMAGE_LAYER_GZIP_MEDIA_TYPE,
+        dir.path(),
+        0,
+        1,
+        &mut total_size,
+    )
+    .unwrap();
 
     let mode = |p: &str| -> u32 {
         std::fs::metadata(dir.path().join(p))
@@ -203,7 +228,15 @@ fn extract_layer_does_not_chmod_symlinks() {
     };
 
     let mut total_size = 0u64;
-    extract_layer_with_limits(&layer, dir.path(), 0, 1, &mut total_size).unwrap();
+    extract_layer_with_limits(
+        &layer,
+        IMAGE_LAYER_GZIP_MEDIA_TYPE,
+        dir.path(),
+        0,
+        1,
+        &mut total_size,
+    )
+    .unwrap();
 
     let link_meta = std::fs::symlink_metadata(dir.path().join("bin/link")).unwrap();
     assert!(
@@ -235,7 +268,15 @@ fn extract_layer_preserves_directory_structure() {
     let layer = make_layer_targz(&[("usr/local/bin/tool", b"#!/bin/sh\necho hi", 0o755)]);
 
     let mut total_size = 0u64;
-    extract_layer_with_limits(&layer, dir.path(), 0, 1, &mut total_size).unwrap();
+    extract_layer_with_limits(
+        &layer,
+        IMAGE_LAYER_GZIP_MEDIA_TYPE,
+        dir.path(),
+        0,
+        1,
+        &mut total_size,
+    )
+    .unwrap();
 
     assert!(dir.path().join("usr/local/bin/tool").exists());
     let content = std::fs::read_to_string(dir.path().join("usr/local/bin/tool")).unwrap();
@@ -252,7 +293,14 @@ fn extract_layer_rejects_path_traversal() {
     let gz_data = make_raw_tar_gz(b"../escape.txt", b"malicious content");
 
     let mut total_size = 0u64;
-    let result = extract_layer_with_limits(&gz_data, dir.path(), 0, 1, &mut total_size);
+    let result = extract_layer_with_limits(
+        &gz_data,
+        IMAGE_LAYER_GZIP_MEDIA_TYPE,
+        dir.path(),
+        0,
+        1,
+        &mut total_size,
+    );
     assert!(result.is_err());
     let err_msg = format!("{}", result.unwrap_err());
     assert!(err_msg.contains("path traversal"), "got: {}", err_msg);
@@ -264,7 +312,14 @@ fn extract_layer_rejects_absolute_path() {
     let gz_data = make_raw_tar_gz(b"/etc/passwd", b"root:x:0:0");
 
     let mut total_size = 0u64;
-    let result = extract_layer_with_limits(&gz_data, dir.path(), 0, 1, &mut total_size);
+    let result = extract_layer_with_limits(
+        &gz_data,
+        IMAGE_LAYER_GZIP_MEDIA_TYPE,
+        dir.path(),
+        0,
+        1,
+        &mut total_size,
+    );
     assert!(result.is_err());
     let err_msg = format!("{}", result.unwrap_err());
     assert!(err_msg.contains("absolute path"), "got: {}", err_msg);
@@ -278,7 +333,14 @@ fn extract_layer_rejects_oversized_total() {
 
     // Pre-set total_size to just below MAX_TOTAL_SIZE (10 GiB - 1 byte)
     let mut total_size: u64 = 10 * 1024 * 1024 * 1024 - 1;
-    let result = extract_layer_with_limits(&layer, dir.path(), 0, 1, &mut total_size);
+    let result = extract_layer_with_limits(
+        &layer,
+        IMAGE_LAYER_GZIP_MEDIA_TYPE,
+        dir.path(),
+        0,
+        1,
+        &mut total_size,
+    );
     assert!(result.is_err());
     let err_msg = format!("{}", result.unwrap_err());
     assert!(
@@ -301,7 +363,15 @@ fn extract_layer_handles_whiteout_files() {
     let layer = make_layer_targz(&[(".wh.deleted-file", b"", 0o644)]);
 
     let mut total_size = 0u64;
-    extract_layer_with_limits(&layer, dir.path(), 0, 1, &mut total_size).unwrap();
+    extract_layer_with_limits(
+        &layer,
+        IMAGE_LAYER_GZIP_MEDIA_TYPE,
+        dir.path(),
+        0,
+        1,
+        &mut total_size,
+    )
+    .unwrap();
 
     // The whiteout should have removed the pre-existing file
     assert!(
@@ -378,10 +448,24 @@ fn extract_layer_handles_directories_without_owner_write() {
     ]);
 
     let mut total_size = 0u64;
-    extract_layer_with_limits(&layer1, &rootfs, 0, 2, &mut total_size)
-        .expect("layer 1: entries inside a 0555 directory must extract");
-    extract_layer_with_limits(&layer2, &rootfs, 1, 2, &mut total_size)
-        .expect("layer 2: files and whiteouts inside a 0555 directory must apply");
+    extract_layer_with_limits(
+        &layer1,
+        IMAGE_LAYER_GZIP_MEDIA_TYPE,
+        &rootfs,
+        0,
+        2,
+        &mut total_size,
+    )
+    .expect("layer 1: entries inside a 0555 directory must extract");
+    extract_layer_with_limits(
+        &layer2,
+        IMAGE_LAYER_GZIP_MEDIA_TYPE,
+        &rootfs,
+        1,
+        2,
+        &mut total_size,
+    )
+    .expect("layer 2: files and whiteouts inside a 0555 directory must apply");
 
     assert_eq!(std::fs::read(rootfs.join("usr/bin/tool")).unwrap(), b"v2");
     assert!(

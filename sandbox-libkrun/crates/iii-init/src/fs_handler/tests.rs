@@ -242,6 +242,35 @@ fn chmod_recursive_counts_every_entry() {
     assert_eq!(updated, 4);
 }
 
+/// Like `chmod -R`, a recursive chmod leaves symlinks inside the tree and
+/// their targets alone.
+#[test]
+fn chmod_recursive_skips_symlinks() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tmpdir();
+    let outside = dir.path().join("outside");
+    std::fs::write(&outside, b"x").unwrap();
+    std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let tree = dir.path().join("tree");
+    std::fs::create_dir(&tree).unwrap();
+    std::fs::write(tree.join("f"), b"y").unwrap();
+    std::os::unix::fs::symlink(&outside, tree.join("link")).unwrap();
+    let res = ops::chmod(
+        tree.to_string_lossy().into(),
+        "0700".into(),
+        None,
+        None,
+        true,
+    )
+    .unwrap();
+    let FsResult::Chmod { updated } = res else {
+        panic!("expected Chmod result");
+    };
+    assert_eq!(updated, 2, "tree + f, not the link");
+    let mode = std::fs::metadata(&outside).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o644, "the link's target changed");
+}
+
 #[test]
 fn chmod_missing_returns_s211() {
     let err = ops::chmod("/nonexistent/xyz".into(), "0755".into(), None, None, false).unwrap_err();
@@ -303,6 +332,56 @@ fn mv_overwrite_true_replaces_dst() {
     assert_eq!(std::fs::read(&dst).unwrap(), b"A");
 }
 
+/// A cross-filesystem move keeps a symlink a symlink instead of copying
+/// its target's bytes. Needs /dev/shm on another filesystem than TMPDIR.
+#[test]
+fn mv_across_filesystems_keeps_a_symlink() {
+    use std::os::unix::fs::MetadataExt;
+    let src_dir = tmpdir();
+    let Ok(dst_dir) = tempfile::tempdir_in("/dev/shm") else {
+        eprintln!("[skip] mv_across_filesystems_keeps_a_symlink: no /dev/shm");
+        return;
+    };
+    let dev = |p: &std::path::Path| std::fs::metadata(p).unwrap().dev();
+    if dev(src_dir.path()) == dev(dst_dir.path()) {
+        eprintln!("[skip] mv_across_filesystems_keeps_a_symlink: same filesystem");
+        return;
+    }
+    let target = src_dir.path().join("target");
+    std::fs::write(&target, b"T").unwrap();
+    let src = src_dir.path().join("link");
+    std::os::unix::fs::symlink(&target, &src).unwrap();
+    let dst = dst_dir.path().join("link");
+    ops::mv(
+        src.to_string_lossy().into(),
+        dst.to_string_lossy().into(),
+        false,
+    )
+    .unwrap();
+    assert!(std::fs::symlink_metadata(&src).is_err(), "source link left");
+    assert_eq!(std::fs::read_link(&dst).unwrap(), target);
+}
+
+/// `overwrite=false` is enforced by the rename itself, not a prior check:
+/// a dst that `exists()` misses (a dangling symlink) is not replaced either.
+#[test]
+fn mv_overwrite_false_never_replaces_dst() {
+    let dir = tmpdir();
+    let src = dir.path().join("a");
+    let dst = dir.path().join("b");
+    std::fs::write(&src, b"A").unwrap();
+    std::os::unix::fs::symlink(dir.path().join("missing"), &dst).unwrap();
+    let err = ops::mv(
+        src.to_string_lossy().into(),
+        dst.to_string_lossy().into(),
+        false,
+    )
+    .unwrap_err();
+    assert_eq!(err.code, "S213");
+    assert!(src.exists(), "source should survive failed mv");
+    assert!(std::fs::symlink_metadata(&dst).unwrap().is_symlink());
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // write streaming
 // ──────────────────────────────────────────────────────────────────────────────
@@ -353,6 +432,41 @@ fn write_stream_happy_path_atomic() {
     assert_eq!(std::fs::read(&target).unwrap(), payload);
     let md = std::fs::metadata(&target).unwrap();
     assert_eq!(md.permissions().mode() & 0o777, 0o600);
+}
+
+/// The upload's temp file is private until it is complete; the requested
+/// mode applies only to the finished file.
+#[test]
+fn write_stream_temp_file_is_private_until_renamed() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tmpdir();
+    let target = dir.path().join("secret.env");
+    let (tx, rx) = std::sync::mpsc::sync_channel::<ShellMessage>(8);
+    let path = target.to_string_lossy().into_owned();
+    let writer = std::thread::spawn(move || {
+        streaming::handle_write_start(path, "0644".into(), false, rx, &|| {})
+    });
+    tx.send(ShellMessage::FsChunk {
+        data_b64: b64_encode(b"TOKEN=1"),
+    })
+    .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let temp_mode = loop {
+        let temp = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .find(|e| e.file_name().to_string_lossy().contains(".iii-tmp-"));
+        if let Some(temp) = temp {
+            break temp.metadata().unwrap().permissions().mode() & 0o777;
+        }
+        assert!(std::time::Instant::now() < deadline, "no temp file");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    tx.send(ShellMessage::FsEnd).unwrap();
+    writer.join().unwrap().unwrap();
+    assert_eq!(temp_mode, 0o600);
+    let md = std::fs::metadata(&target).unwrap();
+    assert_eq!(md.permissions().mode() & 0o777, 0o644);
 }
 
 #[test]
@@ -1021,6 +1135,152 @@ fn sed_regex_mode_supports_captures() {
         std::fs::read_to_string(&f).unwrap(),
         "user=alice, user=bob\n"
     );
+}
+
+/// sed matches a line without its terminator, as grep does: `$` anchors
+/// before `\n` or `\r\n`, and `\s` never eats the newline.
+#[test]
+fn sed_regex_matches_lines_without_their_terminator() {
+    let dir = tmpdir();
+    let f = dir.path().join("x.txt");
+    std::fs::write(&f, "foo  \nbar\nfoo\r\nfoo").unwrap();
+    let res = ops::sed(
+        vec![f.to_string_lossy().into()],
+        None,
+        true,
+        Vec::new(),
+        Vec::new(),
+        r"^foo\s*$".into(),
+        "X".into(),
+        true,
+        false,
+        false,
+    )
+    .unwrap();
+    let FsResult::Sed {
+        total_replacements, ..
+    } = res
+    else {
+        panic!();
+    };
+    assert_eq!(total_replacements, 3);
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "X\nbar\nX\r\nX");
+}
+
+/// Only a CRLF's CR is part of the terminator, as in `lines()`: a lone CR
+/// at the end of the file is still matched.
+#[test]
+fn sed_matches_a_lone_cr_but_not_a_crlf_terminator() {
+    let dir = tmpdir();
+    let f = dir.path().join("x.txt");
+    std::fs::write(&f, "a\r\nb\r").unwrap();
+    let res = ops::sed(
+        vec![f.to_string_lossy().into()],
+        None,
+        true,
+        Vec::new(),
+        Vec::new(),
+        "\r".into(),
+        "".into(),
+        false,
+        false,
+        false,
+    )
+    .unwrap();
+    let FsResult::Sed {
+        total_replacements, ..
+    } = res
+    else {
+        panic!();
+    };
+    assert_eq!(total_replacements, 1);
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "a\r\nb");
+}
+
+/// A file without a match is left alone, not rewritten.
+#[test]
+fn sed_without_matches_leaves_the_file_untouched() {
+    use std::os::unix::fs::MetadataExt;
+    let dir = tmpdir();
+    let f = dir.path().join("x.txt");
+    std::fs::write(&f, "keep\n").unwrap();
+    let ino = std::fs::metadata(&f).unwrap().ino();
+    let res = ops::sed(
+        vec![f.to_string_lossy().into()],
+        None,
+        true,
+        Vec::new(),
+        Vec::new(),
+        "absent".into(),
+        "X".into(),
+        false,
+        false,
+        false,
+    )
+    .unwrap();
+    let FsResult::Sed { results, .. } = res else {
+        panic!();
+    };
+    assert!(results[0].success);
+    assert_eq!(results[0].replacements, 0);
+    assert_eq!(
+        std::fs::metadata(&f).unwrap().ino(),
+        ino,
+        "file was rewritten"
+    );
+}
+
+/// A rewritten file keeps its owner (root-only: chown needs privilege).
+#[test]
+fn sed_preserves_the_file_owner() {
+    use std::os::unix::fs::MetadataExt;
+    if unsafe { libc::geteuid() } != 0 {
+        eprintln!("[skip] sed_preserves_the_file_owner: needs root");
+        return;
+    }
+    let dir = tmpdir();
+    let f = dir.path().join("x.txt");
+    std::fs::write(&f, "old\n").unwrap();
+    std::os::unix::fs::chown(&f, Some(1234), Some(4321)).unwrap();
+    ops::sed(
+        vec![f.to_string_lossy().into()],
+        None,
+        true,
+        Vec::new(),
+        Vec::new(),
+        "old".into(),
+        "new".into(),
+        false,
+        false,
+        false,
+    )
+    .unwrap();
+    let md = std::fs::metadata(&f).unwrap();
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "new\n");
+    assert_eq!((md.uid(), md.gid()), (1234, 4321));
+}
+
+/// A literal replacement is written as given: `$` is not a capture
+/// reference, with or without `ignore_case`.
+#[test]
+fn sed_literal_ignore_case_keeps_dollar_signs() {
+    let dir = tmpdir();
+    let f = dir.path().join("x.txt");
+    std::fs::write(&f, "HELLO hello\n").unwrap();
+    ops::sed(
+        vec![f.to_string_lossy().into()],
+        None,
+        true,
+        Vec::new(),
+        Vec::new(),
+        "hello".into(),
+        "$HOME$1".into(),
+        false,
+        false,
+        true,
+    )
+    .unwrap();
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "$HOME$1 $HOME$1\n");
 }
 
 #[test]

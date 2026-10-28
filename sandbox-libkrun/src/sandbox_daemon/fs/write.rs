@@ -15,6 +15,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
+use futures::future::BoxFuture;
 use iii_sdk::RegisterFunction;
 use iii_sdk::channels::{ChannelReader, StreamChannelRef};
 use iii_shell_proto::FsResult;
@@ -43,19 +44,42 @@ use crate::sandbox_daemon::{
 /// keeps the `AsyncRead` impl `Unpin` without unsafe and avoids storing a
 /// `Pin<Box<dyn Future>>` inline (which would require `unsafe Unpin`).
 pub struct ChannelReaderAdapter {
-    reader: Arc<ChannelReader>,
+    /// Starts the read of the next frame: `ChannelReader::next_binary`, or a
+    /// scripted source in tests.
+    next: Box<dyn Fn() -> BoxFuture<'static, Frame> + Send>,
     pending_buf: Vec<u8>,
-    pending_task: Option<tokio::task::JoinHandle<Result<Option<Vec<u8>>, iii_sdk::Error>>>,
+    pending_task: Option<tokio::task::JoinHandle<Frame>>,
     eof: bool,
 }
 
+/// One `next_binary` result: a frame, `None` at the end of the stream.
+type Frame = Result<Option<Vec<u8>>, iii_sdk::Error>;
+
 impl ChannelReaderAdapter {
     pub fn new(reader: ChannelReader) -> Self {
+        let reader = Arc::new(reader);
+        Self::from_source(move || {
+            let reader = reader.clone();
+            Box::pin(async move { reader.next_binary().await })
+        })
+    }
+
+    fn from_source(next: impl Fn() -> BoxFuture<'static, Frame> + Send + 'static) -> Self {
         Self {
-            reader: Arc::new(reader),
+            next: Box::new(next),
             pending_buf: Vec::new(),
             pending_task: None,
             eof: false,
+        }
+    }
+}
+
+/// A dropped upload (S218 on the caller's idle timeout) must not leave its
+/// spawned read holding the channel until the caller's writer closes.
+impl Drop for ChannelReaderAdapter {
+    fn drop(&mut self) {
+        if let Some(task) = self.pending_task.take() {
+            task.abort();
         }
     }
 }
@@ -80,41 +104,72 @@ impl tokio::io::AsyncRead for ChannelReaderAdapter {
             return Poll::Ready(Ok(()));
         }
 
-        // Spawn a task if we don't have one in flight.
-        if this.pending_task.is_none() {
-            let reader = this.reader.clone();
-            this.pending_task = Some(tokio::spawn(async move { reader.next_binary().await }));
-        }
+        loop {
+            // Spawn a task if we don't have one in flight.
+            let task = this
+                .pending_task
+                .get_or_insert_with(|| tokio::spawn((this.next)()));
 
-        // Poll the in-flight task.
-        let task = this.pending_task.as_mut().unwrap();
-        match Pin::new(task).poll(cx) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(join_result) => {
-                this.pending_task = None;
-                let chunk_result = join_result.map_err(|e| {
-                    io::Error::new(io::ErrorKind::BrokenPipe, format!("channel task: {e}"))
-                })?;
-                match chunk_result {
-                    Ok(None) => {
-                        this.eof = true;
-                        Poll::Ready(Ok(()))
-                    }
-                    Ok(Some(data)) => {
-                        let n = data.len().min(buf.remaining());
-                        buf.put_slice(&data[..n]);
-                        if n < data.len() {
-                            this.pending_buf.extend_from_slice(&data[n..]);
-                        }
-                        Poll::Ready(Ok(()))
-                    }
-                    Err(e) => Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        format!("channel read error: {e}"),
-                    ))),
+            // Poll the in-flight task.
+            let join_result = std::task::ready!(Pin::new(task).poll(cx));
+            this.pending_task = None;
+            let chunk_result = join_result.map_err(|e| {
+                io::Error::new(io::ErrorKind::BrokenPipe, format!("channel task: {e}"))
+            })?;
+            return match chunk_result {
+                Ok(None) => {
+                    this.eof = true;
+                    Poll::Ready(Ok(()))
                 }
-            }
+                // An empty frame (the Python SDK sends one for `write(b"")`) is
+                // no data: returning it would fill 0 bytes, which reads as EOF
+                // and commits a truncated file.
+                Ok(Some(data)) if data.is_empty() => continue,
+                Ok(Some(data)) => {
+                    let n = data.len().min(buf.remaining());
+                    buf.put_slice(&data[..n]);
+                    if n < data.len() {
+                        this.pending_buf.extend_from_slice(&data[n..]);
+                    }
+                    Poll::Ready(Ok(()))
+                }
+                Err(e) => Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    format!("channel read error: {e}"),
+                ))),
+            };
         }
+    }
+}
+
+/// Bumps the sandbox's `last_exec_at` as upload bytes arrive, as `fs::read`
+/// does per chunk: an upload longer than the idle timeout is activity, and
+/// without this the reaper killed the VM mid-transfer. A stalled upload stops
+/// bumping, so it still ages out.
+struct ActivityReader {
+    inner: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
+    registry: SandboxRegistry,
+    id: Uuid,
+    /// At most one bump in flight, so a fast upload does not queue a task per chunk.
+    bump: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl tokio::io::AsyncRead for ActivityReader {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        let before = buf.filled().len();
+        let polled = Pin::new(&mut this.inner).poll_read(cx, buf);
+        if buf.filled().len() > before && this.bump.as_ref().is_none_or(|b| b.is_finished()) {
+            let (registry, id) = (this.registry.clone(), this.id);
+            this.bump = Some(tokio::spawn(
+                async move { registry.bump_last_exec(id).await },
+            ));
+        }
+        polled
     }
 }
 
@@ -215,6 +270,12 @@ pub async fn handle_write_with_reader<R: FsRunner + ?Sized>(
         return Err(SandboxError::AlreadyStopped(id.to_string()));
     }
     registry.bump_last_exec(id).await;
+    let reader = Box::new(ActivityReader {
+        inner: reader,
+        registry: registry.clone(),
+        id,
+        bump: None,
+    });
 
     let result = runner
         .fs_write_stream(state.shell_sock, path.clone(), mode, parents, reader)
@@ -456,6 +517,84 @@ mod tests {
         assert_eq!(err.code().as_str(), "S002");
     }
 
+    /// Reads the upload only after ageing the sandbox past any idle timeout,
+    /// as a transfer longer than that timeout would.
+    struct LongUploadRunner {
+        registry: SandboxRegistry,
+        id: Uuid,
+    }
+
+    #[async_trait::async_trait]
+    impl FsRunner for LongUploadRunner {
+        async fn fs_call(&self, _shell_sock: PathBuf, _op: FsOp) -> Result<FsResult, SandboxError> {
+            unimplemented!()
+        }
+
+        async fn fs_write_stream(
+            &self,
+            _shell_sock: PathBuf,
+            path: String,
+            _mode: String,
+            _parents: bool,
+            mut reader: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
+        ) -> Result<FsResult, SandboxError> {
+            use tokio::io::AsyncReadExt;
+            let mut state = self.registry.get(self.id).await?;
+            state.last_exec_at = std::time::Instant::now() - std::time::Duration::from_secs(600);
+            self.registry.insert(state).await;
+            let mut buf = Vec::new();
+            reader.read_to_end(&mut buf).await.unwrap();
+            Ok(FsResult::Write {
+                bytes_written: buf.len() as u64,
+                path,
+            })
+        }
+
+        async fn fs_read_stream(
+            &self,
+            _shell_sock: PathBuf,
+            _path: String,
+        ) -> Result<(FsReadMeta, Box<dyn tokio::io::AsyncRead + Unpin + Send>), SandboxError>
+        {
+            unimplemented!()
+        }
+    }
+
+    /// Upload bytes are activity: the reaper must not see a sandbox mid-upload as idle.
+    #[tokio::test]
+    async fn upload_bytes_keep_the_sandbox_active() {
+        let reg = SandboxRegistry::new();
+        let id = Uuid::new_v4();
+        reg.insert(make_state(id)).await;
+        let runner = LongUploadRunner {
+            registry: reg.clone(),
+            id,
+        };
+        handle_write_with_reader(
+            id.to_string(),
+            "/x".into(),
+            "0644".into(),
+            false,
+            Box::new(Cursor::new(b"data".to_vec())),
+            &reg,
+            &runner,
+        )
+        .await
+        .unwrap();
+        let mut idle = std::time::Duration::MAX;
+        for _ in 0..100 {
+            idle = reg.get(id).await.unwrap().last_exec_at.elapsed();
+            if idle < std::time::Duration::from_secs(60) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            idle < std::time::Duration::from_secs(60),
+            "idle for {idle:?}"
+        );
+    }
+
     // ── public handle_write — body-shape dispatch (option A) ────────────
 
     /// `content: "<utf-8 string>"` is the path agents naturally take.
@@ -576,6 +715,52 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code().as_str(), "S001");
         assert!(err.to_string().contains("missing file body"), "got: {err}");
+    }
+
+    /// A channel whose reads return `frames`, then the end of the stream.
+    fn scripted(frames: &'static [&'static [u8]]) -> ChannelReaderAdapter {
+        let frames = std::sync::Mutex::new(frames.iter().copied());
+        ChannelReaderAdapter::from_source(move || {
+            let frame = frames.lock().unwrap().next().map(<[u8]>::to_vec);
+            Box::pin(async move { Ok(frame) })
+        })
+    }
+
+    /// An empty frame (the Python SDK sends one for `write(b"")`) is no data,
+    /// not the end: the upload must go on past it.
+    #[tokio::test]
+    async fn an_empty_frame_does_not_end_the_upload() {
+        use tokio::io::AsyncReadExt;
+        let mut got = Vec::new();
+        scripted(&[b"ab", b"", b"cd"])
+            .read_to_end(&mut got)
+            .await
+            .unwrap();
+        assert_eq!(got, b"abcd");
+    }
+
+    /// Dropping the adapter mid-upload ends its pending channel read.
+    #[tokio::test]
+    async fn dropping_the_adapter_ends_its_pending_read() {
+        use tokio::io::AsyncReadExt;
+        let (held, released) = tokio::sync::oneshot::channel::<()>();
+        let held = std::sync::Mutex::new(Some(held));
+        let mut reader = ChannelReaderAdapter::from_source(move || {
+            let held = held.lock().unwrap().take();
+            Box::pin(async move {
+                // Released only when this read ends.
+                let _held = held;
+                std::future::pending::<Frame>().await
+            })
+        });
+        let mut buf = [0u8; 8];
+        let read = reader.read(&mut buf);
+        let short = std::time::Duration::from_millis(50);
+        assert!(tokio::time::timeout(short, read).await.is_err());
+
+        drop(reader);
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(1), released).await;
+        assert!(ended.is_ok(), "the read outlived the adapter");
     }
 
     /// Serde dispatch: a bare JSON string lands as `Utf8`; an object

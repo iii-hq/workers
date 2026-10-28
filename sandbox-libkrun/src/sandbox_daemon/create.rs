@@ -158,6 +158,12 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
         }
     }
 
+    // Normalise env from EnvShape to Vec<String> with the other request
+    // checks, before any pull, directory or `BootingVm` event: `into_kv_vec`
+    // rejects invalid var names with S001. Accepts both the historical
+    // Vec<"K=V"> shape and the agent-natural { K: V } map.
+    let env_vec = req.env.clone().into_kv_vec()?;
+
     // Refuse before resolving or pulling the image when the
     // launcher cannot boot an isolated root (no embedded iii-init).
     launcher.preflight()?;
@@ -195,19 +201,18 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
     };
 
     let id = Uuid::new_v4();
-    let layout = OverlayLayout::for_sandbox(id);
+    // Removes the dirs unless the create succeeds: a failed boot, a failed
+    // `ensure_dirs`, or a caller that drops this future mid-boot.
+    let mut dirs = DirsGuard {
+        layout: OverlayLayout::for_sandbox(id),
+        keep: false,
+    };
+    let layout = &dirs.layout;
     layout
         .ensure_dirs()
         .map_err(|e| SandboxError::BootFailed(format!("overlay dirs: {e}")))?;
     let shell_sock = layout.base().join("shell.sock");
     let workdir = layout.merged.clone();
-
-    // Normalise env from EnvShape to Vec<String> BEFORE emitting
-    // `BootingVm`. `into_kv_vec` rejects invalid var names with S001;
-    // emitting the event first would tell subscribers boot has begun
-    // for a sandbox that never actually starts. Accepts both the
-    // historical Vec<"K=V"> shape and the agent-natural { K: V } map.
-    let env_vec = req.env.clone().into_kv_vec()?;
 
     on_event(SandboxCreateEvent::BootingVm);
     let boot = launcher
@@ -221,11 +226,7 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
             env: env_vec,
             network: req.network.unwrap_or(false),
         })
-        .await
-        .inspect_err(|_| {
-            // Don't leak the per-sandbox dirs of a sandbox that never booted.
-            let _ = layout.cleanup();
-        })?;
+        .await?;
 
     let state = SandboxState {
         id,
@@ -245,6 +246,7 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
         stopped: false,
     };
     registry.insert(state).await;
+    dirs.keep = true;
 
     on_event(SandboxCreateEvent::Ready {
         sandbox_id: id.to_string(),
@@ -261,6 +263,20 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
         sandbox_id: id.to_string(),
         image: req.image,
     })
+}
+
+/// Removes a sandbox's directories on drop unless told to keep them.
+struct DirsGuard {
+    layout: OverlayLayout,
+    keep: bool,
+}
+
+impl Drop for DirsGuard {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = self.layout.cleanup();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -332,20 +348,21 @@ mod tests {
         assert_eq!(err.code().as_str(), "S100");
     }
 
+    /// Fails the preflight, the step right after the request checks.
+    struct NoInit;
+    #[async_trait::async_trait]
+    impl VmLauncher for NoInit {
+        fn preflight(&self) -> Result<(), SandboxError> {
+            Err(SandboxError::BootFailed("no embedded init".into()))
+        }
+        async fn boot(&self, _p: &BootParams) -> Result<BootHandle, SandboxError> {
+            unreachable!("the preflight fails first")
+        }
+    }
+
     /// cpus 0 and a guest too small to boot are bad requests, not a later S300.
     #[tokio::test]
     async fn unbootable_cpus_or_memory_is_s001_at_create() {
-        /// Fails the preflight, the step right after the resource checks.
-        struct NoInit;
-        #[async_trait::async_trait]
-        impl VmLauncher for NoInit {
-            fn preflight(&self) -> Result<(), SandboxError> {
-                Err(SandboxError::BootFailed("no embedded init".into()))
-            }
-            async fn boot(&self, _p: &BootParams) -> Result<BootHandle, SandboxError> {
-                unreachable!("the preflight fails first")
-            }
-        }
         let cfg = cfg_with_python_allowed();
         let reg = SandboxRegistry::new();
         let launcher = NoInit;
@@ -374,6 +391,117 @@ mod tests {
                 "cpus={cpus:?} memory_mb={memory_mb:?}: {err}"
             );
         }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Boot {
+        Fails,
+        Hangs,
+        Succeeds,
+    }
+
+    /// Records the sandbox dir boot was handed, then boots as scripted.
+    struct Scripted {
+        boot: Boot,
+        base: std::sync::Mutex<Option<PathBuf>>,
+    }
+    #[async_trait::async_trait]
+    impl VmLauncher for Scripted {
+        async fn boot(&self, p: &BootParams) -> Result<BootHandle, SandboxError> {
+            *self.base.lock().unwrap() = p.shell_sock.parent().map(PathBuf::from);
+            match self.boot {
+                Boot::Fails => Err(SandboxError::BootFailed("the guest died".into())),
+                Boot::Hangs => std::future::pending().await,
+                Boot::Succeeds => Ok(BootHandle {
+                    vm_pid: 1,
+                    lifeline: None,
+                }),
+            }
+        }
+    }
+
+    /// Only a finished create keeps its sandbox dir: a failed boot and a
+    /// create dropped mid-boot remove it.
+    #[test]
+    fn only_a_finished_create_keeps_its_sandbox_dir() {
+        let _g = crate::cli::test_support::lock_home();
+        let home = tempfile::tempdir().unwrap();
+        let prior = std::env::var_os("HOME");
+        // SAFETY: TEST_HOME_LOCK serializes all env mutation.
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let oci_ref = "ghcr.io/acme/my-app:1";
+        std::fs::create_dir_all(rootfs_cache::canonical_path(oci_ref).join("bin")).unwrap();
+        let mut cfg = cfg_with_python_allowed();
+        cfg.custom_images.insert("my-app".into(), oci_ref.into());
+        cfg.image_allowlist.push("my-app".into());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut kept = vec![];
+        for boot in [Boot::Fails, Boot::Hangs, Boot::Succeeds] {
+            let launcher = Scripted {
+                boot,
+                base: Default::default(),
+            };
+            let req = CreateRequest {
+                image: "my-app".into(),
+                cpus: None,
+                memory_mb: None,
+                name: None,
+                network: None,
+                idle_timeout_secs: None,
+                env: crate::sandbox_daemon::exec::EnvShape::default(),
+            };
+            let reg = SandboxRegistry::new();
+            let create = handle_create(req, &cfg, &reg, &launcher, |_| {});
+            // Only the hanging boot needs cutting short; a tight bound on the others flakes on slow runners.
+            let wait = std::time::Duration::from_millis(if matches!(boot, Boot::Hangs) {
+                200
+            } else {
+                10_000
+            });
+            let _ = rt.block_on(async { tokio::time::timeout(wait, create).await });
+            let base = launcher.base.lock().unwrap().take();
+            kept.push(base.as_ref().map(|b| b.exists()));
+            if let Some(base) = base {
+                let _ = std::fs::remove_dir_all(base);
+            }
+        }
+        match prior {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert_eq!(
+            kept,
+            [Some(false), Some(false), Some(true)],
+            "fails, hangs, succeeds"
+        );
+    }
+
+    /// A bad env name is caught with the other request checks, before any
+    /// pull or sandbox dir: found after `ensure_dirs`, it leaked those dirs.
+    #[tokio::test]
+    async fn invalid_env_name_is_s001_before_the_preflight() {
+        let req = CreateRequest {
+            image: "python".into(),
+            cpus: None,
+            memory_mb: None,
+            name: None,
+            network: None,
+            idle_timeout_secs: None,
+            env: serde_json::from_value(serde_json::json!({"9bad": "x"})).unwrap(),
+        };
+        let err = handle_create(
+            req,
+            &cfg_with_python_allowed(),
+            &SandboxRegistry::new(),
+            &NoInit,
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code().as_str(), "S001", "{err}");
     }
 
     #[tokio::test]

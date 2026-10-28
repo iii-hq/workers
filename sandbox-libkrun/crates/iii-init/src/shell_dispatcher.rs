@@ -42,7 +42,7 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -70,8 +70,9 @@ struct SessionHandle {
     /// TTY-mode master fd, for `Resize`. `None` in pipe mode.
     master: Option<Arc<Mutex<File>>>,
     /// Set by the waiter after `exit_rx.recv()` returns. Once true
-    /// the pid has been reaped and the kernel may recycle the pgid,
-    /// so `kill(-pid, sig)` could land on an unrelated process group.
+    /// the pid has been reaped and the kernel may recycle it once the
+    /// group is empty, so `kill(-pid, sig)` could land on an unrelated
+    /// process group (see the `Signal` arm).
     terminated: bool,
 }
 
@@ -93,13 +94,18 @@ pub(crate) struct Window {
     /// Frames it may still send, and whether the host cancelled the session.
     state: Mutex<(u32, bool)>,
     granted: Condvar,
+    /// An eventfd that `cancel` makes readable, so an output stream waiting
+    /// in `poll` wakes at once. `None` if none could be opened.
+    cancel_fd: Option<OwnedFd>,
 }
 
 impl Window {
     pub(crate) fn new(credit: u32) -> Arc<Self> {
+        let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC) };
         Arc::new(Self {
             state: Mutex::new((credit, false)),
             granted: Condvar::new(),
+            cancel_fd: (fd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(fd) }),
         })
     }
 
@@ -126,6 +132,14 @@ impl Window {
     pub(crate) fn cancel(&self) {
         self.state.lock().expect("window mutex poisoned").1 = true;
         self.granted.notify_all();
+        if let Some(fd) = &self.cancel_fd {
+            let one = 1u64;
+            unsafe { libc::write(fd.as_raw_fd(), (&one as *const u64).cast(), 8) };
+        }
+    }
+
+    fn cancelled(&self) -> bool {
+        self.state.lock().expect("window mutex poisoned").1
     }
 }
 
@@ -294,12 +308,16 @@ fn handle_frame(
             }
         }
         ShellMessage::Signal { signal } => {
-            // Refuse delivery if terminated: PID 1 has reaped and the
-            // pgid may be recycled, so `kill(-pid, sig)` could hit an
-            // unrelated process group.
+            // Once terminated, PID 1 has reaped the leader, but a job it
+            // left behind may still hold the output open, so the group is
+            // still signalled until the session ends. Its pgid cannot be
+            // reused while any member lives; with none left, a live
+            // `/proc/<pid>` means the pid now names someone else.
             let pid = {
                 let map = sessions.lock().expect("session map mutex poisoned");
-                map.get(&corr_id).filter(|s| !s.terminated).map(|s| s.pid)
+                map.get(&corr_id)
+                    .filter(|s| !s.terminated || !Path::new(&format!("/proc/{}", s.pid)).exists())
+                    .map(|s| s.pid)
             };
             if let Some(pid) = pid
                 && signal > 0
@@ -474,12 +492,26 @@ fn handle_frame(
                             let result = dispatch_one_shot(one_shot);
                             match result {
                                 Ok(fs_result) => {
-                                    send_frame(
+                                    // A reply over the frame limit fails to encode
+                                    // (e.g. a broad grep); the host still needs an end.
+                                    if !send_frame(
                                         &writer,
                                         corr_id,
                                         FLAG_TERMINAL,
                                         &ShellMessage::FsResponse(fs_result),
-                                    );
+                                    ) {
+                                        send_frame(
+                                            &writer,
+                                            corr_id,
+                                            FLAG_TERMINAL,
+                                            &ShellMessage::FsError {
+                                                code: "S216".to_string(),
+                                                message: "response exceeds the frame limit; \
+                                                          narrow the request"
+                                                    .to_string(),
+                                            },
+                                        );
+                                    }
                                 }
                                 Err(e) => {
                                     send_frame(
@@ -1042,7 +1074,11 @@ enum OutputKind {
     Stderr,
 }
 
-fn stream_fd<R: Read>(
+/// How often an idle output stream checks whether the host cancelled it,
+/// when its window has no eventfd to wake it.
+const CANCEL_POLL_MS: libc::c_int = 100;
+
+fn stream_fd<R: Read + AsRawFd>(
     writer: Writer,
     corr_id: u32,
     mut src: R,
@@ -1051,6 +1087,28 @@ fn stream_fd<R: Read>(
 ) {
     let mut buf = vec![0u8; IO_CHUNK_SIZE];
     loop {
+        // Wait for output or the host's cancel: a process the kill cannot
+        // reach (outside the group) may hold the pipe open, and the cancel
+        // must still end the stream, so the waiter can send `Exited`.
+        let (cancel_fd, timeout) = match &window.cancel_fd {
+            Some(fd) => (fd.as_raw_fd(), -1),
+            None => (-1, CANCEL_POLL_MS),
+        };
+        // `poll` skips a negative fd.
+        let mut pfds = [src.as_raw_fd(), cancel_fd].map(|fd| libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        });
+        let ready = unsafe { libc::poll(pfds.as_mut_ptr(), 2, timeout) };
+        let interrupted =
+            ready < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted;
+        if window.cancelled() {
+            break;
+        }
+        if ready == 0 || interrupted {
+            continue;
+        }
         match src.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
@@ -1266,6 +1324,46 @@ mod tests {
         assert_eq!(last.len(), 1, "a killed read sent more: {last:?}");
         assert!(last[0].1 & FLAG_TERMINAL != 0);
         assert!(matches!(&last[0].2, ShellMessage::FsError { code, .. } if code == "S218"));
+    }
+
+    /// A one-shot reply too large for a frame still ends its session, with
+    /// a terminal S216; nothing at all left the host waiting forever.
+    #[test]
+    fn an_oversized_fs_reply_ends_with_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("big.txt");
+        // ~5 MiB of matches: over the 4 MiB frame limit.
+        std::fs::write(&file, ("a".repeat(1000) + "\n").repeat(5000)).unwrap();
+        let (writer, frames) = sync_channel::<Vec<u8>>(16);
+        let (sessions, fs_writes) = (SessionRegistry::default(), FsWriteRegistry::default());
+        let grep = iii_shell_proto::FsOp::Grep {
+            path: file.to_string_lossy().into_owned(),
+            pattern: "a".into(),
+            recursive: false,
+            ignore_case: false,
+            include_glob: vec![],
+            exclude_glob: vec![],
+            max_matches: 10_000,
+            max_line_bytes: 4096,
+        };
+        let windows = Windows::default();
+        handle_frame(
+            3,
+            ShellMessage::FsRequest(grep),
+            &sessions,
+            &writer,
+            &fs_writes,
+            &windows,
+        );
+        let frame = frames
+            .recv_timeout(Duration::from_secs(10))
+            .expect("no reply");
+        let (_, flags, msg) = sp::decode_frame_body(&frame[4..]).unwrap();
+        assert!(flags & FLAG_TERMINAL != 0);
+        assert!(
+            matches!(&msg, ShellMessage::FsError { code, .. } if code == "S216"),
+            "{msg:?}"
+        );
     }
 
     /// Drive the dispatcher over an in-process socketpair and assert
@@ -2099,6 +2197,81 @@ mod tests {
         // Past the holder's exit, which frees the stdin writer.
         thread::sleep(Duration::from_millis(2500));
         assert_eq!(host.leaks(), 0, "frames after the session's end");
+    }
+
+    /// `$!` of the background job a session printed.
+    #[cfg(target_os = "linux")]
+    fn job_pid(out: &[u8]) -> libc::pid_t {
+        String::from_utf8_lossy(out)
+            .trim()
+            .parse()
+            .expect("job pid")
+    }
+
+    /// Gone or a zombie, within a few seconds.
+    #[cfg(target_os = "linux")]
+    fn dies(pid: libc::pid_t) -> bool {
+        (0..100).any(|_| {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"));
+            let dead = stat.map_or(true, |s| {
+                s.rsplit(')')
+                    .next()
+                    .unwrap_or("")
+                    .trim_start()
+                    .starts_with('Z')
+            });
+            if !dead {
+                thread::sleep(Duration::from_millis(50));
+            }
+            dead
+        })
+    }
+
+    /// A background job that keeps the output open after its shell exited
+    /// is still in the session's group: the host's SIGKILL reaches it, and
+    /// the session ends instead of waiting out the job.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_kill_reaches_a_job_left_behind_by_its_shell() {
+        let _g = serial_spawn_guard();
+        let host = SimHost::start();
+        let s = host.open(1, sh("sleep 20 & echo $!"));
+        // The shell exits at once and is reaped; the job holds stdout.
+        thread::sleep(Duration::from_millis(500));
+        s.send(ShellMessage::Signal { signal: 9 });
+        let killed = std::time::Instant::now();
+        let (out, end) = s.wait();
+        assert_eq!(end, EXITED_0);
+        assert!(
+            killed.elapsed() < Duration::from_secs(5),
+            "waited out the job"
+        );
+        assert!(dies(job_pid(&out)), "the job survived the kill");
+        assert_eq!(host.leaks(), 0);
+    }
+
+    /// A SIGKILL ends the session even while a process outside its group,
+    /// which the kill cannot reach, holds the output open.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_kill_ends_a_session_whose_output_is_held_outside_it() {
+        if skip_if_missing("/usr/bin/setsid") {
+            return;
+        }
+        let _g = serial_spawn_guard();
+        let host = SimHost::start();
+        let s = host.open(1, sh("setsid sleep 20 & echo $!"));
+        thread::sleep(Duration::from_millis(500));
+        s.send(ShellMessage::Signal { signal: 9 });
+        let killed = std::time::Instant::now();
+        let (out, end) = s.wait();
+        unsafe { libc::kill(job_pid(&out), libc::SIGKILL) };
+        assert_eq!(end, EXITED_0);
+        assert!(
+            killed.elapsed() < Duration::from_secs(5),
+            "waited out the holder"
+        );
+        assert_eq!(host.leaks(), 0);
     }
 
     /// 128 MiB uploaded within its window lands whole; the guest's write

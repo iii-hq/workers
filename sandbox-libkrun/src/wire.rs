@@ -143,7 +143,8 @@ pub struct WorkerLogsRequest {
     pub auth: String,
     pub vm_id: String,
     /// `LogRecord.cursor` of the last record the caller has; reading resumes right after it.
-    /// Opaque to Compose. A cursor past the end of the log (after a rotation) reads from the start.
+    /// Opaque to Compose: an offset into all the instance logged, valid across a log
+    /// rotation. A cursor past the end (another instance's) reads from the oldest record kept.
     pub cursor: Option<u64>,
     /// Keep the channel open while the instance runs.
     pub follow: bool,

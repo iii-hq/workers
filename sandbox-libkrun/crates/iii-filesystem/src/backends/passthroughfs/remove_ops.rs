@@ -42,13 +42,14 @@ pub(crate) fn do_unlink(
     let parent_fd = inode::get_inode_fd(fs, parent)?;
 
     // On macOS, grab an fd before unlink to keep the file data alive (Pitfall 4).
+    // O_NONBLOCK: opening a FIFO with no writer would block the fs worker thread.
     #[cfg(target_os = "macos")]
     let pre_unlink_fd = {
         let fd = unsafe {
             libc::openat(
                 parent_fd.raw(),
                 name.as_ptr(),
-                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
             )
         };
         if fd >= 0 { Some(fd) } else { None }
@@ -63,11 +64,15 @@ pub(crate) fn do_unlink(
         return Err(platform::linux_error(io::Error::last_os_error()));
     }
 
-    // Store the fd in InodeData so open_inode_fd can use it after unlink.
+    // Store the fd in InodeData so open_inode_fd can use it after unlink. Only
+    // once no link is left: until then /.vol still opens the file with the
+    // access each open asks for, which this read-only fd would replace.
     #[cfg(target_os = "macos")]
     if let Some(fd) = pre_unlink_fd {
         let st = platform::fstat(fd);
-        if let Ok(st) = st {
+        if let Ok(st) = st
+            && st.st_nlink == 0
+        {
             let alt_key = crate::backends::shared::inode_table::InodeAltKey::new(
                 st.st_ino,
                 platform::stat_dev(&st),

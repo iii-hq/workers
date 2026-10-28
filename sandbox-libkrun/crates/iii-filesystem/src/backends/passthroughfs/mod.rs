@@ -19,7 +19,7 @@ use std::{
     os::fd::{AsRawFd, FromRawFd},
     path::PathBuf,
     sync::{
-        Arc, Mutex, RwLock,
+        Arc, RwLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
@@ -28,8 +28,8 @@ use std::{
 use dashmap::DashMap;
 
 use crate::{
-    Context, DirEntry, DynFileSystem, Entry, Extensions, FsOptions, OpenOptions, SetattrValid,
-    ZeroCopyReader, ZeroCopyWriter,
+    AddDirEntry, AddDirEntryPlus, Context, DynFileSystem, Entry, Extensions, FsOptions,
+    OpenOptions, SetattrValid, ZeroCopyReader, ZeroCopyWriter,
     backends::shared::{
         handle_table::HandleData,
         init_binary,
@@ -43,15 +43,9 @@ use crate::{
 // Types
 //--------------------------------------------------------------------------------------------------
 
-/// Wrapper for raw pointer to leaked readdir name buffer.
-///
-/// The pointer is only accessed under `Mutex` in `PassthroughFs` and freed
-/// during `destroy()` shutdown, making Send/Sync safe.
-pub(crate) struct LeakedBufPtr(*mut u8);
-
-// SAFETY: The pointer is only accessed under Mutex and only freed in destroy().
-unsafe impl Send for LeakedBufPtr {}
-unsafe impl Sync for LeakedBufPtr {}
+/// A directory listing as `(d_ino, d_type, name)` per entry (macOS only).
+#[cfg(target_os = "macos")]
+pub(crate) type DirSnapshot = Vec<(u64, u32, Box<[u8]>)>;
 
 /// Cache policy for the passthrough filesystem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,8 +113,10 @@ pub struct PassthroughFs {
     /// File containing the init binary bytes (memfd on Linux, tmpfile on macOS).
     pub(crate) init_file: File,
 
-    /// Tracks leaked readdir name buffers for reclamation in destroy().
-    pub(crate) leaked_readdir_bufs: Mutex<Vec<(LeakedBufPtr, usize)>>,
+    /// Per directory handle, the listing its READDIRs page through (macOS
+    /// only): taken at offset 0, dropped at RELEASEDIR.
+    #[cfg(target_os = "macos")]
+    pub(crate) dir_snapshots: DashMap<u64, Arc<DirSnapshot>>,
 
     /// Whether `openat2` with `RESOLVE_BENEATH` is available (Linux 5.6+).
     #[cfg(target_os = "linux")]
@@ -201,7 +197,8 @@ impl PassthroughFs {
             next_handle: AtomicU64::new(start_handle),
             writeback: AtomicBool::new(false),
             init_file,
-            leaked_readdir_bufs: Mutex::new(Vec::new()),
+            #[cfg(target_os = "macos")]
+            dir_snapshots: DashMap::new(),
             #[cfg(target_os = "linux")]
             has_openat2,
             #[cfg(target_os = "linux")]
@@ -366,21 +363,9 @@ impl DynFileSystem for PassthroughFs {
 
     fn destroy(&self) {
         self.handles.clear();
+        #[cfg(target_os = "macos")]
+        self.dir_snapshots.clear();
         self.inodes.write().unwrap().clear();
-
-        // Reclaim all leaked readdir name buffers.
-        let bufs = std::mem::take(&mut *self.leaked_readdir_bufs.lock().unwrap());
-        for (ptr, len) in bufs {
-            // SAFETY: ptr and len came from Box::leak(names_buf.into_boxed_slice())
-            // in read_dir_entries, so ptr is non-null, u8-aligned, and valid for len
-            // bytes. No DirEntry references remain after the FUSE server calls destroy()
-            // (all requests complete before FUSE_DESTROY is processed), so the memory
-            // is not aliased. We reconstruct and drop the Box to reclaim the allocation.
-            unsafe {
-                let slice = std::slice::from_raw_parts_mut(ptr.0, len);
-                drop(Box::from_raw(slice));
-            }
-        }
     }
 
     fn lookup(&self, _ctx: Context, parent: u64, name: &CStr) -> io::Result<Entry> {
@@ -566,26 +551,30 @@ impl DynFileSystem for PassthroughFs {
         dir_ops::do_opendir(self, ctx, ino, flags)
     }
 
-    fn readdir(
+    // The streaming forms, not the `Vec<DirEntry<'static>>` ones: those would
+    // need every name leaked, and they read the whole directory per page.
+    fn readdir_for_each(
         &self,
         ctx: Context,
         ino: u64,
         handle: u64,
         size: u32,
         offset: u64,
-    ) -> io::Result<Vec<DirEntry<'static>>> {
-        dir_ops::do_readdir(self, ctx, ino, handle, size, offset)
+        add_entry: &mut AddDirEntry<'_>,
+    ) -> io::Result<()> {
+        dir_ops::do_readdir(self, ctx, ino, handle, size, offset, add_entry)
     }
 
-    fn readdirplus(
+    fn readdirplus_for_each(
         &self,
         ctx: Context,
         ino: u64,
         handle: u64,
         size: u32,
         offset: u64,
-    ) -> io::Result<Vec<(DirEntry<'static>, Entry)>> {
-        dir_ops::do_readdirplus(self, ctx, ino, handle, size, offset)
+        add_entry: &mut AddDirEntryPlus<'_>,
+    ) -> io::Result<()> {
+        dir_ops::do_readdirplus(self, ctx, ino, handle, size, offset, add_entry)
     }
 
     fn fsyncdir(&self, ctx: Context, ino: u64, datasync: bool, handle: u64) -> io::Result<()> {
@@ -794,15 +783,6 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // Compile-time assertion: LeakedBufPtr must be Send + Sync
-    const _: () = {
-        fn assert_send_sync<T: Send + Sync>() {}
-        fn check() {
-            assert_send_sync::<LeakedBufPtr>();
-        }
-        let _ = check;
-    };
-
     /// The guest init's exit-code ioctl sets the VM's exit code; any other
     /// ioctl stays ENOSYS and leaves it alone.
     #[test]
@@ -828,31 +808,6 @@ mod tests {
         let other = fs.ioctl(ctx, 1, 0, 0, 0x7603, 9, 0, 0, &code).unwrap_err();
         assert_eq!(other.raw_os_error(), Some(platform::LINUX_ENOSYS));
         assert_eq!(code.load(Ordering::SeqCst), 3);
-    }
-
-    #[test]
-    fn destroy_clears_leaked_readdir_bufs() {
-        let dir = tempfile::tempdir().unwrap();
-        let fs = PassthroughFs::builder()
-            .root_dir(dir.path())
-            .build()
-            .unwrap();
-
-        // Simulate a leaked readdir buffer
-        let buf = vec![0u8; 64];
-        let len = buf.len();
-        let ptr = Box::into_raw(buf.into_boxed_slice()) as *mut u8;
-        fs.leaked_readdir_bufs
-            .lock()
-            .unwrap()
-            .push((LeakedBufPtr(ptr), len));
-
-        assert_eq!(fs.leaked_readdir_bufs.lock().unwrap().len(), 1);
-
-        // destroy() should reclaim the buffer
-        fs.destroy();
-
-        assert!(fs.leaked_readdir_bufs.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -882,6 +837,5 @@ mod tests {
         // MultikeyBTreeMap has no is_empty(); verify destroy cleared it by
         // checking that no entry exists for the well-known root inode key.
         assert!(fs.inodes.read().unwrap().get(&1u64).is_none());
-        assert!(fs.leaked_readdir_bufs.lock().unwrap().is_empty());
     }
 }

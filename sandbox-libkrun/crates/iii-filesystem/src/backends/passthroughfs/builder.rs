@@ -13,7 +13,7 @@ use std::{
     os::fd::FromRawFd,
     path::PathBuf,
     sync::{
-        Mutex, RwLock,
+        RwLock,
         atomic::{AtomicBool, AtomicU64},
     },
     time::Duration,
@@ -161,7 +161,8 @@ impl PassthroughFsBuilder {
             next_handle: AtomicU64::new(start_handle),
             writeback: AtomicBool::new(false),
             init_file,
-            leaked_readdir_bufs: Mutex::new(Vec::new()),
+            #[cfg(target_os = "macos")]
+            dir_snapshots: DashMap::new(),
             #[cfg(target_os = "linux")]
             has_openat2,
             #[cfg(target_os = "linux")]

@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::cli::oci_ref::canonical_cache_key;
+use crate::cli::oci_ref::{canonical_cache_key, pinned_digest};
 use crate::cli::worker_manager::oci::{pull_and_extract_rootfs, rootfs_slug_for_image};
 
 /// Canonical cache root. All new pulls land under here, keyed by
@@ -27,14 +27,44 @@ fn cache_root() -> PathBuf {
         .join("cache")
 }
 
-/// Canonical on-disk location for `oci_ref`'s rootfs. Returned path is
-/// stable across calls and callers — two different flows referencing
-/// the same image resolve to the same directory. Digest-pinned refs
-/// (`foo:tag@sha256:...`) collapse to the same dir as the unpinned
-/// form via `canonical_cache_key`, so engine-resolved pins never
-/// trigger a re-pull of an image the user already added.
+/// Canonical on-disk location for `oci_ref`'s rootfs. Two different
+/// flows referencing the same image resolve to the same directory.
+/// Digest-pinned refs (`foo:tag@sha256:...`) collapse to the unpinned
+/// form's dir via `canonical_cache_key` while that dir's digest sidecar
+/// lists the pin, so engine-resolved pins never trigger a re-pull of an
+/// image the user already added. While that dir is empty a pin pulls into
+/// it, so a later unpinned use reuses that pull. Any other pin gets a dir
+/// of its own: a changed pin must miss, not be served another digest's
+/// rootfs. A digest-only pin (`foo@sha256:...`) names no tag, so it never
+/// shares or fills `foo:latest`'s dir.
+// shortcut: per-digest dirs are never evicted, add a cache GC if pin churn grows ~/.iii/cache.
 pub fn canonical_path(oci_ref: &str) -> PathBuf {
+    let shared = shared_path(oci_ref);
+    match pinned_digest(oci_ref) {
+        Some(pin) if is_populated(&shared) && !pulled_from(&shared, pin) => {
+            cache_root().join(rootfs_slug_for_image(oci_ref))
+        }
+        _ => shared,
+    }
+}
+
+/// The dir every variant of `oci_ref`, pinned or not, may share.
+fn shared_path(oci_ref: &str) -> PathBuf {
     cache_root().join(rootfs_slug_for_image(canonical_cache_key(oci_ref)))
+}
+
+/// `<rootfs>.digest`, beside the rootfs: the manifest digests it was
+/// pulled from, one per line.
+fn digest_path(rootfs: &Path) -> PathBuf {
+    let mut name = rootfs.file_name().unwrap_or_default().to_os_string();
+    name.push(".digest");
+    rootfs.with_file_name(name)
+}
+
+/// True if the rootfs at `rootfs` was pulled from manifest `digest`.
+fn pulled_from(rootfs: &Path, digest: &str) -> bool {
+    std::fs::read_to_string(digest_path(rootfs))
+        .is_ok_and(|digests| digests.lines().any(|d| d.eq_ignore_ascii_case(digest)))
 }
 
 /// True if `path` looks like a populated OCI rootfs. The `bin/` check
@@ -53,9 +83,10 @@ pub fn resolve_cached(oci_ref: &str) -> Option<PathBuf> {
 
 /// Lock file guarding one image's pull. Lives beside the rootfs
 /// directories rather than inside one, because the pull begins by
-/// deleting that directory.
+/// deleting that directory. Pinned and unpinned variants share it, so
+/// which dir `canonical_path` picks cannot change while it is held.
 fn lock_path_for_image(oci_ref: &str) -> PathBuf {
-    let mut path = canonical_path(oci_ref);
+    let mut path = shared_path(oci_ref);
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -125,7 +156,14 @@ pub async fn ensure_rootfs(oci_ref: &str, on_pull_start: impl FnOnce()) -> Resul
     // (ensure_base_erofs also rebuilds on stale mtime; this is the
     // belt-and-suspenders explicit GC at the re-extract boundary.)
     crate::cli::erofs::remove_base_erofs(&dest);
-    pull_and_extract_rootfs(oci_ref, &dest).await?;
+    // A stale sidecar must never vouch for whatever this pull leaves.
+    let digest_file = digest_path(&dest);
+    let _ = std::fs::remove_file(&digest_file);
+    let digests = pull_and_extract_rootfs(oci_ref, &dest).await?;
+    // Without the sidecar a pinned ref only misses this dir and pulls its own.
+    if let Err(e) = std::fs::write(&digest_file, digests.join("\n")) {
+        tracing::warn!(path = %digest_file.display(), error = %e, "failed to record the rootfs digest");
+    }
     Ok(dest)
 }
 
@@ -145,6 +183,83 @@ mod tests {
         let b = canonical_path("docker.io/library/python:3.13");
         assert_eq!(a, b);
         assert_ne!(a, canonical_path("docker.io/library/python:3.12"));
+    }
+
+    /// A pin shares the tag's dir only while that dir was pulled from the
+    /// pinned digest; changing the pin used to keep serving the old rootfs.
+    #[test]
+    fn a_pin_shares_the_tag_dir_only_while_its_digest_matches() {
+        let _g = crate::cli::test_support::lock_home();
+        let home = tempdir().unwrap();
+        let prior = std::env::var_os("HOME");
+        // SAFETY: the caller holds TEST_HOME_LOCK, which serializes all env mutation.
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        let tag = "docker.io/iiidev/node:latest";
+        let (index, platform, other) = (
+            format!("sha256:{}", "a".repeat(64)),
+            format!("sha256:{}", "b".repeat(64)),
+            format!("sha256:{}", "c".repeat(64)),
+        );
+        let shared = canonical_path(tag);
+        let pinned_before_pull = canonical_path(&format!("{tag}@{index}"));
+        populate(&shared);
+        std::fs::write(digest_path(&shared), format!("{index}\n{platform}")).unwrap();
+        let hit_index = resolve_cached(&format!("{tag}@{index}"));
+        let hit_platform = resolve_cached(&format!("{tag}@{platform}"));
+        let hit_other = resolve_cached(&format!("{tag}@{other}"));
+        let other_path = canonical_path(&format!("{tag}@{other}"));
+
+        match prior {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert_eq!(hit_index.as_ref(), Some(&shared));
+        assert_eq!(hit_platform.as_ref(), Some(&shared));
+        assert_eq!(
+            hit_other, None,
+            "a changed pin was served another digest's rootfs"
+        );
+        assert_ne!(other_path, shared);
+        assert_eq!(
+            pinned_before_pull, shared,
+            "a pin's first pull fills the tag's empty dir"
+        );
+        assert_eq!(
+            lock_path_for_image(tag),
+            lock_path_for_image(&format!("{tag}@{other}"))
+        );
+    }
+
+    /// A digest-only pin pulled first used to fill `repo:latest`'s empty dir,
+    /// so the tag was then served that digest whatever `latest` pointed to.
+    #[test]
+    fn a_digest_only_pin_never_fills_the_latest_dir() {
+        let _g = crate::cli::test_support::lock_home();
+        let home = tempdir().unwrap();
+        let prior = std::env::var_os("HOME");
+        // SAFETY: the caller holds TEST_HOME_LOCK, which serializes all env mutation.
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        let digest = format!("sha256:{}", "d".repeat(64));
+        let pinned = format!("docker.io/iiidev/node@{digest}");
+        let pin_dir = canonical_path(&pinned);
+        populate(&pin_dir);
+        std::fs::write(digest_path(&pin_dir), &digest).unwrap();
+        let pin_hit = resolve_cached(&pinned);
+        let latest_hit = resolve_cached("docker.io/iiidev/node:latest");
+        let bare_hit = resolve_cached("docker.io/iiidev/node");
+
+        match prior {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert_eq!(pin_hit, Some(pin_dir));
+        assert_eq!(
+            latest_hit, None,
+            "the tag was served a digest-only pin's rootfs"
+        );
+        assert_eq!(bare_hit, None);
     }
 
     #[test]

@@ -11,8 +11,8 @@
 //! All handlers are **sync** (`fn`, not `async fn`) and use only
 //! `std::fs` / `std::io` — no tokio anywhere in this file.
 
-use std::io::{BufRead, Read};
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::io::{BufRead, Read, Write};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
 use iii_shell_proto::{FsEntry, FsMatch, FsResult, FsSedFileResult};
@@ -47,6 +47,44 @@ pub(super) fn temp_sibling(target: &Path) -> std::path::PathBuf {
     t.push(".iii-tmp-");
     t.push(uuid::Uuid::new_v4().to_string());
     t.into()
+}
+
+/// `rename` that fails with `EEXIST` instead of replacing an existing `dst`.
+/// virtio-fs passes `RENAME_NOREPLACE` through to the host (FUSE rename2),
+/// and overlayfs, ext4 and tmpfs support it natively.
+fn rename_noreplace(src: &Path, dst: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let c_src = std::ffi::CString::new(src.as_os_str().as_bytes())?;
+    let c_dst = std::ffi::CString::new(dst.as_os_str().as_bytes())?;
+    // The raw syscall: older musl has no renameat2 wrapper.
+    let res = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            c_src.as_ptr(),
+            libc::AT_FDCWD,
+            c_dst.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if res == 0 {
+        return Ok(());
+    }
+    let err = std::io::Error::last_os_error();
+    // A filesystem without the flag: EINVAL (a FUSE server without rename2),
+    // EOPNOTSUPP, or EIO (a macOS host has no Linux errno for its ENOTSUP).
+    // shortcut: such a filesystem gets the racy check-then-rename; make it
+    // race-free only if one must hold concurrent no-replace moves.
+    if !matches!(
+        err.raw_os_error(),
+        Some(libc::EINVAL | libc::EOPNOTSUPP | libc::EIO)
+    ) {
+        return Err(err);
+    }
+    if dst.symlink_metadata().is_ok() {
+        return Err(std::io::Error::from_raw_os_error(libc::EEXIST));
+    }
+    std::fs::rename(src, dst)
 }
 
 /// Match a glob `pattern` against a relative path with gitignore-style
@@ -179,10 +217,9 @@ fn literal_replace_line(
     }
     if case_insensitive {
         // `(?i)` + literal-escaped needle gives correct Unicode case
-        // folding without re-implementing it. `$` in `replacement`
-        // would otherwise be expanded as a backref; escape it.
+        // folding without re-implementing it. A closure replacer's
+        // output is never expanded, so `$` in `replacement` stays literal.
         let escaped_needle = regex::escape(needle);
-        let escaped_replacement = replacement.replace('$', "$$");
         let pattern = format!("(?i){escaped_needle}");
         let re = match regex::Regex::new(&pattern) {
             Ok(r) => r,
@@ -195,13 +232,13 @@ fn literal_replace_line(
         let out = if first_only {
             re.replacen(line, 1, |_caps: &regex::Captures| {
                 count += 1;
-                escaped_replacement.clone()
+                replacement
             })
             .into_owned()
         } else {
             re.replace_all(line, |_caps: &regex::Captures| {
                 count += 1;
-                escaped_replacement.clone()
+                replacement
             })
             .into_owned()
         };
@@ -373,7 +410,8 @@ pub fn rm(path: String, recursive: bool) -> FsCallResult {
 /// Change mode (and optionally ownership) of a path.
 ///
 /// - `recursive=true` → walks the entire tree via `walkdir`; the root
-///   entry itself counts in the returned `updated` tally.
+///   entry itself counts in the returned `updated` tally. Symlinks
+///   inside the tree are skipped, as `chmod -R` does.
 /// - `uid` / `gid` of `None` means "do not change that field".
 ///
 /// Errors:
@@ -413,6 +451,11 @@ pub fn chmod(
             .into_iter()
             .filter_map(|e| e.ok())
         {
+            // chmod and chown follow links: a link inside the tree would
+            // change its target. The root follows, as without `recursive`.
+            if entry.depth() > 0 && entry.path_is_symlink() {
+                continue;
+            }
             apply(entry.path())?;
             updated += 1;
         }
@@ -440,17 +483,31 @@ pub fn mv(src: String, dst: String, overwrite: bool) -> FsCallResult {
     if !src_p.exists() {
         return Err(FsError::new("S211", format!("src not found: {src}")));
     }
+    // Fast path only: a dst created after this check is caught by the
+    // no-replace rename below.
     if dst_p.exists() && !overwrite {
         return Err(FsError::new("S213", format!("dst already exists: {dst}")));
     }
+    let rename = |from: &Path, to: &Path| {
+        if overwrite {
+            std::fs::rename(from, to)
+        } else {
+            rename_noreplace(from, to)
+        }
+    };
 
-    match std::fs::rename(src_p, dst_p) {
+    match rename(src_p, dst_p) {
         Ok(()) => Ok(FsResult::Mv { moved: true }),
         Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
-            // Cross-fs: copy to temp sibling of dst, then rename.
+            // Cross-fs: copy to temp sibling of dst, then rename. A symlink
+            // is recreated, not followed (read_link fails on anything else).
             let tmp = temp_sibling(dst_p);
-            std::fs::copy(src_p, &tmp).map_err(|e| FsError::from_io(&dst, e))?;
-            if let Err(e) = std::fs::rename(&tmp, dst_p) {
+            match std::fs::read_link(src_p) {
+                Ok(target) => std::os::unix::fs::symlink(target, &tmp),
+                Err(_) => std::fs::copy(src_p, &tmp).map(drop),
+            }
+            .map_err(|e| FsError::from_io(&dst, e))?;
+            if let Err(e) = rename(&tmp, dst_p) {
                 let _ = std::fs::remove_file(&tmp);
                 return Err(FsError::from_io(&dst, e));
             }
@@ -724,10 +781,14 @@ fn collect_files_to_sed(
 ///   capture references in `replacement`.
 /// - `regex=false` → literal string match.
 /// - `first_only=true` → replace only the first match per line.
+/// - Each line is matched without its terminator (`\n` or `\r\n`), as
+///   grep reads it, so `$` anchors before a CRLF and `\s+$` keeps it; a
+///   pattern can never match the terminator, the CR of a CRLF included.
 /// - Per-file failures are isolated; the handler continues to the next
 ///   file and reports `success=false` in that entry's result.
 /// - Writes are atomic: content goes to a temp sibling and is renamed
-///   over the original only on success.
+///   over the original only on success. A file without a match is not
+///   rewritten.
 ///
 /// Returns `Err` for: bad regex (S217), empty literal pattern (S210),
 /// missing `path` form root (S211), invalid input form (S210), or
@@ -841,7 +902,12 @@ pub fn sed(
         let mut replacements: u64 = 0;
         let mut output = String::with_capacity(original.len());
 
-        for line in original.split_inclusive('\n') {
+        for full_line in original.split_inclusive('\n') {
+            // Match the line without its terminator, as grep's `lines()` does.
+            let line = full_line
+                .strip_suffix("\r\n")
+                .or_else(|| full_line.strip_suffix('\n'))
+                .unwrap_or(full_line);
             let (new_line, n) = match &matcher {
                 Some(re) => {
                     let mut count_here = 0u64;
@@ -864,6 +930,17 @@ pub fn sed(
             };
             replacements += n;
             output.push_str(&new_line);
+            output.push_str(&full_line[line.len()..]);
+        }
+
+        if replacements == 0 {
+            results.push(FsSedFileResult {
+                path: file,
+                replacements: 0,
+                success: true,
+                error: None,
+            });
+            continue;
         }
 
         // Atomic write-to-temp + rename. On any failure we report
@@ -871,11 +948,23 @@ pub fn sed(
         let tmp = temp_sibling(p);
         let write_result: Result<(), std::io::Error> = (|| {
             let original_md = std::fs::metadata(p)?;
-            std::fs::write(&tmp, output.as_bytes())?;
-            std::fs::set_permissions(
-                &tmp,
-                std::fs::Permissions::from_mode(original_md.permissions().mode()),
-            )?;
+            // Private until complete, like an upload's temp file.
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&tmp)?;
+            f.write_all(output.as_bytes())?;
+            // Keep the owner (before the mode: chown clears setuid bits).
+            // EPERM: only root may give a file away; it then stays ours.
+            match std::os::unix::fs::fchown(&f, Some(original_md.uid()), Some(original_md.gid())) {
+                Err(e) if e.raw_os_error() != Some(libc::EPERM) => return Err(e),
+                _ => {}
+            }
+            f.set_permissions(std::fs::Permissions::from_mode(
+                original_md.permissions().mode(),
+            ))?;
+            drop(f);
             std::fs::rename(&tmp, p)?;
             Ok(())
         })();

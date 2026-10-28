@@ -43,6 +43,9 @@ struct Mock {
     config: Vec<u8>,
     layer_digest: String,
     layer: Vec<u8>,
+    /// When set, served for every manifest request except the platform
+    /// manifest's own digest.
+    index: Option<Vec<u8>>,
 }
 
 async fn serve(mock: Mock) -> u16 {
@@ -79,11 +82,14 @@ async fn serve(mock: Mock) -> u16 {
                     let _ = sock.write_all(send("application/json", 2).as_bytes()).await;
                     let _ = sock.write_all(b"{}").await;
                 } else if path.contains("/manifests/") {
-                    let ct = "application/vnd.oci.image.manifest.v1+json";
-                    let _ = sock
-                        .write_all(send(ct, mock.manifest.len() as u64).as_bytes())
-                        .await;
-                    let _ = sock.write_all(&mock.manifest).await;
+                    let (ct, body) = match &mock.index {
+                        Some(index) if !path.ends_with(&sha(&mock.manifest)) => {
+                            ("application/vnd.oci.image.index.v1+json", index)
+                        }
+                        _ => ("application/vnd.oci.image.manifest.v1+json", &mock.manifest),
+                    };
+                    let _ = sock.write_all(send(ct, body.len() as u64).as_bytes()).await;
+                    let _ = sock.write_all(body).await;
                 } else if path.ends_with(&mock.config_digest) {
                     let ct = "application/octet-stream";
                     let _ = sock
@@ -108,24 +114,46 @@ async fn serve(mock: Mock) -> u16 {
     port
 }
 
+/// An image manifest whose descriptors declare the given sizes.
+fn manifest(config_digest: &str, config_size: i64, layer_digest: &str, layer_size: i64) -> Vec<u8> {
+    format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json",
+"config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{config_digest}","size":{config_size}}},
+"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"{layer_digest}","size":{layer_size}}}]}}"#
+    )
+    .into_bytes()
+}
+
 fn build_mock(layer: Vec<u8>, config: Vec<u8>) -> Mock {
     let config_digest = sha(&config);
     let layer_digest = sha(&layer);
-    let manifest = format!(
-        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json",
-"config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{config_digest}","size":{}}},
-"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"{layer_digest}","size":{}}}]}}"#,
-        config.len(),
-        layer.len()
-    )
-    .into_bytes();
+    let manifest = manifest(
+        &config_digest,
+        config.len() as i64,
+        &layer_digest,
+        layer.len() as i64,
+    );
     Mock {
         manifest,
         config_digest,
         config,
         layer_digest,
         layer,
+        index: None,
     }
+}
+
+/// A multi-arch image index whose only entry is `manifest` for the host arch.
+fn index_for(manifest: &[u8]) -> Vec<u8> {
+    format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json",
+"manifests":[{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"{}","size":{},
+"platform":{{"architecture":"{}","os":"linux"}}}}]}}"#,
+        sha(manifest),
+        manifest.len(),
+        host_arch()
+    )
+    .into_bytes()
 }
 
 /// A layer with a `bin/` dir and, optionally, `.oci-config.json` as a symlink.
@@ -205,6 +233,7 @@ fn assert_config_is_regular_file(dest: &Path, config: &[u8]) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[serial_test::parallel]
 async fn config_write_does_not_follow_absolute_symlink_from_layer() {
     let tmp = tempfile::tempdir().unwrap();
     let victim = victim_in(tmp.path());
@@ -222,6 +251,7 @@ async fn config_write_does_not_follow_absolute_symlink_from_layer() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[serial_test::parallel]
 async fn config_write_does_not_follow_relative_escaping_symlink_from_layer() {
     let tmp = tempfile::tempdir().unwrap();
     let victim = victim_in(tmp.path());
@@ -239,6 +269,7 @@ async fn config_write_does_not_follow_relative_escaping_symlink_from_layer() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[serial_test::parallel]
 async fn dangling_symlink_from_layer_does_not_create_host_file() {
     let tmp = tempfile::tempdir().unwrap();
     let target = tmp.path().join("home/user/.ssh/authorized_keys");
@@ -256,6 +287,7 @@ async fn dangling_symlink_from_layer_does_not_create_host_file() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[serial_test::parallel]
 async fn benign_layer_writes_regular_config_file() {
     let tmp = tempfile::tempdir().unwrap();
     let arch = host_arch();
@@ -265,4 +297,122 @@ async fn benign_layer_writes_regular_config_file() {
 
     assert!(out.ok);
     assert_config_is_regular_file(&out.dest, &config);
+}
+
+/// The rootfs cache records what the pull returns and lets a digest pin
+/// reuse the rootfs only when the pin is listed, so the pull must return
+/// the digest a pin of this image names, for a tag and for the pin itself.
+#[tokio::test(flavor = "multi_thread")]
+#[serial_test::parallel]
+async fn pull_returns_the_manifest_digest_a_pin_names() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mock = build_mock(layer(None), b"{}".to_vec());
+    let digest = sha(&mock.manifest);
+    let port = serve(mock).await;
+    let image = format!("127.0.0.1:{port}/evil/base:1");
+
+    let by_tag = oci::pull_and_extract_rootfs(&image, &tmp.path().join("tag"))
+        .await
+        .unwrap();
+    let pinned = format!("{image}@{digest}");
+    let by_pin = oci::pull_and_extract_rootfs(&pinned, &tmp.path().join("pin"))
+        .await
+        .unwrap();
+
+    assert_eq!(by_tag, std::slice::from_ref(&digest));
+    assert_eq!(by_pin, [digest]);
+}
+
+/// `ensure_rootfs` records the digests it pulled beside the rootfs: a pin of
+/// one of them reuses the tag's dir and any other pin misses. For an index
+/// that is the index and the platform manifest, and a pin pulled first fills
+/// the tag's empty dir.
+#[tokio::test(flavor = "multi_thread")]
+#[serial_test::serial]
+async fn ensure_rootfs_shares_the_tag_dir_only_with_the_pulled_digests() {
+    use sandbox_libkrun::cli::rootfs_cache::{ensure_rootfs, resolve_cached};
+
+    let home = tempfile::tempdir().unwrap();
+    let prior = std::env::var_os("HOME");
+    // SAFETY: #[serial], and every other test in this binary is #[parallel].
+    unsafe { std::env::set_var("HOME", home.path()) };
+    let other = format!("sha256:{}", "c".repeat(64));
+
+    let mock = build_mock(layer(None), b"{}".to_vec());
+    let digest = sha(&mock.manifest);
+    let tag = format!("127.0.0.1:{}/evil/base:1", serve(mock).await);
+    let shared = ensure_rootfs(&tag, || {}).await.unwrap();
+    let pin_hit = resolve_cached(&format!("{tag}@{digest}"));
+    let pin_miss = resolve_cached(&format!("{tag}@{other}"));
+
+    let mut mock = build_mock(layer(None), b"{}".to_vec());
+    let platform = sha(&mock.manifest);
+    let index = index_for(&mock.manifest);
+    let index_digest = sha(&index);
+    mock.index = Some(index);
+    let multi = format!("127.0.0.1:{}/evil/multi:1", serve(mock).await);
+    let pinned = ensure_rootfs(&format!("{multi}@{index_digest}"), || {})
+        .await
+        .unwrap();
+    let mut pulled_again = false;
+    let by_tag = ensure_rootfs(&multi, || pulled_again = true).await.unwrap();
+    let platform_hit = resolve_cached(&format!("{multi}@{platform}"));
+    let multi_miss = resolve_cached(&format!("{multi}@{other}"));
+
+    match prior {
+        Some(v) => unsafe { std::env::set_var("HOME", v) },
+        None => unsafe { std::env::remove_var("HOME") },
+    }
+    assert!(
+        shared.starts_with(home.path()),
+        "isolated HOME not honoured"
+    );
+    assert_eq!(pin_hit, Some(shared));
+    assert_eq!(pin_miss, None, "another digest was served this rootfs");
+    assert_eq!(pinned, by_tag, "a pin pulled first fills the tag's dir");
+    assert!(!pulled_again, "the tag re-pulled what its pin had pulled");
+    assert_eq!(platform_hit, Some(by_tag));
+    assert_eq!(multi_miss, None);
+}
+
+/// Pull from `mock` and return the error the pull must fail with.
+async fn pull_error(mock: Mock) -> String {
+    let tmp = tempfile::tempdir().unwrap();
+    let port = serve(mock).await;
+    let image = format!("127.0.0.1:{port}/evil/base:1");
+    let res = oci::pull_and_extract_rootfs(&image, &tmp.path().join("rootfs")).await;
+    format!("{:#}", res.expect_err("the pull must fail"))
+}
+
+/// Descriptor sizes come from the registry. One the allocator cannot satisfy
+/// used to be passed to `Vec::with_capacity` and abort the whole process.
+#[tokio::test(flavor = "multi_thread")]
+#[serial_test::parallel]
+async fn absurd_declared_blob_size_fails_the_pull_without_aborting() {
+    let mut mock = build_mock(layer(None), b"{}".to_vec());
+    let layer_size = mock.layer.len() as i64;
+    mock.manifest = manifest(
+        &mock.config_digest,
+        i64::MAX,
+        &mock.layer_digest,
+        layer_size,
+    );
+
+    let err = pull_error(mock).await;
+
+    assert!(err.contains("image blobs exceed"), "got: {err}");
+}
+
+/// A blob that streams past its declared size is refused before it is
+/// buffered, so memory stays within the sizes the manifest was checked for.
+#[tokio::test(flavor = "multi_thread")]
+#[serial_test::parallel]
+async fn blob_longer_than_its_descriptor_fails_the_pull() {
+    let mut mock = build_mock(layer(None), b"{}".to_vec());
+    let layer_size = mock.layer.len() as i64 - 1;
+    mock.manifest = manifest(&mock.config_digest, 2, &mock.layer_digest, layer_size);
+
+    let err = pull_error(mock).await;
+
+    assert!(err.contains("layer 1 is larger than"), "got: {err}");
 }

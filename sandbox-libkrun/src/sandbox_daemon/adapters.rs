@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -30,6 +31,10 @@ const BOOT_SOCKET_TIMEOUT: Duration = Duration::from_secs(30);
 /// Calls that should fail fast (probes, version checks, "is this
 /// service up") should still pass an explicit `timeout_ms`.
 pub const DEFAULT_EXEC_TIMEOUT_MS: u64 = 300_000;
+/// How long a create waits for the guest once the relay is up: the default
+/// exec deadline, which covered a slow boot when the first exec paid for it.
+/// A VM that dies closes the relay, so it fails the create at once.
+const GUEST_READY_TIMEOUT: Duration = Duration::from_millis(DEFAULT_EXEC_TIMEOUT_MS);
 /// Grace between SIGTERM and SIGKILL. Kept short because the sandbox VM
 /// is ephemeral — nothing needs to flush to persistent storage. Values
 /// larger than a few hundred ms directly translate into user-visible
@@ -266,9 +271,9 @@ impl VmLauncher for VmBootLauncher {
 
         // Capture stderr to a per-sandbox log. Dropping to /dev/null
         // masked clap parse errors and libkrun panics as opaque 30s
-        // timeouts.
+        // timeouts. A new file only: never follow a planted symlink.
         let log_path = params.shell_sock.with_file_name("vm-boot.stderr.log");
-        let stderr = std::fs::File::create(&log_path).map_err(|e| {
+        let stderr = crate::sandbox_daemon::overlay::create_private(&log_path).map_err(|e| {
             SandboxError::BootFailed(format!(
                 "cannot create vm-boot stderr log at {}: {e}",
                 log_path.display()
@@ -298,14 +303,9 @@ impl VmLauncher for VmBootLauncher {
             .id()
             .ok_or_else(|| SandboxError::BootFailed("child exited immediately".to_string()))?;
 
-        // Detach — the child is the VM process; let it run independently.
-        // Dropping `tokio::process::Child` with its default `kill_on_drop:
-        // false` releases tokio's bookkeeping (fds + the background reap
-        // future) without signaling the process. `sandbox::stop` later
-        // sends SIGTERM/SIGKILL by `vm_pid` directly, so we don't need
-        // the handle. (mem::forget here would leak the reap state
-        // permanently, once per `sandbox::create`.)
-        drop(child);
+        // A waiter task reaps the VM when it exits; `sandbox::stop` signals
+        // `vm_pid` only until then (see `signal_vm`).
+        watch_vm(child, vm_pid);
         tracing::info!(
             ms = t_spawn.elapsed().as_millis() as u64,
             pid = vm_pid,
@@ -320,7 +320,7 @@ impl VmLauncher for VmBootLauncher {
         // refused" on the next `sandbox::exec`.
         //
         // Three ways this loop exits:
-        //   1. a test connect() succeeds — VM is live; return Ok.
+        //   1. a test connect() succeeds — the relay is up; go on to the guest.
         //   2. the child PID is no longer alive — VM died; bail with
         //      the tail of the stderr log so the user can see why.
         //   3. 30 s elapsed — bail with a useful error.
@@ -381,10 +381,48 @@ impl VmLauncher for VmBootLauncher {
             "boot_phase: shell_sock_wait (boot total)"
         );
 
+        // The relay binds `shell.sock` before the VM is even built: wait for
+        // the guest itself, so the first exec's deadline does not pay for the
+        // boot and a guest that never comes up fails the create.
+        let t_guest = Instant::now();
+        guest_answers(&sock, GUEST_READY_TIMEOUT)
+            .await
+            .map_err(|e| {
+                let hint = read_stderr_tail(&log_path);
+                SandboxError::BootFailed(format!(
+                    "the guest behind {} did not answer: {e}. Last stderr:\n{hint}",
+                    sock.display()
+                ))
+            })?;
+        tracing::info!(
+            ms = t_guest.elapsed().as_millis() as u64,
+            total_ms = t_boot_start.elapsed().as_millis() as u64,
+            "boot_phase: guest_ready"
+        );
+
         Ok(BootHandle {
             vm_pid,
             lifeline: Some(std::sync::Arc::new(lifeline)),
         })
+    }
+}
+
+/// One fs round trip through the relay at `sock`, within `within`: proof the
+/// guest is up, which a connect to the relay is not.
+async fn guest_answers(sock: &Path, within: Duration) -> Result<(), String> {
+    let round_trip = async {
+        let session = Session::connect(sock).await?;
+        session
+            .fs_call(iii_shell_proto::FsOp::Stat {
+                path: "/".to_string(),
+            })
+            .await
+    };
+    match tokio::time::timeout(within, round_trip).await {
+        // An fs error is an answer too: the guest is up.
+        Ok(Ok(_)) | Ok(Err(iii_shell_client::VmClientError::FsError { .. })) => Ok(()),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err(format!("no answer within {within:?}")),
     }
 }
 
@@ -679,27 +717,53 @@ impl ShellRunner for ShellProtoRunner {
     }
 }
 
+/// Pids of the VMs this process spawned and has not reaped yet. The stopper
+/// signals only these: once reaped, a pid may name another process. Global
+/// because every handler builds its own `SignalStopper`.
+static UNREAPED_VMS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+fn unreaped_vms() -> MutexGuard<'static, Vec<u32>> {
+    UNREAPED_VMS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Hand the VM `child` (pid `pid`) to a task that reaps it on exit, and keep
+/// its pid signalable until then.
+fn watch_vm(mut child: tokio::process::Child, pid: u32) {
+    unreaped_vms().push(pid);
+    tokio::spawn(async move {
+        let _ = child.wait().await;
+        unreaped_vms().retain(|&p| p != pid);
+    });
+}
+
+/// Send `signal` to `pid` if it is a VM not reaped yet.
+/// shortcut: a VM reaped but not yet removed from the list can still be
+/// signaled in that microsecond gap; move to a pidfd if that ever matters.
+fn signal_vm(pid: u32, signal: nix::sys::signal::Signal) {
+    if unreaped_vms().contains(&pid) {
+        let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), signal);
+    }
+}
+
 pub struct SignalStopper;
 
 #[async_trait::async_trait]
 impl VmStopper for SignalStopper {
     async fn stop(&self, vm_pid: u32) -> Result<(), SandboxError> {
-        use nix::sys::signal::{Signal, kill};
-        use nix::unistd::Pid;
+        use nix::sys::signal::Signal;
 
         let t_stop = Instant::now();
-        let pid = Pid::from_raw(vm_pid as i32);
 
         // SIGTERM first so iii-init/libkrun can close cleanly when they
         // do respond. The grace here is intentionally short: the sandbox
         // VM's upper layer is tmpfs and discarded on reap, so "allow
         // flush" isn't a real use case. Every millisecond of grace is
         // visible in `sandbox run` end-to-end latency.
-        let _ = kill(pid, Signal::SIGTERM);
+        signal_vm(vm_pid, Signal::SIGTERM);
 
         tokio::time::sleep(Duration::from_millis(STOP_GRACE_MS)).await;
 
-        let _ = kill(pid, Signal::SIGKILL);
+        signal_vm(vm_pid, Signal::SIGKILL);
 
         tracing::info!(
             ms = t_stop.elapsed().as_millis() as u64,
@@ -794,6 +858,107 @@ mod tests {
         let wire = serde_json::to_value(&resp).unwrap();
         assert_eq!(wire["stdout_truncated"], true);
         assert_eq!(wire["stderr_truncated"], false);
+    }
+
+    /// The stopper signals only a VM this process spawned and has not reaped:
+    /// any other pid, such as a reaped VM's reused one, is left alone.
+    #[tokio::test]
+    async fn the_stopper_signals_only_unreaped_vms() {
+        let mut other = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        SignalStopper.stop(other.id()).await.unwrap();
+        let untouched = other.try_wait().unwrap().is_none();
+        other.kill().unwrap();
+        other.wait().unwrap();
+        assert!(untouched, "signaled a pid that is no live VM");
+
+        let vm = tokio::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = vm.id().unwrap();
+        watch_vm(vm, pid);
+        SignalStopper.stop(pid).await.unwrap();
+        for _ in 0..100 {
+            if !unreaped_vms().contains(&pid) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("the VM was not stopped and reaped");
+    }
+
+    /// A relay on `shell.sock` that hands out id range 0 and reads one
+    /// request; `reply` then answers it, or the guest stays silent.
+    fn fake_relay(reply: Option<Duration>) -> (tempfile::TempDir, PathBuf) {
+        use iii_shell_proto::{
+            FsEntry, FsResult, ShellMessage, encode_frame, flags::FLAG_TERMINAL,
+        };
+        use std::io::{Read, Write};
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("shell.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            s.write_all(&0u32.to_be_bytes()).unwrap();
+            let mut len = [0u8; 4];
+            s.read_exact(&mut len).unwrap();
+            let mut body = vec![0u8; u32::from_be_bytes(len) as usize];
+            s.read_exact(&mut body).unwrap();
+            let Some(delay) = reply else {
+                std::thread::sleep(Duration::from_secs(2));
+                return;
+            };
+            std::thread::sleep(delay);
+            let root = FsResult::Stat(FsEntry {
+                name: "/".into(),
+                is_dir: true,
+                size: 0,
+                mode: "0755".into(),
+                mtime: 0,
+                is_symlink: false,
+            });
+            let frame = encode_frame(1, FLAG_TERMINAL, &ShellMessage::FsResponse(root)).unwrap();
+            s.write_all(&frame).unwrap();
+        });
+        (dir, sock)
+    }
+
+    /// The relay accepts before the guest is up; readiness waits for the guest's answer.
+    #[tokio::test]
+    async fn a_guest_is_ready_once_it_answers() {
+        let (_dir, sock) = fake_relay(Some(Duration::from_millis(100)));
+        guest_answers(&sock, Duration::from_secs(5)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_relay_whose_guest_never_answers_is_not_ready() {
+        let (_dir, sock) = fake_relay(None);
+        let err = guest_answers(&sock, Duration::from_millis(200))
+            .await
+            .unwrap_err();
+        assert!(err.contains("no answer"), "{err}");
+    }
+
+    /// The long readiness bound never holds a create for a VM that died: its
+    /// relay closes, and the probe fails at once.
+    #[tokio::test]
+    async fn a_closed_relay_fails_readiness_at_once() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("shell.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::thread::spawn(move || drop(listener.accept()));
+        let started = Instant::now();
+        let err = guest_answers(&sock, GUEST_READY_TIMEOUT).await.unwrap_err();
+        assert!(!err.contains("no answer"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5), "{err}");
     }
 
     #[test]

@@ -7,20 +7,64 @@
 //! overlayfs with an in-guest tmpfs upper, so every write is private to the
 //! VM and vanishes with it.
 //!
-//! Directory layout per sandbox (ID = UUID):
-//!   /tmp/iii-sandbox/<uuid>/root/      (read-only virtiofs trampoline: `/dev/root`)
-//!   /tmp/iii-sandbox/<uuid>/upper/     (reserved; the live upper is an in-guest tmpfs)
-//!   /tmp/iii-sandbox/<uuid>/work/      (reserved)
-//!   /tmp/iii-sandbox/<uuid>/merged/    (host-side workdir placeholder)
-//!   /tmp/iii-sandbox/<uuid>/owner      (pid of the adapter that created it)
+//! Directory layout per sandbox (ID = UUID), under the per-user root
+//! `/tmp/iii-sandbox-<euid>` (0700, see [`sandbox_root`]):
+//!   <root>/<uuid>/root/      (read-only virtiofs trampoline: `/dev/root`)
+//!   <root>/<uuid>/upper/     (reserved; the live upper is an in-guest tmpfs)
+//!   <root>/<uuid>/work/      (reserved)
+//!   <root>/<uuid>/merged/    (host-side workdir placeholder)
+//!   <root>/<uuid>/owner      (pid of the adapter that created it)
 
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
+use std::fs::File;
+use std::io::{self, Write};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-/// Where every sandbox's directory lives.
-pub const SANDBOX_ROOT: &str = "/tmp/iii-sandbox";
+/// Where every sandbox's directory lives: one root per user, so another local
+/// user can neither pre-create it nor plant files or sockets in it.
+pub fn sandbox_root() -> PathBuf {
+    PathBuf::from(format!("/tmp/iii-sandbox-{}", euid()))
+}
+
+fn euid() -> u32 {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    unsafe { libc::geteuid() }
+}
+
+/// Create `root` (0700) if missing, and refuse it unless it is a directory of
+/// this user, not a symlink. A lax mode is tightened: only this user can have
+/// made a directory this user owns.
+fn ensure_private_root(root: &Path) -> io::Result<()> {
+    match std::fs::DirBuilder::new().mode(0o700).create(root) {
+        Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(e),
+        _ => {}
+    }
+    let meta = std::fs::symlink_metadata(root)?;
+    if !meta.is_dir() || meta.uid() != euid() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "{} is not a directory owned by this user; remove it",
+                root.display()
+            ),
+        ));
+    }
+    if meta.mode() & 0o077 != 0 {
+        std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+/// Create `path` as a new 0600 file. `create_new` (O_EXCL) also refuses a
+/// symlink planted there, dangling or not.
+pub(crate) fn create_private(path: &Path) -> io::Result<File> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+}
 
 /// File in a sandbox's directory naming the adapter process that owns it.
 const OWNER_FILE: &str = "owner";
@@ -42,7 +86,7 @@ pub struct OverlayLayout {
 
 impl OverlayLayout {
     pub fn for_sandbox(id: Uuid) -> Self {
-        let base = PathBuf::from(SANDBOX_ROOT).join(id.to_string());
+        let base = sandbox_root().join(id.to_string());
         Self {
             upper: base.join("upper"),
             work: base.join("work"),
@@ -59,20 +103,15 @@ impl OverlayLayout {
     /// [`TRAMPOLINE_STAGING_DIRS`]; does NOT mount anything. This helper
     /// exists so the layout is deterministic and easily reaped.
     pub fn ensure_dirs(&self) -> std::io::Result<()> {
+        let base = self.base();
+        ensure_private_root(base.parent().expect("base has a parent"))?;
         std::fs::create_dir_all(&self.upper)?;
         std::fs::create_dir_all(&self.work)?;
         std::fs::create_dir_all(&self.merged)?;
         for dir in TRAMPOLINE_STAGING_DIRS {
             std::fs::create_dir_all(self.root.join(dir))?;
         }
-        // `create_new` (O_EXCL) refuses an `owner` symlink planted in the shared
-        // root; a swapped parent dir is still followed.
-        let mut owner = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(self.base().join(OWNER_FILE))?;
-        owner.write_all(std::process::id().to_string().as_bytes())
+        create_private(&base.join(OWNER_FILE))?.write_all(std::process::id().to_string().as_bytes())
     }
 
     pub fn cleanup(&self) -> std::io::Result<()> {
@@ -83,10 +122,15 @@ impl OverlayLayout {
 
 /// Remove the sandbox directories under `root` whose owning adapter is gone,
 /// as a SIGKILLed adapter leaves them. A directory with no owner file, or whose
-/// owner still runs (another adapter on this host), is left alone.
+/// owner still runs (another adapter on this host), is left alone, and so is a
+/// `root` that is not this user's private directory.
 /// shortcut: a dead adapter's pid reused by another process keeps its dirs until
 /// that process exits; record the owner's start time too if that ever matters.
 pub fn sweep_stale(root: &Path) {
+    if let Err(e) = ensure_private_root(root) {
+        tracing::warn!(root = %root.display(), error = %e, "not sweeping the sandbox root");
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };
@@ -186,7 +230,70 @@ mod tests {
         assert_eq!(owner, std::process::id().to_string());
     }
 
-    /// `/tmp/iii-sandbox` is shared: a symlink planted at `owner` must fail the
+    /// Each user gets a root of their own, closed to everyone else, so a second
+    /// local user neither collides with nor tampers with this one's sandboxes.
+    #[test]
+    fn the_sandbox_root_is_this_users_private_dir() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let root = sandbox_root();
+        assert!(root.ends_with(format!("iii-sandbox-{}", euid())));
+        let l = OverlayLayout::for_sandbox(Uuid::new_v4());
+        assert_eq!(l.base().parent(), Some(root.as_path()));
+        l.ensure_dirs().unwrap();
+        l.cleanup().unwrap();
+        let meta = std::fs::symlink_metadata(&root).unwrap();
+        assert!(meta.is_dir());
+        assert_eq!(meta.uid(), euid());
+        assert_eq!(meta.permissions().mode() & 0o777, 0o700);
+    }
+
+    /// A root pre-created as a symlink (to a dir the planter controls) is
+    /// refused, by `ensure_dirs` and by the sweep alike.
+    #[test]
+    fn a_symlinked_root_is_refused() {
+        let mut gone = std::process::Command::new("true").spawn().unwrap();
+        gone.wait().unwrap();
+        let t = tempfile::tempdir().unwrap();
+        let real = t.path().join("real");
+        let dead = real.join(Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&dead).unwrap();
+        std::fs::write(dead.join(OWNER_FILE), gone.id().to_string()).unwrap();
+        let root = t.path().join("root");
+        std::os::unix::fs::symlink(&real, &root).unwrap();
+
+        assert!(ensure_private_root(&root).is_err());
+        sweep_stale(&root);
+        assert!(dead.exists());
+    }
+
+    /// A root another user made is refused, not adopted.
+    #[test]
+    fn a_root_of_another_user_is_refused() {
+        if euid() == 0 {
+            return; // root owns everything; and the check must never chmod `/usr`
+        }
+        let err = ensure_private_root(Path::new("/usr")).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("not a directory owned by this user"),
+            "{err}"
+        );
+    }
+
+    /// A lax mode on a root this user owns is tightened to 0700.
+    #[test]
+    fn a_lax_root_of_this_user_is_tightened() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("root");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o777)).unwrap();
+        ensure_private_root(&root).unwrap();
+        let mode = std::fs::metadata(&root).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+    }
+
+    /// A symlink planted at `owner` must fail the
     /// write, not redirect it.
     #[test]
     fn ensure_dirs_refuses_a_planted_owner_symlink() {

@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use smoltcp::iface::{SocketHandle, SocketSet};
@@ -18,7 +19,14 @@ const TCP_TX_BUF_SIZE: usize = 65536;
 const DEFAULT_MAX_CONNECTIONS: usize = 256;
 const CHANNEL_CAPACITY: usize = 32;
 const RELAY_BUF_SIZE: usize = 16384;
-const DEFERRED_CLOSE_LIMIT: u16 = 64;
+/// How long a closing connection may sit with proxy bytes left to flush and
+/// none accepted by the guest before it is reset. Wall time, not poll
+/// iterations: the loop also wakes for other connections' traffic.
+const DEFERRED_CLOSE_STALL: Duration = Duration::from_secs(30);
+/// A socket still handshaking after this long is reaped: a SYN smoltcp
+/// rejected (bad checksum) or a handshake the guest reset leaves it parked
+/// in Listen, holding a connection slot forever.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Tracks TCP connections between guest and proxy tasks.
 ///
@@ -45,10 +53,13 @@ struct Connection {
     from_proxy: mpsc::Receiver<Bytes>,
     proxy_channels: Option<ProxyChannels>,
     proxy_spawned: bool,
-    /// Set when `from_proxy` disconnects — the proxy task has exited.
+    /// Set once the proxy has nothing more to send: it relayed server EOF
+    /// (an empty chunk) or exited (`from_proxy` disconnected).
     proxy_gone: bool,
     write_buf: Option<(Bytes, usize)>,
-    close_attempts: u16,
+    /// When the deferred close last stopped making progress.
+    close_stalled_since: Option<Instant>,
+    created_at: Instant,
 }
 
 struct ProxyChannels {
@@ -155,7 +166,8 @@ impl ConnectionTracker {
                 proxy_spawned: false,
                 proxy_gone: false,
                 write_buf: None,
-                close_attempts: 0,
+                close_stalled_since: None,
+                created_at: Instant::now(),
             },
         );
 
@@ -177,14 +189,15 @@ impl ConnectionTracker {
 
             let socket = sockets.get_mut::<tcp::Socket>(handle);
 
-            // Proxy task gone: it died (host connect/IO failure) or finished
-            // after a propagated guest FIN. Flush remaining proxy→guest bytes,
-            // then close; abort if the guest never drains us.
+            // Proxy done: it died (host connect/IO failure), or the guest FIN
+            // was propagated and the server sent EOF. Flush remaining
+            // proxy→guest bytes, then close; abort if the guest never drains us.
             let proxy_dead = conn
                 .to_proxy
                 .as_ref()
                 .map_or(conn.proxy_gone, |tx| tx.is_closed());
             if proxy_dead {
+                let queued = socket.send_queue();
                 write_proxy_data(socket, conn);
                 if conn.write_buf.is_none() {
                     if !matches!(
@@ -194,11 +207,16 @@ impl ConnectionTracker {
                         tracing::debug!(src = %conn.src, dst = %conn.dst, state = ?socket.state(), "proxy gone; closing socket");
                     }
                     socket.close();
-                } else {
-                    conn.close_attempts += 1;
-                    if conn.close_attempts >= DEFERRED_CLOSE_LIMIT {
-                        socket.abort();
-                    }
+                } else if socket.send_queue() > queued {
+                    // The guest is draining, however slowly.
+                    conn.close_stalled_since = None;
+                } else if conn
+                    .close_stalled_since
+                    .get_or_insert_with(Instant::now)
+                    .elapsed()
+                    >= DEFERRED_CLOSE_STALL
+                {
+                    socket.abort();
                 }
                 continue;
             }
@@ -229,6 +247,11 @@ impl ConnectionTracker {
             }
 
             write_proxy_data(socket, conn);
+            // Server EOF: FIN the guest once flushed; smoltcp still receives in
+            // FinWait1/2, so the upload goes on.
+            if conn.proxy_gone && conn.write_buf.is_none() {
+                socket.close();
+            }
         }
     }
 
@@ -288,13 +311,17 @@ impl ConnectionTracker {
 
     /// Remove closed connections and their sockets.
     ///
-    /// Only removes sockets in the `Closed` state. Sockets in `TimeWait`
+    /// Removes sockets in the `Closed` state, and sockets whose handshake
+    /// never completed within [`HANDSHAKE_TIMEOUT`]. Sockets in `TimeWait`
     /// are left for smoltcp to handle naturally (2*MSL timer).
     pub fn cleanup_closed(&mut self, sockets: &mut SocketSet<'_>) {
         let keys = &mut self.connection_keys;
         self.connections.retain(|&handle, conn| {
             let socket = sockets.get::<tcp::Socket>(handle);
-            if matches!(socket.state(), tcp::State::Closed) {
+            let handshake_expired =
+                matches!(socket.state(), tcp::State::Listen | tcp::State::SynReceived)
+                    && conn.created_at.elapsed() >= HANDSHAKE_TIMEOUT;
+            if handshake_expired || matches!(socket.state(), tcp::State::Closed) {
                 tracing::debug!(src = %conn.src, dst = %conn.dst, "connection reaped");
                 keys.remove(&(conn.src, conn.dst));
                 sockets.remove(handle);
@@ -325,6 +352,10 @@ fn write_proxy_data(socket: &mut tcp::Socket<'_>, conn: &mut Connection) {
 
     while conn.write_buf.is_none() {
         match conn.from_proxy.try_recv() {
+            Ok(data) if data.is_empty() => {
+                conn.proxy_gone = true;
+                break;
+            }
             Ok(data) => {
                 if socket.can_send() {
                     match socket.send_slice(&data) {
@@ -472,6 +503,62 @@ mod tests {
         tracker.cleanup_closed(&mut sockets);
         assert_eq!(tracker.connections.len(), 1);
         assert!(tracker.has_socket_for(&src, &dst));
+    }
+
+    /// A socket left in Listen (its SYN was rejected, e.g. on checksum) must
+    /// be reaped once the handshake window passes, or 256 such SYNs lock the
+    /// VM out of TCP.
+    #[test]
+    fn cleanup_reaps_socket_stuck_in_handshake() {
+        let mut tracker = ConnectionTracker::new(Some(1));
+        let mut sockets = SocketSet::new(vec![]);
+        let (src, dst) = (addr(5000), dst_addr(80));
+        assert!(tracker.create_tcp_socket(src, dst, &mut sockets));
+
+        for conn in tracker.connections.values_mut() {
+            conn.created_at -= HANDSHAKE_TIMEOUT;
+        }
+        tracker.cleanup_closed(&mut sockets);
+
+        assert!(!tracker.has_socket_for(&src, &dst));
+        assert_eq!(sockets.iter().count(), 0, "socket must leave the set");
+        assert!(
+            tracker.create_tcp_socket(addr(5001), dst, &mut sockets),
+            "the slot must be free again"
+        );
+    }
+
+    /// A closing connection whose guest never takes the proxy's tail is reset
+    /// once it has stalled for DEFERRED_CLOSE_STALL, not held forever.
+    #[test]
+    fn deferred_close_resets_after_stall() {
+        let mut tracker = ConnectionTracker::new(None);
+        let mut sockets = SocketSet::new(vec![]);
+        assert!(tracker.create_tcp_socket(addr(5000), dst_addr(80), &mut sockets));
+        let (&handle, conn) = tracker.connections.iter_mut().next().unwrap();
+        // A proxy that queued a reply and exited; the socket cannot send.
+        conn.proxy_spawned = true;
+        let channels = conn.proxy_channels.take().unwrap();
+        channels
+            .to_smoltcp
+            .try_send(Bytes::from_static(b"tail"))
+            .unwrap();
+        drop(channels);
+
+        tracker.relay_data(&mut sockets);
+        assert_eq!(
+            sockets.get::<tcp::Socket>(handle).state(),
+            tcp::State::Listen
+        );
+
+        for conn in tracker.connections.values_mut() {
+            *conn.close_stalled_since.as_mut().unwrap() -= DEFERRED_CLOSE_STALL;
+        }
+        tracker.relay_data(&mut sockets);
+        assert_eq!(
+            sockets.get::<tcp::Socket>(handle).state(),
+            tcp::State::Closed
+        );
     }
 
     #[test]

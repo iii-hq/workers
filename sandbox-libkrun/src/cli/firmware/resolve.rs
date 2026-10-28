@@ -1,7 +1,7 @@
 //! Runtime resolution of libkrunfw shared library and iii-init binary locations.
 //!
 //! libkrunfw is looked up in order at:
-//! 1. `III_LIBKRUNFW_PATH` (file path -> parent dir, or directory)
+//! 1. `III_LIBKRUNFW_PATH` (a file, loaded as named, or a directory)
 //! 2. `~/.iii/lib/` (where the embedded copy is extracted)
 //! 3. System paths (`/usr/lib`, `/usr/local/lib`, Homebrew on macOS)
 //!
@@ -23,11 +23,17 @@ pub fn lib_path_env_var() -> &'static str {
     }
 }
 
-/// Resolve the directory containing libkrunfw.
+/// Resolve the directory containing libkrunfw: the parent of
+/// [`resolve_libkrunfw_file`].
+pub fn resolve_libkrunfw_dir() -> Option<PathBuf> {
+    resolve_libkrunfw_file()?.parent().map(Path::to_path_buf)
+}
+
+/// Resolve the libkrunfw file to load.
 ///
 /// Checks (in order): env var override, `~/.iii/lib/`, system paths.
 /// Returns `None` if the library is not found in any location.
-pub fn resolve_libkrunfw_dir() -> Option<PathBuf> {
+pub fn resolve_libkrunfw_file() -> Option<PathBuf> {
     let filename = libkrunfw_filename();
 
     // Build list of paths to check
@@ -44,7 +50,7 @@ pub fn resolve_libkrunfw_dir() -> Option<PathBuf> {
         vec![Path::new("/usr/lib"), Path::new("/usr/local/lib")]
     };
 
-    resolve_dir_with_paths(
+    resolve_file_with_paths(
         env_path.as_deref(),
         lib_dir.as_deref(),
         &system_paths,
@@ -59,8 +65,9 @@ pub fn resolve_init_binary() -> Option<PathBuf> {
     p.is_file().then_some(p)
 }
 
-/// Internal testable resolution function.
-fn resolve_dir_with_paths(
+/// Internal testable resolution function. A file override keeps its own
+/// name; every directory supplies the platform `filename`.
+fn resolve_file_with_paths(
     env_path: Option<&str>,
     lib_dir: Option<&Path>,
     system_paths: &[&Path],
@@ -70,28 +77,19 @@ fn resolve_dir_with_paths(
     if let Some(env_val) = env_path {
         let p = PathBuf::from(env_val);
         if p.is_file() {
-            return p.parent().map(|d| d.to_path_buf());
-        }
-        if p.is_dir() && p.join(filename).exists() {
             return Some(p);
         }
-    }
-
-    // 2. ~/.iii/lib/
-    if let Some(dir) = lib_dir
-        && dir.join(filename).exists()
-    {
-        return Some(dir.to_path_buf());
-    }
-
-    // 3. System paths
-    for path in system_paths {
-        if path.join(filename).exists() {
-            return Some(path.to_path_buf());
+        if p.is_dir() && p.join(filename).exists() {
+            return Some(p.join(filename));
         }
     }
 
-    None
+    // 2. ~/.iii/lib/, then 3. system paths
+    lib_dir
+        .into_iter()
+        .chain(system_paths.iter().copied())
+        .map(|dir| dir.join(filename))
+        .find(|file| file.exists())
 }
 
 #[cfg(test)]
@@ -117,13 +115,58 @@ mod tests {
         std::fs::write(&file_path, b"fake").unwrap();
 
         let result =
-            resolve_dir_with_paths(Some(file_path.to_str().unwrap()), None, &[], &filename);
-        assert_eq!(result, Some(tmp.path().to_path_buf()));
+            resolve_file_with_paths(Some(file_path.to_str().unwrap()), None, &[], &filename);
+        assert_eq!(result, Some(file_path));
+    }
+
+    /// A file override with a non-standard name is loaded as named, not
+    /// swapped for the platform filename in its directory.
+    #[test]
+    fn test_resolve_env_var_file_keeps_its_name() {
+        let tmp = TempDir::new().unwrap();
+        let file_path = tmp.path().join("custom.so");
+        std::fs::write(&file_path, b"fake").unwrap();
+        let lib = TempDir::new().unwrap();
+        std::fs::write(lib.path().join(libkrunfw_filename()), b"fake").unwrap();
+
+        let result = resolve_file_with_paths(
+            Some(file_path.to_str().unwrap()),
+            Some(lib.path()),
+            &[],
+            &libkrunfw_filename(),
+        );
+        assert_eq!(result, Some(file_path));
+    }
+
+    #[test]
+    fn test_resolve_dir_override_and_fallbacks_use_platform_filename() {
+        let filename = libkrunfw_filename();
+        let env = TempDir::new().unwrap();
+        let sys = TempDir::new().unwrap();
+        std::fs::write(sys.path().join(&filename), b"fake").unwrap();
+
+        // An env dir without the library falls through to the system path.
+        let result = resolve_file_with_paths(
+            Some(env.path().to_str().unwrap()),
+            None,
+            &[sys.path()],
+            &filename,
+        );
+        assert_eq!(result, Some(sys.path().join(&filename)));
+
+        std::fs::write(env.path().join(&filename), b"fake").unwrap();
+        let result = resolve_file_with_paths(
+            Some(env.path().to_str().unwrap()),
+            None,
+            &[sys.path()],
+            &filename,
+        );
+        assert_eq!(result, Some(env.path().join(&filename)));
     }
 
     #[test]
     fn test_resolve_not_found() {
-        let result = resolve_dir_with_paths(None, None, &[], &libkrunfw_filename());
+        let result = resolve_file_with_paths(None, None, &[], &libkrunfw_filename());
         assert!(result.is_none());
     }
 

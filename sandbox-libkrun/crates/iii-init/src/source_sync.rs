@@ -15,7 +15,7 @@ use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStringExt;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt, symlink};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -131,9 +131,11 @@ fn apply_file(
     ));
 
     let result = (|| {
+        // Private until complete: the entry's mode is applied below.
         let mut output = OpenOptions::new()
             .create_new(true)
             .write(true)
+            .mode(0o600)
             .open(&temp)?;
         let mut payload = reader.take(header.payload_len);
         let copied = io::copy(&mut payload, &mut output)?;
@@ -293,6 +295,49 @@ mod tests {
         .unwrap();
 
         assert_eq!(fs::read(workspace.join("src/main.py")).unwrap(), b"after");
+    }
+
+    /// Reads `bytes`, first noting the mode of the sync temp file in `dir`.
+    struct TempModeProbe<'a> {
+        dir: &'a Path,
+        mode: Option<u32>,
+        bytes: &'a [u8],
+    }
+
+    impl Read for TempModeProbe<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if self.mode.is_none() {
+                let temp = fs::read_dir(self.dir)?
+                    .flatten()
+                    .find(|e| e.file_name().to_string_lossy().contains(".iii-sync-"));
+                self.mode = temp.map(|e| e.metadata().unwrap().permissions().mode() & 0o777);
+            }
+            self.bytes.read(buffer)
+        }
+    }
+
+    #[test]
+    fn file_entry_temp_is_private_until_renamed() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut payload = TempModeProbe {
+            dir: temp.path(),
+            mode: None,
+            bytes: b"TOKEN=1",
+        };
+
+        apply_entry(
+            &mut payload,
+            temp.path(),
+            &header(EntryKind::File, ".env", 7),
+        )
+        .unwrap();
+
+        assert_eq!(payload.mode, Some(0o600));
+        let mode = fs::metadata(temp.path().join(".env"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o644);
     }
 
     #[test]

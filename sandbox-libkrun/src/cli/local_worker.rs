@@ -10,17 +10,66 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use super::project::{ProjectInfo, WORKER_MANIFEST, load_from_manifest};
+use super::project::{ProjectInfo, WORKER_MANIFEST, project_from_doc};
 use super::rootfs::clone_rootfs;
 
 const PREPARED_MARKER_VERSION: &str = "workspace-copy-in-v1";
+
+/// The worker command. A valid base image may lack bash (`node:20-alpine`);
+/// its `sh` then runs the script, whose only bash-ism, `set -o pipefail`,
+/// busybox ash supports. Images with bash keep running the script under it,
+/// as their setup/install commands may rely on bash syntax.
+const RUN_SCRIPT_CMD: &str =
+    "command -v bash >/dev/null && exec bash /opt/iii/dev-run.sh; exec sh /opt/iii/dev-run.sh";
+
+/// Re-sync deletions: /workspace lives on the persistent ext4 upper and tar -x
+/// only adds/overwrites (never deletes), so a source file removed on the host
+/// would keep running across a watcher restart. Remove every file outside the
+/// VM-local dep/build dirs, at any depth like the tar excludes (they are not
+/// re-copied and install is skipped once prepared, so a nested
+/// `service/node_modules` must persist), then the directories left empty, then
+/// the few left (ancestors of dep dirs) that are no longer a directory in
+/// $SRC, dep dirs included (a stale `old/node_modules`, or a `service/` that
+/// tar could not replace with the file the host now has), and re-extract the
+/// current source. On first boot /workspace is empty so this is a no-op.
+/// (All name lists MUST match the tar --exclude list.)
+const WORKSPACE_RESYNC_CLEANUP: &str = r#"find /workspace -mindepth 1 \( -name node_modules -o -name .venv -o -name target \
+  -o -name dist -o -name __pycache__ -o -name .pytest_cache -o -name .next -o -name .git \) -prune \
+  -o ! -type d -exec rm -f {} +
+find /workspace -mindepth 1 -depth -type d -empty \
+  ! -path '*/node_modules/*' ! -path '*/.venv/*' ! -path '*/target/*' ! -path '*/dist/*' \
+  ! -path '*/__pycache__/*' ! -path '*/.pytest_cache/*' ! -path '*/.next/*' ! -path '*/.git/*' \
+  -exec rmdir {} \;
+find /workspace -mindepth 1 \( -name node_modules -o -name .venv -o -name target \
+  -o -name dist -o -name __pycache__ -o -name .pytest_cache -o -name .next -o -name .git \) -prune \
+  -o -type d ! -exec sh -c '[ -d "$1/${2#/workspace/}" ] && [ ! -L "$1/${2#/workspace/}" ]' sh "$SRC" {} \; \
+  -prune -exec rm -rf {} +"#;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Shared helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// In legacy mode the marker is on the guest root, so the guest may have
+/// planted a symlink (to `/dev/zero`, say), a FIFO or a huge file there:
+/// never follow it, never block on it, and read only a marker's worth.
 fn prepared_marker_matches_current_workspace(marker: &Path) -> bool {
-    std::fs::read_to_string(marker).is_ok_and(|contents| contents.trim() == PREPARED_MARKER_VERSION)
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let Ok(file) = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(marker)
+    else {
+        return false;
+    };
+    let mut contents = String::new();
+    file.metadata().is_ok_and(|meta| meta.is_file())
+        && file
+            .take(PREPARED_MARKER_VERSION.len() as u64 + 1)
+            .read_to_string(&mut contents)
+            .is_ok()
+        && contents.trim() == PREPARED_MARKER_VERSION
 }
 
 /// Write `dev-run.sh` (mode 0755) into the share and return its dir:
@@ -67,11 +116,13 @@ pub fn build_libkrun_local_script(
     is_bundle: bool,
     overlay: bool,
 ) -> String {
-    let env_exports = build_env_exports(&project.env);
+    // The script never re-exports the manifest env: the VM env already holds
+    // it merged with the caller's overrides and the gateway rewrite. The
+    // system dirs go after PATH so a PATH from that env keeps precedence.
     let mut parts = vec![
         "set -e".to_string(),
         "export HOME=${HOME:-/root}".to_string(),
-        "export PATH=/usr/local/bin:/usr/bin:/bin:$PATH".to_string(),
+        "export PATH=${PATH:+$PATH:}/usr/local/bin:/usr/bin:/bin".to_string(),
         "export LANG=${LANG:-C.UTF-8}".to_string(),
     ];
 
@@ -116,18 +167,12 @@ fi
 if ! command -v tar >/dev/null 2>&1; then
   echo "iii: ERROR workspace copy-in requires 'tar' in the base image" >&2
   exit 1
-fi
-# Re-sync deletions: /workspace lives on the persistent ext4 upper and tar -x
-# only adds/overwrites (never deletes), so a source file removed on the host
-# would keep running across a watcher restart. Clear every top-level entry
-# EXCEPT the VM-local dep/build dirs (excluded from the copy, must persist),
-# then re-extract the current source. On first boot /workspace is empty so this
-# is a no-op. (Exclusion list MUST match the tar --exclude list below.)
-find /workspace -mindepth 1 -maxdepth 1 \
-  ! -name node_modules ! -name .venv ! -name target ! -name dist \
-  ! -name __pycache__ ! -name .pytest_cache ! -name .next ! -name .git \
-  -exec rm -rf {} +
-# Copy host source into the VM-local /workspace, excluding dep/build dirs (at
+fi"#
+            .to_string(),
+        );
+        parts.push(WORKSPACE_RESYNC_CLEANUP.to_string());
+        parts.push(
+            r#"# Copy host source into the VM-local /workspace, excluding dep/build dirs (at
 # any depth) so VM-local installs persist across a re-copy and host clutter
 # isn't pulled in. Only /mnt/host-src is read; the host project is never
 # written, so no empty dep folders appear there.
@@ -207,33 +252,8 @@ fi"#
     // simple commands anyway, so single-command starts keep their PID
     // semantics.
     let quoted_run_cmd = format!("'{}'", project.run_cmd.replace('\'', "'\\''"));
-    parts.push(format!(
-        "{} && exec /bin/sh -c {}",
-        env_exports, quoted_run_cmd
-    ));
+    parts.push(format!("exec /bin/sh -c {quoted_run_cmd}"));
     parts.join("\n")
-}
-
-pub fn build_env_exports(env: &HashMap<String, String>) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    for (k, v) in env {
-        if k == "III_ENGINE_URL" || k == "III_URL" || k == "III_WORKER_NAME" {
-            continue;
-        }
-        if !k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') || k.is_empty() {
-            continue;
-        }
-        parts.push(format!("export {}='{}'", k, shell_escape(v)));
-    }
-    if parts.is_empty() {
-        "true".to_string()
-    } else {
-        parts.join(" && ")
-    }
-}
-
-pub fn shell_escape(s: &str) -> String {
-    s.replace('\'', "'\\''")
 }
 
 pub fn build_local_env(
@@ -310,10 +330,10 @@ pub async fn local_vm_command(
 
 /// A local VM runs only on an explicit, valid OCI image: an invalid VM request
 /// must not silently change into another image.
-fn validate_compose_base_image(worker_dir: &Path) -> Result<(), String> {
-    let manifest_path = worker_dir.join(WORKER_MANIFEST);
-    let doc = super::project::read_manifest_doc(&manifest_path)?
-        .ok_or_else(|| format!("{} does not exist", manifest_path.display()))?;
+fn validate_compose_base_image(
+    doc: &serde_yaml::Value,
+    manifest_path: &Path,
+) -> Result<(), String> {
     let value = doc
         .get("runtime")
         .and_then(|runtime| runtime.get("base_image"))
@@ -412,14 +432,14 @@ pub(crate) fn validate_source(
     }
 
     // 1a. Bundle workers: re-run the strict manifest validator before
-    // we touch the publisher-controlled YAML via load_from_manifest.
+    // we touch the publisher-controlled YAML via project_from_doc.
     // Whatever checked the bundle at install time, the
     // install dir is on the host filesystem — any local-FS-write
     // attacker (or a future bug that lets a bundle write to its own
     // install dir) could modify the iii.worker.yaml in that install dir
     // (Compose's package cache) between install and start to introduce
     // scripts.setup, scripts.install, or runtime.base_image. The permissive
-    // load_from_manifest path below would honor those fields. The
+    // project_from_doc path below would honor those fields. The
     // strict validator also enforces the 64 KiB manifest cap, which
     // defuses billion-laughs YAML expansion before serde_yaml sees it.
     if let Some(package) = package
@@ -434,18 +454,19 @@ pub(crate) fn validate_source(
     // 1b. Local (non-bundle) workers: the manifest must exist, and gets
     // strict key validation, so a manifest hand-edited after it was written
     // can't smuggle unknown keys (or an oversize/billion-laughs YAML) past
-    // the engine via the permissive load_from_manifest path below.
+    // the engine via the permissive load path below. The manifest is read
+    // once, so the doc that passes these checks is the one loaded.
     let manifest_path = project_path.join(WORKER_MANIFEST);
-    if package.is_none() {
-        let doc = super::project::read_manifest_doc(&manifest_path)?
-            .ok_or_else(|| format!("{} does not exist", manifest_path.display()))?;
-        if let Err(e) = super::project::validate_manifest_keys(&doc, &manifest_path) {
-            return Err(format!("manifest validation failed at start: {}", e));
-        }
+    let doc = super::project::read_manifest_doc(&manifest_path)?
+        .ok_or_else(|| format!("{} does not exist", manifest_path.display()))?;
+    if package.is_none()
+        && let Err(e) = super::project::validate_manifest_keys(&doc, &manifest_path)
+    {
+        return Err(format!("manifest validation failed at start: {}", e));
     }
 
     // 2. Load the manifest
-    let mut project = load_from_manifest(&manifest_path).ok_or_else(|| {
+    let mut project = project_from_doc(&doc, &manifest_path).ok_or_else(|| {
         format!(
             "Could not load the worker manifest in '{}'",
             project_path.display()
@@ -474,7 +495,7 @@ pub(crate) fn validate_source(
         .to_string();
 
     if package.is_none() {
-        validate_compose_base_image(project_path)?;
+        validate_compose_base_image(&doc, &manifest_path)?;
     }
     Ok((project, kind))
 }
@@ -618,7 +639,7 @@ pub(crate) async fn start_worker_impl(
     //    `iii-init` binary absorbs that role (see iii_init::supervisor).
     let script = build_libkrun_local_script(&project, is_prepared, is_bundle, overlay);
 
-    // Both modes exec `bash /opt/iii/dev-run.sh`; only the SOURCE of that file
+    // Both modes run `/opt/iii/dev-run.sh`; only the SOURCE of that file
     // differs:
     //   - legacy: written into the per-worker clone at managed_dir/opt/iii,
     //     which IS the guest root (PassthroughFs) — directly visible.
@@ -631,17 +652,14 @@ pub(crate) async fn start_worker_impl(
     // The script is delivered as a FILE, never inlined into III_WORKER_CMD:
     // with an on-disk (not embedded) init the guest env rides the kernel
     // cmdline (krun_env), whose size `vm_boot` caps. Keeping III_WORKER_CMD
-    // tiny (`exec bash /opt/iii/dev-run.sh`) keeps the env within that budget
+    // tiny (RUN_SCRIPT_CMD) keeps the env within that budget
     // for both modes.
     let script_dir = write_run_script(&managed_dir, overlay, &script)
         .map_err(|e| format!("Failed to write run script: {}", e))?;
     // The script sets up the workspace; no pre-cd needed (and /workspace is
     // empty until virtiofs mounts, so cd-before-exec would be racy).
     let exec_path = "/bin/sh";
-    let args = vec![
-        "-c".to_string(),
-        "exec bash /opt/iii/dev-run.sh".to_string(),
-    ];
+    let args = vec!["-c".to_string(), RUN_SCRIPT_CMD.to_string()];
 
     // 8. Copy iii-init if needed
     let init_path = match super::firmware::provision::ensure_init_binary().await {
@@ -893,6 +911,48 @@ mod tests {
         assert!(script.contains("touch /run/iii/source-ready"));
     }
 
+    /// A valid base image without bash (`node:20-alpine`) must still run the
+    /// script, through the image's own `sh`.
+    #[test]
+    fn run_script_command_falls_back_to_sh_without_bash() {
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        std::os::unix::fs::symlink("/bin/sh", bin.join("sh")).unwrap();
+        let script = temp.path().join("dev-run.sh");
+        std::fs::write(&script, "exit 7\n").unwrap();
+
+        let status = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(RUN_SCRIPT_CMD.replace("/opt/iii/dev-run.sh", script.to_str().unwrap()))
+            .env("PATH", &bin)
+            .status()
+            .unwrap();
+
+        assert_eq!(status.code(), Some(7));
+    }
+
+    /// The VM env already holds the manifest env with the caller's overrides
+    /// and the gateway rewrite applied; re-exporting the raw manifest values
+    /// in the script would revert both.
+    #[test]
+    fn build_libkrun_local_script_does_not_reexport_manifest_env() {
+        let project = ProjectInfo {
+            name: "test".to_string(),
+            kind: Some("typescript".to_string()),
+            setup_cmd: String::new(),
+            install_cmd: String::new(),
+            run_cmd: "node server.js".to_string(),
+            env: HashMap::from([("API_URL".to_string(), "http://localhost:3000".to_string())]),
+            base_image: None,
+        };
+        let script = build_libkrun_local_script(
+            &project, /*prepared=*/ true, /*is_bundle=*/ false, false,
+        );
+        assert!(!script.contains("API_URL"), "{script}");
+        assert!(script.ends_with("exec /bin/sh -c 'node server.js'"));
+    }
+
     #[test]
     fn current_prepared_marker_matches_copy_in_workspace() {
         let temp = tempfile::tempdir().unwrap();
@@ -900,6 +960,73 @@ mod tests {
         std::fs::write(&marker, PREPARED_MARKER_VERSION).unwrap();
 
         assert!(prepared_marker_matches_current_workspace(&marker));
+    }
+
+    /// Install is skipped once the marker exists, so the restart cleanup must
+    /// keep dep dirs at any depth (a monorepo's `service/node_modules`), the
+    /// same names tar excludes, while still dropping files the host deleted,
+    /// and the dep dirs of a directory the host no longer has as one (tar
+    /// cannot replace a non-empty directory with a file, so the copy-in
+    /// would fail on every boot).
+    #[test]
+    fn workspace_cleanup_keeps_nested_dep_dirs() {
+        let temp = tempfile::tempdir().unwrap();
+        let (ws, src) = (temp.path().join("ws"), temp.path().join("src"));
+        for file in [
+            "service/node_modules/dep/index.js",
+            "service/old.js",
+            "gone/sub/old.js",
+            "node_modules/top.js",
+            "pkg/.venv/lib/site.py",
+            "old/node_modules/x.js",
+            "swapped/node_modules/y.js",
+            "linked/node_modules/z.js",
+        ] {
+            std::fs::create_dir_all(ws.join(file).parent().unwrap()).unwrap();
+            std::fs::write(ws.join(file), "x").unwrap();
+        }
+        std::fs::create_dir_all(ws.join("pkg/.venv/include")).unwrap();
+        std::fs::create_dir_all(src.join("service")).unwrap();
+        std::fs::create_dir_all(src.join("pkg")).unwrap();
+        std::fs::write(src.join("swapped"), "now a file").unwrap();
+        std::os::unix::fs::symlink("service", src.join("linked")).unwrap();
+
+        // Run from inside the workspace so the temp dir's own path cannot
+        // match a dep-dir pattern.
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(WORKSPACE_RESYNC_CLEANUP.replace("/workspace", "."))
+            .env("SRC", &src)
+            .current_dir(&ws)
+            .status()
+            .unwrap();
+
+        assert!(status.success());
+        assert!(ws.join("service/node_modules/dep/index.js").is_file());
+        assert!(ws.join("node_modules/top.js").is_file());
+        assert!(ws.join("pkg/.venv/lib/site.py").is_file());
+        assert!(ws.join("pkg/.venv/include").is_dir());
+        for gone in ["old", "swapped", "linked"] {
+            assert!(!ws.join(gone).exists(), "{gone} survived the cleanup");
+        }
+        assert!(!ws.join("service/old.js").exists());
+        assert!(!ws.join("gone").exists());
+    }
+
+    /// In legacy mode the marker sits on the guest root: a planted symlink
+    /// must not be followed and a FIFO must not block the daemon.
+    #[test]
+    fn prepared_marker_refuses_symlinks_and_fifos() {
+        let temp = tempfile::tempdir().unwrap();
+        let real = temp.path().join("real");
+        std::fs::write(&real, PREPARED_MARKER_VERSION).unwrap();
+        let marker = temp.path().join(".iii-prepared");
+        std::os::unix::fs::symlink(&real, &marker).unwrap();
+        assert!(!prepared_marker_matches_current_workspace(&marker));
+
+        std::fs::remove_file(&marker).unwrap();
+        nix::unistd::mkfifo(&marker, nix::sys::stat::Mode::S_IRWXU).unwrap();
+        assert!(!prepared_marker_matches_current_workspace(&marker));
     }
 
     #[test]
@@ -935,8 +1062,7 @@ mod tests {
         assert!(script.contains("tar -cf -"));
         // Re-sync deletions: clear /workspace (minus dep dirs) before extract so
         // host-deleted files don't keep running on the persistent upper.
-        assert!(script.contains("find /workspace -mindepth 1 -maxdepth 1"));
-        assert!(script.contains("! -name node_modules"));
+        assert!(script.contains(WORKSPACE_RESYNC_CLEANUP));
         // Host-untouched: the unmount is FATAL, not best-effort.
         assert!(script.contains("refusing to run with host source writable"));
         assert!(
@@ -997,30 +1123,6 @@ mod tests {
         project_env.insert("III_WORKER_NAME".to_string(), "impostor".to_string());
         let env = build_local_env("ws://localhost:49134", "my-worker", &project_env);
         assert_eq!(env.get("III_WORKER_NAME").unwrap(), "my-worker");
-    }
-
-    #[test]
-    fn build_env_exports_excludes_engine_urls_and_worker_name() {
-        let mut env = HashMap::new();
-        env.insert(
-            "III_ENGINE_URL".to_string(),
-            "ws://localhost:49134".to_string(),
-        );
-        env.insert("III_URL".to_string(), "ws://localhost:49134".to_string());
-        env.insert("III_WORKER_NAME".to_string(), "my-worker".to_string());
-        env.insert("CUSTOM_VAR".to_string(), "custom-val".to_string());
-
-        let exports = build_env_exports(&env);
-        assert!(!exports.contains("III_ENGINE_URL"));
-        assert!(!exports.contains("III_URL"));
-        assert!(!exports.contains("III_WORKER_NAME"));
-        assert!(exports.contains("CUSTOM_VAR='custom-val'"));
-    }
-
-    #[test]
-    fn shell_escape_single_quote() {
-        let result = shell_escape("it's");
-        assert_eq!(result, "it'\\''s");
     }
 
     #[test]

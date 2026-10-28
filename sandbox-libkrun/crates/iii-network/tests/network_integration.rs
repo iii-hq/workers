@@ -20,6 +20,7 @@ use smoltcp::time::Instant;
 use smoltcp::wire::{
     ArpOperation, ArpPacket, ArpRepr, EthernetAddress, EthernetFrame, EthernetProtocol,
     EthernetRepr, IpProtocol, Ipv4Packet, Ipv4Repr, TcpControl, TcpPacket, TcpRepr, TcpSeqNumber,
+    UdpPacket, UdpRepr,
 };
 
 /// Test 3: Network connectivity — frame flow from backend through shared state to device.
@@ -169,6 +170,8 @@ fn build_state(
         shared.clone(),
         config.gateway_mac,
         config.guest_mac,
+        config.gateway_ipv4,
+        config.mtu,
         handle.clone(),
     );
     PollLoopState {
@@ -272,6 +275,76 @@ async fn poll_iteration_dns_no_tcp_connection() {
 
     let result = poll_iteration(&mut state, &shared, &config, &handle);
     assert_eq!(result.new_connections, 0);
+}
+
+/// A DNS query sent to an explicit server (here 8.8.8.8) is intercepted, so
+/// its reply must come from that server's address: connected resolvers
+/// (glibc, Go) drop a reply from any other source, such as the gateway.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dns_reply_comes_from_the_queried_server() {
+    let shared = Arc::new(SharedState::new(64));
+    let config = test_config();
+    let handle = tokio::runtime::Handle::current();
+    let mut state = build_state(&shared, &config, &handle);
+    let server_ip = Ipv4Addr::new(8, 8, 8, 8);
+
+    // `localhost.` is answered inside hickory, so no network is needed.
+    let query: &[u8] = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\
+        \x09localhost\x00\x00\x01\x00\x01";
+    let udp = UdpRepr {
+        src_port: 33333,
+        dst_port: 53,
+    };
+    let ip = Ipv4Repr {
+        src_addr: config.guest_ipv4,
+        dst_addr: server_ip,
+        next_header: IpProtocol::Udp,
+        payload_len: udp.header_len() + query.len(),
+        hop_limit: 64,
+    };
+    let eth = EthernetRepr {
+        src_addr: EthernetAddress(config.guest_mac),
+        dst_addr: EthernetAddress(config.gateway_mac),
+        ethertype: EthernetProtocol::Ipv4,
+    };
+    let mut frame = vec![0u8; 14 + ip.buffer_len() + udp.header_len() + query.len()];
+    let caps = ChecksumCapabilities::default();
+    eth.emit(&mut EthernetFrame::new_unchecked(&mut frame));
+    ip.emit(&mut Ipv4Packet::new_unchecked(&mut frame[14..]), &caps);
+    udp.emit(
+        &mut UdpPacket::new_unchecked(&mut frame[14 + ip.buffer_len()..]),
+        &config.guest_ipv4.into(),
+        &server_ip.into(),
+        query.len(),
+        |buf| buf.copy_from_slice(query),
+        &caps,
+    );
+
+    let guest = TestGuest::new(&config, server_ip, 33333, 53);
+    shared.tx_ring.push(guest.arp_announce()).unwrap();
+    shared.tx_ring.push(frame).unwrap();
+
+    for _ in 0..1000 {
+        poll_iteration(&mut state, &shared, &config, &handle);
+        while let Some(out) = shared.rx_ring.pop() {
+            let eth = EthernetFrame::new_checked(&out[..]).unwrap();
+            if eth.ethertype() != EthernetProtocol::Ipv4 {
+                continue;
+            }
+            let ip = Ipv4Packet::new_checked(eth.payload()).unwrap();
+            let udp = UdpPacket::new_checked(ip.payload()).unwrap();
+            assert_eq!(udp.src_port(), 53);
+            assert_eq!(&udp.payload()[..2], b"\x12\x34", "reply to our query");
+            assert_eq!(
+                ip.src_addr(),
+                server_ip,
+                "reply must come from the queried server"
+            );
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("no DNS reply reached the guest");
 }
 
 /// Multiple SYN frames in a single iteration create independent connections.
@@ -765,6 +838,62 @@ async fn relay_backpressure_loses_no_bytes() {
     }
 }
 
+/// A proxy that exits with more response queued than the guest window holds
+/// must not reset the guest just because the poll loop spun many times while
+/// the guest was not reading: the tail must still arrive, then a clean FIN.
+#[tokio::test]
+async fn proxy_exit_flushes_tail_across_many_idle_polls() {
+    let shared = Arc::new(SharedState::new(2048));
+    let config = test_config();
+    let handle = tokio::runtime::Handle::current();
+    let mut state = build_state(&shared, &config, &handle);
+    let mut guest = TestGuest::new(&config, Ipv4Addr::new(93, 184, 216, 34), 46000, 9999);
+
+    shared.tx_ring.push(guest.arp_announce()).unwrap();
+    poll_no_proxy(&mut state);
+    let syn = guest.syn();
+    shared.tx_ring.push(syn).unwrap();
+    let mut conn = None;
+    for _ in 0..20 {
+        if let Some(c) = poll_no_proxy(&mut state).pop() {
+            conn = Some(c);
+        }
+        guest.drain_egress(&shared);
+        if guest.established && conn.is_some() {
+            break;
+        }
+    }
+    let conn = conn.expect("connection should be established and handed to the proxy");
+
+    // Queue more than the guest's 64 KiB window, then exit like a proxy
+    // whose server closed: both channel ends drop.
+    let pattern = |i: usize| (i % 251) as u8;
+    let total = 8 * 16384;
+    for c in 0..8 {
+        let chunk: Vec<u8> = (c * 16384..(c + 1) * 16384).map(pattern).collect();
+        conn.to_smoltcp.try_send(chunk.into()).unwrap();
+    }
+    drop(conn);
+
+    // The guest stalls (reads nothing) across many loop wakeups.
+    for _ in 0..200 {
+        poll_no_proxy(&mut state);
+    }
+
+    for _ in 0..2000 {
+        if guest.peer_fin {
+            break;
+        }
+        guest.drain_egress(&shared);
+        poll_no_proxy(&mut state);
+    }
+    assert!(guest.peer_fin, "the gateway never finished the close");
+    assert_eq!(guest.received.len(), total, "response tail was cut short");
+    for (i, &b) in guest.received.iter().enumerate() {
+        assert_eq!(b, pattern(i), "stream corrupted at offset {i}");
+    }
+}
+
 /// Poll + let proxy tasks run, until `done` or the deadline expires.
 async fn pump_until(
     state: &mut PollLoopState,
@@ -1079,5 +1208,86 @@ async fn refused_dial_then_same_port_reconnect_delivers_data() {
     assert_eq!(
         req, b"attempt-b upgrade",
         "server must receive attempt B's bytes"
+    );
+}
+
+/// A server that half-closes first (reply, then EOF) must still receive
+/// what the guest sends afterwards: the guest gets the reply and a FIN, and
+/// its later bytes and FIN still reach the server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn server_half_close_keeps_guest_upload_flowing() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let (mut sock, _) = listener.accept().unwrap();
+        sock.write_all(b"bye").unwrap();
+        sock.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut req = Vec::new();
+        sock.read_to_end(&mut req).unwrap();
+        req
+    });
+
+    let shared = Arc::new(SharedState::new(2048));
+    let config = test_config();
+    let handle = tokio::runtime::Handle::current();
+    let mut state = build_state(&shared, &config, &handle);
+    let mut guest = TestGuest::new(&config, config.gateway_ipv4, 45000, port);
+
+    shared.tx_ring.push(guest.arp_announce()).unwrap();
+    poll_iteration(&mut state, &shared, &config, &handle);
+    let syn = guest.syn();
+    shared.tx_ring.push(syn).unwrap();
+    pump_until(
+        &mut state,
+        &shared,
+        &config,
+        &handle,
+        &mut guest,
+        |g, _| g.established,
+        "handshake",
+    )
+    .await;
+
+    pump_until(
+        &mut state,
+        &shared,
+        &config,
+        &handle,
+        &mut guest,
+        |g, _| g.received == b"bye" && g.peer_fin,
+        "server reply + FIN",
+    )
+    .await;
+
+    let data = guest.data(b"after-eof");
+    shared.tx_ring.push(data).unwrap();
+    pump_until(
+        &mut state,
+        &shared,
+        &config,
+        &handle,
+        &mut guest,
+        |g, _| g.in_flight() == 0,
+        "post-EOF upload acked",
+    )
+    .await;
+    let fin = guest.fin();
+    shared.tx_ring.push(fin).unwrap();
+    pump_until(
+        &mut state,
+        &shared,
+        &config,
+        &handle,
+        &mut guest,
+        |_, _| server.is_finished(),
+        "server sees guest EOF",
+    )
+    .await;
+
+    assert_eq!(
+        server.join().unwrap(),
+        b"after-eof",
+        "bytes sent after server EOF must reach the server"
     );
 }

@@ -86,19 +86,30 @@ pub(crate) fn ensure_rootfs_dir_no_follow(
     Ok(dir)
 }
 
-/// Read `<rootfs>/<rel>` without following a symlink anywhere below
-/// `rootfs`: every ancestor must be a real directory and the final entry a
-/// regular file. The rootfs comes from the image (and, without overlay, keeps
-/// what the guest wrote), so any component may be a symlink to a host path
-/// (reading through it would expose host contents or hit a device such as
-/// `/dev/zero`) or a FIFO. The final entry is opened with O_NOFOLLOW and its
-/// type is checked on the descriptor, so it cannot be swapped between the
-/// check and the read; O_NONBLOCK keeps a FIFO from blocking the open.
+/// Read `<rootfs>/<rel>` whole; see [`open_rootfs_file_no_follow`].
 pub(crate) fn read_rootfs_file_no_follow(
     rootfs: &std::path::Path,
     rel: &std::path::Path,
 ) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
+
+    let mut data = Vec::new();
+    open_rootfs_file_no_follow(rootfs, rel)?.read_to_end(&mut data)?;
+    Ok(data)
+}
+
+/// Open `<rootfs>/<rel>` for reading without following a symlink anywhere
+/// below `rootfs`: every ancestor must be a real directory and the final entry
+/// a regular file. The rootfs comes from the image (and, without overlay,
+/// keeps what the guest wrote), so any component may be a symlink to a host
+/// path (reading through it would expose host contents or hit a device such
+/// as `/dev/zero`) or a FIFO. The final entry is opened with O_NOFOLLOW and
+/// its type is checked on the descriptor, so it cannot be swapped between the
+/// check and the read; O_NONBLOCK keeps a FIFO from blocking the open.
+pub(crate) fn open_rootfs_file_no_follow(
+    rootfs: &std::path::Path,
+    rel: &std::path::Path,
+) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
 
     let refuse = |why: &str| {
@@ -121,16 +132,14 @@ pub(crate) fn read_rootfs_file_no_follow(
             return Err(refuse("non-directory ancestor in rootfs path"));
         }
     }
-    let mut file = std::fs::OpenOptions::new()
+    let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(&path)?;
     if !file.metadata()?.is_file() {
         return Err(refuse("not a regular file"));
     }
-    let mut data = Vec::new();
-    file.read_to_end(&mut data)?;
-    Ok(data)
+    Ok(file)
 }
 
 /// Read `<rootfs>/.oci-config.json` as text, refusing symlinks and
@@ -197,7 +206,9 @@ pub(crate) fn write_default_hosts_no_follow(hosts_path: &std::path::Path) {
 /// outside the rootfs. `remove_dir_all` only refuses a symlink as the final
 /// component, so walk the ancestors and require each one to be a real
 /// directory inside `dest`, and refuse names (empty, `.`, `..`) that would
-/// resolve to the directory itself or to its parent.
+/// resolve to the directory itself or to its parent. The opaque marker
+/// `<dir>/.wh..wh..opq` (target `.wh..opq`) instead clears every child
+/// lower layers gave `<dir>`, keeping `<dir>` itself.
 fn apply_whiteout(
     dest: &std::path::Path,
     entry_path: &std::path::Path,
@@ -234,10 +245,17 @@ fn apply_whiteout(
             Err(_) => return,
         }
     }
-    let target = dir.join(target_name);
-    // Neither call follows a symlink in the final component.
-    let _ = std::fs::remove_file(&target);
-    let _ = std::fs::remove_dir_all(&target);
+    let targets: Vec<PathBuf> = if target_name == ".wh..opq" {
+        let children = std::fs::read_dir(&dir).into_iter().flatten().flatten();
+        children.map(|child| child.path()).collect()
+    } else {
+        vec![dir.join(target_name)]
+    };
+    for target in targets {
+        // Neither call follows a symlink in the final component.
+        let _ = std::fs::remove_file(&target);
+        let _ = std::fs::remove_dir_all(&target);
+    }
 }
 
 /// OCI image to use as rootfs for each `runtime.kind` value. Keep in sync
@@ -398,7 +416,9 @@ const SETID_BITS: u32 = 0o6000;
 
 /// Extract a single OCI layer with safety limits.
 ///
-/// Setuid and setgid bits are stripped from every regular file as it lands.
+/// Setuid and setgid bits are masked off every entry as it lands, whatever
+/// its type: tar writes sparse, device, FIFO and unknown entries as regular
+/// files, so a per-type strip would leave a setuid file in the host cache.
 /// The microVM rootfs is served read-only through PassthroughFs with no UID
 /// translation: host ownership surfaces verbatim inside the guest. When the
 /// extracting user is not root (the common case), setuid binaries carry the
@@ -409,165 +429,185 @@ const SETID_BITS: u32 = 0o6000;
 /// the PID-1 euid (root) on exec, which is what a single-tenant microVM
 /// guest actually wants. There is no privilege boundary *inside* the VM
 /// for setuid to defend, so removing the bit is strictly a fix.
+///
+/// `media_type` is the layer descriptor's: uncompressed and gzip tar layers
+/// are supported (OCI spells gzip `tar+gzip`, Docker `tar.gzip`); anything
+/// else, zstd included, is refused by name. Gzip or zstd magic bytes at the
+/// start of `data` override the label.
 pub fn extract_layer_with_limits(
     data: &[u8],
+    media_type: &str,
     dest: &std::path::Path,
     layer_index: usize,
     layer_count: usize,
     total_size: &mut u64,
 ) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
+    // A magic number in the bytes beats the label, as in containerd, so a
+    // gzip layer labelled plain `tar` still extracts.
+    let zstd = data.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]);
+    let gzip = data.starts_with(&[0x1f, 0x8b])
+        || media_type.ends_with("tar+gzip")
+        || media_type.ends_with("tar.gzip");
+    if zstd || !(gzip || media_type.ends_with("tar")) {
+        anyhow::bail!(
+            "Layer {}/{}: unsupported {} {media_type:?} \
+             (only uncompressed and gzip tar layers can be extracted)",
+            layer_index + 1,
+            layer_count,
+            if zstd {
+                "zstd layer"
+            } else {
+                "layer media type"
+            }
+        );
+    }
 
-    let decoder = flate2::read::GzDecoder::new(data);
-    let mut archive = tar::Archive::new(decoder);
-    archive.set_preserve_permissions(true);
-    archive.set_overwrite(true);
+    let start_total = *total_size;
+    // Whiteouts hide lower-layer files only (OCI image spec), so all of this
+    // layer's are applied before any of its own entries land: a whiteout
+    // listed after a same-layer file or directory must not delete it.
+    for whiteout_pass in [true, false] {
+        // Both passes enforce the size limits before tar reads a payload;
+        // the second pass's count is the one that stands.
+        *total_size = start_total;
+        let reader: Box<dyn std::io::Read + '_> = if gzip {
+            Box::new(flate2::read::GzDecoder::new(data))
+        } else {
+            Box::new(data)
+        };
+        let mut archive = tar::Archive::new(reader);
+        archive.set_preserve_permissions(true);
+        // Applied when tar sets the mode, so the bits never exist on disk.
+        archive.set_mask(SETID_BITS);
+        archive.set_overwrite(true);
 
-    let mut entry_count: u64 = 0;
+        let mut entry_count: u64 = 0;
 
-    for entry in archive.entries().context("Failed to read layer tar")? {
-        let mut entry = entry.context("Failed to read tar entry")?;
+        for entry in archive.entries().context("Failed to read layer tar")? {
+            let mut entry = entry.context("Failed to read tar entry")?;
 
-        entry_count += 1;
-        if entry_count > MAX_ENTRY_COUNT {
-            anyhow::bail!(
-                "Layer {}/{}: exceeded max entry count ({})",
-                layer_index + 1,
-                layer_count,
-                MAX_ENTRY_COUNT
-            );
-        }
-
-        let path = entry
-            .path()
-            .context("Failed to get entry path")?
-            .into_owned();
-
-        if path.is_absolute() {
-            anyhow::bail!(
-                "Layer {}/{}: absolute path in tar entry: {}",
-                layer_index + 1,
-                layer_count,
-                path.display()
-            );
-        }
-
-        for component in path.components() {
-            if matches!(component, Component::ParentDir) {
+            entry_count += 1;
+            if entry_count > MAX_ENTRY_COUNT {
                 anyhow::bail!(
-                    "Layer {}/{}: path traversal in tar entry: {}",
+                    "Layer {}/{}: exceeded max entry count ({})",
+                    layer_index + 1,
+                    layer_count,
+                    MAX_ENTRY_COUNT
+                );
+            }
+
+            let path = entry
+                .path()
+                .context("Failed to get entry path")?
+                .into_owned();
+
+            if path.is_absolute() {
+                anyhow::bail!(
+                    "Layer {}/{}: absolute path in tar entry: {}",
                     layer_index + 1,
                     layer_count,
                     path.display()
                 );
             }
-        }
 
-        let depth = path
-            .components()
-            .filter(|c| matches!(c, Component::Normal(_)))
-            .count();
-        if depth > MAX_PATH_DEPTH {
-            anyhow::bail!(
-                "Layer {}/{}: path too deep ({} components): {}",
-                layer_index + 1,
-                layer_count,
-                depth,
-                path.display()
-            );
-        }
-
-        let entry_size = entry.size();
-        if entry_size > MAX_FILE_SIZE {
-            anyhow::bail!(
-                "Layer {}/{}: file too large: {} bytes (max {})",
-                layer_index + 1,
-                layer_count,
-                entry_size,
-                MAX_FILE_SIZE
-            );
-        }
-
-        *total_size += entry_size;
-        if *total_size > MAX_TOTAL_SIZE {
-            anyhow::bail!(
-                "Layer {}/{}: total extraction size exceeded {} bytes",
-                layer_index + 1,
-                layer_count,
-                MAX_TOTAL_SIZE
-            );
-        }
-
-        // Reserved metadata name: iii writes `<rootfs>/.oci-config.json`
-        // itself after extraction, so skip any entry at that root name or
-        // beneath it (a leading `./` included) — above all a symlink. Defense
-        // in depth behind the no-follow write in pull_and_extract_rootfs.
-        let is_reserved_root = matches!(
-            path.components().find(|c| !matches!(c, Component::CurDir)),
-            Some(Component::Normal(first))
-                if first == std::ffi::OsStr::new(RESERVED_ROOTFS_NAME_OCI_CONFIG)
-        );
-        if is_reserved_root {
-            tracing::warn!(
-                layer = layer_index + 1,
-                path = %path.display(),
-                "layer entry uses the reserved name .oci-config.json; skipping"
-            );
-            continue;
-        }
-
-        if let Some(name) = path.file_name().and_then(|n| n.to_str())
-            && let Some(target_name) = name.strip_prefix(".wh.")
-        {
-            apply_whiteout(dest, &path, target_name, layer_index);
-            continue;
-        }
-
-        let entry_type = entry.header().entry_type();
-        let header_mode = entry.header().mode().unwrap_or(0);
-
-        let unpacked = entry
-            .unpack_in(dest)
-            .with_context(|| format!("Failed to extract: {}", path.display()))?;
-
-        // `unpack_in` returns Ok(false) when it intentionally skips an entry
-        // (e.g. path traversal, no parent). Don't touch the dest path in
-        // that case — the file wasn't written and the resolved path could
-        // point outside the rootfs.
-        if !unpacked {
-            continue;
-        }
-
-        // Keep extracted directories writable for the extracting user, or a
-        // directory shipped as 0555 refuses its own entries (see
-        // `keep_dir_owner_writable`).
-        if entry_type.is_dir() {
-            keep_dir_owner_writable(&dest.join(&path))
-                .with_context(|| format!("Failed to keep {} owner-writable", path.display()))?;
-        }
-
-        // Strip setuid/setgid from regular files. See function doc for why.
-        // Symlinks are skipped: chmod on a symlink path follows to the
-        // target, which may live outside the rootfs.
-        if matches!(
-            entry_type,
-            tar::EntryType::Regular | tar::EntryType::Continuous
-        ) && header_mode & SETID_BITS != 0
-        {
-            let target = dest.join(&path);
-            if let Ok(meta) = std::fs::metadata(&target) {
-                let current = meta.permissions().mode();
-                if current & SETID_BITS != 0 {
-                    let mut perms = meta.permissions();
-                    perms.set_mode(current & !SETID_BITS);
-                    if let Err(e) = std::fs::set_permissions(&target, perms) {
-                        tracing::warn!(
-                            path = %target.display(),
-                            error = %e,
-                            "failed to strip setuid/setgid bits; setuid binaries will drop PID-1 privileges inside the guest",
-                        );
-                    }
+            for component in path.components() {
+                if matches!(component, Component::ParentDir) {
+                    anyhow::bail!(
+                        "Layer {}/{}: path traversal in tar entry: {}",
+                        layer_index + 1,
+                        layer_count,
+                        path.display()
+                    );
                 }
+            }
+
+            let depth = path
+                .components()
+                .filter(|c| matches!(c, Component::Normal(_)))
+                .count();
+            if depth > MAX_PATH_DEPTH {
+                anyhow::bail!(
+                    "Layer {}/{}: path too deep ({} components): {}",
+                    layer_index + 1,
+                    layer_count,
+                    depth,
+                    path.display()
+                );
+            }
+
+            let entry_size = entry.size();
+            if entry_size > MAX_FILE_SIZE {
+                anyhow::bail!(
+                    "Layer {}/{}: file too large: {} bytes (max {})",
+                    layer_index + 1,
+                    layer_count,
+                    entry_size,
+                    MAX_FILE_SIZE
+                );
+            }
+
+            *total_size += entry_size;
+            if *total_size > MAX_TOTAL_SIZE {
+                anyhow::bail!(
+                    "Layer {}/{}: total extraction size exceeded {} bytes",
+                    layer_index + 1,
+                    layer_count,
+                    MAX_TOTAL_SIZE
+                );
+            }
+
+            let whiteout = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_prefix(".wh."));
+            if whiteout_pass {
+                if let Some(target_name) = whiteout {
+                    apply_whiteout(dest, &path, target_name, layer_index);
+                }
+                continue;
+            }
+            if whiteout.is_some() {
+                continue;
+            }
+
+            // Reserved metadata name: iii writes `<rootfs>/.oci-config.json`
+            // itself after extraction, so skip any entry at that root name or
+            // beneath it (a leading `./` included) — above all a symlink. Defense
+            // in depth behind the no-follow write in pull_and_extract_rootfs.
+            let is_reserved_root = matches!(
+                path.components().find(|c| !matches!(c, Component::CurDir)),
+                Some(Component::Normal(first))
+                    if first == std::ffi::OsStr::new(RESERVED_ROOTFS_NAME_OCI_CONFIG)
+            );
+            if is_reserved_root {
+                tracing::warn!(
+                    layer = layer_index + 1,
+                    path = %path.display(),
+                    "layer entry uses the reserved name .oci-config.json; skipping"
+                );
+                continue;
+            }
+
+            let entry_type = entry.header().entry_type();
+
+            let unpacked = entry
+                .unpack_in(dest)
+                .with_context(|| format!("Failed to extract: {}", path.display()))?;
+
+            // `unpack_in` returns Ok(false) when it intentionally skips an entry
+            // (e.g. path traversal, no parent). Don't touch the dest path in
+            // that case — the file wasn't written and the resolved path could
+            // point outside the rootfs.
+            if !unpacked {
+                continue;
+            }
+
+            // Keep extracted directories writable for the extracting user, or a
+            // directory shipped as 0555 refuses its own entries (see
+            // `keep_dir_owner_writable`).
+            if entry_type.is_dir() {
+                keep_dir_owner_writable(&dest.join(&path))
+                    .with_context(|| format!("Failed to keep {} owner-writable", path.display()))?;
             }
         }
     }
@@ -627,11 +667,14 @@ fn insecure_registries(reference: &oci_client::Reference) -> Vec<String> {
 ///
 /// Atomicity scope is `dest` ONLY — callers can rely on
 /// `dest` either existing with the full rootfs or not existing. Sibling
-/// metadata (e.g. a digest sidecar in a later task) is written by the
-/// caller AFTER this function returns and is not covered by the same
-/// rename; a missing sidecar beside a valid rootfs is treated as a
-/// cache miss upstream, which forces a re-pull that rewrites both.
-pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Result<()> {
+/// metadata (the rootfs cache's digest sidecar) is written by the caller
+/// AFTER this function returns and is not covered by the same rename; a
+/// missing sidecar beside a valid rootfs makes a digest-pinned ref miss
+/// upstream instead of trusting the rootfs.
+///
+/// Returns the manifest digests that name the pulled image: the one `image`
+/// resolved to, then the platform manifest's when that was an image index.
+pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Result<Vec<String>> {
     use oci_client::client::{ClientConfig, ClientProtocol};
     use oci_client::secrets::RegistryAuth;
     use oci_client::{Client, Reference};
@@ -701,7 +744,10 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
         .await
     {
         Ok((oci_client::manifest::OciManifest::Image(m), _)) => {
-            let bytes: i64 = m.layers.iter().map(|l| l.size).sum();
+            let bytes = m
+                .layers
+                .iter()
+                .fold(0i64, |sum, l| sum.saturating_add(l.size));
             format!(
                 " ({} layer{}, {:.1} MiB)",
                 m.layers.len(),
@@ -717,6 +763,7 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
 
     const MAX_PULL_ATTEMPTS: u32 = 3;
     let mut image_data = None;
+    let mut image_digests = Vec::new();
     let mut last_err = None;
 
     for attempt in 0..MAX_PULL_ATTEMPTS {
@@ -740,8 +787,9 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
         let pull_result = pull_with_progress(&client, &reference, image, host_arch).await;
 
         match pull_result {
-            Ok(data) => {
+            Ok((data, digests)) => {
                 image_data = Some(data);
+                image_digests = digests;
                 break;
             }
             Err(e) => {
@@ -827,7 +875,14 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
     let mut total_size: u64 = 0;
     let extract_result: Result<()> = (|| {
         for (i, layer) in image_data.layers.iter().enumerate() {
-            extract_layer_with_limits(&layer.data, &extract_root, i, layer_count, &mut total_size)?;
+            extract_layer_with_limits(
+                &layer.data,
+                &layer.media_type,
+                &extract_root,
+                i,
+                layer_count,
+                &mut total_size,
+            )?;
             eprintln!(
                 "  Extracted layer {}/{} ({:.1} MiB total)",
                 i + 1,
@@ -872,7 +927,7 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
                 })?;
                 tracing::info!(path = %dest.display(), "rootfs ready (atomic promote)");
                 eprintln!("  {} Rootfs ready", "\u{2713}".green());
-                Ok(())
+                Ok(image_digests)
             }
             Err(e) => {
                 // Extraction failed mid-way. Clean up the temp dir so the
@@ -887,7 +942,7 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
         extract_result?;
         tracing::info!(path = %dest.display(), "rootfs ready");
         eprintln!("  {} Rootfs ready", "\u{2713}".green());
-        Ok(())
+        Ok(image_digests)
     }
 }
 
@@ -938,7 +993,7 @@ async fn pull_with_progress(
     reference: &oci_client::Reference,
     image: &str,
     host_arch: &str,
-) -> Result<oci_client::client::ImageData> {
+) -> Result<(oci_client::client::ImageData, Vec<String>)> {
     use futures::StreamExt;
     use oci_client::client::{Config, ImageData, ImageLayer};
     use sha2::Digest;
@@ -946,10 +1001,11 @@ async fn pull_with_progress(
     use std::sync::atomic::{AtomicU64, Ordering};
 
     // 1. Manifest (resolving multi-platform if the registry returned an
-    //    ImageIndex). Tracks the resolved manifest digest so we can
-    //    return it to the caller alongside the data.
-    let (image_manifest, manifest_digest) =
+    //    ImageIndex). Tracks the manifest digests so we can return them
+    //    to the caller alongside the data.
+    let (image_manifest, manifest_digests) =
         pull_image_manifest_resolved(client, reference, host_arch).await?;
+    check_declared_blob_sizes(&image_manifest)?;
 
     let total_bytes: u64 = image_manifest
         .layers
@@ -1018,7 +1074,9 @@ async fn pull_with_progress(
     //    response or MITM doesn't slip through — the upstream
     //    `client.pull(...)` we replaced did this internally; the
     //    streaming path needs to do it explicitly.
-    let mut config_bytes: Vec<u8> = Vec::with_capacity(image_manifest.config.size.max(0) as usize);
+    // Never sized from the descriptor: a capacity the allocator cannot
+    // satisfy aborts the process instead of returning an error.
+    let mut config_bytes: Vec<u8> = Vec::new();
     let mut config_hasher = sha2::Sha256::new();
     let mut config_stream = client
         .pull_blob_stream(reference, &image_manifest.config)
@@ -1026,6 +1084,11 @@ async fn pull_with_progress(
         .context("failed to pull image config blob")?;
     while let Some(chunk) = config_stream.next().await {
         let chunk = chunk.context("config blob stream chunk failed")?;
+        check_blob_len(
+            config_bytes.len() + chunk.len(),
+            &image_manifest.config,
+            "image config",
+        )?;
         config_hasher.update(&chunk);
         config_bytes.extend_from_slice(&chunk);
     }
@@ -1046,7 +1109,7 @@ async fn pull_with_progress(
     //    extract step touches the rootfs.
     let mut layers: Vec<ImageLayer> = Vec::with_capacity(image_manifest.layers.len());
     for (idx, layer_desc) in image_manifest.layers.iter().enumerate() {
-        let mut layer_bytes: Vec<u8> = Vec::with_capacity(layer_desc.size.max(0) as usize);
+        let mut layer_bytes: Vec<u8> = Vec::new();
         let mut layer_hasher = sha2::Sha256::new();
         let mut stream = client
             .pull_blob_stream(reference, layer_desc)
@@ -1054,6 +1117,11 @@ async fn pull_with_progress(
             .with_context(|| format!("failed to pull layer {} blob", idx + 1))?;
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.with_context(|| format!("layer {} stream chunk failed", idx + 1))?;
+            check_blob_len(
+                layer_bytes.len() + chunk.len(),
+                layer_desc,
+                &format!("layer {}", idx + 1),
+            )?;
             layer_hasher.update(&chunk);
             downloaded.fetch_add(chunk.len() as u64, Ordering::Relaxed);
             layer_bytes.extend_from_slice(&chunk);
@@ -1082,12 +1150,49 @@ async fn pull_with_progress(
         image, final_mb, total_mb, final_elapsed as f64
     );
 
-    Ok(ImageData {
+    let image_data = ImageData {
         layers,
-        digest: manifest_digest,
+        digest: manifest_digests.last().cloned(),
         config,
         manifest: Some(image_manifest),
-    })
+    };
+    Ok((image_data, manifest_digests))
+}
+
+/// Refuse a manifest whose blobs could not fit the extraction limits before
+/// anything is fetched: every blob is held in memory until extraction, and
+/// the sizes come from the registry.
+fn check_declared_blob_sizes(manifest: &oci_client::manifest::OciImageManifest) -> Result<()> {
+    let mut total: u64 = 0;
+    for desc in std::iter::once(&manifest.config).chain(&manifest.layers) {
+        total = u64::try_from(desc.size)
+            .ok()
+            .and_then(|size| total.checked_add(size))
+            .filter(|&total| total <= MAX_TOTAL_SIZE)
+            .with_context(|| {
+                format!(
+                    "image blobs exceed {MAX_TOTAL_SIZE} bytes ({} declares {} bytes)",
+                    desc.digest, desc.size
+                )
+            })?;
+    }
+    Ok(())
+}
+
+/// Refuse a blob that streams more bytes than its descriptor declares, so
+/// memory stays within what `check_declared_blob_sizes` accepted.
+fn check_blob_len(
+    received: usize,
+    desc: &oci_client::manifest::OciDescriptor,
+    label: &str,
+) -> Result<()> {
+    if received as u64 > desc.size as u64 {
+        anyhow::bail!(
+            "{label} is larger than the {} bytes its descriptor declares",
+            desc.size
+        );
+    }
+    Ok(())
 }
 
 /// Compare the SHA256 digest a streaming hasher produced against the OCI
@@ -1140,12 +1245,13 @@ fn verify_sha256_digest(expected: &str, hasher: sha2::Sha256, label: &str) -> Re
 
 /// Fetch the image manifest, resolving multi-platform `ImageIndex` to
 /// the appropriate `linux/<host_arch>` `Image` manifest. Returns the
-/// resolved Image manifest and its digest.
+/// resolved Image manifest and the digests naming it: the reference's own
+/// (a pin names this one), then the platform manifest's for an index.
 async fn pull_image_manifest_resolved(
     client: &oci_client::Client,
     reference: &oci_client::Reference,
     host_arch: &str,
-) -> Result<(oci_client::manifest::OciImageManifest, Option<String>)> {
+) -> Result<(oci_client::manifest::OciImageManifest, Vec<String>)> {
     use oci_client::secrets::RegistryAuth;
 
     let target_arch = match host_arch {
@@ -1159,7 +1265,7 @@ async fn pull_image_manifest_resolved(
         .context("failed to pull image manifest")?;
 
     match manifest {
-        oci_client::manifest::OciManifest::Image(m) => Ok((m, Some(digest))),
+        oci_client::manifest::OciManifest::Image(m) => Ok((m, vec![digest])),
         oci_client::manifest::OciManifest::ImageIndex(idx) => {
             let chosen = idx.manifests.iter().find(|m| {
                 m.platform.as_ref().is_some_and(|p| {
@@ -1191,7 +1297,7 @@ async fn pull_image_manifest_resolved(
                 .await
                 .context("failed to pull resolved platform manifest")?;
             match m {
-                oci_client::manifest::OciManifest::Image(im) => Ok((im, Some(d))),
+                oci_client::manifest::OciManifest::Image(im) => Ok((im, vec![digest, d])),
                 oci_client::manifest::OciManifest::ImageIndex(_) => {
                     Err(anyhow::anyhow!("nested ImageIndex not supported"))
                 }
@@ -1203,6 +1309,7 @@ async fn pull_image_manifest_resolved(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oci_client::manifest::IMAGE_LAYER_GZIP_MEDIA_TYPE;
 
     /// Regression: the streaming pull's `verify_sha256_digest` must
     /// accept a hasher whose finalize matches the descriptor's hex
@@ -1271,6 +1378,34 @@ mod tests {
         h2.update(b"hello world");
         let expected2 = "SHA256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
         verify_sha256_digest(expected2, h2, "SHA256-prefix").expect("ALL-CAPS prefix must match");
+    }
+
+    /// Registry-declared sizes are checked before any blob is fetched or any
+    /// buffer is sized from them: negative, overflowing and over-limit totals
+    /// fail with an error instead of reaching the allocator.
+    #[test]
+    fn declared_blob_sizes_are_capped_before_any_fetch() {
+        let manifest = |config: i64, layers: &[i64]| {
+            let desc = |size: i64| serde_json::json!({"mediaType": "x", "digest": "sha256:00", "size": size});
+            let layers: Vec<_> = layers.iter().map(|&s| desc(s)).collect();
+            serde_json::from_value::<oci_client::manifest::OciImageManifest>(
+                serde_json::json!({"schemaVersion": 2, "config": desc(config), "layers": layers}),
+            )
+            .unwrap()
+        };
+        let max = MAX_TOTAL_SIZE as i64;
+
+        check_declared_blob_sizes(&manifest(100, &[1 << 20, max - 100 - (1 << 20)])).unwrap();
+        for (config, layers) in [
+            (i64::MAX, vec![]),
+            (-1, vec![]),
+            (1, vec![i64::MAX, i64::MAX]),
+            (1, vec![max]),
+        ] {
+            let err = check_declared_blob_sizes(&manifest(config, &layers))
+                .expect_err(&format!("config {config}, layers {layers:?}"));
+            assert!(err.to_string().contains("image blobs exceed"), "got: {err}");
+        }
     }
 
     #[test]
@@ -1512,7 +1647,14 @@ mod tests {
         let gz_data = gz.finish().unwrap();
 
         let mut total_size = 0u64;
-        let result = extract_layer_with_limits(&gz_data, dir.path(), 0, 1, &mut total_size);
+        let result = extract_layer_with_limits(
+            &gz_data,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            dir.path(),
+            0,
+            1,
+            &mut total_size,
+        );
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());
         assert!(err_msg.contains("path traversal"), "got: {}", err_msg);
@@ -1538,7 +1680,15 @@ mod tests {
         let gz_data = gz.finish().unwrap();
 
         let mut total_size = 0u64;
-        extract_layer_with_limits(&gz_data, dir.path(), 0, 1, &mut total_size).unwrap();
+        extract_layer_with_limits(
+            &gz_data,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            dir.path(),
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
 
         let content = std::fs::read_to_string(dir.path().join("test.txt")).unwrap();
         assert_eq!(content, "hello world");
@@ -1722,7 +1872,15 @@ mod tests {
         let rootfs = dir.path().join("rootfs");
         std::fs::create_dir_all(&rootfs).unwrap();
         let mut total_size = 0u64;
-        extract_layer_with_limits(&gz_data, &rootfs, 0, 1, &mut total_size).unwrap();
+        extract_layer_with_limits(
+            &gz_data,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
 
         assert!(std::fs::symlink_metadata(rootfs.join(".oci-config.json")).is_err());
     }
@@ -1753,7 +1911,15 @@ mod tests {
         let rootfs = dir.path().join("rootfs");
         std::fs::create_dir_all(&rootfs).unwrap();
         let mut total_size = 0u64;
-        extract_layer_with_limits(&gz_data, &rootfs, 0, 1, &mut total_size).unwrap();
+        extract_layer_with_limits(
+            &gz_data,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
 
         assert!(std::fs::symlink_metadata(rootfs.join(".oci-config.json")).is_err());
     }
@@ -1779,7 +1945,15 @@ mod tests {
         let rootfs = dir.path().join("rootfs");
         std::fs::create_dir_all(&rootfs).unwrap();
         let mut total_size = 0u64;
-        extract_layer_with_limits(&gz_data, &rootfs, 0, 1, &mut total_size).unwrap();
+        extract_layer_with_limits(
+            &gz_data,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
 
         assert!(std::fs::symlink_metadata(rootfs.join(".oci-config.json")).is_err());
     }
@@ -1811,6 +1985,94 @@ mod tests {
         b.append_data(&mut h, path, std::io::empty()).unwrap();
     }
 
+    /// Uncompressed layers are valid OCI and Docker layers; they used to fail
+    /// with a gzip header error because every layer went through gunzip. A
+    /// gzip layer labelled plain `tar` is still read as gzip.
+    #[test]
+    fn extract_layer_reads_uncompressed_and_docker_gzip_layers() {
+        use oci_client::manifest::{
+            IMAGE_DOCKER_LAYER_GZIP_MEDIA_TYPE, IMAGE_DOCKER_LAYER_TAR_MEDIA_TYPE,
+            IMAGE_LAYER_MEDIA_TYPE,
+        };
+        let mut builder = tar::Builder::new(Vec::new());
+        append_empty_file(&mut builder, "plain");
+        let raw_tar = builder.into_inner().unwrap();
+        let gzip = layer_with(|b| append_empty_file(b, "plain"));
+
+        for (media_type, data) in [
+            (IMAGE_LAYER_MEDIA_TYPE, &raw_tar),
+            (IMAGE_DOCKER_LAYER_TAR_MEDIA_TYPE, &raw_tar),
+            (IMAGE_DOCKER_LAYER_GZIP_MEDIA_TYPE, &gzip),
+            (IMAGE_LAYER_MEDIA_TYPE, &gzip),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut total_size = 0u64;
+            extract_layer_with_limits(data, media_type, dir.path(), 0, 1, &mut total_size)
+                .unwrap_or_else(|e| panic!("{media_type}: {e:#}"));
+            assert!(dir.path().join("plain").is_file(), "{media_type}");
+        }
+    }
+
+    #[test]
+    fn extract_layer_rejects_unsupported_media_types_by_name() {
+        let zstd: &[u8] = &[0x28, 0xb5, 0x2f, 0xfd, 0, 0];
+        for (media_type, data) in [
+            ("application/vnd.oci.image.layer.v1.tar+zstd", zstd),
+            ("application/vnd.oci.image.layer.v1.tar", zstd),
+            (
+                "application/vnd.oci.image.layer.v1.tar+gzip+encrypted",
+                &b"ciphertext"[..],
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut total_size = 0u64;
+            let err =
+                extract_layer_with_limits(data, media_type, dir.path(), 0, 1, &mut total_size)
+                    .expect_err(media_type);
+            assert!(err.to_string().contains(media_type), "got: {err}");
+        }
+    }
+
+    /// tar writes FIFO, device and unknown typeflags as regular files, so the
+    /// setuid strip must not depend on the entry type.
+    #[test]
+    fn extract_layer_strips_setid_bits_from_every_entry_type() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let kinds = [
+            ("fifo", tar::EntryType::Fifo),
+            ("chr", tar::EntryType::Char),
+            ("unknown", tar::EntryType::new(b'Z')),
+        ];
+        let layer = layer_with(|b| {
+            for (path, kind) in kinds {
+                let mut h = tar::Header::new_gnu();
+                h.set_size(0);
+                h.set_mode(0o6755);
+                h.set_entry_type(kind);
+                b.append_data(&mut h, path, std::io::empty()).unwrap();
+            }
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut total_size = 0u64;
+        extract_layer_with_limits(
+            &layer,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            dir.path(),
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
+
+        for (path, _) in kinds {
+            let meta = std::fs::symlink_metadata(dir.path().join(path)).unwrap();
+            assert!(meta.is_file(), "{path} is written as a regular file");
+            assert_eq!(meta.permissions().mode() & 0o7777, 0o755, "{path}");
+        }
+    }
+
     #[test]
     fn whiteout_does_not_follow_symlinked_ancestor() {
         let dir = tempfile::tempdir().unwrap();
@@ -1825,7 +2087,15 @@ mod tests {
         let rootfs = dir.path().join("rootfs");
         std::fs::create_dir_all(&rootfs).unwrap();
         let mut total_size = 0u64;
-        extract_layer_with_limits(&layer, &rootfs, 0, 1, &mut total_size).unwrap();
+        extract_layer_with_limits(
+            &layer,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
 
         assert!(
             outside.join("victim/keep").exists(),
@@ -1845,7 +2115,15 @@ mod tests {
         let rootfs = cache.join("rootfs");
         std::fs::create_dir_all(&rootfs).unwrap();
         let mut total_size = 0u64;
-        extract_layer_with_limits(&layer, &rootfs, 0, 1, &mut total_size).unwrap();
+        extract_layer_with_limits(
+            &layer,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
 
         assert!(
             cache.join("other/keep").exists(),
@@ -1864,10 +2142,147 @@ mod tests {
         let layer = layer_with(|b| append_empty_file(b, "a/.wh.gone"));
 
         let mut total_size = 0u64;
-        extract_layer_with_limits(&layer, &rootfs, 0, 1, &mut total_size).unwrap();
+        extract_layer_with_limits(
+            &layer,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
 
         assert!(!rootfs.join("a/gone").exists());
         assert!(rootfs.join("a/stays").exists());
+    }
+
+    /// `dir/.wh..wh..opq` hides every lower-layer child of `dir` (it used to
+    /// delete a nonexistent `dir/.wh..opq`), keeps this layer's children and
+    /// never clears a directory reached through a symlink.
+    #[test]
+    fn opaque_whiteout_clears_lower_layer_children_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("keep"), b"host").unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(rootfs.join("a/sub")).unwrap();
+        std::fs::create_dir_all(rootfs.join("b")).unwrap();
+        std::fs::write(rootfs.join("a/old"), b"lower").unwrap();
+        std::fs::write(rootfs.join("a/sub/x"), b"lower").unwrap();
+        std::fs::write(rootfs.join("b/keep"), b"lower").unwrap();
+        std::os::unix::fs::symlink(&outside, rootfs.join("a/link")).unwrap();
+        std::os::unix::fs::symlink(&outside, rootfs.join("c")).unwrap();
+        let layer = layer_with(|b| {
+            append_empty_file(b, "a/new");
+            append_empty_file(b, "a/.wh..wh..opq");
+            append_empty_file(b, "c/.wh..wh..opq");
+        });
+
+        let mut total_size = 0u64;
+        extract_layer_with_limits(
+            &layer,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
+
+        let mut children: Vec<_> = std::fs::read_dir(rootfs.join("a"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        children.sort();
+        assert_eq!(children, ["new"], "only this layer's child is left");
+        assert!(rootfs.join("b/keep").exists());
+        assert!(outside.join("keep").exists(), "cleared through a symlink");
+    }
+
+    /// A whiteout hides lower-layer files only, so a same-layer file or
+    /// subtree listed before it must survive.
+    #[test]
+    fn whiteout_keeps_same_layer_entries_listed_before_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(rootfs.join("a/sub")).unwrap();
+        std::fs::write(rootfs.join("a/gone"), b"lower").unwrap();
+        std::fs::write(rootfs.join("a/sub/old"), b"lower").unwrap();
+        let layer = layer_with(|b| {
+            append_empty_file(b, "a/gone");
+            append_empty_file(b, "a/sub/new");
+            append_empty_file(b, "a/.wh.gone");
+            append_empty_file(b, "a/.wh.sub");
+        });
+
+        let mut total_size = 0u64;
+        extract_layer_with_limits(
+            &layer,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(rootfs.join("a/gone")).unwrap(), b"");
+        assert!(rootfs.join("a/sub/new").exists());
+        assert!(
+            !rootfs.join("a/sub/old").exists(),
+            "the lower-layer child of a whited-out dir stays hidden"
+        );
+    }
+
+    /// The whiteout pass used to read past every entry before any size
+    /// check, so an oversized entry was inflated in full, and a whiteout's
+    /// own payload was never counted.
+    #[test]
+    fn size_limits_hold_in_the_whiteout_pass_and_for_whiteouts() {
+        use oci_client::manifest::IMAGE_LAYER_MEDIA_TYPE;
+
+        // A header declaring more than MAX_FILE_SIZE, with no payload behind it.
+        let mut h = tar::Header::new_gnu();
+        h.set_path("huge").unwrap();
+        h.set_size(MAX_FILE_SIZE + 1);
+        h.set_mode(0o644);
+        h.set_entry_type(tar::EntryType::Regular);
+        h.set_cksum();
+        let dir = tempfile::tempdir().unwrap();
+        let mut total_size = 0u64;
+        let err = extract_layer_with_limits(
+            h.as_bytes(),
+            IMAGE_LAYER_MEDIA_TYPE,
+            dir.path(),
+            0,
+            1,
+            &mut total_size,
+        )
+        .expect_err("an oversized entry must be refused");
+        assert!(err.to_string().contains("file too large"), "got: {err:#}");
+
+        let layer = layer_with(|b| {
+            let mut h = tar::Header::new_gnu();
+            h.set_size(1);
+            h.set_mode(0o644);
+            h.set_entry_type(tar::EntryType::Regular);
+            b.append_data(&mut h, ".wh.x", &b"x"[..]).unwrap();
+        });
+        let mut total_size = MAX_TOTAL_SIZE;
+        let err = extract_layer_with_limits(
+            &layer,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            dir.path(),
+            0,
+            1,
+            &mut total_size,
+        )
+        .expect_err("a whiteout's payload counts toward the total");
+        assert!(
+            err.to_string().contains("total extraction size exceeded"),
+            "got: {err:#}"
+        );
     }
 
     #[test]
@@ -1920,7 +2335,15 @@ mod tests {
         let layer = layer_with(|b| append_empty_file(b, "a/.wh.link"));
 
         let mut total_size = 0u64;
-        extract_layer_with_limits(&layer, &rootfs, 0, 1, &mut total_size).unwrap();
+        extract_layer_with_limits(
+            &layer,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
 
         assert!(std::fs::symlink_metadata(rootfs.join("a/link")).is_err());
         assert!(

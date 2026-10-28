@@ -150,7 +150,7 @@ stop_sb() {
   CREATED=("${left[@]}")
 }
 no_files_in_trampoline() {  # only the staging dirs may exist in a sandbox's trampoline
-  [ -d "/tmp/iii-sandbox/$1/root" ] && [ -z "$(find "/tmp/iii-sandbox/$1/root" -mindepth 1 ! -type d -print -quit)" ]
+  [ -d "/tmp/iii-sandbox-$(id -u)/$1/root" ] && [ -z "$(find "/tmp/iii-sandbox-$(id -u)/$1/root" -mindepth 1 ! -type d -print -quit)" ]
 }
 host_checks() {  # host_checks <label>
   manifest "$CACHE" > "$LOGS/cache-manifest-$1.txt"
@@ -225,7 +225,7 @@ for f in etc/shadow etc/gshadow usr/bin; do
   [ -e "$CACHE/$f" ] && echo "image mode: /$f $(stat -c '%a %U' "$CACHE/$f")"
 done
 check "init.krun is not copied into the image cache" test ! -e "$CACHE/init.krun"
-VMARGS=$(ps -ww -eo args= | grep -F -- '__vm-boot' | grep -F -- "/tmp/iii-sandbox/$A/root" | grep -v -F 'grep -F' | head -1)
+VMARGS=$(ps -ww -eo args= | grep -F -- '__vm-boot' | grep -F -- "/tmp/iii-sandbox-$(id -u)/$A/root" | grep -v -F 'grep -F' | head -1)
 echo "A boot args: $VMARGS"
 check "A boots on its own trampoline, served read-only" grep -qF -- '--rootfs-readonly' <<< "$VMARGS"
 check "A boots with the erofs image as its overlay lower" grep -qF -- "--rootfs-mode overlay --rootfs-lower $EROFS" <<< "$VMARGS"

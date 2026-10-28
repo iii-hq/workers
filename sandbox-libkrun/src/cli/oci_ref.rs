@@ -4,25 +4,35 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! OCI image-ref helper for the rootfs cache: [`canonical_cache_key`] strips
-//! any `@sha256:...` suffix before hashing so pinned and unpinned variants of
-//! the same image share one cache dir.
+//! OCI image-ref helpers for the rootfs cache: [`canonical_cache_key`] strips
+//! a tagged ref's `@sha256:...` suffix before hashing so pinned and unpinned
+//! variants of the same tag can share one cache dir, and [`pinned_digest`]
+//! returns the pin the cache checks before sharing it.
 
 /// Return the portion of `image_ref` that should be used as the cache-dir
-/// hash input. Strips any trailing `@sha256:...` so `foo:latest` and
-/// `foo:latest@sha256:abc` resolve to the same cache dir, and a pinned ref
-/// doesn't re-pull an image the cache already holds.
+/// hash input. Strips a trailing `@sha256:...` when the ref names a tag, so
+/// `foo:latest` and `foo:latest@sha256:abc` resolve to the same cache dir,
+/// and a pinned ref doesn't re-pull an image the cache already holds (as
+/// long as that image is the pinned one: see `rootfs_cache::canonical_path`).
+/// A digest-only ref says nothing about any tag, so it keeps its digest and
+/// never shares `foo:latest`'s dir.
 ///
 /// Examples:
 /// - `foo:latest` -> `foo:latest`
 /// - `foo:latest@sha256:abc` -> `foo:latest`
-/// - `foo@sha256:abc` -> `foo`
+/// - `foo@sha256:abc` -> `foo@sha256:abc`
 /// - `docker.io/foo/bar:tag@sha256:deadbeef...` -> `docker.io/foo/bar:tag`
 pub(crate) fn canonical_cache_key(image_ref: &str) -> &str {
-    image_ref
-        .split_once("@sha256:")
-        .map(|(lhs, _)| lhs)
-        .unwrap_or(image_ref)
+    match image_ref.split_once("@sha256:") {
+        // A tag is a `:` in the last path segment; a registry port is not.
+        Some((name, _)) if name.rsplit('/').next().is_some_and(|n| n.contains(':')) => name,
+        _ => image_ref,
+    }
+}
+
+/// The `sha256:...` digest `image_ref` is pinned to, if any.
+pub(crate) fn pinned_digest(image_ref: &str) -> Option<&str> {
+    image_ref.find("@sha256:").map(|at| &image_ref[at + 1..])
 }
 
 #[cfg(test)]
@@ -38,8 +48,17 @@ mod tests {
     }
 
     #[test]
-    fn strips_digest_from_nameonly_ref() {
-        assert_eq!(canonical_cache_key("foo@sha256:abc"), "foo");
+    fn keeps_digest_on_a_digest_only_ref() {
+        // Stripping it made `foo@sha256:abc` share and fill `foo:latest`'s dir.
+        assert_eq!(canonical_cache_key("foo@sha256:abc"), "foo@sha256:abc");
+        assert_eq!(
+            canonical_cache_key("localhost:5000/foo@sha256:abc"),
+            "localhost:5000/foo@sha256:abc"
+        );
+        assert_eq!(
+            canonical_cache_key("localhost:5000/foo:1@sha256:abc"),
+            "localhost:5000/foo:1"
+        );
     }
 
     #[test]
@@ -63,14 +82,24 @@ mod tests {
     }
 
     #[test]
+    fn pinned_digest_is_the_part_after_the_at() {
+        assert_eq!(
+            pinned_digest("docker.io/foo/bar:latest@sha256:abc"),
+            Some("sha256:abc")
+        );
+        assert_eq!(pinned_digest("foo@sha256:abc"), Some("sha256:abc"));
+        assert_eq!(pinned_digest("foo:latest"), None);
+    }
+
+    #[test]
     fn empty_ref_passes_through() {
         // Degenerate input: empty string. Don't panic, just return it.
         assert_eq!(canonical_cache_key(""), "");
     }
 
     #[test]
-    fn ref_with_only_at_sha256_marker_strips_to_empty_left() {
-        // Pathological but deterministic: "@sha256:abc" -> "".
-        assert_eq!(canonical_cache_key("@sha256:abc"), "");
+    fn ref_with_only_at_sha256_marker_passes_through() {
+        // Pathological but deterministic: no tag, so nothing is stripped.
+        assert_eq!(canonical_cache_key("@sha256:abc"), "@sha256:abc");
     }
 }

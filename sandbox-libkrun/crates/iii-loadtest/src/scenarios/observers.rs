@@ -43,6 +43,8 @@ pub async fn run(env: &Env) -> Result<()> {
 
     let mut observing = Vec::new();
     let mut handles = Vec::new();
+    // Observers the engine refused: they hold no memory.
+    let mut refused = 0;
     for n in env.levels(&[1_000, 4_000, 16_000, 64_000], &[1_000, 4_000]) {
         let from = handles.len();
         let mut needed = Vec::new();
@@ -84,15 +86,18 @@ pub async fn run(env: &Env) -> Result<()> {
             .await;
         let (step, added) = step?;
         handles.extend(added);
+        refused += step.errors as usize;
+        let held = n.saturating_sub(refused);
         let rest = env
             .idle(
-                format!("{n} observers (at rest)"),
-                json!({ "observers": n }),
+                format!("{held} observers (at rest)"),
+                json!({ "observers": held }),
                 json!({ "create_errors": step.errors }),
             )
             .await?;
-        let per = (rest.resources.rss_avg_mb - base_rss) * 1024.0 * 1024.0 / n as f64;
-        env.annotate_last(json!({ "rss_bytes_per_observer": per.round() }));
+        if let Some(per) = rss_bytes_per(rest.resources.rss_avg_mb, base_rss, held) {
+            env.annotate_last(json!({ "rss_bytes_per_observer": per }));
+        }
     }
 
     let total = handles.len();
@@ -121,4 +126,21 @@ pub async fn run(env: &Env) -> Result<()> {
 
     shutdown(observing.into_iter().chain([host, target])).await;
     Ok(())
+}
+
+/// The RSS each of `held` observers adds over `base_mb`, in whole bytes; none
+/// when none are held.
+fn rss_bytes_per(rss_mb: f64, base_mb: f64, held: usize) -> Option<f64> {
+    (held > 0).then(|| ((rss_mb - base_mb) * 1024.0 * 1024.0 / held as f64).round())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rss_is_shared_by_the_observers_held_only() {
+        assert_eq!(rss_bytes_per(110.0, 100.0, 1024), Some(10240.0));
+        assert_eq!(rss_bytes_per(110.0, 100.0, 0), None);
+    }
 }

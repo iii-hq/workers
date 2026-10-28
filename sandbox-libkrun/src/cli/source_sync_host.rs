@@ -18,14 +18,21 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use iii_supervisor::source_sync::{self, EntryHeader, EntryKind};
+use notify::event::ModifyKind;
 use notify::{Event, EventKind, Watcher};
 
-use super::source_watcher::{DEBOUNCE_MS, register_new_dirs, should_ignore_path, watch_pruned};
+use super::source_watcher::{
+    DEBOUNCE_MS, forget_watches, register_new_dirs, should_ignore_path, watch_pruned,
+};
 
 const FILE_READ_ATTEMPTS: usize = 3;
+
+/// Longest a burst may keep extending, so a host file written more often
+/// than DEBOUNCE_MS (a log, say) cannot hold the flush back forever.
+const MAX_BURST: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
 struct FileSnapshot {
@@ -83,20 +90,49 @@ fn run_loop(
             Ok(event) => event,
             Err(_) => return Ok(()),
         };
-        let mut paths = first.paths;
-        loop {
-            match rx.recv_timeout(Duration::from_millis(DEBOUNCE_MS)) {
-                Ok(event) => paths.extend(event.paths),
-                Err(RecvTimeoutError::Timeout) => break,
-                Err(RecvTimeoutError::Disconnected) => return Ok(()),
-            }
-        }
+        let Some((paths, gone)) = collect_burst(first, &rx, MAX_BURST) else {
+            return Ok(());
+        };
+        let paths: Vec<PathBuf> = paths.into_iter().collect();
 
+        forget_watches(&mut registered, &gone);
         register_new_dirs(&mut watcher, &paths, &source_root, &mut registered);
         for path in coalesce_paths(paths, &source_root) {
             send_current_entry(&mut stream, &source_root, &path)?;
         }
     }
+}
+
+/// Gathers the paths of `first` and of the events after it until the tree is
+/// quiet for DEBOUNCE_MS or the burst is `max_burst` old, plus the paths that
+/// were removed or renamed (see [`forget_watches`]). None once the watcher is
+/// gone.
+fn collect_burst(
+    first: Event,
+    rx: &mpsc::Receiver<Event>,
+    max_burst: Duration,
+) -> Option<(BTreeSet<PathBuf>, BTreeSet<PathBuf>)> {
+    let deadline = Instant::now() + max_burst;
+    let (mut paths, mut gone) = (BTreeSet::new(), BTreeSet::new());
+    let mut event = first;
+    loop {
+        if matches!(
+            event.kind,
+            EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
+        ) {
+            gone.extend(event.paths.iter().cloned());
+        }
+        paths.extend(event.paths);
+        let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+            break;
+        };
+        event = match rx.recv_timeout(left.min(Duration::from_millis(DEBOUNCE_MS))) {
+            Ok(event) => event,
+            Err(RecvTimeoutError::Timeout) => break,
+            Err(RecvTimeoutError::Disconnected) => return None,
+        };
+    }
+    Some((paths, gone))
 }
 
 fn coalesce_paths(paths: Vec<PathBuf>, root: &Path) -> Vec<PathBuf> {
@@ -109,24 +145,42 @@ fn coalesce_paths(paths: Vec<PathBuf>, root: &Path) -> Vec<PathBuf> {
         .collect();
     unique.sort_by_key(|path| path.components().count());
 
-    let mut selected: Vec<PathBuf> = Vec::new();
+    // A directory resend re-sends what exists but cannot express a removed
+    // child, so a child collapses only if it still exists or its parent was
+    // removed too (that Remove covers the whole subtree).
+    let mut selected: Vec<(PathBuf, bool)> = Vec::new();
     for path in unique {
-        if selected.iter().any(|parent| path.starts_with(parent)) {
+        let gone = std::fs::symlink_metadata(&path).is_err();
+        if selected
+            .iter()
+            .any(|(parent, parent_gone)| path.starts_with(parent) && (*parent_gone || !gone))
+        {
             continue;
         }
-        selected.push(path);
+        selected.push((path, gone));
     }
-    selected
+    selected.into_iter().map(|(path, _)| path).collect()
 }
 
 fn send_current_entry(stream: &mut UnixStream, root: &Path, path: &Path) -> io::Result<()> {
     if should_ignore_path(path, root) {
         return Ok(());
     }
-    let relative = relative_utf8(root, path)?;
+    // The wire format carries UTF-8 paths only: skip such a path (and its
+    // subtree), as an error here would end the sync thread for good.
+    let relative = match relative_utf8(root, path) {
+        Ok(relative) => relative,
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "source sync: path skipped");
+            return Ok(());
+        }
+    };
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
-            let link = std::fs::read_link(path)?;
+            let link = match std::fs::read_link(path) {
+                Ok(link) => link,
+                Err(error) => return send_path_error(stream, relative, path, error),
+            };
             let bytes = link.as_os_str().as_bytes();
             send_header(
                 stream,
@@ -148,7 +202,11 @@ fn send_current_entry(stream: &mut UnixStream, root: &Path, path: &Path) -> io::
             )?;
             finish_entry(stream)?;
 
-            let mut children = std::fs::read_dir(path)?.collect::<Result<Vec<_>, _>>()?;
+            let children = std::fs::read_dir(path).and_then(|entries| entries.collect());
+            let mut children: Vec<std::fs::DirEntry> = match children {
+                Ok(children) => children,
+                Err(error) => return send_path_error(stream, relative, path, error),
+            };
             children.sort_by_key(|entry| entry.file_name());
             for child in children {
                 send_current_entry(stream, root, &child.path())?;
@@ -158,20 +216,7 @@ fn send_current_entry(stream: &mut UnixStream, root: &Path, path: &Path) -> io::
         Ok(metadata) if metadata.is_file() => {
             let snapshot = match read_stable_file(path) {
                 Ok(snapshot) => snapshot,
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        io::ErrorKind::InvalidData | io::ErrorKind::WouldBlock
-                    ) =>
-                {
-                    tracing::warn!(path = %path.display(), %error, "source sync: file skipped");
-                    return Ok(());
-                }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    send_header(stream, EntryKind::Remove, relative, 0, 0)?;
-                    return finish_entry(stream);
-                }
-                Err(error) => return Err(error),
+                Err(error) => return send_path_error(stream, relative, path, error),
             };
             send_header(
                 stream,
@@ -187,12 +232,25 @@ fn send_current_entry(stream: &mut UnixStream, root: &Path, path: &Path) -> io::
             tracing::debug!(path = %path.display(), "source sync: unsupported file type skipped");
             Ok(())
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            send_header(stream, EntryKind::Remove, relative, 0, 0)?;
-            finish_entry(stream)
-        }
-        Err(error) => Err(error),
+        Err(error) => send_path_error(stream, relative, path, error),
     }
+}
+
+/// A filesystem error on `path` itself: a path that vanished mid-walk is
+/// sent as a Remove, and any other error skips the path, since only stream
+/// errors may end the sync thread.
+fn send_path_error(
+    stream: &mut UnixStream,
+    relative: &str,
+    path: &Path,
+    error: io::Error,
+) -> io::Result<()> {
+    if error.kind() == io::ErrorKind::NotFound {
+        send_header(stream, EntryKind::Remove, relative, 0, 0)?;
+        return finish_entry(stream);
+    }
+    tracing::warn!(path = %path.display(), %error, "source sync: path skipped");
+    Ok(())
 }
 
 fn read_stable_file(path: &Path) -> io::Result<FileSnapshot> {
@@ -305,6 +363,77 @@ mod tests {
         assert_eq!(coalesce_paths(paths, root), vec![root.join("src")]);
     }
 
+    /// A directory resend cannot say that a child is gone, so a removed child
+    /// of a directory that still exists keeps its own entry (a Remove); under
+    /// a removed directory it collapses, as that Remove covers it.
+    #[test]
+    fn removed_children_are_not_collapsed_under_an_existing_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(root.join("src/kept.ts"), "").unwrap();
+        let paths = vec![
+            root.join("src/old.ts"),
+            root.join("src"),
+            root.join("src/kept.ts"),
+            root.join("gone/child.ts"),
+            root.join("gone"),
+        ];
+
+        assert_eq!(
+            coalesce_paths(paths, &root),
+            vec![root.join("gone"), root.join("src"), root.join("src/old.ts")]
+        );
+    }
+
+    /// A host file written more often than the debounce window must not
+    /// postpone the flush forever, nor grow the burst by one entry per event.
+    #[test]
+    fn a_continuous_writer_cannot_postpone_the_flush_forever() {
+        let event = || Event::new(EventKind::Any).add_path(PathBuf::from("/project/app.log"));
+        let (tx, rx) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            for _ in 0..100 {
+                if tx.send(event()).is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+
+        let started = Instant::now();
+        let (paths, gone) = collect_burst(event(), &rx, Duration::from_millis(300)).unwrap();
+
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(paths, BTreeSet::from([PathBuf::from("/project/app.log")]));
+        assert!(gone.is_empty());
+        drop(rx);
+        writer.join().unwrap();
+    }
+
+    /// Removed or renamed paths are reported, so their stale watch
+    /// registrations get forgotten; a content change is not.
+    #[test]
+    fn burst_reports_removed_and_renamed_paths() {
+        use notify::event::{DataChange, RemoveKind, RenameMode};
+        let event = |kind, path: &str| Event::new(kind).add_path(PathBuf::from(path));
+        let (tx, rx) = mpsc::channel();
+        let renamed = EventKind::Modify(ModifyKind::Name(RenameMode::From));
+        let edited = EventKind::Modify(ModifyKind::Data(DataChange::Any));
+        tx.send(event(renamed, "/p/old")).unwrap();
+        tx.send(event(edited, "/p/edited")).unwrap();
+
+        let removed = event(EventKind::Remove(RemoveKind::Folder), "/p/src");
+        let (paths, gone) = collect_burst(removed, &rx, Duration::from_millis(100)).unwrap();
+
+        assert_eq!(paths.len(), 3);
+        assert_eq!(
+            gone,
+            BTreeSet::from([PathBuf::from("/p/old"), PathBuf::from("/p/src")])
+        );
+        drop(tx);
+    }
+
     #[test]
     fn ignored_dependency_paths_are_removed_from_burst() {
         let root = Path::new("/project");
@@ -337,6 +466,47 @@ mod tests {
         let (header, payload) = receiver.join().unwrap();
         assert_eq!(header.path, "main.rs");
         assert_eq!(payload, b"fn main() {}\n");
+    }
+
+    /// Linux allows non-UTF-8 names; one such path is skipped instead of
+    /// ending the sync thread for the rest of the VM's life.
+    #[test]
+    fn non_utf8_path_is_skipped_without_stopping_sync() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut host, _guest) = UnixStream::pair().unwrap();
+        let path = temp
+            .path()
+            .join(std::ffi::OsStr::from_bytes(b"bad-\xff.ts"));
+
+        send_current_entry(&mut host, temp.path(), &path).unwrap();
+    }
+
+    /// One unreadable directory (or one that vanishes mid-walk) is skipped:
+    /// only a stream error may end the sync thread for the VM's life.
+    #[test]
+    fn an_unreadable_directory_does_not_stop_sync() {
+        let temp = tempfile::tempdir().unwrap();
+        let locked = temp.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let (mut host, mut guest) = UnixStream::pair().unwrap();
+        let receiver = std::thread::spawn(move || {
+            let mut paths = Vec::new();
+            while let Ok(header) = source_sync::read_header(&mut guest) {
+                let mut payload = vec![0u8; header.payload_len as usize];
+                guest.read_exact(&mut payload).unwrap();
+                source_sync::write_ack(&mut guest, Ok(())).unwrap();
+                paths.push(header.path);
+            }
+            paths
+        });
+
+        let sent = send_current_entry(&mut host, temp.path(), &locked);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        drop(host);
+
+        sent.unwrap();
+        assert_eq!(receiver.join().unwrap(), vec!["locked".to_string()]);
     }
 
     #[test]

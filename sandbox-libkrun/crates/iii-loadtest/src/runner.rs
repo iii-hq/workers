@@ -347,6 +347,7 @@ fn spawn_engine(args: &RunArgs, cpus: &[usize], cgroup: Option<&Path>) -> Result
             // Own process group, so stopping it reaches every engine thread's
             // children too.
             libc::setpgid(0, 0);
+            unblock_stop_signals();
             libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set);
             if let Some(path) = &procs {
                 // "0" moves the writing process: the engine-to-be.
@@ -421,7 +422,7 @@ fn engine_cgroup(mem_mib: Option<u64>) -> Option<PathBuf> {
 
 /// The process group the run has running (an engine, or a VM), so a suite
 /// stopped by a signal takes it down with it: each lives in a group of its
-/// own and would outlive the suite otherwise.
+/// own and would outlive the suite otherwise. 0 when none is.
 pub static CHILD_PGID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
 /// Records `child` as the group to stop on a signal.
@@ -429,42 +430,75 @@ pub fn track(child: &Child) {
     CHILD_PGID.store(child.id() as i32, std::sync::atomic::Ordering::SeqCst);
 }
 
+/// Forgets the tracked group once its leader is reaped: its pid is free
+/// again, and may come back as another group's.
+pub fn untrack() {
+    CHILD_PGID.store(0, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// Stops the tracked group and exits, on SIGTERM or SIGINT. Call before any
 /// thread starts: the signals are blocked in the caller, so every thread
 /// inherits that and only the waiting thread receives them.
 pub fn stop_children_on_signal() {
+    let set = stop_signals();
+    unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut()) };
+    std::thread::spawn(move || {
+        let mut sig: libc::c_int = 0;
+        unsafe { libc::sigwait(&set, &mut sig) };
+        let pgid = CHILD_PGID.load(std::sync::atomic::Ordering::SeqCst);
+        if pgid > 0 {
+            stop_group(pgid, Duration::from_secs(10));
+        }
+        std::process::exit(128 + sig);
+    });
+}
+
+/// SIGTERM and SIGINT.
+fn stop_signals() -> libc::sigset_t {
     unsafe {
         let mut set: libc::sigset_t = std::mem::zeroed();
         libc::sigemptyset(&mut set);
         libc::sigaddset(&mut set, libc::SIGTERM);
         libc::sigaddset(&mut set, libc::SIGINT);
-        libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
-        std::thread::spawn(move || {
-            let mut sig: libc::c_int = 0;
-            libc::sigwait(&set, &mut sig);
-            let pgid = CHILD_PGID.load(std::sync::atomic::Ordering::SeqCst);
-            if pgid > 0 {
-                libc::kill(-pgid, libc::SIGTERM);
-            }
-            std::process::exit(128 + sig);
-        });
+        set
     }
 }
 
-/// SIGTERM to the engine's process group, SIGKILL if it is still there 5 s
-/// later.
+/// For a child's `pre_exec`: spawn keeps the parent's signal mask, so a child
+/// of `stop_children_on_signal`'s process would never act on SIGTERM.
+/// Async-signal-safe.
+pub fn unblock_stop_signals() {
+    unsafe { libc::pthread_sigmask(libc::SIG_UNBLOCK, &stop_signals(), std::ptr::null_mut()) };
+}
+
+/// SIGTERM to group `pgid`, then SIGKILL to what is left of it once its
+/// leader (a child of this process) exits, or `grace` later: exiting first
+/// would orphan the group.
+fn stop_group(pgid: i32, grace: Duration) {
+    unsafe { libc::kill(-pgid, libc::SIGTERM) };
+    let deadline = Instant::now() + grace;
+    // Not 0: reaped here, or (ECHILD) by the thread that spawned it.
+    while Instant::now() < deadline
+        && unsafe { libc::waitpid(pgid, std::ptr::null_mut(), libc::WNOHANG) } == 0
+    {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // Members that outlive the leader too.
+    unsafe { libc::kill(-pgid, libc::SIGKILL) };
+}
+
+/// SIGTERM to the engine's process group, then SIGKILL to what is left of it
+/// once the engine exits, or 5 s later.
 fn stop(child: &mut Child) {
     let pgid = child.id() as i32;
     unsafe { libc::kill(-pgid, libc::SIGTERM) };
     let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        if let Ok(Some(_)) = child.try_wait() {
-            return;
-        }
+    while Instant::now() < deadline && !matches!(child.try_wait(), Ok(Some(_))) {
         std::thread::sleep(Duration::from_millis(50));
     }
     unsafe { libc::kill(-pgid, libc::SIGKILL) };
     let _ = child.wait();
+    untrack();
 }
 
 /// Waits until the engine answers a WebSocket with `workerregistered`.
@@ -564,6 +598,83 @@ fn bring_up_loopback() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A child spawned while the stop signals are blocked, as they are on
+    /// every thread after `stop_children_on_signal`, still dies on SIGTERM.
+    #[test]
+    fn a_child_acts_on_the_sigterm_its_parent_blocks() {
+        use std::os::unix::process::ExitStatusExt;
+        let mut old: libc::sigset_t = unsafe { std::mem::zeroed() };
+        unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &stop_signals(), &mut old) };
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        unsafe {
+            cmd.pre_exec(|| {
+                unblock_stop_signals();
+                Ok(())
+            });
+        }
+        let spawned = cmd.spawn();
+        unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &old, std::ptr::null_mut()) };
+        let mut child = spawned.expect("spawn sleep");
+
+        unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("try_wait") {
+                break Some(status);
+            }
+            if Instant::now() > deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+
+        assert_eq!(status.and_then(|s| s.signal()), Some(libc::SIGTERM));
+    }
+
+    /// `stop_group` kills a leader that ignores SIGTERM once the grace is
+    /// over, and a member that ignores it once the leader is gone.
+    #[test]
+    fn stop_group_leaves_nothing_of_the_group() {
+        use std::io::{BufRead, Read};
+        for script in [
+            "trap '' TERM; echo up; exec sleep 30",
+            "(trap '' TERM; echo up; exec sleep 30) & exec sleep 30",
+        ] {
+            let mut child = Command::new("sh")
+                .args(["-c", script])
+                .process_group(0)
+                .stdout(Stdio::piped())
+                .spawn()
+                .expect("spawn sh");
+            let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
+            out.read_line(&mut String::new()).unwrap();
+
+            let started = Instant::now();
+            stop_group(child.id() as i32, Duration::from_millis(300));
+            // EOF once no process of the group holds the pipe.
+            out.read_to_end(&mut Vec::new()).unwrap();
+            let _ = child.wait();
+            assert!(started.elapsed() < Duration::from_secs(10), "{script}");
+        }
+    }
+
+    /// `stop` reaps the engine, so a signal after it must not reach the
+    /// group its pid may lead by then.
+    #[test]
+    fn stop_untracks_the_group_it_reaps() {
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .expect("spawn sleep");
+        track(&child);
+        stop(&mut child);
+        assert_eq!(CHILD_PGID.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
 
     #[test]
     fn cpu_lists_parse_and_format() {
