@@ -2,7 +2,11 @@
 
 Além das APIs CLI existentes, `github::pr::watch`, `github::pr::unwatch`,
 `github::pr::watch-status`, `github::pr::recover` e o trigger `github::pr::event`
-implementam monitoramento por webhooks. O recurso fica desabilitado por padrão;
+implementam monitoramento por webhooks. No iii 0.25 os mesmos eventos também são
+observáveis pela função `github::on-pr-event` (args = a config do trigger), e a
+atividade do trigger `github::called` pela função `github::on-called`; ambas
+recusam invocação direta com `FORBIDDEN` e os dois tipos de trigger continuam
+registrados. O recurso fica desabilitado por padrão;
 consulte o [guia de webhooks](../docs/architecture/github-webhooks.md) para
 conhecer as permissões, a recuperação e as limitações. Nenhum recurso externo é
 criado ao registrar a interface com a configuração padrão.

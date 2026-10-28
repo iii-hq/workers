@@ -15,6 +15,13 @@ First arm the trigger with a caller-chosen `watch_id`, then call
 and mandatory future RFC3339 `expires_at`. Read `github::pr::watch-status`
 once after watch to close the initial race. Never interval-poll PRs.
 
+On iii 0.25 engines, observing `github::on-pr-event` with the same config as
+args (`{ watch_id?, repo?, number?, categories?, notifications? }`) is
+equivalent to a `github::pr::event` binding: the observer receives the same
+payloads and keeps the watch alive the same way. `github::on-called` is the
+observable form of `github::called`. Never invoke either directly: they
+refuse with `FORBIDDEN`.
+
 Inspect `status` and `health.last_error`: `preparing` is not active ingress;
 `cleanup_pending` is not successful cleanup. `unwatch` and manual `recover`
 are mutations requiring approval. Internal `github::webhooks::*` functions

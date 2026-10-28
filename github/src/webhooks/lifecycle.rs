@@ -676,25 +676,37 @@ impl Service {
         }
         LAST_SUBSCRIBER_RECONCILE.store(now, Relaxed);
         // Read before listing: a binding registered meanwhile is never dropped.
-        let known: std::collections::BTreeSet<String> =
-            self.store()?.read()?.subscribers.keys().cloned().collect();
-        if known.is_empty() {
-            return Ok(vec![]);
-        }
-        let listed = self
-            .invoke(
-                "engine::registered-triggers::list",
-                json!({"trigger_type": "github::pr::event", "include_pending": true, "include_internal": true}),
-            )
-            .await?;
-        let Some(rows) = listed["registered_triggers"].as_array() else {
-            return Ok(vec![]);
-        };
-        let engine = rows
-            .iter()
-            .filter_map(|r| r["id"].as_str().map(str::to_owned))
+        let (observers, known): (
+            std::collections::BTreeSet<String>,
+            std::collections::BTreeSet<String>,
+        ) = self
+            .store()?
+            .read()?
+            .subscribers
+            .keys()
+            .cloned()
+            .partition(|id| super::observe::is_observer_subscriber(id));
+        // github::on-pr-event observers are not engine bindings: a stored one
+        // is stale once its live handle is gone (a worker restart).
+        let mut stale: Vec<String> = observers
+            .into_iter()
+            .filter(|id| !super::observe::is_live_subscriber(id))
             .collect();
-        let stale = super::listeners::stale(&known, &engine);
+        if !known.is_empty() {
+            let listed = self
+                .invoke(
+                    "engine::registered-triggers::list",
+                    json!({"trigger_type": "github::pr::event", "include_pending": true, "include_internal": true}),
+                )
+                .await?;
+            if let Some(rows) = listed["registered_triggers"].as_array() {
+                let engine = rows
+                    .iter()
+                    .filter_map(|r| r["id"].as_str().map(str::to_owned))
+                    .collect();
+                stale.extend(super::listeners::stale(&known, &engine));
+            }
+        }
         if stale.is_empty() {
             return Ok(vec![]);
         }
