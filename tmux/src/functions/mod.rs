@@ -13,8 +13,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::collector::Collector;
-use crate::events::Monitor;
-use crate::model::{PortsSnapshot, SessionsSnapshot, TmuxInfo};
+use crate::events::{Monitor, OnChangedResponse, ON_CHANGED, ON_CHANGED_DESCRIPTION};
+use crate::model::{Overview, PortsSnapshot, SessionsSnapshot, TmuxInfo};
 use crate::tmux_cli::Tmux;
 use crate::transcript::Transcripts;
 
@@ -119,6 +119,12 @@ pub fn catalog() -> Vec<FunctionSpec> {
     specs.push(spec::<EmptyInput, PortsSnapshot>(
         PORTS_LIST,
         PORTS_LIST_DESC,
+    ));
+    // Observable, never invoked: the request is the overview its observers'
+    // targets receive (registered by `events::register_on_changed`).
+    specs.push(spec::<Overview, OnChangedResponse>(
+        ON_CHANGED,
+        ON_CHANGED_DESCRIPTION,
     ));
     specs
 }

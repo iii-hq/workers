@@ -13,6 +13,11 @@
 
 ### Added
 
+- **`tmux::on-changed`, an observable function (iii 0.25).** Observe it with args `{}`
+  and the observer's target receives the same `{ sessions, ports }` overview a
+  `tmux::changed` binding gets, once when added and then on every change. Observers share
+  the bindings' subscriber set and poll loop. Invoking it directly is refused with
+  `FORBIDDEN`. The `tmux::changed` trigger type stays, unchanged, for existing bindings.
 - **tmux sessions and windows as functions.** `tmux::sessions::{list,create,rename,kill}`
   and `tmux::windows::{create,select,rename,kill}` drive the host's tmux server; sessions
   and windows are addressed by id (`$5`, `@3`) or exact name / index, never by prefix.

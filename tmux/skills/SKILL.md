@@ -89,3 +89,13 @@ iii.registerFunction('my-worker::on-tmux', async ({ sessions, ports }) => {
 })
 iii.registerTrigger({ type: 'tmux::changed', function_id: 'my-worker::on-tmux', config: {} })
 ```
+
+Code on a 0.25 engine can observe the function `tmux::on-changed` instead,
+with args `{}`: the observer's target receives the same overview a binding
+gets (once when added, then on every change). A session or a 0.24 engine
+keeps the `tmux::changed` binding. Never invoke `tmux::on-changed` directly:
+it is refused with `FORBIDDEN`.
+
+```ts
+await iii.observe({ function_id: 'tmux::on-changed', args: {} }, 'my-worker::on-tmux')
+```
