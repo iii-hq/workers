@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::WorkerConfig;
 
-pub const DESCRIPTION: &str = "Error monitor for the iii engine: groups failures from trace and log telemetry by deterministic fingerprint, freezes the evidence before the in-memory store discards it, and opens assisted harness investigations that record a structured diagnosis.";
+pub const DESCRIPTION: &str = "Error monitor for the iii engine: groups failures from trace and log telemetry by deterministic fingerprint, freezes the evidence before the in-memory store discards it, and opens assisted harness investigations that record a structured diagnosis. Change events reach consumers through the sentinel::group-changed and sentinel::investigation-changed trigger types and the observable functions next to them, sentinel::on-group-changed and sentinel::on-investigation-changed (iii 0.25).";
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ModuleManifest {

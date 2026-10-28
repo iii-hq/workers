@@ -1,0 +1,166 @@
+{
+  "args_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "GroupChangedOpV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "created",
+              "status"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A new occurrence on a group that is otherwise unchanged. Coalesced.",
+            "enum": [
+              "occurrence"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "What a subscriber may narrow `sentinel::group-changed` to.",
+    "properties": {
+      "group_id": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "ops": {
+        "default": null,
+        "items": {
+          "$ref": "#/definitions/GroupChangedOpV1"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "service_name": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "GroupChangedConfigV1",
+    "type": "object"
+  },
+  "description": "Fires when an error group is created, takes a new occurrence, or changes state. Observe it with args { group_id?, service_name?, ops? } (the sentinel::group-changed binding config; ops narrows to created, occurrence or status); every matching observer receives the GroupChangedEventV1. Occurrence events are coalesced per group over one second; re-read the group rather than trusting the payload. Only the sentinel worker fires it: invoking it directly is refused.",
+  "function_id": "sentinel::on-group-changed",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "GroupChangeReasonV1": {
+        "description": "Why a group changed, for the event siblings subscribe to.",
+        "enum": [
+          "regression",
+          "ignore_expired",
+          "resolved",
+          "ignored",
+          "diagnosed",
+          "reopened",
+          "investigating"
+        ],
+        "type": "string"
+      },
+      "GroupChangedOpV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "created",
+              "status"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A new occurrence on a group that is otherwise unchanged. Coalesced.",
+            "enum": [
+              "occurrence"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "GroupStatusV1": {
+        "description": "The lifecycle of a group. `resolved` and `ignored` are human decisions; `regressed` is the one the ingest makes on its own, and the reason the worker exists.",
+        "oneOf": [
+          {
+            "enum": [
+              "new",
+              "diagnosed",
+              "resolved",
+              "ignored"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass of an investigation is running.",
+            "enum": [
+              "investigating"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A new occurrence after a resolve.",
+            "enum": [
+              "regressed"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "The event siblings and the console subscribe to.",
+    "properties": {
+      "group_id": {
+        "type": "string"
+      },
+      "occurrence_count": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "op": {
+        "$ref": "#/definitions/GroupChangedOpV1"
+      },
+      "previous_status": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/GroupStatusV1"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "reason": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/GroupChangeReasonV1"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "status": {
+        "$ref": "#/definitions/GroupStatusV1"
+      }
+    },
+    "required": [
+      "group_id",
+      "occurrence_count",
+      "op",
+      "status"
+    ],
+    "title": "GroupChangedEventV1",
+    "type": "object"
+  }
+}

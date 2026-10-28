@@ -129,6 +129,31 @@ The session id it answers with is a real console conversation: opening it in
 the console puts you in the middle of the investigation, with the same
 controls as any other chat.
 
+## Change events
+
+Every time a group is created, takes a new occurrence or changes state, and
+every time an investigation is created, starts or finishes, `sentinel`
+announces it. On an iii 0.25 engine, observe the function for the event:
+
+| Function | Args (all optional) | Each observer receives |
+| --- | --- | --- |
+| `sentinel::on-group-changed` | `group_id`, `service_name`, `ops` (`created`, `occurrence`, `status`) | `GroupChangedEventV1` |
+| `sentinel::on-investigation-changed` | `group_id` | `InvestigationChangedEventV1` |
+
+```ts
+iii.observe(
+  { function_id: 'sentinel::on-group-changed', args: { ops: ['created', 'status'] } },
+  'alerts::on-error',
+)
+```
+
+Only `sentinel` fires these functions: calling one directly is refused with
+`FORBIDDEN`. The event is a doorbell, not a record: re-read the group it
+names. Occurrence events are coalesced per group over one second; a creation
+or a state change goes out immediately. The trigger types
+`sentinel::group-changed` and `sentinel::investigation-changed` stay, with
+the same config as the args above, so existing bindings keep working.
+
 ## Configuration
 
 Registered with the `configuration` worker under the id `sentinel` and
