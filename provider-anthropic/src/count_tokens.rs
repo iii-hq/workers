@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 
 use crate::config::config_from_resolve;
 use crate::errors::classify_bus_error;
-use crate::request::build_headers;
+use crate::request::{build_headers, drop_trailing_prefill};
 use crate::state;
 use crate::wire::cache::build_system_field;
 use crate::wire::messages::to_wire_messages;
@@ -70,16 +70,19 @@ struct WireCountResponse {
 
 /// The count body: `{model, system?, tools?, messages}` — no `max_tokens`,
 /// no `stream`, and no cache markers (`cache_enabled=false`), because a count
-/// must never write a cache entry.
+/// must never write a cache entry. Messages go through the same prefill drop
+/// as the send.
 fn build_count_body(
     model: &str,
     system_prompt: &str,
     tools: &[AgentFunction],
     messages: &[AgentMessage],
 ) -> Value {
+    let mut wire_messages = to_wire_messages(messages);
+    drop_trailing_prefill(&mut wire_messages);
     let mut body = json!({
         "model": model,
-        "messages": to_wire_messages(messages),
+        "messages": wire_messages,
     });
     let wire_tools = functions_to_wire(tools);
     if !wire_tools.is_empty() {
@@ -217,6 +220,33 @@ mod tests {
         let body = build_count_body("m", "", &tools, &[user("hi")]);
         assert!(body.get("system").is_none());
         assert_eq!(body["tools"][0]["name"], "agent__trigger");
+    }
+
+    #[test]
+    fn trailing_call_less_assistant_is_dropped_like_the_send() {
+        // build_body drops the dead partial an aborted stream left behind, so
+        // counting it would over-count what the next turn actually bills.
+        use llm_router::types::events::StopReason;
+        use llm_router::types::messages::{AssistantMessage, AssistantRoleTag};
+        let partial = AgentMessage::Assistant(AssistantMessage {
+            role: AssistantRoleTag::Assistant,
+            content: vec![ContentBlock::Text {
+                text: "the answer is".into(),
+            }],
+            stop_reason: StopReason::End,
+            native_stop_reason: None,
+            error_message: None,
+            error_kind: None,
+            warnings: None,
+            usage: None,
+            model: "m".into(),
+            provider: "anthropic".into(),
+            timestamp: 2,
+        });
+        let body = build_count_body("m", "", &[], &[user("hi"), partial]);
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1, "{body}");
+        assert_eq!(messages[0]["role"], "user");
     }
 
     #[test]
