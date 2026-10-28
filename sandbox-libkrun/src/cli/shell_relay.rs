@@ -208,10 +208,7 @@ const CREDIT_BATCH: u32 = SEND_WINDOW / 4;
 /// never reads an `fs::read` channel must not hold a relay slot and a guest
 /// thread until the sandbox is reaped. A slow reader still takes a frame
 /// far more often than this.
-#[cfg(not(test))]
 const CLIENT_STALL: Duration = Duration::from_secs(30);
-#[cfg(test)]
-const CLIENT_STALL: Duration = Duration::from_secs(1);
 
 /// Maximum number of distinct `corr_id`s a single client can register
 /// routes for concurrently. Each registered id pins an entry in the
@@ -262,6 +259,16 @@ pub fn spawn(
     runtime: &tokio::runtime::Handle,
     sock_path: PathBuf,
     vm_stream: StdUnixStream,
+) -> Result<ShellSocketFingerprint, String> {
+    spawn_with_stall(runtime, sock_path, vm_stream, CLIENT_STALL)
+}
+
+/// [`spawn`] with `stall` in place of [`CLIENT_STALL`].
+fn spawn_with_stall(
+    runtime: &tokio::runtime::Handle,
+    sock_path: PathBuf,
+    vm_stream: StdUnixStream,
+    stall: Duration,
 ) -> Result<ShellSocketFingerprint, String> {
     // `UnixListener::from_std` / `UnixStream::from_std` register the fd
     // with the current tokio reactor, which panics with "there is no
@@ -327,7 +334,13 @@ pub fn spawn(
                     routes.clone(),
                     clients.clone(),
                 ));
-                runtime.spawn(listener_task(tokio_listener, vm_write_tx, routes, clients));
+                runtime.spawn(listener_task(
+                    tokio_listener,
+                    vm_write_tx,
+                    routes,
+                    clients,
+                    stall,
+                ));
                 fp
             }
             Err(e) => {
@@ -471,6 +484,7 @@ async fn listener_task(
     vm_write_tx: mpsc::Sender<QueuedFrame>,
     routes: Routes,
     clients: ClientTable,
+    stall: Duration,
 ) {
     let our_uid = unsafe { libc::geteuid() };
     loop {
@@ -496,7 +510,7 @@ async fn listener_task(
                 // Dropping the stream closes it.
                 return;
             };
-            client_session(stream, id_offset, vm_write_tx, routes, clients).await;
+            client_session(stream, id_offset, vm_write_tx, routes, clients, stall).await;
         });
     }
 }
@@ -559,6 +573,7 @@ async fn client_session(
     vm_write_tx: mpsc::Sender<QueuedFrame>,
     routes: Routes,
     clients: ClientTable,
+    stall: Duration,
 ) {
     let id_ceil = id_offset.saturating_add(ID_RANGE_STEP);
     let (mut client_read, mut client_write) = stream.into_split();
@@ -586,13 +601,11 @@ async fn client_session(
             _permit,
         }) = client_rx.recv().await
         {
-            match tokio::time::timeout(CLIENT_STALL, client_write.write_all(&frame)).await {
+            match tokio::time::timeout(stall, client_write.write_all(&frame)).await {
                 Ok(Ok(())) => {}
                 Ok(Err(_)) => break,
                 Err(_) => {
-                    tracing::warn!(
-                        "shell_relay: a client took nothing for {CLIENT_STALL:?}; ending it"
-                    );
+                    tracing::warn!("shell_relay: a client took nothing for {stall:?}; ending it");
                     break;
                 }
             }
@@ -920,6 +933,14 @@ mod tests {
     /// Boot the relay with a socketpair standing in for the VM end.
     /// Returns (sock_path, vm_host_end_simulator, tmpdir-for-lifetime).
     async fn boot() -> (PathBuf, StdUS, TempDir) {
+        boot_with_stall(CLIENT_STALL).await
+    }
+
+    /// Only the stall test boots with this. Under CPU load a client of the
+    /// other tests can take nothing for over a second and be ended mid-frame.
+    const SHORT_STALL: Duration = Duration::from_secs(1);
+
+    async fn boot_with_stall(stall: Duration) -> (PathBuf, StdUS, TempDir) {
         let tmp = TempDir::new().unwrap();
         let sock_path = tmp.path().join("shell.sock");
         let (vm_host, vm_guest_sim) = StdUS::pair().unwrap();
@@ -927,7 +948,7 @@ mod tests {
         // The test keeps vm_guest_sim and pretends to be the guest
         // dispatcher, reading requests and writing responses.
         let runtime = tokio::runtime::Handle::current();
-        spawn(&runtime, sock_path.clone(), vm_host).expect("relay spawn");
+        spawn_with_stall(&runtime, sock_path.clone(), vm_host, stall).expect("relay spawn");
         // Poll for the bound inode. Avoids a probe-connect that
         // would take the first id range the tests expect.
         let deadline = Duration::from_secs(2);
@@ -1360,12 +1381,12 @@ mod tests {
         assert!(!queue_for_client(&tx, out_bytes, frame()));
     }
 
-    /// A client that takes no frame for CLIENT_STALL is ended and its
+    /// A client that takes no frame for its stall is ended and its
     /// session SIGKILLed, so an `fs::read` nobody reads cannot hold a relay
     /// slot and a guest thread until the sandbox is reaped.
     #[tokio::test]
     async fn a_client_that_takes_nothing_is_ended_and_its_session_killed() {
-        let (sock, vm_guest_sim, _tmp) = boot().await;
+        let (sock, vm_guest_sim, _tmp) = boot_with_stall(SHORT_STALL).await;
         let mut writer = vm_guest_sim.try_clone().unwrap();
         let (killed_tx, killed_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -1395,7 +1416,7 @@ mod tests {
             .await
             .unwrap()
             .expect("the stalled session was never SIGKILLed");
-        assert!(started.elapsed() >= CLIENT_STALL);
+        assert!(started.elapsed() >= SHORT_STALL);
         let closed = tokio::time::timeout(Duration::from_secs(5), async {
             while let Ok(Some(_)) = read_frame(&mut idle).await {}
         })
