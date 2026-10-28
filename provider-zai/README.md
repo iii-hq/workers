@@ -17,7 +17,9 @@ Override `api_url`
 to `https://api.z.ai/api/paas/v4/chat/completions` (pay-as-you-go) for the
 full GLM lineup.
 
-`provider::zai::count_tokens` counts a prompt behind `router::count_tokens`
+`provider::zai::count_tokens` counts a prompt behind `router::count_tokens`:
+the prompt GLM's chat template builds from the body `provider::zai::stream`
+sends (tool block, schemas, call markup, the effort line on glm-5.2+), encoded
 with GLM's own published vocabulary rather than a borrowed one, which matters
 most for the Chinese text these models are used for. The vocabulary is fetched
 once and cached; counting never runs the model and costs nothing.

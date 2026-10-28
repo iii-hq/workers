@@ -38,10 +38,23 @@ pub fn always_reasons(model: &str) -> bool {
     model.to_ascii_lowercase().starts_with("glm-5.3")
 }
 
+/// The level a request sends: GLM-5.3 cannot turn thinking off, so `off`
+/// becomes enabled at `low` (the migration note's mapping).
+pub fn effective_level(
+    level: Option<ThinkingLevel>,
+    model: &str,
+    reasoning: bool,
+) -> Option<ThinkingLevel> {
+    match level {
+        Some(ThinkingLevel::Off) if reasoning && always_reasons(model) => Some(ThinkingLevel::Low),
+        other => other,
+    }
+}
+
 /// Only GLM-5.2 and newer document `reasoning_effort`: parse the numeric
 /// version after `glm-` so glm-5.3/glm-6 qualify without a code change,
 /// while glm-5-turbo (5.0) and glm-5v-turbo stay excluded.
-fn accepts_effort(model: &str) -> bool {
+pub fn accepts_effort(model: &str) -> bool {
     let id = model.to_ascii_lowercase();
     let Some(rest) = id.strip_prefix("glm-") else {
         return false;
@@ -93,6 +106,18 @@ mod tests {
         assert!(always_reasons("glm-5.3"));
         assert!(always_reasons("glm-5.3-flash"));
         assert!(!always_reasons("glm-5.2"));
+    }
+
+    #[test]
+    fn off_is_sent_as_low_only_where_glm_always_reasons() {
+        let off = Some(ThinkingLevel::Off);
+        assert_eq!(
+            effective_level(off, "glm-5.3", true),
+            Some(ThinkingLevel::Low)
+        );
+        assert_eq!(effective_level(off, "glm-5.2", true), off);
+        assert_eq!(effective_level(off, "glm-5.3", false), off);
+        assert_eq!(effective_level(None, "glm-5.3", true), None);
     }
 
     #[test]

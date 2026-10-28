@@ -1,0 +1,677 @@
+{
+ "glm47_agent_thinking_off": {
+  "body": {
+   "max_tokens": 1,
+   "messages": [
+    {
+     "content": "You are a careful reader. Keep identifiers verbatim.",
+     "role": "system"
+    },
+    {
+     "content": "Read segment 3, then search for \"ledger\".",
+     "role": "user"
+    },
+    {
+     "content": "  Reading it now.\n",
+     "role": "assistant",
+     "tool_calls": [
+      {
+       "function": {
+        "arguments": "{\"segment\":3}",
+        "name": "docs__read"
+       },
+       "id": "c1",
+       "type": "function"
+      },
+      {
+       "function": {
+        "arguments": "{\"kind\":\"text\",\"options\":{\"case_sensitive\":true},\"paths\":[\"src\",\"docs\"],\"query\":\"ledger \\u8d26\\u672c\"}",
+        "name": "workspace__search"
+       },
+       "id": "c2",
+       "type": "function"
+      }
+     ]
+    },
+    {
+     "content": "segment three",
+     "role": "tool",
+     "tool_call_id": "c1"
+    },
+    {
+     "content": "[PERMISSION_DENIED]\n{\"policy\":\"ask\",\"status\":\"denied\"}\n\nnope",
+     "role": "tool",
+     "tool_call_id": "c2"
+    },
+    {
+     "content": [
+      {
+       "text": "[image result of tool call c1]",
+       "type": "text"
+      },
+      {
+       "image_url": {
+        "url": "data:image/png;base64,iVBORw0KGgo="
+       },
+       "type": "image_url"
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "role": "assistant",
+     "tool_calls": [
+      {
+       "function": {
+        "arguments": "{\"segment\":4}",
+        "name": "docs__read"
+       },
+       "id": "c3",
+       "type": "function"
+      }
+     ]
+    },
+    {
+     "content": "Tool call was interrupted before completing. Continue without its output.",
+     "role": "tool",
+     "tool_call_id": "c3"
+    },
+    {
+     "content": "go on",
+     "role": "user"
+    },
+    {
+     "content": "Done: CTX-N3.",
+     "role": "assistant"
+    },
+    {
+     "content": "请总结要点。",
+     "role": "user"
+    }
+   ],
+   "model": "glm-4.7",
+   "thinking": {
+    "type": "disabled"
+   },
+   "tools": [
+    {
+     "function": {
+      "description": "Read one segment of the ladder by its index.",
+      "name": "docs__read",
+      "parameters": {
+       "properties": {
+        "segment": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "segment"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    },
+    {
+     "function": {
+      "description": "Search the workspace; returns ranked matches.",
+      "name": "workspace__search",
+      "parameters": {
+       "properties": {
+        "kind": {
+         "enum": [
+          "file",
+          "symbol",
+          "text"
+         ],
+         "type": "string"
+        },
+        "options": {
+         "properties": {
+          "case_sensitive": {
+           "type": "boolean"
+          }
+         },
+         "type": "object"
+        },
+        "query": {
+         "description": "Words or a regex, e.g. \"fn main\".",
+         "type": "string"
+        }
+       },
+       "required": [
+        "query"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ]
+  },
+  "prompt": "[gMASK]<sop><|system|>\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"description\": \"Read one segment of the ladder by its index.\", \"name\": \"docs__read\", \"parameters\": {\"properties\": {\"segment\": {\"type\": \"integer\"}}, \"required\": [\"segment\"], \"type\": \"object\"}, \"strict\": false}\n{\"description\": \"Search the workspace; returns ranked matches.\", \"name\": \"workspace__search\", \"parameters\": {\"properties\": {\"kind\": {\"enum\": [\"file\", \"symbol\", \"text\"], \"type\": \"string\"}, \"options\": {\"properties\": {\"case_sensitive\": {\"type\": \"boolean\"}}, \"type\": \"object\"}, \"query\": {\"description\": \"Words or a regex, e.g. \\\"fn main\\\".\", \"type\": \"string\"}}, \"required\": [\"query\"], \"type\": \"object\"}, \"strict\": false}\n</tools>\n\nFor each function call, output the function name and arguments within the following XML format:\n<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value><arg_key>{arg-key-2}</arg_key><arg_value>{arg-value-2}</arg_value>...</tool_call><|system|>You are a careful reader. Keep identifiers verbatim.<|user|>Read segment 3, then search for \"ledger\".<|assistant|></think>Reading it now.<tool_call>docs__read<arg_key>segment</arg_key><arg_value>3</arg_value></tool_call><tool_call>workspace__search<arg_key>kind</arg_key><arg_value>text</arg_value><arg_key>options</arg_key><arg_value>{\"case_sensitive\": true}</arg_value><arg_key>paths</arg_key><arg_value>[\"src\", \"docs\"]</arg_value><arg_key>query</arg_key><arg_value>ledger 账本</arg_value></tool_call><|observation|><tool_response>segment three</tool_response><tool_response>[PERMISSION_DENIED]\n{\"policy\":\"ask\",\"status\":\"denied\"}\n\nnope</tool_response><|user|>[image result of tool call c1]<|assistant|></think><tool_call>docs__read<arg_key>segment</arg_key><arg_value>4</arg_value></tool_call><|observation|><tool_response>Tool call was interrupted before completing. Continue without its output.</tool_response><|user|>go on<|assistant|></think>Done: CTX-N3.<|user|>请总结要点。<|assistant|></think>"
+ },
+ "glm47_chat_thinking_on": {
+  "body": {
+   "max_tokens": 1,
+   "messages": [
+    {
+     "content": "hi",
+     "role": "user"
+    },
+    {
+     "content": "ok",
+     "role": "assistant"
+    },
+    {
+     "content": "hi",
+     "role": "user"
+    }
+   ],
+   "model": "glm-4.7-flash",
+   "thinking": {
+    "type": "enabled"
+   }
+  },
+  "prompt": "[gMASK]<sop><|user|>hi<|assistant|></think>ok<|user|>hi<|assistant|><think>"
+ },
+ "glm52_agent_effort_high": {
+  "body": {
+   "max_tokens": 1,
+   "messages": [
+    {
+     "content": "You are a careful reader. Keep identifiers verbatim.",
+     "role": "system"
+    },
+    {
+     "content": "Read segment 3, then search for \"ledger\".",
+     "role": "user"
+    },
+    {
+     "content": "  Reading it now.\n",
+     "role": "assistant",
+     "tool_calls": [
+      {
+       "function": {
+        "arguments": "{\"segment\":3}",
+        "name": "docs__read"
+       },
+       "id": "c1",
+       "type": "function"
+      },
+      {
+       "function": {
+        "arguments": "{\"kind\":\"text\",\"options\":{\"case_sensitive\":true},\"paths\":[\"src\",\"docs\"],\"query\":\"ledger \\u8d26\\u672c\"}",
+        "name": "workspace__search"
+       },
+       "id": "c2",
+       "type": "function"
+      }
+     ]
+    },
+    {
+     "content": "segment three",
+     "role": "tool",
+     "tool_call_id": "c1"
+    },
+    {
+     "content": "[PERMISSION_DENIED]\n{\"policy\":\"ask\",\"status\":\"denied\"}\n\nnope",
+     "role": "tool",
+     "tool_call_id": "c2"
+    },
+    {
+     "content": [
+      {
+       "text": "[image result of tool call c1]",
+       "type": "text"
+      },
+      {
+       "image_url": {
+        "url": "data:image/png;base64,iVBORw0KGgo="
+       },
+       "type": "image_url"
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "role": "assistant",
+     "tool_calls": [
+      {
+       "function": {
+        "arguments": "{\"segment\":4}",
+        "name": "docs__read"
+       },
+       "id": "c3",
+       "type": "function"
+      }
+     ]
+    },
+    {
+     "content": "Tool call was interrupted before completing. Continue without its output.",
+     "role": "tool",
+     "tool_call_id": "c3"
+    },
+    {
+     "content": "go on",
+     "role": "user"
+    },
+    {
+     "content": "Done: CTX-N3.",
+     "role": "assistant"
+    },
+    {
+     "content": "请总结要点。",
+     "role": "user"
+    }
+   ],
+   "model": "glm-5.2",
+   "reasoning_effort": "high",
+   "thinking": {
+    "type": "enabled"
+   },
+   "tools": [
+    {
+     "function": {
+      "description": "Read one segment of the ladder by its index.",
+      "name": "docs__read",
+      "parameters": {
+       "properties": {
+        "segment": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "segment"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    },
+    {
+     "function": {
+      "description": "Search the workspace; returns ranked matches.",
+      "name": "workspace__search",
+      "parameters": {
+       "properties": {
+        "kind": {
+         "enum": [
+          "file",
+          "symbol",
+          "text"
+         ],
+         "type": "string"
+        },
+        "options": {
+         "properties": {
+          "case_sensitive": {
+           "type": "boolean"
+          }
+         },
+         "type": "object"
+        },
+        "query": {
+         "description": "Words or a regex, e.g. \"fn main\".",
+         "type": "string"
+        }
+       },
+       "required": [
+        "query"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ]
+  },
+  "prompt": "[gMASK]<sop><|system|>Reasoning Effort: High<|system|>\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"description\": \"Read one segment of the ladder by its index.\", \"name\": \"docs__read\", \"parameters\": {\"properties\": {\"segment\": {\"type\": \"integer\"}}, \"required\": [\"segment\"], \"type\": \"object\"}}\n{\"description\": \"Search the workspace; returns ranked matches.\", \"name\": \"workspace__search\", \"parameters\": {\"properties\": {\"kind\": {\"enum\": [\"file\", \"symbol\", \"text\"], \"type\": \"string\"}, \"options\": {\"properties\": {\"case_sensitive\": {\"type\": \"boolean\"}}, \"type\": \"object\"}, \"query\": {\"description\": \"Words or a regex, e.g. \\\"fn main\\\".\", \"type\": \"string\"}}, \"required\": [\"query\"], \"type\": \"object\"}}\n</tools>\n\nFor each function call, output the function name and arguments within the following XML format:\n<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value><arg_key>{arg-key-2}</arg_key><arg_value>{arg-value-2}</arg_value>...</tool_call><|system|>You are a careful reader. Keep identifiers verbatim.<|user|>Read segment 3, then search for \"ledger\".<|assistant|><think></think>Reading it now.<tool_call>docs__read<arg_key>segment</arg_key><arg_value>3</arg_value></tool_call><tool_call>workspace__search<arg_key>kind</arg_key><arg_value>text</arg_value><arg_key>options</arg_key><arg_value>{\"case_sensitive\": true}</arg_value><arg_key>paths</arg_key><arg_value>[\"src\", \"docs\"]</arg_value><arg_key>query</arg_key><arg_value>ledger 账本</arg_value></tool_call><|observation|><tool_response>segment three</tool_response><tool_response>[PERMISSION_DENIED]\n{\"policy\":\"ask\",\"status\":\"denied\"}\n\nnope</tool_response><|user|>[image result of tool call c1]<reminder>You are unable to process this image because you don't have multi-modal input ability. Try different methods.</reminder><|assistant|><think></think><tool_call>docs__read<arg_key>segment</arg_key><arg_value>4</arg_value></tool_call><|observation|><tool_response>Tool call was interrupted before completing. Continue without its output.</tool_response><|user|>go on<|assistant|><think></think>Done: CTX-N3.<|user|>请总结要点。<|assistant|><think>"
+ },
+ "glm52_effort_low_renders_max": {
+  "body": {
+   "max_tokens": 1,
+   "messages": [
+    {
+     "content": "You are a careful reader. Keep identifiers verbatim.",
+     "role": "system"
+    },
+    {
+     "content": "Read segment 3, then search for \"ledger\".",
+     "role": "user"
+    }
+   ],
+   "model": "glm-5.2",
+   "reasoning_effort": "low",
+   "thinking": {
+    "type": "enabled"
+   }
+  },
+  "prompt": "[gMASK]<sop><|system|>Reasoning Effort: Max<|system|>You are a careful reader. Keep identifiers verbatim.<|user|>Read segment 3, then search for \"ledger\".<|assistant|><think>"
+ },
+ "glm52_thinking_off": {
+  "body": {
+   "max_tokens": 1,
+   "messages": [
+    {
+     "content": "You are a careful reader. Keep identifiers verbatim.",
+     "role": "system"
+    },
+    {
+     "content": "Read segment 3, then search for \"ledger\".",
+     "role": "user"
+    },
+    {
+     "content": "  Reading it now.\n",
+     "role": "assistant",
+     "tool_calls": [
+      {
+       "function": {
+        "arguments": "{\"segment\":3}",
+        "name": "docs__read"
+       },
+       "id": "c1",
+       "type": "function"
+      },
+      {
+       "function": {
+        "arguments": "{\"kind\":\"text\",\"options\":{\"case_sensitive\":true},\"paths\":[\"src\",\"docs\"],\"query\":\"ledger \\u8d26\\u672c\"}",
+        "name": "workspace__search"
+       },
+       "id": "c2",
+       "type": "function"
+      }
+     ]
+    },
+    {
+     "content": "segment three",
+     "role": "tool",
+     "tool_call_id": "c1"
+    },
+    {
+     "content": "[PERMISSION_DENIED]\n{\"policy\":\"ask\",\"status\":\"denied\"}\n\nnope",
+     "role": "tool",
+     "tool_call_id": "c2"
+    },
+    {
+     "content": [
+      {
+       "text": "[image result of tool call c1]",
+       "type": "text"
+      },
+      {
+       "image_url": {
+        "url": "data:image/png;base64,iVBORw0KGgo="
+       },
+       "type": "image_url"
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "role": "assistant",
+     "tool_calls": [
+      {
+       "function": {
+        "arguments": "{\"segment\":4}",
+        "name": "docs__read"
+       },
+       "id": "c3",
+       "type": "function"
+      }
+     ]
+    },
+    {
+     "content": "Tool call was interrupted before completing. Continue without its output.",
+     "role": "tool",
+     "tool_call_id": "c3"
+    },
+    {
+     "content": "go on",
+     "role": "user"
+    },
+    {
+     "content": "Done: CTX-N3.",
+     "role": "assistant"
+    },
+    {
+     "content": "请总结要点。",
+     "role": "user"
+    }
+   ],
+   "model": "glm-5.2",
+   "thinking": {
+    "type": "disabled"
+   },
+   "tools": [
+    {
+     "function": {
+      "description": "Read one segment of the ladder by its index.",
+      "name": "docs__read",
+      "parameters": {
+       "properties": {
+        "segment": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "segment"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    },
+    {
+     "function": {
+      "description": "Search the workspace; returns ranked matches.",
+      "name": "workspace__search",
+      "parameters": {
+       "properties": {
+        "kind": {
+         "enum": [
+          "file",
+          "symbol",
+          "text"
+         ],
+         "type": "string"
+        },
+        "options": {
+         "properties": {
+          "case_sensitive": {
+           "type": "boolean"
+          }
+         },
+         "type": "object"
+        },
+        "query": {
+         "description": "Words or a regex, e.g. \"fn main\".",
+         "type": "string"
+        }
+       },
+       "required": [
+        "query"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ]
+  },
+  "prompt": "[gMASK]<sop><|system|>\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"description\": \"Read one segment of the ladder by its index.\", \"name\": \"docs__read\", \"parameters\": {\"properties\": {\"segment\": {\"type\": \"integer\"}}, \"required\": [\"segment\"], \"type\": \"object\"}}\n{\"description\": \"Search the workspace; returns ranked matches.\", \"name\": \"workspace__search\", \"parameters\": {\"properties\": {\"kind\": {\"enum\": [\"file\", \"symbol\", \"text\"], \"type\": \"string\"}, \"options\": {\"properties\": {\"case_sensitive\": {\"type\": \"boolean\"}}, \"type\": \"object\"}, \"query\": {\"description\": \"Words or a regex, e.g. \\\"fn main\\\".\", \"type\": \"string\"}}, \"required\": [\"query\"], \"type\": \"object\"}}\n</tools>\n\nFor each function call, output the function name and arguments within the following XML format:\n<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value><arg_key>{arg-key-2}</arg_key><arg_value>{arg-value-2}</arg_value>...</tool_call><|system|>You are a careful reader. Keep identifiers verbatim.<|user|>Read segment 3, then search for \"ledger\".<|assistant|><think></think>Reading it now.<tool_call>docs__read<arg_key>segment</arg_key><arg_value>3</arg_value></tool_call><tool_call>workspace__search<arg_key>kind</arg_key><arg_value>text</arg_value><arg_key>options</arg_key><arg_value>{\"case_sensitive\": true}</arg_value><arg_key>paths</arg_key><arg_value>[\"src\", \"docs\"]</arg_value><arg_key>query</arg_key><arg_value>ledger 账本</arg_value></tool_call><|observation|><tool_response>segment three</tool_response><tool_response>[PERMISSION_DENIED]\n{\"policy\":\"ask\",\"status\":\"denied\"}\n\nnope</tool_response><|user|>[image result of tool call c1]<reminder>You are unable to process this image because you don't have multi-modal input ability. Try different methods.</reminder><|assistant|><think></think><tool_call>docs__read<arg_key>segment</arg_key><arg_value>4</arg_value></tool_call><|observation|><tool_response>Tool call was interrupted before completing. Continue without its output.</tool_response><|user|>go on<|assistant|><think></think>Done: CTX-N3.<|user|>请总结要点。<|assistant|><think></think>"
+ },
+ "glm53_agent_no_level": {
+  "body": {
+   "max_tokens": 1,
+   "messages": [
+    {
+     "content": "You are a careful reader. Keep identifiers verbatim.",
+     "role": "system"
+    },
+    {
+     "content": "Read segment 3, then search for \"ledger\".",
+     "role": "user"
+    },
+    {
+     "content": "  Reading it now.\n",
+     "role": "assistant",
+     "tool_calls": [
+      {
+       "function": {
+        "arguments": "{\"segment\":3}",
+        "name": "docs__read"
+       },
+       "id": "c1",
+       "type": "function"
+      },
+      {
+       "function": {
+        "arguments": "{\"kind\":\"text\",\"options\":{\"case_sensitive\":true},\"paths\":[\"src\",\"docs\"],\"query\":\"ledger \\u8d26\\u672c\"}",
+        "name": "workspace__search"
+       },
+       "id": "c2",
+       "type": "function"
+      }
+     ]
+    },
+    {
+     "content": "segment three",
+     "role": "tool",
+     "tool_call_id": "c1"
+    },
+    {
+     "content": "[PERMISSION_DENIED]\n{\"policy\":\"ask\",\"status\":\"denied\"}\n\nnope",
+     "role": "tool",
+     "tool_call_id": "c2"
+    },
+    {
+     "content": [
+      {
+       "text": "[image result of tool call c1]",
+       "type": "text"
+      },
+      {
+       "image_url": {
+        "url": "data:image/png;base64,iVBORw0KGgo="
+       },
+       "type": "image_url"
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "role": "assistant",
+     "tool_calls": [
+      {
+       "function": {
+        "arguments": "{\"segment\":4}",
+        "name": "docs__read"
+       },
+       "id": "c3",
+       "type": "function"
+      }
+     ]
+    },
+    {
+     "content": "Tool call was interrupted before completing. Continue without its output.",
+     "role": "tool",
+     "tool_call_id": "c3"
+    },
+    {
+     "content": "go on",
+     "role": "user"
+    },
+    {
+     "content": "Done: CTX-N3.",
+     "role": "assistant"
+    },
+    {
+     "content": "请总结要点。",
+     "role": "user"
+    }
+   ],
+   "model": "glm-5.3",
+   "thinking": {
+    "type": "disabled"
+   },
+   "tools": [
+    {
+     "function": {
+      "description": "Read one segment of the ladder by its index.",
+      "name": "docs__read",
+      "parameters": {
+       "properties": {
+        "segment": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "segment"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    },
+    {
+     "function": {
+      "description": "Search the workspace; returns ranked matches.",
+      "name": "workspace__search",
+      "parameters": {
+       "properties": {
+        "kind": {
+         "enum": [
+          "file",
+          "symbol",
+          "text"
+         ],
+         "type": "string"
+        },
+        "options": {
+         "properties": {
+          "case_sensitive": {
+           "type": "boolean"
+          }
+         },
+         "type": "object"
+        },
+        "query": {
+         "description": "Words or a regex, e.g. \"fn main\".",
+         "type": "string"
+        }
+       },
+       "required": [
+        "query"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ]
+  },
+  "prompt": "[gMASK]<sop><|system|>Reasoning Effort: Max<|system|>\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"description\": \"Read one segment of the ladder by its index.\", \"name\": \"docs__read\", \"parameters\": {\"properties\": {\"segment\": {\"type\": \"integer\"}}, \"required\": [\"segment\"], \"type\": \"object\"}}\n{\"description\": \"Search the workspace; returns ranked matches.\", \"name\": \"workspace__search\", \"parameters\": {\"properties\": {\"kind\": {\"enum\": [\"file\", \"symbol\", \"text\"], \"type\": \"string\"}, \"options\": {\"properties\": {\"case_sensitive\": {\"type\": \"boolean\"}}, \"type\": \"object\"}, \"query\": {\"description\": \"Words or a regex, e.g. \\\"fn main\\\".\", \"type\": \"string\"}}, \"required\": [\"query\"], \"type\": \"object\"}}\n</tools>\n\nFor each function call, output the function name and arguments within the following XML format:\n<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value><arg_key>{arg-key-2}</arg_key><arg_value>{arg-value-2}</arg_value>...</tool_call><|system|>You are a careful reader. Keep identifiers verbatim.<|user|>Read segment 3, then search for \"ledger\".<|assistant|><think></think>Reading it now.<tool_call>docs__read<arg_key>segment</arg_key><arg_value>3</arg_value></tool_call><tool_call>workspace__search<arg_key>kind</arg_key><arg_value>text</arg_value><arg_key>options</arg_key><arg_value>{\"case_sensitive\": true}</arg_value><arg_key>paths</arg_key><arg_value>[\"src\", \"docs\"]</arg_value><arg_key>query</arg_key><arg_value>ledger 账本</arg_value></tool_call><|observation|><tool_response>segment three</tool_response><tool_response>[PERMISSION_DENIED]\n{\"policy\":\"ask\",\"status\":\"denied\"}\n\nnope</tool_response><|user|>[image result of tool call c1]<reminder>You are unable to process this image because you don't have multi-modal input ability. Try different methods.</reminder><|assistant|><think></think><tool_call>docs__read<arg_key>segment</arg_key><arg_value>4</arg_value></tool_call><|observation|><tool_response>Tool call was interrupted before completing. Continue without its output.</tool_response><|user|>go on<|assistant|><think></think>Done: CTX-N3.<|user|>请总结要点。<|assistant|><think>"
+ },
+ "glm53_effort_low": {
+  "body": {
+   "max_tokens": 1,
+   "messages": [
+    {
+     "content": "You are a careful reader. Keep identifiers verbatim.",
+     "role": "system"
+    },
+    {
+     "content": "Read segment 3, then search for \"ledger\".",
+     "role": "user"
+    }
+   ],
+   "model": "glm-5.3",
+   "reasoning_effort": "low",
+   "thinking": {
+    "type": "enabled"
+   }
+  },
+  "prompt": "[gMASK]<sop><|system|>Reasoning Effort: Low<|system|>You are a careful reader. Keep identifiers verbatim.<|user|>Read segment 3, then search for \"ledger\".<|assistant|><think>"
+ }
+}
