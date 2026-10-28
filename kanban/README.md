@@ -321,6 +321,23 @@ standing wake with a `cron` check-in over `kanban::comment::list`, which
 takes `ticket_id`, the author filters and `since` (no `parent_id`; list the
 parent and each child).
 
+### Observable functions (iii 0.25)
+
+Next to each trigger type the worker registers an owner-delivered observable
+function that delivers the same event. Observe it with the trigger config as
+args; the filters and `ticket: summary` behave exactly as on a binding:
+
+- `kanban::on-change` — the `kanban:change` event, args
+  `{ ticket_id?, parent_id?, release_id?, events?, ticket? }`.
+- `kanban::on-comment` — the `kanban:comment` event, args
+  `{ ticket_id | parent_id, author?, exclude_author?, root_only?, ticket? }`.
+
+Only this worker emits them: invoking a `kanban::on-*` function directly is
+refused with `FORBIDDEN`. The trigger types stay registered, so existing
+bindings keep working unchanged; `subscribers` in `kanban::config::info`
+counts bindings and observers together. `kanban::on-config-change` is the
+worker's internal configuration reload, not an observable function.
+
 ## Console pages
 
 While the worker is connected it injects four pages into the console:
