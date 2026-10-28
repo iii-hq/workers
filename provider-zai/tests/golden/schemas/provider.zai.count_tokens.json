@@ -523,7 +523,7 @@
         "type": "array"
       },
       "model": {
-        "description": "Model id the prompt targets, reported back unchanged. It picks the chat template (glm-5.2 and newer have their own); the GLM chat models share the one vocabulary.",
+        "description": "Model id the prompt targets, reported back unchanged. It picks the chat template (glm-4.5/4.6, glm-4.7/5, glm-5.1 and glm-5.2+ differ); the GLM chat models share the one vocabulary.",
         "type": "string"
       },
       "system_prompt": {

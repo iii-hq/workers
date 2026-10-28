@@ -24,6 +24,13 @@ with GLM's own published vocabulary rather than a borrowed one, which matters
 most for the Chinese text these models are used for. The vocabulary is fetched
 once and cached; counting never runs the model and costs nothing.
 
+The count renders the requested id's template. The coding-plan endpoint serves
+some ids as another model and bills that model's template (seen 2026-10-28:
+glm-5.1 and glm-5.2 as glm-5.3, glm-4.5, glm-4.5-air and glm-4.6 as
+glm-5.3-flash). That leaves glm-5.1 and glm-5.2 about 7 tokens under per
+request, and glm-4.5/4.6 over by the newlines their own template adds (about 7
+tokens per tool round).
+
 ## Behavior
 
 - **Registration:** self-declares via `router::provider::register` with
