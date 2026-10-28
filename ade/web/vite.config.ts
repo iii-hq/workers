@@ -19,6 +19,10 @@ export default defineConfig({
   },
   test: {
     exclude: [...configDefaults.exclude, 'e2e/**'],
+    // Node 25+ defines its own global localStorage/sessionStorage (undefined
+    // without --localstorage-file); vitest only copies window keys the global
+    // lacks, so jsdom's storage would never be installed.
+    execArgv: ['--no-experimental-webstorage'],
   },
   // Dev twin of the console worker's HTTP server (src/server.rs): the same
   // /ws proxy contract, bound on 0.0.0.0 like the binary so the dev server
