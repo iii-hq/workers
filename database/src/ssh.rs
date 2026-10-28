@@ -492,7 +492,14 @@ fn channel_failure_reason(reason: &russh::ChannelOpenFailure) -> String {
 
 /// Decode an OpenSSH or PEM private key. The error never quotes the key.
 pub fn decode_private_key(pem: &str, passphrase: Option<&str>) -> Result<PrivateKey, String> {
-    russh::keys::decode_secret_key(pem, passphrase).map_err(|e| {
+    use russh::keys::{ssh_encoding, ssh_key, Error};
+    let decoded = match russh::keys::decode_secret_key(pem, passphrase) {
+        Err(e @ Error::SshKey(ssh_key::Error::Encoding(ssh_encoding::Error::Length))) => {
+            decode_short_ecdsa_scalar(pem, passphrase).ok_or(e)
+        }
+        decoded => decoded,
+    };
+    decoded.map_err(|e| {
         let encrypted_pem = pem.contains("ENCRYPTED");
         match (&e, passphrase.is_some()) {
             (russh::keys::Error::KeyIsEncrypted, false) => {
@@ -513,6 +520,73 @@ pub fn decode_private_key(pem: &str, passphrase: Option<&str>) -> Result<Private
             ),
         }
     })
+}
+
+/// OpenSSH writes the ECDSA private scalar as an mpint, dropping leading zero
+/// bytes, and the ssh-key release russh pins rejects a P-256 scalar shorter
+/// than 32 bytes ("length invalid": about 1 key in 512). Rebuild such a key
+/// unencrypted with the scalar zero-padded to the curve size and decode that,
+/// so ssh-key still checks the checkints and the public key.
+fn decode_short_ecdsa_scalar(pem: &str, passphrase: Option<&str>) -> Option<PrivateKey> {
+    use base64::Engine as _;
+    use russh::keys::ssh_encoding::{Decode, Encode, Reader};
+    use russh::keys::ssh_key::{cipher::Tag, Cipher, Kdf};
+
+    const MAGIC: &[u8] = b"openssh-key-v1\0";
+    let body: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
+    let blob = base64::engine::general_purpose::STANDARD
+        .decode(body.trim())
+        .ok()?;
+    let mut r = blob.strip_prefix(MAGIC)?;
+    let cipher = Cipher::decode(&mut r).ok()?;
+    let kdf = Kdf::decode(&mut r).ok()?;
+    let nkeys = u32::decode(&mut r).ok()?;
+    let public = Vec::<u8>::decode(&mut r).ok()?;
+    let mut private = Vec::<u8>::decode(&mut r).ok()?;
+    if cipher.is_some() {
+        let mut tag = Tag::default();
+        if cipher.has_tag() {
+            r.read(&mut tag).ok()?;
+        }
+        let (key, iv) = kdf.derive_key_and_iv(cipher, passphrase?).ok()?;
+        cipher
+            .decrypt(&key, &iv, &mut private, cipher.has_tag().then_some(tag))
+            .ok()?;
+    }
+
+    // checkint ×2, key type, curve, public point, scalar, comment, padding.
+    let mut p = private.as_slice();
+    let mut checkints = [0u8; 8];
+    p.read(&mut checkints).ok()?;
+    let mut fields: Vec<Vec<u8>> = (0..5)
+        .map(|_| Vec::<u8>::decode(&mut p).ok())
+        .collect::<Option<_>>()?;
+    let size = match fields[1].as_slice() {
+        b"nistp256" => 32,
+        b"nistp384" => 48,
+        b"nistp521" => 66,
+        _ => return None,
+    };
+    if !fields[0].starts_with(b"ecdsa-sha2-") || fields[3].len() >= size {
+        return None;
+    }
+    let mut scalar = vec![0u8; size - fields[3].len()];
+    scalar.append(&mut fields[3]);
+    fields[3] = scalar;
+
+    let mut plain = checkints.to_vec();
+    for field in &fields {
+        field.encode(&mut plain).ok()?;
+    }
+    let padding = (8 - plain.len() % 8) % 8;
+    plain.extend(1..=padding as u8);
+    let mut rebuilt = MAGIC.to_vec();
+    Cipher::None.encode(&mut rebuilt).ok()?;
+    Kdf::None.encode(&mut rebuilt).ok()?;
+    nkeys.encode(&mut rebuilt).ok()?;
+    public.encode(&mut rebuilt).ok()?;
+    plain.encode(&mut rebuilt).ok()?;
+    PrivateKey::from_bytes(&rebuilt).ok()
 }
 
 /// russh's key errors name formats and algorithms, never key material; keep
@@ -567,6 +641,49 @@ mod tests {
         let mangled = ed25519.replace(&body, &"A".repeat(body.len()));
         let err = decode_private_key(&mangled, None).unwrap_err();
         assert!(!err.contains(&body), "{err}");
+    }
+
+    /// A throwaway ssh-keygen P-256 key (comment `test`) whose private scalar
+    /// starts with a zero byte, so OpenSSH stores it as a 31-byte mpint.
+    const SHORT_SCALAR_ECDSA: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAaAAAABNlY2RzYS
+1zaGEyLW5pc3RwMjU2AAAACG5pc3RwMjU2AAAAQQQemMT1qB9A1UdPoKkrmd/yYJ6HsE9O
+OsJtT5CBAZFZPja+vBQUghoGYEgEG4m1kNTx6ceyS8BKLv9+fn87w+raAAAAoOwVQ7PsFU
+OzAAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBB6YxPWoH0DVR0+g
+qSuZ3/JgnoewT046wm1PkIEBkVk+Nr68FBSCGgZgSAQbibWQ1PHpx7JLwEou/35+fzvD6t
+oAAAAfU0AWGRW3bDFZqasTZgDR/60vQyLdaRVot7SBLtERHwAAAAR0ZXN0AQIDBAU=
+-----END OPENSSH PRIVATE KEY-----
+";
+    /// The same key after `ssh-keygen -p -N 'correct horse'`.
+    const SHORT_SCALAR_ECDSA_ENCRYPTED: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABBlowSGAC
+/ikl7ZrsNQVMfnAAAAGAAAAAEAAABoAAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlz
+dHAyNTYAAABBBB6YxPWoH0DVR0+gqSuZ3/JgnoewT046wm1PkIEBkVk+Nr68FBSCGgZgSA
+QbibWQ1PHpx7JLwEou/35+fzvD6toAAACg1eD4PtGjGTOnP4mcmVZvC3/g8AY/pG2tvqq0
+oGW0li222UyZFCqnewgthRt/G9oRY91BPmJO4BRSLzShXDNKM4DguryCNByu9ThNibzi0p
+OUq0rqKwi+/SrGjcr8RdkOnS53+ePRO568HR/r0pH7h3gIGDcPeB97sV48W6n8RsWF62+P
+n4CdglXFMnyef3kAwCBg58wBrVb/yfDtSFpuNw==
+-----END OPENSSH PRIVATE KEY-----
+";
+
+    #[test]
+    fn decodes_an_ecdsa_key_whose_scalar_has_a_leading_zero_byte() {
+        for (pem, passphrase) in [
+            (SHORT_SCALAR_ECDSA, None),
+            (SHORT_SCALAR_ECDSA_ENCRYPTED, Some("correct horse")),
+        ] {
+            let key = decode_private_key(pem, passphrase).unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(
+                key.fingerprint(HashAlg::Sha256).to_string(),
+                "SHA256:5g8GC3lMngONHdHk+dpc8q9p4ciYegVcy2JeNqq2WYc"
+            );
+            assert_eq!(key.comment().as_str_lossy(), "test");
+            // Only the right scalar signs for the stored public point.
+            let sig = key.sign("test", HashAlg::Sha256, b"msg").unwrap();
+            key.public_key().verify("test", b"msg", &sig).unwrap();
+        }
+        let err = decode_private_key(SHORT_SCALAR_ECDSA_ENCRYPTED, Some("wrong")).unwrap_err();
+        assert!(err.contains("wrong passphrase"), "{err}");
     }
 
     #[test]
