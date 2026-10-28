@@ -1,6 +1,7 @@
 /**
  * Wire types for the AgentEvent subset this worker emits on the
- * `claude::agent-event` trigger type. Mirrors harness/src/types/* in iii-hq/workers so
+ * `claude::agent-event` trigger type (and its observable function
+ * `claude::on-agent-event`). Mirrors harness/src/types/* in iii-hq/workers so
  * the console and acp worker render Claude Code turns like any other agent worker.
  */
 
