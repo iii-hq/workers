@@ -24,6 +24,16 @@
 //!
 //! The binding table and counters live behind a `std::sync::Mutex`; matching
 //! bindings are cloned out before any trigger call is awaited.
+//!
+//! iii 0.25: each feed also has an owner-delivered observable function,
+//! `codex::on-agent-event` and `codex::on-raw-event`. An observer passes the
+//! binding config as args (`{ session_id, metadata? }`, same validation; the
+//! `metadata` key is accepted and unused, an observer delivery carries no
+//! trigger metadata), is filed in the same feed as the bindings, and receives
+//! the same payload with the same `seq` through `obs.call`, after the
+//! bindings. Frames are routed in-process; invoking either function directly
+//! is refused with FORBIDDEN. Both trigger types stay registered for old
+//! consumers on 0.24 and 0.25 engines.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -33,16 +43,26 @@ use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::{TriggerAction, TriggerRequest, TriggerRequestWithMetadata};
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType};
-use serde_json::{json, Value};
+use iii_sdk::{
+    IIIClient, Observe, ObserveHandler, ObserveRejection, Observer, RegisterFunction,
+    RegisterTriggerType,
+};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
 
 /// Producer namespace stamped on every delivery as `source`.
 pub const SOURCE: &str = "codex";
 /// Trigger type carrying the translated AgentEvent frames.
 pub const AGENT_EVENT_TRIGGER_TYPE: &str = "codex::agent-event";
+/// Observable function next to [`AGENT_EVENT_TRIGGER_TYPE`] (iii 0.25).
+pub const ON_AGENT_EVENT_FN: &str = "codex::on-agent-event";
 /// Trigger type carrying the raw Codex thread events, verbatim.
 pub const RAW_EVENT_TRIGGER_TYPE: &str = "codex::raw-event";
-/// Bindings accepted per trigger type; a new binding beyond it is rejected.
+/// Observable function next to [`RAW_EVENT_TRIGGER_TYPE`] (iii 0.25).
+pub const ON_RAW_EVENT_FN: &str = "codex::on-raw-event";
+/// Bindings accepted per trigger type, and observers per observable function
+/// (counted apart); a new one beyond it is rejected.
 pub const MAX_BINDINGS: usize = 256;
 /// Longest accepted `session_id`, in characters.
 pub const MAX_SESSION_ID_CHARS: usize = 512;
@@ -54,6 +74,59 @@ const RAW_EVENT_DESCRIPTION: &str = "Raw Codex thread events (codex exec --json 
      verbatim) of one codex session. Config: { session_id, metadata? }. Payload: { session_id, \
      event_id, seq, epoch, source, event }. Ephemeral (not stored, not replayed); order by \
      (epoch, seq).";
+const ON_AGENT_EVENT_DESCRIPTION: &str = "Translated AgentEvent frames of one codex session. \
+     Observe it with args { session_id, metadata? } (the codex::agent-event config); each \
+     observer of the session receives { session_id, event_id, seq, epoch, source, event }. \
+     Ephemeral (not stored, not replayed); order by (epoch, seq). Only the codex worker \
+     delivers it: invoking it directly is refused.";
+const ON_RAW_EVENT_DESCRIPTION: &str = "Raw Codex thread events (codex exec --json lines, \
+     verbatim) of one codex session. Observe it with args { session_id, metadata? } (the \
+     codex::raw-event config); each observer of the session receives { session_id, event_id, \
+     seq, epoch, source, event }. Ephemeral (not stored, not replayed); order by (epoch, seq). \
+     Only the codex worker delivers it: invoking it directly is refused.";
+
+/// Codes an observer is refused with, and the direct-invocation refusal.
+pub mod codes {
+    /// Any direct invocation of an observable feed function.
+    pub const FORBIDDEN: &str = "FORBIDDEN";
+    /// Args the binding-config validation refuses (an empty or too long
+    /// `session_id`, a null `metadata`).
+    pub const INVALID_ARGS: &str = "INVALID_ARGS";
+    /// The function already holds [`super::MAX_BINDINGS`] observers.
+    pub const OBSERVER_LIMIT: &str = "OBSERVER_LIMIT";
+    /// SDK codes of an `obs.call` that sent nothing: not delivery failures.
+    pub(super) const FILTERS_NOT_MATCHED: &str = "FILTERS_NOT_MATCHED";
+    pub(super) const OBSERVER_NOT_ACTIVE: &str = "OBSERVER_NOT_ACTIVE";
+}
+
+/// An observer's args: the trigger types' binding config. The engine checks
+/// them against this schema; [`validate_feed_config`] then applies the
+/// binding rules.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FeedArgs {
+    /// The codex session to follow (non-empty, at most 512 characters).
+    pub session_id: String,
+    /// Accepted for parity with the binding config; unused for observers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Map<String, Value>>,
+}
+
+/// What a binding and an observer receive per frame.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+pub struct FeedEvent {
+    pub session_id: String,
+    /// `<session_id>-<epoch>-<seq:08>`: the dedup key.
+    pub event_id: String,
+    /// Contiguous per (feed, session, epoch), starting at 0.
+    pub seq: u64,
+    /// Per-process uuid.
+    pub epoch: String,
+    /// Always `codex`.
+    pub source: String,
+    /// The frame, unchanged.
+    pub event: Value,
+}
 
 /// A validated binding config.
 #[derive(Debug, Clone, PartialEq)]
@@ -136,10 +209,54 @@ impl Delivery {
     }
 }
 
+/// One observer of a feed's observable function, as the feed delivers to it:
+/// [`Observer`] delivers with `obs.call`.
+#[async_trait]
+pub trait FeedObserver: Send + Sync {
+    fn id(&self) -> &str;
+    /// Hand one delivery payload to the observer's target.
+    async fn deliver(&self, payload: Value) -> Result<(), Error>;
+}
+
+#[async_trait]
+impl FeedObserver for Observer {
+    fn id(&self) -> &str {
+        Observer::id(self)
+    }
+
+    async fn deliver(&self, payload: Value) -> Result<(), Error> {
+        self.call::<Value>(payload).await.map(|_| ())
+    }
+}
+
+/// An observer's filters rejected the payload, or it was removed meanwhile:
+/// nothing was sent, which is not a delivery failure.
+fn is_skipped_delivery(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Remote { code, .. }
+            if code == codes::FILTERS_NOT_MATCHED || code == codes::OBSERVER_NOT_ACTIVE
+    )
+}
+
+#[derive(Clone)]
+struct FeedObserverEntry {
+    session_id: String,
+    sink: Arc<dyn FeedObserver>,
+}
+
 #[derive(Default)]
 struct FeedState {
     bindings: HashMap<String, Binding>,
+    observers: HashMap<String, FeedObserverEntry>,
     seq_by_session: HashMap<String, u64>,
+}
+
+/// One frame's matching bindings and observers, and the payload they share.
+struct Prepared {
+    deliveries: Vec<Delivery>,
+    observers: Vec<Arc<dyn FeedObserver>>,
+    payload: Value,
 }
 
 /// One owned trigger type: its bindings and per-session sequence counters.
@@ -205,11 +322,57 @@ impl Feed {
         self.lock().bindings.len()
     }
 
+    /// File an observer of this feed's observable function under its args,
+    /// validated as a binding config (replacing one with the same id).
+    pub fn add_observer(
+        &self,
+        args: &Value,
+        observer: Arc<dyn FeedObserver>,
+    ) -> Result<(), ObserveRejection> {
+        let config = validate_feed_config(&self.id, args)
+            .map_err(|message| ObserveRejection::new(codes::INVALID_ARGS, message))?;
+        let id = observer.id().to_string();
+        let mut state = self.lock();
+        if !state.observers.contains_key(&id) && state.observers.len() >= MAX_BINDINGS {
+            return Err(ObserveRejection::new(
+                codes::OBSERVER_LIMIT,
+                format!("{}: observer limit ({MAX_BINDINGS}) reached", self.id),
+            ));
+        }
+        state.observers.insert(
+            id,
+            FeedObserverEntry {
+                session_id: config.session_id,
+                sink: observer,
+            },
+        );
+        Ok(())
+    }
+
+    /// Remove an observer; true when it was filed.
+    pub fn remove_observer(&self, observer_id: &str) -> bool {
+        self.lock().observers.remove(observer_id).is_some()
+    }
+
+    pub fn observer_count(&self) -> usize {
+        self.lock().observers.len()
+    }
+
     /// Assign the next sequence number for `session_id` on this feed and
     /// build one delivery per matching binding (empty when none match). The
-    /// lock is released before this returns.
+    /// lock is released before this returns. Observers are delivered by
+    /// [`Feed::emit_with`].
     pub fn prepare(&self, session_id: &str, event: Value) -> Vec<Delivery> {
-        let (seq, targets) = {
+        self.prepare_all(session_id, event)
+            .map(|prepared| prepared.deliveries)
+            .unwrap_or_default()
+    }
+
+    /// Assign the next sequence number for `session_id` and collect the
+    /// matching bindings and observers; `None` when nothing matches. The lock
+    /// is released before this returns.
+    fn prepare_all(&self, session_id: &str, event: Value) -> Option<Prepared> {
+        let (seq, targets, observers) = {
             let mut state = self.lock();
             let counter = state
                 .seq_by_session
@@ -223,10 +386,16 @@ impl Feed {
                 .filter(|binding| binding.config.session_id == session_id)
                 .cloned()
                 .collect();
-            (seq, targets)
+            let observers: Vec<Arc<dyn FeedObserver>> = state
+                .observers
+                .values()
+                .filter(|entry| entry.session_id == session_id)
+                .map(|entry| entry.sink.clone())
+                .collect();
+            (seq, targets, observers)
         };
-        if targets.is_empty() {
-            return Vec::new();
+        if targets.is_empty() && observers.is_empty() {
+            return None;
         }
         let payload = json!({
             "session_id": session_id,
@@ -236,7 +405,7 @@ impl Feed {
             "source": self.source,
             "event": event,
         });
-        targets
+        let deliveries = targets
             .into_iter()
             .map(|binding| Delivery {
                 function_id: binding.function_id,
@@ -244,18 +413,28 @@ impl Feed {
                 metadata: binding.config.metadata.or(binding.metadata),
                 payload: payload.clone(),
             })
-            .collect()
+            .collect();
+        Some(Prepared {
+            deliveries,
+            observers,
+            payload,
+        })
     }
 
-    /// Deliver one frame through `send`, sequentially; failures are logged
-    /// and swallowed. Returns how many deliveries succeeded.
+    /// Deliver one frame through `send` to each matching binding, then with
+    /// `obs.call` to each matching observer, sequentially; failures are logged
+    /// and swallowed. Returns how many deliveries succeeded (bindings and
+    /// observers together).
     pub async fn emit_with<F, Fut>(&self, session_id: &str, event: Value, mut send: F) -> usize
     where
         F: FnMut(Delivery) -> Fut,
         Fut: Future<Output = Result<Value, Error>>,
     {
+        let Some(prepared) = self.prepare_all(session_id, event) else {
+            return 0;
+        };
         let mut delivered = 0;
-        for delivery in self.prepare(session_id, event) {
+        for delivery in prepared.deliveries {
             let function_id = delivery.function_id.clone();
             match send(delivery).await {
                 Ok(_) => delivered += 1,
@@ -265,6 +444,25 @@ impl Feed {
                     session_id,
                     error = %e,
                     "event feed delivery failed"
+                ),
+            }
+        }
+        for observer in prepared.observers {
+            match observer.deliver(prepared.payload.clone()).await {
+                Ok(()) => delivered += 1,
+                Err(e) if is_skipped_delivery(&e) => tracing::debug!(
+                    trigger_type = %self.id,
+                    observer = %observer.id(),
+                    session_id,
+                    error = %e,
+                    "event feed observer skipped the frame"
+                ),
+                Err(e) => tracing::warn!(
+                    trigger_type = %self.id,
+                    observer = %observer.id(),
+                    session_id,
+                    error = %e,
+                    "event feed observer delivery failed"
                 ),
             }
         }
@@ -306,6 +504,63 @@ impl TriggerHandler for FeedHandler {
     }
 }
 
+/// The observe hooks of one feed's observable function: each observer is
+/// filed in the same feed as the trigger type's bindings, under its
+/// `session_id`, and taken out when the engine removes it.
+pub struct FeedObserveHandler {
+    feed: Arc<Feed>,
+}
+
+impl FeedObserveHandler {
+    pub fn new(feed: Arc<Feed>) -> Self {
+        Self { feed }
+    }
+}
+
+#[async_trait]
+impl ObserveHandler for FeedObserveHandler {
+    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
+        // Filed before the ack: the first frame after the engine marks the
+        // observer active reaches it.
+        self.feed
+            .add_observer(obs.args_value(), Arc::new(obs.clone()))
+            .inspect_err(|rejection| {
+                tracing::warn!(trigger_type = %self.feed.id, observer = %obs.id(), message = %rejection.message, "observer rejected");
+            })?;
+        tracing::info!(trigger_type = %self.feed.id, observer = %obs.id(), target = %obs.target(), "feed observer added");
+        Ok(())
+    }
+
+    async fn on_observer_removed(&self, obs: &Observer) {
+        self.feed.remove_observer(obs.id());
+        tracing::info!(trigger_type = %self.feed.id, observer = %obs.id(), "feed observer removed");
+    }
+}
+
+/// The refusal every direct invocation of an observable feed function gets:
+/// frames only come from the codex turn that produced them, routed in-process.
+pub fn refuse_invocation(function_id: &str) -> Error {
+    Error::Remote {
+        code: codes::FORBIDDEN.to_string(),
+        message: format!(
+            "{function_id} is an event source: observe it \
+             (iii.observe({{ function_id: '{function_id}', args: {{ session_id }} }}, target)); \
+             only the codex worker delivers its events"
+        ),
+        stacktrace: None,
+    }
+}
+
+/// Handler of `codex::on-agent-event`: any payload is refused.
+fn refuse_agent_event(_payload: Value) -> Result<(), Error> {
+    Err(refuse_invocation(ON_AGENT_EVENT_FN))
+}
+
+/// Handler of `codex::on-raw-event`: any payload is refused.
+fn refuse_raw_event(_payload: Value) -> Result<(), Error> {
+    Err(refuse_invocation(ON_RAW_EVENT_FN))
+}
+
 /// The worker's two feeds; both share the process epoch, each keeps its own
 /// counters.
 pub struct Feeds {
@@ -328,19 +583,57 @@ pub fn feeds() -> &'static Feeds {
     FEEDS.get_or_init(|| Feeds::new(&uuid::Uuid::new_v4().to_string()))
 }
 
-/// Register both trigger types with the engine. Call once at startup.
+/// Register both trigger types and both observable functions with the engine.
+/// Call once at startup. The trigger types are deprecated in iii 0.25 and stay
+/// for old consumers on 0.24 and 0.25 engines; on an engine without observe
+/// the functions register as plain functions and their hooks never run.
 pub fn register(iii: &IIIClient) {
     let feeds = feeds();
+    #[allow(deprecated)]
     let _ = iii.register_trigger_type(RegisterTriggerType::new(
         AGENT_EVENT_TRIGGER_TYPE,
         AGENT_EVENT_DESCRIPTION,
         FeedHandler::new(feeds.agent.clone()),
     ));
+    #[allow(deprecated)]
     let _ = iii.register_trigger_type(RegisterTriggerType::new(
         RAW_EVENT_TRIGGER_TYPE,
         RAW_EVENT_DESCRIPTION,
         FeedHandler::new(feeds.raw.clone()),
     ));
+    let _ = iii.register_function(
+        ON_AGENT_EVENT_FN,
+        observable(
+            RegisterFunction::new(refuse_agent_event),
+            ON_AGENT_EVENT_DESCRIPTION,
+            feeds.agent.clone(),
+        ),
+    );
+    let _ = iii.register_function(
+        ON_RAW_EVENT_FN,
+        observable(
+            RegisterFunction::new(refuse_raw_event),
+            ON_RAW_EVENT_DESCRIPTION,
+            feeds.raw.clone(),
+        ),
+    );
+}
+
+/// An owner-delivered observable function over `feed`: args_format is the
+/// binding config, the request format the delivery payload.
+fn observable(function: RegisterFunction, description: &str, feed: Arc<Feed>) -> RegisterFunction {
+    function
+        .description(description)
+        .request_format(feed_event_schema())
+        .observe(
+            Observe::owner()
+                .args_format::<FeedArgs>()
+                .handler(FeedObserveHandler::new(feed)),
+        )
+}
+
+fn feed_event_schema() -> Value {
+    serde_json::to_value(schemars::schema_for!(FeedEvent)).unwrap_or(Value::Null)
 }
 
 /// Deliver a translated AgentEvent frame on `codex::agent-event`.
@@ -619,5 +912,194 @@ mod tests {
         assert_eq!(feeds.raw.id(), "codex::raw-event");
         assert_eq!(feeds.agent.epoch(), feeds.raw.epoch());
         assert!(uuid::Uuid::parse_str(feeds.agent.epoch()).is_ok());
+    }
+
+    /// An observer of a feed's observable function that records its frames.
+    struct RecordingObserver {
+        id: String,
+        received: Mutex<Vec<Value>>,
+        fail_with: Option<&'static str>,
+    }
+
+    impl RecordingObserver {
+        fn new(id: &str) -> Arc<Self> {
+            Arc::new(Self {
+                id: id.to_string(),
+                received: Mutex::new(Vec::new()),
+                fail_with: None,
+            })
+        }
+
+        fn failing(id: &str, code: &'static str) -> Arc<Self> {
+            Arc::new(Self {
+                id: id.to_string(),
+                received: Mutex::new(Vec::new()),
+                fail_with: Some(code),
+            })
+        }
+
+        fn received(&self) -> Vec<Value> {
+            self.received.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl FeedObserver for RecordingObserver {
+        fn id(&self) -> &str {
+            &self.id
+        }
+
+        async fn deliver(&self, payload: Value) -> Result<(), Error> {
+            if let Some(code) = self.fail_with {
+                return Err(Error::Remote {
+                    code: code.to_string(),
+                    message: "not sent".to_string(),
+                    stacktrace: None,
+                });
+            }
+            self.received.lock().unwrap().push(payload);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn observable_functions_refuse_direct_invocation() {
+        for (function_id, refused) in [
+            (
+                ON_AGENT_EVENT_FN,
+                refuse_agent_event(json!({ "session_id": "s1" })),
+            ),
+            (ON_RAW_EVENT_FN, refuse_raw_event(json!({}))),
+            (ON_AGENT_EVENT_FN, refuse_agent_event(Value::Null)),
+            (ON_RAW_EVENT_FN, refuse_raw_event(json!("forged"))),
+        ] {
+            let error = refused.unwrap_err();
+            assert!(
+                matches!(&error, Error::Remote { code, message, .. }
+                    if code == codes::FORBIDDEN && message.contains(function_id)),
+                "{error:?}"
+            );
+        }
+        assert_eq!(ON_AGENT_EVENT_FN, "codex::on-agent-event");
+        assert_eq!(ON_RAW_EVENT_FN, "codex::on-raw-event");
+    }
+
+    #[tokio::test]
+    async fn an_observer_receives_the_frame_a_binding_receives() {
+        let feeds = Feeds::new(EPOCH);
+        let handler = FeedHandler::new(feeds.agent.clone());
+        handler
+            .register_trigger(binding("b1", "acp::fn", json!({ "session_id": "s1" })))
+            .await
+            .unwrap();
+        let observer = RecordingObserver::new("o1");
+        feeds
+            .agent
+            .add_observer(&json!({ "session_id": "s1" }), observer.clone())
+            .unwrap();
+        let elsewhere = RecordingObserver::new("o2");
+        feeds
+            .agent
+            .add_observer(&json!({ "session_id": "s2" }), elsewhere.clone())
+            .unwrap();
+
+        let event = json!({ "type": "message_complete" });
+        let (delivered, sent) = capture(&feeds.agent, "s1", event.clone()).await;
+        assert_eq!(delivered, 2, "one binding and one observer");
+        assert_eq!(sent.len(), 1);
+        let received = observer.received();
+        assert_eq!(received, vec![sent[0].payload.clone()]);
+        let typed: FeedEvent = serde_json::from_value(received[0].clone()).unwrap();
+        assert_eq!(typed.seq, 0);
+        assert_eq!(typed.event, event);
+        assert_eq!(typed.source, SOURCE);
+        assert!(
+            elsewhere.received().is_empty(),
+            "another session's observer"
+        );
+
+        // The raw feed is its own: the agent observer sees none of it.
+        capture(&feeds.raw, "s1", json!({ "raw": true })).await;
+        assert_eq!(observer.received().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_observer_alone_gets_frames_and_shares_the_seq() {
+        let feeds = Feeds::new(EPOCH);
+        let observer = RecordingObserver::new("o1");
+        feeds
+            .raw
+            .add_observer(&json!({ "session_id": "s1" }), observer.clone())
+            .unwrap();
+        for n in 0..3 {
+            let (delivered, sent) = capture(&feeds.raw, "s1", json!({ "n": n })).await;
+            assert_eq!(delivered, 1);
+            assert!(sent.is_empty(), "no binding");
+        }
+        let seqs: Vec<u64> = observer
+            .received()
+            .iter()
+            .map(|payload| payload["seq"].as_u64().unwrap())
+            .collect();
+        assert_eq!(seqs, [0, 1, 2]);
+
+        assert!(feeds.raw.remove_observer("o1"));
+        assert!(!feeds.raw.remove_observer("o1"));
+        let (delivered, _) = capture(&feeds.raw, "s1", json!({ "n": 3 })).await;
+        assert_eq!(delivered, 0);
+        assert_eq!(observer.received().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn observer_args_follow_the_binding_rules_and_cap() {
+        let feed = Feeds::new(EPOCH).agent;
+        for bad in [
+            json!({}),
+            json!({ "session_id": "" }),
+            json!({ "session_id": "x".repeat(MAX_SESSION_ID_CHARS + 1) }),
+        ] {
+            let rejection = feed
+                .add_observer(&bad, RecordingObserver::new("bad"))
+                .unwrap_err();
+            assert_eq!(rejection.code, codes::INVALID_ARGS, "{bad}");
+        }
+        for n in 0..MAX_BINDINGS {
+            feed.add_observer(
+                &json!({ "session_id": "s1" }),
+                RecordingObserver::new(&format!("o{n}")),
+            )
+            .unwrap();
+        }
+        let rejection = feed
+            .add_observer(
+                &json!({ "session_id": "s1" }),
+                RecordingObserver::new("one-too-many"),
+            )
+            .unwrap_err();
+        assert_eq!(rejection.code, codes::OBSERVER_LIMIT);
+        // Replacing an existing observer id is not a new one.
+        feed.add_observer(&json!({ "session_id": "s2" }), RecordingObserver::new("o0"))
+            .unwrap();
+        assert_eq!(feed.observer_count(), MAX_BINDINGS);
+        assert_eq!(feed.binding_count(), 0, "observers are counted apart");
+    }
+
+    #[tokio::test]
+    async fn a_skipped_or_failing_observer_is_swallowed() {
+        let feeds = Feeds::new(EPOCH);
+        let ok = RecordingObserver::new("ok");
+        for observer in [
+            RecordingObserver::failing("skipped", codes::FILTERS_NOT_MATCHED),
+            RecordingObserver::failing("broken", "TARGET_FAILED"),
+            ok.clone(),
+        ] {
+            feeds
+                .agent
+                .add_observer(&json!({ "session_id": "s1" }), observer)
+                .unwrap();
+        }
+        let (delivered, _) = capture(&feeds.agent, "s1", json!({})).await;
+        assert_eq!(delivered, 1);
+        assert_eq!(ok.received().len(), 1);
     }
 }
