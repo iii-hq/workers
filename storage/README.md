@@ -355,6 +355,32 @@ triggers:
       bucket: uploads
 ```
 
+### Observable functions (iii 0.25)
+
+On a 0.25 engine a new consumer observes an owner-delivered function instead
+of binding the trigger type. The trigger types above stay registered,
+unchanged, for consumers on 0.24 and 0.25 engines.
+
+| Function | Args (the trigger config) | Event to observers |
+|---|---|---|
+| `storage::on-object-created` | `{ bucket, event_types?, handler_timeout_ms? }` | `{ bucket, key, size, etag, content_type, created_at, raw_event_id }` |
+| `storage::on-object-deleted` | `{ bucket, handler_timeout_ms? }` | `{ bucket, key, deleted_at, raw_event_id }` |
+
+```ts
+iii.observe(
+  { function_id: 'storage::on-object-created', args: { bucket: 'uploads' } },
+  'thumbnails::make',
+)
+```
+
+Observers share the bindings' registry and fan-out: an observer receives the
+same payload a binding receives, with the same ack rule (`{ ack: false }`, an
+error or a timeout leaves the upstream message for redelivery; an event the
+observer's filters reject counts as acked). Args are parsed like a binding
+config, and a bucket without a wired notifications source is refused with
+`INVALID_ARGS`. Events only come from the worker's own fan-out: invoking
+either function directly is refused with `FORBIDDEN`.
+
 > **R2 trigger v1 caveat:** the Cloudflare Queues consume-from-outside
 > REST API is the youngest of the four upstreams. The worker probes the
 > consume endpoint at startup and surfaces `CF_QUEUE_AUTH_FAILED` for

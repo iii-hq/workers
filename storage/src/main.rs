@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions, RegisterFunction, RegisterTriggerType};
+use iii_sdk::{register_worker, InitOptions, Observe, RegisterFunction, RegisterTriggerType};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use storage::config::{redact_url, WorkerConfig};
@@ -13,6 +13,13 @@ use storage::handlers::{
 };
 use storage::triggers::dispatcher::EngineDispatcher;
 use storage::triggers::handler::{ObjectCreatedHandler, ObjectDeletedHandler};
+use storage::triggers::normalize::EventKind;
+use storage::triggers::object_created::TriggerConfig as CreatedConfig;
+use storage::triggers::object_deleted::TriggerConfig as DeletedConfig;
+use storage::triggers::observe::{
+    refuse_invocation, OnObjectHandler, ON_OBJECT_CREATED, ON_OBJECT_CREATED_DESCRIPTION,
+    ON_OBJECT_DELETED, ON_OBJECT_DELETED_DESCRIPTION,
+};
 use storage::triggers::registry::TriggerRegistry;
 use tokio::sync::RwLock;
 
@@ -329,6 +336,48 @@ async fn main() -> Result<()> {
         },
     ));
 
+    // The observable functions next to the object trigger types (iii 0.25).
+    // Observers share the trigger registry, so every event reaches bindings
+    // and observers with the same payload. Events are routed in-process; the
+    // functions refuse every invocation. On an engine without observe they
+    // are plain functions whose hooks never run.
+    iii.register_function(
+        ON_OBJECT_CREATED,
+        RegisterFunction::new(|_input: serde_json::Value| -> Result<(), Error> {
+            Err(refuse_invocation(EventKind::Created))
+        })
+        .description(ON_OBJECT_CREATED_DESCRIPTION)
+        .request_format(schema_of::<storage::triggers::object_created::Event>())
+        .observe(
+            Observe::owner()
+                .args_format::<CreatedConfig>()
+                .handler(OnObjectHandler {
+                    kind: EventKind::Created,
+                    registry: registry.clone(),
+                    wired_buckets: wired_buckets.clone(),
+                    reconfigure_gate: state.reconfigure_gate.clone(),
+                }),
+        ),
+    );
+    iii.register_function(
+        ON_OBJECT_DELETED,
+        RegisterFunction::new(|_input: serde_json::Value| -> Result<(), Error> {
+            Err(refuse_invocation(EventKind::Deleted))
+        })
+        .description(ON_OBJECT_DELETED_DESCRIPTION)
+        .request_format(schema_of::<storage::triggers::object_deleted::Event>())
+        .observe(
+            Observe::owner()
+                .args_format::<DeletedConfig>()
+                .handler(OnObjectHandler {
+                    kind: EventKind::Deleted,
+                    registry: registry.clone(),
+                    wired_buckets: wired_buckets.clone(),
+                    reconfigure_gate: state.reconfigure_gate.clone(),
+                }),
+        ),
+    );
+
     configuration::register_config_trigger(&iii, state.clone(), runtime.clone())
         .context("registering configuration change trigger")?;
     configuration::register_secret_trigger(&iii, state.clone(), runtime.clone());
@@ -336,7 +385,7 @@ async fn main() -> Result<()> {
 
     storage::ui::register(&iii);
 
-    tracing::info!("storage registered 12 functions and 2 trigger types, waiting for invocations");
+    tracing::info!("storage registered 14 functions and 2 trigger types, waiting for invocations");
     wait_for_shutdown_signal().await?;
     tracing::info!("storage shutting down");
     runtime.shutdown().await;
