@@ -1041,6 +1041,19 @@ Knobs (`inject_hint`, `hint_min_workers`, `registry_search`) live in the
 Dispatches are fire-and-forget (Void), so the write path doesn't
 block on downstream latency.
 
+### Observable functions (iii 0.25)
+
+On a 0.25 engine a new consumer observes an owner-delivered function instead of binding a trigger type. Each one shares its trigger type's subscriber registry, so an observer receives exactly the event a binding receives (the payloads above), at the same moments:
+
+| Function | Args | Event |
+|---|---|---|
+| `directory::on-skills-change` | `{}` | as `directory::skills::on-change` |
+| `directory::on-system-prompts-change` | `{}` | as `directory::system-prompts::on-change` |
+| `directory::on-agents-change` | `{}` | as `directory::agents::on-change` |
+| `directory::on-kits-change` | `{}` | as `directory::kits::on-change` |
+
+Events are routed inside the iii-directory worker (each observer gets them with `Observer::call`, on its own task, so a slow observer never blocks the write path): invoking any of these functions directly is refused with `FORBIDDEN`. The trigger types stay registered, unchanged, so consumers that bind them keep working on 0.24 and 0.25 engines.
+
 The `external` op comes from a filesystem watch over `skills_folder`,
 `local_skills_folder`, and (when it already exists) the read-only
 `agents_skills_folder`. It is a doorbell, not a ledger: every read re-scans

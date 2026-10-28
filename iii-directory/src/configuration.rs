@@ -213,6 +213,9 @@ struct OnConfigChangeResponse {
 
 /// Register the internal config-change handler and bind a `configuration`
 /// trigger for `configuration:updated` on the `iii-directory` entry.
+// `register_trigger` is deprecated in 0.25 and still served: the
+// `configuration` trigger type has no source function yet.
+#[allow(deprecated)]
 pub fn register_config_trigger(iii: &IIIClient, state: SharedState) -> Result<(), Error> {
     let st = state.clone();
     let engine = iii.clone();

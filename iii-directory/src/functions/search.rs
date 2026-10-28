@@ -2321,6 +2321,9 @@ pub fn required_bindings() -> Vec<(&'static str, &'static str, Value)> {
     )]
 }
 
+// `register_trigger` is deprecated in 0.25 and still served: the engine's
+// `engine::functions-available` trigger type has no source function yet.
+#[allow(deprecated)]
 pub fn bind_best_effort(iii: &IIIClient) {
     for (trigger_type, function_id, config) in required_bindings() {
         if let Err(error) =

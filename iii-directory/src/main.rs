@@ -440,6 +440,9 @@ fn setup_auto_download(
     let iii_sub = iii.clone();
     tokio::spawn(async move {
         for attempt in 1..=5 {
+            // Deprecated in 0.25 and still served: `worker` publishes no source
+            // function to observe yet.
+            #[allow(deprecated)]
             let result = iii_sub.register_trigger(RegisterTriggerInput::new(
                 "worker".to_string(),
                 "directory::__on_worker_added".to_string(),
