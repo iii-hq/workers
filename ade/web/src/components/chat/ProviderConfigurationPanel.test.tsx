@@ -485,8 +485,7 @@ describe('ProviderConfigurationPanel lifecycle with real QueryClient hooks', () 
     transport.schemaErrors.delete('team-blue-router')
     transport.valueErrors.delete('team-blue-router')
     await clickButton('Retry')
-    await flush()
-    await flush()
+    await waitForText('Provider settings')
     expect(
       view.querySelector<HTMLInputElement>('input[inputmode="url"]')?.value,
     ).toBe('https://server.example')
