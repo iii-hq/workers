@@ -167,6 +167,17 @@ fn slug(value: &str) -> String {
     out.trim_matches('-').to_string()
 }
 
+/// The tree the compiler builds, resolved: Vite reports module ids by their
+/// resolved path, so the build and `rel_to` must start from that same form.
+fn resolved_tree(path: PathBuf) -> PathBuf {
+    // shortcut: Windows keeps the configured form, since canonicalize's `\\?\`
+    // prefix would reach Vite; resolve it there if symlinked workspaces matter.
+    if cfg!(windows) {
+        return path;
+    }
+    path.canonicalize().unwrap_or(path)
+}
+
 fn rel_to(root: &Path, path: &str) -> String {
     let p = Path::new(path);
     match p.strip_prefix(root) {
@@ -322,7 +333,7 @@ async fn build_line_inner(
     build_id: &str,
 ) -> Result<Index, String> {
     let ws = workspace.name.as_str();
-    let root = workspace.path_resolved();
+    let root = resolved_tree(workspace.path_resolved());
     if !root.is_dir() {
         return Err(format!(
             "workspace path {} is not a directory",
@@ -346,7 +357,7 @@ async fn build_line_inner(
         _ => {
             let dest = ctx.store.worktrees_dir(ws).join(&resolved.key);
             lines::materialize(&resolved, &root, &dest, &ctx.ide_turns_dir()).await?;
-            dest
+            resolved_tree(dest)
         }
     };
     let result = compile_tree(ctx, workspace, &resolved, &source_root, build_id).await;
