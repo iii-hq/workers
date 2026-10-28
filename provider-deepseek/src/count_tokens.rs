@@ -31,7 +31,7 @@ use llm_router::types::router::ResponseFormat;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::reasoning::reasoning_effort_for;
+use crate::reasoning::{is_reasoning_model, reasoning_effort_for};
 use crate::request::build_response_format;
 use crate::wire::messages::to_wire_messages;
 use crate::wire::tools::functions_to_wire;
@@ -111,7 +111,7 @@ pub async fn handle(req: CountTokensRequest) -> Result<CountTokensResponse, Erro
                 &rows,
                 &tools,
                 response_format.as_ref(),
-                mode(req.thinking_level),
+                mode(&req.model, req.thinking_level),
             ),
             false,
         )
@@ -124,11 +124,18 @@ pub async fn handle(req: CountTokensRequest) -> Result<CountTokensResponse, Erro
     })
 }
 
-/// The encoder mode the request runs in, read off the level the way
-/// `stream` turns it into `thinking` / `reasoning_effort`: `off` disables
-/// thinking, every other level is the effort it maps to, and no level is
-/// the API default.
-fn mode(level: Option<ThinkingLevel>) -> Mode {
+/// The encoder mode the request runs in, read off the level as `stream`
+/// resolves it: `off` disables thinking, every other level is the effort it
+/// maps to, and no level, or a model that does not reason, is the API
+/// default.
+///
+/// shortcut: the count sees neither `provider_options.thinking` nor the
+/// catalog's `supports_thinking`, so a native `"disabled"` switch, or a
+/// catalog record that overrides the id pattern, still counts thinking mode
+/// (over by ~26 tokens plus the replayed reasoning). Forward them on
+/// `router::count_tokens` if a caller starts sending the native switch.
+fn mode(model: &str, level: Option<ThinkingLevel>) -> Mode {
+    let level = level.filter(|_| is_reasoning_model(model, None));
     if level == Some(ThinkingLevel::Off) {
         return Mode::Chat;
     }
@@ -143,11 +150,23 @@ fn mode(level: Option<ThinkingLevel>) -> Mode {
 mod tests {
     use super::*;
 
+    const FLASH: &str = "deepseek-v4-flash";
+
+    #[test]
+    fn a_model_that_does_not_reason_counts_the_default_whatever_the_level() {
+        // stream sends no thinking params to such a model, so `off` does not
+        // switch it to chat mode.
+        let other = "qwen2.5-coder-7b-instruct";
+        for level in [ThinkingLevel::Off, ThinkingLevel::Low, ThinkingLevel::Xhigh] {
+            assert_eq!(mode(other, Some(level)), mode(other, None), "{level:?}");
+        }
+    }
+
     #[test]
     fn off_renders_chat_mode_and_levels_render_their_effort_budget() {
-        assert_eq!(mode(Some(ThinkingLevel::Off)), Mode::Chat);
+        assert_eq!(mode(FLASH, Some(ThinkingLevel::Off)), Mode::Chat);
         // No level: the API's own default, thinking at `high`.
-        assert_eq!(mode(None), Mode::Thinking { budget: 75 });
+        assert_eq!(mode(FLASH, None), Mode::Thinking { budget: 75 });
         for (level, budget) in [
             (ThinkingLevel::Minimal, 50),
             (ThinkingLevel::Low, 50),
@@ -155,7 +174,11 @@ mod tests {
             (ThinkingLevel::High, 75),
             (ThinkingLevel::Xhigh, 100),
         ] {
-            assert_eq!(mode(Some(level)), Mode::Thinking { budget }, "{level:?}");
+            assert_eq!(
+                mode(FLASH, Some(level)),
+                Mode::Thinking { budget },
+                "{level:?}"
+            );
         }
     }
 
