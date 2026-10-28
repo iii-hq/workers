@@ -41,9 +41,8 @@ use crate::wire::tools::functions_to_wire;
 /// The server root the counting routes hang off, like `/props`: they are not
 /// children of the configured chat route.
 fn server_root(api_url: &str) -> &str {
-    api_url
-        .strip_suffix("/v1/chat/completions")
-        .unwrap_or_else(|| api_url.trim_end_matches('/'))
+    let url = api_url.trim_end_matches('/');
+    url.strip_suffix("/v1/chat/completions").unwrap_or(url)
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -121,7 +120,7 @@ async fn count(
     .await;
     match counted {
         // `post_count` reports a non-2xx as `provider/upstream_status: <code> …`.
-        Err(Error::Handler(msg)) if msg.starts_with("provider/upstream_status: 404 ") => {
+        Err(Error::Handler(first)) if first.starts_with("provider/upstream_status: 404 ") => {
             post_count(
                 http,
                 format!("{root}/v1/messages/count_tokens"),
@@ -130,6 +129,13 @@ async fn count(
                 pick,
             )
             .await
+            // The 404 may have meant "unknown model", not "no such route".
+            .map_err(|fallback| match fallback {
+                Error::Handler(msg) => Error::Handler(format!(
+                    "{msg} (after /v1/chat/completions/input_tokens answered {first})"
+                )),
+                other => other,
+            })
         }
         counted => counted,
     }
@@ -177,6 +183,9 @@ pub async fn handle(
         messages: req.messages,
         tools: req.tools.unwrap_or_default(),
         response_format: req.response_format,
+        // router::count_tokens does not forward the level yet (MOT-5568), so
+        // this counts the no-level turn: llamacpp declares no default level,
+        // and the stream then sends enable_thinking=false too.
         enable_thinking: enable_thinking(req.thinking_level),
     };
     let headers = build_headers(&cfg)
@@ -310,14 +319,46 @@ mod tests {
 
     #[test]
     fn the_count_body_is_the_chat_body_without_the_generation_knobs() {
-        // The chat route bills exactly what this body renders, so anything
-        // that shapes the prompt (tools, call-only turns, image parts,
-        // chat_template_kwargs, response_format) must be identical.
-        let mut chat = build_body(&args());
-        for knob in ["stream", "stream_options", "max_tokens"] {
-            chat.as_object_mut().unwrap().remove(knob);
-        }
-        assert_eq!(count_body(&args()), chat);
+        let mut a = args();
+        a.enable_thinking = true;
+        a.response_format = Some(ResponseFormat {
+            r#type: "json".into(),
+            schema: Some(json!({ "type": "object" })),
+        });
+        // Spelled out, not derived from build_body: the OpenAI tool shape, a
+        // call-only assistant turn keeping its tool_calls, the image_url part,
+        // the thinking kwarg and response_format are what the chat route
+        // bills, and stream / max_tokens are absent.
+        let tool = json!({
+            "type": "function",
+            "function": {
+                "name": "shell__exec",
+                "description": "run a command",
+                "parameters": { "type": "object", "properties": { "cmd": { "type": "string" } } },
+            },
+        });
+        assert_eq!(
+            count_body(&a),
+            json!({
+                "model": "qwen3-8b",
+                "messages": [
+                    { "role": "system", "content": "be brief" },
+                    { "role": "user", "content": [
+                        { "type": "text", "text": "list it" },
+                        { "type": "image_url", "image_url": { "url": "data:image/png;base64,QUJD" } },
+                    ] },
+                    { "role": "assistant", "tool_calls": [{
+                        "id": "c1",
+                        "type": "function",
+                        "function": { "name": "shell__exec", "arguments": "{\"cmd\":\"ls\"}" },
+                    }] },
+                    { "role": "tool", "tool_call_id": "c1", "content": "a b" },
+                ],
+                "tools": [tool],
+                "chat_template_kwargs": { "enable_thinking": true },
+                "response_format": { "type": "json_schema", "schema": { "type": "object" } },
+            })
+        );
     }
 
     #[tokio::test]
@@ -358,6 +399,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_failed_fallback_still_reports_the_first_routes_answer() {
+        // A 404 can also mean "unknown model" (router mode), so the first
+        // route's words must survive the fallback failing too.
+        let (url, _) = stub(vec![
+            "HTTP/1.1 404 Not Found\r\ncontent-length: 13\r\n\r\nunknown model",
+            "HTTP/1.1 404 Not Found\r\ncontent-length: 4\r\n\r\nnope",
+        ])
+        .await;
+        let err = count(&reqwest::Client::new(), &url, vec![], &args())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.starts_with("handler error: provider/upstream_status: 404 Not Found: nope")
+                && err.contains("unknown model"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
     async fn any_other_failure_is_reported_not_retried() {
         let (url, seen) = stub(vec![
             "HTTP/1.1 500 Internal Server Error\r\ncontent-length: 4\r\n\r\nboom",
@@ -379,6 +440,7 @@ mod tests {
         // `/v1/chat/completions` tail goes before they are appended.
         for api_url in [
             "http://127.0.0.1:8080/v1/chat/completions",
+            "http://127.0.0.1:8080/v1/chat/completions/",
             "http://127.0.0.1:8080/",
         ] {
             assert_eq!(server_root(api_url), "http://127.0.0.1:8080");

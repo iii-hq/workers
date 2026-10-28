@@ -29,7 +29,7 @@ pub const REFRESH_MODELS_DESC: &str = "Discover the resolved llama.cpp server's 
 
 pub const COUNT_TOKENS_ID: &str = "provider::llamacpp::count_tokens";
 pub const COUNT_TOKENS_DESC: &str =
-    "Count prompt tokens for {model, system_prompt?, tools?, messages} through the llama-server's own count endpoint, using the loaded model's tokenizer; never runs the model and costs nothing.";
+    "Count prompt tokens for {model, system_prompt?, tools?, messages, thinking_level?, response_format?} through the llama-server's own count endpoint, using the loaded model's tokenizer; never runs the model and costs nothing.";
 
 pub const ON_ROUTER_READY_ID: &str = "provider::llamacpp::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =

@@ -1,5 +1,5 @@
 {
-  "description": "Count prompt tokens for {model, system_prompt?, tools?, messages} through the llama-server's own count endpoint, using the loaded model's tokenizer; never runs the model and costs nothing.",
+  "description": "Count prompt tokens for {model, system_prompt?, tools?, messages, thinking_level?, response_format?} through the llama-server's own count endpoint, using the loaded model's tokenizer; never runs the model and costs nothing.",
   "function_id": "provider::llamacpp::count_tokens",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
