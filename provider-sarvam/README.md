@@ -14,8 +14,11 @@ Sarvam model family:
 - **Text to speech**: `provider::sarvam::speak` runs Bulbul (`bulbul:v3`
   default, `bulbul:v2`) behind `router::speak`: 11 languages, 35+ speakers,
   mp3, wav, pcm16 or opus back.
-- `provider::sarvam::count_tokens` estimates prompt tokens locally with
-  tiktoken (Sarvam publishes no tokenizer for the 105B and 30B models).
+- `provider::sarvam::count_tokens` counts prompt tokens locally: the prompt
+  Sarvam's published chat template renders from the wire request, encoded
+  with the model's own HuggingFace vocabulary (`sarvamai/sarvam-30b`, shared
+  by 105B, and `sarvamai/sarvam-m`). Other ids, and a cold cache with no
+  network, get a tiktoken estimate.
 
 The voice worker reaches the speech half with `stt.backend: router` /
 `tts.backend: router` and a `sarvam::…` model.
