@@ -420,6 +420,12 @@ pub struct TurnRecord {
     /// `harness_context/<session_id>` once the generation completes).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_snapshot: Option<crate::context_snapshot::ContextSnapshotV1>,
+    /// What dynamic pre_generate hooks added to the system prompt on this
+    /// turn's last prompt-only measurement; sizes the next step's assembly
+    /// reservation. `context_snapshot.categories.hook_guidance` cannot carry
+    /// it: exact provider counts fold it into `system_prompt`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_generate_hook_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -596,6 +602,7 @@ pub(crate) mod tests {
             skill_ack: None,
             skills_started: false,
             context_snapshot: None,
+            pre_generate_hook_tokens: None,
             result: None,
             result_error: None,
             stop_reason: None,

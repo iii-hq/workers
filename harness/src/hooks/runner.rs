@@ -102,6 +102,27 @@ impl HookRegistry {
         Ok(())
     }
 
+    /// The prompt with every static `inject_prompt` binding appended in chain
+    /// order. The turn loop applies it before `context::assemble`, so the
+    /// budget, the compaction gate and the request all count that text.
+    pub fn with_static_prompts(&self, system_prompt: Option<String>) -> Option<String> {
+        self.pre_generate
+            .ordered()
+            .iter()
+            .filter_map(|binding| binding.inject_prompt.as_deref())
+            .fold(system_prompt, append_prompt)
+    }
+
+    /// Whether `run_pre_generate` invokes any hook: only bindings without a
+    /// static prompt run there, and only they can grow the request after
+    /// assembly.
+    pub fn has_dynamic_pre_generate(&self) -> bool {
+        self.pre_generate
+            .ordered()
+            .iter()
+            .any(|binding| binding.inject_prompt.is_none())
+    }
+
     /// `pre_generate`: extend the system prompt and append bounded messages, or
     /// veto. Each hook sees the prompt/messages as mutated by the previous.
     pub async fn run_pre_generate(
@@ -117,8 +138,8 @@ impl HookRegistry {
         let mut appended: Vec<Value> = Vec::new();
         let mut annotations = Map::new();
         for binding in self.pre_generate.ordered() {
-            if let Some(injected) = binding.inject_prompt.as_deref() {
-                system_prompt = append_prompt(system_prompt, injected);
+            // Already in the assembled prompt (`with_static_prompts`).
+            if binding.inject_prompt.is_some() {
                 continue;
             }
             let mut messages = base_messages.to_vec();
