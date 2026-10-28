@@ -239,6 +239,24 @@ iii.register_trigger(RegisterTriggerInput {
 })?;
 ```
 
+### Observable functions (iii 0.25)
+
+Next to each trigger type the worker registers an observable function with
+the same filters as args and the same event payload:
+`worktree::on-created`, `worktree::on-claimed`, `worktree::on-released`,
+`worktree::on-removed`, `worktree::on-landed` and
+`worktree::on-land-blocked`. They are owner-delivered: only this worker
+emits their events, and invoking one directly is refused with `FORBIDDEN`
+(malformed args are refused with `INVALID_ARGS`). Existing trigger bindings
+keep working unchanged.
+
+```typescript
+iii.observe(
+  { function_id: 'worktree::on-landed', args: { repo_path: '/home/me/project' } },
+  'notify::on-land',
+)
+```
+
 ## Conflict resolution flow
 
 When a land's rebase hits conflicts, the rebase is left IN PROGRESS inside

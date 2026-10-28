@@ -6,7 +6,7 @@ manifest: Cargo.toml
 license: Apache-2.0
 bin: worktree
 tags: [git, worktree, parallel, agents, branches, ci]
-description: Git worktree lifecycle for parallel agents — mint, claim, and track isolated worktrees per repo, emit lifecycle trigger types, and land branches back through a per-repo FIFO queue (rebase, test gate, ff-only merge).
+description: Git worktree lifecycle for parallel agents — mint, claim, and track isolated worktrees per repo, emit lifecycle trigger types, and land branches back through a per-repo FIFO queue (rebase, test gate, ff-only merge). Registers the `worktree::created`, `worktree::claimed`, `worktree::released`, `worktree::removed`, `worktree::landed` and `worktree::land-blocked` trigger types and, next to them, the observable functions `worktree::on-created`, `worktree::on-claimed`, `worktree::on-released`, `worktree::on-removed`, `worktree::on-landed` and `worktree::on-land-blocked` (iii 0.25).
 
 dependencies:
   configuration: "latest"
