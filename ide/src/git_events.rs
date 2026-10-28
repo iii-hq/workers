@@ -129,7 +129,8 @@ pub(crate) fn discover(dir: &Path) -> Option<Layout> {
             continue;
         };
         let git_dir = if meta.is_dir() {
-            dot
+            // A `.git` symlinked elsewhere: FSEvents reports the target's paths.
+            dot.canonicalize().unwrap_or(dot)
         } else if meta.is_file() {
             let Ok(text) = std::fs::read_to_string(&dot) else {
                 continue;
@@ -817,6 +818,33 @@ mod tests {
         git(&root, &["add", "b.txt"]);
         let (changes, _) = fold(&drain(&mut rx, 500).await, &root, watch.layout.as_ref());
         assert!(changes.contains(INDEX), "{changes:?}");
+    }
+
+    /// A `.git` symlinked to the real git dir: FSEvents reports the target's
+    /// paths, so HEAD, index and ref changes must be matched there.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_symlinked_git_dir_reports_head_index_and_refs() {
+        let (tmp, root) = repo();
+        let real = tmp.path().canonicalize().unwrap().join("real.git");
+        std::fs::rename(root.join(".git"), &real).unwrap();
+        std::os::unix::fs::symlink(&real, root.join(".git")).unwrap();
+        let (watch, mut rx) = open(&root);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        git(&root, &["switch", "-q", "-c", "topic"]);
+        let (changes, _) = fold(&drain(&mut rx, 500).await, &root, watch.layout.as_ref());
+        assert!(changes.contains(HEAD), "{changes:?}");
+        assert!(changes.contains(REFS), "{changes:?}");
+
+        std::fs::write(root.join("b.txt"), "b").unwrap();
+        git(&root, &["add", "b.txt"]);
+        let (changes, _) = fold(&drain(&mut rx, 500).await, &root, watch.layout.as_ref());
+        assert!(changes.contains(INDEX), "{changes:?}");
+
+        // inotify reports the watched form, so name the target everywhere.
+        let event = watch.event(&root, &BTreeSet::from([HEAD]));
+        assert_eq!(event.git_dir, Some(real.to_string_lossy().into_owned()));
     }
 
     /// A folder in no repository waits for one: `git init` there is a
