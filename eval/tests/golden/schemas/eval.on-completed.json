@@ -1,0 +1,46 @@
+{
+  "function_id": "eval::on-completed",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "EvalStatusV1": {
+        "enum": [
+          "queued",
+          "collecting",
+          "judging",
+          "investigating",
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "What every binding and observer receives when an analysis ends.",
+    "properties": {
+      "evaluation_id": {
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/definitions/EvalStatusV1"
+      },
+      "timestamp": {
+        "description": "Epoch millis at emit time.",
+        "format": "int64",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "evaluation_id",
+      "status",
+      "timestamp"
+    ],
+    "title": "CompletedEventV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Null",
+    "type": "null"
+  }
+}
