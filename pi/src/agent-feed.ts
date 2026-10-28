@@ -12,17 +12,32 @@
  * consumer bound late never sees earlier frames; the durable history is the
  * session record (`pi::status`) and the session-manager transcript.
  *
+ * On an iii 0.25 engine each feed is also an owner-delivered observable
+ * function (`pi::on-agent-event`, `pi::on-raw-event`): an observer with args
+ * `{ session_id }` gets the same payload through `obs.call`. The trigger
+ * types stay for 0.24 engines and old consumers; invoking an `on-*` function
+ * directly is refused with FORBIDDEN.
+ *
  * `seq` is contiguous per (feed, session_id, epoch) from 0, with a separate
  * counter per feed; `epoch` is a per-process uuid, so consumers order by
  * `(epoch, seq)` and dedup by `event_id`.
  */
 
 import { randomUUID } from 'node:crypto';
-import { type IIIClient, TriggerAction } from 'iii-sdk';
+import {
+  type IIIClient,
+  InvocationError,
+  ObserveRejection,
+  type Observer,
+  TriggerAction,
+} from 'iii-sdk';
 
 export const SOURCE = 'pi';
 export const AGENT_EVENT_TRIGGER = 'pi::agent-event';
 export const RAW_EVENT_TRIGGER = 'pi::raw-event';
+/** The observable functions (iii 0.25) next to the two trigger types. */
+export const AGENT_EVENT_OBSERVABLE = 'pi::on-agent-event';
+export const RAW_EVENT_OBSERVABLE = 'pi::on-raw-event';
 
 /** Bindings per trigger type; a new binding beyond it is rejected, not queued. */
 export const MAX_BINDINGS = 256;
@@ -37,6 +52,31 @@ type Binding = {
   namespace?: string;
   metadata?: Record<string, unknown>;
   config: FeedConfig;
+  /** Set for an observer of the observable function (iii 0.25), absent for a trigger binding. */
+  observer?: Observer;
+};
+
+/** Observers share the bindings map under a key no trigger binding id uses. */
+const observerKey = (observerId: string) => `observer:${observerId}`;
+
+/** The observers' args (`FeedConfig`), validated by the engine (`INVALID_ARGS`). */
+const FEED_ARGS_FORMAT = {
+  type: 'object' as const,
+  properties: {
+    session_id: {
+      type: 'string',
+      minLength: 1,
+      maxLength: MAX_SESSION_ID_LEN,
+      description: 'The session whose frames this observer receives.',
+    },
+    metadata: {
+      type: 'object',
+      description:
+        'Accepted for parity with the trigger config; an observer gets its sidecar from its own `metadata` option.',
+    },
+  },
+  required: ['session_id'],
+  additionalProperties: false,
 };
 
 export type FeedPayload = {
@@ -83,10 +123,10 @@ export function validateFeedConfig(typeId: string, raw: unknown): FeedConfig {
   return metadata === undefined ? { session_id } : { session_id, metadata };
 }
 
-/** Register one owned trigger type and return its emitter. */
+/** Register one owned trigger type and its observable function; return the emitter. */
 export function createFeed(
   iii: IIIClient,
-  opts: { id: string; source: string; description: string },
+  opts: { id: string; observableId: string; source: string; description: string },
 ): Feed {
   const bindings = new Map<string, Binding>();
   const seqBySession = new Map<string, number>();
@@ -114,6 +154,52 @@ export function createFeed(
     },
   );
 
+  const forbidden = `${opts.observableId} is an event source: observe it (iii.observe({ function_id: '${opts.observableId}', args: { session_id } }, target)); only the pi worker emits its events`;
+
+  // The iii 0.25 observable function next to the trigger type: owner-delivered,
+  // its observers filed in the same bindings map (keyed apart from binding ids),
+  // so one emit reaches bindings and observers alike. Events are routed
+  // in-process, never through the function: invoking it is refused.
+  iii.registerFunction(
+    opts.observableId,
+    async () => {
+      throw new InvocationError({
+        code: 'FORBIDDEN',
+        message: forbidden,
+        function_id: opts.observableId,
+      });
+    },
+    {
+      description: `${opts.description} Observe with iii.observe({ function_id: '${opts.observableId}', args: { session_id } }, target) (iii 0.25); invoking it is refused with FORBIDDEN.`,
+      observe: {
+        delivery: 'owner',
+        args_format: FEED_ARGS_FORMAT,
+        async onObserverAdded(obs) {
+          let config: FeedConfig;
+          try {
+            config = validateFeedConfig(opts.observableId, obs.args);
+          } catch (err) {
+            throw new ObserveRejection(
+              'INVALID_ARGS',
+              err instanceof Error ? err.message : String(err),
+            );
+          }
+          const key = observerKey(obs.id);
+          if (!bindings.has(key) && bindings.size >= MAX_BINDINGS) {
+            throw new ObserveRejection(
+              'BINDING_LIMIT',
+              `${opts.observableId}: binding limit (${MAX_BINDINGS}) reached`,
+            );
+          }
+          bindings.set(key, { id: key, function_id: obs.target, config, observer: obs });
+        },
+        async onObserverRemoved(obs) {
+          bindings.delete(observerKey(obs.id));
+        },
+      },
+    },
+  );
+
   async function emit(session_id: string, event: unknown, stableEventId?: string) {
     const seq = seqBySession.get(session_id) ?? 0;
     seqBySession.set(session_id, seq + 1);
@@ -128,6 +214,17 @@ export function createFeed(
     let delivered = 0;
     for (const b of Array.from(bindings.values())) {
       if (b.config.session_id !== session_id) continue;
+      if (b.observer) {
+        try {
+          await b.observer.call(payload);
+          delivered++;
+        } catch (err) {
+          const code = (err as { code?: unknown } | null)?.code;
+          if (code === 'FILTERS_NOT_MATCHED' || code === 'OBSERVER_NOT_ACTIVE') continue;
+          console.warn(`${opts.observableId}: delivery to ${b.function_id} failed: ${String(err)}`);
+        }
+        continue;
+      }
       const metadata = b.config.metadata ?? b.metadata;
       try {
         await iii.trigger({
@@ -148,16 +245,18 @@ export function createFeed(
   return { emit, bindingCount: () => bindings.size };
 }
 
-/** Both feeds, each with its own binding table and sequence counter. */
+/** Both feeds, each with its own binding table (bindings and observers) and sequence counter. */
 export function registerAgentFeeds(iii: IIIClient): { agent: Feed; raw: Feed } {
   const agent = createFeed(iii, {
     id: AGENT_EVENT_TRIGGER,
+    observableId: AGENT_EVENT_OBSERVABLE,
     source: SOURCE,
     description:
       'Translated AgentEvent frames of one Pi session (pi::run, pi::start, pi::task, run::start_and_wait and the console terminal). Config: { session_id, metadata? }. Payload: { session_id, event_id, seq, epoch, source, event }. Ephemeral: not stored or replayed.',
   });
   const raw = createFeed(iii, {
     id: RAW_EVENT_TRIGGER,
+    observableId: RAW_EVENT_OBSERVABLE,
     source: SOURCE,
     description:
       'Raw Pi AgentSession events (agent_start/end, turn_start/end, message_start/update/end, tool_execution_*, queue_update, compaction_*) of one session, verbatim. Config: { session_id, metadata? }. Payload: { session_id, event_id, seq, epoch, source, event }. Ephemeral: not stored or replayed.',

@@ -15,7 +15,11 @@ working directory, and returns the final result, token usage, and cost. Every
 event Pi emits is published untouched on the `pi::raw-event` trigger type; a
 translated AgentEvent view is published on `pi::agent-event`, which is what the
 iii console and the acp worker render. Bind either with `{ session_id }`; frames
-are live only (not stored or replayed), ordered by `(epoch, seq)`.
+are live only (not stored or replayed), ordered by `(epoch, seq)`. On iii 0.25
+engines the same frames reach observers of the owner-delivered functions
+`pi::on-agent-event` and `pi::on-raw-event`:
+`iii.observe({ function_id: 'pi::on-agent-event', args: { session_id } }, target)`.
+The trigger types keep working on 0.24 and 0.25 engines.
 
 Pi runs the loop in-process (no CLI subprocess), so it needs model credentials
 in the worker environment (e.g. `ANTHROPIC_API_KEY`) or an existing Pi login.
@@ -62,6 +66,8 @@ shape a headless one does. `claude-code` is the same shape for Claude Code.
 - `pi::agent-event` carries whole-message frames (`message_complete`,
   `function_execution_start/end`, `turn_end`, `agent_end`); the raw Pi event
   shapes (including token deltas via `message_update`) live on `pi::raw-event`.
+- `pi::on-agent-event` and `pi::on-raw-event` are event sources: observe
+  them, never invoke them (a direct call is refused with `FORBIDDEN`).
 
 ## Functions
 

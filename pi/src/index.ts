@@ -113,7 +113,8 @@ await bindConfigTrigger(iii, refresh);
 
 // The two owned event feeds: pi::agent-event (AgentEvent frames) and
 // pi::raw-event (verbatim Pi events), each with its own binding table and
-// sequence counter.
+// sequence counter, and each observable on iii 0.25 as
+// pi::on-agent-event / pi::on-raw-event (same table, same frames).
 const feeds = registerAgentFeeds(iii);
 const emit = feeds.agent.emit;
 const emitRaw = feeds.raw.emit;

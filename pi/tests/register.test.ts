@@ -44,6 +44,8 @@ describe('register', () => {
     const fake = await registeredWorker();
     expect([...fake.registered.keys()].sort()).toEqual([
       'pi::follow_up',
+      'pi::on-agent-event',
+      'pi::on-raw-event',
       'pi::run',
       'pi::sessions::list',
       'pi::start',
