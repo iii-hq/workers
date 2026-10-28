@@ -11,7 +11,6 @@
 
 use base64::Engine as _;
 use iii_sdk::errors::Error;
-use llm_router::provider_scaffold::chat_framing::tool_schema_text;
 use llm_router::provider_scaffold::tiktoken_count::{
     encoder_for, ESTIMATOR_TIKTOKEN, TOKENS_PER_MESSAGE, TOKENS_REPLY_PRIMING,
 };
@@ -22,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::wire::messages::to_wire_messages;
+use crate::wire::tools::functions_to_wire;
 
 // Item framing on top of the encoded text, fitted to provider-openai's live
 // Responses probe of 2026-10-27 (gpt-5-nano, billed usage; MOT-5558), which
@@ -39,13 +39,21 @@ const TOKENS_PER_OUTPUT_ITEM: u64 = 10;
 // count high; render the server's form once a Codex probe can calibrate it.
 const TOKENS_TOOL_BLOCK: u64 = 16;
 
-// GPT-5's published image rate at high detail. The wire sends no `detail`,
-// so the backend picks (`auto`); high is the larger of the two.
+// Image rates measured with OpenAI's free POST /v1/responses/input_tokens on
+// 2026-10-28, with no `detail` as the wire sends it. gpt-5 and gpt-5.1 bill
+// 512px tiles at high detail; their mini/nano and every later model bill
+// 32px patches. The Codex backend was not probed (subscription credential).
 const IMAGE_BASE_TOKENS: u64 = 70;
 const IMAGE_TOKENS_PER_TILE: u64 = 140;
 // The most 512px tiles a resized image can span (2048x768), for an image
 // whose size cannot be read.
 const IMAGE_MAX_TILES: u64 = 8;
+// The most patches a model bills: gpt-5/5.1 mini and nano shrink an image to
+// 4096, gpt-5.2 to 5.5 to 10000, and gpt-5.6 and gpt-6 reject one over 30000.
+const IMAGE_PATCH_BUDGETS: [u64; 3] = [4096, 10000, 30000];
+// Base64 that holds a png/webp header and most jpeg ones (EXIF comes first);
+// a multiple of 4 so it decodes alone. The whole image is the fallback.
+const IMAGE_HEADER_B64: usize = 128 * 1024;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CountTokensRequest {
@@ -89,13 +97,13 @@ pub fn handle(req: CountTokensRequest) -> Result<CountTokensResponse, Error> {
     let mut tokens = TOKENS_REPLY_PRIMING
         + items
             .iter()
-            .map(|item| item_tokens(item, &count))
+            .map(|item| item_tokens(&req.model, item, &count))
             .sum::<u64>();
     if !tools.is_empty() {
         tokens += TOKENS_TOOL_BLOCK
-            + tools
+            + functions_to_wire(tools)
                 .iter()
-                .map(|tool| count(&tool_schema_text(tool)))
+                .map(|tool| count(&tool.to_string()))
                 .sum::<u64>();
     }
     Ok(CountTokensResponse {
@@ -106,7 +114,7 @@ pub fn handle(req: CountTokensRequest) -> Result<CountTokensResponse, Error> {
 }
 
 /// One Responses `input` item: its framing plus its encoded text and images.
-fn item_tokens(item: &Value, count: &impl Fn(&str) -> u64) -> u64 {
+fn item_tokens(model: &str, item: &Value, count: &impl Fn(&str) -> u64) -> u64 {
     let text = |value: &Value| count(value.as_str().unwrap_or(""));
     match item["type"].as_str() {
         Some("function_call") => {
@@ -125,7 +133,7 @@ fn item_tokens(item: &Value, count: &impl Fn(&str) -> u64) -> u64 {
                     .iter()
                     .map(|part| match part["type"].as_str() {
                         Some("input_image") => {
-                            image_tokens(part["image_url"].as_str().unwrap_or(""))
+                            image_tokens(model, part["image_url"].as_str().unwrap_or(""))
                         }
                         _ => text(&part["text"]),
                     })
@@ -135,13 +143,46 @@ fn item_tokens(item: &Value, count: &impl Fn(&str) -> u64) -> u64 {
 }
 
 /// An `input_image` data URI's cost from the dimensions in its header.
-fn image_tokens(image_url: &str) -> u64 {
-    let tiles = image_url
-        .split_once(";base64,")
-        .and_then(|(_, data)| base64::engine::general_purpose::STANDARD.decode(data).ok())
-        .and_then(|bytes| crate::image::dimensions(&bytes))
-        .map_or(IMAGE_MAX_TILES, |(width, height)| tiles(width, height));
-    IMAGE_BASE_TOKENS + IMAGE_TOKENS_PER_TILE * tiles
+fn image_tokens(model: &str, image_url: &str) -> u64 {
+    let size = image_url.split_once(";base64,").and_then(|(_, data)| {
+        let read = |b64: &str| {
+            let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+            crate::image::dimensions(&bytes)
+        };
+        read(data.get(..IMAGE_HEADER_B64).unwrap_or(data)).or_else(|| read(data))
+    });
+    image_cost(model, size)
+}
+
+/// What `model` bills for an image of `size`; an unreadable image costs the
+/// most its family bills.
+fn image_cost(model: &str, size: Option<(u32, u32)>) -> u64 {
+    let bare = model.rsplit('/').next().unwrap_or(model);
+    let minor = crate::reasoning::gpt5_minor(bare);
+    let early = bare == "gpt-5" || bare.starts_with("gpt-5-") || minor == Some(1);
+    let small = bare.contains("-mini") || bare.contains("-nano");
+    if early && !small {
+        let tiles = size.map_or(IMAGE_MAX_TILES, |(width, height)| tiles(width, height));
+        return IMAGE_BASE_TOKENS + IMAGE_TOKENS_PER_TILE * tiles;
+    }
+    let budget = match minor {
+        _ if early => IMAGE_PATCH_BUDGETS[0],
+        Some(2..=5) => IMAGE_PATCH_BUDGETS[1],
+        _ => IMAGE_PATCH_BUDGETS[2],
+    };
+    // shortcut: an image over the budget counts the whole budget, where the
+    // server shrinks it to a little less (and gpt-5-nano first fits it in
+    // 2048x2048), so it counts high; the gpt-5.4 mini/nano budget of 2500
+    // counts as 10000 for the same reason.
+    let patches = size.map_or(budget, |(width, height)| {
+        let side = |px: u32| u64::from(px.max(1).div_ceil(32));
+        (side(width) * side(height)).min(budget)
+    });
+    if early && bare.contains("-nano") {
+        (3 * patches).div_ceil(2)
+    } else {
+        6 * patches / 5 + 1
+    }
 }
 
 /// OpenAI's high-detail resize: fit within 2048x2048, then shrink the short
@@ -388,31 +429,98 @@ mod tests {
         assert_eq!(tiles(0, 0), 1);
     }
 
+    // input_tokens of "hi" plus one PNG minus "hi" alone, from OpenAI's free
+    // POST /v1/responses/input_tokens on 2026-10-28 (no `detail`, as the
+    // wire sends it; the endpoint matched the bill on every MOT-5558 shape).
     #[test]
-    fn a_user_image_costs_its_tiles() {
-        let text = count("", vec![], vec![user("hi")]);
-        let with_image = |image: ContentBlock| {
-            count(
-                "",
-                vec![],
-                vec![user_blocks(vec![
-                    ContentBlock::Text { text: "hi".into() },
-                    image,
-                ])],
-            )
+    fn a_user_image_costs_what_its_model_family_bills() {
+        let image_cost = |model: &str, image: ContentBlock| {
+            let text = handle(request(model, vec![user("hi")])).unwrap().tokens;
+            let messages = vec![user_blocks(vec![
+                ContentBlock::Text { text: "hi".into() },
+                image,
+            ])];
+            handle(request(model, messages)).unwrap().tokens - text
         };
-        // 600x400 stays as is: 2 by 1 tiles of 512px.
-        assert_eq!(with_image(png(600, 400)) - text, 70 + 2 * 140);
-        // 1920x1080 shrinks to 1365x768: 3 by 2 tiles.
-        assert_eq!(with_image(png(1920, 1080)) - text, 70 + 6 * 140);
-        // An image whose size cannot be read costs the most tiles a resized
-        // image can span.
-        let unreadable = ContentBlock::Image {
-            mime: "image/png".into(),
-            data: "AAAA".into(),
-            attachment_id: None,
+        let measured = [
+            ("codex/gpt-5", (1024, 1024), 630),
+            ("codex/gpt-5-nano", (256, 256), 96),
+            ("codex/gpt-5-nano", (1024, 1024), 1536),
+            ("codex/gpt-5-mini", (600, 400), 297),
+            ("codex/gpt-5.5", (256, 256), 77),
+            ("codex/gpt-5.5", (1024, 1024), 1229),
+        ];
+        for (model, (width, height), billed) in measured {
+            assert_eq!(
+                image_cost(model, png(width, height)),
+                billed,
+                "{model} {width}x{height}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_image_is_sized_from_its_header_without_decoding_the_rest() {
+        let ContentBlock::Image { data, .. } = png(600, 400) else {
+            unreachable!()
         };
-        assert_eq!(with_image(unreadable) - text, 70 + 8 * 140);
+        let mut bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .unwrap();
+        bytes.resize(bytes.len() + 1_000_000, 0);
+        // A tail no decoder would accept: only the header may be read.
+        let data = base64::engine::general_purpose::STANDARD.encode(bytes) + "!";
+        let url = format!("data:image/png;base64,{data}");
+        assert_eq!(image_tokens("codex/gpt-5.5", &url), 297);
+    }
+
+    #[test]
+    fn image_cost_follows_the_measured_rates_and_never_counts_under_them() {
+        // Same endpoint as above, on sizes too large to encode in a test.
+        let exact = [
+            ("gpt-5.1", (1920, 1080), 910),
+            ("gpt-5-mini", (1920, 1080), 2449),
+            ("gpt-5-mini", (4096, 4096), 4916),
+            ("gpt-5-nano", (2048, 2048), 6144),
+            ("gpt-5.2", (1920, 1080), 2449),
+            ("codex/gpt-5.3-codex", (1024, 1024), 1229),
+            ("gpt-5.5", (4000, 800), 3751),
+            ("gpt-5.5", (4096, 4096), 12001),
+            ("gpt-5.6-sol", (5000, 5000), 29579),
+            ("gpt-6-sol", (4096, 4096), 19661),
+        ];
+        for (model, size, billed) in exact {
+            assert_eq!(image_cost(model, Some(size)), billed, "{model} {size:?}");
+        }
+        // Shrunk below the budget by the server: counted high.
+        let over = [
+            ("gpt-5-nano", (4000, 800), 1248),
+            ("gpt-5.4-mini", (4096, 4096), 3001),
+        ];
+        for (model, size, billed) in over {
+            assert!(image_cost(model, Some(size)) >= billed, "{model} {size:?}");
+        }
+    }
+
+    #[test]
+    fn an_unreadable_image_costs_the_most_its_family_bills() {
+        let with_image = |model: &str, data: &str| {
+            let image = ContentBlock::Image {
+                mime: "image/png".into(),
+                data: data.into(),
+                attachment_id: None,
+            };
+            let messages = vec![user_blocks(vec![image])];
+            let text = handle(request(model, vec![user_blocks(vec![])])).unwrap();
+            handle(request(model, messages)).unwrap().tokens - text.tokens
+        };
+        assert_eq!(with_image("codex/gpt-5", "AAAA"), 70 + 8 * 140);
+        assert_eq!(with_image("codex/gpt-5-mini", "AAAA"), 6 * 4096 / 5 + 1);
+        assert_eq!(with_image("codex/gpt-5.5", "AAAA"), 6 * 10000 / 5 + 1);
+        assert_eq!(
+            with_image("codex/gpt-6-sol", "not base64 é"),
+            6 * 30000 / 5 + 1
+        );
     }
 
     #[test]
@@ -430,8 +538,7 @@ mod tests {
         let ok = || ContentBlock::Text { text: "ok".into() };
         let with_image = round(vec![ok(), png(600, 400)]);
         let without = round(vec![ok()]);
-        let hoisted_item =
-            TOKENS_PER_MESSAGE + text_tokens("[image result of tool call t1]") + (70 + 2 * 140);
+        let hoisted_item = TOKENS_PER_MESSAGE + text_tokens("[image result of tool call t1]") + 297;
         assert_eq!(with_image - without, hoisted_item);
     }
 

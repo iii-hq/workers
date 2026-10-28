@@ -3,9 +3,8 @@
 //! no metering endpoint, so the count is computed from the text the wire
 //! mappers would send plus the published chat-framing constants; it never
 //! runs the model, costs nothing, and needs no network. The counting logic
-//! itself is shared with `provider-openai-codex` in
-//! `llm_router::provider_scaffold::tiktoken_count`; this module is the thin
-//! request/response adapter around it.
+//! itself is `llm_router::provider_scaffold::tiktoken_count`; this module is
+//! the thin request/response adapter around it.
 
 use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::tiktoken_count::{count_chat_tokens, ESTIMATOR_TIKTOKEN};
