@@ -1,5 +1,5 @@
 {
-  "description": "Estimate prompt tokens for {model, system_prompt?, tools?, messages} locally with tiktoken; never runs the model and costs nothing.",
+  "description": "Count prompt tokens for {model, system_prompt?, tools?, messages} locally with Sarvam's own published vocabulary and chat template; never runs the model and costs nothing.",
   "function_id": "provider::sarvam::count_tokens",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -545,14 +545,14 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
       "estimator": {
-        "description": "Always `tiktoken`: a local tokenizer produced the estimate.",
+        "description": "`tokenizer` when Sarvam's own vocabulary and template produced the count; `tiktoken` for the estimate kept for other ids and a cold offline cache.",
         "type": "string"
       },
       "model": {
         "type": "string"
       },
       "tokens": {
-        "description": "Estimated prompt tokens for the assembled request.",
+        "description": "Prompt tokens for the assembled request.",
         "format": "uint64",
         "minimum": 0.0,
         "type": "integer"
