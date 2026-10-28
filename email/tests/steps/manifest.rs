@@ -104,11 +104,11 @@ fn manifest_lists_function(world: &mut EmailWorld, want: String) {
     );
 }
 
-#[then("the manifest lists exactly 8 functions")]
+#[then("the manifest lists exactly 9 functions")]
 fn manifest_function_count(world: &mut EmailWorld) {
     let m = manifest_value(world);
     let arr = m["functions"].as_array().expect("functions is an array");
-    assert_eq!(arr.len(), 8, "expected 8 functions, got {}", arr.len());
+    assert_eq!(arr.len(), 9, "expected 9 functions, got {}", arr.len());
 }
 
 #[then(regex = r#"^the manifest lists the trigger type "([^"]+)"$"#)]

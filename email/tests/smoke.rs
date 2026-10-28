@@ -8,10 +8,10 @@ use email::manifest::build_manifest;
 use email::triggers::registry::TriggerRegistry;
 
 #[test]
-fn manifest_lists_eight_functions_and_new_mail_trigger() {
+fn manifest_lists_nine_functions_and_new_mail_trigger() {
     let m = build_manifest();
     let fns = m["functions"].as_array().expect("functions array");
-    assert_eq!(fns.len(), 8, "expected 8 functions in manifest");
+    assert_eq!(fns.len(), 9, "expected 9 functions in manifest");
     let ids: Vec<_> = fns.iter().map(|f| f["id"].as_str().unwrap_or("")).collect();
     for expected in [
         "email::send",
@@ -22,6 +22,7 @@ fn manifest_lists_eight_functions_and_new_mail_trigger() {
         "email::flag",
         "email::move",
         "email::attachment::get",
+        "email::on-new-mail",
     ] {
         assert!(ids.contains(&expected), "missing {expected}");
     }

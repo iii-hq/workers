@@ -98,18 +98,24 @@ async fn main() -> Result<()> {
 
     email::handlers::register_all(&iii, &state);
 
+    // Kept until the trigger type is retired; old consumers bind it on 0.24
+    // and 0.25 engines.
+    #[allow(deprecated)]
     let _new_mail_ref = iii.register_trigger_type(
         RegisterTriggerType::new(
-            "email::new-mail",
-            "Fires when IMAP IDLE pushes a new message to a configured (account, folder). \
-         Payload: { account, folder, uid, message_id, from, subject, snippet, ts }. \
-         If the IMAP server lacks the IDLE capability, the account fails at startup (E610).",
+            email::triggers::new_mail::NEW_MAIL_TRIGGER_TYPE,
+            email::triggers::new_mail::NEW_MAIL_DESCRIPTION,
             email::triggers::new_mail::Handler {
                 registry: trig_registry.clone(),
             },
         )
         .trigger_request_format::<email::triggers::new_mail::NewMailBindingConfig>(),
     );
+    // The observable function next to it, on the same registry. On an engine
+    // without observe it registers as a plain function and its hooks never
+    // run.
+    let _on_new_mail_ref =
+        email::triggers::new_mail::register_on_new_mail(&iii, trig_registry.clone());
 
     let supervised = state.start_idle().await;
 
@@ -118,8 +124,9 @@ async fn main() -> Result<()> {
     configuration::register_config_status(&iii, state.clone());
 
     tracing::info!(
-        "email registered {} functions and 1 trigger type; {} IMAP connections supervised",
+        "email registered {} functions, 1 trigger type and the observable function {}; {} IMAP connections supervised",
         email::handlers::REGISTERED_FN_COUNT,
+        email::triggers::new_mail::ON_NEW_MAIL_FN,
         supervised,
     );
 

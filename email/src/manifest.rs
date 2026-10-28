@@ -13,7 +13,13 @@ pub fn build_manifest() -> Value {
             { "id": "email::search",            "stability": "beta", "streams": "ndjson" },
             { "id": "email::flag",              "stability": "beta" },
             { "id": "email::move",              "stability": "beta" },
-            { "id": "email::attachment::get",   "stability": "beta", "streams": "bytes" }
+            { "id": "email::attachment::get",   "stability": "beta", "streams": "bytes" },
+            {
+                "id": crate::triggers::new_mail::ON_NEW_MAIL_FN,
+                "stability": "beta",
+                "description": crate::triggers::new_mail::ON_NEW_MAIL_DESCRIPTION,
+                "args_format": schemars::schema_for!(crate::triggers::new_mail::NewMailBindingConfig)
+            }
         ],
         "trigger_types": [
             {
