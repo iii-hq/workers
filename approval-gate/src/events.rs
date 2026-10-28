@@ -1,24 +1,35 @@
 //! The two custom trigger types this worker emits —
-//! `approval::pending-created` / `approval::pending-resolved` — and the
-//! fan-out machinery behind them (the session-manager reactivity model:
-//! consumers bind handlers with the standard two-step pattern; the engine
-//! routes each registration to our [`TriggerHandler`]s; delivery is
-//! fire-and-forget, at-least-once, unordered; `list_pending` is the
-//! reconciliation read).
+//! `approval::pending-created` / `approval::pending-resolved` — the
+//! observable functions next to them (iii 0.25) —
+//! `approval::on-pending-created` / `approval::on-pending-resolved` — and the
+//! fan-out machinery behind both (the session-manager reactivity model:
+//! consumers bind handlers with the standard two-step pattern, or observe the
+//! function on a 0.25 engine; the engine routes each registration to our
+//! [`TriggerHandler`]s and each observer to our [`ObserveHandler`]s; delivery
+//! is fire-and-forget, unordered; `list_pending` is the reconciliation read).
 //!
-//! Per-binding `config` filters are evaluated here, by the emitting
-//! worker: `session_id` equality and `metadata` subset-equality against
-//! the record's denormalized `session_metadata` (the tenancy hook).
-//! Malformed configs are rejected at registration time.
+//! Per-binding `config` filters (and the observers' `args`, which share the
+//! same [`BindingConfig`] shape) are evaluated here, by the emitting worker:
+//! `session_id` equality and `metadata` subset-equality against the record's
+//! denormalized `session_metadata` (the tenancy hook). Malformed configs are
+//! rejected at registration time.
+//!
+//! Events reach observers in-process, from the same fan-out that serves the
+//! trigger bindings, with `obs.call`: the observable functions' own handlers
+//! refuse every invocation (`FORBIDDEN`), so no caller can make this worker
+//! deliver a forged event.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::{observe_codes, TriggerRequest};
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
+use iii_sdk::{
+    IIIClient, Observe, ObserveHandler, ObserveRejection, Observer, RegisterFunction,
+    RegisterTriggerType, TriggerAction,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -36,7 +47,25 @@ pub const PENDING_RESOLVED_DESC: &str =
     "A pending approval left the inbox (outcome: allow | deny | timeout | aborted). \
      Emitted exactly once per record; lets UIs clear badges.";
 
-/// Config accepted by both trigger types.
+/// The observable function next to [`PENDING_CREATED`].
+pub const ON_PENDING_CREATED: &str = "approval::on-pending-created";
+pub const ON_PENDING_CREATED_DESC: &str =
+    "Fires when a function call is held for human approval and its inbox record is written. \
+     Observe it with args { session_id?, metadata? } (the approval::pending-created binding \
+     config); every matching observer receives PendingApprovalRecord & { status: \"pending\" }. \
+     Only the approval-gate worker fires it: invoking it directly is refused.";
+
+/// The observable function next to [`PENDING_RESOLVED`].
+pub const ON_PENDING_RESOLVED: &str = "approval::on-pending-resolved";
+pub const ON_PENDING_RESOLVED_DESC: &str =
+    "Fires when a pending approval leaves the inbox (outcome: allow | deny | timeout | aborted), \
+     exactly once per record. Observe it with args { session_id?, metadata? } (the \
+     approval::pending-resolved binding config); every matching observer receives the \
+     PendingResolvedEvent. Only the approval-gate worker fires it: invoking it directly is \
+     refused.";
+
+/// Config accepted by both trigger types, and the args of both observable
+/// functions (`args_format`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BindingConfig {
@@ -85,14 +114,56 @@ pub struct Binding {
     pub filter: BindingConfig,
 }
 
-/// Thread-safe subscriber registry for one trigger type. Cloned into both
-/// the [`TriggerHandler`] (mutates on register/unregister) and the
-/// [`Emitter`] (iterates read-only snapshots). After a worker restart the
-/// engine replays existing registrations, so the sets rebuild themselves.
+/// One observer of an `approval::on-*` function, with its args parsed as
+/// the trigger type parses a binding config.
+#[derive(Debug, Clone)]
+pub struct ObserverBinding {
+    pub observer: Arc<dyn EventObserver>,
+    pub filter: BindingConfig,
+}
+
+/// One observer as a sink of a [`SubscriberSet`]: the SDK's [`Observer`] in
+/// production, a recorder in tests (the fan-out runs without an engine).
+#[async_trait]
+pub trait EventObserver: std::fmt::Debug + Send + Sync + 'static {
+    fn id(&self) -> &str;
+    fn target(&self) -> &str;
+    /// The observer's args, parsed as a binding config.
+    fn args_value(&self) -> &Value;
+    /// Hands one event to the observer's target (`obs.call`).
+    async fn deliver(&self, payload: Value) -> Result<(), Error>;
+}
+
+#[async_trait]
+impl EventObserver for Observer {
+    fn id(&self) -> &str {
+        Observer::id(self)
+    }
+
+    fn target(&self) -> &str {
+        Observer::target(self)
+    }
+
+    fn args_value(&self) -> &Value {
+        Observer::args_value(self)
+    }
+
+    async fn deliver(&self, payload: Value) -> Result<(), Error> {
+        self.call::<Value>(payload).await.map(|_| ())
+    }
+}
+
+/// Thread-safe subscriber registry for one trigger type and the observable
+/// function next to it. Cloned into the [`TriggerHandler`] (mutates bindings
+/// on register/unregister), the [`ObserveHandler`] (mutates observers on
+/// add/remove) and the [`Emitter`] (iterates read-only snapshots). After a
+/// worker restart the engine replays existing registrations and observers,
+/// so the sets rebuild themselves.
 #[derive(Clone)]
 pub struct SubscriberSet {
     trigger_type: &'static str,
     inner: Arc<Mutex<HashMap<String, Binding>>>,
+    observers: Arc<Mutex<HashMap<String, ObserverBinding>>>,
 }
 
 impl SubscriberSet {
@@ -100,6 +171,7 @@ impl SubscriberSet {
         Self {
             trigger_type,
             inner: Arc::new(Mutex::new(HashMap::new())),
+            observers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -128,6 +200,7 @@ impl SubscriberSet {
         self.lock().values().cloned().collect()
     }
 
+    /// Trigger bindings only; see [`observer_count`](Self::observer_count).
     pub fn len(&self) -> usize {
         self.lock().len()
     }
@@ -136,8 +209,37 @@ impl SubscriberSet {
         self.lock().is_empty()
     }
 
+    /// Files an observer under its id; its args are parsed exactly as a
+    /// binding config (`null` = match all, unknown fields rejected).
+    pub fn add_observer(&self, observer: Arc<dyn EventObserver>) -> Result<(), String> {
+        let filter = parse_binding_config(observer.args_value())?;
+        let id = observer.id().to_string();
+        self.lock_observers()
+            .insert(id, ObserverBinding { observer, filter });
+        Ok(())
+    }
+
+    pub fn remove_observer(&self, id: &str) {
+        self.lock_observers().remove(id);
+    }
+
+    /// Snapshot so the mutex isn't held across awaits.
+    pub fn observer_snapshot(&self) -> Vec<ObserverBinding> {
+        self.lock_observers().values().cloned().collect()
+    }
+
+    pub fn observer_count(&self) -> usize {
+        self.lock_observers().len()
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Binding>> {
         self.inner
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    fn lock_observers(&self) -> std::sync::MutexGuard<'_, HashMap<String, ObserverBinding>> {
+        self.observers
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
     }
@@ -194,12 +296,101 @@ impl TriggerHandler for ApprovalTriggerHandler {
     }
 }
 
-/// Register both custom trigger types with the engine. Must run **before**
-/// `functions::register_all` so the handlers capture the subscriber sets
-/// they fan out to.
+/// Files each observer of an `approval::on-*` function in the subscriber set
+/// its trigger type fans out from, and takes it out when the engine removes
+/// it.
+struct ApprovalObserveHandler {
+    function_id: &'static str,
+    set: SubscriberSet,
+}
+
+#[async_trait]
+impl ObserveHandler for ApprovalObserveHandler {
+    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
+        // Checked by the engine against args_format; parsed again here so a
+        // config the trigger type would refuse is refused the same way.
+        self.set
+            .add_observer(Arc::new(obs.clone()))
+            .map_err(|e| ObserveRejection::new(observe_codes::INVALID_ARGS, e))?;
+        tracing::info!(
+            function_id = self.function_id,
+            observer = %obs.id(),
+            target = %obs.target(),
+            "observer added"
+        );
+        Ok(())
+    }
+
+    async fn on_observer_removed(&self, obs: &Observer) {
+        self.set.remove_observer(obs.id());
+        tracing::info!(
+            function_id = self.function_id,
+            observer = %obs.id(),
+            "observer removed"
+        );
+    }
+}
+
+/// The error every direct invocation of an `approval::on-*` function gets:
+/// events only come from this worker's own fan-out.
+pub fn forbidden(function_id: &str) -> Error {
+    Error::Remote {
+        code: observe_codes::FORBIDDEN.to_string(),
+        message: format!(
+            "{function_id} is an event source: observe it \
+             (iii.observe({{ function_id: '{function_id}', args: {{ session_id?, metadata? }} }}, \
+             target)); only the approval-gate worker fires its events"
+        ),
+        stacktrace: None,
+    }
+}
+
+/// The handler of an `approval::on-*` function: refuses any input with
+/// [`forbidden`], before and regardless of its shape.
+pub fn refuse_invocation(function_id: &str, _input: Value) -> Result<(), Error> {
+    Err(forbidden(function_id))
+}
+
+/// JSON Schema of `T`, generated as iii-sdk does at registration.
+fn schema_value<T: JsonSchema>() -> Value {
+    let schema = schemars::r#gen::SchemaSettings::draft07()
+        .into_generator()
+        .into_root_schema_for::<T>();
+    serde_json::to_value(schema).unwrap_or(Value::Null)
+}
+
+/// Registers one owner-delivered `approval::on-*` function whose observers
+/// share `set` with the trigger type next to it. Its request format
+/// documents the event its observers receive; on an engine without observe
+/// it registers as a plain function and its hooks never run.
+fn register_observable<Event: JsonSchema>(
+    iii: &IIIClient,
+    function_id: &'static str,
+    description: &'static str,
+    set: SubscriberSet,
+) {
+    iii.register_function(
+        function_id,
+        RegisterFunction::new(move |input: Value| refuse_invocation(function_id, input))
+            .description(description)
+            .request_format(schema_value::<Event>())
+            .observe(
+                Observe::owner()
+                    .args_format::<BindingConfig>()
+                    .handler(ApprovalObserveHandler { function_id, set }),
+            ),
+    );
+}
+
+/// Register both custom trigger types and the observable function next to
+/// each with the engine. Must run **before** `functions::register_all` so
+/// the handlers capture the subscriber sets they fan out to.
 pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
     let sets = TriggerSets::new();
 
+    // Kept until the trigger types are retired; old consumers bind them on
+    // 0.24 and 0.25 engines.
+    #[allow(deprecated)]
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
             PENDING_CREATED,
@@ -210,6 +401,7 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
         )
         .trigger_request_format::<BindingConfig>(),
     );
+    #[allow(deprecated)]
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
             PENDING_RESOLVED,
@@ -221,9 +413,23 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
         .trigger_request_format::<BindingConfig>(),
     );
 
+    register_observable::<PendingApprovalRecord>(
+        iii,
+        ON_PENDING_CREATED,
+        ON_PENDING_CREATED_DESC,
+        sets.created.clone(),
+    );
+    register_observable::<PendingResolvedEvent>(
+        iii,
+        ON_PENDING_RESOLVED,
+        ON_PENDING_RESOLVED_DESC,
+        sets.resolved.clone(),
+    );
+
     tracing::info!(
         trigger_types = ?[PENDING_CREATED, PENDING_RESOLVED],
-        "registered trigger types"
+        observable_functions = ?[ON_PENDING_CREATED, ON_PENDING_RESOLVED],
+        "registered trigger types and observable functions"
     );
     sets
 }
@@ -235,7 +441,7 @@ pub trait EventSink: Send + Sync {
     async fn pending_resolved(&self, event: &PendingResolvedEvent);
 }
 
-/// Filtered fire-and-forget fan-out to every matching binding.
+/// Filtered fire-and-forget fan-out to every matching binding and observer.
 pub struct Emitter {
     sets: TriggerSets,
     iii: Arc<IIIClient>,
@@ -271,6 +477,30 @@ impl Emitter {
                     );
                 }
             }
+        }
+        // Observers get the same payload under the same filter, through
+        // `obs.call` (the SDK applies their own filters too). Each call runs
+        // on its own task, in this invocation's context, so a slow target
+        // holds up neither the caller nor the other sinks.
+        let ctx = iii_sdk::current_invocation();
+        for entry in set.observer_snapshot() {
+            if !binding_matches(&entry.filter, session_id, session_metadata) {
+                continue;
+            }
+            let payload = payload.clone();
+            tokio::spawn(iii_sdk::scope(ctx.clone(), async move {
+                match entry.observer.deliver(payload).await {
+                    Ok(()) => {}
+                    Err(Error::Remote { code, .. })
+                        if code == observe_codes::FILTERS_NOT_MATCHED => {}
+                    Err(e) => tracing::warn!(
+                        observer = %entry.observer.id(),
+                        target = %entry.observer.target(),
+                        error = %e,
+                        "observer delivery failed"
+                    ),
+                }
+            }));
         }
     }
 }
@@ -431,5 +661,164 @@ mod tests {
         assert!(set
             .add(trigger_config("b2", "f::2", json!({ "bogus": 1 })))
             .is_err());
+    }
+
+    /// An `approval::on-*` observer that records what it is handed.
+    #[derive(Debug)]
+    struct Recorder {
+        id: String,
+        args: Value,
+        events: tokio::sync::mpsc::UnboundedSender<Value>,
+    }
+
+    #[async_trait]
+    impl EventObserver for Recorder {
+        fn id(&self) -> &str {
+            &self.id
+        }
+
+        fn target(&self) -> &str {
+            "test::target"
+        }
+
+        fn args_value(&self) -> &Value {
+            &self.args
+        }
+
+        async fn deliver(&self, payload: Value) -> Result<(), Error> {
+            let _ = self.events.send(payload);
+            Ok(())
+        }
+    }
+
+    fn recorder(
+        id: &str,
+        args: Value,
+    ) -> (
+        Arc<dyn EventObserver>,
+        tokio::sync::mpsc::UnboundedReceiver<Value>,
+    ) {
+        let (events, received) = tokio::sync::mpsc::unbounded_channel();
+        let observer = Arc::new(Recorder {
+            id: id.to_string(),
+            args,
+            events,
+        });
+        (observer, received)
+    }
+
+    fn offline_emitter(sets: TriggerSets) -> Emitter {
+        // Never connects; observers are served in-process.
+        Emitter::new(
+            sets,
+            Arc::new(iii_sdk::register_worker(
+                "ws://127.0.0.1:9",
+                iii_sdk::InitOptions::default(),
+            )),
+        )
+    }
+
+    async fn next_event(received: &mut tokio::sync::mpsc::UnboundedReceiver<Value>) -> Value {
+        tokio::time::timeout(std::time::Duration::from_secs(5), received.recv())
+            .await
+            .expect("the observer is handed the event")
+            .expect("one event")
+    }
+
+    fn pending_record(session_id: &str) -> PendingApprovalRecord {
+        serde_json::from_value(json!({
+            "session_id": session_id,
+            "turn_id": "t_1",
+            "function_call_id": "c_1",
+            "function_id": "shell::run",
+            "kind": "function",
+            "arguments_excerpt": {},
+            "pending_at": 100,
+            "depth": 0,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn on_functions_refuse_direct_invocation() {
+        for function_id in [ON_PENDING_CREATED, ON_PENDING_RESOLVED] {
+            for input in [json!({}), json!({ "session_id": "s_1" }), Value::Null] {
+                let err = refuse_invocation(function_id, input).unwrap_err();
+                assert!(
+                    matches!(&err, Error::Remote { code, message, .. }
+                        if code == "FORBIDDEN" && message.contains(function_id)),
+                    "{err:?}"
+                );
+            }
+        }
+        assert_eq!(ON_PENDING_CREATED, "approval::on-pending-created");
+        assert_eq!(ON_PENDING_RESOLVED, "approval::on-pending-resolved");
+    }
+
+    #[test]
+    fn observer_args_are_parsed_as_a_binding_config() {
+        let set = SubscriberSet::new(PENDING_CREATED);
+        let (all, _rx) = recorder("o_all", Value::Null);
+        set.add_observer(all).unwrap();
+        let (bad, _rx) = recorder("o_bad", json!({ "bogus": 1 }));
+        assert!(
+            set.add_observer(bad).is_err(),
+            "a config a binding would refuse"
+        );
+        assert_eq!(set.observer_count(), 1);
+        assert!(set.is_empty(), "observers are not bindings");
+        set.remove_observer("o_all");
+        assert_eq!(set.observer_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn an_observer_receives_the_created_event_a_binding_receives() {
+        let sets = TriggerSets::new();
+        let (matching, mut matching_rx) = recorder("o_1", json!({ "session_id": "s_1" }));
+        let (other, mut other_rx) = recorder("o_2", json!({ "session_id": "s_2" }));
+        sets.created.add_observer(matching).unwrap();
+        sets.created.add_observer(other).unwrap();
+        let emitter = offline_emitter(sets);
+
+        let record = pending_record("s_1");
+        emitter.pending_created(&record).await;
+
+        // The payload bindings get: PendingApprovalRecord & { status: "pending" }.
+        let mut expected = serde_json::to_value(&record).unwrap();
+        expected["status"] = json!("pending");
+        assert_eq!(next_event(&mut matching_rx).await, expected);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(other_rx.try_recv().is_err(), "filtered like a binding");
+    }
+
+    #[tokio::test]
+    async fn an_observer_receives_the_resolved_event_a_binding_receives() {
+        let sets = TriggerSets::new();
+        let (observer, mut received) = recorder("o_1", json!({}));
+        sets.resolved.add_observer(observer).unwrap();
+        let (created_only, mut created_rx) = recorder("o_c", json!({}));
+        sets.created.add_observer(created_only).unwrap();
+        let emitter = offline_emitter(sets);
+
+        let event: PendingResolvedEvent = serde_json::from_value(json!({
+            "session_id": "s_1",
+            "turn_id": "t_1",
+            "function_call_id": "c_1",
+            "function_id": "shell::run",
+            "outcome": "allow",
+            "resolved_at": 200,
+        }))
+        .unwrap();
+        emitter.pending_resolved(&event).await;
+
+        assert_eq!(
+            next_event(&mut received).await,
+            serde_json::to_value(&event).unwrap()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            created_rx.try_recv().is_err(),
+            "each function has its own set"
+        );
     }
 }

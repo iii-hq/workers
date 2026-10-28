@@ -107,6 +107,15 @@ pub async fn spawn_engine() -> Option<Engine> {
     let probe = register_worker(&url, InitOptions::default());
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
+        // An engine that exited (e.g. one that refuses this config.yaml
+        // format) will never become ready: skip now instead of waiting out
+        // the whole deadline in every test.
+        if let Ok(Some(status)) = child.try_wait() {
+            eprintln!("iii engine exited during boot ({status}); skipping");
+            probe.shutdown();
+            let _ = std::fs::remove_dir_all(&dir);
+            return None;
+        }
         // The engine core must be up AND the configuration worker must be
         // serving — approval-gate treats configuration as a required boot
         // dependency, so a test that boots before it is ready would fail
@@ -450,12 +459,15 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
             }),
         );
     }
+    // Old-style consumers: the trigger types stay served on 0.25 engines.
+    #[allow(deprecated)]
     iii.register_trigger(RegisterTriggerInput::new(
         PENDING_CREATED.to_string(),
         "recorder::on_created".to_string(),
         json!({}),
     ))
     .expect("bind pending_created");
+    #[allow(deprecated)]
     iii.register_trigger(RegisterTriggerInput::new(
         PENDING_RESOLVED.to_string(),
         "recorder::on_resolved".to_string(),

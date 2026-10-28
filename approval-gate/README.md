@@ -19,7 +19,9 @@ worker:
 4. **The pending inbox** — an **ephemeral** index of held calls
    (`approval::list-pending` / `approval::get-pending`) plus two trigger types
    (`approval::pending-created` / `approval::pending-resolved`) that
-   notification workers and UIs bind to. `PendingApprovalRecord.kind`
+   notification workers and UIs bind to, and the observable functions next
+   to them (`approval::on-pending-created` / `approval::on-pending-resolved`,
+   iii 0.25). `PendingApprovalRecord.kind`
    (`"function"` | `"folder_access"`) tells a console which prompt to render.
 
 The worker keeps **no resolved-approval history**: a record exists only while
@@ -102,6 +104,34 @@ Binding config (both types): `{ session_id?, metadata? }` — `metadata` is a
 subset-equality match against the record's denormalized `session_metadata`,
 so a multi-tenant notification worker binds to only its own sessions. After a
 restart, reconcile with one `approval::list-pending` call.
+
+Both trigger types keep working, unchanged, on 0.24 and 0.25 engines.
+
+## Observable functions (iii 0.25)
+
+On a 0.25 engine, new consumers observe the function next to each trigger
+type instead of binding it:
+
+| Function | Next to | Event each observer receives |
+|---|---|---|
+| `approval::on-pending-created` | `approval::pending-created` | `PendingApprovalRecord & { status: "pending" }` |
+| `approval::on-pending-resolved` | `approval::pending-resolved` | `PendingResolvedEvent` |
+
+Both are owner-delivered. Their args are the trigger types' binding config,
+`{ session_id?, metadata? }`, filtered the same way (unknown fields are
+refused with `INVALID_ARGS`); the observer's own `filters` apply on top.
+
+```ts
+iii.observe(
+  { function_id: 'approval::on-pending-created', args: { metadata: { owner: 'u_1' } } },
+  'notify::pending',
+)
+```
+
+Events come only from the worker's own fan-out, the one that serves the
+trigger bindings: invoking either function directly is refused with
+`FORBIDDEN`, so no caller can inject a forged approval event. Delivery is
+fire-and-forget and unordered, as for bindings.
 
 ## Folder-access grant watch
 

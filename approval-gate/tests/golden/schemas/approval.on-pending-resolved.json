@@ -1,0 +1,89 @@
+{
+  "args_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "description": "Config accepted by both trigger types, and the args of both observable functions (`args_format`).",
+    "properties": {
+      "metadata": {
+        "additionalProperties": true,
+        "description": "Equality match against the record's `session_metadata` (every key given here must equal the stored value — subset match).",
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "session_id": {
+        "description": "Only deliver events for this session.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "BindingConfig",
+    "type": "object"
+  },
+  "description": "Fires when a pending approval leaves the inbox (outcome: allow | deny | timeout | aborted), exactly once per record. Observe it with args { session_id?, metadata? } (the approval::pending-resolved binding config); every matching observer receives the PendingResolvedEvent. Only the approval-gate worker fires it: invoking it directly is refused.",
+  "event_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ResolvedOutcome": {
+        "enum": [
+          "allow",
+          "deny",
+          "aborted"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "Payload of `approval::pending-resolved` — a pending call left the inbox. Emitted exactly once per record (gated on the record delete).",
+    "properties": {
+      "function_call_id": {
+        "type": "string"
+      },
+      "function_id": {
+        "type": "string"
+      },
+      "outcome": {
+        "$ref": "#/definitions/ResolvedOutcome"
+      },
+      "reason": {
+        "description": "Operator-supplied on deny.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "resolved_at": {
+        "description": "ms epoch",
+        "format": "int64",
+        "type": "integer"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "session_metadata": {
+        "additionalProperties": true,
+        "description": "Tenancy routing, from the record.",
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "turn_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "function_call_id",
+      "function_id",
+      "outcome",
+      "resolved_at",
+      "session_id",
+      "turn_id"
+    ],
+    "title": "PendingResolvedEvent",
+    "type": "object"
+  },
+  "function_id": "approval::on-pending-resolved"
+}

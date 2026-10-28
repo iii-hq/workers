@@ -11,8 +11,10 @@
 //!      startup — the gate must run on a known, authoritative policy
 //!      surface, never a guessed one.
 //!   4. Register the two custom trigger types (`approval::pending-created`,
-//!      `approval::pending-resolved`) — first, because the function
-//!      handlers capture the subscriber sets they fan out to.
+//!      `approval::pending-resolved`) and the observable functions next to
+//!      them (`approval::on-pending-created`, `approval::on-pending-resolved`)
+//!      — first, because the function handlers capture the subscriber sets
+//!      they fan out to.
 //!   5. Register the 13 `approval::*` functions (each reads the live config
 //!      snapshot per call).
 //!   6. Bind the fixed gate + filesystem-access-watch hooks + the session/turn
@@ -75,6 +77,7 @@ fn worker_metadata() -> WorkerMetadata {
 /// missing trigger type surfaces later as an SDK-level
 /// `trigger_type_not_found` error log, never as an `Err` here. Restart
 /// the worker after the sibling appears to re-bind.
+#[allow(deprecated)] // register_trigger: still served by 0.24 and 0.25 engines
 fn bind_best_effort(
     iii: &Arc<IIIClient>,
     trigger_type: &str,
@@ -151,7 +154,8 @@ async fn main() -> Result<()> {
         .map_err(anyhow::Error::msg)
         .context("loading approval-gate configuration")?;
 
-    // Trigger types first: the handlers capture the subscriber sets.
+    // Trigger types and their observable functions first: the handlers
+    // capture the subscriber sets.
     let sets = events::register_trigger_types(&iii);
     let sink = Arc::new(Emitter::new(sets, iii.clone()));
 
@@ -188,7 +192,7 @@ async fn main() -> Result<()> {
     configuration::register_config_trigger(&iii, cell)
         .context("registering the configuration change trigger")?;
 
-    tracing::info!("approval-gate ready: 13 approval::* functions + 2 custom trigger types");
+    tracing::info!("approval-gate ready: 13 approval::* functions + 2 custom trigger types + 2 observable functions");
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("approval-gate shutting down");

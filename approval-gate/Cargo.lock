@@ -98,7 +98,7 @@ dependencies = [
  "clap",
  "futures",
  "harness",
- "iii-sdk",
+ "iii-sdk 0.25.0",
  "regex",
  "schemars",
  "serde",
@@ -109,6 +109,15 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "arc-swap"
+version = "1.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "380962b3d93b99642e50b9febf72c071e97e8b32d86eae9cf4ef582bb960ae6e"
+dependencies = [
+ "rustversion",
 ]
 
 [[package]]
@@ -580,8 +589,8 @@ dependencies = [
  "futures-util",
  "globset",
  "iii-console-ui",
- "iii-helpers",
- "iii-sdk",
+ "iii-helpers 0.24.6",
+ "iii-sdk 0.24.6",
  "iii-worker-paths",
  "jsonschema",
  "judge-contract",
@@ -844,7 +853,7 @@ dependencies = [
 name = "iii-console-ui"
 version = "0.1.0"
 dependencies = [
- "iii-sdk",
+ "iii-sdk 0.24.6",
  "schemars",
  "serde",
  "serde_json",
@@ -853,10 +862,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "iii-filter"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a3d4bb15e834619f1180c09b78bf40cb0eeaa87c99869b821081eecaf5e4b3f"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "iii-helpers"
 version = "0.24.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a6af460c1ecd277c99d375fb6b1c652639520148ddad304f424a3d9cd97b5d1"
+dependencies = [
+ "futures-util",
+ "opentelemetry",
+ "opentelemetry-http",
+ "opentelemetry_sdk",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "iii-helpers"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1caa4741cf4ae1bd37c860a872f3b86f94e15ac5a5b1b16ba9507d313be5d2bb"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -882,7 +922,30 @@ dependencies = [
  "async-trait",
  "futures-util",
  "hostname",
- "iii-helpers",
+ "iii-helpers 0.24.6",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "iii-sdk"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ba3c91f524939ab1c980cf07786975dfdd16ffae90eed7345dd2a34c12643e8"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "futures-util",
+ "hostname",
+ "iii-filter",
+ "iii-helpers 0.25.0",
  "reqwest",
  "schemars",
  "serde",

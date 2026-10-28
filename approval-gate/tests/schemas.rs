@@ -17,7 +17,9 @@
 
 mod support;
 
-use approval_gate::functions::{catalog, trigger_catalog, FunctionSpec, TriggerSpec};
+use approval_gate::functions::{
+    catalog, observable_catalog, trigger_catalog, FunctionSpec, ObservableSpec, TriggerSpec,
+};
 
 fn golden_file_name(id: &str) -> String {
     format!("schemas/{}.json", id.replace("::", "."))
@@ -121,6 +123,90 @@ fn trigger_schema_snapshots_match_goldens() {
     assert!(
         failures.is_empty(),
         "{} trigger wire-schema golden(s) drifted:\n\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+fn observable_spec_to_pretty_json(spec: &ObservableSpec) -> String {
+    let value = serde_json::json!({
+        "function_id": spec.function_id,
+        "description": spec.description,
+        "args_schema": spec.args_schema,
+        "event_schema": spec.event_schema,
+    });
+    let mut pretty = serde_json::to_string_pretty(&value).expect("observable spec serializes");
+    pretty.push('\n');
+    pretty
+}
+
+/// The observable functions (iii 0.25): one next to each trigger type, in
+/// the trigger catalog's order (kept in lockstep with
+/// `register_trigger_types`).
+#[test]
+fn observable_catalog_lists_one_function_next_to_each_trigger_type() {
+    let ids: Vec<&str> = observable_catalog().iter().map(|s| s.function_id).collect();
+    assert_eq!(
+        ids,
+        vec![
+            "approval::on-pending-created",
+            "approval::on-pending-resolved"
+        ]
+    );
+    for (observable, trigger) in observable_catalog().iter().zip(trigger_catalog()) {
+        assert_eq!(
+            observable.function_id,
+            trigger
+                .trigger_id
+                .replacen("approval::", "approval::on-", 1)
+        );
+        // Observers receive exactly what a binding of the trigger type receives.
+        assert_eq!(
+            serde_json::to_value(&observable.event_schema).unwrap(),
+            serde_json::to_value(&trigger.payload_schema).unwrap(),
+            "{}: event schema differs from {}'s payload",
+            observable.function_id,
+            trigger.trigger_id
+        );
+        // Observing is refused (FORBIDDEN) when invoked: documented.
+        assert!(
+            observable.description.contains("refused"),
+            "{}: description must say direct invocation is refused",
+            observable.function_id
+        );
+    }
+}
+
+/// Both observable functions take the binding config as args.
+#[test]
+fn observable_args_are_the_binding_config() {
+    for spec in observable_catalog() {
+        let args = serde_json::to_value(&spec.args_schema).unwrap();
+        let properties = args["properties"].as_object().expect("object args");
+        assert!(
+            properties.contains_key("session_id"),
+            "{}",
+            spec.function_id
+        );
+        assert!(properties.contains_key("metadata"), "{}", spec.function_id);
+        assert_eq!(args["additionalProperties"], serde_json::json!(false));
+    }
+}
+
+/// Every observable function matches its committed golden.
+#[test]
+fn observable_schema_snapshots_match_goldens() {
+    let mut failures = Vec::new();
+    for spec in observable_catalog() {
+        let rel = golden_file_name(spec.function_id);
+        let actual = observable_spec_to_pretty_json(&spec);
+        if let Err(msg) = support::check_golden(&rel, &actual) {
+            failures.push(msg);
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} observable wire-schema golden(s) drifted:\n\n{}",
         failures.len(),
         failures.join("\n")
     );
