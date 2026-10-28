@@ -4,7 +4,6 @@
 pub mod config;
 pub mod count_tokens;
 pub mod curated;
-pub mod deepseek_v41;
 pub mod discovery;
 pub mod errors;
 pub mod manifest;

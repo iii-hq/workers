@@ -18,8 +18,10 @@
 //!
 //! Exposed behind `router::count_tokens`.
 
-use crate::deepseek_v41::{effort_budget, prompt, Mode, DEFAULT_EFFORT_BUDGET};
 use iii_sdk::errors::Error;
+use llm_router::provider_scaffold::deepseek_v41::{
+    effort_budget, prompt, Mode, DEFAULT_EFFORT_BUDGET,
+};
 use llm_router::provider_scaffold::vocabulary_count::{
     resolve, VocabularyRef, ESTIMATOR_TOKENIZER,
 };

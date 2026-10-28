@@ -10,7 +10,7 @@
 
 use serde_json::Value;
 
-use llm_router::provider_scaffold::python_json::python_json;
+use crate::provider_scaffold::python_json::python_json;
 
 pub const BOS: &str = "<｜begin▁of▁sentence｜>";
 pub const EOS: &str = "<｜end▁of▁sentence｜>";
@@ -248,7 +248,9 @@ mod tests {
     /// serde_json sends them.
     #[test]
     fn requests_render_as_deepseeks_encoder_renders_them() {
-        for (name, case) in cases(include_str!("../tests/golden/encoding/dsv41_prompts.json")) {
+        for (name, case) in cases(include_str!(
+            "../../tests/golden/encoding/dsv41_prompts.json"
+        )) {
             let mode = Mode::Thinking {
                 budget: DEFAULT_EFFORT_BUDGET,
             };
@@ -265,7 +267,7 @@ mod tests {
     /// a `json_object` response format.
     #[test]
     fn chat_mode_and_every_effort_render_as_the_encoder_renders_them() {
-        for (name, case) in cases(include_str!("../tests/golden/encoding/dsv41_modes.json")) {
+        for (name, case) in cases(include_str!("../../tests/golden/encoding/dsv41_modes.json")) {
             let mode = match case["reasoning_effort"].as_str() {
                 None => Mode::Chat,
                 Some(effort) => Mode::Thinking {
