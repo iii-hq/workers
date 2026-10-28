@@ -16,7 +16,6 @@ use llm_router::provider_scaffold::endpoint_count::{post_count, ESTIMATOR_METERE
 use llm_router::provider_scaffold::tiktoken_count::{
     count_chat_tokens, encoder_for, ESTIMATOR_TIKTOKEN,
 };
-use llm_router::types::events::ErrorKind;
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::AgentFunction;
 use llm_router::types::router::ResponseFormat;
@@ -26,7 +25,6 @@ use serde_json::Value;
 use std::time::Duration;
 
 use crate::config::{config_from_resolve, ApiMode, OpenaiConfig};
-use crate::errors::classify_bus_error;
 use crate::request::{build_body, build_chat_response_format, build_headers, BodyArgs};
 use crate::state;
 
@@ -215,12 +213,7 @@ pub async fn handle(
         .await
     {
         Ok(resolved) => config_from_resolve(&req.model, None, &resolved).ok(),
-        Err(e) => {
-            if classify_bus_error(&e) == ErrorKind::AuthExpired {
-                cache.invalidate();
-            }
-            None
-        }
+        Err(_) => None,
     };
     count(http, cache, cfg.as_ref(), req).await
 }
