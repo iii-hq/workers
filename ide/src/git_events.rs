@@ -230,7 +230,10 @@ fn name_of(path: &Path) -> &str {
 pub(crate) fn classify(path: &Path, watched: &Path, layout: Option<&Layout>) -> Classified {
     let Some(layout) = layout else {
         let dot = watched.join(".git");
-        return if path.starts_with(&dot) {
+        // A `.git` symlinked elsewhere: FSEvents reports the target's paths.
+        return if path.starts_with(&dot)
+            || dot.canonicalize().is_ok_and(|real| path.starts_with(real))
+        {
             Classified::rebuild(REPOSITORY)
         } else {
             Classified::default()
@@ -869,6 +872,30 @@ mod tests {
         git(&plain, &["symbolic-ref", "HEAD", "refs/heads/other"]);
         let (changes, _) = fold(&drain(&mut rx, 500).await, &plain, watch.layout.as_ref());
         assert!(changes.contains(HEAD), "{changes:?}");
+    }
+
+    /// A `.git` symlinked to an empty directory before `git init`: FSEvents
+    /// reports the target's paths, and the repository must still be seen.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_repository_made_through_a_symlinked_git_dir_is_reported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plain = tmp.path().canonicalize().unwrap().join("plain");
+        let real = tmp.path().canonicalize().unwrap().join("real.git");
+        std::fs::create_dir(&plain).unwrap();
+        std::fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&real, plain.join(".git")).unwrap();
+        assert_eq!(
+            classify(&real.join("HEAD"), &plain, None),
+            Classified::rebuild(REPOSITORY)
+        );
+        let (watch, mut rx) = open(&plain);
+        assert!(watch.layout.is_none());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        git(&plain, &["init", "-q"]);
+        let (changes, rebuild) = fold(&drain(&mut rx, 500).await, &plain, None);
+        assert!(changes.contains(REPOSITORY), "{changes:?}");
+        assert!(rebuild);
     }
 
     #[test]
