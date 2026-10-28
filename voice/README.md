@@ -25,7 +25,7 @@ Three surfaces, one worker:
    dictation test.
 
 Agents get the same through `voice::*` functions and the `voice::transcript`
-trigger.
+trigger, or by observing `voice::on-transcript` (iii 0.25).
 
 ## Install
 
@@ -386,6 +386,19 @@ Triggers: `voice::transcript`, `voice::session-started`,
 `voice::session-stopped`, `voice::model-progress`. The legacy
 `voice::speech-ended` trigger remains registered for compatibility but is no
 longer emitted: each browser uses its audio element's ended/error events.
+
+Observable functions (iii 0.25), one next to each trigger type, take the
+same config as args (`{ session_id? }`, `{ speech_id? }` for
+`voice::on-speech-ended`) and receive the same events a binding receives:
+`voice::on-transcript`, `voice::on-session-started`,
+`voice::on-session-stopped`, `voice::on-model-progress`,
+`voice::on-speech-ended`. Only the voice worker emits them; invoking one
+directly is refused with `FORBIDDEN`, and args the trigger type would refuse
+reject the observer with `INVALID_ARGS`.
+
+```js
+iii.observe({ function_id: 'voice::on-transcript', args: { session_id: 'd_…' } }, 'my::on-transcript')
+```
 
 ## Limits
 

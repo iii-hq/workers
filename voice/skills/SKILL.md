@@ -44,3 +44,13 @@ Local speech-to-text and read-aloud on the iii bus. Nothing leaves the machine b
 - `voice::transcript` — partial, final, closed and error events of dictation sessions (filter `session_id`).
 - `voice::session-started`, `voice::session-stopped` — session lifecycle.
 - `voice::model-progress` — download progress, one event per megabyte and a final `done`.
+- `voice::speech-ended` — legacy, registered for compatibility, no longer emitted (filter `speech_id`).
+
+## Observable functions (iii 0.25)
+
+Observe these with the trigger config as args; each observer receives the same event a binding receives. Only the voice worker emits them: invoking one directly is refused with `FORBIDDEN`; bad args reject the observer with `INVALID_ARGS`.
+
+- `voice::on-transcript` — args `{ session_id? }`.
+- `voice::on-session-started`, `voice::on-session-stopped` — args `{ session_id? }`.
+- `voice::on-model-progress` — args `{}`.
+- `voice::on-speech-ended` — args `{ speech_id? }` (legacy, never fires).
