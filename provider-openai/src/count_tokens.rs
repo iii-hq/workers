@@ -23,6 +23,7 @@ use llm_router::types::router::ResponseFormat;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::time::Duration;
 
 use crate::config::{config_from_resolve, ApiMode, OpenaiConfig};
 use crate::errors::classify_bus_error;
@@ -62,11 +63,29 @@ pub struct CountTokensResponse {
     pub estimator: String,
 }
 
+/// The harness gives `router::count_tokens` 10 s
+/// (`harness/src/clients/router.rs`), less than `post_count`'s own 20 s, so
+/// the metering call gives up first and the local estimate still arrives.
+const METERING_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Metering route for the configured Responses `api_url`: its
 /// `/input_tokens` child (`…/v1/responses` → `…/v1/responses/input_tokens`),
-/// so proxies and gateways stay on their own host.
-fn input_tokens_url(api_url: &str) -> String {
-    format!("{}/input_tokens", api_url.trim_end_matches('/'))
+/// so proxies and gateways stay on their own host. Pushed as a path segment
+/// so a query (`?api-version=…`) stays a query.
+fn input_tokens_url(api_url: &str) -> Option<String> {
+    let mut url = reqwest::Url::parse(api_url).ok()?;
+    url.path_segments_mut()
+        .ok()?
+        .pop_if_empty()
+        .push("input_tokens");
+    Some(url.into())
+}
+
+/// A credential the upstream refused. `post_count` keeps the status at the
+/// head of its message (`provider/upstream_status: 401 Unauthorized: …`).
+fn rejected_credential(e: &Error) -> bool {
+    let Error::Handler(m) = e else { return false };
+    m.starts_with("provider/upstream_status: 401") || m.starts_with("provider/upstream_status: 403")
 }
 
 /// The stream's Responses body without what the metering route rejects or
@@ -118,8 +137,10 @@ fn local_count(req: CountTokensRequest) -> CountTokensResponse {
 
 /// Count `req` against `cfg`'s endpoint, or locally when there is no
 /// config, the endpoint speaks Chat Completions, or the metering call fails.
+/// A refused credential drops `cache`, as the stream does.
 pub async fn count(
     http: &reqwest::Client,
+    cache: &ScaffoldCache,
     cfg: Option<&OpenaiConfig>,
     req: CountTokensRequest,
 ) -> Result<CountTokensResponse, Error> {
@@ -130,28 +151,41 @@ pub async fn count(
             "invalid_input: messages must not be empty".into(),
         ));
     }
-    let Some(cfg) = cfg.filter(|cfg| cfg.api_mode == ApiMode::Responses) else {
+    let Some((cfg, url)) = cfg
+        .filter(|cfg| cfg.api_mode == ApiMode::Responses)
+        .and_then(|cfg| Some((cfg, input_tokens_url(&cfg.api_url)?)))
+    else {
         return Ok(local_count(req));
     };
     let headers = build_headers(cfg)
         .into_iter()
         .map(|(name, value)| (name.to_string(), value))
         .collect();
-    match post_count(
-        http,
-        input_tokens_url(&cfg.api_url),
-        headers,
-        build_count_body(&req),
-        |reply| reply.get("input_tokens").and_then(Value::as_u64),
+    // shortcut: a Responses gateway without this route (vLLM, LiteLLM) pays
+    // one failed round trip and a warn per count; remember the failure per
+    // api_url if that shows up in latency or logs.
+    let metered = tokio::time::timeout(
+        METERING_TIMEOUT,
+        post_count(http, url, headers, build_count_body(&req), |reply| {
+            reply.get("input_tokens").and_then(Value::as_u64)
+        }),
     )
     .await
-    {
+    .unwrap_or_else(|_| {
+        Err(Error::Handler(format!(
+            "provider/timeout: no input_tokens reply within {METERING_TIMEOUT:?}"
+        )))
+    });
+    match metered {
         Ok(tokens) => Ok(CountTokensResponse {
             model: req.model,
             tokens,
             estimator: ESTIMATOR_METERED.into(),
         }),
         Err(e) => {
+            if rejected_credential(&e) {
+                cache.invalidate();
+            }
             tracing::warn!(error = %e, "openai input_tokens failed; counting locally");
             Ok(local_count(req))
         }
@@ -165,7 +199,7 @@ pub async fn handle(
     req: CountTokensRequest,
 ) -> Result<CountTokensResponse, Error> {
     if req.messages.is_empty() {
-        return count(http, None, req).await;
+        return count(http, cache, None, req).await;
     }
     // Resolved the way the stream resolves, so a count and a generation
     // agree on the endpoint and credential. A failed resolve still counts,
@@ -188,7 +222,7 @@ pub async fn handle(
             None
         }
     };
-    count(http, cfg.as_ref(), req).await
+    count(http, cache, cfg.as_ref(), req).await
 }
 
 #[cfg(test)]
@@ -292,26 +326,36 @@ mod tests {
     }
 
     const METERED: &str = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"object\":\"response.input_tokens\",\"input_tokens\":1545}";
+    const UNAUTHORIZED: &str = "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"error\":{\"code\":\"invalid_api_key\"}}";
     const NOT_FOUND: &str = "HTTP/1.1 404 Not Found\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"no route\"}}";
 
     #[tokio::test]
     async fn empty_messages_are_rejected() {
-        assert!(
-            count(&reqwest::Client::new(), None, request("gpt-5", vec![]))
-                .await
-                .is_err()
-        );
+        assert!(count(
+            &reqwest::Client::new(),
+            &ScaffoldCache::new(),
+            None,
+            request("gpt-5", vec![])
+        )
+        .await
+        .is_err());
     }
 
     #[test]
     fn input_tokens_route_is_the_responses_child() {
         assert_eq!(
-            input_tokens_url("https://api.openai.com/v1/responses"),
-            "https://api.openai.com/v1/responses/input_tokens"
+            input_tokens_url("https://api.openai.com/v1/responses").as_deref(),
+            Some("https://api.openai.com/v1/responses/input_tokens")
         );
         assert_eq!(
-            input_tokens_url("http://127.0.0.1:9/v1/responses/"),
-            "http://127.0.0.1:9/v1/responses/input_tokens"
+            input_tokens_url("http://127.0.0.1:9/v1/responses/").as_deref(),
+            Some("http://127.0.0.1:9/v1/responses/input_tokens")
+        );
+        // Appended to the raw string this lands inside the query value and
+        // posts to the generation route itself.
+        assert_eq!(
+            input_tokens_url("https://gw.example/openai/v1/responses?api-version=x").as_deref(),
+            Some("https://gw.example/openai/v1/responses/input_tokens?api-version=x")
         );
     }
 
@@ -350,6 +394,7 @@ mod tests {
         let (url, seen) = stub(METERED).await;
         let resp = count(
             &reqwest::Client::new(),
+            &ScaffoldCache::new(),
             Some(&cfg(url)),
             request("gpt-5-nano", vec![with_image()]),
         )
@@ -369,9 +414,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_failing_metering_route_falls_back_to_tiktoken() {
-        let (url, _seen) = stub(NOT_FOUND).await;
+        let (url, seen) = stub(NOT_FOUND).await;
         let resp = count(
             &reqwest::Client::new(),
+            &ScaffoldCache::new(),
             Some(&cfg(url)),
             request("gpt-5", vec![user("hello world")]),
         )
@@ -382,15 +428,70 @@ mod tests {
             resp.tokens,
             count_chat_tokens("gpt-5", None, &[], &[user("hello world")])
         );
+        let raw = seen.await.expect("the metering route was called");
+        assert!(raw.starts_with("POST /v1/responses/input_tokens "), "{raw}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_hung_metering_route_falls_back_inside_the_harness_budget() {
+        // Accepts and never answers. The harness gives router::count_tokens
+        // 10 s; the fallback is worthless if it lands after that.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1/responses", listener.local_addr().unwrap());
+        let _hold = tokio::spawn(async move {
+            let conn = listener.accept().await;
+            std::future::pending::<()>().await;
+            drop(conn);
+        });
+        let started = tokio::time::Instant::now();
+        let resp = count(
+            &reqwest::Client::new(),
+            &ScaffoldCache::new(),
+            Some(&cfg(url)),
+            request("gpt-5", vec![user("hello world")]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.estimator, "tiktoken");
+        let waited = started.elapsed();
+        assert!(
+            waited < Duration::from_secs(10),
+            "fell back after {waited:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn only_a_refused_credential_reads_as_one() {
+        let refused = |response: &'static str| async move {
+            let (url, _seen) = stub(response).await;
+            let err = post_count(
+                &reqwest::Client::new(),
+                format!("{url}/input_tokens"),
+                vec![],
+                json!({}),
+                |_| None,
+            )
+            .await
+            .unwrap_err();
+            rejected_credential(&err)
+        };
+        assert!(refused(UNAUTHORIZED).await);
+        assert!(!refused(NOT_FOUND).await);
+        assert!(!rejected_credential(&Error::Handler(
+            "provider/timeout: no input_tokens reply within 5s".into()
+        )));
     }
 
     #[tokio::test]
     async fn chat_completions_and_unconfigured_count_locally() {
-        // A port nothing listens on: the local path must not call out.
-        let chat = cfg("http://127.0.0.1:9/v1/chat/completions".into());
+        // A live stub that would answer 1545: any call out shows up both in
+        // the count and in what the stub saw.
+        let (url, mut seen) = stub(METERED).await;
+        let chat = cfg(url.replace("/v1/responses", "/v1/chat/completions"));
         for cfg in [Some(&chat), None] {
             let resp = count(
                 &reqwest::Client::new(),
+                &ScaffoldCache::new(),
                 cfg,
                 request("gpt-5", vec![user("hello world")]),
             )
@@ -403,12 +504,15 @@ mod tests {
                 count_chat_tokens("gpt-5", None, &[], &[user("hello world")])
             );
         }
+        tokio::task::yield_now().await;
+        assert!(seen.try_recv().is_err(), "the local path called out");
     }
 
     #[tokio::test]
     async fn the_local_estimate_counts_the_response_format_schema() {
         let plain = count(
             &reqwest::Client::new(),
+            &ScaffoldCache::new(),
             None,
             request("gpt-5", vec![user("hi")]),
         )
@@ -416,7 +520,9 @@ mod tests {
         .unwrap();
         let mut req = request("gpt-5", vec![user("hi")]);
         req.response_format = Some(schema_format());
-        let formatted = count(&reqwest::Client::new(), None, req).await.unwrap();
+        let formatted = count(&reqwest::Client::new(), &ScaffoldCache::new(), None, req)
+            .await
+            .unwrap();
         assert!(
             formatted.tokens > plain.tokens + 10,
             "{} vs {}",
