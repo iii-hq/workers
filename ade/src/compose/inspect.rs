@@ -143,7 +143,11 @@ async fn checkouts(dir: &Path) -> Vec<Checkout> {
     let Some(top) = git(dir, &["rev-parse", "--show-toplevel"]).await else {
         return Vec::new();
     };
-    let Ok(subdir) = dir.strip_prefix(top.trim()) else {
+    // `--show-toplevel` is resolved (symlinks, macOS `/var`), so strip it from the resolved dir.
+    let resolved = tokio::fs::canonicalize(dir)
+        .await
+        .unwrap_or_else(|_| dir.to_path_buf());
+    let Ok(subdir) = resolved.strip_prefix(top.trim()) else {
         return Vec::new();
     };
     let Some(list) = git(dir, &["worktree", "list", "--porcelain"]).await else {
@@ -357,6 +361,16 @@ mod tests {
         assert_eq!(feature.branch.as_deref(), Some("feat/x"));
         assert_eq!(feature.dirty, Some(false));
         assert!(feature.path.ends_with("wt/web"));
+
+        // Through a symlink git still reports the resolved top level.
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(&repo, &link).unwrap();
+        let linked = inspect(&InspectInput {
+            path: link.join("web").to_string_lossy().into_owned(),
+            run: None,
+        })
+        .await;
+        assert_eq!(linked.checkouts.len(), 2);
     }
 
     #[tokio::test]
