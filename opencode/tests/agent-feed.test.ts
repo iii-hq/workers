@@ -1,10 +1,12 @@
-import { TriggerAction } from 'iii-sdk';
+import { InvocationError, TriggerAction } from 'iii-sdk';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  AGENT_EVENT_OBSERVABLE,
   AGENT_EVENT_TRIGGER_TYPE,
   createAgentFeeds,
   createFeed,
   MAX_BINDINGS,
+  RAW_EVENT_OBSERVABLE,
   RAW_EVENT_TRIGGER_TYPE,
   validateFeedConfig,
 } from '../src/agent-feed.js';
@@ -176,6 +178,146 @@ describe('agent feeds', () => {
     expect(fake.feedEvents(AGENT)).toEqual([{ type: 'turn_end' }]);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('f::gone'));
     expect(consumerFor(AGENT)).toBe('consumer::opencode::agent-event');
+    warn.mockRestore();
+  });
+});
+
+const OBSERVABLES = [
+  [AGENT, AGENT_EVENT_OBSERVABLE, 'emit'],
+  [RAW, RAW_EVENT_OBSERVABLE, 'emitRaw'],
+] as const;
+
+describe('observable feed functions (iii 0.25)', () => {
+  it('registers both on-* functions owner-delivered with FeedConfig args, next to the trigger types', () => {
+    const fake = fakeIii();
+    createAgentFeeds(fake.iii);
+    expect(AGENT_EVENT_OBSERVABLE).toBe('opencode::on-agent-event');
+    expect(RAW_EVENT_OBSERVABLE).toBe('opencode::on-raw-event');
+    expect([...fake.observeHooks.keys()].sort()).toEqual(
+      [AGENT_EVENT_OBSERVABLE, RAW_EVENT_OBSERVABLE].sort(),
+    );
+    for (const [, fnId] of OBSERVABLES) {
+      const hooks = fake.observeHooks.get(fnId);
+      expect(hooks?.delivery).toBe('owner');
+      expect(hooks?.args_format).toMatchObject({
+        type: 'object',
+        required: ['session_id'],
+        additionalProperties: false,
+      });
+    }
+    // The trigger types stay registered next to them.
+    expect([...fake.triggerTypes.keys()].sort()).toEqual([AGENT, RAW].sort());
+  });
+
+  it('createFeed without an observableId registers no function', () => {
+    const fake = fakeIii();
+    createFeed(fake.iii, { id: 'plain::feed', source: 'opencode', description: 'd' });
+    expect(fake.registered.size).toBe(0);
+    expect(fake.triggerTypes.has('plain::feed')).toBe(true);
+  });
+
+  it.each(OBSERVABLES)('%s: direct invocation of %s is refused with FORBIDDEN', async (_, fnId) => {
+    const fake = fakeIii();
+    createAgentFeeds(fake.iii);
+    const handler = fake.registered.get(fnId);
+    expect(handler).toBeDefined();
+    for (const payload of [
+      {},
+      { session_id: 's1' },
+      { session_id: 's1', event: { forged: true } },
+    ]) {
+      const err = await handler?.(payload).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(InvocationError);
+      expect(err).toMatchObject({ code: 'FORBIDDEN' });
+    }
+    // Nothing was delivered by the refused calls.
+    expect(fake.calls).toEqual([]);
+  });
+
+  it.each(
+    OBSERVABLES,
+  )('%s: an observer receives the frame a binding receives', async (typeId, fnId, emitter) => {
+    const fake = fakeIii();
+    const feeds = createAgentFeeds(fake.iii);
+    await fake.bind(typeId, 's1');
+    const observer = await fake.observe(fnId, { session_id: 's1' });
+    const elsewhere = await fake.observe(fnId, { session_id: 's2' });
+
+    await expect(feeds[emitter]('s1', { type: 'turn_end' })).resolves.toBe(2);
+
+    const bound = fake.feedPayloads(typeId);
+    expect(bound).toHaveLength(1);
+    expect(observer.received).toEqual(bound);
+    expect(bound[0]).toMatchObject({
+      session_id: 's1',
+      seq: 0,
+      source: 'opencode',
+      event: { type: 'turn_end' },
+    });
+    expect(elsewhere.call).not.toHaveBeenCalled();
+  });
+
+  it('an observer alone gets frames with the shared seq, and none after removal', async () => {
+    const fake = fakeIii();
+    const { emit, emitRaw } = createAgentFeeds(fake.iii);
+    const observer = await fake.observe(RAW_EVENT_OBSERVABLE, { session_id: 's1' });
+    await emitRaw('s1', { n: 0 });
+    await emitRaw('s1', { n: 1 });
+    expect(observer.received.map((p) => (p as { seq: number }).seq)).toEqual([0, 1]);
+    // The agent feed is its own: the raw observer sees none of it.
+    await emit('s1', { n: 9 });
+    expect(observer.received).toHaveLength(2);
+    expect(fake.calls).toEqual([]);
+
+    await fake.unobserve(RAW_EVENT_OBSERVABLE, observer);
+    await expect(emitRaw('s1', { n: 2 })).resolves.toBe(0);
+    expect(observer.received).toHaveLength(2);
+  });
+
+  it('rejects observer args the trigger config would refuse', async () => {
+    const fake = fakeIii();
+    const { emit } = createAgentFeeds(fake.iii);
+    for (const args of [{}, { session_id: '' }, { session_id: 's1', bogus: 1 }, null]) {
+      await expect(fake.observe(AGENT_EVENT_OBSERVABLE, args)).rejects.toMatchObject({
+        code: 'INVALID_ARGS',
+      });
+    }
+    await expect(emit('s1', { type: 'turn_end' })).resolves.toBe(0);
+  });
+
+  it('counts observers against the binding cap', async () => {
+    const fake = fakeIii();
+    const feed = createFeed(fake.iii, {
+      id: 'cap::feed',
+      observableId: 'cap::on-feed',
+      source: 'opencode',
+      description: 'd',
+    });
+    for (let i = 0; i < MAX_BINDINGS; i++) await fake.bind('cap::feed', 's1', { id: `b${i}` });
+    await expect(fake.observe('cap::on-feed', { session_id: 's1' })).rejects.toMatchObject({
+      code: 'BINDING_LIMIT',
+    });
+    expect(feed.bindingCount()).toBe(MAX_BINDINGS);
+  });
+
+  it('swallows an observer that skips or fails and keeps delivering', async () => {
+    const fake = fakeIii();
+    const { emit } = createAgentFeeds(fake.iii);
+    const skipped = await fake.observe(AGENT_EVENT_OBSERVABLE, { session_id: 's1' });
+    skipped.call.mockRejectedValueOnce(
+      Object.assign(new Error('skip'), { code: 'FILTERS_NOT_MATCHED' }),
+    );
+    const broken = await fake.observe(AGENT_EVENT_OBSERVABLE, { session_id: 's1' });
+    broken.call.mockRejectedValueOnce(new Error('target gone'));
+    const ok = await fake.observe(AGENT_EVENT_OBSERVABLE, { session_id: 's1' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(emit('s1', { type: 'turn_end' })).resolves.toBe(1);
+    expect(ok.received).toHaveLength(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(broken.target));
     warn.mockRestore();
   });
 });

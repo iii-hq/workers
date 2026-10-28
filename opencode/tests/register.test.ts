@@ -24,6 +24,8 @@ describe('register', () => {
   it('registers the full opencode::* surface plus the shared entrypoint', async () => {
     const fake = await registeredWorker();
     expect([...fake.registered.keys()].sort()).toEqual([
+      'opencode::on-agent-event',
+      'opencode::on-raw-event',
       'opencode::run',
       'opencode::sessions::list',
       'opencode::start',

@@ -125,6 +125,35 @@ Payload your function receives:
 
 The two feeds number their frames independently. Deliveries are not guaranteed to arrive in order, so order by `(epoch, seq)` and drop repeated `event_id`s. Frames are ephemeral: nothing is stored or replayed, and a consumer bound after a frame was emitted never sees it. The durable record of a turn is the value `opencode::run` returns and the session record behind `opencode::status` / `opencode::sessions::list`. These feeds replace the former `agent::events` / `opencode::events` iii-stream streams (see the guide "Migrate from iii-stream and pubsub").
 
+### How to observe (iii 0.25)
+
+`registerTrigger` is deprecated in iii 0.25 and keeps working: both trigger
+types stay registered, unchanged, for 0.24 engines and existing consumers. On
+a 0.25 engine each feed is also an owner-delivered observable function:
+
+| Observable function | Same frames as |
+| --- | --- |
+| `opencode::on-agent-event` | `opencode::agent-event` |
+| `opencode::on-raw-event` | `opencode::raw-event` |
+
+```ts
+const observer = iii.observe(
+  { function_id: 'opencode::on-agent-event', args: { session_id } },
+  'my::on-opencode-event',
+  { metadata: { tenant: 'a' } }, // the observer's own sidecar
+);
+await observer.ready();
+```
+
+The args are the trigger config, `{ session_id, metadata? }`, validated by
+the engine (`INVALID_ARGS`); `args.metadata` is accepted but not forwarded,
+so pass a sidecar with the observer's own `metadata` option. Your target
+receives the payload above, one call per frame. Observers and bindings share
+each feed's table, numbering and 256-entry limit (`BINDING_LIMIT` rejects an
+observer beyond it). Frames are routed by this worker only: invoking
+`opencode::on-agent-event` or `opencode::on-raw-event` directly is refused with
+`FORBIDDEN`. On an engine without observe (0.24), bind the trigger types.
+
 ## The agent on the bus
 
 By default every turn's prompt carries the iii runtime context: the engine-grounded discovery rules retargeted to the `iii` CLI, which OpenCode reaches through its own shell tool. The agent discovers capabilities from the live engine (`engine::functions::list`, `iii trigger <fn> --help`, the registry flow) instead of memory. Local file edits stay on OpenCode's native tools; backend actions go through registered functions. The context is prepended on a fresh session and skipped on resume; turn it off with `"iii_context": false` per call or in `config.yaml`.

@@ -57,7 +57,9 @@ const refresh = async () => {
 
 await bindConfigTrigger(iii, refresh);
 
-// Owned feeds: opencode::agent-event and opencode::raw-event (bind with { session_id }).
+// Owned feeds: opencode::agent-event and opencode::raw-event (bind with { session_id }),
+// each observable on iii 0.25 as opencode::on-agent-event / opencode::on-raw-event
+// (same table, same frames).
 const { emit, emitRaw } = createAgentFeeds(iii);
 register(iii, () => holder.current, emit, emitRaw);
 
