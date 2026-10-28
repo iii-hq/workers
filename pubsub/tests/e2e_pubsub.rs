@@ -13,6 +13,7 @@ use common::engine;
 
 #[tokio::test]
 #[serial]
+#[allow(deprecated)] // the subscribe trigger type is kept for 0.24 consumers
 async fn publish_fans_out_raw_data_to_subscribe_triggers() {
     let Some(iii) = engine::get_or_init().await else {
         return; // skip: engine absent

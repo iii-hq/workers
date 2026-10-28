@@ -13,7 +13,8 @@
 > internal iii-stream bridge) does not warn.
 
 Topic-based publish/subscribe messaging. Registers the `subscribe` trigger
-type and the `publish` service function. This standalone worker replaces the
+type, the `pubsub::on-message` observable function (iii 0.25) and the
+`publish` service function. This standalone worker replaces the
 legacy built-in pub/sub service. Any function bound to a `subscribe` trigger on a topic receives
 every event published to that topic; `publish` fans an event's `data` out to
 all of a topic's subscribers as fire-and-forget invocations.
@@ -85,6 +86,32 @@ it with:
 |---|---|---|---|
 | `topic` | yes | — | Topic to subscribe to. A missing or empty topic registers nothing (a warning is logged). |
 | `condition_function_id` | no | — | Accepted for schema parity with the builtin; **never evaluated**. |
+
+## The `pubsub::on-message` observable function (iii 0.25)
+
+`registerTrigger` is deprecated in iii 0.25 and keeps working: the
+`subscribe` trigger type stays registered, unchanged, for 0.24 engines and
+existing consumers. On a 0.25 engine the same subscriptions are also an
+owner-delivered observable function, `pubsub::on-message`:
+
+```ts
+const observer = iii.observe(
+  { function_id: 'pubsub::on-message', args: { topic: 'orders' } },
+  'orders::on_created',
+);
+await observer.ready();
+```
+
+The args are the `subscribe` trigger config (`{ topic, condition_function_id? }`),
+validated by the engine (`INVALID_ARGS`; an empty topic is rejected too).
+Each observer is one more subscription in the same table as the bindings,
+keyed by its observer id, so it receives every message published to its
+topic, as the raw `data`, fire-and-forget, exactly as a bound function does;
+adapter hot-swaps carry it along. `dispose()` unsubscribes it. Messages are
+routed by this worker only: invoking `pubsub::on-message` directly is refused
+with `FORBIDDEN`. On an engine without observe (0.24), bind the trigger type.
+The redis adapter's one-subscription-per-topic-per-instance limit applies to
+observers and bindings alike.
 
 ## The `publish` function
 

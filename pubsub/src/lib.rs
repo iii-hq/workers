@@ -16,4 +16,5 @@ pub mod configuration;
 pub mod deprecation;
 pub mod hub;
 pub mod manifest;
+pub mod on_message;
 pub mod trigger;

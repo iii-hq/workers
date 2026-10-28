@@ -36,6 +36,7 @@ The worker exposes one callable function (`publish`, registered with the bare fu
 ## Functions
 
 - `publish` — broadcast an event to a topic; every `subscribe` trigger on that exact topic receives the raw `data`. Empty topic returns `topic_not_set`.
+- `pubsub::on-message` — observable function (iii 0.25): every observer of a topic receives what a `subscribe` trigger on it receives. Observe it; invoking it is refused with `FORBIDDEN`.
 
 ## Reactive triggers
 
@@ -64,5 +65,18 @@ iii.registerTrigger({
 ```
 
 The handler receives the published `data` unchanged, with no `topic` field; if one handler serves multiple topics, embed the topic inside `data` at publish time. The handler's return value is ignored and there is no retry.
+
+### How to observe (iii 0.25)
+
+On iii 0.25 engines the same subscriptions are an owner-delivered observable function, `pubsub::on-message`, with the trigger config as args:
+
+```typescript
+iii.observe(
+  { function_id: 'pubsub::on-message', args: { topic: 'orders.shipped' } },
+  'notifications::on-order-shipped',
+)
+```
+
+The target receives the published `data` unchanged, fire-and-forget, as a bound function does. An empty topic is rejected (`INVALID_ARGS`); `dispose()` unsubscribes. `pubsub::on-message` is an event source: observe it, never invoke it (a direct call is refused with `FORBIDDEN`). The `subscribe` trigger type keeps working on 0.24 and 0.25 engines.
 
 For the published payload shape, call `iii get function info` on `publish` or the handler function id.
