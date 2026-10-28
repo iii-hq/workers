@@ -364,6 +364,25 @@ iii.registerTrigger({
 | `session::meta-updated` | title/description/metadata changed | `session_id?`, `metadata?` | `{ session_id, title, description, metadata?, timestamp }` |
 | `session::deleted` | session removed | `session_id?`, `metadata?` | `{ session_id, timestamp }` |
 
+On an iii 0.25 engine each trigger type has an owner-delivered observable
+function next to it — `session::on-created`, `session::on-message-added`,
+`session::on-message-updated`, `session::on-status-changed`,
+`session::on-meta-updated`, `session::on-deleted`. Observe it with the
+trigger type's config as `args`; the observer receives the same payload as a
+binding with that config, under the same filter semantics below:
+
+```typescript
+iii.registerFunction("ui::render", async ({ input }) => render(input));
+iii.observe(
+  { function_id: "session::on-message-updated", args: { session_id: "s_123", roles: ["assistant"] } },
+  "ui::render",
+);
+```
+
+Only session-manager delivers these events: invoking a `session::on-*`
+function directly is refused with `FORBIDDEN`. The trigger types keep
+working for consumers that bind them, on 0.24 and 0.25 engines.
+
 Filter semantics (all supplied filters must hold — AND):
 
 - `session_id` — exact match.

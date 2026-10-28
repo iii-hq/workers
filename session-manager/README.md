@@ -130,6 +130,39 @@ Delivery is fire-and-forget, at-least-once, and unordered — reconcile
 message updates by `revision` (keep the highest) and transcript order
 by the parent chain, never by arrival order.
 
+### Observable functions (iii 0.25)
+
+On a 0.25 engine a new consumer observes an owner-delivered function
+instead of binding a trigger type. Each shares its trigger type's
+subscriber registry and takes that type's binding config as args, so an
+observer receives exactly the event a binding with the same config
+receives, at the same moments and through the same filters:
+
+| Function | Args | Event |
+|---|---|---|
+| `session::on-created` | `{ metadata? }` | as `session::created` |
+| `session::on-message-added` | `{ session_id?, roles?, metadata? }` | as `session::message-added` |
+| `session::on-message-updated` | `{ session_id?, roles?, metadata? }` | as `session::message-updated` |
+| `session::on-status-changed` | `{ session_id?, metadata? }` | as `session::status-changed` |
+| `session::on-meta-updated` | `{ session_id?, metadata? }` | as `session::meta-updated` |
+| `session::on-deleted` | `{ session_id?, metadata? }` | as `session::deleted` |
+
+```typescript
+iii.registerFunction('my-ui::render', async ({ observer_id, input }) => render(input))
+
+const live = iii.observe(
+  { function_id: 'session::on-message-updated', args: { session_id, roles: ['assistant'] } },
+  'my-ui::render',
+)
+```
+
+Events are routed inside session-manager: invoking any `session::on-*`
+function directly is refused with `FORBIDDEN`. Malformed args are
+rejected when the observer is added, as malformed configs are at
+registration. The six trigger types stay registered, unchanged, so
+consumers that bind them keep working on 0.24 and 0.25 engines; the
+internal `session::store::events` feed is unchanged.
+
 ## Storage adapters
 
 Two adapters, selected by an `adapter` block (a `name` plus a nested

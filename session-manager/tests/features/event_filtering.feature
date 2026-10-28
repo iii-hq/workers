@@ -169,3 +169,99 @@ Feature: trigger binding configs — the per-subscriber filter contract
       { "metadata": { "owner": "u_9" } }
       """
     Then function "obs::all" received 2 deliveries
+
+  # Observable functions (iii 0.25): an observer of session::on-* passes
+  # the trigger type's binding config as args and is filed next to the
+  # bindings, so the same filters decide what it receives.
+
+  # Prevents: an observer seeing a different event (or a different set of
+  # events) than a binding with the same config.
+  Scenario: an observer receives the events a binding with the same config receives
+    Given a bare session
+    And a bare session
+    And a binding "b1" on "session::message-added" delivering to "ui::s1" with config:
+      """
+      { "session_id": "s_001" }
+      """
+    And an observer "o1" of "session::on-message-added" with args:
+      """
+      { "session_id": "s_001" }
+      """
+    When I append a user message "mine" to "s_001"
+    And I append a user message "other" to "s_002"
+    Then function "ui::s1" received 1 delivery
+    And observer "o1" received 1 delivery
+    And observer "o1" received what function "ui::s1" received
+
+  # Prevents: roles and metadata filters being skipped for observers.
+  Scenario: observer args filter by roles and by the session's metadata
+    Given a session created with:
+      """
+      { "metadata": { "owner": "u_1" } }
+      """
+    And a session created with:
+      """
+      { "metadata": { "owner": "u_2" } }
+      """
+    And a binding "b1" on "session::message-added" delivering to "ui::assistant" with config:
+      """
+      { "roles": ["assistant"], "metadata": { "owner": "u_1" } }
+      """
+    And an observer "o1" of "session::on-message-added" with args:
+      """
+      { "roles": ["assistant"], "metadata": { "owner": "u_1" } }
+      """
+    When I append a user message "q" to "s_001"
+    And I append an empty assistant message to "s_002"
+    And I append an empty assistant message to "s_001"
+    Then function "ui::assistant" received 1 delivery
+    And observer "o1" received 1 delivery
+    And observer "o1" received what function "ui::assistant" received
+
+  # Prevents: observers of one function receiving another trigger type's
+  # events.
+  Scenario: an observer of session::on-created only sees creations
+    Given a binding "b1" on "session::created" delivering to "obs::all" with config:
+      """
+      {}
+      """
+    And an observer "o1" of "session::on-created" with args:
+      """
+      {}
+      """
+    When I call "session::create" with "{}"
+    And I append a user message "not a creation" to "s_001"
+    Then function "obs::all" received 1 delivery
+    And observer "o1" received 1 delivery
+    And observer "o1" received what function "obs::all" received
+
+  # Prevents: typo'd observer args silently matching nothing.
+  Scenario: observer args the trigger type would refuse are refused
+    When I try to observe "session::on-message-added" as "bad" with args:
+      """
+      { "sesion_id": "s_001" }
+      """
+    Then the observer is refused mentioning "unknown field"
+    When I try to observe "session::on-created" as "bad" with args:
+      """
+      { "session_id": "s_001" }
+      """
+    Then the observer is refused mentioning "unknown field"
+
+  # Prevents: removed observers continuing to receive, or their removal
+  # unbinding a binding of the same id.
+  Scenario: a removed observer stops receiving and bindings stay bound
+    Given a bare session
+    And a binding "o1" on "session::message-added" delivering to "ui::recv" with config:
+      """
+      {}
+      """
+    And an observer "o1" of "session::on-message-added" with args:
+      """
+      {}
+      """
+    Given a user message "before" appended to "s_001"
+    When I remove observer "o1" from "session::on-message-added"
+    And I append a user message "after" to "s_001"
+    Then function "ui::recv" received 2 deliveries
+    And observer "o1" received 1 delivery
