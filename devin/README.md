@@ -167,6 +167,21 @@ Your function gets one fire-and-forget call per frame:
 
 `seq` counts from 0 per feed and session within one `epoch` (a uuid minted per worker process, so a restart starts a new epoch); the two feeds count independently. Deliveries may arrive out of order: order by `(epoch, seq)` and dedup by `event_id`. The feeds are ephemeral: nothing is stored or replayed, and a binding made mid-turn only sees later frames. History lives in the session-manager transcript (`session::messages` with the run's `session_id`), the session record (`devin::status`, `devin::sessions::list`) and the `devin::run` result. These trigger types replace the former `agent::events` / `devin::events` streams (see the guide "Migrate from iii-stream and pubsub").
 
+#### Observable functions (iii 0.25)
+
+On an iii 0.25 engine each feed also has an owner-delivered observable function. A new consumer observes it instead of binding the trigger type:
+
+| Function | Next to | Carries |
+| --- | --- | --- |
+| `devin::on-agent-event` | `devin::agent-event` | the terminal AgentEvent frames |
+| `devin::on-raw-event` | `devin::raw-event` | every CLI stdout line, verbatim |
+
+```js
+iii.observe({ function_id: 'devin::on-agent-event', args: { session_id: 'sess-1' } }, 'my-app::on-frame')
+```
+
+The args are the binding config, with the same rules (`session_id` required, non-empty, at most 512 characters; no other key but `metadata`, which is accepted and unused for observers). An observer is refused with `INVALID_ARGS` when they break them and with `OBSERVER_LIMIT` past 256 observers per function. Each observer of the session receives the payload above, the same `seq` a binding gets for that frame, through `obs.call` after the bindings; observer filters apply. A failing observer never fails the run. Frames are routed inside the worker: invoking either function directly is refused with `FORBIDDEN`, so nobody can forge a frame. Both trigger types stay registered and unchanged, so existing bindings keep working on 0.24 and 0.25 engines; on a 0.24 engine the functions are plain functions that only refuse calls.
+
 ## Configuration
 
 Managed by the `configuration` worker; `config.yaml` is the seed installed on first registration and the live value hot-reloads.

@@ -92,8 +92,9 @@ async fn main() -> Result<()> {
     configuration::reconcile(&iii, &cell).await;
 
     let http = api::build_client();
-    // Own the devin::agent-event / devin::raw-event trigger types before the
-    // first turn can emit.
+    // Own the devin::agent-event / devin::raw-event trigger types and their
+    // observable functions (devin::on-agent-event / devin::on-raw-event)
+    // before the first turn can emit.
     agent_feed::register(&iii);
     register_all(&iii, cell, http);
     tracing::info!("devin worker registered all functions, ready");

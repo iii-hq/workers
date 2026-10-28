@@ -6,7 +6,7 @@ manifest: Cargo.toml
 license: Apache-2.0
 bin: devin
 tags: [coding-agent, devin, cloud, pr-review, agent]
-description: Devin CLI + API as an iii worker; devin::run/start/stop/status/sessions::list follow the agent-worker family and deliver AgentEvent frames on the devin::agent-event trigger type, devin::session::* wrap the Devin cloud session lifecycle, devin::pr-review::* exposes Devin's review surface, and devin::api reaches any Devin v1/v3 endpoint.
+description: Devin CLI + API as an iii worker; devin::run/start/stop/status/sessions::list follow the agent-worker family and deliver AgentEvent frames on the devin::agent-event trigger type (raw stdout on devin::raw-event; on iii 0.25 both feeds are also observable as devin::on-agent-event and devin::on-raw-event), devin::session::* wrap the Devin cloud session lifecycle, devin::pr-review::* exposes Devin's review surface, and devin::api reaches any Devin v1/v3 endpoint.
 config:
   base_url: https://api.devin.ai/v1
   request_timeout_secs: 120
