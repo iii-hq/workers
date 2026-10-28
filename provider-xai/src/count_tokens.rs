@@ -26,7 +26,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::config::config_from_resolve;
+use crate::config::{config_from_resolve, WorkerConfig};
 use crate::configuration::ConfigCell;
 use crate::errors::classify_bus_error;
 use crate::request::build_headers;
@@ -101,19 +101,7 @@ pub async fn handle(
     let cfg = config_from_resolve(&req.model, None, &resolved)
         .map_err(|e| Error::Handler(e.to_string()))?;
 
-    // The routing decision the stream makes: server tools ride only the
-    // Agent Tools path, which a request with client functions never takes.
-    let wc = { cell.read().await.clone() };
-    let has_client_functions = req.tools.as_ref().is_some_and(|tools| !tools.is_empty());
-    let server_tools: Vec<String> =
-        if crate::stream_fn::uses_responses_agent_tools(&wc, has_client_functions) {
-            wc.tool_sources
-                .iter()
-                .map(|t| t.as_type().to_string())
-                .collect()
-        } else {
-            Vec::new()
-        };
+    let server_tools = server_tools(&*cell.read().await, req.tools.as_deref());
     let headers = build_headers(&cfg, None)
         .into_iter()
         .map(|(name, value)| (name.to_string(), value))
@@ -125,6 +113,19 @@ pub async fn handle(
         tokens,
         estimator: ESTIMATOR_TOKENIZER.into(),
     })
+}
+
+/// The server tools the stream would send: they ride only the Agent Tools
+/// path, which a request with client functions never takes.
+fn server_tools(wc: &WorkerConfig, tools: Option<&[AgentFunction]>) -> Vec<String> {
+    let has_client_functions = tools.is_some_and(|tools| !tools.is_empty());
+    if !crate::stream_fn::uses_responses_agent_tools(wc, has_client_functions) {
+        return Vec::new();
+    }
+    wc.tool_sources
+        .iter()
+        .map(|t| t.as_type().to_string())
+        .collect()
 }
 
 /// Tokenize the rendered prompt in one `tokenize-text` call and add the
@@ -192,9 +193,15 @@ const IMAGE_MARKERS: u64 = 2;
 /// tokens for "hi" less its one text token and its row.
 fn preamble(model: &str) -> u64 {
     let id = model.to_ascii_lowercase();
-    if id.starts_with("grok-build") || id.starts_with("grok-4.20") {
+    // xAI now serves grok-code-fast as grok-build-0.1, and grok-3 and the
+    // dash-versioned grok-4 ids (grok-4-0709, grok-4-fast-…) as grok-4.3.
+    if id.starts_with("grok-build") || id.starts_with("grok-code") || id.starts_with("grok-4.20") {
         182
-    } else if id.starts_with("grok-4.3") {
+    } else if id.starts_with("grok-4.3")
+        || id.starts_with("grok-3")
+        || id == "grok-4"
+        || id.starts_with("grok-4-")
+    {
         188
     } else if id.starts_with("grok-4.5") {
         490
@@ -499,6 +506,20 @@ mod tests {
             let fixed = prompt(model, &request(vec![], vec![hi()]), &[]).fixed;
             assert_eq!(fixed + 1, billed, "{model}");
         }
+        // Older ids the catalog still lists: xAI serves grok-code-fast as
+        // grok-build-0.1 and the grok-3/grok-4 ids as grok-4.3 (2026-10-28).
+        for (model, billed) in [
+            ("grok-code-fast-1", 187),
+            ("grok-4", 193),
+            ("grok-4-0709", 193),
+            ("grok-4-fast-reasoning", 193),
+            ("grok-4-1-fast-reasoning", 193),
+            ("grok-3", 193),
+            ("grok-3-mini", 193),
+        ] {
+            let fixed = prompt(model, &request(vec![], vec![hi()]), &[]).fixed;
+            assert_eq!(fixed + 1, billed, "{model}");
+        }
         // A family not measured yet counts as the largest one, never under.
         let fixed = prompt("grok-5", &request(vec![], vec![hi()]), &[]).fixed;
         assert_eq!(fixed + 1, 1243);
@@ -647,5 +668,115 @@ mod tests {
             prompt("grok-4.3", &with_format, &web).fixed,
             prompt("grok-4.3", &req, &web).fixed
         );
+    }
+
+    #[test]
+    fn probe_shapes_count_what_xai_billed() {
+        // The live probe's shapes on grok-build-0.1 (2026-10-28): billed
+        // prompt_tokens, and Grok's tokenizer over each shape's joined text.
+        let tool = |name: &str| AgentFunction {
+            name: name.into(),
+            description: format!("Run {name} on the workspace."),
+            parameters: json!({"type": "object", "properties": {"path": {"type": "string"}}}),
+            label: None,
+            execution_mode: None,
+        };
+        let reader = AgentFunction {
+            name: "docs::read".into(),
+            description: "Read one segment of the ladder by its index.".into(),
+            parameters: json!({"type": "object", "properties": {"segment": {"type": "integer"}}, "required": ["segment"]}),
+            label: None,
+            execution_mode: None,
+        };
+        let round = |details: Value, content: Vec<ContentBlock>| {
+            vec![hi(), calls(&["c1"]), result("c1", content, details)]
+        };
+        let three = || vec![text("segment three")];
+        let denied = json!({"status": "denied", "reason": "policy blocks docs::read"});
+        let mut schema = request(vec![], vec![hi()]);
+        schema.response_format = Some(ResponseFormat {
+            r#type: "json".into(),
+            schema: Some(
+                json!({"type": "object", "properties": {"answer": {"type": "string"}, "confidence": {"type": "number"}}, "required": ["answer", "confidence"], "additionalProperties": false}),
+            ),
+        });
+        // (shape, request, text tokens, billed, counted over the bill)
+        let shapes = [
+            (
+                "hi + 1 tool",
+                request(vec![tool("alpha")], vec![hi()]),
+                39,
+                255,
+                0,
+            ),
+            (
+                "hi + 3 tools",
+                request(vec![tool("alpha"), tool("beta"), tool("gamma")], vec![hi()]),
+                113,
+                331,
+                0,
+            ),
+            ("hi + json_schema", schema, 44, 238, 0),
+            (
+                "1 call round",
+                request(vec![reader.clone()], round(json!({}), three())),
+                63,
+                285,
+                2,
+            ),
+            (
+                "1 call, denied result",
+                request(vec![reader.clone()], round(denied, three())),
+                83,
+                305,
+                2,
+            ),
+            (
+                "orphan call",
+                request(vec![reader.clone()], vec![hi(), calls(&["c1"])]),
+                72,
+                295,
+                1,
+            ),
+            (
+                "tool-result image 256x256",
+                request(
+                    vec![reader.clone()],
+                    round(json!({}), vec![text("segment three"), image(png(256, 256))]),
+                ),
+                71,
+                392,
+                4,
+            ),
+        ];
+        for (shape, req, text_tokens, billed, over) in shapes {
+            let p = prompt(MODEL, &req, &[]);
+            assert_eq!(p.fixed + text_tokens, billed + over, "{shape}");
+        }
+    }
+
+    #[test]
+    fn server_tools_count_only_on_the_route_the_stream_takes() {
+        use crate::config::{ToolSource, WorkerConfig};
+        let agent_tools = WorkerConfig {
+            tools_enabled: true,
+            tool_sources: vec![ToolSource::WebSearch, ToolSource::XSearch],
+        };
+        assert_eq!(
+            server_tools(&agent_tools, None),
+            vec!["web_search", "x_search"]
+        );
+        assert_eq!(
+            server_tools(&agent_tools, Some(&[])),
+            vec!["web_search", "x_search"]
+        );
+        // Client functions keep the request on Chat Completions.
+        assert!(server_tools(&agent_tools, Some(&[reader()])).is_empty());
+        let disabled = WorkerConfig {
+            tools_enabled: false,
+            ..agent_tools
+        };
+        assert!(server_tools(&disabled, None).is_empty());
+        assert!(server_tools(&WorkerConfig::default(), None).is_empty());
     }
 }

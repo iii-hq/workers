@@ -12,11 +12,16 @@ chat/reasoning families ∪ curated capability snapshot →
 the request is rendered from this worker's own wire rows and tool array
 (schemas in Python `json.dumps` form), tokenized in one `/tokenize-text`
 call, and xAI's measured overhead is added on top: the server-side preamble
-per model family (~180 tokens on grok-build/4.20/4.3, ~1,240 on grok-4.7),
-the tools header, image tokens from each PNG/JPEG's dimensions, the
-`response_format` schema, and the server-tool definitions on the Agent Tools
-path. The constants are calibrated against billed `prompt_tokens`, not
-published by xAI.
+per model family (~180 tokens on grok-build/4.20/4.3 and the older
+grok-code-fast, grok-3 and grok-4 ids xAI now serves as those, ~1,240 on
+grok-4.7), the tools header, image tokens from each PNG/JPEG's dimensions,
+and the server-tool definitions on the Agent Tools path. The constants are
+calibrated against billed `prompt_tokens`, not published by xAI.
+
+A `response_format` schema counts when the caller passes it to
+`provider::xai::count_tokens` directly. `router::count_tokens` does not
+forward `response_format` yet (MOT-5568), so counts through the router leave
+the schema out.
 
 ## Behavior
 
