@@ -2081,6 +2081,40 @@ mod tests {
         assert_eq!(overruns.load(Ordering::SeqCst), 0);
     }
 
+    /// Takes nothing for 1.5 s at its first stdout frame, as a client whose
+    /// thread a loaded machine deschedules does.
+    struct PausingSink(iii_shell_client::VecSink, bool);
+
+    impl iii_shell_client::OutputSink for PausingSink {
+        fn on_stdout(&mut self, bytes: &[u8]) -> iii_shell_client::Flow {
+            if !std::mem::replace(&mut self.1, true) {
+                std::thread::sleep(Duration::from_millis(1500));
+            }
+            self.0.on_stdout(bytes)
+        }
+        fn on_stderr(&mut self, bytes: &[u8]) -> iii_shell_client::Flow {
+            self.0.on_stderr(bytes)
+        }
+    }
+
+    /// REGRESSION: every test once ran the relay with a 1 s stall, which
+    /// ended a client paused like this one mid-frame (`short read on frame
+    /// body`, broken pipe). Under the production stall its echo arrives whole.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_client_paused_mid_echo_still_gets_it_whole() {
+        let (sock, vm_guest_sim, _tmp) = boot().await;
+        let _overruns = fake_guest(vm_guest_sim);
+        let data = pattern(4 << 20, 3);
+        let session = iii_shell_client::Session::connect(&sock).await.unwrap();
+        let mut sink = PausingSink(iii_shell_client::VecSink::with_cap(64 << 20), false);
+        let timeout = Some(Duration::from_secs(60));
+        let out = session
+            .run(spec("/bin/cat", data.clone()), &mut sink, timeout)
+            .await;
+        assert_eq!(out.unwrap().status.code, Some(0));
+        assert!(sink.0.stdout == data, "the echo differs from its stdin");
+    }
+
     /// 16 MiB uploaded via the real client and relay, within the guest's
     /// window; the client once sent every chunk without waiting.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
