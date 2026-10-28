@@ -36,6 +36,8 @@ impl ScheduleHandles {
         self.triggers.len()
     }
 
+    // register_trigger is deprecated in 0.25 and still served by 0.24 and 0.25 engines.
+    #[allow(deprecated)]
     pub async fn recover_bindings(&mut self) {
         let pending = pending_schedule_indices(&self.config, |repository| {
             self.triggers.contains_key(repository)

@@ -103,6 +103,20 @@ Runs, reconciliation snapshots, and finding actions are stored records owned by 
 
 These trigger types replace the earlier stream-based doorbell, which is deprecated; the worker no longer depends on the stream worker.
 
+### Observable functions (iii 0.25)
+
+On a 0.25 engine a new consumer observes an owner-delivered function instead of binding a trigger type. Each one shares its trigger type's binding table, so an observer receives exactly the payload a matching binding receives, at the same moment:
+
+| Function | Args | Event |
+| --- | --- | --- |
+| `security-scan::on-run-changed` | `{ repository?, run_id? }` | `{ run_id, repository, status, attempt, updated_at, completed_at }`, as `security-scan::run-changed` |
+| `security-scan::on-reconciliation-changed` | `{ repository?, run_id? }` | `{ run_id, repository }`, as `security-scan::reconciliation-changed` |
+| `security-scan::on-action-changed` | `{ repository?, run_id? }` | `{ action_id, run_id, repository, status, updated_at }`, as `security-scan::action-changed` |
+
+- The args are the binding `config` above: the same optional equality filters, validated the same way. An invalid filter rejects the observer with `INVALID_ARGS`; past the 256-subscriber cap of its trigger type (bindings and observers together) it is rejected with `TOO_MANY_SUBSCRIBERS`.
+- Changes are routed inside this worker: invoking any of these functions directly is refused with `FORBIDDEN`, so no caller can hand observers a forged change. Delivery does not hold up the write, and is not replayed: observe first, then read, and read again after a reconnect.
+- The trigger types stay registered, unchanged, so consumers that bind them keep working on 0.24 and 0.25 engines.
+
 ## Configuration
 
 Repositories are an operator-owned allowlist. Callers choose an id, not an arbitrary filesystem path or URL.

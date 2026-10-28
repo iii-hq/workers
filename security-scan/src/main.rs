@@ -86,6 +86,8 @@ async fn main() -> Result<()> {
             .await;
     let initial_schedule_count = schedule_handles.bound_schedule_count();
 
+    // Deprecated in 0.25 and still served by 0.24 and 0.25 engines.
+    #[allow(deprecated)]
     let _completion_trigger = match iii.register_trigger(RegisterTriggerInput {
         trigger_type: "harness::turn-completed".into(),
         function_id: functions::TURN_COMPLETED_ID.into(),

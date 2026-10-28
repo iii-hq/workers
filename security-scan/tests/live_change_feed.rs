@@ -56,6 +56,7 @@ fn event(run_id: &str, repository: &str) -> ReconciliationChangedEventV1 {
 
 #[tokio::test]
 #[ignore = "needs a live engine: set SECURITY_SCAN_LIVE_III_URL"]
+#[allow(deprecated)] // register_trigger: still served by 0.24 and 0.25 engines
 async fn change_trigger_types_work_on_a_live_engine() {
     let url = std::env::var("SECURITY_SCAN_LIVE_III_URL")
         .expect("set SECURITY_SCAN_LIVE_III_URL to a live engine");
