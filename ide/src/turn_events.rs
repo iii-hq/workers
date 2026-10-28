@@ -10,6 +10,10 @@
 //!
 //! Delivery mirrors [`crate::job_events`]: `Void` routing, each fire on its
 //! own task, the binding's `metadata` and `namespace` passed through.
+//!
+//! Next to the trigger type, `shell::on-turns-changed` (iii 0.25) is the
+//! observable function with the same config as args: its observers sit in
+//! the same subscriber map and get the same coalesced wake.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -19,13 +23,25 @@ use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
+use iii_sdk::{
+    IIIClient, ObserveHandler, ObserveRejection, Observer, RegisterTriggerType, TriggerAction,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::observable::{codes, observer_key, register_observable, EventObserver};
+
 /// The trigger type a surface binds to follow a session's change history.
 pub const TURNS_CHANGED: &str = "shell::turns::changed";
+/// The observable function next to it (iii 0.25).
+pub const ON_TURNS_CHANGED: &str = "shell::on-turns-changed";
+const ON_TURNS_CHANGED_DESC: &str =
+    "A session's change history (shell::turns::list) changed: a turn opened or closed, a \
+     file change recorded, a snapshot taken. Observe it with args { session_id? } for one \
+     top-level session, or none for every session. At most one event per session per \
+     ~200 ms, carrying { session_id }; read the turns with shell::turns::list. Only the ide \
+     worker emits it: invoking it directly is refused (FORBIDDEN).";
 
 /// Folds a burst of record writes into one wake.
 const COALESCE_MS: u64 = 200;
@@ -51,6 +67,9 @@ struct Subscriber {
     metadata: Option<Value>,
     namespace: Option<String>,
     session_id: Option<String>,
+    /// An observer of `shell::on-turns-changed`: events go through it, and
+    /// `function_id` is only its target, for logs.
+    observer: Option<Arc<dyn EventObserver>>,
 }
 
 impl Subscriber {
@@ -62,6 +81,24 @@ impl Subscriber {
             metadata: config.metadata.clone(),
             namespace: config.namespace.clone(),
             session_id: filter.session_id,
+            observer: None,
+        })
+    }
+
+    /// An observer with its args, the trigger config (absent means none).
+    fn from_observer(observer: Arc<dyn EventObserver>, args: &Value) -> Result<Self, Error> {
+        let filter: TurnsChangedConfig = if args.is_null() {
+            TurnsChangedConfig::default()
+        } else {
+            serde_json::from_value(args.clone())
+                .map_err(|e| Error::Handler(format!("invalid {ON_TURNS_CHANGED} args: {e}")))?
+        };
+        Ok(Self {
+            function_id: observer.target().to_string(),
+            metadata: None,
+            namespace: None,
+            session_id: filter.session_id,
+            observer: Some(observer),
         })
     }
 
@@ -150,13 +187,18 @@ impl TurnsChanged {
         for target in &targets {
             lock(&self.fired).push((target.function_id.clone(), event.clone()));
         }
-        let Some(iii) = &self.iii else {
-            return;
-        };
         let Ok(payload) = serde_json::to_value(&event) else {
             return;
         };
         for target in targets {
+            if let Some(observer) = &target.observer {
+                observer.deliver(payload.clone());
+                continue;
+            }
+            // `None` in unit tests: fires are recorded, not sent.
+            let Some(iii) = &self.iii else {
+                continue;
+            };
             let iii = iii.clone();
             let request = target.request(payload.clone());
             let function_id = target.function_id;
@@ -180,6 +222,7 @@ impl TurnsChanged {
                 metadata: None,
                 namespace: None,
                 session_id: session_id.map(str::to_string),
+                observer: None,
             },
         );
     }
@@ -193,7 +236,50 @@ impl TurnsChanged {
     }
 }
 
+impl TurnsChanged {
+    /// File an observer of `shell::on-turns-changed` with its args (the
+    /// trigger config) next to the bindings.
+    pub fn add_observer(
+        &self,
+        observer: Arc<dyn EventObserver>,
+        args: &Value,
+    ) -> Result<(), Error> {
+        let key = observer_key(observer.id());
+        let subscriber = Subscriber::from_observer(observer, args)?;
+        tracing::info!(
+            function_id = ON_TURNS_CHANGED,
+            id = %key,
+            session_id = ?subscriber.session_id,
+            "turn history observer added"
+        );
+        lock(&self.subscribers).insert(key, subscriber);
+        Ok(())
+    }
+
+    /// Take an observer out of the subscriber map.
+    pub fn remove_observer(&self, id: &str) {
+        lock(&self.subscribers).remove(&observer_key(id));
+    }
+}
+
 struct TurnsChangedTriggerHandler(Arc<TurnsChanged>);
+
+/// Files each observer of `shell::on-turns-changed` in the feed's
+/// subscriber map.
+struct TurnsChangedObserveHandler(Arc<TurnsChanged>);
+
+#[async_trait]
+impl ObserveHandler for TurnsChangedObserveHandler {
+    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
+        self.0
+            .add_observer(Arc::new(obs.clone()), obs.args_value())
+            .map_err(|e| ObserveRejection::new(codes::INVALID_ARGS, e.to_string()))
+    }
+
+    async fn on_observer_removed(&self, obs: &Observer) {
+        self.0.remove_observer(obs.id());
+    }
+}
 
 #[async_trait]
 impl TriggerHandler for TurnsChangedTriggerHandler {
@@ -215,10 +301,14 @@ impl TriggerHandler for TurnsChangedTriggerHandler {
     }
 }
 
-/// Register the trigger type; the returned feed is what the turn log
+/// Register the trigger type and, next to it, the observable
+/// `shell::on-turns-changed`; the returned feed is what the turn log
 /// notifies on every stored record.
 pub fn register_turns_changed_trigger(iii: &IIIClient) -> Arc<TurnsChanged> {
     let feed = TurnsChanged::new(Some(iii.clone()));
+    // Kept for consumers that bind the trigger type, on 0.24 and 0.25
+    // engines alike.
+    #[allow(deprecated)]
     let _handle = iii.register_trigger_type(
         RegisterTriggerType::new(
             TURNS_CHANGED,
@@ -231,6 +321,12 @@ pub fn register_turns_changed_trigger(iii: &IIIClient) -> Arc<TurnsChanged> {
         )
         .trigger_request_format::<TurnsChangedConfig>()
         .call_request_format::<TurnsChangedEvent>(),
+    );
+    register_observable::<TurnsChangedConfig, TurnsChangedEvent, _>(
+        iii,
+        ON_TURNS_CHANGED,
+        ON_TURNS_CHANGED_DESC,
+        TurnsChangedObserveHandler(feed.clone()),
     );
     feed
 }
@@ -322,5 +418,90 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("invalid"), "{err}");
+    }
+
+    /// An observer of `shell::on-turns-changed` shares the feed's
+    /// subscriber map and is woken with the event a binding is.
+    #[tokio::test(start_paused = true)]
+    async fn an_observer_receives_the_event_a_binding_receives() {
+        use crate::observable::testing::Recorder;
+        let feed = TurnsChanged::new(None);
+        TurnsChangedTriggerHandler(feed.clone())
+            .register_trigger(binding("b", Some("s1")))
+            .await
+            .unwrap();
+        let mine = Recorder::new("o-mine");
+        let every = Recorder::new("o-every");
+        let other = Recorder::new("o-other");
+        feed.add_observer(mine.clone(), &json!({ "session_id": "s1" }))
+            .unwrap();
+        feed.add_observer(every.clone(), &Value::Null).unwrap();
+        feed.add_observer(other.clone(), &json!({ "session_id": "s9" }))
+            .unwrap();
+
+        for _ in 0..10 {
+            feed.notify("s1");
+        }
+        tokio::time::sleep(Duration::from_millis(COALESCE_MS + 50)).await;
+
+        let bound: Vec<_> = lock(&feed.fired)
+            .iter()
+            .filter(|(f, _)| f == "probe::b")
+            .map(|(_, e)| serde_json::to_value(e).unwrap())
+            .collect();
+        assert_eq!(bound, vec![json!({ "session_id": "s1" })]);
+        assert_eq!(mine.seen(), bound);
+        assert_eq!(every.seen(), bound);
+        assert!(other.seen().is_empty());
+
+        // A removed observer is no longer woken, the binding still is.
+        feed.remove_observer("o-mine");
+        feed.notify("s1");
+        tokio::time::sleep(Duration::from_millis(COALESCE_MS + 50)).await;
+        assert_eq!(mine.seen().len(), 1);
+        assert_eq!(every.seen().len(), 2);
+        assert_eq!(
+            lock(&feed.fired)
+                .iter()
+                .filter(|(f, _)| f == "probe::b")
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_observer_alone_schedules_a_wake() {
+        use crate::observable::testing::Recorder;
+        let feed = TurnsChanged::new(None);
+        let only = Recorder::new("o-only");
+        feed.add_observer(only.clone(), &json!({})).unwrap();
+        feed.notify("s2");
+        tokio::time::sleep(Duration::from_millis(COALESCE_MS + 50)).await;
+        assert_eq!(only.seen(), vec![json!({ "session_id": "s2" })]);
+    }
+
+    #[test]
+    fn on_turns_changed_refuses_direct_invocation() {
+        assert_eq!(
+            ON_TURNS_CHANGED,
+            TURNS_CHANGED.replacen("shell::turns::", "shell::on-turns-", 1)
+        );
+        let err = crate::observable::refuse_invocation(ON_TURNS_CHANGED);
+        assert!(
+            matches!(&err, Error::Remote { code, message, .. }
+                if code == codes::FORBIDDEN && message.contains(ON_TURNS_CHANGED)),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn observer_args_follow_the_binding_config_rules() {
+        use crate::observable::testing::Recorder;
+        let feed = TurnsChanged::new(None);
+        let err = feed
+            .add_observer(Recorder::new("o-bad"), &json!({ "session_id": 7 }))
+            .unwrap_err();
+        assert!(err.to_string().contains(ON_TURNS_CHANGED), "{err}");
+        assert!(lock(&feed.subscribers).is_empty());
     }
 }

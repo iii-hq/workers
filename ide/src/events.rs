@@ -19,6 +19,11 @@
 //! with more such directories than `CHANGED_WATCH_BUDGET` (or the host's
 //! share) is watched breadth-first up to it, never refused. On macOS one
 //! recursive FSEvents watch covers the root instead.
+//!
+//! Next to the trigger type, `shell::on-changed` (iii 0.25) is the
+//! observable function with the same config as args: an observer joins the
+//! same bounded watch as the bindings on its root and receives the same
+//! events, through [`crate::observable::EventObserver::deliver`].
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -30,19 +35,38 @@ use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
+use iii_sdk::{
+    IIIClient, ObserveHandler, ObserveRejection, Observer, RegisterTriggerType, TriggerAction,
+};
 use notify::{RecursiveMode, Watcher};
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::Sender;
 
 use crate::code::path::PathResolver;
 use crate::code::state::ResolverCell;
+use crate::observable::{codes, observer_key, register_observable, EventObserver};
 
 /// The trigger type a surface binds to watch a directory change.
 pub const CHANGED: &str = "shell::changed";
+/// The observable function next to it (iii 0.25).
+pub const ON_CHANGED: &str = "shell::on-changed";
+
+/// A `shell::changed` binding's config, and a `shell::on-changed`
+/// observer's args.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+// The args schema only: `watch_root` and `Delivery` read the raw config,
+// so a binding's error messages stay what they were.
+#[allow(dead_code)]
+pub struct ChangedConfig {
+    /// The directory to watch (jail-checked like every `coder::*` path).
+    pub path: String,
+    /// Also deliver, and watch inside, paths the root ignores.
+    #[serde(default)]
+    pub include_ignored: bool,
+}
 
 /// How long a watcher batches raw OS events before fanning out — long
 /// enough to fold an editor's write-rename dance into one event, short
@@ -95,6 +119,9 @@ impl Drop for WatchEntry {
 
 /// The `shell::changed` trigger type: the first binding on a root (and
 /// `include_ignored`) starts its watch, the last to unregister stops it.
+/// Shared by the trigger type and the observable function: cheap to clone,
+/// every clone holds the same watches.
+#[derive(Clone)]
 struct ChangedTriggerHandler {
     iii: IIIClient,
     watches: Arc<Mutex<HashMap<(PathBuf, bool), WatchEntry>>>,
@@ -578,6 +605,8 @@ struct Delivery {
     /// `data/observability` and `data/session-manager` writes — the
     /// subscriber's own transcript. The workspace UI opts in to count them.
     include_ignored: bool,
+    /// An observer of `shell::on-changed`: events go through it.
+    observer: Option<Arc<dyn EventObserver>>,
 }
 
 impl Delivery {
@@ -590,6 +619,20 @@ impl Delivery {
                 .get("include_ignored")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            observer: None,
+        }
+    }
+
+    /// An observer, with its args read like a binding's config.
+    fn from_observer(observer: Arc<dyn EventObserver>, args: &Value) -> Self {
+        Self {
+            metadata: None,
+            namespace: None,
+            include_ignored: args
+                .get("include_ignored")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            observer: Some(observer),
         }
     }
 
@@ -711,6 +754,10 @@ async fn pump(
                     );
                     continue;
                 }
+                if let Some(observer) = &delivery.observer {
+                    observer.deliver(payload.clone());
+                    continue;
+                }
                 // Deliveries ride their own tasks: awaiting them here would
                 // let one hung send stop the pump from draining `rx`, fill
                 // the channel, and silently drop distinct events — the exact
@@ -799,12 +846,32 @@ impl ChangedTriggerHandler {
         config: TriggerConfig,
         open: impl FnOnce(&Path, Sender<notify::Event>) -> Option<DirWatch> + Send + 'static,
     ) -> Result<(), Error> {
-        let resolver = self.resolver.read().await.clone();
-        let root = watch_root(&config.config, &resolver)?;
-        let shown = root.display().to_string();
         let delivery = Delivery::from_config(&config);
+        self.attach(
+            config.id.clone(),
+            &config.config,
+            config.function_id.clone(),
+            delivery,
+            open,
+        )
+        .await
+    }
+
+    /// Join `id` (a binding or an observer) to the watch on the root its
+    /// `config` names, starting the watch for the first one.
+    async fn attach(
+        &self,
+        id: String,
+        config: &Value,
+        function_id: String,
+        delivery: Delivery,
+        open: impl FnOnce(&Path, Sender<notify::Event>) -> Option<DirWatch> + Send + 'static,
+    ) -> Result<(), Error> {
+        let resolver = self.resolver.read().await.clone();
+        let root = watch_root(config, &resolver)?;
+        let shown = root.display().to_string();
         // A binding registered again (a reconnect) may name another root.
-        self.unbind(&config.id);
+        self.unbind(&id);
         let mut ready = {
             let mut watches = lock(&self.watches);
             let key = (root.clone(), delivery.include_ignored);
@@ -819,8 +886,7 @@ impl ChangedTriggerHandler {
             let entry = watches.entry(key).or_insert_with(|| {
                 start_watch(self.iii.clone(), root, orphans.unwrap_or_default(), open)
             });
-            lock(&entry.subscribers)
-                .insert(config.id.clone(), (config.function_id.clone(), delivery));
+            lock(&entry.subscribers).insert(id.clone(), (function_id.clone(), delivery));
             entry.ready.clone()
         };
         // An unregister landing mid-setup drops the sender: not a failure.
@@ -829,15 +895,15 @@ impl ChangedTriggerHandler {
             .await
             .is_ok_and(|started| *started == Some(false));
         if failed {
-            self.unbind(&config.id);
+            self.unbind(&id);
             return Err(Error::Handler(format!(
                 "shell::changed cannot watch {shown}: the watcher did not start"
             )));
         }
         tracing::info!(
             trigger_type = CHANGED,
-            id = %config.id,
-            function_id = %config.function_id,
+            id = %id,
+            function_id = %function_id,
             root = %shown,
             "watch registered"
         );
@@ -845,9 +911,48 @@ impl ChangedTriggerHandler {
     }
 }
 
-/// Register the trigger type. The SDK queues the registration and cannot
-/// report failure; a dead type surfaces as bindings that never fire.
+/// Files each observer of `shell::on-changed` on the watch of the root its
+/// args name, next to that root's bindings.
+struct ChangedObserveHandler(ChangedTriggerHandler);
+
+#[async_trait]
+impl ObserveHandler for ChangedObserveHandler {
+    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
+        let args = obs.args_value();
+        let delivery = Delivery::from_observer(Arc::new(obs.clone()), args);
+        let (budget, all) = (self.0.budget, delivery.include_ignored);
+        self.0
+            .attach(
+                observer_key(obs.id()),
+                args,
+                obs.target().to_string(),
+                delivery,
+                move |root, tx| DirWatch::open(root, tx, budget, all),
+            )
+            .await
+            .map_err(|e| ObserveRejection::new(codes::INVALID_ARGS, e.to_string()))
+    }
+
+    async fn on_observer_removed(&self, obs: &Observer) {
+        tracing::info!(function_id = ON_CHANGED, id = %obs.id(), "watch observer removed");
+        self.0.unbind(&observer_key(obs.id()));
+    }
+}
+
+/// Register the trigger type and, next to it, the observable
+/// `shell::on-changed`, both on the same watches. The SDK queues the
+/// registration and cannot report failure; a dead type surfaces as bindings
+/// that never fire.
 pub fn register_changed_trigger(iii: &IIIClient, resolver: ResolverCell) {
+    let handler = ChangedTriggerHandler {
+        iii: iii.clone(),
+        watches: Arc::new(Mutex::new(HashMap::new())),
+        resolver,
+        budget: CHANGED_WATCH_BUDGET,
+    };
+    // Kept for consumers that bind the trigger type, on 0.24 and 0.25
+    // engines alike.
+    #[allow(deprecated)]
     let _handle = iii.register_trigger_type(RegisterTriggerType::new(
         CHANGED,
         format!(
@@ -861,16 +966,26 @@ pub fn register_changed_trigger(iii: &IIIClient, resolver: ResolverCell) {
              breadth-first from the top for that many: changes deeper down go \
              unreported."
         ),
-        ChangedTriggerHandler {
-            iii: iii.clone(),
-            watches: Arc::new(Mutex::new(HashMap::new())),
-            resolver,
-            budget: CHANGED_WATCH_BUDGET,
-        },
+        handler.clone(),
     ));
     tracing::info!(
         trigger_type = CHANGED,
         "sent the trigger type registration; delivery is confirmed by the first subscription"
+    );
+    register_observable::<ChangedConfig, ChangedEvent, _>(
+        iii,
+        ON_CHANGED,
+        &format!(
+            "Anything under a watched directory changed, whoever changed it. Observe it \
+             with args {{ path, include_ignored? }} naming the directory (jail-checked like \
+             every coder::* path); ignored paths (git-ignored; outside a repository data/, \
+             config/, .iii/, node_modules/) are skipped unless include_ignored is true. Each \
+             event is {{ path, kind: created | modified | deleted, root, dir, ignored }}. A \
+             tree holding more than {CHANGED_WATCH_BUDGET} directories is watched \
+             breadth-first from the top for that many. Only the ide worker emits it: \
+             invoking it directly is refused (FORBIDDEN)."
+        ),
+        ChangedObserveHandler(handler),
     );
 }
 
@@ -1477,5 +1592,102 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("cannot watch"), "{err}");
+    }
+
+    /// Waits up to five seconds for `seen` to hold an event for `path`.
+    async fn observed_path(
+        recorder: &crate::observable::testing::Recorder,
+        path: &str,
+    ) -> Option<Value> {
+        for _ in 0..100 {
+            if let Some(event) = recorder.seen().into_iter().find(|e| e["path"] == path) {
+                return Some(event);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        None
+    }
+
+    /// An observer of `shell::on-changed` joins the watch its root's
+    /// bindings use, and receives the event they receive.
+    #[tokio::test]
+    async fn an_observer_receives_the_event_a_binding_receives() {
+        use crate::observable::testing::Recorder;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let handler = handler_at(&root, 64);
+        handler
+            .register_trigger(binding("b1", &root, false))
+            .await
+            .unwrap();
+        let recorder = Recorder::new("o1");
+        let args = json!({ "path": root });
+        handler
+            .attach(
+                observer_key("o1"),
+                &args,
+                recorder.target().to_string(),
+                Delivery::from_observer(recorder.clone(), &args),
+                |root, tx| DirWatch::open(root, tx, 64, false),
+            )
+            .await
+            .unwrap();
+        {
+            let watches = lock(&handler.watches);
+            assert_eq!(watches.len(), 1, "the observer shares the binding's watch");
+            let entry = watches.values().next().unwrap();
+            let mut bound: Vec<String> = lock(&entry.subscribers).keys().cloned().collect();
+            bound.sort();
+            assert_eq!(bound, ["b1", "observer:o1"]);
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        let event = observed_path(&recorder, "a.txt")
+            .await
+            .expect("the observer receives the change");
+        assert_eq!(event["root"], json!(root.to_string_lossy()));
+        assert_eq!(event["dir"], json!(false));
+        assert_eq!(event["ignored"], json!(false));
+        assert!(
+            event["kind"] == "created" || event["kind"] == "modified",
+            "{event}"
+        );
+
+        // Removing the observer keeps the binding's watch; the last binding
+        // takes it down.
+        handler.unbind(&observer_key("o1"));
+        assert_eq!(lock(&handler.watches).len(), 1);
+        handler
+            .unregister_trigger(binding("b1", &root, false))
+            .await
+            .unwrap();
+        assert!(lock(&handler.watches).is_empty());
+    }
+
+    #[tokio::test]
+    async fn observer_args_follow_the_binding_config_rules() {
+        use crate::observable::testing::Recorder;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let handler = handler_at(&root, 64);
+        let recorder = Recorder::new("o1");
+        let args = json!({});
+        let err = handler
+            .attach(
+                observer_key("o1"),
+                &args,
+                recorder.target().to_string(),
+                Delivery::from_observer(recorder.clone(), &args),
+                |root, tx| DirWatch::open(root, tx, 64, false),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("config.path"), "{err}");
+        assert!(lock(&handler.watches).is_empty());
+        let all =
+            Delivery::from_observer(recorder, &json!({ "path": root, "include_ignored": true }));
+        assert!(all.include_ignored);
+        assert!(all.observer.is_some());
     }
 }

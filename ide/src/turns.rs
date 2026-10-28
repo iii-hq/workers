@@ -1888,6 +1888,8 @@ pub fn register(
             .metadata(json!({ "internal": true, "trace_hidden": true })),
         );
     }
+    // iii.register_trigger is deprecated in iii 0.25; kept for 0.24 engines.
+    #[allow(deprecated)]
     for (point, function_id) in [
         ("harness::hook::pre-turn", PRE_TURN_FN_ID),
         ("harness::hook::post-turn", POST_TURN_FN_ID),
@@ -1900,6 +1902,7 @@ pub fn register(
             tracing::warn!(error = %e, point, "turn log: snapshot binding failed; turn diffs fall back to hook pre-images");
         }
     }
+    #[allow(deprecated)]
     for (point, function_id) in [
         ("harness::hook::pre-trigger", PRE_HOOK_FN_ID),
         ("harness::hook::post-trigger", POST_HOOK_FN_ID),
@@ -1970,6 +1973,7 @@ pub fn register(
             .metadata(json!({ "internal": true, "trace_hidden": true })),
         );
     }
+    #[allow(deprecated)]
     for (event, function_id) in [
         ("harness::turn-started", STARTED_FN_ID),
         ("harness::turn-completed", COMPLETED_FN_ID),

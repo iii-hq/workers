@@ -17,23 +17,40 @@
 //! `__binding` key is dropped by the harness with no error anywhere
 //! (MOT-4719), which reads exactly like a trigger type that was never
 //! registered.
+//!
+//! Next to the trigger type, `shell::on-job-finished` (iii 0.25) is the
+//! observable function with the same config as args: its observers live in
+//! the same registry, claim and replay exactly like bindings, and receive
+//! the same event through [`crate::observable::EventObserver::deliver`].
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
+use iii_sdk::{
+    IIIClient, ObserveHandler, ObserveRejection, Observer, RegisterTriggerType, TriggerAction,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::jobs::{JobRecord, JobStatus};
+use crate::observable::{codes, observer_key, register_observable, EventObserver};
 
 /// The trigger type a subscriber binds to be woken when a job ends.
 pub const JOB_FINISHED: &str = "shell::job-finished";
+/// The observable function next to it (iii 0.25).
+pub const ON_JOB_FINISHED: &str = "shell::on-job-finished";
+const ON_JOB_FINISHED_DESC: &str =
+    "A shell::exec_bg background job reached a terminal status (finished, killed, or \
+     failed). Observe it with args { job_id? }: with a job_id the observer is woken once for \
+     that job (its result replayed if already terminal and still retained); without, it \
+     receives every future completion. Each event carries { job_id, argv, status, exit_code, \
+     started_at_ms, finished_at_ms, duration_ms }; call shell::status for the output. Only \
+     the ide worker emits it: invoking it directly is refused (FORBIDDEN).";
 
 /// Select one background job, or observe future completions without a filter.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -94,6 +111,9 @@ struct Subscriber {
     /// A filtered binding can be claimed by either registration replay or
     /// live completion. Both paths update this under the subscriber lock.
     delivered: bool,
+    /// An observer of `shell::on-job-finished`: events go through it, and
+    /// `function_id` is only its target, for logs.
+    observer: Option<Arc<dyn EventObserver>>,
 }
 
 impl Subscriber {
@@ -107,6 +127,26 @@ impl Subscriber {
             namespace: config.namespace.clone(),
             job_id: filter.job_id,
             delivered: false,
+            observer: None,
+        })
+    }
+
+    /// An observer with its args, the trigger config (absent means none).
+    fn from_observer(observer: Arc<dyn EventObserver>, args: &Value) -> Result<Self, Error> {
+        let filter: JobFinishedConfig = if args.is_null() {
+            JobFinishedConfig { job_id: None }
+        } else {
+            serde_json::from_value(args.clone())
+                .map_err(|e| Error::Handler(format!("invalid {ON_JOB_FINISHED} args: {e}")))?
+        };
+        Ok(Self {
+            registration_id: uuid::Uuid::new_v4(),
+            function_id: observer.target().to_string(),
+            metadata: None,
+            namespace: None,
+            job_id: filter.job_id,
+            delivered: false,
+            observer: Some(observer),
         })
     }
 
@@ -189,13 +229,25 @@ fn dispatch(event: &JobFinishedEvent, targets: Vec<Subscriber>) {
     if targets.is_empty() {
         return;
     }
-    let Some(iii) = CLIENT.get() else {
-        return;
-    };
     let Ok(payload) = serde_json::to_value(event) else {
         return;
     };
+    let client = CLIENT.get();
     for subscriber in targets {
+        if let Some(observer) = &subscriber.observer {
+            observer.deliver(payload.clone());
+            tracing::info!(
+                observer = %observer.id(),
+                target = %subscriber.function_id,
+                job_id = %event.job_id,
+                "{ON_JOB_FINISHED} delivered"
+            );
+            continue;
+        }
+        // No client before the trigger type is registered (unit tests).
+        let Some(iii) = client else {
+            continue;
+        };
         let iii = iii.clone();
         let request = subscriber.request(payload.clone());
         let function_id = subscriber.function_id.clone();
@@ -220,52 +272,82 @@ fn dispatch(event: &JobFinishedEvent, targets: Vec<Subscriber>) {
     }
 }
 
+/// File a binding or an observer under `key` and, when it names a job that
+/// already ended and is still retained, replay that job's event to it.
+async fn subscribe(key: String, subscriber: Subscriber) {
+    let registration_id = subscriber.registration_id;
+    let job_id = subscriber.job_id.clone();
+    subscribers()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(key.clone(), subscriber);
+    // Publish the binding BEFORE reading the retained job. If completion
+    // races with this read, fire() claims it or replay does, never both.
+    // Neither registry lock is held across a job lock or a delivery.
+    if let Some(job_id) = job_id {
+        if let Some(handle) = crate::jobs::get(&job_id).await {
+            let event = {
+                let h = handle.lock().await;
+                // shell::kill stamps a terminal status before the drain or
+                // sandbox response has finished collecting the output.
+                if h.finalized {
+                    JobFinishedEvent::from_record(&h.record)
+                } else {
+                    None
+                }
+            };
+            if let Some(event) = event {
+                let target = subscribers()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get_mut(&key)
+                    .filter(|s| s.registration_id == registration_id)
+                    .and_then(|s| s.claim(&job_id).then(|| s.clone()));
+                if let Some(target) = target {
+                    dispatch(&event, vec![target]);
+                }
+            }
+        }
+    }
+}
+
+/// File an observer of `shell::on-job-finished` with its args (the trigger
+/// config): it is claimed, replayed and delivered exactly like a binding.
+pub async fn add_observer(observer: Arc<dyn EventObserver>, args: &Value) -> Result<(), Error> {
+    let key = observer_key(observer.id());
+    let subscriber = Subscriber::from_observer(observer, args)?;
+    tracing::info!(
+        function_id = ON_JOB_FINISHED,
+        id = %key,
+        job_id = ?subscriber.job_id,
+        "job watch observer added"
+    );
+    subscribe(key, subscriber).await;
+    Ok(())
+}
+
+/// Take an observer out of the registry.
+pub fn remove_observer(id: &str) {
+    tracing::info!(function_id = ON_JOB_FINISHED, id = %id, "job watch observer removed");
+    subscribers()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&observer_key(id));
+}
+
 struct JobFinishedTriggerHandler;
 
 #[async_trait]
 impl TriggerHandler for JobFinishedTriggerHandler {
     async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         let subscriber = Subscriber::from_config(&config)?;
-        let registration_id = subscriber.registration_id;
-        let job_id = subscriber.job_id.clone();
         tracing::info!(
             trigger_type = JOB_FINISHED,
             id = %config.id,
             job_id = ?subscriber.job_id,
             "job watch registered"
         );
-        subscribers()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(config.id.clone(), subscriber);
-        // Publish the binding BEFORE reading the retained job. If completion
-        // races with this read, fire() claims it or replay does, never both.
-        // Neither registry lock is held across a job lock or a delivery.
-        if let Some(job_id) = job_id {
-            if let Some(handle) = crate::jobs::get(&job_id).await {
-                let event = {
-                    let h = handle.lock().await;
-                    // shell::kill stamps a terminal status before the drain or
-                    // sandbox response has finished collecting the output.
-                    if h.finalized {
-                        JobFinishedEvent::from_record(&h.record)
-                    } else {
-                        None
-                    }
-                };
-                if let Some(event) = event {
-                    let target = subscribers()
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .get_mut(&config.id)
-                        .filter(|s| s.registration_id == registration_id)
-                        .and_then(|s| s.claim(&job_id).then(|| s.clone()));
-                    if let Some(target) = target {
-                        dispatch(&event, vec![target]);
-                    }
-                }
-            }
-        }
+        subscribe(config.id.clone(), subscriber).await;
         Ok(())
     }
 
@@ -279,11 +361,32 @@ impl TriggerHandler for JobFinishedTriggerHandler {
     }
 }
 
-/// Register the trigger type and install the client the fan-out fires
+/// Files each observer of `shell::on-job-finished` in the registry the
+/// trigger type's bindings use.
+struct JobFinishedObserveHandler;
+
+#[async_trait]
+impl ObserveHandler for JobFinishedObserveHandler {
+    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
+        add_observer(Arc::new(obs.clone()), obs.args_value())
+            .await
+            .map_err(|e| ObserveRejection::new(codes::INVALID_ARGS, e.to_string()))
+    }
+
+    async fn on_observer_removed(&self, obs: &Observer) {
+        remove_observer(obs.id());
+    }
+}
+
+/// Register the trigger type and, next to it, the observable
+/// `shell::on-job-finished`, and install the client the fan-out fires
 /// through. The SDK queues the registration and cannot report failure; a
 /// dead type surfaces as bindings that never fire.
 pub fn register_job_finished_trigger(iii: &IIIClient) {
     let _ = CLIENT.set(iii.clone());
+    // Kept for consumers that bind the trigger type, on 0.24 and 0.25
+    // engines alike.
+    #[allow(deprecated)]
     let _handle = iii.register_trigger_type(
         RegisterTriggerType::new(
             JOB_FINISHED,
@@ -300,6 +403,12 @@ pub fn register_job_finished_trigger(iii: &IIIClient) {
     tracing::info!(
         trigger_type = JOB_FINISHED,
         "sent the trigger type registration; delivery is confirmed by the first subscription"
+    );
+    register_observable::<JobFinishedConfig, JobFinishedEvent, _>(
+        iii,
+        ON_JOB_FINISHED,
+        ON_JOB_FINISHED_DESC,
+        JobFinishedObserveHandler,
     );
 }
 
@@ -870,6 +979,7 @@ mod tests {
             namespace: None,
             job_id: None,
             delivered: false,
+            observer: None,
         };
         let wire = format!("{:?}", bare.request(json!({})));
         assert!(wire.contains("metadata: None"), "{wire}");
@@ -899,5 +1009,102 @@ mod tests {
         handler.register_trigger(cfg.clone()).await.unwrap();
         fire(&record(JobStatus::Finished, Some(3_000))).await;
         handler.unregister_trigger(cfg).await.unwrap();
+    }
+
+    /// An observer of `shell::on-job-finished` is claimed and delivered
+    /// exactly like a binding with the same config.
+    #[tokio::test]
+    async fn an_observer_receives_the_event_a_binding_receives() {
+        use crate::observable::testing::Recorder;
+        let _test_guard = TEST_GUARD.lock().await;
+        let job_id = format!("job-observed-{}", uuid::Uuid::new_v4());
+        let mut cfg = config("t-observed", Some(&job_id));
+        let probe = DeliveryProbe::new(&mut cfg);
+        JobFinishedTriggerHandler
+            .register_trigger(cfg.clone())
+            .await
+            .unwrap();
+        let one = Recorder::new("o-one");
+        let every = Recorder::new("o-every");
+        let other = Recorder::new("o-other");
+        add_observer(one.clone(), &json!({ "job_id": job_id }))
+            .await
+            .unwrap();
+        add_observer(every.clone(), &Value::Null).await.unwrap();
+        add_observer(other.clone(), &json!({ "job_id": "another-job" }))
+            .await
+            .unwrap();
+
+        let mut finished = record(JobStatus::Finished, Some(3_000));
+        finished.id = job_id.clone();
+        fire(&finished).await;
+        fire(&finished).await;
+
+        let bound = probe.take();
+        JobFinishedTriggerHandler
+            .unregister_trigger(cfg)
+            .await
+            .unwrap();
+        for id in ["o-one", "o-every", "o-other"] {
+            remove_observer(id);
+        }
+        assert_eq!(bound.len(), 1, "the binding is claimed once");
+        let payload = serde_json::to_value(&bound[0]).unwrap();
+        assert_eq!(payload["job_id"], json!(job_id));
+        // The filtered observer, like the filtered binding, gets it once.
+        assert_eq!(one.seen(), vec![payload.clone()]);
+        // The catch-all observer stays active and gets every completion.
+        let every_seen: Vec<Value> = every
+            .seen()
+            .into_iter()
+            .filter(|e| e["job_id"] == json!(job_id))
+            .collect();
+        assert_eq!(every_seen, vec![payload.clone(), payload]);
+        assert!(other.seen().is_empty());
+        assert!(
+            take_matching(&job_id).is_empty(),
+            "removed observers leave nothing behind"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_observer_added_after_completion_gets_the_retained_event() {
+        use crate::observable::testing::Recorder;
+        let _test_guard = TEST_GUARD.lock().await;
+        let mut finished = record(JobStatus::Finished, Some(crate::jobs::now_ms()));
+        finished.id = format!("job-late-observer-{}", uuid::Uuid::new_v4());
+        crate::jobs::JOBS.map.lock().await.insert(
+            finished.id.clone(),
+            std::sync::Arc::new(tokio::sync::Mutex::new(crate::jobs::JobHandle {
+                record: finished.clone(),
+                finalized: true,
+                child: None,
+                host_pid: None,
+                owner_session_id: None,
+            })),
+        );
+        let late = Recorder::new("o-late");
+        add_observer(late.clone(), &json!({ "job_id": finished.id }))
+            .await
+            .unwrap();
+        let remaining = take_matching(&finished.id);
+        remove_observer("o-late");
+        crate::jobs::JOBS.map.lock().await.remove(&finished.id);
+        let seen = late.seen();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0]["job_id"], json!(finished.id));
+        assert_eq!(seen[0]["status"], json!("finished"));
+        assert!(remaining.is_empty(), "the replay claimed the event");
+    }
+
+    #[tokio::test]
+    async fn observer_args_follow_the_binding_config_rules() {
+        use crate::observable::testing::Recorder;
+        let _test_guard = TEST_GUARD.lock().await;
+        let err = add_observer(Recorder::new("o-bad"), &json!({ "job_id": 7 }))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains(ON_JOB_FINISHED), "{err}");
+        assert!(take_matching("7").is_empty());
     }
 }

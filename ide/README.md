@@ -399,6 +399,24 @@ Conventions (hold these when adding functions to either surface):
 | `shell::git-changed` | The repository `config.path` sits in changes state: HEAD, the index, refs, another worktree, or the repository itself appearing or going (a path in no repository is watched for a `.git`). One event per ~200 ms batch. `.git` is what `shell::changed` leaves out. | `{ path, worktree?, git_dir?, common_dir?, changes: ["head" \| "index" \| "refs" \| "worktrees" \| "repository"] }` |
 | `shell::turns::changed` | A session's change history (`shell::turns::list`) is stored again: a turn opened or closed, a change recorded. `config: { session_id? }`; at most one event per session per ~200 ms. | `{ session_id }` |
 
+### Observable functions (iii 0.25)
+
+Next to each trigger type the worker registers an owner-delivered
+observable function. Observe it with the trigger type's config as `args`
+(`iii.observe({ function_id, args }, target)`); an observer shares the
+bindings' registry and watch and receives the same payload. The trigger
+types stay registered, so existing bindings are unchanged. Events come only
+from this worker: invoking an `on-*` function directly fails with
+`FORBIDDEN`, and args the trigger type would refuse as a config reject the
+observer with `INVALID_ARGS`.
+
+| Observable function | Next to | Args |
+|---|---|---|
+| `shell::on-job-finished` | `shell::job-finished` | `{ job_id? }` (a retained terminal job is replayed) |
+| `shell::on-changed` | `shell::changed` | `{ path, include_ignored? }` |
+| `shell::on-git-changed` | `shell::git-changed` | `{ path }` |
+| `shell::on-turns-changed` | `shell::turns::changed` | `{ session_id? }` |
+
 ### Background job completion (`shell::job-finished`)
 
 Choose a job ID, register a completion subscription, then start the job with

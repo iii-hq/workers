@@ -141,6 +141,16 @@ project root would otherwise fire on the engine's own data writes. Read
 content on demand via `coder::read-file` — the event deliberately carries
 none.
 
+## Observable functions (iii 0.25)
+
+Each trigger type has an owner-delivered observable function next to it;
+observe it with the trigger config as `args` and get the same payload:
+`shell::on-changed` (`{ path, include_ignored? }`), `shell::on-git-changed`
+(`{ path }`), `shell::on-job-finished` (`{ job_id? }`, a retained finished job
+is replayed) and `shell::on-turns-changed` (`{ session_id? }`). Invoking one
+directly is refused with `FORBIDDEN`; bad args reject the observer with
+`INVALID_ARGS`. The trigger types stay bindable as before.
+
 ## Code files (`coder::*`)
 
 The shell worker also serves the `coder::*` code-file surface (formerly a
