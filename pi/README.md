@@ -175,6 +175,35 @@ and pubsub"). The acp worker binds `pi::agent-event` for the brain `pi::run`;
 when it drives `run::start_and_wait` instead, start it with
 `--events-trigger-type pi::agent-event`.
 
+### How to observe (iii 0.25)
+
+`registerTrigger` is deprecated in iii 0.25 and keeps working: both trigger
+types stay registered, unchanged, for 0.24 engines and existing consumers. On
+a 0.25 engine each feed is also an owner-delivered observable function:
+
+| Observable function | Same frames as |
+| --- | --- |
+| `pi::on-agent-event` | `pi::agent-event` |
+| `pi::on-raw-event` | `pi::raw-event` |
+
+```ts
+const observer = iii.observe(
+  { function_id: 'pi::on-agent-event', args: { session_id } },
+  'my::on-pi-event',
+  { metadata: { tenant: 'a' } }, // the observer's own sidecar
+);
+await observer.ready();
+```
+
+The args are the trigger config, `{ session_id, metadata? }`, validated by
+the engine (`INVALID_ARGS`); `args.metadata` is accepted but not forwarded,
+so pass a sidecar with the observer's own `metadata` option. Your target
+receives the payload above, one call per frame. Observers and bindings share
+each feed's table, numbering and 256-entry limit (`BINDING_LIMIT` rejects an
+observer beyond it). Frames are routed by this worker only: invoking
+`pi::on-agent-event` or `pi::on-raw-event` directly is refused with
+`FORBIDDEN`. On an engine without observe (0.24), bind the trigger types.
+
 ## The agent on the bus
 
 By default every turn's prompt carries the iii runtime context: the same engine-grounded rules as the harness identity prompts, retargeted to the `iii` CLI the agent reaches through its shell. The agent discovers capabilities from the live engine instead of memory — `iii trigger engine::functions::list` to find function ids, `iii trigger <fn> --help` as the contract before every first call, the registry flow (`directory::registry::workers::list/info`, `worker::add`) when nothing registered fits — plus the calling rules and error-handling discipline that go with them. Local file edits stay on Pi's native tools; backend actions go through registered functions.
