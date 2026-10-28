@@ -97,6 +97,17 @@ Bind live views here instead of polling; both are filterable by `bank` in the bi
 - `memory::item-changed` — a memory was created / updated / superseded / deleted. Payload: `{event_type, bank, memory, reason?}` (`reason` on consolidation changes).
 - `memory::bank-changed` — a bank was created / trashed, or its rules changed. Payload: `{event_type, bank}`.
 
+### Observable functions (iii 0.25)
+
+On a 0.25 engine a new consumer observes an owner-delivered function instead of binding a trigger type. Each one shares its trigger type's subscriber registry, so an observer receives exactly the event a binding receives, at the same moments:
+
+| Function | Args | Event |
+|---|---|---|
+| `memory::on-item-changed` | `{ bank? }` | `{event_type, bank, memory, reason?}`, as `memory::item-changed` |
+| `memory::on-bank-changed` | `{ bank? }` | `{event_type, bank}`, as `memory::bank-changed` |
+
+Events are routed inside the memory worker: invoking either function directly is refused with `FORBIDDEN`. The trigger types stay registered, unchanged, so consumers that bind them keep working on 0.24 and 0.25 engines.
+
 ## Storage layout
 
 Compose stores this tree under `III_COMPOSE_DIR`. A standalone worker uses its

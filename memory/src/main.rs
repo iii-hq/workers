@@ -69,6 +69,9 @@ fn worker_metadata() -> WorkerMetadata {
 
 /// Best-effort binding: in standalone deployments the harness's trigger
 /// types may not exist (yet); a failed binding must not prevent boot.
+// register_trigger is deprecated in 0.25 and still served by 0.24 and 0.25
+// engines; these bindings target other workers' trigger types.
+#[allow(deprecated)]
 fn bind_best_effort(
     iii: &Arc<IIIClient>,
     trigger_type: &str,
@@ -233,6 +236,8 @@ async fn main() -> Result<()> {
     // Reuse the http worker: every public function doubles as a REST
     // route (`POST /memory/...`). Best-effort — without the http worker
     // the bus surface still serves everything.
+    // Deprecated in 0.25 and still served by 0.24 and 0.25 engines.
+    #[allow(deprecated)]
     for spec in functions::catalog() {
         let api_path = spec.function_id.replace("::", "/");
         match iii.register_trigger(RegisterTriggerInput::new(
@@ -257,7 +262,7 @@ async fn main() -> Result<()> {
         .context("registering the configuration change trigger")?;
 
     tracing::info!(
-        "memory ready: 14 memory::* functions + 2 custom trigger types + REST via http worker"
+        "memory ready: 14 memory::* functions + 2 custom trigger types + 2 observable functions + REST via http worker"
     );
 
     tokio::signal::ctrl_c().await?;
