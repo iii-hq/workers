@@ -15,7 +15,11 @@ Moonshot chat families, enriched with a curated capability snapshot →
 `provider::kimi::count_tokens` counts a prompt through Moonshot's own
 estimator endpoint behind `router::count_tokens`, so the number is the
 upstream's rather than a local reconstruction of it. Counting never runs the
-model.
+model. The count body is the chat body (`messages`, `tools`,
+`response_format`) without the generation knobs. Whether the estimator meters
+`tools` and `response_format` the way chat bills them is not yet measured: run
+`MOONSHOT_API_KEY=… cargo test --test live_count_probe -- --ignored --nocapture`
+to compare the two.
 
 ## Behavior
 
