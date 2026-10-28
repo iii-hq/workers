@@ -131,3 +131,18 @@ disturbing each other:
   screenshot, recording::start, open); live previews surface it.
 
 All four accept `{ tenant?, udid? }` to narrow the binding.
+
+## Observable functions (iii 0.25)
+
+Next to each trigger type the worker registers an owner-delivered observable
+function that delivers the same event. Observe it with the trigger config as
+args, `{ tenant?, udid? }` (malformed args are refused with `INVALID_ARGS`):
+
+- `ios-simulator::on-device-changed` — the `ios-simulator::device-changed` event.
+- `ios-simulator::on-media-changed` — the `ios-simulator::media-changed` event.
+- `ios-simulator::on-frame-event` — the `ios-simulator::frame-event` event.
+- `ios-simulator::on-activity` — the `ios-simulator::activity` event.
+
+Only this worker emits them: invoking an `ios-simulator::on-*` function
+directly is refused with `FORBIDDEN`. The trigger types stay registered, so
+existing bindings keep working unchanged.
