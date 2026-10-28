@@ -219,6 +219,8 @@ struct Stack {
 }
 
 impl Stack {
+    // register_trigger: deprecated in iii 0.25, still served by 0.25 engines.
+    #[allow(deprecated)]
     async fn new(world: World) -> Option<Self> {
         let engine = isolated_engine().await?;
         let world: Shared = Arc::new(Mutex::new(world));

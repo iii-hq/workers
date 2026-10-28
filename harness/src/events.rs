@@ -11,6 +11,15 @@
 //! unordered. Per-binding `config` filters (`session_id`, `parent_session_id`)
 //! are evaluated here by the emitting worker. The engine replays existing
 //! registrations after a restart, so the subscriber sets rebuild themselves.
+//!
+//! Next to each trigger type is an owner-delivered observable function
+//! (iii 0.25): `harness::on-ready`, `harness::on-turn-started`,
+//! `harness::on-turn-completed`, `harness::on-message-queued`,
+//! `harness::on-triggers-changed` and `harness::on-compaction`. Its args are
+//! the trigger config; its [`ObserveHandler`] files observers in the same
+//! subscriber set, and every event a binding receives is handed to each
+//! matching observer with `obs.call` (see [`crate::observe`]). Invoking an
+//! on-* function is refused with FORBIDDEN.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,11 +29,14 @@ use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
+use iii_sdk::{
+    IIIClient, ObserveHandler, ObserveRejection, Observer, RegisterTriggerType, TriggerAction,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::observe::{self, codes, EventObserver};
 use crate::types::turn::ParentLink;
 
 pub const TURN_STARTED: &str = "harness::turn-started";
@@ -33,6 +45,39 @@ pub const MESSAGE_QUEUED: &str = "harness::message-queued";
 pub const TRIGGERS_CHANGED: &str = "harness::triggers-changed";
 pub const READY: &str = "harness::ready";
 pub const COMPACTION: &str = "harness::compaction";
+
+/// The observable function next to each trigger type above.
+pub const ON_READY: &str = "harness::on-ready";
+pub const ON_TURN_STARTED: &str = "harness::on-turn-started";
+pub const ON_TURN_COMPLETED: &str = "harness::on-turn-completed";
+pub const ON_MESSAGE_QUEUED: &str = "harness::on-message-queued";
+pub const ON_TRIGGERS_CHANGED: &str = "harness::on-triggers-changed";
+pub const ON_COMPACTION: &str = "harness::on-compaction";
+
+const ON_READY_DESC: &str = "The harness completed boot and can accept turns. Observe it with \
+    args {}; each observer receives { status: ready, timestamp }, at once when the harness is \
+    already ready. Only the harness emits it: invoking it directly is refused.";
+const ON_TURN_STARTED_DESC: &str = "A harness turn began executing (first loop step). Observe it \
+    with args { session_id?, parent_session_id? }; each observer receives the \
+    harness::turn-started payload { session_id, turn_id, timestamp, depth, message_preview?, \
+    parent?, parent_session_id? }. Only the harness emits it: invoking it directly is refused.";
+const ON_TURN_COMPLETED_DESC: &str = "A harness turn reached a terminal status \
+    (completed/cancelled/failed). Observe it with args { session_id?, parent_session_id? }; each \
+    observer receives the harness::turn-completed payload { session_id, turn_id, status, \
+    terminal, timestamp, result?, result_error?, reason?, parent?, parent_session_id?, context? \
+    }. Only the harness emits it: invoking it directly is refused.";
+const ON_MESSAGE_QUEUED_DESC: &str = "A message parked in a session's server-side queue while its \
+    turn streams. Observe it with args { session_id?, parent_session_id? }; each observer \
+    receives { session_id, entry_id, queued_at, timestamp }. Only the harness emits it: invoking \
+    it directly is refused.";
+const ON_TRIGGERS_CHANGED_DESC: &str = "A session's trigger-binding set or fire count changed \
+    (refetch harness::triggers::list). Observe it with args { session_id?, parent_session_id? }; \
+    each observer receives { session_id, timestamp }. Only the harness emits it: invoking it \
+    directly is refused.";
+const ON_COMPACTION_DESC: &str = "An explicit compaction of a session started (phase: started) \
+    or finished (phase: completed, with status ok/busy/empty/failed and the user-facing \
+    message). Observe it with args { session_id?, parent_session_id? }; each observer receives \
+    the harness::compaction payload. Only the harness emits it: invoking it directly is refused.";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -109,9 +154,19 @@ struct Binding {
     metadata: Option<Value>,
 }
 
+/// One observer of a `harness::on-*` function with its parsed args.
+#[derive(Clone)]
+struct ObserverEntry {
+    observer: Arc<dyn EventObserver>,
+    filter: BindingFilter,
+}
+
+/// One trigger type's bindings and the observers of its `harness::on-*`
+/// function, kept apart by id.
 #[derive(Clone, Default)]
 pub struct SubscriberSet {
     inner: Arc<Mutex<HashMap<String, Binding>>>,
+    observers: Arc<Mutex<HashMap<String, ObserverEntry>>>,
 }
 
 impl SubscriberSet {
@@ -146,6 +201,32 @@ impl SubscriberSet {
 
     fn snapshot(&self) -> Vec<Binding> {
         self.lock().values().cloned().collect()
+    }
+
+    /// Parse an observer's args (the trigger config) and file it. Malformed
+    /// args reject the observer, as they reject a binding.
+    fn add_observer(&self, observer: Arc<dyn EventObserver>, args: &Value) -> Result<(), String> {
+        let filter = BindingFilter::parse(args)?;
+        self.file_observer(observer, filter);
+        Ok(())
+    }
+
+    fn file_observer(&self, observer: Arc<dyn EventObserver>, filter: BindingFilter) {
+        let id = observer.id().to_string();
+        self.observers_lock()
+            .insert(id, ObserverEntry { observer, filter });
+    }
+
+    fn remove_observer(&self, id: &str) {
+        self.observers_lock().remove(id);
+    }
+
+    fn observer_snapshot(&self) -> Vec<ObserverEntry> {
+        self.observers_lock().values().cloned().collect()
+    }
+
+    fn observers_lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, ObserverEntry>> {
+        self.observers.lock().unwrap_or_else(|p| p.into_inner())
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Binding>> {
@@ -214,6 +295,91 @@ impl TriggerHandler for TurnEventTriggerHandler {
     }
 }
 
+/// The ready config an observer's args must parse as (null means none).
+fn parse_ready_config(raw: &Value) -> Result<ReadyBindingConfig, String> {
+    let raw = if raw.is_null() {
+        serde_json::json!({})
+    } else {
+        raw.clone()
+    };
+    serde_json::from_value::<ReadyBindingConfig>(raw)
+        .map_err(|error| format!("invalid ready-event config: {error}"))
+}
+
+/// Files each observer of `harness::on-ready` in the ready subscriber set;
+/// an observer added after boot receives the ready event at once, as a late
+/// binding does.
+struct ReadyObserveHandler {
+    set: SubscriberSet,
+    ready: Arc<AtomicBool>,
+}
+
+impl ReadyObserveHandler {
+    fn add(&self, observer: Arc<dyn EventObserver>, args: &Value) -> Result<(), String> {
+        parse_ready_config(args)?;
+        self.set
+            .file_observer(observer.clone(), BindingFilter::default());
+        if self.ready.load(Ordering::Acquire) {
+            observer.deliver(ready_payload());
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ObserveHandler for ReadyObserveHandler {
+    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
+        self.add(Arc::new(obs.clone()), obs.args_value())
+            .map_err(|e| ObserveRejection::new(codes::INVALID_ARGS, e))?;
+        tracing::info!(observer = %obs.id(), target = %obs.target(), function_id = %obs.function_id(), "observer added");
+        Ok(())
+    }
+
+    async fn on_observer_removed(&self, obs: &Observer) {
+        self.set.remove_observer(obs.id());
+    }
+}
+
+/// Files each observer of a turn-event `harness::on-*` function in the
+/// subscriber set its trigger type uses, under the same rules as a binding.
+struct TurnEventObserveHandler {
+    type_id: &'static str,
+    set: SubscriberSet,
+}
+
+impl TurnEventObserveHandler {
+    fn add(
+        &self,
+        observer: Arc<dyn EventObserver>,
+        target: &str,
+        args: &Value,
+    ) -> Result<(), String> {
+        // Same refusal as a binding: event delivery never creates an agent.
+        if target == crate::functions::SPAWN_ID {
+            return Err(
+                "harness::spawn is not an observer target: event delivery never creates \
+                 an agent. Spawn children directly and watch what they write."
+                    .to_string(),
+            );
+        }
+        self.set.add_observer(observer, args)
+    }
+}
+
+#[async_trait]
+impl ObserveHandler for TurnEventObserveHandler {
+    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
+        self.add(Arc::new(obs.clone()), obs.target(), obs.args_value())
+            .map_err(|e| ObserveRejection::new(codes::INVALID_ARGS, e))?;
+        tracing::info!(trigger_type = self.type_id, observer = %obs.id(), target = %obs.target(), "turn-event observer added");
+        Ok(())
+    }
+
+    async fn on_observer_removed(&self, obs: &Observer) {
+        self.set.remove_observer(obs.id());
+    }
+}
+
 /// The harness's emitted turn-event subscriber sets + the engine handle for
 /// fan-out. Cloned into [`crate::deps::Deps`].
 #[derive(Clone)]
@@ -240,6 +406,9 @@ impl TurnEvents {
         let triggers_changed = SubscriberSet::default();
         let compaction = SubscriberSet::default();
 
+        // Kept for consumers that bind the trigger type, on 0.24 and 0.25
+        // engines alike.
+        #[allow(deprecated)]
         let _ = iii.register_trigger_type(
             RegisterTriggerType::new(
                 READY,
@@ -252,6 +421,9 @@ impl TurnEvents {
             )
             .trigger_request_format::<ReadyBindingConfig>(),
         );
+        // Kept for consumers that bind the trigger type, on 0.24 and 0.25
+        // engines alike.
+        #[allow(deprecated)]
         let _ = iii.register_trigger_type(
             RegisterTriggerType::new(
                 TURN_STARTED,
@@ -263,6 +435,9 @@ impl TurnEvents {
             )
             .trigger_request_format::<TurnEventBindingConfig>(),
         );
+        // Kept for consumers that bind the trigger type, on 0.24 and 0.25
+        // engines alike.
+        #[allow(deprecated)]
         let _ = iii.register_trigger_type(
             RegisterTriggerType::new(
                 TURN_COMPLETED,
@@ -274,6 +449,9 @@ impl TurnEvents {
             )
             .trigger_request_format::<TurnEventBindingConfig>(),
         );
+        // Kept for consumers that bind the trigger type, on 0.24 and 0.25
+        // engines alike.
+        #[allow(deprecated)]
         let _ = iii.register_trigger_type(
             RegisterTriggerType::new(
                 MESSAGE_QUEUED,
@@ -285,6 +463,9 @@ impl TurnEvents {
             )
             .trigger_request_format::<TurnEventBindingConfig>(),
         );
+        // Kept for consumers that bind the trigger type, on 0.24 and 0.25
+        // engines alike.
+        #[allow(deprecated)]
         let _ = iii.register_trigger_type(
             RegisterTriggerType::new(
                 TRIGGERS_CHANGED,
@@ -296,6 +477,9 @@ impl TurnEvents {
             )
             .trigger_request_format::<TurnEventBindingConfig>(),
         );
+        // Kept for consumers that bind the trigger type, on 0.24 and 0.25
+        // engines alike.
+        #[allow(deprecated)]
         let _ = iii.register_trigger_type(
             RegisterTriggerType::new(
                 COMPACTION,
@@ -311,6 +495,54 @@ impl TurnEvents {
         tracing::info!(
             "registered harness::ready / harness::turn-started / harness::turn-completed / harness::message-queued / harness::triggers-changed / harness::compaction trigger types"
         );
+
+        observe::register_observable::<ReadyBindingConfig, Value, _>(
+            iii,
+            ON_READY,
+            ON_READY_DESC,
+            ReadyObserveHandler {
+                set: ready.clone(),
+                ready: ready_emitted.clone(),
+            },
+        );
+        let turn_observables: [(&'static str, &'static str, &str, &SubscriberSet); 5] = [
+            (
+                ON_TURN_STARTED,
+                TURN_STARTED,
+                ON_TURN_STARTED_DESC,
+                &started,
+            ),
+            (
+                ON_TURN_COMPLETED,
+                TURN_COMPLETED,
+                ON_TURN_COMPLETED_DESC,
+                &completed,
+            ),
+            (
+                ON_MESSAGE_QUEUED,
+                MESSAGE_QUEUED,
+                ON_MESSAGE_QUEUED_DESC,
+                &queued,
+            ),
+            (
+                ON_TRIGGERS_CHANGED,
+                TRIGGERS_CHANGED,
+                ON_TRIGGERS_CHANGED_DESC,
+                &triggers_changed,
+            ),
+            (ON_COMPACTION, COMPACTION, ON_COMPACTION_DESC, &compaction),
+        ];
+        for (function_id, type_id, description, set) in turn_observables {
+            observe::register_observable::<TurnEventBindingConfig, Value, _>(
+                iii,
+                function_id,
+                description,
+                TurnEventObserveHandler {
+                    type_id,
+                    set: set.clone(),
+                },
+            );
+        }
 
         Self {
             iii: iii.clone(),
@@ -331,6 +563,9 @@ impl TurnEvents {
         self.ready_emitted.store(true, Ordering::Release);
         for binding in self.ready.snapshot() {
             deliver_ready(&self.iii, &binding).await;
+        }
+        for entry in self.ready.observer_snapshot() {
+            entry.observer.deliver(ready_payload());
         }
     }
 
@@ -528,16 +763,18 @@ impl TurnEvents {
                 tracing::warn!(trigger_type, function_id = %binding.function_id, error = %e, "turn-event fan-out failed");
             }
         }
+        for entry in set.observer_snapshot() {
+            if entry.filter.matches(session_id, parent, display_parent) {
+                entry.observer.deliver(payload.clone());
+            }
+        }
     }
 }
 
 async fn deliver_ready(iii: &IIIClient, binding: &Binding) {
     let request = TriggerRequest {
         function_id: binding.function_id.clone(),
-        payload: serde_json::json!({
-            "status": "ready",
-            "timestamp": now_ms(),
-        }),
+        payload: ready_payload(),
         action: Some(TriggerAction::Void),
         timeout_ms: None,
     };
@@ -555,6 +792,14 @@ async fn deliver_ready(iii: &IIIClient, binding: &Binding) {
             "ready-event fan-out failed"
         );
     }
+}
+
+/// The `harness::ready` event, for bindings and observers alike.
+fn ready_payload() -> Value {
+    serde_json::json!({
+        "status": "ready",
+        "timestamp": now_ms(),
+    })
 }
 
 fn now_ms() -> i64 {
@@ -623,5 +868,267 @@ mod tests {
         })
         .unwrap();
         assert_eq!(set.snapshot()[0].namespace.as_deref(), Some("project-a"));
+    }
+}
+
+#[cfg(test)]
+mod observable_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// An observer of a `harness::on-*` function that records its events.
+    struct Recorder {
+        id: String,
+        seen: Mutex<Vec<Value>>,
+    }
+
+    impl EventObserver for Recorder {
+        fn id(&self) -> &str {
+            &self.id
+        }
+
+        fn deliver(&self, event: Value) {
+            self.seen.lock().unwrap().push(event);
+        }
+    }
+
+    fn recorder(id: &str) -> Arc<Recorder> {
+        Arc::new(Recorder {
+            id: id.to_string(),
+            seen: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn seen(r: &Recorder) -> Vec<Value> {
+        r.seen.lock().unwrap().clone()
+    }
+
+    /// An emitter over a client that never connects: binding fires are void
+    /// triggers that go nowhere, observers record.
+    fn emitter() -> TurnEvents {
+        TurnEvents {
+            iii: Arc::new(IIIClient::new("ws://127.0.0.1:9")),
+            ready: SubscriberSet::default(),
+            ready_emitted: Arc::new(AtomicBool::new(false)),
+            started: SubscriberSet::default(),
+            completed: SubscriberSet::default(),
+            queued: SubscriberSet::default(),
+            triggers_changed: SubscriberSet::default(),
+            compaction: SubscriberSet::default(),
+        }
+    }
+
+    fn binding(id: &str, config: Value) -> TriggerConfig {
+        TriggerConfig {
+            id: id.into(),
+            function_id: format!("probe::{id}"),
+            config,
+            metadata: None,
+            namespace: None,
+        }
+    }
+
+    #[test]
+    fn each_on_function_refuses_direct_invocation() {
+        let pairs = [
+            (READY, ON_READY),
+            (TURN_STARTED, ON_TURN_STARTED),
+            (TURN_COMPLETED, ON_TURN_COMPLETED),
+            (MESSAGE_QUEUED, ON_MESSAGE_QUEUED),
+            (TRIGGERS_CHANGED, ON_TRIGGERS_CHANGED),
+            (COMPACTION, ON_COMPACTION),
+        ];
+        for (trigger_type, function_id) in pairs {
+            assert_eq!(
+                function_id,
+                trigger_type.replacen("harness::", "harness::on-", 1)
+            );
+            let err = crate::observe::refuse_invocation(function_id);
+            assert!(
+                matches!(&err, Error::Remote { code, message, .. }
+                    if code == codes::FORBIDDEN && message.contains(function_id)),
+                "{err:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_turn_completed_observer_receives_the_event_a_binding_receives() {
+        let events = emitter();
+        events
+            .completed
+            .add(binding("b1", json!({ "session_id": "s1" })))
+            .unwrap();
+        let mine = recorder("o-mine");
+        let children = recorder("o-children");
+        let other = recorder("o-other");
+        let started_only = recorder("o-started");
+        events
+            .completed
+            .add_observer(mine.clone(), &json!({ "session_id": "s1" }))
+            .unwrap();
+        events
+            .completed
+            .add_observer(children.clone(), &json!({ "parent_session_id": "p1" }))
+            .unwrap();
+        events
+            .completed
+            .add_observer(other.clone(), &json!({ "session_id": "s2" }))
+            .unwrap();
+        events
+            .started
+            .add_observer(started_only.clone(), &Value::Null)
+            .unwrap();
+
+        events
+            .emit_completed(
+                "s1",
+                "t1",
+                "completed",
+                Some(&json!({ "text": "done" })),
+                None,
+                None,
+                None,
+                Some("p1"),
+                true,
+                None,
+            )
+            .await;
+
+        // The binding matched the same filter the observer did.
+        let bound: Vec<_> = events
+            .completed
+            .snapshot()
+            .into_iter()
+            .filter(|b| b.filter.matches("s1", None, Some("p1")))
+            .map(|b| b.function_id)
+            .collect();
+        assert_eq!(bound, ["probe::b1"]);
+        let got = seen(&mine);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0]["session_id"], json!("s1"));
+        assert_eq!(got[0]["turn_id"], json!("t1"));
+        assert_eq!(got[0]["status"], json!("completed"));
+        assert_eq!(got[0]["terminal"], json!(true));
+        assert_eq!(got[0]["result"], json!({ "text": "done" }));
+        assert_eq!(got[0]["parent_session_id"], json!("p1"));
+        assert_eq!(
+            seen(&children),
+            got,
+            "display parent matches like a binding"
+        );
+        assert!(seen(&other).is_empty());
+        assert!(seen(&started_only).is_empty());
+
+        events.completed.remove_observer("o-mine");
+        events
+            .emit_completed(
+                "s1",
+                "t2",
+                "completed",
+                None,
+                None,
+                None,
+                None,
+                None,
+                true,
+                None,
+            )
+            .await;
+        assert_eq!(seen(&mine).len(), 1);
+        assert_eq!(events.completed.snapshot().len(), 1, "bindings unchanged");
+    }
+
+    #[tokio::test]
+    async fn the_other_turn_events_reach_their_observers() {
+        let events = emitter();
+        let started = recorder("started");
+        let queued = recorder("queued");
+        let changed = recorder("changed");
+        let compaction = recorder("compaction");
+        events
+            .started
+            .add_observer(started.clone(), &json!({}))
+            .unwrap();
+        events
+            .queued
+            .add_observer(queued.clone(), &json!({}))
+            .unwrap();
+        events
+            .triggers_changed
+            .add_observer(changed.clone(), &json!({}))
+            .unwrap();
+        events
+            .compaction
+            .add_observer(compaction.clone(), &json!({}))
+            .unwrap();
+
+        events
+            .emit_started("s1", "t1", None, None, Some("hello"), 0)
+            .await;
+        events.emit_queued("s1", "e1", 5).await;
+        events.emit_triggers_changed("s1").await;
+        events
+            .emit_compaction("s1", json!({ "phase": "started" }))
+            .await;
+
+        assert_eq!(seen(&started)[0]["message_preview"], json!("hello"));
+        assert_eq!(seen(&queued)[0]["entry_id"], json!("e1"));
+        assert_eq!(seen(&changed)[0]["session_id"], json!("s1"));
+        assert_eq!(seen(&compaction), vec![json!({ "phase": "started" })]);
+    }
+
+    #[tokio::test]
+    async fn on_ready_observers_get_the_ready_event_like_bindings() {
+        let events = emitter();
+        let handler = ReadyObserveHandler {
+            set: events.ready.clone(),
+            ready: events.ready_emitted.clone(),
+        };
+        let early = recorder("early");
+        handler.add(early.clone(), &Value::Null).unwrap();
+        assert!(seen(&early).is_empty(), "not ready yet");
+        events.emit_ready().await;
+        assert_eq!(seen(&early).len(), 1);
+        assert_eq!(seen(&early)[0]["status"], json!("ready"));
+        // Added after boot: delivered at once, as a late binding is.
+        let late = recorder("late");
+        handler.add(late.clone(), &json!({})).unwrap();
+        assert_eq!(seen(&late)[0]["status"], json!("ready"));
+        // Args the ready trigger type refuses reject the observer.
+        let err = handler
+            .add(recorder("bad"), &json!({ "session_id": "s1" }))
+            .unwrap_err();
+        assert!(err.contains("invalid ready-event config"), "{err}");
+    }
+
+    #[test]
+    fn turn_event_observers_follow_the_binding_rules() {
+        let set = SubscriberSet::default();
+        let handler = TurnEventObserveHandler {
+            type_id: TURN_COMPLETED,
+            set: set.clone(),
+        };
+        let err = handler
+            .add(recorder("spawn"), crate::functions::SPAWN_ID, &json!({}))
+            .unwrap_err();
+        assert!(err.contains("harness::spawn"), "{err}");
+        let err = handler
+            .add(
+                recorder("typo"),
+                "ui::refresh",
+                &json!({ "sesion_id": "s1" }),
+            )
+            .unwrap_err();
+        assert!(err.contains("invalid turn-event config"), "{err}");
+        handler
+            .add(
+                recorder("ok"),
+                "ui::refresh",
+                &json!({ "session_id": "s1" }),
+            )
+            .unwrap();
+        assert_eq!(set.observer_snapshot().len(), 1);
+        assert!(set.snapshot().is_empty(), "observers are not bindings");
     }
 }

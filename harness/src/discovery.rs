@@ -405,6 +405,8 @@ pub struct OnFunctionsChangeResponse {
 /// seeded snapshot still serves, refreshed on worker announces) rather than
 /// bricking boot. The handler is tagged `internal` so it stays off the public
 /// catalog (and out of the very cache it maintains).
+// register_trigger: deprecated in iii 0.25, still served by 0.24 and 0.25.
+#[allow(deprecated)]
 pub fn register_functions_trigger(iii: &Arc<IIIClient>, cell: FunctionsCell, timeout_ms: u64) {
     let engine = iii.clone();
     iii.register_function(
