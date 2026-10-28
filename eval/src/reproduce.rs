@@ -648,6 +648,8 @@ async fn plan(
             previous_summary: None,
             lease_key: format!("eval-reproduce-{evaluation_id}"),
             thinking_level,
+            // The rebuilt request carries no response format.
+            response_format: None,
             tools: rebuilt.tools.clone(),
             request_overhead_tokens: 0,
             allow_prune: harness::window::binds_thinking(&rebuilt.model).then_some(false),

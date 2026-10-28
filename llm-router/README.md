@@ -60,7 +60,7 @@ partial content, so consumers never hang on a half-open stream.
 | `router::embed` | Batch text embeddings through the first embed-capable provider in the registry, then embed-only workers (`{model?, provider?, input[]}` → `{provider, model, embeddings[][]}`); providers without an embed surface are skipped. |
 | `router::transcribe` | Speech to text: `{model?, provider?, audio_base64, mime?, language?, prompt?}` → `{provider, model, text, segments[]?, language?, duration_secs?}`. The provider comes from the named `provider`, else from the catalog owner of the `stt` model, else the first provider that declared one. |
 | `router::speak` | Text to speech: `{model?, provider?, text, voice?, format?, language?, speed?}` → `{provider, model, audio_base64, mime, voice?, duration_secs?}`. Same resolution over `tts` models. |
-| `router::count_tokens` | Count prompt tokens: `{model, provider?, system_prompt?, tools?, messages}` → `{provider, model, tokens, estimator}`, resolved with the same routing rules as `router::chat` and forwarded to `provider::<id>::count_tokens`. Never runs the model and costs nothing; `estimator` is `provider` (metering API) or `tiktoken` (local tokenizer). A provider without the surface is a typed `router/no_token_counter` error, so callers can fall back to their own estimate. |
+| `router::count_tokens` | Count prompt tokens: `{model, provider?, system_prompt?, tools?, messages, thinking_level?, response_format?}` → `{provider, model, tokens, estimator}`, resolved with the same routing rules as `router::chat` and forwarded to `provider::<id>::count_tokens`. Never runs the model and costs nothing; `estimator` is `provider` (metering API) or `tiktoken` (local tokenizer). A provider without the surface is a typed `router/no_token_counter` error, so callers can fall back to their own estimate. |
 | `router::provider::list` | Registered providers with `configured` / `available` status, where each credential comes from (`credential_source`, `credential_ref`, `credential_error` — never a value), and each provider's starting point: `default_model` and `default_thinking_level` (see [Default model](#default-model)). |
 
 Only the read surface is agent-callable (`router::models::list` / `get` /
@@ -342,7 +342,9 @@ A provider worker must:
    the provider's.
 
 A provider may also register `provider::<id>::count_tokens` (`{model,
-system_prompt?, tools?, messages}` → `{model, tokens, estimator}`) to serve
+system_prompt?, tools?, messages, thinking_level?, response_format?}` →
+`{model, tokens, estimator}`; the last two are the turn's `router::chat`
+values, sent only when set) to serve
 `router::count_tokens`: an exact count from a provider metering API
 (`estimator: "provider"`) or a local tokenizer estimate (`estimator:
 "tiktoken"`). Providers without it simply make `router::count_tokens` return

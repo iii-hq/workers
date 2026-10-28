@@ -27,7 +27,7 @@ use crate::core::selection::select;
 use crate::core::summary::render_system_prompt;
 use crate::error::ContextError;
 use crate::functions::resolve_model;
-use crate::ports::Deps;
+use crate::ports::{Deps, TurnKnobs};
 use crate::types::{
     AgentFunction, AgentMessage, ByRoleTokens, ContentBlock, EstimatorName, ModelInput, Role,
     ThinkingLevel,
@@ -129,9 +129,14 @@ pub struct AssembleOptions {
     /// not otherwise represented by the prompt, messages, or tools.
     #[serde(default)]
     pub request_overhead_tokens: Option<u64>,
-    /// Reserve the model's thinking budget for this tier.
+    /// Reserve the model's thinking budget for this tier. Also forwarded to
+    /// the provider's count, whose template may render it.
     #[serde(default)]
     pub thinking_level: Option<ThinkingLevel>,
+    /// The `response_format` the turn sends on `router::chat`, forwarded to
+    /// the provider's count for providers that render it into the prompt.
+    #[serde(default)]
+    pub response_format: Option<serde_json::Value>,
     /// Compaction mutual-exclusion key (e.g. a session id); default:
     /// hash of the message set.
     #[serde(default)]
@@ -305,6 +310,10 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
     let mut system_prompt = render_system_prompt(base_prompt, options.previous_summary.as_deref());
     let tools = req.tools.as_deref().unwrap_or_default();
     let request_overhead_tokens = options.request_overhead_tokens.unwrap_or(0);
+    let knobs = TurnKnobs {
+        thinking_level: options.thinking_level,
+        response_format: options.response_format.as_ref(),
+    };
 
     // Size memo: every message, tool, and the prompt are estimated once;
     // the pipeline's recounts become O(1)-per-message sums, and the
@@ -377,6 +386,7 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         &system_prompt,
         tools,
         &working,
+        knobs,
     )
     .await;
 
@@ -468,6 +478,7 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
                     &system_prompt,
                     tools,
                     &working,
+                    knobs,
                 )
                 .await
             else {
@@ -585,6 +596,7 @@ async fn gate_budget(
     system_prompt: &str,
     tools: &[AgentFunction],
     messages: &[AgentMessage],
+    knobs: TurnKnobs<'_>,
 ) -> u64 {
     if messages.is_empty() || estimate.saturating_mul(PROVIDER_COUNT_SHARE) < usable {
         return usable;
@@ -599,6 +611,7 @@ async fn gate_budget(
             system_prompt,
             tools,
             messages,
+            knobs,
         )
         .await
         .map(|counted| counted.saturating_add(request_overhead_tokens))

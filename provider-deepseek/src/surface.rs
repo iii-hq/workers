@@ -29,8 +29,9 @@ pub const REFRESH_MODELS_DESC: &str =
 
 pub const COUNT_TOKENS_ID: &str = "provider::deepseek::count_tokens";
 pub const COUNT_TOKENS_DESC: &str =
-    "Count prompt tokens for {model, system_prompt?, tools?, messages} locally with \
-     DeepSeek's own published vocabulary; never runs the model and costs nothing.";
+    "Count prompt tokens for {model, system_prompt?, tools?, messages, thinking_level?, \
+     response_format?} locally with DeepSeek's own published vocabulary; never runs the model \
+     and costs nothing.";
 
 pub const ON_ROUTER_READY_ID: &str = "provider::deepseek::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =

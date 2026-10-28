@@ -13,12 +13,21 @@ use tokio::sync::RwLock;
 
 use crate::config::WorkerConfig;
 use crate::configuration::ConfigCell;
-use crate::types::{AgentFunction, AgentMessage, Model};
+use crate::types::{AgentFunction, AgentMessage, Model, ThinkingLevel};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelBudget {
     pub model: Model,
     pub effective_max_output_tokens: u64,
+}
+
+/// The turn's `router::chat` knobs that change the prompt a provider bills
+/// (a reasoning-effort line, a chat vs thinking template, a rendered
+/// response format), forwarded to `router::count_tokens` as sent.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TurnKnobs<'a> {
+    pub thinking_level: Option<ThinkingLevel>,
+    pub response_format: Option<&'a serde_json::Value>,
 }
 
 /// Resolves a model id to its router catalog record.
@@ -44,6 +53,7 @@ pub trait ModelResolver: Send + Sync {
         system_prompt: &str,
         tools: &[AgentFunction],
         messages: &[AgentMessage],
+        knobs: TurnKnobs<'_>,
     ) -> Result<u64, String>;
 }
 
