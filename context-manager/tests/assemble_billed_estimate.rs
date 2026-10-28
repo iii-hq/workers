@@ -174,6 +174,25 @@ async fn the_request_overhead_counts_with_the_provider_count() {
 }
 
 #[tokio::test]
+async fn the_provider_counts_the_turns_thinking_level_and_response_format() {
+    let resolver = Arc::new(FakeModelResolver::billing(2.25));
+    let options = json!({
+        "reserved_tokens": RESERVED,
+        "thinking_level": "off",
+        "response_format": { "type": "json" },
+    });
+    let summarizer = Arc::new(FakeSummarizer::new());
+    assemble_with_options(resolver.clone(), summarizer, single_long_turn(48), options).await;
+
+    let knobs = resolver.knobs.lock().unwrap().clone();
+    assert!(!knobs.is_empty());
+    for (level, format) in knobs {
+        assert_eq!(level, Some(context_manager::types::ThinkingLevel::Off));
+        assert_eq!(format, Some(json!({ "type": "json" })));
+    }
+}
+
+#[tokio::test]
 async fn without_a_provider_count_the_estimate_still_decides() {
     let resolver = Arc::new(FakeModelResolver::new());
     let response = assemble(resolver.clone(), 48).await;
@@ -298,7 +317,7 @@ mod mixed_density {
     use super::*;
     use async_trait::async_trait;
     use context_manager::core::estimate::{Estimator, HeuristicEstimator};
-    use context_manager::ports::{ModelBudget, ModelResolver};
+    use context_manager::ports::{ModelBudget, ModelResolver, TurnKnobs};
     use context_manager::types::{AgentFunction, AgentMessage, ContentBlock};
     use fakes::SummarizerScript;
 
@@ -329,6 +348,7 @@ mod mixed_density {
             system_prompt: &str,
             tools: &[AgentFunction],
             messages: &[AgentMessage],
+            _knobs: TurnKnobs<'_>,
         ) -> Result<u64, String> {
             let estimator = HeuristicEstimator;
             let tools = tools

@@ -648,6 +648,8 @@ async fn plan(
             previous_summary: None,
             lease_key: format!("eval-reproduce-{evaluation_id}"),
             thinking_level,
+            // The rebuilt request carries no response format.
+            response_format: None,
             tools: rebuilt.tools.clone(),
             request_overhead_tokens: 0,
             allow_prune: harness::window::binds_thinking(&rebuilt.model).then_some(false),
@@ -799,6 +801,10 @@ async fn count(
     });
     if let Some(provider) = &rebuilt.provider {
         payload["provider"] = json!(provider);
+    }
+    // The same mode assemble counted in `plan`, so the two numbers agree.
+    if let Some(level) = &rebuilt.thinking_level {
+        payload["thinking_level"] = level.clone();
     }
     let counted: Result<Value, EvalError> =
         call(deps, "router::count_tokens", payload, BUS_TIMEOUT_MS).await;
