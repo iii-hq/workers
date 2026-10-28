@@ -4,15 +4,10 @@
 //! `III_STORIES_FIXTURE` (a workspace with story files) and
 //! `III_STORIES_COMPILER_DIR` (a compiler folder with node_modules) are set.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
 
-use iii_stories::builder::{Ctx, build_line, component_from};
+use iii_stories::builder::component_from;
 use iii_stories::compiler::Compiler;
-use iii_stories::config::{StoriesConfig, WorkspaceConfig};
-use iii_stories::events::Subscribers;
-use iii_stories::lines::LineSpec;
 use iii_stories::model::{ChangeKind, Index, LineInfo, LineKind, compare, summarize};
 use iii_stories::store::{Manifest, Store, WORKTREE_KEY};
 
@@ -187,6 +182,14 @@ async fn builds_indexes_and_compares_a_real_workspace() {
 #[tokio::test]
 #[ignore = "needs III_STORIES_FIXTURE and III_STORIES_COMPILER_DIR"]
 async fn indexes_the_imports_of_a_workspace_reached_through_a_symlink() {
+    use std::collections::HashMap;
+    use std::sync::{Arc, RwLock};
+
+    use iii_stories::builder::{Ctx, build_line};
+    use iii_stories::config::{StoriesConfig, WorkspaceConfig};
+    use iii_stories::events::Subscribers;
+    use iii_stories::lines::LineSpec;
+
     let (Some(fixture), Some(compiler_dir)) = (
         env_path("III_STORIES_FIXTURE"),
         env_path("III_STORIES_COMPILER_DIR"),
