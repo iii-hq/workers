@@ -409,6 +409,18 @@
         ],
         "type": "string"
       },
+      "ResponseFormat": {
+        "properties": {
+          "schema": true,
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
       "StopReason": {
         "enum": [
           "end",
@@ -416,6 +428,18 @@
           "function_call",
           "aborted",
           "error"
+        ],
+        "type": "string"
+      },
+      "ThinkingLevel": {
+        "description": "\"off\" asks the provider not to reason at all and is honoured only where the model advertises `Model::supports_thinking_off` (elsewhere the provider falls back to its own lowest setting, or omits the parameter, and warns). \"minimal\" requests the lowest reasoning effort and needs only `thinking` support; levels map to provider-native knobs via `Model::thinking_budgets`.",
+        "enum": [
+          "off",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
         ],
         "type": "string"
       },
@@ -514,6 +538,18 @@
         "description": "Model id the prompt targets; echoed in the reply, since `llama-server` counts with whichever model it has loaded.",
         "type": "string"
       },
+      "response_format": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ResponseFormat"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "The turn's structured-output request, sent as the stream sends it."
+      },
       "system_prompt": {
         "default": null,
         "description": "System prompt counted as the leading wire message when present.",
@@ -521,6 +557,18 @@
           "string",
           "null"
         ]
+      },
+      "thinking_level": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ThinkingLevel"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "The turn's reasoning level, mapped onto `chat_template_kwargs.enable_thinking` exactly as the stream does; absent counts the thinking-off prompt the stream sends by default."
       },
       "tools": {
         "default": null,

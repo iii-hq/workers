@@ -4,7 +4,7 @@ use crate::config::LlamacppConfig;
 use crate::wire::messages::to_wire_messages;
 use crate::wire::tools::functions_to_wire;
 use llm_router::types::messages::AgentMessage;
-use llm_router::types::model::AgentFunction;
+use llm_router::types::model::{AgentFunction, ThinkingLevel};
 use llm_router::types::router::ResponseFormat;
 use serde_json::{json, Value};
 
@@ -18,6 +18,11 @@ pub struct BodyArgs {
     /// Caller's reasoning preference mapped onto llama.cpp's only per-request
     /// lever, the `enable_thinking` chat-template kwarg (see `build_body`).
     pub enable_thinking: bool,
+}
+
+/// Any requested level but `off` means "think"; absent or `off` means "off".
+pub fn enable_thinking(level: Option<ThinkingLevel>) -> bool {
+    level.is_some_and(|level| level != ThinkingLevel::Off)
 }
 
 /// `ResponseFormat { type: "json", schema? }` → llama.cpp's real
@@ -135,6 +140,13 @@ mod tests {
             build_body(&on)["chat_template_kwargs"]["enable_thinking"],
             true
         );
+    }
+
+    #[test]
+    fn only_a_level_other_than_off_enables_thinking() {
+        assert!(!enable_thinking(None));
+        assert!(!enable_thinking(Some(ThinkingLevel::Off)));
+        assert!(enable_thinking(Some(ThinkingLevel::Low)));
     }
 
     #[test]

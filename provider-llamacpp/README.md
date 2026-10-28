@@ -26,8 +26,12 @@ start on the first of those the router finds in the catalog.
 `provider::llamacpp::embed` serves batch text embeddings from the same configured server when llama-server runs with `--embeddings` and an embedding-capable model (e.g. a nomic-embed GGUF). One vector per input, order preserved; behind `router::embed`, this gives the memory worker fully local semantic recall with no cloud call.
 
 `provider::llamacpp::count_tokens` counts a prompt through the server's
-Anthropic-compatible `/v1/messages/count_tokens` route behind
-`router::count_tokens`. The count uses the tokenizer baked into whichever
+`/v1/chat/completions/input_tokens` route behind `router::count_tokens`,
+with the same body the chat request sends (tools, images and
+`chat_template_kwargs` included). A llama-server older than that route
+(June 2026) answers 404 and is counted through the Anthropic-compatible
+`/v1/messages/count_tokens` route, which drops tool definitions, call-only
+assistant turns and images, so update llama-server for exact counts. The count uses the tokenizer baked into whichever
 GGUF is loaded, which is the only way to be right about a model the operator
 chose. Counting is local and never runs the model.
 
