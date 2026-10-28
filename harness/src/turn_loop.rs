@@ -675,8 +675,12 @@ async fn generate_step(
     let (stable_prompt, assembly_system_prompt) =
         with_runtime_context(record.options.system_prompt.clone(), &record, &runtime_aid);
     // Static hook injections join before assembly, so the budget, the
-    // compaction gate and the request count the same prompt (MOT-5569).
-    let assembly_system_prompt = deps.hooks.with_static_prompts(assembly_system_prompt);
+    // compaction gate and the request count the same prompt (MOT-5569). One
+    // snapshot for the whole step: a binding registering mid-step must not be
+    // skipped at pre_generate as static yet missing from assembly.
+    let pre_generate = deps.hooks.pre_generate.ordered();
+    let assembly_system_prompt =
+        crate::hooks::runner::with_static_prompts(&pre_generate, assembly_system_prompt);
     // Registry-change notice: if a function this session may call changed or
     // left since it last acknowledged them, tell the model its cached
     // contracts may be stale. First sighting stamps silently, and so does a
@@ -779,7 +783,9 @@ async fn generate_step(
     // overhead so assembly makes room — failing the turn only when even that
     // is not enough.
     let mut extra_overhead_tokens = pre_generate_allowance(
-        deps.hooks.has_dynamic_pre_generate(),
+        pre_generate
+            .iter()
+            .any(|binding| binding.inject_prompt.is_none()),
         record.pre_generate_hook_tokens,
     );
     let mut reassembled = false;
@@ -823,6 +829,7 @@ async fn generate_step(
         let (gen_system_prompt, appended, gen_annotations) = match deps
             .hooks
             .run_pre_generate(
+                &pre_generate,
                 &record,
                 payload.step,
                 assembled.system_prompt.clone(),
@@ -3938,13 +3945,16 @@ fn split_prompt_sections<'a>(final_prompt: &'a str, stable: &'a str) -> Option<(
 }
 
 /// Assembly headroom for what dynamic pre_generate hooks add after assembly:
-/// the hook text this turn last measured (MOT-5569: code-runner's guidance
-/// alone is ~930 tokens), or the flat reserve before it has measured any.
+/// the hook text the session last measured (MOT-5569: code-runner's guidance
+/// alone is ~930 tokens), never below the flat reserve, which still absorbs a
+/// hook that added nothing on the measured step and text again on this one.
 fn pre_generate_allowance(dynamic_hooks: bool, measured: Option<u64>) -> u64 {
     if !dynamic_hooks {
         return 0;
     }
-    measured.unwrap_or(PRE_GENERATE_HOOK_ALLOWANCE_TOKENS)
+    measured
+        .unwrap_or_default()
+        .max(PRE_GENERATE_HOOK_ALLOWANCE_TOKENS)
 }
 
 /// What the final request grew past the request assembly built.
@@ -5560,7 +5570,12 @@ mod tests {
         );
         // code-runner's guidance (928 DeepSeek tokens) is reserved whole, not 256 of it.
         assert_eq!(super::pre_generate_allowance(true, Some(928)), 928);
-        assert_eq!(super::pre_generate_allowance(true, Some(0)), 0);
+        // A step whose hooks added nothing (disabled, failed open) keeps the
+        // flat floor for the step where they add text again.
+        assert_eq!(
+            super::pre_generate_allowance(true, Some(0)),
+            super::PRE_GENERATE_HOOK_ALLOWANCE_TOKENS
+        );
     }
 
     #[test]

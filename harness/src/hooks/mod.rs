@@ -471,8 +471,9 @@ mod tests {
             owned: Arc::new(Mutex::new(HashMap::new())),
         };
         let base = || Some("base".to_string());
-        assert_eq!(registry.with_static_prompts(base()), base());
-        assert!(!registry.has_dynamic_pre_generate());
+        let with_static =
+            |prompt| runner::with_static_prompts(&registry.pre_generate.ordered(), prompt);
+        assert_eq!(with_static(base()), base());
 
         for (id, prompt, priority) in [("b", "second", 2), ("a", "first", 1)] {
             let mut config = cfg(id, &format!("{id}::hook"), json!({ "priority": priority }));
@@ -482,18 +483,22 @@ mod tests {
                 .add(HookPoint::PreGenerate, config)
                 .unwrap();
         }
-        let assembled = registry.with_static_prompts(base());
+        let assembled = with_static(base());
         assert_eq!(assembled.as_deref(), Some("base\n\nfirst\n\nsecond"));
-        assert_eq!(
-            registry.with_static_prompts(None).as_deref(),
-            Some("first\n\nsecond")
-        );
-        assert!(!registry.has_dynamic_pre_generate());
+        assert_eq!(with_static(None).as_deref(), Some("first\n\nsecond"));
 
         // Assembly already carried them: pre_generate must not append them twice.
         let record = crate::types::turn::tests::record();
         match registry
-            .run_pre_generate(&record, 0, assembled.clone(), &[], 0, &[])
+            .run_pre_generate(
+                &registry.pre_generate.ordered(),
+                &record,
+                0,
+                assembled.clone(),
+                &[],
+                0,
+                &[],
+            )
             .await
         {
             runner::PreGenerateOutcome::Continue { system_prompt, .. } => {
@@ -501,15 +506,6 @@ mod tests {
             }
             runner::PreGenerateOutcome::Deny(reason) => panic!("unexpected deny: {reason}"),
         }
-
-        registry
-            .pre_generate
-            .add(
-                HookPoint::PreGenerate,
-                cfg("dyn", "code-runner::inject-guidance", json!({})),
-            )
-            .unwrap();
-        assert!(registry.has_dynamic_pre_generate());
     }
 
     #[test]
