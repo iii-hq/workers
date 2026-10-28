@@ -275,5 +275,20 @@
    }
   ],
   "prompt": "<s>[SYSTEM_PROMPT]You are a helpful assistant. Think deeply before answering the user's question. Do the thinking inside <think>...</think> tags.[/SYSTEM_PROMPT][INST]hi[/INST]Hello!</s>[INST]How are you?[/INST]<think>\n"
+ },
+ "m_ends_with_reasoning": {
+  "model": "sarvam-m",
+  "tools": [],
+  "messages": [
+   {
+    "content": "hi",
+    "role": "user"
+   },
+   {
+    "content": "<think>greet</think>Hello!",
+    "role": "assistant"
+   }
+  ],
+  "prompt": "<s>[SYSTEM_PROMPT]You are a helpful assistant. Think deeply before answering the user's question. Do the thinking inside <think>...</think> tags.[/SYSTEM_PROMPT][INST]hi[/INST]<think>\ngreet\n</think>\n\nHello!</s>"
  }
 }

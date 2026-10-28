@@ -17,8 +17,8 @@ Sarvam model family:
 - `provider::sarvam::count_tokens` counts prompt tokens locally: the prompt
   Sarvam's published chat template renders from the wire request, encoded
   with the model's own HuggingFace vocabulary (`sarvamai/sarvam-30b`, shared
-  by 105B, and `sarvamai/sarvam-m`). Other ids, and a cold cache with no
-  network, get a tiktoken estimate.
+  by 105B, and `sarvamai/sarvam-m`). Other ids, a cold cache with no
+  network, and a first download slower than 10 s get a tiktoken estimate.
 
 The voice worker reaches the speech half with `stt.backend: router` /
 `tts.backend: router` and a `sarvam::…` model.

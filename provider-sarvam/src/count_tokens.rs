@@ -12,7 +12,8 @@
 //! wire rows, so orphan placeholders, denied envelopes and the latest-wins
 //! result dedup count as they are sent. Ids outside the Sarvam lineup (a custom
 //! endpoint behind an `api_url` override), and a cold cache with no network,
-//! keep the tiktoken estimate.
+//! keep the tiktoken estimate, as does a cold fetch slower than
+//! [`COLD_FETCH_BUDGET`].
 //!
 //! Exposed behind `router::count_tokens`.
 use iii_sdk::errors::Error;
@@ -25,6 +26,8 @@ use llm_router::types::model::AgentFunction;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::future::Future;
+use std::time::Duration;
 
 use crate::wire::messages::to_wire_messages;
 use crate::wire::tools::functions_to_wire;
@@ -56,6 +59,25 @@ pub struct CountTokensResponse {
     pub estimator: String,
 }
 
+/// How long a count waits for a vocabulary that is not loaded yet. The
+/// router gives up on a count after 30 s, the same as the fetch timeout, and
+/// sarvam-30b's `tokenizer.json` is 33 MB: past this the count keeps the
+/// estimate while the fetch, under its own 30 s limit, goes on in the
+/// background to fill the cache for later counts.
+const COLD_FETCH_BUDGET: Duration = Duration::from_secs(10);
+
+/// `work` run on its own task, awaited for at most `budget`. Past the budget
+/// the task is left running and its result dropped.
+async fn within<T: Send + 'static>(
+    budget: Duration,
+    work: impl Future<Output = Option<T>> + Send + 'static,
+) -> Option<T> {
+    tokio::time::timeout(budget, tokio::spawn(work))
+        .await
+        .ok()?
+        .ok()?
+}
+
 type Render = fn(&[Value], &[Value]) -> String;
 
 /// The published vocabulary and template for a Sarvam chat id. Every
@@ -83,7 +105,11 @@ pub async fn handle(req: CountTokensRequest) -> Result<CountTokensResponse, Erro
     }
     let tools = req.tools.as_deref().unwrap_or(&[]);
     let tokenizer = match family(&req.model) {
-        Some((vocabulary, render)) => resolve(&vocabulary).await.map(|t| (t, render)),
+        Some((vocabulary, render)) => {
+            within(COLD_FETCH_BUDGET, async move { resolve(&vocabulary).await })
+                .await
+                .map(|t| (t, render))
+        }
         None => None,
     };
     let (tokens, estimator) = match tokenizer {
@@ -214,9 +240,14 @@ fn sarvam_m_prompt(rows: &[Value], tools: &[Value]) -> String {
     }
     let mut out = format!("<s>[SYSTEM_PROMPT]{system}[/SYSTEM_PROMPT]");
     for (index, row) in rows.iter().enumerate() {
+        let last = index + 1 == rows.len();
         match row["role"].as_str() {
             Some("assistant") => {
-                let (_, content) = split_think(visible_text(&row["content"]));
+                let (reasoning, content) = split_think(visible_text(&row["content"]));
+                // Reasoning is replayed only on the last message.
+                if last && !reasoning.is_empty() {
+                    out.push_str(&format!("<think>\n{reasoning}\n</think>\n\n"));
+                }
                 out.push_str(&content);
                 for call in row["tool_calls"].as_array().into_iter().flatten() {
                     out.push_str(call["function"]["name"].as_str().unwrap_or_default());
@@ -229,7 +260,7 @@ fn sarvam_m_prompt(rows: &[Value], tools: &[Value]) -> String {
                 out.push_str("[INST]");
                 out.push_str(&visible_text(&row["content"]));
                 out.push_str("[/INST]");
-                if index + 1 == rows.len() {
+                if last {
                     out.push_str("<think>\n");
                 }
             }
@@ -374,6 +405,99 @@ mod tests {
             messages: vec![],
         };
         assert!(handle(req).await.is_err());
+    }
+
+    /// A cache dir holding a vocabulary with one token per character for the
+    /// 30b/105b family, so a count reads as the length of the rendered
+    /// prompt, and an unparseable one for sarvam-m. Neither touches the
+    /// network.
+    fn fixture_cache() {
+        static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+        DIR.get_or_init(|| {
+            let dir = std::env::temp_dir().join(format!("sarvam-count-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let per_char = serde_json::json!({
+                "version": "1.0", "truncation": null, "padding": null, "added_tokens": [],
+                "normalizer": null, "post_processor": null, "decoder": null,
+                "pre_tokenizer": {"type": "Split", "pattern": {"Regex": "[\\s\\S]"},
+                                  "behavior": "Isolated", "invert": false},
+                "model": {"type": "WordLevel", "vocab": {"[UNK]": 0}, "unk_token": "[UNK]"},
+            });
+            std::fs::write(dir.join("sarvamai--sarvam-30b.json"), per_char.to_string()).unwrap();
+            std::fs::write(dir.join("sarvamai--sarvam-m.json"), "not a tokenizer").unwrap();
+            std::env::set_var("III_TOKENIZER_CACHE_DIR", &dir);
+            dir
+        });
+    }
+
+    #[tokio::test]
+    async fn sarvam_ids_count_the_prompt_rendered_from_the_wire() {
+        fixture_cache();
+        let tools = vec![AgentFunction {
+            name: "shell__exec".into(),
+            description: "Run a command.".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            label: None,
+            execution_mode: None,
+        }];
+        let req = CountTokensRequest {
+            model: "sarvam-105b".into(),
+            system_prompt: Some("Be brief.".into()),
+            tools: Some(tools.clone()),
+            messages: vec![user("namaste duniya")],
+        };
+        let resp = handle(req).await.unwrap();
+        let rows = [
+            serde_json::json!({"role": "system", "content": "Be brief."}),
+            serde_json::json!({"role": "user", "content": "namaste duniya"}),
+        ];
+        let expected = prompt(&rows, &functions_to_wire(&tools));
+        assert!(expected.contains("shell__exec") && expected.contains("Be brief."));
+        assert_eq!(resp.tokens, expected.chars().count() as u64);
+        assert_eq!(resp.estimator, "tokenizer");
+    }
+
+    #[tokio::test]
+    async fn a_sarvam_id_without_its_vocabulary_keeps_the_tiktoken_estimate() {
+        fixture_cache();
+        let req = CountTokensRequest {
+            model: "sarvam-m".into(),
+            system_prompt: Some("Be brief.".into()),
+            tools: None,
+            messages: vec![user("namaste duniya")],
+        };
+        let resp = handle(req).await.unwrap();
+        let expected = count_chat_tokens(
+            "sarvam-m",
+            Some("Be brief."),
+            &[],
+            &[user("namaste duniya")],
+        );
+        assert_eq!(resp.tokens, expected);
+        assert_eq!(resp.estimator, "tiktoken");
+    }
+
+    #[tokio::test]
+    async fn a_slow_vocabulary_fetch_keeps_the_estimate_and_still_fills_the_cache() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let filled = std::sync::Arc::new(AtomicBool::new(false));
+        let fetch = {
+            let filled = filled.clone();
+            async move {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                filled.store(true, Ordering::SeqCst);
+                Some(())
+            }
+        };
+        let started = std::time::Instant::now();
+        assert_eq!(within(Duration::from_millis(20), fetch).await, None);
+        assert!(started.elapsed() < Duration::from_millis(150));
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(filled.load(Ordering::SeqCst));
+        assert_eq!(
+            within(Duration::from_secs(1), async { Some(7) }).await,
+            Some(7)
+        );
     }
 
     #[tokio::test]
