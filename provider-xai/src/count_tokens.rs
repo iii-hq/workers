@@ -20,7 +20,7 @@ use llm_router::provider_scaffold::endpoint_count::{base_route_url, post_count};
 use llm_router::provider_scaffold::vocabulary_count::ESTIMATOR_TOKENIZER;
 use llm_router::types::events::ErrorKind;
 use llm_router::types::messages::AgentMessage;
-use llm_router::types::model::AgentFunction;
+use llm_router::types::model::{AgentFunction, ThinkingLevel};
 use llm_router::types::router::ResponseFormat;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -29,6 +29,7 @@ use serde_json::{json, Value};
 use crate::config::{config_from_resolve, WorkerConfig};
 use crate::configuration::ConfigCell;
 use crate::errors::classify_bus_error;
+use crate::reasoning::reasoning_effort_for;
 use crate::request::build_headers;
 use crate::state;
 use crate::wire::messages::to_wire_messages;
@@ -52,6 +53,10 @@ pub struct CountTokensRequest {
     /// billed as prompt.
     #[serde(default)]
     pub response_format: Option<ResponseFormat>,
+    /// The turn's reasoning level; it maps to the `reasoning_effort` the
+    /// stream sends, which changes the preamble xAI bills.
+    #[serde(default)]
+    pub thinking_level: Option<ThinkingLevel>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -190,8 +195,9 @@ const IMAGE_MAX_PATCHES: u64 = 49 * 49;
 const IMAGE_MARKERS: u64 = 2;
 
 /// The server-side preamble xAI puts in front of every prompt: billed
-/// tokens for "hi" less its one text token and its row.
-fn preamble(model: &str) -> u64 {
+/// tokens for "hi" less its one text token and its row. `effort` is the
+/// `reasoning_effort` the request carries.
+fn preamble(model: &str, effort: Option<&str>) -> u64 {
     let id = model.to_ascii_lowercase();
     // xAI now serves grok-code-fast as grok-build-0.1, and grok-3 and the
     // dash-versioned grok-4 ids (grok-4-0709, grok-4-fast-…) as grok-4.3.
@@ -202,7 +208,13 @@ fn preamble(model: &str) -> u64 {
         || id == "grok-4"
         || id.starts_with("grok-4-")
     {
-        188
+        // grok-4.3 bills a shorter preamble with reasoning off or high.
+        match effort {
+            _ if id.contains("non-reasoning") => 180,
+            Some("none") => 180,
+            Some("high" | "xhigh") => 182,
+            _ => 188,
+        }
     } else if id.starts_with("grok-4.5") {
         490
     } else if id.starts_with("grok-4.6") {
@@ -229,7 +241,12 @@ fn server_tool(kind: &str) -> u64 {
 fn prompt(model: &str, req: &CountTokensRequest, server_tools: &[String]) -> Prompt {
     let rows = to_wire_messages(&req.messages, req.system_prompt.as_deref().unwrap_or(""));
     let mut text = Vec::new();
-    let mut fixed = preamble(model) + ROW * rows.len() as u64;
+    // The Agent Tools path sends no effort (stream_fn warns).
+    let effort = server_tools
+        .is_empty()
+        .then(|| reasoning_effort_for(req.thinking_level, model))
+        .flatten();
+    let mut fixed = preamble(model, effort) + ROW * rows.len() as u64;
     for row in &rows {
         match &row["content"] {
             Value::String(content) => text.push(content.clone()),
@@ -442,6 +459,7 @@ mod tests {
             tools: Some(tools),
             messages,
             response_format: None,
+            thinking_level: None,
         }
     }
     fn reader() -> AgentFunction {
@@ -523,6 +541,43 @@ mod tests {
         // A family not measured yet counts as the largest one, never under.
         let fixed = prompt("grok-5", &request(vec![], vec![hi()]), &[]).fixed;
         assert_eq!(fixed + 1, 1243);
+    }
+
+    #[test]
+    fn the_preamble_follows_the_effort_the_stream_sends() {
+        // Billed for "hi" on grok-4.3 per reasoning_effort, 2026-10-28; the
+        // harness default (minimal) is sent to grok-4.3 as `none`.
+        for (level, billed) in [
+            (None, 193),
+            (Some(ThinkingLevel::Off), 185),
+            (Some(ThinkingLevel::Minimal), 185),
+            (Some(ThinkingLevel::Low), 193),
+            (Some(ThinkingLevel::Medium), 193),
+            (Some(ThinkingLevel::High), 187),
+            (Some(ThinkingLevel::Xhigh), 187),
+        ] {
+            let mut req = request(vec![], vec![hi()]);
+            req.thinking_level = level;
+            let fixed = prompt("grok-4.3", &req, &[]).fixed;
+            assert_eq!(fixed + 1, billed, "{level:?}");
+        }
+        // grok-3-mini is served as grok-4.3 too, with the same shift.
+        let mut req = request(vec![], vec![hi()]);
+        req.thinking_level = Some(ThinkingLevel::High);
+        assert_eq!(prompt("grok-3-mini", &req, &[]).fixed + 1, 187);
+        // The other families bill the same preamble at every effort.
+        req.thinking_level = Some(ThinkingLevel::Low);
+        for (model, billed) in [("grok-4.5", 495), ("grok-4.6", 637), ("grok-4.7", 1243)] {
+            assert_eq!(prompt(model, &req, &[]).fixed + 1, billed, "{model}");
+        }
+        // Served as grok-4.3 with reasoning off, no effort param sent.
+        let fixed = prompt(
+            "grok-4-fast-non-reasoning",
+            &request(vec![], vec![hi()]),
+            &[],
+        )
+        .fixed;
+        assert_eq!(fixed + 1, 185);
     }
 
     #[test]

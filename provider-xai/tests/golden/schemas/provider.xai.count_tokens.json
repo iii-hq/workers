@@ -431,6 +431,18 @@
         ],
         "type": "string"
       },
+      "ThinkingLevel": {
+        "description": "\"off\" asks the provider not to reason at all and is honoured only where the model advertises `Model::supports_thinking_off` (elsewhere the provider falls back to its own lowest setting, or omits the parameter, and warns). \"minimal\" requests the lowest reasoning effort and needs only `thinking` support; levels map to provider-native knobs via `Model::thinking_budgets`.",
+        "enum": [
+          "off",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "type": "string"
+      },
       "Usage": {
         "properties": {
           "cache_read": {
@@ -545,6 +557,18 @@
           "string",
           "null"
         ]
+      },
+      "thinking_level": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ThinkingLevel"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "The turn's reasoning level; it maps to the `reasoning_effort` the stream sends, which changes the preamble xAI bills."
       },
       "tools": {
         "default": null,

@@ -18,10 +18,11 @@ grok-4.7), the tools header, image tokens from each PNG/JPEG's dimensions,
 and the server-tool definitions on the Agent Tools path. The constants are
 calibrated against billed `prompt_tokens`, not published by xAI.
 
-A `response_format` schema counts when the caller passes it to
-`provider::xai::count_tokens` directly. `router::count_tokens` does not
-forward `response_format` yet (MOT-5568), so counts through the router leave
-the schema out.
+A `response_format` schema, and the `thinking_level` that shifts grok-4.3's
+preamble (6 to 8 tokens shorter with reasoning off or high), count when the
+caller passes them to `provider::xai::count_tokens` directly.
+`router::count_tokens` does not forward either yet (MOT-5568), so counts
+through the router leave the schema out and assume the default effort.
 
 ## Behavior
 
