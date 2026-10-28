@@ -1,5 +1,5 @@
 {
-  "description": "Count prompt tokens for {model, system_prompt?, tools?, response_format?, messages} through Moonshot's own estimator endpoint; never runs the model and costs nothing.",
+  "description": "Count prompt tokens for {model, system_prompt?, tools?, messages} through Moonshot's own estimator endpoint; never runs the model and costs nothing.",
   "function_id": "provider::kimi::count_tokens",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -409,18 +409,6 @@
         ],
         "type": "string"
       },
-      "ResponseFormat": {
-        "properties": {
-          "schema": true,
-          "type": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "type"
-        ],
-        "type": "object"
-      },
       "StopReason": {
         "enum": [
           "end",
@@ -525,18 +513,6 @@
       "model": {
         "description": "Model id the prompt targets (required by the upstream estimator).",
         "type": "string"
-      },
-      "response_format": {
-        "anyOf": [
-          {
-            "$ref": "#/definitions/ResponseFormat"
-          },
-          {
-            "type": "null"
-          }
-        ],
-        "default": null,
-        "description": "Structured output the turn requests; sent as on chat (`json_object`)."
       },
       "system_prompt": {
         "default": null,

@@ -28,7 +28,7 @@ pub const REFRESH_MODELS_DESC: &str = "Refresh the Kimi catalog slice from GET /
 
 pub const COUNT_TOKENS_ID: &str = "provider::kimi::count_tokens";
 pub const COUNT_TOKENS_DESC: &str =
-    "Count prompt tokens for {model, system_prompt?, tools?, response_format?, messages} through Moonshot's own estimator endpoint; never runs the model and costs nothing.";
+    "Count prompt tokens for {model, system_prompt?, tools?, messages} through Moonshot's own estimator endpoint; never runs the model and costs nothing.";
 
 pub const ON_ROUTER_READY_ID: &str = "provider::kimi::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =

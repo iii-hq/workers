@@ -4,14 +4,18 @@
 //! skip `tools` and `response_format` while the chat route bills them. This
 //! sends each shape twice: the chat body `request::build_body` builds (one
 //! output token, not streamed) for `usage.prompt_tokens`, and the same request
-//! through `count_tokens::count`. Needs a key, so it is ignored by default:
+//! through `count_tokens::count`. `count` leaves `response_format` out, so the
+//! json_object row also sends it to the estimator directly: an error there
+//! means the endpoint rejects the field, a number above the count means it
+//! meters it. Needs a key, so it is ignored by default:
 //!
 //!   MOONSHOT_API_KEY=… cargo test --test live_count_probe -- --ignored --nocapture
 //!
 //! `KIMI_PROBE_MODEL` picks the model (a thinking model shows whether the
-//! estimator counts the thinking prefix). About 18 requests, one output token
+//! estimator counts the thinking prefix). About 19 requests, one output token
 //! each.
 
+use llm_router::provider_scaffold::endpoint_count::{base_route_url, post_count};
 use llm_router::types::content::ContentBlock;
 use llm_router::types::events::StopReason;
 use llm_router::types::messages::{
@@ -162,8 +166,8 @@ fn shapes() -> Vec<Shape> {
     ]
 }
 
-async fn billed(http: &reqwest::Client, cfg: &KimiConfig, s: &Shape) -> u64 {
-    let mut body = build_body(&BodyArgs {
+fn chat_body(cfg: &KimiConfig, s: &Shape) -> Value {
+    build_body(&BodyArgs {
         model: cfg.model.clone(),
         max_tokens: 1,
         system_prompt: s.system.into(),
@@ -171,7 +175,18 @@ async fn billed(http: &reqwest::Client, cfg: &KimiConfig, s: &Shape) -> u64 {
         tools: s.tools.clone(),
         response_format: s.response_format.clone(),
         prompt_cache_key: None,
-    });
+    })
+}
+
+fn headers(cfg: &KimiConfig) -> Vec<(String, String)> {
+    build_headers(cfg)
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value))
+        .collect()
+}
+
+async fn billed(http: &reqwest::Client, cfg: &KimiConfig, s: &Shape) -> u64 {
+    let mut body = chat_body(cfg, s);
     body["stream"] = json!(false);
     body.as_object_mut().unwrap().remove("stream_options");
     let mut request = http.post(&cfg.api_url).json(&body);
@@ -189,7 +204,6 @@ async fn counted(http: &reqwest::Client, cfg: &KimiConfig, s: &Shape) -> u64 {
         model: cfg.model.clone(),
         system_prompt: Some(s.system.into()),
         tools: Some(s.tools.clone()),
-        response_format: s.response_format.clone(),
         messages: s.messages.clone(),
     };
     count(http, cfg, &req)
@@ -232,6 +246,26 @@ async fn estimator_counts_what_moonshot_bills() {
     println!("3 tools add: billed {tools_billed:+}, counted {tools_counted:+}");
     let (rf_billed, rf_counted) = delta("JSON hi", "JSON hi + json_object");
     println!("json_object adds: billed {rf_billed:+}, counted {rf_counted:+}");
+
+    // What the estimator says when it is handed the chat body's
+    // `response_format`, which `count` does not send.
+    let s = shapes()
+        .into_iter()
+        .find(|s| s.response_format.is_some())
+        .unwrap();
+    let mut body = chat_body(&cfg, &s);
+    for knob in ["max_tokens", "stream", "stream_options", "prompt_cache_key"] {
+        body.as_object_mut().unwrap().remove(knob);
+    }
+    let with_rf = post_count(
+        &http,
+        base_route_url(&cfg.api_url, "tokenizers/estimate-token-count"),
+        headers(&cfg),
+        body,
+        |reply| reply.pointer("/data/total_tokens").and_then(Value::as_u64),
+    )
+    .await;
+    println!("estimator sent response_format: {with_rf:?}");
 
     let off: Vec<_> = rows.iter().filter(|r| r.1 != r.2).map(|r| r.0).collect();
     assert!(

@@ -16,13 +16,12 @@ use llm_router::provider_scaffold::endpoint_count::{
 };
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::AgentFunction;
-use llm_router::types::router::ResponseFormat;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::config::{config_from_resolve, KimiConfig};
-use crate::request::{build_headers, build_response_format};
+use crate::request::build_headers;
 use crate::wire::messages::to_wire_messages;
 use crate::wire::tools::functions_to_wire;
 use crate::{router_client, state};
@@ -37,9 +36,6 @@ pub struct CountTokensRequest {
     /// Function invocation schemas; mapped to the wire `tools` array.
     #[serde(default)]
     pub tools: Option<Vec<AgentFunction>>,
-    /// Structured output the turn requests; sent as on chat (`json_object`).
-    #[serde(default)]
-    pub response_format: Option<ResponseFormat>,
     /// Wire agent messages, the same shape `provider::kimi::stream` accepts.
     /// Must be non-empty.
     pub messages: Vec<AgentMessage>,
@@ -54,9 +50,10 @@ pub struct CountTokensResponse {
     pub estimator: String,
 }
 
-/// The count body: the same `{model, messages, tools?, response_format?}` a
-/// generation would send, with nothing that would make the upstream do work —
-/// no streaming, no output ceiling.
+/// The count body: the same `{model, messages, tools?}` a generation would
+/// send, with nothing that would make the upstream do work — no streaming, no
+/// output ceiling. `response_format` stays out until a live probe shows the
+/// estimator accepts it: it is documented with `model` and `messages` only.
 fn build_count_body(model: &str, req: &CountTokensRequest) -> Value {
     let mut body = json!({
         "model": model,
@@ -64,9 +61,6 @@ fn build_count_body(model: &str, req: &CountTokensRequest) -> Value {
     });
     if let Some(tools) = req.tools.as_deref().filter(|t| !t.is_empty()) {
         body["tools"] = json!(functions_to_wire(tools));
-    }
-    if let Some(rf) = &req.response_format {
-        body["response_format"] = build_response_format(rf);
     }
     body
 }
@@ -135,11 +129,15 @@ mod tests {
     use crate::request::{build_body, BodyArgs};
     use llm_router::types::content::ContentBlock;
     use llm_router::types::messages::{UserMessage, UserRoleTag};
+    use llm_router::types::router::ResponseFormat;
 
-    /// Whatever the chat request carries reaches the estimator the same way;
-    /// only the knobs that add no prompt tokens stay out of the count.
+    /// The count body is the chat body without the generation knobs and
+    /// without `response_format`: Moonshot documents the estimator with only
+    /// `model` and `messages`, and an unknown field it rejects would turn a
+    /// small undercount into a failed count. This pins the shape only; whether
+    /// the estimator meters what chat bills is `tests/live_count_probe.rs`.
     #[test]
-    fn count_body_is_the_chat_body_without_the_generation_knobs() {
+    fn count_body_is_the_chat_body_without_generation_knobs_or_response_format() {
         let messages = vec![AgentMessage::User(UserMessage {
             role: UserRoleTag::User,
             content: vec![ContentBlock::Text {
@@ -168,7 +166,13 @@ mod tests {
                 response_format: response_format.clone(),
                 prompt_cache_key: Some("session".into()),
             });
-            for knob in ["max_tokens", "stream", "stream_options", "prompt_cache_key"] {
+            for knob in [
+                "max_tokens",
+                "stream",
+                "stream_options",
+                "prompt_cache_key",
+                "response_format",
+            ] {
                 chat.as_object_mut().unwrap().remove(knob);
             }
             let req: CountTokensRequest = serde_json::from_value(json!({
