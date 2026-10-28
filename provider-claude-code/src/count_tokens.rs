@@ -15,7 +15,7 @@ use iii_sdk::IIIClient;
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::types::events::ErrorKind;
 use llm_router::types::messages::AgentMessage;
-use llm_router::types::model::{AgentFunction, ThinkingLevel};
+use llm_router::types::model::{AgentFunction, Model, ThinkingLevel};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -24,7 +24,7 @@ use crate::config::{build_config, ClaudeCodeConfig};
 use crate::errors::{classify_bus_error, invalid_request};
 use crate::request::{build_body, build_headers, BodyArgs};
 use crate::stream_fn::default_resolve;
-use crate::thinking::{build_thinking_config, ThinkingConfig};
+use crate::thinking::build_thinking_config;
 use crate::{auth, router_client, state};
 
 /// A count is bounded and non-streaming; a tight budget keeps this inside
@@ -85,15 +85,18 @@ struct WireCountResponse {
 /// in `system`) minus `stream` and `max_tokens`, with cache markers off
 /// because a count must never write a cache entry. Anthropic renders the
 /// thinking config and effort into the prompt, so leaving them out would
-/// meter a different prompt than the turn bills.
+/// meter a different prompt than the turn bills. The level is mapped here,
+/// with the stream's `build_thinking_config`, so `handle` cannot skip it:
+/// with no level, adaptive thinking is still sent on thinking models.
 fn build_count_body(
     model: String,
     system_prompt: String,
     tools: Vec<AgentFunction>,
     messages: Vec<AgentMessage>,
-    thinking: Option<ThinkingConfig>,
-    effort: Option<&'static str>,
+    thinking_level: Option<ThinkingLevel>,
+    model_meta: Option<&Model>,
 ) -> Value {
+    let thinking = build_thinking_config(thinking_level, model_meta);
     let mut body = build_body(
         &BodyArgs {
             model,
@@ -102,8 +105,8 @@ fn build_count_body(
             system_sections: None,
             messages,
             tools,
-            thinking,
-            effort,
+            thinking: thinking.config,
+            effort: thinking.effort,
             cache_enabled: false,
             cache_ttl: None,
         },
@@ -191,17 +194,15 @@ pub async fn handle(
     let cfg = build_config(&req.model, None, &resolved, credential.as_ref())
         .map_err(|e| Error::Handler(e.to_string()))?;
 
-    // Same thinking mapping as the stream, including its model_meta lookup:
-    // with no level, adaptive thinking is still sent on thinking models.
+    // Same model_meta lookup as the stream feeds its thinking mapping.
     let model_meta = router_client::models_get(iii, &req.model).await;
-    let thinking = build_thinking_config(req.thinking_level, model_meta.as_ref());
     let body = build_count_body(
         cfg.model.clone(),
         req.system_prompt.unwrap_or_default(),
         req.tools.unwrap_or_default(),
         req.messages,
-        thinking.config,
-        thinking.effort,
+        req.thinking_level,
+        model_meta.as_ref(),
     );
     let tokens = post_count(http, &cfg, &body).await?;
 
@@ -356,8 +357,8 @@ mod tests {
             String::new(),
             vec![],
             vec![user("hi")],
-            Some(crate::thinking::ADAPTIVE),
-            Some("high"),
+            Some(ThinkingLevel::High),
+            None,
         );
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert_eq!(body["thinking"]["display"], "summarized");
@@ -384,6 +385,28 @@ mod tests {
         assert_eq!(messages[0]["role"], "user");
     }
 
+    fn thinking_model() -> Model {
+        Model {
+            id: "claude-sonnet-4-6".into(),
+            provider: "claude-code".into(),
+            display_name: None,
+            context_window: 200_000,
+            max_output_tokens: 64_000,
+            input_limit: None,
+            supports_thinking: Some(true),
+            supports_xhigh: Some(false),
+            supports_thinking_off: None,
+            reasoning_efforts: None,
+            supports_tools: Some(true),
+            supports_vision: Some(true),
+            supports_cache: Some(true),
+            supports_structured_output: Some(false),
+            thinking_budgets: None,
+            pricing: None,
+            speech: None,
+        }
+    }
+
     #[test]
     fn body_is_the_stream_body_minus_stream_max_tokens_and_cache_markers() {
         let messages = vec![
@@ -404,34 +427,66 @@ mod tests {
                 text: "partial".into(),
             }]),
         ];
-        let thinking = build_thinking_config(Some(ThinkingLevel::Xhigh), None);
-        let mut stream = build_body(
-            &BodyArgs {
-                model: "claude-sonnet-4-6".into(),
-                max_tokens: 4096,
-                system_prompt: "be brief".into(),
-                system_sections: None,
-                messages: messages.clone(),
-                tools: vec![tool()],
-                thinking: thinking.config.clone(),
-                effort: thinking.effort,
-                cache_enabled: false,
-                cache_ttl: None,
-            },
-            &mut Vec::new(),
-        );
-        let obj = stream.as_object_mut().unwrap();
-        obj.remove("stream");
-        obj.remove("max_tokens");
-        let count = build_count_body(
+        let meta = thinking_model();
+        let levels = [
+            None,
+            Some(ThinkingLevel::Off),
+            Some(ThinkingLevel::Low),
+            Some(ThinkingLevel::High),
+            Some(ThinkingLevel::Xhigh),
+        ];
+        for model_meta in [None, Some(&meta)] {
+            for level in levels {
+                let thinking = build_thinking_config(level, model_meta);
+                let mut stream = build_body(
+                    &BodyArgs {
+                        model: "claude-sonnet-4-6".into(),
+                        max_tokens: 4096,
+                        system_prompt: "be brief".into(),
+                        system_sections: None,
+                        messages: messages.clone(),
+                        tools: vec![tool()],
+                        thinking: thinking.config,
+                        effort: thinking.effort,
+                        cache_enabled: false,
+                        cache_ttl: None,
+                    },
+                    &mut Vec::new(),
+                );
+                let obj = stream.as_object_mut().unwrap();
+                obj.remove("stream");
+                obj.remove("max_tokens");
+                let count = build_count_body(
+                    "claude-sonnet-4-6".into(),
+                    "be brief".into(),
+                    vec![tool()],
+                    messages.clone(),
+                    level,
+                    model_meta,
+                );
+                assert_eq!(
+                    count,
+                    stream,
+                    "level {level:?}, meta {}",
+                    model_meta.is_some()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn absent_level_on_a_thinking_model_counts_adaptive_thinking() {
+        // The reachable router case: no level forwarded, catalog says thinking.
+        let body = build_count_body(
             "claude-sonnet-4-6".into(),
-            "be brief".into(),
-            vec![tool()],
-            messages,
-            thinking.config,
-            thinking.effort,
+            String::new(),
+            vec![],
+            vec![user("hi")],
+            None,
+            Some(&thinking_model()),
         );
-        assert_eq!(count, stream);
+        assert_eq!(body["thinking"]["type"], "adaptive", "{body}");
+        assert!(body.get("output_config").is_none(), "{body}");
     }
 
     #[test]
