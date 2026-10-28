@@ -16,7 +16,11 @@ event OpenCode emits (`step_start`, `text`, `tool_use`, `step_finish`) is
 delivered verbatim on the `opencode::raw-event` trigger type; a translated
 AgentEvent view is delivered on `opencode::agent-event`, which the acp worker
 renders. Bind either with `{ session_id }`; frames are ephemeral (not stored,
-not replayed).
+not replayed). On iii 0.25 engines the same frames reach observers of the
+owner-delivered functions `opencode::on-agent-event` and
+`opencode::on-raw-event`:
+`iii.observe({ function_id: 'opencode::on-agent-event', args: { session_id } }, target)`.
+The trigger types keep working on 0.24 and 0.25 engines.
 
 Requires the `opencode` CLI on the host and an API key for the LLM provider you
 use (e.g. `ANTHROPIC_API_KEY`, or `opencode auth`). When a turn needs a
@@ -50,6 +54,9 @@ bolting anything onto this one.
   read-only introspection is allowed (see iii-permissions.yaml).
 - One turn per session at a time: check `opencode::status` (`live: true`) before
   another `opencode::run` for the same `session_id`.
+- `opencode::on-agent-event` and `opencode::on-raw-event` are event sources:
+  observe them, never invoke them (a direct call is refused with
+  `FORBIDDEN`).
 
 ## Functions
 

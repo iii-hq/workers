@@ -29,6 +29,24 @@ export type TriggerTypeHandler = {
   unregisterTrigger: (binding: TriggerBinding) => Promise<void>;
 };
 
+/** The observe hooks a function registered with (iii 0.25 owner delivery). */
+export type ObserveHooks = {
+  delivery: string;
+  args_format?: unknown;
+  onObserverAdded?: (obs: unknown) => Promise<void> | void;
+  onObserverRemoved?: (obs: unknown) => Promise<void> | void;
+};
+
+/** A stand-in for the SDK's Observer: `call` records what it is handed. */
+export type FakeObserver = {
+  id: string;
+  function_id: string;
+  target: string;
+  args: unknown;
+  received: unknown[];
+  call: ReturnType<typeof vi.fn>;
+};
+
 export type FakeIii = {
   iii: ISdk;
   calls: TriggerCall[];
@@ -44,6 +62,16 @@ export type FakeIii = {
   feedPayloads: (typeId: string) => FeedPayload[];
   /** The `event` of every payload delivered to the default consumer of a feed. */
   feedEvents: (typeId: string) => Array<Record<string, unknown>>;
+  /** Observe hooks per function id, as `registerFunction` received them. */
+  observeHooks: Map<string, ObserveHooks>;
+  /** Add an observer of an observable function the way the engine would. */
+  observe: (
+    fnId: string,
+    args: unknown,
+    opts?: { id?: string; target?: string },
+  ) => Promise<FakeObserver>;
+  /** Remove an observer the way the engine would. */
+  unobserve: (fnId: string, observer: FakeObserver) => Promise<void>;
 };
 
 export const consumerFor = (typeId: string) => `consumer::${typeId}`;
@@ -60,6 +88,8 @@ export function fakeIii(): FakeIii {
   const state = new Map<string, unknown>();
   const registered = new Map<string, (payload: unknown) => Promise<unknown>>();
   const triggerTypes = new Map<string, TriggerTypeHandler>();
+  const observeHooks = new Map<string, ObserveHooks>();
+  let nextObserver = 0;
 
   const iii = {
     trigger: async (req: {
@@ -104,9 +134,16 @@ export function fakeIii(): FakeIii {
       }
       return null;
     },
-    registerFunction: vi.fn((fnId: string, handler: (payload: unknown) => Promise<unknown>) => {
-      registered.set(fnId, handler);
-    }),
+    registerFunction: vi.fn(
+      (
+        fnId: string,
+        handler: (payload: unknown) => Promise<unknown>,
+        options?: { observe?: ObserveHooks },
+      ) => {
+        registered.set(fnId, handler);
+        if (options?.observe) observeHooks.set(fnId, options.observe);
+      },
+    ),
     registerTrigger: vi.fn(),
     registerTriggerType: vi.fn((type: { id: string }, handler: TriggerTypeHandler) => {
       triggerTypes.set(type.id, handler);
@@ -139,7 +176,51 @@ export function fakeIii(): FakeIii {
   const feedEvents = (typeId: string) =>
     feedPayloads(typeId).map((p) => p.event as Record<string, unknown>);
 
-  return { iii, calls, state, registered, triggerTypes, bind, unbind, feedPayloads, feedEvents };
+  const hooksOf = (fnId: string) => {
+    const hooks = observeHooks.get(fnId);
+    if (!hooks) throw new Error(`function ${fnId} is not observable`);
+    return hooks;
+  };
+
+  const observe = async (
+    fnId: string,
+    args: unknown,
+    opts: { id?: string; target?: string } = {},
+  ) => {
+    const received: unknown[] = [];
+    const observer: FakeObserver = {
+      id: opts.id ?? `observer-${++nextObserver}`,
+      function_id: fnId,
+      target: opts.target ?? `test::observer::${fnId}`,
+      args,
+      received,
+      call: vi.fn(async (payload: unknown) => {
+        received.push(structuredClone(payload));
+        return null;
+      }),
+    };
+    await hooksOf(fnId).onObserverAdded?.(observer);
+    return observer;
+  };
+
+  const unobserve = async (fnId: string, observer: FakeObserver) => {
+    await hooksOf(fnId).onObserverRemoved?.(observer);
+  };
+
+  return {
+    iii,
+    calls,
+    state,
+    registered,
+    triggerTypes,
+    bind,
+    unbind,
+    feedPayloads,
+    feedEvents,
+    observeHooks,
+    observe,
+    unobserve,
+  };
 }
 
 export const AGENT = AGENT_EVENT_TRIGGER_TYPE;

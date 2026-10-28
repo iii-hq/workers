@@ -11,15 +11,30 @@
  * replayed, a consumer bound late never sees earlier frames. The durable
  * record of a turn is `opencode::status` / `opencode::sessions::list` and the
  * result `opencode::run` returns.
+ *
+ * On an iii 0.25 engine each feed is also an owner-delivered observable
+ * function (`opencode::on-agent-event`, `opencode::on-raw-event`): an observer
+ * with args `{ session_id }` gets the same payload through `obs.call`. The
+ * trigger types stay for 0.24 engines and old consumers; invoking an `on-*`
+ * function directly is refused with FORBIDDEN.
  */
 
 import { randomUUID } from 'node:crypto';
-import { type IIIClient, TriggerAction } from 'iii-sdk';
+import {
+  type IIIClient,
+  InvocationError,
+  ObserveRejection,
+  type Observer,
+  TriggerAction,
+} from 'iii-sdk';
 
 export const MAX_BINDINGS = 256;
 export const MAX_SESSION_ID_LENGTH = 512;
 export const AGENT_EVENT_TRIGGER_TYPE = 'opencode::agent-event';
 export const RAW_EVENT_TRIGGER_TYPE = 'opencode::raw-event';
+/** The observable functions (iii 0.25) next to the two trigger types. */
+export const AGENT_EVENT_OBSERVABLE = 'opencode::on-agent-event';
+export const RAW_EVENT_OBSERVABLE = 'opencode::on-raw-event';
 export const FEED_SOURCE = 'opencode';
 
 const CONFIG_KEYS = new Set(['session_id', 'metadata']);
@@ -41,6 +56,31 @@ type Binding = {
   namespace?: string;
   metadata?: unknown;
   config: FeedConfig;
+  /** Set for an observer of the observable function (iii 0.25), absent for a trigger binding. */
+  observer?: Observer;
+};
+
+/** Observers share the bindings map under a key no trigger binding id uses. */
+const observerKey = (observerId: string) => `observer:${observerId}`;
+
+/** The observers' args (`FeedConfig`), validated by the engine (`INVALID_ARGS`). */
+const FEED_ARGS_FORMAT = {
+  type: 'object' as const,
+  properties: {
+    session_id: {
+      type: 'string',
+      minLength: 1,
+      maxLength: MAX_SESSION_ID_LENGTH,
+      description: 'The session whose frames this observer receives.',
+    },
+    metadata: {
+      type: 'object',
+      description:
+        'Accepted for parity with the trigger config; an observer gets its sidecar from its own `metadata` option.',
+    },
+  },
+  required: ['session_id'],
+  additionalProperties: false,
 };
 
 /** Emit one frame; resolves to the number of consumers the frame was handed to. */
@@ -72,10 +112,13 @@ export function validateFeedConfig(typeId: string, raw: unknown): FeedConfig {
   return { session_id: sessionId, metadata: raw.metadata };
 }
 
-/** Register one owned feed trigger type and return its emitter. */
+/**
+ * Register one owned feed trigger type and, when `observableId` is given, its
+ * observable function (iii 0.25); return the emitter.
+ */
 export function createFeed(
   iii: IIIClient,
-  opts: { id: string; source: string; description: string },
+  opts: { id: string; observableId?: string; source: string; description: string },
 ): Feed {
   const bindings = new Map<string, Binding>();
   const seqBySession = new Map<string, number>();
@@ -103,6 +146,55 @@ export function createFeed(
     },
   );
 
+  if (opts.observableId !== undefined) {
+    const observableId = opts.observableId;
+    const forbidden = `${observableId} is an event source: observe it (iii.observe({ function_id: '${observableId}', args: { session_id } }, target)); only the opencode worker emits its events`;
+
+    // The iii 0.25 observable function next to the trigger type: owner-delivered,
+    // its observers filed in the same bindings map (keyed apart from binding ids),
+    // so one emit reaches bindings and observers alike. Events are routed
+    // in-process, never through the function: invoking it is refused.
+    iii.registerFunction(
+      observableId,
+      async () => {
+        throw new InvocationError({
+          code: 'FORBIDDEN',
+          message: forbidden,
+          function_id: observableId,
+        });
+      },
+      {
+        description: `${opts.description} Observe with iii.observe({ function_id: '${observableId}', args: { session_id } }, target) (iii 0.25); invoking it is refused with FORBIDDEN.`,
+        observe: {
+          delivery: 'owner',
+          args_format: FEED_ARGS_FORMAT,
+          async onObserverAdded(obs) {
+            let config: FeedConfig;
+            try {
+              config = validateFeedConfig(observableId, obs.args);
+            } catch (err) {
+              throw new ObserveRejection(
+                'INVALID_ARGS',
+                err instanceof Error ? err.message : String(err),
+              );
+            }
+            const key = observerKey(obs.id);
+            if (!bindings.has(key) && bindings.size >= MAX_BINDINGS) {
+              throw new ObserveRejection(
+                'BINDING_LIMIT',
+                `${observableId}: binding limit (${MAX_BINDINGS}) reached`,
+              );
+            }
+            bindings.set(key, { id: key, function_id: obs.target, config, observer: obs });
+          },
+          async onObserverRemoved(obs) {
+            bindings.delete(observerKey(obs.id));
+          },
+        },
+      },
+    );
+  }
+
   async function emit(session_id: string, event: unknown): Promise<number> {
     const seq = seqBySession.get(session_id) ?? 0;
     seqBySession.set(session_id, seq + 1);
@@ -117,6 +209,19 @@ export function createFeed(
     let delivered = 0;
     for (const binding of Array.from(bindings.values())) {
       if (binding.config.session_id !== session_id) continue;
+      if (binding.observer) {
+        try {
+          await binding.observer.call(payload);
+          delivered++;
+        } catch (err) {
+          const code = (err as { code?: unknown } | null)?.code;
+          if (code === 'FILTERS_NOT_MATCHED' || code === 'OBSERVER_NOT_ACTIVE') continue;
+          console.warn(
+            `${opts.observableId ?? opts.id}: delivery to ${binding.function_id} failed: ${String(err)}`,
+          );
+        }
+        continue;
+      }
       const metadata = binding.config.metadata ?? binding.metadata;
       try {
         await iii.trigger({
@@ -137,16 +242,18 @@ export function createFeed(
   return { emit, bindingCount: () => bindings.size };
 }
 
-/** The worker's two feeds, each with its own per-session sequence. */
+/** The worker's two feeds, each with its own binding table (bindings and observers) and per-session sequence. */
 export function createAgentFeeds(iii: IIIClient): { emit: Emit; emitRaw: Emit } {
   const agent = createFeed(iii, {
     id: AGENT_EVENT_TRIGGER_TYPE,
+    observableId: AGENT_EVENT_OBSERVABLE,
     source: FEED_SOURCE,
     description:
       'Translated AgentEvent frames of one OpenCode session. Config: { session_id, metadata? }. Payload: { session_id, event_id, seq, epoch, source, event }. Ephemeral: not stored or replayed.',
   });
   const raw = createFeed(iii, {
     id: RAW_EVENT_TRIGGER_TYPE,
+    observableId: RAW_EVENT_OBSERVABLE,
     source: FEED_SOURCE,
     description:
       'Raw OpenCode JSON events (verbatim `opencode run --format json` lines) of one session. Config: { session_id, metadata? }. Payload: { session_id, event_id, seq, epoch, source, event }. Ephemeral: not stored or replayed.',
