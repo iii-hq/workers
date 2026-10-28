@@ -119,6 +119,10 @@ fn watch_blocking(
     }
     tracing::info!(workspace = name, path = %root.display(), "watching for story changes");
     while let Ok(first) = rx.recv() {
+        // The build loop is gone, so nothing would rebuild: stop watching.
+        if rebuild_tx.is_closed() {
+            return;
+        }
         let started = std::time::Instant::now();
         let mut changed: Vec<PathBuf> = Vec::new();
         let mut collect = |event: notify::Result<notify::Event>| {
@@ -234,10 +238,10 @@ mod tests {
         assert!(store.read_index("ws", WORKTREE_KEY).is_some());
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        {
+        let watcher = {
             let (link, data_dir) = (link.clone(), data_dir.clone());
-            std::thread::spawn(move || watch_blocking(&store, &tx, "ws".into(), link, &data_dir));
-        }
+            std::thread::spawn(move || watch_blocking(&store, &tx, "ws".into(), link, &data_dir))
+        };
         let mut rebuilt = |within: Duration| {
             let deadline = std::time::Instant::now() + within;
             while std::time::Instant::now() < deadline {
@@ -266,6 +270,19 @@ mod tests {
             !rebuilt(Duration::from_millis(1500)),
             "a story file in the data folder must not rebuild"
         );
+
+        drop(rx);
+        let stopped = (6..=10).any(|i| {
+            std::fs::write(
+                link.join("src/Button.tsx"),
+                format!("export const v = {i};\n"),
+            )
+            .unwrap();
+            std::thread::sleep(Duration::from_secs(1));
+            watcher.is_finished()
+        });
+        assert!(stopped, "the watcher must stop once nobody takes rebuilds");
+        watcher.join().unwrap();
     }
 
     #[test]
