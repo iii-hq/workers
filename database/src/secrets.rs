@@ -149,13 +149,21 @@ impl PartialEq for SecretValue {
 
 impl Drop for SecretValue {
     fn drop(&mut self) {
+        drop(SecretBytes(std::mem::take(&mut self.0).into_bytes()));
+    }
+}
+
+/// Secret bytes, such as decoded key material, that dropping overwrites.
+pub struct SecretBytes(pub Vec<u8>);
+
+impl Drop for SecretBytes {
+    fn drop(&mut self) {
         // Best-effort wipe of the whole allocation, without a zeroize
         // dependency. black_box keeps the stores from being elided.
-        let mut bytes = std::mem::take(&mut self.0).into_bytes();
-        let capacity = bytes.capacity();
-        bytes.clear();
-        bytes.resize(capacity, 0);
-        std::hint::black_box(&bytes);
+        let capacity = self.0.capacity();
+        self.0.clear();
+        self.0.resize(capacity, 0);
+        std::hint::black_box(&self.0);
     }
 }
 

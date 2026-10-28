@@ -31,7 +31,7 @@ use serde::Serialize;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
-use crate::secrets::SecretValue;
+use crate::secrets::{SecretBytes, SecretValue};
 
 /// TCP connect + key exchange + authentication budget for one session.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -533,16 +533,31 @@ fn decode_short_ecdsa_scalar(pem: &str, passphrase: Option<&str>) -> Option<Priv
     use russh::keys::ssh_key::{cipher::Tag, Cipher, Kdf};
 
     const MAGIC: &[u8] = b"openssh-key-v1\0";
-    let body: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
-    let blob = base64::engine::general_purpose::STANDARD
-        .decode(body.trim())
-        .ok()?;
-    let mut r = blob.strip_prefix(MAGIC)?;
+    // The base64 lines between the markers, picked the way russh picks them.
+    let mut body = String::with_capacity(pem.len());
+    body.extend(
+        pem.lines()
+            .skip_while(|l| *l != "-----BEGIN OPENSSH PRIVATE KEY-----")
+            .skip(1)
+            .take_while(|l| !l.starts_with("-----END "))
+            .filter(|l| {
+                l.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "+/=".contains(c))
+            }),
+    );
+    // Every buffer below that can hold key bytes is wiped on drop.
+    let body = SecretValue::new(body);
+    let blob = SecretBytes(
+        base64::engine::general_purpose::STANDARD
+            .decode(body.expose())
+            .ok()?,
+    );
+    let mut r = blob.0.strip_prefix(MAGIC)?;
     let cipher = Cipher::decode(&mut r).ok()?;
     let kdf = Kdf::decode(&mut r).ok()?;
     let nkeys = u32::decode(&mut r).ok()?;
     let public = Vec::<u8>::decode(&mut r).ok()?;
-    let mut private = Vec::<u8>::decode(&mut r).ok()?;
+    let mut private = SecretBytes(Vec::<u8>::decode(&mut r).ok()?);
     if cipher.is_some() {
         let mut tag = Tag::default();
         if cipher.has_tag() {
@@ -550,43 +565,49 @@ fn decode_short_ecdsa_scalar(pem: &str, passphrase: Option<&str>) -> Option<Priv
         }
         let (key, iv) = kdf.derive_key_and_iv(cipher, passphrase?).ok()?;
         cipher
-            .decrypt(&key, &iv, &mut private, cipher.has_tag().then_some(tag))
+            .decrypt(&key, &iv, &mut private.0, cipher.has_tag().then_some(tag))
             .ok()?;
     }
 
     // checkint ×2, key type, curve, public point, scalar, comment, padding.
-    let mut p = private.as_slice();
+    let mut p = private.0.as_slice();
     let mut checkints = [0u8; 8];
     p.read(&mut checkints).ok()?;
-    let mut fields: Vec<Vec<u8>> = (0..5)
-        .map(|_| Vec::<u8>::decode(&mut p).ok())
+    let mut fields: Vec<SecretBytes> = (0..5)
+        .map(|_| Vec::<u8>::decode(&mut p).ok().map(SecretBytes))
         .collect::<Option<_>>()?;
-    let size = match fields[1].as_slice() {
+    let size = match fields[1].0.as_slice() {
         b"nistp256" => 32,
         b"nistp384" => 48,
         b"nistp521" => 66,
         _ => return None,
     };
-    if !fields[0].starts_with(b"ecdsa-sha2-") || fields[3].len() >= size {
+    if !fields[0].0.starts_with(b"ecdsa-sha2-") || fields[3].0.len() >= size {
         return None;
     }
-    let mut scalar = vec![0u8; size - fields[3].len()];
-    scalar.append(&mut fields[3]);
-    fields[3] = scalar;
+    let mut scalar = Vec::with_capacity(size);
+    scalar.resize(size - fields[3].0.len(), 0);
+    scalar.extend_from_slice(&fields[3].0);
+    fields[3] = SecretBytes(scalar);
 
-    let mut plain = checkints.to_vec();
+    // Sized up front (the rebuilt key grows by at most `size` + 7 bytes), so
+    // no reallocation leaves an unwiped copy behind.
+    let capacity = blob.0.len() + size + 8;
+    let mut plain = SecretBytes(Vec::with_capacity(capacity));
+    plain.0.extend_from_slice(&checkints);
     for field in &fields {
-        field.encode(&mut plain).ok()?;
+        field.0.encode(&mut plain.0).ok()?;
     }
-    let padding = (8 - plain.len() % 8) % 8;
-    plain.extend(1..=padding as u8);
-    let mut rebuilt = MAGIC.to_vec();
-    Cipher::None.encode(&mut rebuilt).ok()?;
-    Kdf::None.encode(&mut rebuilt).ok()?;
-    nkeys.encode(&mut rebuilt).ok()?;
-    public.encode(&mut rebuilt).ok()?;
-    plain.encode(&mut rebuilt).ok()?;
-    PrivateKey::from_bytes(&rebuilt).ok()
+    let padding = (8 - plain.0.len() % 8) % 8;
+    plain.0.extend(1..=padding as u8);
+    let mut rebuilt = SecretBytes(Vec::with_capacity(capacity));
+    rebuilt.0.extend_from_slice(MAGIC);
+    Cipher::None.encode(&mut rebuilt.0).ok()?;
+    Kdf::None.encode(&mut rebuilt.0).ok()?;
+    nkeys.encode(&mut rebuilt.0).ok()?;
+    public.encode(&mut rebuilt.0).ok()?;
+    plain.0.encode(&mut rebuilt.0).ok()?;
+    PrivateKey::from_bytes(&rebuilt.0).ok()
 }
 
 /// russh's key errors name formats and algorithms, never key material; keep
@@ -665,12 +686,29 @@ OUq0rqKwi+/SrGjcr8RdkOnS53+ePRO568HR/r0pH7h3gIGDcPeB97sV48W6n8RsWF62+P
 n4CdglXFMnyef3kAwCBg58wBrVb/yfDtSFpuNw==
 -----END OPENSSH PRIVATE KEY-----
 ";
+    /// The same key under an AEAD cipher, so the tag is read:
+    /// `ssh-keygen -p -N 'correct horse' -Z aes256-gcm@openssh.com -a 1`.
+    const SHORT_SCALAR_ECDSA_AEAD: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAAFmFlczI1Ni1nY21Ab3BlbnNzaC5jb20AAAAGYmNyeXB0AA
+AAGAAAABASSaB093+wwwIa2PdDtQPRAAAAAQAAAAEAAABoAAAAE2VjZHNhLXNoYTItbmlz
+dHAyNTYAAAAIbmlzdHAyNTYAAABBBB6YxPWoH0DVR0+gqSuZ3/JgnoewT046wm1PkIEBkV
+k+Nr68FBSCGgZgSAQbibWQ1PHpx7JLwEou/35+fzvD6toAAACgyfXHrzU9Ogr9Hx1kWnp+
+uBCUjARIQi8TVfu0E+9Uk1odiQNdoR6OUQN2ZPSYDSak0f5jQjboPIGnh0Vlxa0luyj9Kh
+oVlwb3F+mhx6C5jA3RIxUmp+53jNQrTrldW45+xqHnRHhoHPVY30dxaraAlU0S9uCB7A1y
+jRxo4ZrsdAV0ssl6nNwGFjE0v73LZ7dkid6aO8NWkm+j5U9br5EkZIkKXAdhxXTTrQtZ8Z
+RbenQ=
+-----END OPENSSH PRIVATE KEY-----
+";
 
     #[test]
     fn decodes_an_ecdsa_key_whose_scalar_has_a_leading_zero_byte() {
+        // russh ignores text outside the markers, so the fallback must too.
+        let wrapped = format!("A note before the key\n{SHORT_SCALAR_ECDSA}and one after it\n");
         for (pem, passphrase) in [
             (SHORT_SCALAR_ECDSA, None),
+            (wrapped.as_str(), None),
             (SHORT_SCALAR_ECDSA_ENCRYPTED, Some("correct horse")),
+            (SHORT_SCALAR_ECDSA_AEAD, Some("correct horse")),
         ] {
             let key = decode_private_key(pem, passphrase).unwrap_or_else(|e| panic!("{e}"));
             assert_eq!(
@@ -682,8 +720,10 @@ n4CdglXFMnyef3kAwCBg58wBrVb/yfDtSFpuNw==
             let sig = key.sign("test", HashAlg::Sha256, b"msg").unwrap();
             key.public_key().verify("test", b"msg", &sig).unwrap();
         }
-        let err = decode_private_key(SHORT_SCALAR_ECDSA_ENCRYPTED, Some("wrong")).unwrap_err();
-        assert!(err.contains("wrong passphrase"), "{err}");
+        for pem in [SHORT_SCALAR_ECDSA_ENCRYPTED, SHORT_SCALAR_ECDSA_AEAD] {
+            let err = decode_private_key(pem, Some("wrong")).unwrap_err();
+            assert!(err.contains("wrong passphrase"), "{err}");
+        }
     }
 
     #[test]
