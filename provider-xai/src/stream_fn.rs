@@ -99,7 +99,7 @@ async fn pump_stream(
     }
 }
 
-fn uses_responses_agent_tools(
+pub(crate) fn uses_responses_agent_tools(
     config: &crate::config::WorkerConfig,
     has_client_functions: bool,
 ) -> bool {
