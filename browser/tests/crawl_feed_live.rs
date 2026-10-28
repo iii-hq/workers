@@ -231,6 +231,9 @@ async fn crawl_items_reach_a_bound_consumer_and_are_recoverable_without_a_stream
             }),
         );
     }
+    // The old consumer's path (register_trigger is deprecated in iii 0.25;
+    // the trigger type stays).
+    #[allow(deprecated)]
     client
         .register_trigger(RegisterTriggerInput::new(
             "browser::crawl-item".to_string(),
@@ -238,6 +241,9 @@ async fn crawl_items_reach_a_bound_consumer_and_are_recoverable_without_a_stream
             json!({"crawl_id": "live-1"}),
         ))
         .expect("bind crawl-item");
+    // The old consumer's path (register_trigger is deprecated in iii 0.25;
+    // the trigger type stays).
+    #[allow(deprecated)]
     client
         .register_trigger(RegisterTriggerInput::new(
             "browser::crawl-item".to_string(),
