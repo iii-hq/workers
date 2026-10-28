@@ -1,5 +1,5 @@
 {
-  "description": "Count prompt tokens for {model, system_prompt?, tools?, messages} with Grok's tokenizer upstream; never runs the model and costs nothing.",
+  "description": "Count prompt tokens for {model, system_prompt?, tools?, messages, response_format?} with Grok's tokenizer upstream plus xAI's measured prompt overhead; never runs the model and costs nothing.",
   "function_id": "provider::xai::count_tokens",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -409,6 +409,18 @@
         ],
         "type": "string"
       },
+      "ResponseFormat": {
+        "properties": {
+          "schema": true,
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
       "StopReason": {
         "enum": [
           "end",
@@ -514,6 +526,18 @@
         "description": "Model id the prompt targets; selects the tokenizer upstream.",
         "type": "string"
       },
+      "response_format": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ResponseFormat"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "The turn's structured-output request, when it has one; its schema is billed as prompt."
+      },
       "system_prompt": {
         "default": null,
         "description": "System prompt counted as its own framed wire row when present.",
@@ -552,7 +576,7 @@
         "type": "string"
       },
       "tokens": {
-        "description": "Prompt tokens for the assembled request: Grok's tokenizer over the text, this worker's framing on top.",
+        "description": "Prompt tokens for the assembled request: Grok's tokenizer over the rendered text, xAI's measured overhead on top.",
         "format": "uint64",
         "minimum": 0.0,
         "type": "integer"

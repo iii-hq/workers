@@ -9,10 +9,14 @@ chat/reasoning families ∪ curated capability snapshot →
 `router::models::reconcile`).
 
 `provider::xai::count_tokens` counts a prompt behind `router::count_tokens`:
-xAI owns the vocabulary (`/tokenize-text`), this worker owns the chat
-framing. The whole request is tokenized in one call rather than one per
-message, which costs a separator token per row. xAI documents that this
-tokenizer can disagree with what billing records.
+the request is rendered from this worker's own wire rows and tool array
+(schemas in Python `json.dumps` form), tokenized in one `/tokenize-text`
+call, and xAI's measured overhead is added on top: the server-side preamble
+per model family (~180 tokens on grok-build/4.20/4.3, ~1,240 on grok-4.7),
+the tools header, image tokens from each PNG/JPEG's dimensions, the
+`response_format` schema, and the server-tool definitions on the Agent Tools
+path. The constants are calibrated against billed `prompt_tokens`, not
+published by xAI.
 
 ## Behavior
 
