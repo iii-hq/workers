@@ -7,8 +7,8 @@ description: Acquire and observe expiring leases on operator-authorized cloudfla
 
 Use this worker only when a development webhook service needs a public ephemeral HTTPS URL. Acquiring exposes the entire configured local service publicly: require user approval. Do not run cloudflared or download binaries yourself.
 
-1. Discover and inspect `quick-tunnel::acquire`, `quick-tunnel::release`, `quick-tunnel::status`, and trigger type `quick-tunnel::changed`.
-2. Register a bounded changed binding **before** acquiring, filtered by `tunnel_id` (default `webhooks`). Preserve callback metadata and namespace; use the engine's wake primitive for future work.
+1. Discover and inspect `quick-tunnel::acquire`, `quick-tunnel::release`, `quick-tunnel::status`, the observable function `quick-tunnel::on-changed` and trigger type `quick-tunnel::changed`.
+2. Subscribe **before** acquiring, filtered by `tunnel_id` (default `webhooks`). Code on a 0.25 engine observes `quick-tunnel::on-changed` with args `{ tunnel_id? }` (the trigger config) and receives the same snapshot a binding gets; a session or 0.24 engine keeps a bounded `quick-tunnel::changed` binding. Preserve callback metadata and namespace; use the engine's wake primitive for future work. Never invoke `quick-tunnel::on-changed` directly: it is refused with `FORBIDDEN`.
 3. Acquire with a stable opaque `consumer_id`, authorized `tunnel_id`, and future RFC3339 `expires_at`. No origin, port, executable, arguments or credentials are accepted. Repeated acquire renews the same lease, never shortens expiry.
 4. Read status once after acquiring to recover races. Use `public_url` only for `ready`. `starting` and `reconnecting` are not failures but are not ready; `failed` includes sanitized diagnostics. Do not poll: react to changed events.
 5. New process generations are opaque UUIDs and can change URLs. GitHub integration must update its webhook when the ready generation changes; validate webhook signatures in the HTTP receiver.
