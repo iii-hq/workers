@@ -1755,7 +1755,7 @@ dependencies = [
 
 [[package]]
 name = "provider-deepseek"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "clap",
  "futures",
@@ -1837,7 +1837,7 @@ dependencies = [
 
 [[package]]
 name = "provider-openai-codex"
-version = "0.4.28"
+version = "0.4.29"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -2305,7 +2305,7 @@ dependencies = [
 
 [[package]]
 name = "secrets"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "async-trait",
