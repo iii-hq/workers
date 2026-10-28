@@ -89,7 +89,7 @@ Two ids come back from every run. `session_id` is the iii session id: the key fo
 
 ### Raw events
 
-Every line Grok emits on its `--output-format streaming-json` stream is delivered verbatim on the `grok::raw-event` trigger type. Consumers that want the exact Grok wire format bind `grok::raw-event`; consumers that want harness-shaped frames bind `grok::agent-event`. Same turn, two views (see Event feeds below).
+Every line Grok emits on its `--output-format streaming-json` stream is delivered verbatim on the `grok::raw-event` trigger type (observable as `grok::on-raw-event` on iii 0.25). Consumers that want the exact Grok wire format bind `grok::raw-event`; consumers that want harness-shaped frames bind `grok::agent-event` (or observe `grok::on-agent-event`). Same turn, two views (see Event feeds below).
 
 The streaming-json stream (captured from Grok CLI 0.2.77) is delta-based: assistant text arrives as `{"type":"text","data":"<chunk>"}` lines, the turn closes with `{"type":"end","stopReason","sessionId","requestId"}`, and failures arrive as `{"type":"error","message"}`. The worker accumulates the text deltas and emits one `message_complete` frame on `grok::agent-event` at `end`.
 
@@ -120,6 +120,21 @@ Your function gets one fire-and-forget call per frame:
 ```
 
 `seq` counts from 0 per feed and session within one `epoch` (a uuid minted per worker process, so a restart starts a new epoch); the two feeds count independently. Deliveries may arrive out of order: order by `(epoch, seq)` and dedup by `event_id`. The feeds are ephemeral: nothing is stored or replayed, and a binding made mid-turn only sees later frames. History lives in the session record (`grok::status`, `grok::sessions::list`) and in the `grok::run` result. A failing consumer never fails the turn. These trigger types replace the former `agent::events` / `grok::events` streams (see the guide "Migrate from iii-stream and pubsub").
+
+### Observable functions (iii 0.25)
+
+On an iii 0.25 engine each feed also has an owner-delivered observable function. A new consumer observes it instead of binding the trigger type:
+
+| Function | Next to | Carries |
+| --- | --- | --- |
+| `grok::on-agent-event` | `grok::agent-event` | translated AgentEvent frames |
+| `grok::on-raw-event` | `grok::raw-event` | every streaming-json line, verbatim |
+
+```js
+iii.observe({ function_id: 'grok::on-agent-event', args: { session_id: 'sess-1' } }, 'my-app::on-frame')
+```
+
+The args are the binding config, with the same rules (`session_id` required, non-empty, at most 512 characters; no other key but `metadata`, which is accepted and unused for observers). An observer is refused with `INVALID_ARGS` when they break them and with `OBSERVER_LIMIT` past 256 observers per function. Each observer of the session receives the payload above, the same `seq` a binding gets for that frame, through `obs.call` after the bindings; observer filters apply. A failing observer never fails the turn. Frames are routed inside the worker: invoking either function directly is refused with `FORBIDDEN`, so nobody can forge a frame. Both trigger types stay registered and unchanged, so existing bindings keep working on 0.24 and 0.25 engines; on a 0.24 engine the functions are plain functions that only refuse calls.
 
 ## Configuration
 

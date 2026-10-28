@@ -93,8 +93,9 @@ async fn main() -> Result<()> {
     }
     configuration::reconcile(&iii, &cell).await;
 
-    // Own the grok::agent-event / grok::raw-event trigger types before the
-    // first turn can emit.
+    // Own the grok::agent-event / grok::raw-event trigger types and their
+    // observable functions (grok::on-agent-event / grok::on-raw-event)
+    // before the first turn can emit.
     agent_feed::register(&iii);
     register_all(&iii, cell);
     tracing::info!("grok worker registered all functions, ready");
