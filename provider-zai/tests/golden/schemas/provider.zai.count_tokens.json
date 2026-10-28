@@ -419,6 +419,18 @@
         ],
         "type": "string"
       },
+      "ThinkingLevel": {
+        "description": "\"off\" asks the provider not to reason at all and is honoured only where the model advertises `Model::supports_thinking_off` (elsewhere the provider falls back to its own lowest setting, or omits the parameter, and warns). \"minimal\" requests the lowest reasoning effort and needs only `thinking` support; levels map to provider-native knobs via `Model::thinking_budgets`.",
+        "enum": [
+          "off",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "type": "string"
+      },
       "Usage": {
         "properties": {
           "cache_read": {
@@ -511,7 +523,7 @@
         "type": "array"
       },
       "model": {
-        "description": "Model id the prompt targets. Reported back unchanged; the GLM chat models share the one vocabulary.",
+        "description": "Model id the prompt targets, reported back unchanged. It picks the chat template (glm-4.5/4.6, glm-4.7/5, glm-5.1 and glm-5.2+ differ); the GLM chat models share the one vocabulary.",
         "type": "string"
       },
       "system_prompt": {
@@ -521,6 +533,18 @@
           "string",
           "null"
         ]
+      },
+      "thinking_level": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ThinkingLevel"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "The turn's thinking level, as `provider::zai::stream` takes it. On glm-5.2 and newer it decides the `Reasoning Effort` line the template adds; absent counts the request a turn without a level sends."
       },
       "tools": {
         "default": null,
