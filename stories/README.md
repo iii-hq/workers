@@ -68,6 +68,22 @@ Triggers: `stories:changed` fires after a working-tree rebuild with the
 classified changes (`{ workspace?, project?, kinds? }`); `stories:build`
 fires on every build state transition.
 
+Observable functions (iii 0.25): `stories::on-changed` and
+`stories::on-build` sit next to the two trigger types, owner-delivered.
+Observe them with the trigger config as args (`{ workspace?, project?, kinds? }`
+and `{ workspace? }`); each matching observer receives exactly the payload a
+binding with that config receives, from the same fan-out.
+
+```js
+iii.observe({ function_id: 'stories::on-changed', args: { workspace: 'web', kinds: ['direct'] } }, 'review::on-change')
+```
+
+Events only come from the worker itself: invoking an `on-*` function directly
+is refused with `FORBIDDEN`. The `stories:changed` and `stories:build`
+trigger types stay registered, unchanged, for consumers on 0.24 and 0.25
+engines; on an engine without observe the functions are plain functions and
+only the trigger types deliver.
+
 The review workflow for agents lives in [`skills/`](skills/).
 
 ## Lines and data

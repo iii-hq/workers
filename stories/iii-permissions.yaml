@@ -7,6 +7,10 @@ rules:
   - '!stories::ui-content'
   - '!stories::ui-file'
   - '!stories::on-config-change'
+  # Observable event sources: observed, never invoked (a direct call is
+  # refused with FORBIDDEN anyway).
+  - '!stories::on-changed'
+  - '!stories::on-build'
   # Reads, comparisons and renders are safe to allow by default. Builds of a
   # line run git and the project's own Vite inside data/stories; they are
   # also allowed because a review loop cannot work without them.

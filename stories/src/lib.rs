@@ -14,7 +14,8 @@
 //! - [`watch`] — the working-tree watcher.
 //! - [`render`] — screenshots and DOM/React trees through the browser worker.
 //! - [`pixels`] / [`treediff`] — the deterministic diff halves.
-//! - [`events`] — the `stories:changed` and `stories:build` trigger types.
+//! - [`events`] — the `stories:changed` and `stories:build` trigger types and
+//!   the `stories::on-changed` / `stories::on-build` observable functions.
 //! - [`functions`] — the typed `stories::*` catalog.
 //! - [`ui`] — the injected console page and the `/ui-files` content function.
 
