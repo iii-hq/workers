@@ -11,8 +11,9 @@ Implements the provider protocol from `tech-specs/2026-06-agentic/llm-router.md`
 into a router-owned channel), `provider::openai-codex::refresh_models`
 (fetches and reconciles the authenticated Codex model catalog), and
 `provider::openai-codex::count_tokens` (local prompt token estimation with
-the tiktoken tokenizers behind `router::count_tokens`; never runs the model,
-costs nothing, and needs no network).
+the tiktoken tokenizers behind `router::count_tokens`, over the Responses
+items the stream sends, with each image costed from its dimensions; never
+runs the model, costs nothing, and needs no network).
 
 > ⚠️ **Terms-of-service caveat — local/personal dev only.** This drives a
 > personal ChatGPT subscription through the undocumented

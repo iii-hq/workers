@@ -1,20 +1,51 @@
 //! `provider::openai-codex::count_tokens` — local prompt token estimation
 //! with the tiktoken tokenizers (vocabularies embedded in the binary). The
-//! Codex backend exposes no metering endpoint, so the count is computed from
-//! the text the wire mappers would send plus the published chat-framing
-//! constants; it never runs the model, costs nothing, and needs no network.
-//! The counting logic itself is shared with `provider-openai` in
-//! `llm_router::provider_scaffold::tiktoken_count`; this module is the thin
-//! request/response adapter around it. Model ids stay namespaced
-//! (`codex/gpt-5.2`) end to end — the shared encoder-selection logic strips
+//! Codex backend exposes no metering endpoint, so the count walks the
+//! Responses `input` items and `tools` the stream sends (the same
+//! `to_wire_messages` the body uses, so denied envelopes, orphan
+//! placeholders, hoisted result images and de-duplicated results count as
+//! sent) and adds the item framing and image cost the Responses bill charges.
+//! It never runs the model, costs nothing, and needs no network. Model ids
+//! stay namespaced (`codex/gpt-5.2`) end to end — encoder selection strips
 //! the namespace internally, but the response echoes the id the caller sent.
 
+use base64::Engine as _;
 use iii_sdk::errors::Error;
-use llm_router::provider_scaffold::tiktoken_count::{count_chat_tokens, ESTIMATOR_TIKTOKEN};
+use llm_router::provider_scaffold::chat_framing::tool_schema_text;
+use llm_router::provider_scaffold::tiktoken_count::{
+    encoder_for, ESTIMATOR_TIKTOKEN, TOKENS_PER_MESSAGE, TOKENS_REPLY_PRIMING,
+};
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::AgentFunction;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::wire::messages::to_wire_messages;
+
+// Item framing on top of the encoded text, fitted to provider-openai's live
+// Responses probe of 2026-10-27 (gpt-5-nano, billed usage; MOT-5558), which
+// it matches exactly on every text shape including 12 tool rounds (16,467).
+// The Codex backend takes a subscription credential and was not probed.
+// A user or system item is TOKENS_PER_MESSAGE; an assistant text item is 2 more.
+const TOKENS_PER_ASSISTANT_ITEM: u64 = TOKENS_PER_MESSAGE + 2;
+// A call and its output bill 20 together. Every call goes out with exactly
+// one output, so the split between the two items is not observable.
+const TOKENS_PER_CALL_ITEM: u64 = 10;
+const TOKENS_PER_OUTPUT_ITEM: u64 = 10;
+// The block the server wraps around the tool schemas once any tool is sent.
+// shortcut: schemas count as compact JSON, which the bill's own rendering
+// undercuts (one small tool billed 19 against 28), so tool-heavy requests
+// count high; render the server's form once a Codex probe can calibrate it.
+const TOKENS_TOOL_BLOCK: u64 = 16;
+
+// GPT-5's published image rate at high detail. The wire sends no `detail`,
+// so the backend picks (`auto`); high is the larger of the two.
+const IMAGE_BASE_TOKENS: u64 = 70;
+const IMAGE_TOKENS_PER_TILE: u64 = 140;
+// The most 512px tiles a resized image can span (2048x768), for an image
+// whose size cannot be read.
+const IMAGE_MAX_TILES: u64 = 8;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CountTokensRequest {
@@ -51,12 +82,22 @@ pub fn handle(req: CountTokensRequest) -> Result<CountTokensResponse, Error> {
             "invalid_input: messages must not be empty".into(),
         ));
     }
-    let tokens = count_chat_tokens(
-        &req.model,
-        req.system_prompt.as_deref(),
-        req.tools.as_deref().unwrap_or(&[]),
-        &req.messages,
-    );
+    let bpe = encoder_for(&req.model);
+    let count = |text: &str| bpe.encode_ordinary(text).len() as u64;
+    let items = to_wire_messages(&req.messages, req.system_prompt.as_deref().unwrap_or(""));
+    let tools = req.tools.as_deref().unwrap_or(&[]);
+    let mut tokens = TOKENS_REPLY_PRIMING
+        + items
+            .iter()
+            .map(|item| item_tokens(item, &count))
+            .sum::<u64>();
+    if !tools.is_empty() {
+        tokens += TOKENS_TOOL_BLOCK
+            + tools
+                .iter()
+                .map(|tool| count(&tool_schema_text(tool)))
+                .sum::<u64>();
+    }
     Ok(CountTokensResponse {
         model: req.model,
         tokens,
@@ -64,18 +105,158 @@ pub fn handle(req: CountTokensRequest) -> Result<CountTokensResponse, Error> {
     })
 }
 
+/// One Responses `input` item: its framing plus its encoded text and images.
+fn item_tokens(item: &Value, count: &impl Fn(&str) -> u64) -> u64 {
+    let text = |value: &Value| count(value.as_str().unwrap_or(""));
+    match item["type"].as_str() {
+        Some("function_call") => {
+            TOKENS_PER_CALL_ITEM + text(&item["name"]) + text(&item["arguments"])
+        }
+        Some("function_call_output") => TOKENS_PER_OUTPUT_ITEM + text(&item["output"]),
+        _ => {
+            let frame = if item["role"] == "assistant" {
+                TOKENS_PER_ASSISTANT_ITEM
+            } else {
+                TOKENS_PER_MESSAGE
+            };
+            let parts = item["content"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+            frame
+                + parts
+                    .iter()
+                    .map(|part| match part["type"].as_str() {
+                        Some("input_image") => {
+                            image_tokens(part["image_url"].as_str().unwrap_or(""))
+                        }
+                        _ => text(&part["text"]),
+                    })
+                    .sum::<u64>()
+        }
+    }
+}
+
+/// An `input_image` data URI's cost from the dimensions in its header.
+fn image_tokens(image_url: &str) -> u64 {
+    let tiles = image_url
+        .split_once(";base64,")
+        .and_then(|(_, data)| base64::engine::general_purpose::STANDARD.decode(data).ok())
+        .and_then(|bytes| crate::image::dimensions(&bytes))
+        .map_or(IMAGE_MAX_TILES, |(width, height)| tiles(width, height));
+    IMAGE_BASE_TOKENS + IMAGE_TOKENS_PER_TILE * tiles
+}
+
+/// OpenAI's high-detail resize: fit within 2048x2048, then shrink the short
+/// side to 768, then count 512px tiles. Images are never scaled up.
+fn tiles(width: u32, height: u32) -> u64 {
+    let (w, h) = (f64::from(width.max(1)), f64::from(height.max(1)));
+    let fit = (2048.0 / w.max(h)).min(1.0);
+    let short = (768.0 / (w.min(h) * fit)).min(1.0);
+    // Resized images have whole pixels; rounding keeps float noise from
+    // tipping an exact 512 multiple into one more tile.
+    let side = |px: f64| (px * fit * short).round() / 512.0;
+    (side(w).ceil() * side(h).ceil()) as u64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wire::messages::ORPHAN_TOOL_PLACEHOLDER;
     use llm_router::types::content::ContentBlock;
-    use llm_router::types::messages::{UserMessage, UserRoleTag};
+    use llm_router::types::events::StopReason;
+    use llm_router::types::messages::{
+        AssistantMessage, AssistantRoleTag, FunctionResultMessage, FunctionResultRoleTag,
+        UserMessage, UserRoleTag,
+    };
+    use serde_json::{json, Value};
 
-    fn user(text: &str) -> AgentMessage {
+    fn user_blocks(content: Vec<ContentBlock>) -> AgentMessage {
         AgentMessage::User(UserMessage {
             role: UserRoleTag::User,
-            content: vec![ContentBlock::Text { text: text.into() }],
+            content,
             timestamp: 1,
         })
+    }
+
+    fn user(text: &str) -> AgentMessage {
+        user_blocks(vec![ContentBlock::Text { text: text.into() }])
+    }
+
+    fn assistant(content: Vec<ContentBlock>) -> AgentMessage {
+        AgentMessage::Assistant(AssistantMessage {
+            role: AssistantRoleTag::Assistant,
+            content,
+            stop_reason: StopReason::End,
+            native_stop_reason: None,
+            error_message: None,
+            error_kind: None,
+            warnings: None,
+            usage: None,
+            model: "m".into(),
+            provider: "openai-codex".into(),
+            timestamp: 2,
+        })
+    }
+
+    fn call(id: &str) -> ContentBlock {
+        ContentBlock::FunctionCall {
+            id: id.into(),
+            function_id: "docs::read".into(),
+            arguments: json!({ "segment": 3 }),
+        }
+    }
+
+    fn result_with(id: &str, content: Vec<ContentBlock>, details: Value) -> AgentMessage {
+        AgentMessage::FunctionResult(FunctionResultMessage {
+            role: FunctionResultRoleTag::FunctionResult,
+            function_call_id: id.into(),
+            function_id: "docs::read".into(),
+            content,
+            details,
+            is_error: false,
+            timestamp: 3,
+        })
+    }
+
+    fn result(id: &str, text: &str) -> AgentMessage {
+        result_with(
+            id,
+            vec![ContentBlock::Text { text: text.into() }],
+            json!({}),
+        )
+    }
+
+    fn tool(name: &str) -> AgentFunction {
+        AgentFunction {
+            name: name.into(),
+            description: format!("Run {name} on the workspace."),
+            parameters: json!({"type": "object", "properties": {"path": {"type": "string"}}}),
+            label: None,
+            execution_mode: None,
+        }
+    }
+
+    fn docs_tool() -> AgentFunction {
+        AgentFunction {
+            name: "docs::read".into(),
+            description: "Read one segment of the ladder by its index.".into(),
+            parameters: json!({"type": "object", "properties": {"segment": {"type": "integer"}}, "required": ["segment"]}),
+            label: None,
+            execution_mode: None,
+        }
+    }
+
+    fn png(width: u32, height: u32) -> ContentBlock {
+        let mut bytes = Vec::new();
+        image::DynamicImage::new_rgb8(width, height)
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        ContentBlock::Image {
+            mime: "image/png".into(),
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+            attachment_id: None,
+        }
     }
 
     fn request(model: &str, messages: Vec<AgentMessage>) -> CountTokensRequest {
@@ -85,6 +266,21 @@ mod tests {
             tools: None,
             messages,
         }
+    }
+
+    fn count(system: &str, tools: Vec<AgentFunction>, messages: Vec<AgentMessage>) -> u64 {
+        handle(CountTokensRequest {
+            model: "codex/gpt-5.5".into(),
+            system_prompt: Some(system.into()),
+            tools: Some(tools),
+            messages,
+        })
+        .unwrap()
+        .tokens
+    }
+
+    fn text_tokens(text: &str) -> u64 {
+        encoder_for("gpt-5.5").encode_ordinary(text).len() as u64
     }
 
     #[test]
@@ -99,5 +295,203 @@ mod tests {
         assert_eq!(namespaced.tokens, bare.tokens);
         assert_eq!(namespaced.model, "codex/gpt-5.2");
         assert_eq!(namespaced.estimator, "tiktoken");
+    }
+
+    // The billed numbers below are provider-openai's live Responses probe of
+    // 2026-10-27 (gpt-5-nano, same tokenizer and item shapes; MOT-5558). The
+    // Codex backend takes a subscription credential, so it was not probed.
+    const SYSTEM: &str = "You are a careful reader. Keep identifiers verbatim.";
+
+    #[test]
+    fn text_items_match_the_responses_bill() {
+        let hi = || user("hi");
+        let ok = assistant(vec![ContentBlock::Text {
+            text: "ok fine".into(),
+        }]);
+        assert_eq!(count("", vec![], vec![hi()]), 7);
+        assert_eq!(count(SYSTEM, vec![], vec![hi()]), 22);
+        assert_eq!(count("", vec![], vec![hi(), hi()]), 12);
+        assert_eq!(count("", vec![], vec![hi(), ok, hi()]), 20);
+    }
+
+    #[test]
+    fn call_rounds_differ_by_what_the_responses_bill_charged() {
+        let round = |turn: Vec<ContentBlock>, results: Vec<AgentMessage>| {
+            let mut messages = vec![user("hi"), assistant(turn)];
+            messages.extend(results);
+            count("", vec![docs_tool()], messages)
+        };
+        let one = round(vec![call("c1")], vec![result("c1", "segment three")]);
+        let two = round(
+            vec![call("c1"), call("c2")],
+            vec![result("c1", "segment three"), result("c2", "segment three")],
+        );
+        let text_call = round(
+            vec![
+                ContentBlock::Text {
+                    text: "reading".into(),
+                },
+                call("c1"),
+            ],
+            vec![result("c1", "segment three")],
+        );
+        let wide = round(
+            vec![ContentBlock::FunctionCall {
+                id: "w1".into(),
+                function_id: "docs::read".into(),
+                arguments: json!({"query": "ledger entries", "kind": "text", "paths": ["src", "docs", "tests"], "limit": 5, "options": {"case_sensitive": true, "whole_word": false}}),
+            }],
+            vec![result("w1", "segment three")],
+        );
+        // billed: 1 call 78, 2 calls 108, text+call 85, wide args 108.
+        assert!(one >= 78, "1 call round counted {one}, billed 78");
+        assert_eq!(two - one, 108 - 78);
+        assert_eq!(text_call - one, 85 - 78);
+        assert_eq!(wide - one, 108 - 78);
+    }
+
+    #[test]
+    fn tool_requests_are_never_under_the_responses_bill() {
+        let hi = || vec![user("hi")];
+        let big = AgentFunction {
+            name: "workspace::search".into(),
+            description: "Search the workspace for files, symbols and text. Returns ranked matches with their paths, line numbers and a short excerpt of the surrounding code, so the caller can decide what to open next.".into(),
+            parameters: json!({"type": "object", "properties": {
+                "query": {"type": "string", "description": "What to look for, as plain words or a regular expression."},
+                "kind": {"type": "string", "enum": ["file", "symbol", "text"], "description": "Which index to search."},
+                "paths": {"type": "array", "items": {"type": "string"}, "description": "Directories to limit the search to."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "How many matches to return."},
+                "options": {"type": "object", "properties": {"case_sensitive": {"type": "boolean"}, "whole_word": {"type": "boolean"}}}
+            }, "required": ["query"]}),
+            label: None,
+            execution_mode: None,
+        };
+        let shapes = [
+            (vec![tool("alpha")], 42),
+            (vec![tool("alpha"), tool("beta")], 61),
+            (vec![tool("alpha"), tool("beta"), tool("gamma")], 80),
+            (vec![big], 155),
+        ];
+        for (tools, billed) in shapes {
+            let counted = count("", tools, hi());
+            assert!(counted >= billed, "counted {counted}, billed {billed}");
+        }
+    }
+
+    #[test]
+    fn tiles_follow_the_published_high_detail_examples() {
+        assert_eq!(tiles(1024, 1024), 4);
+        assert_eq!(tiles(2048, 4096), 6);
+        assert_eq!(tiles(1920, 1080), 6);
+        assert_eq!(tiles(256, 256), 1);
+        assert_eq!(tiles(4000, 800), 4);
+        assert_eq!(tiles(0, 0), 1);
+    }
+
+    #[test]
+    fn a_user_image_costs_its_tiles() {
+        let text = count("", vec![], vec![user("hi")]);
+        let with_image = |image: ContentBlock| {
+            count(
+                "",
+                vec![],
+                vec![user_blocks(vec![
+                    ContentBlock::Text { text: "hi".into() },
+                    image,
+                ])],
+            )
+        };
+        // 600x400 stays as is: 2 by 1 tiles of 512px.
+        assert_eq!(with_image(png(600, 400)) - text, 70 + 2 * 140);
+        // 1920x1080 shrinks to 1365x768: 3 by 2 tiles.
+        assert_eq!(with_image(png(1920, 1080)) - text, 70 + 6 * 140);
+        // An image whose size cannot be read costs the most tiles a resized
+        // image can span.
+        let unreadable = ContentBlock::Image {
+            mime: "image/png".into(),
+            data: "AAAA".into(),
+            attachment_id: None,
+        };
+        assert_eq!(with_image(unreadable) - text, 70 + 8 * 140);
+    }
+
+    #[test]
+    fn a_result_image_counts_its_hoisted_user_item() {
+        let round = |content: Vec<ContentBlock>| {
+            count(
+                "",
+                vec![],
+                vec![
+                    assistant(vec![call("t1")]),
+                    result_with("t1", content, json!({})),
+                ],
+            )
+        };
+        let ok = || ContentBlock::Text { text: "ok".into() };
+        let with_image = round(vec![ok(), png(600, 400)]);
+        let without = round(vec![ok()]);
+        let hoisted_item =
+            TOKENS_PER_MESSAGE + text_tokens("[image result of tool call t1]") + (70 + 2 * 140);
+        assert_eq!(with_image - without, hoisted_item);
+    }
+
+    #[test]
+    fn a_denied_result_counts_its_envelope() {
+        let details = json!({ "status": "denied", "reason": "policy forbids shell" });
+        let round = |details: Value| {
+            count(
+                "",
+                vec![],
+                vec![
+                    assistant(vec![call("t1")]),
+                    result_with(
+                        "t1",
+                        vec![ContentBlock::Text {
+                            text: "not run".into(),
+                        }],
+                        details,
+                    ),
+                ],
+            )
+        };
+        let envelope = format!("[PERMISSION_DENIED]\n{details}\n\nnot run");
+        assert_eq!(
+            round(details) - round(json!({})),
+            text_tokens(&envelope) - text_tokens("not run")
+        );
+    }
+
+    #[test]
+    fn an_orphan_call_counts_its_placeholder_output() {
+        let orphan = count("", vec![], vec![user("hi"), assistant(vec![call("t1")])]);
+        let answered = count(
+            "",
+            vec![],
+            vec![
+                user("hi"),
+                assistant(vec![call("t1")]),
+                result("t1", ORPHAN_TOOL_PLACEHOLDER),
+            ],
+        );
+        assert_eq!(orphan, answered);
+    }
+
+    #[test]
+    fn a_duplicated_result_counts_once_as_the_wire_sends_it() {
+        let replayed = count(
+            "",
+            vec![],
+            vec![
+                assistant(vec![call("t1")]),
+                result("t1", "first"),
+                result("t1", "second"),
+            ],
+        );
+        let once = count(
+            "",
+            vec![],
+            vec![assistant(vec![call("t1")]), result("t1", "second")],
+        );
+        assert_eq!(replayed, once);
     }
 }

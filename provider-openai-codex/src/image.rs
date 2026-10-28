@@ -507,10 +507,11 @@ impl ImageStreamCollector {
 
 /// Pixel dimensions of the saved image (png/jpeg/webp header read).
 pub fn dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
-    image::load_from_memory(bytes).ok().map(|img| {
-        use image::GenericImageView as _;
-        img.dimensions()
-    })
+    image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
 }
 
 /// Transparent pixels composited over white: a JPEG has no alpha, and black
