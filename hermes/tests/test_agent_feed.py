@@ -11,12 +11,14 @@ import asyncio
 import re
 
 import pytest
-from iii import TriggerActionVoid
+from iii import InvocationError, ObserveRejection, TriggerActionVoid
 
 from src import handlers as handlers_mod
 from src.agent_feed import (
+    AGENT_EVENT_OBSERVABLE,
     AGENT_EVENT_TYPE,
     MAX_BINDINGS,
+    RAW_EVENT_OBSERVABLE,
     RAW_EVENT_TYPE,
     create_feeds,
     validate_feed_config,
@@ -232,3 +234,98 @@ def test_f_turn_succeeds_when_consumer_is_gone(monkeypatch):
     assert res == {"session_id": "s1", "result": "pong", "is_error": False, "stop_reason": "end"}
     assert fake.state["hermes_sessions/s1"]["status"] == "done"
     assert len(fake.void_calls()) == 3  # result, turn_end, agent_end were all attempted
+
+
+# -- observable functions (iii 0.25) ------------------------------------------
+
+OBSERVABLES = {AGENT_EVENT_TYPE: AGENT_EVENT_OBSERVABLE, RAW_EVENT_TYPE: RAW_EVENT_OBSERVABLE}
+
+
+def test_create_feeds_registers_both_observable_functions_owner_delivered():
+    fake = FakeIii()
+    create_feeds(fake)
+    assert set(fake.observables) == {AGENT_EVENT_OBSERVABLE, RAW_EVENT_OBSERVABLE}
+    for fid in (AGENT_EVENT_OBSERVABLE, RAW_EVENT_OBSERVABLE):
+        hooks = fake.observables[fid]
+        assert hooks.delivery == "owner"
+        assert hooks.args_format["required"] == ["session_id"]
+        assert hooks.args_format["additionalProperties"] is False
+    # The trigger types stay registered next to them.
+    assert set(fake.trigger_types) == {AGENT_EVENT_TYPE, RAW_EVENT_TYPE}
+
+
+@pytest.mark.parametrize("type_id", FEEDS)
+def test_observable_function_refuses_direct_invocation(type_id):
+    fake = FakeIii()
+    create_feeds(fake)
+    fid = OBSERVABLES[type_id]
+    for junk in ({"session_id": "s1", "event": {"forged": True}}, None, "junk"):
+        with pytest.raises(InvocationError) as err:
+            asyncio.run(fake.registered[fid](junk))
+        assert err.value.code == "FORBIDDEN"
+        assert fid in str(err.value)
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("type_id", FEEDS)
+def test_observer_receives_the_payload_a_binding_receives(type_id):
+    fake = FakeIii()
+    feed = _feed(fake, type_id)
+    fake.bind(type_id, "s1")
+    mine = fake.observe(OBSERVABLES[type_id], {"session_id": "s1"})
+    other = fake.observe(OBSERVABLES[type_id], {"session_id": "s2"})
+
+    delivered = asyncio.run(feed.emit("s1", {"type": "turn_end"}))
+
+    assert delivered == 2
+    bound = fake.feed_frames(type_id)
+    assert len(bound) == 1
+    assert mine.received == bound
+    assert bound[0]["event"] == {"type": "turn_end"}
+    assert other.received == []
+    # Observers go through obs.call, never a trigger call of their own.
+    assert [c["function_id"] for c in fake.void_calls()] == [consumer_fn(type_id)]
+
+
+@pytest.mark.parametrize("type_id", FEEDS)
+def test_removed_observer_gets_nothing_and_bindings_are_unchanged(type_id):
+    fake = FakeIii()
+    feed = _feed(fake, type_id)
+    fake.bind(type_id, "s1")
+    obs = fake.observe(OBSERVABLES[type_id], {"session_id": "s1"})
+    assert feed.binding_count() == 2
+    fake.unobserve(OBSERVABLES[type_id], obs)
+    assert feed.binding_count() == 1
+    assert asyncio.run(feed.emit("s1", {"type": "agent_end"})) == 1
+    assert obs.received == []
+    assert len(fake.feed_frames(type_id)) == 1
+
+
+@pytest.mark.parametrize("type_id", FEEDS)
+def test_observer_args_follow_the_binding_config_rules(type_id):
+    fake = FakeIii()
+    feed = _feed(fake, type_id)
+    for bad in ({}, {"session_id": ""}, {"session_id": "s1", "extra": 1}, {"session_id": "s1", "metadata": 3}, None):
+        with pytest.raises(ObserveRejection):
+            fake.observe(OBSERVABLES[type_id], bad)
+    assert feed.binding_count() == 0
+
+
+def test_observers_share_the_binding_limit():
+    fake = FakeIii()
+    feed = _feed(fake, AGENT_EVENT_TYPE)
+    for i in range(MAX_BINDINGS):
+        fake.bind(AGENT_EVENT_TYPE, f"s{i}")
+    with pytest.raises(ObserveRejection):
+        fake.observe(AGENT_EVENT_OBSERVABLE, {"session_id": "s0"})
+    assert feed.binding_count() == MAX_BINDINGS
+
+
+def test_failing_observer_delivery_is_swallowed():
+    fake = FakeIii()
+    feed = _feed(fake, AGENT_EVENT_TYPE)
+    fake.bind(AGENT_EVENT_TYPE, "s1")
+    gone = fake.observe(AGENT_EVENT_OBSERVABLE, {"session_id": "s1"})
+    gone.fail_with = RuntimeError("target is gone")
+    assert asyncio.run(feed.emit("s1", {"type": "turn_end"})) == 1
+    assert len(fake.feed_frames(AGENT_EVENT_TYPE)) == 1

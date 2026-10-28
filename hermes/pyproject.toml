@@ -10,8 +10,8 @@ authors = [{ name = "iii" }]
 license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
-    "iii-sdk==0.24.6",
-    "iii-helpers==0.24.6",
+    "iii-sdk==0.25.0",
+    "iii-helpers==0.25.0",
     "opentelemetry-api",
     "opentelemetry-sdk",
     "pyyaml",
@@ -19,6 +19,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
+
+# Installed by a plain `uv sync`, so `uv sync --frozen && uv run pytest` works.
+[dependency-groups]
 dev = ["pytest", "pytest-asyncio"]
 
 [project.scripts]

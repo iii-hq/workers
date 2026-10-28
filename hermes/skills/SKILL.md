@@ -43,7 +43,13 @@ on here.
   whole-turn frames (`turn_end`, `agent_end`), not per-tool frames. Bind it (and
   `hermes::raw-event` for the raw `result` frame and inbound deliveries) with
   `{ session_id }`; frames are ephemeral, so use `hermes::status` /
-  `hermes::sessions::list` for history.
+  `hermes::sessions::list` for history. On iii 0.25 engines the same frames
+  reach observers of the owner-delivered functions `hermes::on-agent-event` and
+  `hermes::on-raw-event`:
+  `iii.observe({"function_id": "hermes::on-agent-event", "args": {"session_id": sid}}, target)`.
+  The trigger types keep working on 0.24 and 0.25 engines.
+- `hermes::on-agent-event` and `hermes::on-raw-event` are event sources:
+  observe them, never invoke them (a direct call is refused with `FORBIDDEN`).
 - Hermes's own shell/code/web tools and MCP are intentionally not re-exposed —
   iii already has `shell`, `coder`, `web`.
 
@@ -66,3 +72,9 @@ on here.
   `{ session_id, event_id, seq, epoch, source, event }`.
 - `hermes::raw-event` — raw Hermes frames (`result`, `inbound`), same config and
   payload.
+
+## Observable functions (iii 0.25)
+
+- `hermes::on-agent-event` — owner-delivered; args = the `hermes::agent-event`
+  config `{ session_id, metadata? }`; the target gets the same payload.
+- `hermes::on-raw-event` — the same for `hermes::raw-event`.

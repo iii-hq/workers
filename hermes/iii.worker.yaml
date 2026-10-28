@@ -5,7 +5,7 @@ deploy: image
 manifest: pyproject.toml
 license: Apache-2.0
 tags: [agent, messaging, chat, webhook, multi-channel]
-description: Hermes agent as an iii worker — hermes::run runs headless Hermes turns with the iii runtime context, hermes::send delivers to 27+ messaging platforms, and inbound platform/webhook deliveries are republished on the hermes::raw-event trigger type for iii workers to react to; turn frames are delivered on hermes::agent-event.
+description: Hermes agent as an iii worker — hermes::run runs headless Hermes turns with the iii runtime context, hermes::send delivers to 27+ messaging platforms, and inbound platform/webhook deliveries are republished on the hermes::raw-event trigger type for iii workers to react to; turn frames are delivered on hermes::agent-event. Both feeds are also observable as hermes::on-raw-event and hermes::on-agent-event (iii 0.25).
 
 runtime:
   language: python

@@ -17,6 +17,13 @@ agent worker (P3-1 design, section 2):
   sequential, forwarding the binding's namespace and metadata (config metadata
   wins); a failed delivery is logged and swallowed. No binding, no call.
 
+On an iii 0.25 engine each feed is also an owner-delivered observable function
+(`hermes::on-agent-event`, `hermes::on-raw-event`): an observer with args
+`{session_id, metadata?}` (the binding config) gets the same payload through
+`obs.call`, filed in the same binding table (same numbering, same limit). The
+trigger types stay for 0.24 engines and existing consumers; invoking an `on-*`
+function directly is refused with FORBIDDEN.
+
 Frames are ephemeral: not stored, not replayed. History lives in the session
 records (`hermes::status`, `hermes::sessions::list`) and the turn result.
 """
@@ -26,15 +33,19 @@ from __future__ import annotations
 import logging
 import threading
 import uuid
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
-from iii import TriggerAction
+from iii import InvocationError, ObserveHooks, ObserveRejection, TriggerAction
 from iii.triggers import TriggerConfig, TriggerHandler
 
 SOURCE = "hermes"
 AGENT_EVENT_TYPE = "hermes::agent-event"
 RAW_EVENT_TYPE = "hermes::raw-event"
+# The observable functions (iii 0.25) next to the two trigger types.
+AGENT_EVENT_OBSERVABLE = "hermes::on-agent-event"
+RAW_EVENT_OBSERVABLE = "hermes::on-raw-event"
 MAX_BINDINGS = 256
 MAX_SESSION_ID_LEN = 512
 CONFIG_KEYS = frozenset({"session_id", "metadata"})
@@ -64,6 +75,27 @@ FEED_CONFIG_FORMAT = {
     "required": ["session_id"],
     "additionalProperties": False,
 }
+# The observers' args: the binding config, validated by the engine (INVALID_ARGS).
+FEED_ARGS_FORMAT = {
+    "type": "object",
+    "properties": {
+        "session_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": MAX_SESSION_ID_LEN,
+            "description": "The session whose frames this observer receives.",
+        },
+        "metadata": {
+            "type": "object",
+            "description": "Accepted for parity with the trigger config; an observer gets its sidecar "
+            "from its own `metadata` option.",
+        },
+    },
+    "required": ["session_id"],
+    "additionalProperties": False,
+}
+# Observer delivery outcomes that are not failures: nothing was sent.
+_SKIPPED_CODES = frozenset({"FILTERS_NOT_MATCHED", "OBSERVER_NOT_ACTIVE"})
 FEED_PAYLOAD_FORMAT = {
     "type": "object",
     "properties": {
@@ -108,14 +140,24 @@ class _Binding:
     namespace: str | None
     metadata: Any
     config: dict[str, Any]
+    # Set for an observer of the observable function (iii 0.25), None for a trigger binding.
+    observer: Any = None
+
+
+def _observer_key(observer_id: str) -> str:
+    """Observers share the binding table under a key no trigger binding id uses."""
+    return f"observer:{observer_id}"
 
 
 class AgentFeed(TriggerHandler[dict[str, Any]]):
-    """One owned trigger type: binding table, per-session sequence, delivery."""
+    """One owned trigger type and its observable function: binding table, per-session sequence, delivery."""
 
-    def __init__(self, iii: Any, *, type_id: str, source: str, description: str) -> None:
+    def __init__(
+        self, iii: Any, *, type_id: str, source: str, description: str, observable_id: str | None = None
+    ) -> None:
         self._iii = iii
         self.type_id = type_id
+        self.observable_id = observable_id
         self.source = source
         self.description = description
         self.epoch = str(uuid.uuid4())
@@ -125,16 +167,67 @@ class AgentFeed(TriggerHandler[dict[str, Any]]):
         self._lock = threading.Lock()
 
     def register(self) -> AgentFeed:
-        self._iii.register_trigger_type(
-            {
-                "id": self.type_id,
-                "description": self.description,
-                "trigger_request_format": FEED_CONFIG_FORMAT,
-                "call_request_format": FEED_PAYLOAD_FORMAT,
-            },
-            self,
-        )
+        # Deprecated in iii 0.25 and kept registered for 0.24 engines and existing bindings.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            self._iii.register_trigger_type(
+                {
+                    "id": self.type_id,
+                    "description": self.description,
+                    "trigger_request_format": FEED_CONFIG_FORMAT,
+                    "call_request_format": FEED_PAYLOAD_FORMAT,
+                },
+                self,
+            )
+        if self.observable_id is not None:
+            # The iii 0.25 observable function next to the trigger type: owner-delivered,
+            # its observers filed in the same binding table, so one emit reaches bindings
+            # and observers alike. Events are routed in-process; invoking it is refused.
+            self._iii.register_function(
+                self.observable_id,
+                self.refuse_invocation,
+                description=(
+                    f"{self.description} Observe with iii.observe({{function_id: '{self.observable_id}', "
+                    "args: {session_id}}, target) (iii 0.25); invoking it is refused with FORBIDDEN."
+                ),
+                observe=ObserveHooks(
+                    delivery="owner",
+                    args_format=FEED_ARGS_FORMAT,
+                    on_observer_added=self.on_observer_added,
+                    on_observer_removed=self.on_observer_removed,
+                ),
+            )
         return self
+
+    async def refuse_invocation(self, data: Any) -> None:
+        """The observable function's handler: it is an event source, never invoked."""
+        raise InvocationError(
+            code="FORBIDDEN",
+            message=(
+                f"{self.observable_id} is an event source: observe it (iii.observe({{function_id: "
+                f"'{self.observable_id}', args: {{session_id}}}}, target)); only the hermes worker emits its events"
+            ),
+            function_id=self.observable_id,
+        )
+
+    async def on_observer_added(self, obs: Any) -> None:
+        name = self.observable_id or self.type_id
+        try:
+            feed_config = validate_feed_config(name, obs.args)
+        except ValueError as exc:
+            raise ObserveRejection("INVALID_ARGS", str(exc)) from exc
+        key = _observer_key(obs.id)
+        binding = _Binding(
+            id=key, function_id=obs.target, namespace=None, metadata=None, config=feed_config, observer=obs
+        )
+        with self._lock:
+            if key not in self._bindings and len(self._bindings) >= MAX_BINDINGS:
+                raise ObserveRejection("BINDING_LIMIT", f"{name}: binding limit ({MAX_BINDINGS}) reached")
+            self._bindings[key] = binding
+
+    async def on_observer_removed(self, obs: Any) -> None:
+        with self._lock:
+            self._bindings.pop(_observer_key(obs.id), None)
 
     async def register_trigger(self, config: TriggerConfig[dict[str, Any]]) -> None:
         feed_config = validate_feed_config(self.type_id, config.config)
@@ -176,6 +269,16 @@ class AgentFeed(TriggerHandler[dict[str, Any]]):
         }
         delivered = 0
         for binding in targets:
+            if binding.observer is not None:
+                try:
+                    await binding.observer.call_async(payload)
+                    delivered += 1
+                except InvocationError as exc:
+                    if exc.code not in _SKIPPED_CODES:
+                        log.warning("%s: delivery to %s failed: %s", self.observable_id, binding.function_id, exc)
+                except Exception as exc:  # noqa: BLE001 - a gone observer never fails the turn
+                    log.warning("%s: delivery to %s failed: %s", self.observable_id, binding.function_id, exc)
+                continue
             request: dict[str, Any] = {
                 "function_id": binding.function_id,
                 "payload": payload,
@@ -201,7 +304,20 @@ class Feeds:
 
 
 def create_feeds(iii: Any) -> Feeds:
-    """Register `hermes::agent-event` and `hermes::raw-event` on `iii`."""
-    agent = AgentFeed(iii, type_id=AGENT_EVENT_TYPE, source=SOURCE, description=AGENT_EVENT_DESCRIPTION)
-    raw = AgentFeed(iii, type_id=RAW_EVENT_TYPE, source=SOURCE, description=RAW_EVENT_DESCRIPTION)
+    """Register `hermes::agent-event` and `hermes::raw-event` on `iii`, each with its
+    observable function (`hermes::on-agent-event`, `hermes::on-raw-event`)."""
+    agent = AgentFeed(
+        iii,
+        type_id=AGENT_EVENT_TYPE,
+        source=SOURCE,
+        description=AGENT_EVENT_DESCRIPTION,
+        observable_id=AGENT_EVENT_OBSERVABLE,
+    )
+    raw = AgentFeed(
+        iii,
+        type_id=RAW_EVENT_TYPE,
+        source=SOURCE,
+        description=RAW_EVENT_DESCRIPTION,
+        observable_id=RAW_EVENT_OBSERVABLE,
+    )
     return Feeds(agent=agent.register(), raw=raw.register())

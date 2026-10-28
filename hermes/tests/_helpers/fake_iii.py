@@ -34,6 +34,9 @@ class FakeIii:
         # function ids whose invocation raises (simulates a gone consumer)
         self.failing_functions: set[str] = set()
         self._binding_seq = 0
+        # `observe=` hooks of each registered observable function (iii 0.25).
+        self.observables: dict[str, Any] = {}
+        self._observer_seq = 0
 
     def trigger(self, request: dict[str, Any]) -> Any:
         fid = request["function_id"]
@@ -62,8 +65,10 @@ class FakeIii:
         # the event-loop thread); back it with the same in-memory store.
         return self.trigger(request)
 
-    def register_function(self, fid: str, handler: Any, **_kw: Any) -> None:
+    def register_function(self, fid: str, handler: Any, **kw: Any) -> None:
         self.registered[fid] = handler
+        if kw.get("observe") is not None:
+            self.observables[fid] = kw["observe"]
 
     def register_trigger(self, spec: dict[str, Any]) -> None:
         self.triggers.append(spec)
@@ -100,6 +105,23 @@ class FakeIii:
         handler = self.trigger_types[type_id]["handler"]
         asyncio.run(handler.unregister_trigger(TriggerConfig(id=binding_id, function_id="", config=None)))
 
+    # -- engine side of an observer (iii 0.25) ------------------------------
+
+    async def observe_async(
+        self, function_id: str, args: Any, *, target: str = "consumer::observer", observer_id: str | None = None
+    ) -> FakeObserver:
+        """Add an observer the way the engine does: run the owner's `on_observer_added`."""
+        self._observer_seq += 1
+        obs = FakeObserver(observer_id or f"observer-{self._observer_seq}", function_id, target, args)
+        await self.observables[function_id].on_observer_added(obs)
+        return obs
+
+    def observe(self, function_id: str, args: Any, **kw: Any) -> FakeObserver:
+        return asyncio.run(self.observe_async(function_id, args, **kw))
+
+    def unobserve(self, function_id: str, obs: FakeObserver) -> None:
+        asyncio.run(self.observables[function_id].on_observer_removed(obs))
+
     def void_calls(self, function_id: str | None = None) -> list[dict[str, Any]]:
         return [
             c
@@ -114,6 +136,25 @@ class FakeIii:
 
     def feed_events(self, type_id: str) -> list[dict[str, Any]]:
         return [p["event"] for p in self.feed_frames(type_id)]
+
+
+class FakeObserver:
+    """An observer as the owner's hooks see it; `call_async` records each event."""
+
+    def __init__(self, observer_id: str, function_id: str, target: str, args: Any) -> None:
+        self.id = observer_id
+        self.function_id = function_id
+        self.target = target
+        self.args = args
+        self.received: list[dict[str, Any]] = []
+        # Set to an exception to make delivery fail (a gone target).
+        self.fail_with: BaseException | None = None
+
+    async def call_async(self, payload: Any) -> Any:
+        if self.fail_with is not None:
+            raise self.fail_with
+        self.received.append(copy.deepcopy(payload))
+        return None
 
 
 def consumer_fn(type_id: str) -> str:
