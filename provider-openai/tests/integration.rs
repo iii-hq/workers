@@ -76,6 +76,8 @@ const STUB_RESPONSES_SSE: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-st
 
 const STUB_401: &str = "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"Incorrect API key provided.\",\"type\":\"invalid_request_error\",\"code\":\"invalid_api_key\"}}";
 
+const STUB_INPUT_TOKENS: &str = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"object\":\"response.input_tokens\",\"input_tokens\":1545}";
+
 const STUB_MODELS: &str = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"data\":[{\"id\":\"gpt-5.2\",\"object\":\"model\"},{\"id\":\"gpt-5.2-2025-12-11\",\"object\":\"model\"},{\"id\":\"gpt-5.4-2026-03-05\",\"object\":\"model\"},{\"id\":\"o3-mini\",\"object\":\"model\"},{\"id\":\"text-embedding-3-large\",\"object\":\"model\"}]}";
 
 async fn stub_upstream(messages_response: &'static str) -> StubUpstream {
@@ -97,6 +99,8 @@ async fn stub_upstream_at(messages_response: &'static str, endpoint: &str) -> St
                 let head = String::from_utf8_lossy(&buf[..n]);
                 let response = if head.starts_with("GET /v1/models") {
                     STUB_MODELS
+                } else if head.starts_with("POST /v1/responses/input_tokens ") {
+                    STUB_INPUT_TOKENS
                 } else {
                     messages_response
                 };
@@ -320,6 +324,32 @@ async fn responses_streams_end_to_end() {
     assert_eq!(last["message"]["usage"]["input"], 12);
 
     consumer.shutdown();
+    router_iii.shutdown();
+    provider_iii.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn count_tokens_meters_through_the_resolved_responses_endpoint() {
+    let engine = engine_or_skip!();
+    let stub = stub_upstream_at(STUB_RESPONSES_SSE, "/v1/responses").await;
+    let (router_iii, provider_iii) = boot_stack(&engine.url).await;
+    configure_stub_key(&router_iii, &stub.url).await;
+    // Same sequencing as the stream tests: the refresh lands the new slice.
+    refresh_and_wait(&router_iii, &provider_iii, "gpt-5.2").await;
+
+    let metered = call(
+        &provider_iii,
+        "provider::openai::count_tokens",
+        json!({
+            "model": "gpt-5.2",
+            "messages": [{ "role": "user", "content": [{ "type": "text", "text": "hi" }], "timestamp": 1 }],
+        }),
+    )
+    .await
+    .expect("count succeeds");
+    assert_eq!(metered["estimator"], "metered", "{metered}");
+    assert_eq!(metered["tokens"], 1545);
+
     router_iii.shutdown();
     provider_iii.shutdown();
 }
