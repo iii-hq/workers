@@ -313,6 +313,8 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             .description(surface::ON_CONFIG_CHANGED_DESC)
             .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
+    // Deprecated in iii 0.25, still served by 0.24 and 0.25 engines.
+    #[allow(deprecated)]
     iii.register_trigger(RegisterTriggerInput::new(
         "configuration",
         surface::ON_CONFIG_CHANGED_ID,
@@ -395,11 +397,14 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             .description(surface::ON_FUNCTIONS_CHANGED_DESC)
             .metadata(json!({ "internal": true, "trace_hidden": true })),
         );
-        if let Err(e) = iii.register_trigger(RegisterTriggerInput::new(
+        // Deprecated in iii 0.25, still served by 0.24 and 0.25 engines.
+        #[allow(deprecated)]
+        let functions_binding = iii.register_trigger(RegisterTriggerInput::new(
             "engine::functions-available",
             surface::ON_FUNCTIONS_CHANGED_ID,
             json!({}),
-        )) {
+        ));
+        if let Err(e) = functions_binding {
             // Best-effort: without it providers still recover on their own
             // timer, exactly as before this binding existed.
             tracing::warn!(error = %e, "binding engine::functions-available failed; provider re-discovery falls back to each provider's periodic refresh");
@@ -417,11 +422,14 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             .description(surface::ON_SECRET_CHANGED_DESC)
             .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
-    if let Err(e) = iii.register_trigger(RegisterTriggerInput::new(
+    // Deprecated in iii 0.25, still served by 0.24 and 0.25 engines.
+    #[allow(deprecated)]
+    let secrets_binding = iii.register_trigger(RegisterTriggerInput::new(
         crate::secrets::CHANGED_TRIGGER_TYPE,
         surface::ON_SECRET_CHANGED_ID,
         json!({}),
-    )) {
+    ));
+    if let Err(e) = secrets_binding {
         tracing::warn!(error = %e, "binding secrets::changed failed; secret references refresh on their cache TTL only");
     }
     // Warm the cache off the boot path; a secrets worker that is not up yet

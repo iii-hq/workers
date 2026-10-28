@@ -285,21 +285,35 @@ credential comes from, never its value.
 
 ## Events
 
-The router registers three custom trigger types and fans out to every bound
-handler. Bind with the standard two-step pattern; the handler receives the
-payload verbatim (no envelope).
+The router registers three custom trigger types and, next to each one, an
+observable function (iii 0.25). Both reach the same events: the handler
+receives the payload verbatim (no envelope).
 
-| Trigger type | Fires when | Payload |
-|---|---|---|
-| `router::models::changed` | a provider reconciles its catalog slice | `{ "provider": "<id>", "count": <n> }` |
-| `router::provider::changed` | the registry changes (declare / availability flip) | `{ "provider": "<id>", "op": "register" \| "available" \| "unavailable" }` |
-| `router::ready` | the router finishes booting; providers re-declare on it | `{}` |
+| Trigger type | Observable function | Fires when | Payload |
+|---|---|---|---|
+| `router::models::changed` | `router::on-models-changed` | a provider reconciles its catalog slice | `{ "provider": "<id>", "count": <n> }` |
+| `router::provider::changed` | `router::on-provider-changed` | the registry changes (declare / availability flip) | `{ "provider": "<id>", "op": "register" \| "available" \| "unavailable" }` |
+| `router::ready` | `router::on-ready` | the router finishes booting; providers re-declare on it | `{}` |
+
+New consumers observe the function with args `{}` (the trigger config; no
+filters yet). The `router::on-*` functions are owner-delivered event sources:
+only the router emits their events, in-process, and invoking one directly is
+refused with `FORBIDDEN`; args the trigger type would refuse as a config
+reject the observer with `INVALID_ARGS`. Consumers that bind the trigger types
+with the two-step pattern keep working unchanged on 0.24 and 0.25 engines.
 
 The router itself binds the engine's `configuration` trigger (its entry) and,
 when the optional `secrets` worker is installed, `secrets::changed`
 (`router::on_secret_changed`).
 
 ```ts
+// iii 0.25: observe the function.
+iii.observe(
+  { function_id: 'router::on-models-changed', args: {} },
+  'my-worker::on-models-changed',
+);
+
+// Older consumers: bind the trigger type.
 iii.registerFunction('my-worker::on-models-changed', async (payload) => {
   console.log('catalog changed:', payload); // { provider, count }
   return {};
