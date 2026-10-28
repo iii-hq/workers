@@ -1,5 +1,5 @@
 {
-  "description": "Count prompt tokens for {model, system_prompt?, tools?, messages} locally with the tiktoken tokenizers; never runs the model and costs nothing.",
+  "description": "Count prompt tokens for {model, system_prompt?, tools?, messages, response_format?} with OpenAI's Responses input_tokens route, falling back to the local tiktoken tokenizers on Chat Completions endpoints or when that route fails; never runs the model and costs nothing.",
   "function_id": "provider::openai::count_tokens",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -409,6 +409,18 @@
         ],
         "type": "string"
       },
+      "ResponseFormat": {
+        "properties": {
+          "schema": true,
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
       "StopReason": {
         "enum": [
           "end",
@@ -511,8 +523,20 @@
         "type": "array"
       },
       "model": {
-        "description": "Model id the prompt targets; selects the tokenizer (o200k_base for gpt-4o/gpt-5/o-series and anything unknown-modern, cl100k_base for gpt-3.5 and non-o gpt-4 families).",
+        "description": "Model id the prompt targets. The metering route takes it as is; the tiktoken fallback selects its tokenizer from it (o200k_base for gpt-4o/gpt-5/o-series and anything unknown-modern, cl100k_base for gpt-3.5 and non-o gpt-4 families).",
         "type": "string"
+      },
+      "response_format": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ResponseFormat"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Structured-output format the turn sends; its schema is part of the billed prompt."
       },
       "system_prompt": {
         "default": null,
@@ -545,14 +569,14 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
       "estimator": {
-        "description": "Always `tiktoken`: a local tokenizer produced the estimate.",
+        "description": "`metered` when OpenAI's input_tokens route counted the request, `tiktoken` when the local tokenizer estimated it.",
         "type": "string"
       },
       "model": {
         "type": "string"
       },
       "tokens": {
-        "description": "Estimated prompt tokens for the assembled request.",
+        "description": "Prompt tokens for the assembled request.",
         "format": "uint64",
         "minimum": 0.0,
         "type": "integer"

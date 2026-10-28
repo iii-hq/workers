@@ -1,5 +1,5 @@
 {
-  "description": "Count prompt tokens for {model, system_prompt?, tools?, messages} with Grok's tokenizer upstream; never runs the model and costs nothing.",
+  "description": "Count prompt tokens for {model, system_prompt?, tools?, messages, response_format?} with Grok's tokenizer upstream plus xAI's measured prompt overhead; never runs the model and costs nothing.",
   "function_id": "provider::xai::count_tokens",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -409,6 +409,18 @@
         ],
         "type": "string"
       },
+      "ResponseFormat": {
+        "properties": {
+          "schema": true,
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
       "StopReason": {
         "enum": [
           "end",
@@ -416,6 +428,18 @@
           "function_call",
           "aborted",
           "error"
+        ],
+        "type": "string"
+      },
+      "ThinkingLevel": {
+        "description": "\"off\" asks the provider not to reason at all and is honoured only where the model advertises `Model::supports_thinking_off` (elsewhere the provider falls back to its own lowest setting, or omits the parameter, and warns). \"minimal\" requests the lowest reasoning effort and needs only `thinking` support; levels map to provider-native knobs via `Model::thinking_budgets`.",
+        "enum": [
+          "off",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
         ],
         "type": "string"
       },
@@ -514,6 +538,18 @@
         "description": "Model id the prompt targets; selects the tokenizer upstream.",
         "type": "string"
       },
+      "response_format": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ResponseFormat"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "The turn's structured-output request, when it has one; its schema is billed as prompt."
+      },
       "system_prompt": {
         "default": null,
         "description": "System prompt counted as its own framed wire row when present.",
@@ -521,6 +557,18 @@
           "string",
           "null"
         ]
+      },
+      "thinking_level": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ThinkingLevel"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "The turn's reasoning level; it maps to the `reasoning_effort` the stream sends, which changes the preamble xAI bills."
       },
       "tools": {
         "default": null,
@@ -552,7 +600,7 @@
         "type": "string"
       },
       "tokens": {
-        "description": "Prompt tokens for the assembled request: Grok's tokenizer over the text, this worker's framing on top.",
+        "description": "Prompt tokens for the assembled request: Grok's tokenizer over the rendered text, xAI's measured overhead on top.",
         "format": "uint64",
         "minimum": 0.0,
         "type": "integer"

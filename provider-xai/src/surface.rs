@@ -27,7 +27,7 @@ pub const REFRESH_MODELS_DESC: &str = "Refresh the xAI catalog slice from GET /v
 
 pub const COUNT_TOKENS_ID: &str = "provider::xai::count_tokens";
 pub const COUNT_TOKENS_DESC: &str =
-    "Count prompt tokens for {model, system_prompt?, tools?, messages} with Grok's tokenizer upstream; never runs the model and costs nothing.";
+    "Count prompt tokens for {model, system_prompt?, tools?, messages, response_format?} with Grok's tokenizer upstream plus xAI's measured prompt overhead; never runs the model and costs nothing.";
 
 pub const ON_ROUTER_READY_ID: &str = "provider::xai::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =

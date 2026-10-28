@@ -84,6 +84,9 @@ pub struct AssembleParams {
     pub previous_summary: Option<String>,
     pub lease_key: String,
     pub thinking_level: Option<ThinkingLevel>,
+    /// The `response_format` the turn sends on `router::chat`, so the
+    /// provider's count renders it where its template does.
+    pub response_format: Option<Value>,
     pub tools: Vec<AgentFunction>,
     pub request_overhead_tokens: u64,
     /// `false` keeps earlier function results as they were sent (no aged
@@ -150,41 +153,11 @@ impl ContextClient {
     /// Assemble a model-ready context. The context manager is a required
     /// dependency: callers must never fall back to unbudgeted raw history.
     pub async fn assemble(&self, params: AssembleParams) -> Result<AssembleOutput, String> {
-        let mut model = json!({ "id": params.model_id });
-        if let Some(p) = &params.provider {
-            model["provider"] = json!(p);
-        }
-        let mut options = json!({
-            "lease_key": params.lease_key,
-            "request_overhead_tokens": params.request_overhead_tokens,
-        });
-        if let Some(s) = &params.previous_summary {
-            options["previous_summary"] = json!(s);
-        }
-        if let Some(tl) = &params.thinking_level {
-            options["thinking_level"] = serde_json::to_value(tl).unwrap_or(Value::Null);
-        }
-        if let Some(allow) = params.allow_prune {
-            options["allow_prune"] = json!(allow);
-        }
-        let mut payload = json!({
-            "messages": params.messages,
-            "model": model,
-            "options": options,
-            "tools": params.tools,
-        });
-        if let Some(sp) = &params.system_prompt {
-            payload["system_prompt"] = json!(sp);
-        }
-        if let Some(parts) = &params.parts {
-            payload["parts"] = json!(parts);
-        }
-
         let resp = self
             .iii
             .trigger(TriggerRequest {
                 function_id: "context::assemble".into(),
-                payload,
+                payload: assemble_payload(params),
                 action: None,
                 timeout_ms: Some(self.timeout_ms),
             })
@@ -265,5 +238,77 @@ impl ContextClient {
                 .map_err(|e| format!("context::count-tokens parse: {e}")),
             Err(e) => Err(format!("context::count-tokens: {e}")),
         }
+    }
+}
+
+/// The `context::assemble` request for `params`.
+fn assemble_payload(params: AssembleParams) -> Value {
+    let mut model = json!({ "id": params.model_id });
+    if let Some(p) = &params.provider {
+        model["provider"] = json!(p);
+    }
+    let mut options = json!({
+        "lease_key": params.lease_key,
+        "request_overhead_tokens": params.request_overhead_tokens,
+    });
+    if let Some(s) = &params.previous_summary {
+        options["previous_summary"] = json!(s);
+    }
+    if let Some(tl) = &params.thinking_level {
+        options["thinking_level"] = serde_json::to_value(tl).unwrap_or(Value::Null);
+    }
+    if let Some(format) = params.response_format {
+        options["response_format"] = format;
+    }
+    if let Some(allow) = params.allow_prune {
+        options["allow_prune"] = json!(allow);
+    }
+    let mut payload = json!({
+        "messages": params.messages,
+        "model": model,
+        "options": options,
+        "tools": params.tools,
+    });
+    if let Some(sp) = &params.system_prompt {
+        payload["system_prompt"] = json!(sp);
+    }
+    if let Some(parts) = &params.parts {
+        payload["parts"] = json!(parts);
+    }
+    payload
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn assemble_carries_the_turns_level_and_format_for_the_provider_count() {
+        let params = |response_format| AssembleParams {
+            messages: vec![],
+            model_id: "m".into(),
+            provider: None,
+            system_prompt: None,
+            parts: None,
+            previous_summary: None,
+            lease_key: "s".into(),
+            thinking_level: Some(ThinkingLevel::Off),
+            response_format,
+            tools: vec![],
+            request_overhead_tokens: 0,
+            allow_prune: None,
+        };
+        let payload = assemble_payload(params(Some(json!({ "type": "json" }))));
+        assert_eq!(payload["options"]["thinking_level"], "off");
+        assert_eq!(
+            payload["options"]["response_format"],
+            json!({ "type": "json" })
+        );
+
+        let payload = assemble_payload(params(None));
+        assert!(
+            payload["options"].get("response_format").is_none(),
+            "{payload}"
+        );
     }
 }

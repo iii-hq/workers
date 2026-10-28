@@ -1,16 +1,36 @@
-//! `provider::sarvam::count_tokens` — local prompt token estimation with the
-//! tiktoken tokenizers. Sarvam exposes no metering endpoint and publishes
-//! no tokenizer for the 105B and 30B models, so the count is an estimate
-//! from the text the wire mappers would send plus the chat-framing
-//! constants; it never runs the model, costs nothing, and needs no network.
-//! The counting logic is shared with the other OpenAI-shaped providers in
-//! `llm_router::provider_scaffold::tiktoken_count`.
+//! `provider::sarvam::count_tokens` — prompt token counting with Sarvam's own
+//! vocabulary and chat templates.
+//!
+//! Sarvam exposes no metering endpoint, so the count is computed locally from
+//! what Sarvam publishes on HuggingFace: sarvam-30b and sarvam-105b share one
+//! `tokenizer.json` and one `chat_template.jinja`, and sarvam-m ships Mistral's
+//! Tekken vocabulary with its own template. o200k under-counted code and hex by
+//! a fifth to a third and over-counted Indic scripts, and the generic framing
+//! missed the tool block and the call markup the template renders.
+//!
+//! What gets counted is the prompt the template renders from this provider's
+//! wire rows, so orphan placeholders, denied envelopes and the latest-wins
+//! result dedup count as they are sent. Ids outside the Sarvam lineup (a custom
+//! endpoint behind an `api_url` override), and a cold cache with no network,
+//! keep the tiktoken estimate, as does a cold fetch slower than
+//! [`COLD_FETCH_BUDGET`].
+//!
+//! Exposed behind `router::count_tokens`.
 use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::tiktoken_count::{count_chat_tokens, ESTIMATOR_TIKTOKEN};
+use llm_router::provider_scaffold::vocabulary_count::{
+    resolve, VocabularyRef, ESTIMATOR_TOKENIZER,
+};
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::AgentFunction;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::future::Future;
+use std::time::Duration;
+
+use crate::wire::messages::to_wire_messages;
+use crate::wire::tools::functions_to_wire;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CountTokensRequest {
@@ -31,29 +51,288 @@ pub struct CountTokensRequest {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct CountTokensResponse {
     pub model: String,
-    /// Estimated prompt tokens for the assembled request.
+    /// Prompt tokens for the assembled request.
     pub tokens: u64,
-    /// Always `tiktoken`: a local tokenizer produced the estimate.
+    /// `tokenizer` when Sarvam's own vocabulary and template produced the
+    /// count; `tiktoken` for the estimate kept for other ids and a cold
+    /// offline cache.
     pub estimator: String,
 }
 
-pub fn handle(req: CountTokensRequest) -> Result<CountTokensResponse, Error> {
+/// How long a count waits for a vocabulary that is not loaded yet. The
+/// router gives up on a count after 30 s, the same as the fetch timeout, and
+/// sarvam-30b's `tokenizer.json` is 33 MB: past this the count keeps the
+/// estimate while the fetch, under its own 30 s limit, goes on in the
+/// background to fill the cache for later counts.
+const COLD_FETCH_BUDGET: Duration = Duration::from_secs(10);
+
+/// `work` run on its own task, awaited for at most `budget`. Past the budget
+/// the task is left running and its result dropped.
+async fn within<T: Send + 'static>(
+    budget: Duration,
+    work: impl Future<Output = Option<T>> + Send + 'static,
+) -> Option<T> {
+    tokio::time::timeout(budget, tokio::spawn(work))
+        .await
+        .ok()?
+        .ok()?
+}
+
+type Render = fn(&[Value], &[Value]) -> String;
+
+/// The published vocabulary and template for a Sarvam chat id. Every
+/// `sarvam-*` id but sarvam-m is the 30b/105b family: both repos ship the
+/// same files, and a new size is likelier to join it than to bring a third.
+fn family(model: &str) -> Option<(VocabularyRef, Render)> {
+    let model = model.to_ascii_lowercase();
+    if model == "sarvam-m" {
+        Some((
+            VocabularyRef::huggingface("sarvamai/sarvam-m"),
+            sarvam_m_prompt,
+        ))
+    } else if model.starts_with("sarvam-") {
+        Some((VocabularyRef::huggingface("sarvamai/sarvam-30b"), prompt))
+    } else {
+        None
+    }
+}
+
+pub async fn handle(req: CountTokensRequest) -> Result<CountTokensResponse, Error> {
     if req.messages.is_empty() {
         return Err(Error::Handler(
             "invalid_input: messages must not be empty".into(),
         ));
     }
-    let tokens = count_chat_tokens(
-        &req.model,
-        req.system_prompt.as_deref(),
-        req.tools.as_deref().unwrap_or(&[]),
-        &req.messages,
-    );
+    let tools = req.tools.as_deref().unwrap_or(&[]);
+    let tokenizer = match family(&req.model) {
+        Some((vocabulary, render)) => {
+            within(COLD_FETCH_BUDGET, async move { resolve(&vocabulary).await })
+                .await
+                .map(|t| (t, render))
+        }
+        None => None,
+    };
+    let (tokens, estimator) = match tokenizer {
+        Some((tokenizer, render)) => {
+            let rows = to_wire_messages(
+                &req.messages,
+                req.system_prompt.as_deref().unwrap_or_default(),
+            );
+            let tokens = tokenizer
+                .encode(render(&rows, &functions_to_wire(tools)), false)
+                .map_err(|err| Error::Handler(format!("router/no_token_counter: {err}")))?
+                .len() as u64;
+            (tokens, ESTIMATOR_TOKENIZER)
+        }
+        None => (
+            count_chat_tokens(
+                &req.model,
+                req.system_prompt.as_deref(),
+                tools,
+                &req.messages,
+            ),
+            ESTIMATOR_TIKTOKEN,
+        ),
+    };
     Ok(CountTokensResponse {
         model: req.model,
         tokens,
-        estimator: ESTIMATOR_TIKTOKEN.into(),
+        estimator: estimator.into(),
     })
+}
+
+/// sarvam-30b/105b's published `chat_template.jinja`, reduced to the rows
+/// this wire sends, with the generation prompt. The template's `<|nothink|>`
+/// needs `enable_thinking: false`, which Sarvam has no switch for.
+fn prompt(rows: &[Value], tools: &[Value]) -> String {
+    let mut out = String::from("[@BOS@]\n");
+    if !tools.is_empty() {
+        out.push_str("<|start_of_turn|><|tool_declare|>\n<tools>\n");
+        for tool in tools {
+            out.push_str(&python_json(tool));
+            out.push('\n');
+        }
+        out.push_str("</tools><|end_of_turn|>\n");
+    }
+    let last_user = rows.iter().rposition(|row| row["role"] == "user");
+    for (index, row) in rows.iter().enumerate() {
+        match row["role"].as_str() {
+            Some(role @ ("user" | "system")) => {
+                out.push_str(&format!("<|start_of_turn|><|{role}|>\n"));
+                out.push_str(&visible_text(&row["content"]));
+                out.push_str("<|end_of_turn|>\n");
+            }
+            Some("assistant") => {
+                out.push_str("<|start_of_turn|><|assistant|>\n");
+                let (reasoning, content) = split_think(visible_text(&row["content"]));
+                // Reasoning is replayed only after the last user turn.
+                if last_user.is_none_or(|user| index > user) && !reasoning.is_empty() {
+                    out.push_str(&format!("<think>{}</think>", reasoning.trim()));
+                } else {
+                    out.push_str("<think></think>");
+                }
+                if !content.trim().is_empty() {
+                    out.push('\n');
+                    out.push_str(content.trim());
+                }
+                for call in row["tool_calls"].as_array().into_iter().flatten() {
+                    let call = &call["function"];
+                    out.push_str("\n<tool_call>");
+                    out.push_str(call["name"].as_str().unwrap_or_default());
+                    out.push('\n');
+                    for (key, value) in arguments(call) {
+                        let value = match value {
+                            Value::String(text) => text,
+                            other => python_json(&other),
+                        };
+                        out.push_str(&format!(
+                            "<arg_key>{key}</arg_key>\n<arg_value>{value}</arg_value>\n"
+                        ));
+                    }
+                    out.push_str("</tool_call>");
+                }
+                out.push_str("<|end_of_turn|>\n");
+            }
+            Some("tool") => {
+                // A run of tool rows is one observation turn.
+                if index == 0 || rows[index - 1]["role"] != "tool" {
+                    out.push_str("<|start_of_turn|><|observation|>");
+                }
+                out.push_str("\n<tool_response>\n");
+                out.push_str(row["content"].as_str().unwrap_or_default());
+                out.push_str("\n</tool_response>");
+                if rows
+                    .get(index + 1)
+                    .is_none_or(|next| next["role"] != "tool")
+                {
+                    out.push_str("<|end_of_turn|>\n");
+                }
+            }
+            _ => {}
+        }
+    }
+    out.push_str("<|start_of_turn|><|assistant|>\n");
+    out
+}
+
+const SARVAM_M_THINK: &str =
+    "Think deeply before answering the user's question. Do the thinking inside <think>...</think> tags.";
+
+/// sarvam-m's published template (tokenizer_config.json) in the thinking mode
+/// Sarvam always runs: it has no off switch.
+fn sarvam_m_prompt(rows: &[Value], tools: &[Value]) -> String {
+    let (mut system, rows) = match rows.first() {
+        Some(row) if row["role"] == "system" => (
+            format!("{SARVAM_M_THINK}\n\n{}", visible_text(&row["content"])),
+            &rows[1..],
+        ),
+        _ => (
+            format!("You are a helpful assistant. {SARVAM_M_THINK}"),
+            rows,
+        ),
+    };
+    // shortcut: the published template has no tool markup (it raises on a tool
+    // row), so tools, calls and results count as their bare wire text; render
+    // the hosted markup once a live probe shows it.
+    for tool in tools {
+        system.push_str("\n\n");
+        system.push_str(&python_json(tool));
+    }
+    let mut out = format!("<s>[SYSTEM_PROMPT]{system}[/SYSTEM_PROMPT]");
+    for (index, row) in rows.iter().enumerate() {
+        let last = index + 1 == rows.len();
+        match row["role"].as_str() {
+            Some("assistant") => {
+                let (reasoning, content) = split_think(visible_text(&row["content"]));
+                // Reasoning is replayed only on the last message.
+                if last && !reasoning.is_empty() {
+                    out.push_str(&format!("<think>\n{reasoning}\n</think>\n\n"));
+                }
+                out.push_str(&content);
+                for call in row["tool_calls"].as_array().into_iter().flatten() {
+                    out.push_str(call["function"]["name"].as_str().unwrap_or_default());
+                    out.push_str(call["function"]["arguments"].as_str().unwrap_or_default());
+                }
+                out.push_str("</s>");
+            }
+            Some("tool") => out.push_str(row["content"].as_str().unwrap_or_default()),
+            _ => {
+                out.push_str("[INST]");
+                out.push_str(&visible_text(&row["content"]));
+                out.push_str("[/INST]");
+                if last {
+                    out.push_str("<think>\n");
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The template's `visible_text`: a string as is, the text parts of a part
+/// list joined bare (images render nothing), anything else empty.
+fn visible_text(content: &Value) -> String {
+    match content {
+        Value::String(text) => text.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter(|part| part["type"] == "text")
+            .filter_map(|part| part["text"].as_str())
+            .collect(),
+        _ => String::new(),
+    }
+}
+
+/// Reasoning the assistant text carries inline, split off as the templates
+/// do: what precedes the first `</think>` (after any `<think>`), and the text
+/// after the last one.
+fn split_think(content: String) -> (String, String) {
+    if !content.contains("</think>") {
+        return (String::new(), content);
+    }
+    let head = content.split("</think>").next().unwrap_or_default();
+    let reasoning = head
+        .trim_end_matches('\n')
+        .rsplit("<think>")
+        .next()
+        .unwrap_or_default()
+        .trim_start_matches('\n');
+    let tail = content.rsplit("</think>").next().unwrap_or_default();
+    (
+        reasoning.to_string(),
+        tail.trim_start_matches('\n').to_string(),
+    )
+}
+
+/// A call's wire arguments as the object the server renders: it parses the
+/// JSON string before applying the template, and a non-object has no keys.
+fn arguments(call: &Value) -> serde_json::Map<String, Value> {
+    match serde_json::from_str(call["arguments"].as_str().unwrap_or_default()) {
+        Ok(Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    }
+}
+
+/// JSON as Python's `json.dumps` writes it, which the template's `tojson`
+/// uses: a space after every `:` and `,`. A copy of provider-deepseek's until
+/// the shared scaffold helper lands.
+fn python_json(value: &Value) -> String {
+    match value {
+        Value::Object(map) => {
+            let fields: Vec<String> = map
+                .iter()
+                .map(|(key, value)| {
+                    format!("{}: {}", Value::from(key.as_str()), python_json(value))
+                })
+                .collect();
+            format!("{{{}}}", fields.join(", "))
+        }
+        Value::Array(items) => {
+            let items: Vec<String> = items.iter().map(python_json).collect();
+            format!("[{}]", items.join(", "))
+        }
+        other => other.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -70,27 +349,168 @@ mod tests {
         })
     }
 
+    /// Prompts Sarvam's published templates render (sarvamai/sarvam-30b and
+    /// sarvam-105b `chat_template.jinja`, sarvamai/sarvam-m
+    /// `tokenizer_config.json`), rendered as transformers does, with tool-call
+    /// arguments parsed into objects, keys sorted as serde_json sends them.
     #[test]
-    fn empty_messages_are_rejected() {
+    fn requests_render_as_sarvams_templates_render_them() {
+        let cases: Value =
+            serde_json::from_str(include_str!("../tests/golden/encoding/sarvam_prompts.json"))
+                .unwrap();
+        for (name, case) in cases.as_object().unwrap() {
+            let (_, render) = family(case["model"].as_str().unwrap()).unwrap();
+            let rendered = render(
+                case["messages"].as_array().unwrap(),
+                case["tools"].as_array().unwrap(),
+            );
+            assert_eq!(rendered, case["prompt"].as_str().unwrap(), "{name}");
+        }
+    }
+
+    #[test]
+    fn sarvam_m_counts_the_tool_text_its_template_cannot_render() {
+        let rows = [
+            serde_json::json!({"role": "user", "content": "ls"}),
+            serde_json::json!({"role": "assistant", "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "shell__exec", "arguments": "{\"cmd\":\"ls\"}"}}]}),
+            serde_json::json!({"role": "tool", "tool_call_id": "c1", "content": "a.txt"}),
+        ];
+        let tools = [serde_json::json!({"type": "function", "function": {"name": "shell__exec"}})];
+        assert_eq!(
+            sarvam_m_prompt(&rows, &tools),
+            format!(
+                "<s>[SYSTEM_PROMPT]You are a helpful assistant. {SARVAM_M_THINK}\n\n\
+                 {{\"function\": {{\"name\": \"shell__exec\"}}, \"type\": \"function\"}}\
+                 [/SYSTEM_PROMPT][INST]ls[/INST]shell__exec{{\"cmd\":\"ls\"}}</s>a.txt"
+            )
+        );
+    }
+
+    #[test]
+    fn every_sarvam_chat_id_has_a_published_vocabulary() {
+        for model in crate::curated::chat_models() {
+            assert!(family(&model.id).is_some(), "{}", model.id);
+        }
+        assert!(family("qwen2.5-coder-7b-instruct").is_none());
+    }
+
+    #[tokio::test]
+    async fn empty_messages_are_rejected() {
         let req = CountTokensRequest {
             model: "sarvam-105b".into(),
             system_prompt: None,
             tools: None,
             messages: vec![],
         };
-        assert!(handle(req).is_err());
+        assert!(handle(req).await.is_err());
     }
 
-    #[test]
-    fn handle_wraps_the_scaffold_estimate() {
+    /// A cache dir holding a vocabulary with one token per character for the
+    /// 30b/105b family, so a count reads as the length of the rendered
+    /// prompt, and an unparseable one for sarvam-m. Neither touches the
+    /// network.
+    fn fixture_cache() {
+        static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+        DIR.get_or_init(|| {
+            let dir = std::env::temp_dir().join(format!("sarvam-count-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let per_char = serde_json::json!({
+                "version": "1.0", "truncation": null, "padding": null, "added_tokens": [],
+                "normalizer": null, "post_processor": null, "decoder": null,
+                "pre_tokenizer": {"type": "Split", "pattern": {"Regex": "[\\s\\S]"},
+                                  "behavior": "Isolated", "invert": false},
+                "model": {"type": "WordLevel", "vocab": {"[UNK]": 0}, "unk_token": "[UNK]"},
+            });
+            std::fs::write(dir.join("sarvamai--sarvam-30b.json"), per_char.to_string()).unwrap();
+            std::fs::write(dir.join("sarvamai--sarvam-m.json"), "not a tokenizer").unwrap();
+            std::env::set_var("III_TOKENIZER_CACHE_DIR", &dir);
+            dir
+        });
+    }
+
+    #[tokio::test]
+    async fn sarvam_ids_count_the_prompt_rendered_from_the_wire() {
+        fixture_cache();
+        let tools = vec![AgentFunction {
+            name: "shell__exec".into(),
+            description: "Run a command.".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            label: None,
+            execution_mode: None,
+        }];
         let req = CountTokensRequest {
             model: "sarvam-105b".into(),
+            system_prompt: Some("Be brief.".into()),
+            tools: Some(tools.clone()),
+            messages: vec![user("namaste duniya")],
+        };
+        let resp = handle(req).await.unwrap();
+        let rows = [
+            serde_json::json!({"role": "system", "content": "Be brief."}),
+            serde_json::json!({"role": "user", "content": "namaste duniya"}),
+        ];
+        let expected = prompt(&rows, &functions_to_wire(&tools));
+        assert!(expected.contains("shell__exec") && expected.contains("Be brief."));
+        assert_eq!(resp.tokens, expected.chars().count() as u64);
+        assert_eq!(resp.estimator, "tokenizer");
+    }
+
+    #[tokio::test]
+    async fn a_sarvam_id_without_its_vocabulary_keeps_the_tiktoken_estimate() {
+        fixture_cache();
+        let req = CountTokensRequest {
+            model: "sarvam-m".into(),
+            system_prompt: Some("Be brief.".into()),
+            tools: None,
+            messages: vec![user("namaste duniya")],
+        };
+        let resp = handle(req).await.unwrap();
+        let expected = count_chat_tokens(
+            "sarvam-m",
+            Some("Be brief."),
+            &[],
+            &[user("namaste duniya")],
+        );
+        assert_eq!(resp.tokens, expected);
+        assert_eq!(resp.estimator, "tiktoken");
+    }
+
+    #[tokio::test]
+    async fn a_slow_vocabulary_fetch_keeps_the_estimate_and_still_fills_the_cache() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let filled = std::sync::Arc::new(AtomicBool::new(false));
+        let fetch = {
+            let filled = filled.clone();
+            async move {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                filled.store(true, Ordering::SeqCst);
+                Some(())
+            }
+        };
+        let started = std::time::Instant::now();
+        assert_eq!(within(Duration::from_millis(20), fetch).await, None);
+        assert!(started.elapsed() < Duration::from_millis(150));
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(filled.load(Ordering::SeqCst));
+        assert_eq!(
+            within(Duration::from_secs(1), async { Some(7) }).await,
+            Some(7)
+        );
+    }
+
+    #[tokio::test]
+    async fn other_ids_keep_the_tiktoken_estimate() {
+        let model = "qwen2.5-coder-7b-instruct";
+        let req = CountTokensRequest {
+            model: model.into(),
             system_prompt: None,
             tools: None,
             messages: vec![user("namaste duniya")],
         };
-        let resp = handle(req).unwrap();
-        let expected = count_chat_tokens("sarvam-105b", None, &[], &[user("namaste duniya")]);
+        let resp = handle(req).await.unwrap();
+        let expected = count_chat_tokens(model, None, &[], &[user("namaste duniya")]);
         assert_eq!(resp.tokens, expected);
         assert_eq!(resp.estimator, "tiktoken");
     }

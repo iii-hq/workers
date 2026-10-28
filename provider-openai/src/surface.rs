@@ -50,8 +50,9 @@ pub const IMAGE_READ_DESC: &str =
 
 pub const COUNT_TOKENS_ID: &str = "provider::openai::count_tokens";
 pub const COUNT_TOKENS_DESC: &str =
-    "Count prompt tokens for {model, system_prompt?, tools?, messages} locally with the \
-     tiktoken tokenizers; never runs the model and costs nothing.";
+    "Count prompt tokens for {model, system_prompt?, tools?, messages, response_format?} with \
+     OpenAI's Responses input_tokens route, falling back to the local tiktoken tokenizers on \
+     Chat Completions endpoints or when that route fails; never runs the model and costs nothing.";
 
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.
