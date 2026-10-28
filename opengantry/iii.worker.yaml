@@ -10,7 +10,7 @@ tags:
   - policy
   - gxt
   - opengantry
-description: OpenGantry governance for iii. Kernel verify and middleware gate before promote-class calls.
+description: OpenGantry governance for iii. Kernel verify and middleware gate before promote-class calls. Verify outcomes go out on the gantry::verdict trigger type, also observable as gantry::on-verdict (iii 0.25).
 runtime:
   kind: javascript
 scripts:

@@ -26,7 +26,7 @@ Install and use these ecosystem workers instead of writing custom equivalents:
 | Git land / merge | `worktree::land` (+ `shell` for test gates) | Custom `myapp::deploy` / `::merge` |
 | GitHub operations | `github::*` | Raw `gh` shell from agent code |
 | Public governed port | `rbac-proxy` with `gantry::middleware` | Rolling your own auth middleware |
-| Verify completion events | Subscribe to `gantry::verdict` | Polling verify JSON for side effects |
+| Verify completion events | Observe `gantry::on-verdict` (iii 0.25) or subscribe to `gantry::verdict` | Polling verify JSON for side effects |
 
 **Canonical pipeline:** `worktree::create` → agent work → `gantry::verify` → `worktree::land` (with `verdict_token` in context). Promote-class suffixes (`::deploy`, `::merge`, `::publish`, `::apply`, `::push`, `::promote`) require a token whose claims match the mission on disk.
 
@@ -44,6 +44,7 @@ Install and use these ecosystem workers instead of writing custom equivalents:
 - `gantry::on-trigger-registration` — block triggers bound into the `gantry::` namespace
 - `gantry::on-trigger-type-registration` — always denied
 - `gantry::verdict` — trigger type; fires after every verify (pass or fail) for audit/notifications
+- `gantry::on-verdict` — observable function (iii 0.25) next to `gantry::verdict`, same events: `iii.observe({ function_id: 'gantry::on-verdict', args: {} }, target)`; invoking it directly is refused with FORBIDDEN
 
 ## Bootstrap (host only)
 

@@ -45,6 +45,7 @@ Promote-class is a kernel match on the function id. Suffixes `::promote`, `::dep
 | `gantry::on-trigger-registration` | Blocks triggers bound into the `gantry::` namespace. |
 | `gantry::on-trigger-type-registration` | Always denied. Agents must not register trigger types on the governed port. |
 | `gantry::verdict` | Trigger type emitted when verify completes. |
+| `gantry::on-verdict` | Observable function (iii 0.25) next to `gantry::verdict`, same events; owner-delivered, a direct call is refused with `FORBIDDEN`. |
 
 ## Practices this worker follows
 
@@ -191,6 +192,20 @@ After every `gantry::verify` completes (pass or fail), the worker fans out a bes
 
 Subscribe a sibling function (audit log, Slack notifier, console inbox) via `registerTrigger` on `gantry::verdict`. A failing subscriber never fails verify.
 
+#### How to observe (iii 0.25)
+
+`registerTrigger` is deprecated in iii 0.25 and keeps working: the `gantry::verdict` trigger type stays registered, unchanged, for 0.24 engines and existing consumers. On a 0.25 engine the same events also go to observers of the owner-delivered observable function `gantry::on-verdict`:
+
+```js
+const observer = iii.observe(
+  { function_id: 'gantry::on-verdict', args: {} },
+  'audit::on-verdict',
+);
+await observer.ready();
+```
+
+The args are the trigger config, which takes no fields: every observer receives every verdict, the payload above, one call per verify. Observers and bindings share one table, so an observer receives exactly what a binding receives, best-effort. Events are routed by this worker only: invoking `gantry::on-verdict` directly is refused with `FORBIDDEN`. On an engine without observe (0.24), bind the trigger type.
+
 ## Quickstart
 
 From zero to a fail-closed land on the governed port:
@@ -278,7 +293,7 @@ Start at `src/index.js`, then `src/middleware.js` and `src/verify.js`. Tests in 
 | `src/lease-store.js` | File-locked `leases.json`. Fail-closed on corrupt JSON. |
 | `src/stores.js` | Bounded LRU for lease stores and governance bundles. |
 | `src/registration-hooks.js` | Reserved prefix / suffix predicates and RBAC hook handlers. |
-| `src/verdict-events.js` | `gantry::verdict` trigger fan-out after verify completes. |
+| `src/verdict-events.js` | `gantry::verdict` trigger and `gantry::on-verdict` observer fan-out after verify completes. |
 | `src/repo-path.js` | Absolute repo resolution. Lease-path jail under `.gitagent/`. |
 | `src/formats.js` | Zod → JSON Schema for `registerFunction`. |
 | `src/denied.js` | `GantryDenied`. Throw so iii records `InvocationResult.error`. |

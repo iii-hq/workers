@@ -13,7 +13,7 @@ import {
   onTriggerTypeRegistration,
 } from './registration-hooks.js';
 import { createGantryRuntime } from './runtime.js';
-import { createVerdictEmitter } from './verdict-events.js';
+import { createVerdictEmitter, VERDICT_OBSERVABLE, VERDICT_TRIGGER } from './verdict-events.js';
 
 const HANDLERS = {
   'gantry::middleware': null,
@@ -55,11 +55,18 @@ async function startWorker() {
 
   worker.registerTriggerType(
     {
-      id: 'gantry::verdict',
+      id: VERDICT_TRIGGER,
       description: 'Emitted when gantry verify completes',
     },
     verdictEmitter.handler,
   );
+
+  // iii 0.25: the observable function next to the trigger type, sharing its
+  // bindings (owner-delivered; a direct call is refused with FORBIDDEN).
+  worker.registerFunction(VERDICT_OBSERVABLE, verdictEmitter.onVerdict, {
+    description: `Emitted when gantry verify completes (same payload as ${VERDICT_TRIGGER}). Observe with iii.observe({ function_id: '${VERDICT_OBSERVABLE}', args: {} }, target) (iii 0.25); invoking it is refused with FORBIDDEN.`,
+    observe: verdictEmitter.observe,
+  });
 
   console.log(`opengantry worker registered (verify, middleware, RBAC hooks) → ${url}`);
 }
