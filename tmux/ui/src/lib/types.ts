@@ -1,6 +1,6 @@
 /**
- * The tmux worker's wire shapes, as its functions and its `tmux::changed`
- * trigger type deliver them. Keys are snake_case; times are milliseconds
+ * The tmux worker's wire shapes, as its functions return them and as
+ * observers of `tmux::on-changed` receive them. Keys are snake_case; times are milliseconds
  * since the Unix epoch.
  */
 
@@ -181,7 +181,7 @@ export interface PortsSnapshot {
   generated_at_ms: number
 }
 
-/** The `tmux::changed` payload. */
+/** What `tmux::on-changed` returns: the overview its observers receive. */
 export interface Overview {
   sessions: SessionsSnapshot
   ports: PortsSnapshot

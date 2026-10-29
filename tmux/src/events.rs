@@ -1,69 +1,32 @@
-//! `tmux::changed` — the live feed behind the console page.
+//! `tmux::on-changed` — the live feed behind the console page.
 //!
-//! A binding receives the full [`Overview`] right after it registers and
-//! again whenever anything in it changes. The poll loop only runs while at
-//! least one binding exists, and mutations through this worker poke it so
-//! their effect shows at once instead of on the next tick.
+//! A private function whose handler returns the [`Overview`] it is called
+//! with: its observers observe the overview. Each observer receives the full
+//! overview right after it is accepted, and again whenever anything in it
+//! changes. The poll loop only runs while the function is observed, and
+//! mutations through this worker poke it so their effect shows at once.
 //!
-//! Delivery mirrors the ide's trigger types: `TriggerAction::Void`, one task
-//! per fire, and the binding's `metadata` and `namespace` passed through — a
-//! fire that drops `__binding` is discarded by the harness without an error
-//! (MOT-4719).
+//! Calls are fire-and-forget (`CallAction::Void`): iii delivers each one to
+//! the observers whose filters match, and the engine applies each observer's
+//! metadata (the harness's `__binding`) and target namespace.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{TriggerRequest, TriggerRequestWithMetadata};
-use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use iii_sdk::{CallAction, CallRequest, IIIClient, Observer, RegisterFunction};
 use serde_json::Value;
 use tokio::sync::Notify;
 
 use crate::collector::Collector;
 use crate::model::Overview;
 
-pub const CHANGED: &str = "tmux::changed";
+pub const ON_CHANGED_FN: &str = "tmux::on-changed";
 
-/// `tmux::changed` takes no options.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-pub struct ChangedConfig {}
-
-#[derive(Debug, Clone)]
-struct Subscriber {
-    function_id: String,
-    metadata: Option<Value>,
-    namespace: Option<String>,
-}
-
-impl Subscriber {
-    fn request(&self, payload: Value) -> TriggerRequestWithMetadata {
-        let mut request: TriggerRequestWithMetadata = TriggerRequest {
-            function_id: self.function_id.clone(),
-            payload,
-            action: Some(TriggerAction::Void),
-            timeout_ms: None,
-        }
-        .into();
-        if let Some(metadata) = &self.metadata {
-            request = request.metadata(metadata.clone());
-        }
-        if let Some(namespace) = &self.namespace {
-            request = request.namespace(namespace.clone());
-        }
-        request
-    }
-}
-
-/// Bindings plus the poll loop that feeds them.
+/// The poll loop that calls [`ON_CHANGED_FN`] while it is observed.
 pub struct Monitor {
     iii: IIIClient,
     collector: Arc<Collector>,
-    subscribers: Mutex<HashMap<String, Subscriber>>,
     wake: Notify,
 }
 
@@ -80,7 +43,6 @@ impl Monitor {
         Arc::new(Self {
             iii,
             collector,
-            subscribers: Mutex::new(HashMap::new()),
             wake: Notify::new(),
         })
     }
@@ -90,28 +52,40 @@ impl Monitor {
         self.wake.notify_one();
     }
 
-    fn targets(&self) -> Vec<Subscriber> {
-        self.subscribers
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values()
-            .cloned()
-            .collect()
+    fn observed(&self) -> bool {
+        self.iii.is_observed(ON_CHANGED_FN)
     }
 
-    fn deliver(&self, targets: Vec<Subscriber>, payload: Value) {
-        for subscriber in targets {
-            let iii = self.iii.clone();
-            let request = subscriber.request(payload.clone());
-            tokio::spawn(async move {
-                if let Err(error) = iii.trigger(request).await {
-                    tracing::debug!(function_id = %subscriber.function_id, %error, "tmux::changed delivery failed");
-                }
-            });
+    /// One call of [`ON_CHANGED_FN`]; iii delivers it to every observer.
+    async fn emit(&self, payload: Value) {
+        let request = CallRequest {
+            function_id: ON_CHANGED_FN.to_string(),
+            payload,
+            action: Some(CallAction::Void),
+            timeout_ms: None,
+        };
+        if let Err(error) = self.iii.call(request).await {
+            tracing::debug!(%error, "tmux::on-changed call failed");
         }
     }
 
-    /// The poll loop. Sleeps while nothing is bound.
+    /// The current overview, to `observer` alone, once it is active.
+    async fn send_current(&self, observer: Observer) {
+        if let Err(error) = observer.accepted().await {
+            tracing::debug!(observer_id = %observer.id(), %error, "observer not accepted");
+            return;
+        }
+        let overview = self.collector.overview().await;
+        if let Ok(payload) = serde_json::to_value(&overview) {
+            let request = CallRequest::observer(&observer, payload).action(CallAction::Void);
+            if let Err(error) = self.iii.call(request).await {
+                tracing::debug!(observer_id = %observer.id(), %error, "first overview not delivered");
+            }
+        }
+        self.poke();
+    }
+
+    /// The poll loop. Sleeps while nothing observes [`ON_CHANGED_FN`].
     pub fn spawn(self: &Arc<Self>) {
         let monitor = self.clone();
         tokio::spawn(async move {
@@ -120,7 +94,7 @@ impl Monitor {
                 let wake = monitor.wake.notified();
                 tokio::pin!(wake);
                 wake.as_mut().enable();
-                if monitor.targets().is_empty() {
+                if !monitor.observed() {
                     last = None;
                     wake.await;
                     continue;
@@ -129,7 +103,7 @@ impl Monitor {
                 let print = fingerprint(&overview);
                 if print.is_some() && print != last {
                     if let Ok(payload) = serde_json::to_value(&overview) {
-                        monitor.deliver(monitor.targets(), payload);
+                        monitor.emit(payload).await;
                     }
                     last = print;
                 }
@@ -143,61 +117,28 @@ impl Monitor {
     }
 }
 
-struct ChangedHandler {
-    monitor: Arc<Monitor>,
-}
-
-#[async_trait]
-impl TriggerHandler for ChangedHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        let subscriber = Subscriber {
-            function_id: config.function_id.clone(),
-            metadata: config.metadata.clone(),
-            namespace: config.namespace.clone(),
-        };
-        tracing::debug!(trigger_type = CHANGED, id = %config.id, "live feed bound");
-        self.monitor
-            .subscribers
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(config.id.clone(), subscriber.clone());
-        // The first frame goes to the new binding alone, right away.
-        let monitor = self.monitor.clone();
-        tokio::spawn(async move {
-            let overview = monitor.collector.overview().await;
-            if let Ok(payload) = serde_json::to_value(&overview) {
-                monitor.deliver(vec![subscriber], payload);
-            }
-            monitor.poke();
-        });
-        Ok(())
-    }
-
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        tracing::debug!(trigger_type = CHANGED, id = %config.id, "live feed unbound");
-        self.monitor
-            .subscribers
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&config.id);
-        Ok(())
-    }
-}
-
-pub fn register_changed_trigger(iii: &IIIClient, monitor: Arc<Monitor>) {
-    // `register_trigger_type` is deprecated in iii-sdk 0.25. Kept until the
-    // trigger type is retired; old consumers bind it on 0.24 and 0.25 engines.
-    #[allow(deprecated)]
-    let _handle = iii.register_trigger_type(
-        RegisterTriggerType::new(
-            CHANGED,
-            "Live tmux overview: fires the full state (sessions, windows, panes with agent/compose/port \
-             status, compose stacks and listening ports) when bound and again whenever it changes. \
-             Config takes no options.",
-            ChangedHandler { monitor },
-        )
-        .trigger_request_format::<ChangedConfig>()
-        .call_request_format::<Overview>(),
+/// Registers [`ON_CHANGED_FN`]. Its added hook sends the new observer the
+/// current overview and wakes the poll loop.
+pub fn register(iii: &IIIClient, monitor: Arc<Monitor>) {
+    iii.on_observer_added_for(ON_CHANGED_FN, move |observer: Observer| {
+        let monitor = monitor.clone();
+        async move {
+            tracing::debug!(observer_id = %observer.id(), "live feed observed");
+            // A call through the observer reaches it only once it is active,
+            // which is after this hook returns.
+            tokio::spawn(async move { monitor.send_current(observer).await });
+            Ok(())
+        }
+    });
+    iii.register_function(
+        ON_CHANGED_FN,
+        RegisterFunction::new(|overview: Overview| Ok::<_, Error>(overview))
+            .description(
+                "Live tmux overview: the full state (sessions, windows, panes with agent/compose/port \
+                 status, compose stacks and listening ports), sent to each observer when it is added \
+                 and called again whenever it changes. Takes no args.",
+            )
+            .private(),
     );
 }
 

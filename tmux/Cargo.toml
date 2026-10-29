@@ -16,11 +16,10 @@ name = "tmux"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.25.0"
+iii-sdk = "=0.26.0"
 iii-console-ui = { path = "../crates/console-ui" }
 iii-config-client = { path = "../crates/config-client" }
 arc-swap = "1"
-async-trait = "0.1"
 base64 = "0.22"
 libc = "0.2"
 portable-pty = "0.9.0"
@@ -40,3 +39,6 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
+# A scripted engine for tests/live_feed.rs; both are already in the graph through iii-sdk.
+futures-util = "0.3"
+tokio-tungstenite = "0.28"
