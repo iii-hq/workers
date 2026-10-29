@@ -20,10 +20,10 @@ No provider key or network access is required.
 | INT-010 | `crash-recovery-507` | direct | SIGKILL and restart the engine while a controlled function is in flight, with `context::assemble` held out during boot; the side effect runs once, the interrupted call closes, and the turn completes |
 | INT-011 | `stop-cancel-cascade` | direct | stopping a running root turn cancels the root and spawned children while retaining a queued message |
 | INT-012 | `queued-message-edit-unqueue` | direct | edit one queued message in place and unqueue another while the first turn is streaming; only the edited and untouched rows drain in order |
-| INT-013 | `timer-wake` | direct | a one-shot `timer` registration parks the session and wakes it exactly once on the deadline |
-| INT-014 | `database-row-wake` | direct | a `database::row-changed` wake notifies the owner through the same generic delivery path the state medium uses |
-| INT-015 | `leaf-denied-control-plane` | direct | a spawned child without the orchestrator grant is policy-denied trigger registration and spawning, and sees neither in its toolset |
-| INT-016 | `standing-wake-delivery` | direct | a standing notify binding delivers every fire as a notification AND a trigger_fired record on distinct entry ids (the burst-loss regression: shared wake/record ids let session-manager's entry-id idempotence swallow one append per fire) |
+| INT-013 | `timer-wake` | direct | a one-shot `harness::on-timer` observer parks the session and wakes it exactly once on the deadline |
+| INT-014 | `database-row-wake` | direct | a `database::on-row-changed` wake notifies the owner through the same generic delivery path the state medium uses |
+| INT-015 | `leaf-denied-control-plane` | direct | a spawned child without the orchestrator grant arms a wake for itself but is refused a call target and spawning, and sees no spawn tool |
+| INT-016 | `standing-wake-delivery` | direct | a standing notify binding delivers every fire as a notification AND an observer_fired record on distinct entry ids (the burst-loss regression: shared wake/record ids let session-manager's entry-id idempotence swallow one append per fire) |
 | INT-017 | `wake-expiry-notice` | direct | a parked wake whose lifecycle deadline passes unfired wakes its owner with the expiry notice |
 | INT-018 | `spawn-reuse-guard` | direct | an in-turn spawn into an existing session owned by another parent is refused naming the owner (no hijack turn ever starts); re-spawning its own child appends the new task to the retained transcript and reports `reused: true` |
 | INT-019 | `condition-failure-notice` | direct | a binding whose condition ERRORS on a fire wakes its owner with an actionable `[notification]` (once per binding) instead of starving silently; the skip record still lands and the binding stays armed |
@@ -45,7 +45,7 @@ No provider key or network access is required.
 | INT-035 | `compaction-anchor` | direct | a `compaction` record whose `tail_start_entry_id` is not on the path anchors the next turn on the whole path under its summary instead of an empty context; a `null` boundary opens the window after the record; the snapshot reports `compacted` |
 | INT-036 | `binding-prefix-append-only` | direct | across two function calls, a queued steer, and a second turn that moves the working directory, every router request extends the session's previous one: `system_prompt`, `system_sections`, `tools` and every earlier message unchanged, so thinking bound to the prefix survives (MOT-4845); each assistant entry's `origin.req` is the digest of the request the router received |
 | INT-037 | `ask-ends-turn` | direct | a valid `harness::ask` is answered by the turn loop (`details.status: "awaiting_answer"`, the card's questions) and the turn completes without a second model call; the answer arrives later as the user's next message |
-| INT-038 | `ask-bypasses-approval-hook` | direct | a `pre_trigger` hook that holds every call (`*`) is bound after turn 1; turn 2's `harness::ask` never reaches it (zero hook invocations), nothing parks, the result is `awaiting_answer`, and the turn completes without another model call |
+| INT-038 | `ask-bypasses-approval-hook` | direct | a `harness::hook::on-pre-call` observer that holds every call (`*`) is added after turn 1; turn 2's `harness::ask` never reaches it (zero hook invocations), nothing parks, the result is `awaiting_answer`, and the turn completes without another model call |
 | INT-039 | `stop-held-call` | direct | `harness::stop` cancels a turn while its function call is still held, without waiting for the call to return; the call closes as a `cancelled` error |
 | INT-040 | `call-argument-contract` | direct | through `agent_call`, a malformed call whose contract the model never fetched gets the compacted request schema in its diagnosis (no `engine::functions::info` step needed); after the model fetches the contract, the next diagnosis only points at it |
 | UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
@@ -166,7 +166,7 @@ grade → teardown → report. Playground replaces send with an externally
 initiated Console or SDK turn and waits for shutdown after completion.
 
 - Harness readiness, completion, and trace stabilization are awakened by iii
-  triggers. A bounded boot-only discovery barrier verifies the authoritative
+  observers. A bounded boot-only discovery barrier verifies the authoritative
   function surface because the engine does not replay its current
   registry to late subscribers.
 - All RPCs and event waits use bounded monotonic deadlines.

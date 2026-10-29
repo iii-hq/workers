@@ -161,6 +161,23 @@ impl Scenario {
         self
     }
 
+    /// Observe `function_id` (with `args` for the worker that hosts it) with
+    /// `target` from the probe once `after_turns` terminal completions are
+    /// observed, and wait until the observer is active.
+    pub(super) fn probe_observe_after(
+        self,
+        after_turns: usize,
+        function_id: &str,
+        args: serde_json::Value,
+        target: &str,
+    ) -> Self {
+        self.probe_after(
+            after_turns,
+            crate::fixtures::OBSERVE_ACTION,
+            serde_json::json!({ "function_id": function_id, "args": args, "target": target }),
+        )
+    }
+
     /// After every terminal turn arrived, additionally await `count`
     /// controlled-function invocations (probe-side, whole-run) before
     /// collecting evidence. Required to observe call-mode reaction dispatches
@@ -435,7 +452,7 @@ impl Send {
     }
 
     /// Allow a function the scripted worker does NOT provide — a real engine
-    /// or harness builtin (e.g. `engine::register_trigger`) the scenario
+    /// or harness builtin (e.g. `harness::observe`) the scenario
     /// drives through the model.
     pub(super) fn allow_id(mut self, function_id: &str) -> Self {
         if !self.allowed_functions.iter().any(|id| id == function_id) {
@@ -448,7 +465,7 @@ impl Send {
     /// the concrete target in the compiled allow-list. This is the public
     /// model surface for harness-owned functions such as `harness::spawn`.
     pub(super) fn agent_call(mut self) -> Self {
-        self.expose = CompiledFunctionExposureV1::AgentTrigger;
+        self.expose = CompiledFunctionExposureV1::AgentCall;
         self
     }
 
@@ -632,8 +649,8 @@ impl Request {
         self
     }
 
-    /// Native exposure publishes the harness's intercepted subscription
-    /// controls (`subscribe::native_control_tools`) AHEAD of the registry
+    /// Native exposure publishes the harness's intercepted observe controls
+    /// (`observe::native_control_tools`) AHEAD of the registry
     /// functions this turn's policy allows. Their descriptions and schemas
     /// live in the harness crate, which fixtures cannot import, so the leading
     /// control tools are pinned by name while the registry tools that follow

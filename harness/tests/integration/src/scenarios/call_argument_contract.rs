@@ -12,7 +12,7 @@ use super::ScenarioDriver;
 use crate::evidence_data::message_text;
 use crate::fixtures::ScenarioFixture;
 
-const AGENT_TRIGGER: &str = "agent_call";
+const AGENT_CALL: &str = "agent_call";
 const INFO: &str = "engine::functions::info";
 const LOOKUP: &str = "{{run_id}}::lookup";
 
@@ -41,7 +41,7 @@ pub(super) fn scenario() -> ScenarioFixture {
         Response::function_calls_raw(
             vec![(
                 call_id,
-                AGENT_TRIGGER,
+                AGENT_CALL,
                 json!({ "function": function, "payload": payload }),
             )],
             8,

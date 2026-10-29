@@ -1,10 +1,10 @@
 //! INT-014 — the database medium drives the SAME generic wake path state
-//! does: a `database::row-changed` binding notifies its owner when a row
+//! does: a `database::on-row-changed` observer notifies its owner when a row
 //! lands, with no database-specific anything in delivery.
 //!
 //! Together with INT-005/INT-006 (state) and INT-013 (timer) this pins the
 //! medium-agnostic claim: the parent picks the shared mechanism — here a
-//! SQLite table — registers ONE wake on its change stream, and the identical
+//! SQLite table — observes ONE wake on its change stream, and the identical
 //! deliver → notify hop wakes it. The stack runs the real `database` worker
 //! (see `stack/config.rs`); the probe's `executeBatch` creates the table and
 //! inserts the row, and only the INSERT emits (row events are op-classified,
@@ -22,7 +22,7 @@ use super::dsl::{
 use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
 
-const REGISTER: &str = "engine::register_trigger";
+const OBSERVE: &str = "harness::observe";
 const TABLE: &str = "items";
 
 pub(super) fn scenario() -> ScenarioFixture {
@@ -40,8 +40,8 @@ pub(super) fn scenario() -> ScenarioFixture {
         .returns_text("recorded");
 
     let register_args = json!({
-        "trigger_type": "database::row-changed",
-        "config": { "db": "primary", "table": TABLE },
+        "function_id": "database::on-row-changed",
+        "args": { "db": "primary", "table": TABLE },
         "once": false,
         "lifecycle": { "max_fires": 1 }
     });
@@ -57,7 +57,7 @@ pub(super) fn scenario() -> ScenarioFixture {
     .send(
         Send::message(MESSAGE)
             .idempotency_key("{{run_id}}:integration-014")
-            .allow_id(REGISTER)
+            .allow_id(OBSERVE)
             .allow_function(&record),
     )
     // This path serializes two turns around a durable SQLite transaction.
@@ -85,11 +85,11 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .turn_request()
                     .system_prompt_sha256("{{system_prompt_sha256}}")
                     .messages_exact([Message::user(MESSAGE)])
-                    .tools_exact_after_controls([REGISTER], [record.tool()]),
+                    .tools_exact_after_controls([OBSERVE], [record.tool()]),
             )
             .respond(Response::function_call_raw(
                 "call-arm",
-                REGISTER,
+                OBSERVE,
                 register_args,
                 8,
                 4,
@@ -104,12 +104,12 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .messages_subset([
                         json!({ "role": "user" }),
                         json!({ "role": "assistant", "content": [
-                            { "type": "function_call", "id": "call-arm", "function_id": REGISTER }
+                            { "type": "function_call", "id": "call-arm", "function_id": OBSERVE }
                         ] }),
                         json!({ "role": "function_result", "function_call_id": "call-arm",
                                 "is_error": false }),
                     ])
-                    .tools_exact_after_controls([REGISTER], [record.tool()]),
+                    .tools_exact_after_controls([OBSERVE], [record.tool()]),
             )
             .respond(Response::text("watching", 10, 2)),
     )
@@ -120,7 +120,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .turn_request_step(0)
                     .system_prompt_regex(".")
                     .messages_subset([json!({ "role": "user" })])
-                    .tools_exact_after_controls([REGISTER], [record.tool()]),
+                    .tools_exact_after_controls([OBSERVE], [record.tool()]),
             )
             .respond(Response::function_call(
                 "call-record",
@@ -137,7 +137,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .turn_request_step(1)
                     .system_prompt_regex(".")
                     .messages_subset([json!({ "role": "user" })])
-                    .tools_exact_after_controls([REGISTER], [record.tool()]),
+                    .tools_exact_after_controls([OBSERVE], [record.tool()]),
             )
             .respond(Response::text("row recorded", 12, 3)),
     )
@@ -189,7 +189,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             item.get("custom")
                 .and_then(|c| c.get("custom_type"))
                 .and_then(Value::as_str)
-                == Some("trigger_fired")
+                == Some("observer_fired")
                 && item
                     .get("custom")
                     .and_then(|c| c.get("data"))

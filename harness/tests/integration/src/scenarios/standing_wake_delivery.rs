@@ -1,5 +1,5 @@
 //! INT-016 — a standing wake binding delivers EVERY fire: each one as a
-//! notification message AND a `trigger_fired` record, on distinct entry ids.
+//! notification message AND an `observer_fired` record, on distinct entry ids.
 //!
 //! This pins the burst-loss bug chain found live with `database::row-changed`
 //! (one transaction committing three writes → three claims, two records, one
@@ -31,7 +31,7 @@ use super::dsl::{
 use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
 
-const REGISTER: &str = "engine::register_trigger";
+const OBSERVE: &str = "harness::observe";
 const SCOPE: &str = "e2e-011";
 const KEY: &str = "tick";
 
@@ -55,8 +55,8 @@ pub(super) fn scenario() -> ScenarioFixture {
     // session as a `[notification]` message. `once: false` is the subject —
     // the binding must survive fire 1 and deliver fire 2 on the next ordinal.
     let register_args = json!({
-        "trigger_type": "state",
-        "config": { "scope": SCOPE, "key": KEY },
+        "function_id": "state::on-changed",
+        "filters": { "input.scope": { "$eq": SCOPE }, "input.key": { "$eq": KEY } },
         "once": false,
         "label": "standing"
     });
@@ -64,7 +64,7 @@ pub(super) fn scenario() -> ScenarioFixture {
     Scenario::new(
         ID,
         "standing-wake-delivery",
-        "A standing notify binding delivers every fire as a notification AND a trigger_fired \
+        "A standing notify binding delivers every fire as a notification AND an observer_fired \
          record, on distinct entry ids.",
         ScenarioDriver::Direct,
         model.clone(),
@@ -72,7 +72,7 @@ pub(super) fn scenario() -> ScenarioFixture {
     .send(
         Send::message(MESSAGE)
             .idempotency_key("{{run_id}}:integration-011")
-            .allow_id(REGISTER)
+            .allow_id(OBSERVE)
             .allow_function(&record),
     )
     // Arm turn + one woken turn per fire.
@@ -97,11 +97,11 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .turn_request_step(0)
                     .system_prompt_sha256("{{system_prompt_sha256}}")
                     .messages_exact([Message::user(MESSAGE)])
-                    .tools_exact_after_controls([REGISTER], [record.tool()]),
+                    .tools_exact_after_controls([OBSERVE], [record.tool()]),
             )
             .respond(Response::function_call_raw(
                 "call-arm",
-                REGISTER,
+                OBSERVE,
                 register_args,
                 8,
                 4,
@@ -116,12 +116,12 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .messages_subset([
                         json!({ "role": "user" }),
                         json!({ "role": "assistant", "content": [
-                            { "type": "function_call", "id": "call-arm", "function_id": REGISTER }
+                            { "type": "function_call", "id": "call-arm", "function_id": OBSERVE }
                         ] }),
                         json!({ "role": "function_result", "function_call_id": "call-arm",
                                 "is_error": false }),
                     ])
-                    .tools_exact_after_controls([REGISTER], [record.tool()]),
+                    .tools_exact_after_controls([OBSERVE], [record.tool()]),
             )
             .respond(Response::text("armed", 10, 2)),
     )
@@ -141,7 +141,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                         json!({ "role": "assistant" }),
                         json!({ "role": "user" }),
                     ])
-                    .tools_exact_after_controls([REGISTER], [record.tool()]),
+                    .tools_exact_after_controls([OBSERVE], [record.tool()]),
             )
             .respond(Response::text("wake one", 10, 2)),
     )
@@ -161,7 +161,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                         json!({ "role": "assistant" }),
                         json!({ "role": "user" }),
                     ])
-                    .tools_exact_after_controls([REGISTER], [record.tool()]),
+                    .tools_exact_after_controls([OBSERVE], [record.tool()]),
             )
             .respond(Response::text("wake two", 10, 2)),
     )
@@ -207,12 +207,12 @@ pub(super) fn scenario() -> ScenarioFixture {
                 item.get("custom")
                     .and_then(|c| c.get("custom_type"))
                     .and_then(Value::as_str)
-                    == Some("trigger_fired")
+                    == Some("observer_fired")
             })
             .collect();
         anyhow::ensure!(
             records.len() == 2,
-            "expected 2 trigger_fired records, got {}",
+            "expected 2 observer_fired records, got {}",
             records.len()
         );
         // Both fires belong to the ONE standing binding, and it retired for
@@ -247,8 +247,8 @@ pub(super) fn scenario() -> ScenarioFixture {
             );
             for id in ids {
                 anyhow::ensure!(
-                    id.starts_with("e_trigfired_"),
-                    "delivery record id must be the derived e_trigfired_* form, got {id}"
+                    id.starts_with("e_obsfired_"),
+                    "delivery record id must be the derived e_obsfired_* form, got {id}"
                 );
             }
         }
