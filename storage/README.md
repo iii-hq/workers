@@ -328,8 +328,18 @@ every RPC live in [`src/error.rs`](src/error.rs).
 
 | Trigger type | Fires when | Payload to subscribers |
 |---|---|---|
-| `storage::object-created` | An object is written (PUT, multipart complete, copy-in). | `{ bucket, key, size, content_type, etag, version_id?, event_time }` |
-| `storage::object-deleted` | An object (or version, on versioned buckets) is removed. | `{ bucket, key, version_id?, event_time }` |
+| `storage::object-created` | An object is written (PUT, multipart complete, copy-in). | `{ bucket, key, size, etag, content_type, created_at, raw_event_id }` |
+| `storage::object-deleted` | An object (or version, on versioned buckets) is removed. | `{ bucket, key, deleted_at, raw_event_id }` |
+
+`content_type` is `null` when the upstream notification does not carry one;
+`created_at` / `deleted_at` are RFC 3339 UTC timestamps; `raw_event_id` is the
+upstream message id (empty when the provider sends none).
+
+Each type has an observable function next to it on iii 0.25,
+`storage::on-object-created` / `storage::on-object-deleted` (see
+[Observable functions](#observable-functions-iii-025)): its args are the
+binding config above, its observers receive the same payload, and invoking it
+directly is refused with `FORBIDDEN`.
 
 The worker itself binds two internal functions (metadata `internal: true`,
 denied to agents): `storage::on-config-change` to the configuration worker's
@@ -354,6 +364,32 @@ triggers:
     config:
       bucket: uploads
 ```
+
+### Observable functions (iii 0.25)
+
+On a 0.25 engine a new consumer observes an owner-delivered function instead
+of binding the trigger type. The trigger types above stay registered,
+unchanged, for consumers on 0.24 and 0.25 engines.
+
+| Function | Args (the trigger config) | Event to observers |
+|---|---|---|
+| `storage::on-object-created` | `{ bucket, event_types?, handler_timeout_ms? }` | `{ bucket, key, size, etag, content_type, created_at, raw_event_id }` |
+| `storage::on-object-deleted` | `{ bucket, handler_timeout_ms? }` | `{ bucket, key, deleted_at, raw_event_id }` |
+
+```ts
+iii.observe(
+  { function_id: 'storage::on-object-created', args: { bucket: 'uploads' } },
+  'thumbnails::make',
+)
+```
+
+Observers share the bindings' registry and fan-out: an observer receives the
+same payload a binding receives, with the same ack rule (`{ ack: false }`, an
+error or a timeout leaves the upstream message for redelivery; an event the
+observer's filters reject counts as acked). Args are parsed like a binding
+config, and a bucket without a wired notifications source is refused with
+`INVALID_ARGS`. Events only come from the worker's own fan-out: invoking
+either function directly is refused with `FORBIDDEN`.
 
 > **R2 trigger v1 caveat:** the Cloudflare Queues consume-from-outside
 > REST API is the youngest of the four upstreams. The worker probes the
@@ -635,7 +671,9 @@ the native store and optional direct-transfer HTTP listener, and registers
 `storage::putObject`, `storage::getObject`, `storage::deleteObject`,
 `storage::presignUrl`, `storage::presignPost`, `storage::headObject`,
 `storage::listBuckets`, `storage::listObjects`, `storage::getBucket`,
-`storage::saveBucket`, `storage::deleteBucket` and `storage::testBucket`. Files land under
+`storage::saveBucket`, `storage::deleteBucket` and `storage::testBucket`, plus the
+`storage::object-created` / `storage::object-deleted` trigger types and their
+observable functions `storage::on-object-created` / `storage::on-object-deleted`. Files land under
 `data/storage/` under `III_COMPOSE_DIR` (configurable via
 `providers.local.data_dir`).
 
@@ -652,6 +690,7 @@ cargo run -- --manifest | jq .
 cargo test --lib                # unit tests (config, manifest, handlers, triggers)
 cargo test --test schemas       # schema regression for every `storage::*` RPC
 cargo test --test manifest      # `--manifest` subprocess contract
+cargo test --test observe       # `storage::on-object-*` observable functions
 cargo test --test integration   # spec §9 pattern A: spawns engine + worker
 ```
 
