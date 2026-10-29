@@ -15,7 +15,7 @@ test('onVerifyPassed pins mission_rel on lease store', async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-vp-pin-'));
   const { missionRel, msnId } = writeMiniGantryRepo(repoRoot);
   const runtime = createGantryRuntime({
-    forwardTrigger: async () => ({ ok: true }),
+    forwardCall: async () => ({ ok: true }),
   });
   await runtime.onVerifyPassed({
     repo_root: repoRoot,
@@ -34,7 +34,7 @@ test('minted token promotes when mission_rel is bound', async () => {
   await withKeyring(krDir, async (keyring) => {
     const token = mintVerdictToken({ ...claims, keyringPath: keyring });
     const runtime = createGantryRuntime({
-      forwardTrigger: async () => ({ ok: true }),
+      forwardCall: async () => ({ ok: true }),
       verdictKeyringPath: keyring,
     });
     await runtime.onVerifyPassed({
@@ -60,7 +60,7 @@ test('mission edited after mint denies promote', async () => {
     const token = mintVerdictToken({ ...claims, keyringPath: keyring });
     fs.appendFileSync(path.join(repoRoot, missionRel), '\n# tamper\n');
     const runtime = createGantryRuntime({
-      forwardTrigger: async () => ({ ok: true }),
+      forwardCall: async () => ({ ok: true }),
       verdictKeyringPath: keyring,
     });
     await runtime.onVerifyPassed({
@@ -88,7 +88,7 @@ test('onVerifyPassed throws when lease store is corrupted', async () => {
   fs.mkdirSync(path.dirname(storePath), { recursive: true });
   fs.writeFileSync(storePath, '{"leases": null}');
   const runtime = createGantryRuntime({
-    forwardTrigger: async () => ({ ok: true }),
+    forwardCall: async () => ({ ok: true }),
   });
   await assert.rejects(
     () =>
@@ -112,7 +112,7 @@ test('missing org config denies promote', async () => {
     fs.unlinkSync(path.join(repoRoot, '.gitagent/foreman/ORG.export.local'));
     delete process.env.GANTRY_ORG_ID;
     const runtime = createGantryRuntime({
-      forwardTrigger: async () => ({ ok: true }),
+      forwardCall: async () => ({ ok: true }),
       verdictKeyringPath: keyring,
     });
     await runtime.onVerifyPassed({

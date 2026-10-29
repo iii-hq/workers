@@ -1,5 +1,5 @@
 /**
- * Composition root. Tests call this with a fake forwardTrigger instead of
+ * Composition root. Tests call this with a fake forwardCall instead of
  * reaching into a mutable module bag. Caches live on `deps` so they die
  * with the runtime, not as process globals.
  */
@@ -11,18 +11,18 @@ import { BoundedMap, getLeaseStore } from './stores.js';
 import { createVerifyHandler, onVerifyPassed, VerifyCoalescer } from './verify.js';
 
 export function createGantryRuntime({
-  forwardTrigger,
+  forwardCall,
   verdictKeyringPath,
   leaseStorePathOverride,
   emitVerdict,
 } = {}) {
-  if (typeof forwardTrigger !== 'function') {
-    throw new TypeError('opengantry: forwardTrigger is required');
+  if (typeof forwardCall !== 'function') {
+    throw new TypeError('opengantry: forwardCall is required');
   }
   const envVerdictKeyring = process.env.GANTRY_VERDICT_KEYRING?.trim() || undefined;
   const envLeaseStoreOverride = process.env.GANTRY_III_LEASE_STORE?.trim() || undefined;
   const deps = {
-    forwardTrigger,
+    forwardCall,
     leaseStores: new BoundedMap(32),
     governance: new BoundedMap(32),
     coalescer: new VerifyCoalescer(),

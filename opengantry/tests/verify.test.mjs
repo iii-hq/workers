@@ -11,8 +11,7 @@ import { LEASE_STATES } from '../src/lease-store.js';
 import {
   isReservedGovernanceFunctionId,
   onFunctionRegistration,
-  onTriggerRegistration,
-  onTriggerTypeRegistration,
+  onObserverRegistration,
 } from '../src/registration-hooks.js';
 import { resolveLeaseStorePath } from '../src/repo-path.js';
 import { createGantryRuntime } from '../src/runtime.js';
@@ -78,26 +77,34 @@ test('onFunctionRegistration denies reserved ids', () => {
   );
 });
 
-test('onTriggerRegistration denies gantry namespace bindings', () => {
+test('onObserverRegistration denies observers that target the gantry namespace', () => {
   assert.throws(
-    () => onTriggerRegistration({ function_id: 'gantry::deploy' }),
+    () =>
+      onObserverRegistration({
+        observer_id: 'o-1',
+        function_id: 'orders::create',
+        target_function_id: 'gantry::deploy',
+      }),
     (err) => err instanceof GantryDenied && err.code === 'REGISTRATION_DENIED',
-    'gantry namespace trigger bindings should be denied',
+    'observers targeting the gantry namespace should be denied',
   );
 });
 
-test('onTriggerTypeRegistration always denies', () => {
-  assert.throws(
-    () => onTriggerTypeRegistration(),
-    (err) => err instanceof GantryDenied && err.code === 'TRIGGER_TYPE_REGISTRATION_DENIED',
-    'trigger type registration should always be denied',
+test('onObserverRegistration accepts other observers, gantry::on-verdict included, unchanged', () => {
+  assert.deepEqual(
+    onObserverRegistration({
+      observer_id: 'o-2',
+      function_id: 'gantry::on-verdict',
+      target_function_id: 'audit::on-verdict',
+    }),
+    {},
   );
 });
 
 test('tombstone on disconnect while promoting', async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'og-v-tomb-'));
   const runtime = createGantryRuntime({
-    forwardTrigger: async () => ({ ok: true }),
+    forwardCall: async () => ({ ok: true }),
   });
   const leases = runtime.leaseStoreFor(repoRoot);
   await leases.upsert({
