@@ -7,9 +7,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use iii_sdk::engine::EngineSources;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, Deliver, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
@@ -76,14 +76,14 @@ mod initialization;
 /// Initialize atomically when supported, otherwise use the warned legacy path.
 async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
     initialization::ensure_with(payload, |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload)
+        call_configuration_with_retry(iii, function, payload)
     })
     .await
 }
 
 /// `Ok(None)` when the entry does not exist (`NOT_FOUND`).
 async fn try_get_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
+    match call_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
         .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
@@ -96,9 +96,11 @@ pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) {
     *cell.write().await = Arc::new(cfg);
 }
 
-/// Register the internal config-change handler and bind the `configuration`
-/// trigger that wakes it.
-pub fn register_config_trigger(iii: &IIIClient, cell: ConfigCell) -> Result<(), Error> {
+/// Register the internal config-change handler and observe
+/// `configuration::on-updated` with it: filters on this worker's entry and on
+/// `configuration:updated`, the event delivered as output. The observer stays
+/// `pending` while the configuration source is not registered.
+pub fn register_config_reload(iii: &IIIClient, cell: ConfigCell) {
     let engine = iii.clone();
     iii.register_function(
         CONFIG_FN_ID,
@@ -119,19 +121,21 @@ pub fn register_config_trigger(iii: &IIIClient, cell: ConfigCell) -> Result<(), 
         .metadata(json!({ "internal": true })),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration".to_string(),
-        CONFIG_FN_ID.to_string(),
-        json!({
-            "configuration_id": config_id(),
-            "event_types": ["configuration:updated"],
-        }),
-    ))?;
-    Ok(())
+    // The observer lives as long as the worker's connection; dropping the
+    // handle does not dispose it.
+    iii.observe(
+        Source::function(EngineSources::CONFIGURATION_UPDATED)
+            .filters(json!({
+                "input.id": { "$eq": config_id() },
+                "input.event_type": { "$eq": "configuration:updated" },
+            }))
+            .deliver(Deliver::Output),
+        CONFIG_FN_ID,
+    );
 }
 
-/// Re-fetch the authoritative value after trigger registration to close the
-/// boot race.
+/// Re-fetch the authoritative value after observing to close the boot race:
+/// an update landing before the observer is active reaches no one.
 pub async fn reconcile(iii: &IIIClient, cell: &ConfigCell) {
     on_config_change(iii, cell).await;
 }
@@ -172,7 +176,7 @@ fn is_not_found(error: &str) -> bool {
         || raw.starts_with("remote error (NOT_FOUND): ")
 }
 
-async fn trigger_configuration_with_retry(
+async fn call_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -180,8 +184,8 @@ async fn trigger_configuration_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: function_id.to_string(),
                     payload: payload.clone(),
                     action: None,
