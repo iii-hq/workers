@@ -29,15 +29,16 @@ export interface DiscoverSkillView {
   description: string
 }
 
-/** A registered trigger binding the search judged relevant to the requested
- * capabilities: what already fires, schedules, or hooks
- * `functionId`. Inspect the function with `engine::functions::info`. */
-export interface DiscoverTriggerView {
+/** An observer the search judged relevant to the requested capabilities:
+ * it already runs `target` on the events, schedules, or hooks of the
+ * observed `functionId`. Inspect the target with `engine::functions::info`. */
+export interface DiscoverObserverView {
   id: string
-  triggerType: string
   functionId: string
+  target: string
   workerName?: string
-  config: unknown
+  args: unknown
+  filters: unknown
 }
 
 /** The search mode that actually ranked the results: the judge worker
@@ -52,7 +53,7 @@ export interface DiscoverView {
   workers: DiscoverWorkerView[]
   installable: DiscoverInstallableView[]
   skills: DiscoverSkillView[]
-  triggers: DiscoverTriggerView[]
+  observers: DiscoverObserverView[]
   searchMode?: DiscoverSearchMode
   latency_ms: number
 }
@@ -167,22 +168,23 @@ export function parseDiscoverResponse(output: unknown): DiscoverView | null {
       skills.push({ id: skill.id, title: skill.title, description: skill.description })
     }
   }
-  const triggers: DiscoverTriggerView[] = []
-  if ('triggers' in value && value.triggers !== undefined) {
-    if (!Array.isArray(value.triggers)) return null
-    for (const trigger of value.triggers) {
-      if (!isRecord(trigger)) return null
-      if (typeof trigger.id !== 'string' || trigger.id.length === 0) return null
-      if (typeof trigger.trigger_type !== 'string') return null
-      if (typeof trigger.function_id !== 'string') return null
-      const workerName = trigger.worker_name
+  const observers: DiscoverObserverView[] = []
+  if ('observers' in value && value.observers !== undefined) {
+    if (!Array.isArray(value.observers)) return null
+    for (const observer of value.observers) {
+      if (!isRecord(observer)) return null
+      if (typeof observer.id !== 'string' || observer.id.length === 0) return null
+      if (typeof observer.function_id !== 'string') return null
+      if (typeof observer.target !== 'string') return null
+      const workerName = observer.worker_name
       if (workerName !== undefined && workerName !== null && typeof workerName !== 'string') return null
-      triggers.push({
-        id: trigger.id,
-        triggerType: trigger.trigger_type,
-        functionId: trigger.function_id,
+      observers.push({
+        id: observer.id,
+        functionId: observer.function_id,
+        target: observer.target,
         ...(typeof workerName === 'string' ? { workerName } : {}),
-        config: trigger.config ?? {},
+        args: observer.args ?? {},
+        filters: observer.filters ?? {},
       })
     }
   }
@@ -194,7 +196,7 @@ export function parseDiscoverResponse(output: unknown): DiscoverView | null {
     workers,
     installable,
     skills,
-    triggers,
+    observers,
     ...(searchMode ? { searchMode } : {}),
     latency_ms: value.latency_ms,
   }

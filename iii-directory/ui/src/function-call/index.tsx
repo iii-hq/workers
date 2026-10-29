@@ -1,5 +1,5 @@
 /**
- * Injected function-trigger renderer for the `directory::*` family —
+ * Injected function-call renderer for the `directory::*` family —
  * moved out of the console SPA (formerly
  * ade/web/src/components/chat/directory/) into the worker's own
  * injected UI, so the rendering ships and versions with the worker.
@@ -11,8 +11,8 @@
  */
 
 import type {
-  FunctionTriggerMessage,
-  FunctionTriggerRenderer,
+  FunctionCallMessage,
+  FunctionCallRenderer,
   Host,
 } from '@iii-dev/console-ui'
 import { isErrorOutput, unwrapEnvelope } from '../lib/envelope'
@@ -42,7 +42,7 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
 }
 
 function render(
-  message: FunctionTriggerMessage,
+  message: FunctionCallMessage,
   running: boolean,
   host?: Host,
 ): React.ReactNode | null {
@@ -175,12 +175,12 @@ function render(
  * its own: the plan it would execute, so approve/deny is informed.
  * Everything else keeps the console's default request-JSON pane.
  */
-export function renderPreview(message: FunctionTriggerMessage, host?: Host): React.ReactNode | null {
+export function renderPreview(message: FunctionCallMessage, host?: Host): React.ReactNode | null {
   if (message.functionId !== 'directory::kits::apply') return null
   return <KitApplyPreview input={unwrapEnvelope(message.input)} host={host} />
 }
 
-export function createDirectoryTriggerRenderer(host?: Host): FunctionTriggerRenderer {
+export function createDirectoryCallRenderer(host?: Host): FunctionCallRenderer {
   return {
     id: 'iii-directory/page.js#directory',
     isMatch: isDirectoryFunction,

@@ -10,8 +10,8 @@ import {
   Chip,
   EmptyState,
   Eyebrow,
-  type FunctionTriggerMessage,
-  type FunctionTriggerRenderer,
+  type FunctionCallMessage,
+  type FunctionCallRenderer,
   MetaRow,
   TerminalCommandLine,
 } from '@iii-dev/console-ui'
@@ -22,7 +22,7 @@ import {
   type DiscoverCandidateView,
   type DiscoverInstallableView,
   type DiscoverSkillView,
-  type DiscoverTriggerView,
+  type DiscoverObserverView,
   type DiscoverView,
   discoverCapabilities,
   functionCount,
@@ -94,24 +94,26 @@ function SkillBlock({ skill }: { skill: DiscoverSkillView }) {
   )
 }
 
-/** One registered trigger binding: its type, the function it runs (and the
- * owning worker), and the binding config. The function is inspectable with
- * `engine::functions::info`. */
-function TriggerBlock({ trigger }: { trigger: DiscoverTriggerView }) {
-  const config = JSON.stringify(trigger.config)
+/** One observer: the function it observes, the target it runs (and the
+ * observing worker), and its args and filters. The target is inspectable
+ * with `engine::functions::info`. */
+function ObserverBlock({ observer }: { observer: DiscoverObserverView }) {
+  const args = JSON.stringify(observer.args)
+  const filters = JSON.stringify(observer.filters)
   return (
     <details className="dir-ui-search-fn">
       <summary>
         <ChevronRight aria-hidden className="dir-ui-search-caret" />
         <Zap aria-hidden className="dir-ui-search-sym" />
-        <span className="dir-ui-search-fn-id">{trigger.triggerType}</span>
+        <span className="dir-ui-search-fn-id">{observer.functionId}</span>
         <span className="dir-ui-search-fn-desc">
-          → {trigger.functionId}
-          {trigger.workerName ? ` · ${trigger.workerName}` : ''}
+          → {observer.target}
+          {observer.workerName ? ` · ${observer.workerName}` : ''}
         </span>
       </summary>
-      {config !== '{}' ? <div className="dir-ui-search-desc">{config}</div> : null}
-      <TerminalCommandLine command={`engine::functions::info { "function_id": "${trigger.functionId}" }`} copy />
+      {args !== '{}' ? <div className="dir-ui-search-desc">args {args}</div> : null}
+      {filters !== '{}' ? <div className="dir-ui-search-desc">filters {filters}</div> : null}
+      <TerminalCommandLine command={`engine::functions::info { "function_id": "${observer.target}" }`} copy />
     </details>
   )
 }
@@ -133,7 +135,7 @@ export function DiscoverCard({ capabilities, view }: { capabilities: string[]; v
     view.workers.length === 0 &&
     view.installable.length === 0 &&
     view.skills.length === 0 &&
-    view.triggers.length === 0
+    view.observers.length === 0
   return (
     <Card>
       <MetaRow
@@ -142,7 +144,7 @@ export function DiscoverCard({ capabilities, view }: { capabilities: string[]; v
           ['functions', functionCount(view)],
           ['installable', view.installable.length > 0 && view.installable.length],
           ['skills', view.skills.length > 0 && view.skills.length],
-          ['triggers', view.triggers.length > 0 && view.triggers.length],
+          ['observers', view.observers.length > 0 && view.observers.length],
           ['latency', `${Math.round(view.latency_ms)}ms`],
         ])}
       >
@@ -181,11 +183,11 @@ export function DiscoverCard({ capabilities, view }: { capabilities: string[]; v
               ))}
             </section>
           ) : null}
-          {view.triggers.length > 0 ? (
-            <section aria-label="triggers">
-              <SectionHead count={view.triggers.length}>registered triggers</SectionHead>
-              {view.triggers.map((trigger) => (
-                <TriggerBlock key={trigger.id} trigger={trigger} />
+          {view.observers.length > 0 ? (
+            <section aria-label="observers">
+              <SectionHead count={view.observers.length}>observers</SectionHead>
+              {view.observers.map((observer) => (
+                <ObserverBlock key={observer.id} observer={observer} />
               ))}
             </section>
           ) : null}
@@ -196,11 +198,11 @@ export function DiscoverCard({ capabilities, view }: { capabilities: string[]; v
   )
 }
 
-export function createSearchTriggerRenderer(): FunctionTriggerRenderer {
+export function createSearchCallRenderer(): FunctionCallRenderer {
   return {
     id: 'iii-directory/page.js#search',
     isMatch: (functionId) => functionId === 'directory::search_functions',
-    tryRender: (message: FunctionTriggerMessage) => {
+    tryRender: (message: FunctionCallMessage) => {
       if (message.pendingApproval) return null
       if (isErrorOutput(message.output)) return null
       const view = parseDiscoverResponse(message.output)
