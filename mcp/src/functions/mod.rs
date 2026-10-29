@@ -4,7 +4,7 @@ use iii_helpers::observability::Logger;
 use iii_sdk::{
     channels::{ChannelWriter, StreamChannelRef},
     errors::Error,
-    IIIClient, RegisterFunction,
+    IIIClient, ObserverHandle, RegisterFunction, Source,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -14,6 +14,8 @@ use crate::handler::{handle_mcp_body, Outcome};
 use crate::transport::encode_sse_jsonrpc;
 
 pub const FUNCTION_ID: &str = "mcp::handler";
+/// The http worker's request function: each observer serves one route.
+pub const HTTP_ON_REQUEST_FN: &str = "http::on-request";
 
 /// Per-handler context: shared engine handle, config, and a logger.
 #[derive(Clone)]
@@ -23,9 +25,10 @@ struct Ctx {
     log: Logger,
 }
 
-/// Subset of `iii_sdk::types::ApiRequest` plus the engine-issued response
-/// channel writer ref. We deserialize directly off `serde_json::Value` so we
-/// can capture the `response` field that the typed `ApiRequest<T>` strips.
+/// Subset of the http worker's `HttpRequest` (what an `http::on-request`
+/// route target receives): the parsed body plus the response channel writer
+/// ref. We deserialize directly off `serde_json::Value` so we can capture the
+/// `response` field that the typed request strips.
 #[derive(Deserialize, schemars::JsonSchema)]
 struct McpRequest {
     #[serde(default)]
@@ -57,6 +60,23 @@ pub fn register_all(iii: &Arc<IIIClient>, cfg: &Arc<McpConfig>) {
     tracing::info!(function_id = FUNCTION_ID, "all functions registered");
 }
 
+/// The `http::on-request` args of the bridge's route: `POST <api_path>`.
+pub fn route_args(api_path: &str) -> Value {
+    json!({ "method": "POST", "path": api_path })
+}
+
+/// Serve `POST <api_path>` with [`FUNCTION_ID`]: observe `http::on-request`
+/// with the route as args. The http worker calls `mcp::handler` with each
+/// matching request and streams what it writes to the response channel. The
+/// observer stays pending while the http worker is absent, and is rejected
+/// with `HTTP_ROUTE_CONFLICT` when another observer holds the route.
+pub fn observe_route(iii: &IIIClient, api_path: &str) -> ObserverHandle {
+    iii.observe(
+        Source::function(HTTP_ON_REQUEST_FN).args(route_args(api_path)),
+        FUNCTION_ID,
+    )
+}
+
 fn register_handler(iii: &Arc<IIIClient>, cfg: &Arc<McpConfig>) {
     let ctx = Ctx {
         iii: iii.clone(),
@@ -72,7 +92,7 @@ fn register_handler(iii: &Arc<IIIClient>, cfg: &Arc<McpConfig>) {
                     Ok(e) => e,
                     Err(err) => {
                         ctx.log.warn(
-                            "mcp: invalid http trigger payload",
+                            "mcp: invalid http::on-request payload",
                             Some(json!({ "error": err.to_string() })),
                         );
                         return Ok(Value::Null);
@@ -164,8 +184,8 @@ async fn respond_sse(
     Ok(Value::Null)
 }
 
-/// Send the iii HTTP trigger control frames that configure the response
-/// status line and headers. Always advertises `text/event-stream`; even
+/// Send the http worker's response-channel control frames that configure the
+/// response status line and headers. Always advertises `text/event-stream`; even
 /// notification-only acks (which carry no body) keep the same content
 /// type so a browser EventSource can attach without surprises.
 async fn send_sse_control(writer: &ChannelWriter, status: u16) -> Result<(), Error> {

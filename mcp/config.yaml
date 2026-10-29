@@ -18,7 +18,7 @@ hidden_prefixes:
 # backwards compatibility with workers that haven't adopted the flag.
 require_expose: false
 
-# HTTP path bound by the bridge's `http` trigger. Override this if you need to
-# co-deploy with the TypeScript MCP bridge in `src/mcp/` (which also binds
-# `/mcp`); for example, `/mcp-rs`.
+# HTTP path of the bridge's `http::on-request` route (POST). Override this if
+# you need to co-deploy with the TypeScript MCP bridge in `src/mcp/` (which
+# also serves `/mcp`); for example, `/mcp-rs`.
 api_path: "/mcp"
