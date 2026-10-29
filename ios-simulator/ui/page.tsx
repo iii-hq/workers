@@ -25,7 +25,7 @@ export default function setup(host: Host) {
     render: (props) => <SimulatorsPage host={host} {...props} />,
   })
   host.configForms.register('ios-simulator', IosSimulatorConfigForm)
-  host.functionTriggers.register(screenshotRenderer)
+  host.functionCalls.register(screenshotRenderer)
   // A console without the overlays slot shows no preview; the page still
   // reaches the simulator.
   host.overlays?.register({ id: 'ios-simulator-live', render: () => <SimulatorOverlay host={host} /> })
