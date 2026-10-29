@@ -3,8 +3,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{register_worker, IIIClient};
+use iii_sdk::{register_worker, CallRequest, IIIClient};
 use llm_router::register::register_router;
 use provider_kimi::register::register_provider;
 use serde_json::{json, Value};
@@ -21,7 +20,7 @@ async fn call(
     function_id: &str,
     payload: Value,
 ) -> Result<Value, iii_sdk::errors::Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: function_id.into(),
         payload,
         action: None,
@@ -239,7 +238,7 @@ async fn chat_streams_end_to_end_with_cost_fill() {
     let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let res = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
@@ -285,7 +284,7 @@ async fn upstream_401_surfaces_as_auth_expired_error_frame() {
     let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let res = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
@@ -377,7 +376,7 @@ async fn provider_redeclares_on_router_ready() {
         .await
         .expect("router reboots");
 
-    // router::ready trigger → provider re-declares with its persisted token
+    // router::on-ready → provider re-declares with its persisted token
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let list = call(&router2, "router::provider::list", json!({}))

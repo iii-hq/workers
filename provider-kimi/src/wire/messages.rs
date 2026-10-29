@@ -103,7 +103,7 @@ fn assistant_tool_calls(a: &llm_router::types::messages::AssistantMessage) -> Ve
 /// MUST be immediately followed by one `role:"tool"` message per `tool_call_id`.
 ///
 /// We cannot rely on a global "is this id answered anywhere" set, because the
-/// harness reuses tool_call ids across turns (e.g. `agent_trigger_3` appears in
+/// harness reuses tool_call ids across turns (e.g. `agent_call_3` appears in
 /// several turns) and emits parallel calls plus interspersed `custom` rows.
 /// Instead we pair **positionally**: each assistant turn's calls are answered by
 /// the contiguous run of `function_result`s that follows it (custom rows
