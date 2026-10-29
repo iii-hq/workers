@@ -19,7 +19,7 @@ The worker is simultaneously:
   for every outbound action (`sendMessage`, `editMessageText`, `setWebhook`, …); and
 - an **update receiver** — it consumes inbound `Update` objects either by
   long-polling Telegram (`getUpdates`) or by receiving Telegram's HTTP POSTs
-  through an engine route.
+  through an `http::on-request` route.
 
 Both ingress paths converge on a single sink, so the rest of the worker never
 needs to know which adapter delivered an update:
@@ -27,7 +27,7 @@ needs to know which adapter delivered an update:
 ```
 polling:  bg task ─ getUpdates ─┐
                                  ├─► webhook::process_update_with_tracing ─► process_update
-webhook:  engine HTTP route ─────┘
+webhook:  http::on-request route ┘
 ```
 
 ## 2. The HTTP client
