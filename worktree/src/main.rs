@@ -148,11 +148,14 @@ async fn main() -> Result<()> {
         "worktree::validate",
     ] {
         let api_path = function_id.replace("::", "/");
-        match iii.register_trigger(iii_sdk::protocol::RegisterTriggerInput::new(
+        // Deprecated in iii-sdk 0.25, still served by 0.24 and 0.25 engines.
+        #[allow(deprecated)]
+        let registered = iii.register_trigger(iii_sdk::protocol::RegisterTriggerInput::new(
             "http".to_string(),
             function_id.to_string(),
             serde_json::json!({ "api_path": api_path, "http_method": "POST" }),
-        )) {
+        ));
+        match registered {
             Ok(_) => tracing::info!(function_id, api_path, "http trigger registered"),
             Err(e) => {
                 tracing::warn!(error = %e, function_id, "http trigger registration failed")

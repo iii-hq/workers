@@ -1,0 +1,39 @@
+{
+  "function_id": "worktree::on-removed",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`worktree::removed` — a managed worktree was removed (remove or prune).",
+    "properties": {
+      "branch": {
+        "type": "string"
+      },
+      "branch_deleted": {
+        "type": "boolean"
+      },
+      "repo_path": {
+        "type": "string"
+      },
+      "timestamp": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "worktree_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "branch",
+      "branch_deleted",
+      "repo_path",
+      "timestamp",
+      "worktree_id"
+    ],
+    "title": "RemovedEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Null",
+    "type": "null"
+  }
+}

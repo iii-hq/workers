@@ -148,3 +148,20 @@ iii.registerTrigger({
 All six types accept the same three optional filters; unknown config keys
 are rejected at registration. For event payload shapes, call
 `get function info` on the trigger type.
+
+### How to observe (iii 0.25)
+
+Each type has an observable function next to it — `worktree::on-created`,
+`worktree::on-claimed`, `worktree::on-released`, `worktree::on-removed`,
+`worktree::on-landed`, `worktree::on-land-blocked` — taking the same three
+filters as args and delivering the same payload:
+
+```typescript
+iii.observe(
+  { function_id: 'worktree::on-landed', args: { repo_path: '/home/me/project' } },
+  'notify::on-land',
+)
+```
+
+Only the worktree worker emits these events: invoking an on-* function
+directly fails with `FORBIDDEN`; unknown args keys fail with `INVALID_ARGS`.

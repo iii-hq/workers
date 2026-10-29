@@ -148,6 +148,9 @@ pub struct CronSlot {
 }
 
 impl CronSlot {
+    // `register_trigger` is deprecated in iii-sdk 0.25; the cron binding is
+    // kept as is (served by 0.24 and 0.25 engines alike).
+    #[allow(deprecated)]
     pub fn rebind(&self, iii: &IIIClient, schedule: &str) {
         // `expression` is the binding key the cron trigger type consumes
         // (engine built-in and the standalone cron worker alike), matching
@@ -224,14 +227,17 @@ pub fn register_config_trigger(
         .metadata(json!({ "internal": true })),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
+    // Deprecated in iii-sdk 0.25, still served by 0.24 and 0.25 engines.
+    #[allow(deprecated)]
+    let registered = iii.register_trigger(RegisterTriggerInput::new(
         "configuration".to_string(),
         CONFIG_FN_ID.to_string(),
         json!({
             "configuration_id": config_id(),
             "event_types": ["configuration:updated"],
         }),
-    ))?;
+    ));
+    registered?;
     Ok(())
 }
 

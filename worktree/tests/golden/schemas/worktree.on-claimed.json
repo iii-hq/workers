@@ -1,0 +1,41 @@
+{
+  "function_id": "worktree::on-claimed",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`worktree::claimed` — a session took ownership.",
+    "properties": {
+      "previous_session_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "repo_path": {
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "timestamp": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "worktree_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "repo_path",
+      "session_id",
+      "timestamp",
+      "worktree_id"
+    ],
+    "title": "ClaimedEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Null",
+    "type": "null"
+  }
+}

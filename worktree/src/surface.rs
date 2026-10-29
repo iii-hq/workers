@@ -2,13 +2,18 @@
 //! single source of truth for each function's id and schemars-derived
 //! request/response schemas. Golden-tested in `tests/schemas.rs`; keep in
 //! lockstep with the boot registration order in `main.rs`
-//! (`functions::register_all`, then the configuration handler).
+//! (`functions::register_all`, then the configuration handler, then the
+//! observable `worktree::on-*` functions from `events`).
 //!
 //! Schema generation MUST mirror iii-sdk's internal `json_schema_for`
 //! (`SchemaSettings::draft07()` on the handler's request/response types) so
 //! a catalog snapshot pins exactly what registration emits.
 
 use crate::configuration::{OnConfigChangeEvent, OnConfigChangeResponse};
+use crate::events::{
+    ClaimedEvent, CreatedEvent, LandBlockedEvent, LandedEvent, ReleasedEvent, RemovedEvent,
+    ON_CLAIMED, ON_CREATED, ON_LANDED, ON_LAND_BLOCKED, ON_RELEASED, ON_REMOVED,
+};
 use crate::functions::{
     claim, create, get, land, land_step, list, prune, release, remove, status, validate,
 };
@@ -54,5 +59,13 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<land::Request, land::Response>("worktree::land"),
         spec::<land_step::Request, land_step::Response>("worktree::land-step"),
         spec::<OnConfigChangeEvent, OnConfigChangeResponse>("worktree::on-config-change"),
+        // Observable functions next to the trigger types: request is the
+        // event an observer receives; direct invocation is refused.
+        spec::<CreatedEvent, ()>(ON_CREATED),
+        spec::<ClaimedEvent, ()>(ON_CLAIMED),
+        spec::<ReleasedEvent, ()>(ON_RELEASED),
+        spec::<RemovedEvent, ()>(ON_REMOVED),
+        spec::<LandedEvent, ()>(ON_LANDED),
+        spec::<LandBlockedEvent, ()>(ON_LAND_BLOCKED),
     ]
 }

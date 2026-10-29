@@ -31,8 +31,9 @@ fn spec_to_pretty_json(spec: &FunctionSpec) -> String {
 }
 
 /// The catalog must cover exactly the registered functions, in registration
-/// order (functions::register_all, then the configuration handler) — kept
-/// in lockstep with the boot sequence in `main.rs`.
+/// order (functions::register_all, then the configuration handler, then the
+/// observable `worktree::on-*` functions next to the six trigger types) —
+/// kept in lockstep with the catalog order documented in `surface.rs`.
 #[test]
 fn catalog_lists_all_functions_in_registration_order() {
     let ids: Vec<&str> = catalog().iter().map(|s| s.function_id).collect();
@@ -51,6 +52,12 @@ fn catalog_lists_all_functions_in_registration_order() {
             "worktree::land",
             "worktree::land-step",
             "worktree::on-config-change",
+            "worktree::on-created",
+            "worktree::on-claimed",
+            "worktree::on-released",
+            "worktree::on-removed",
+            "worktree::on-landed",
+            "worktree::on-land-blocked",
         ]
     );
 }
@@ -74,6 +81,37 @@ fn wire_schema_snapshots_match_goldens() {
         failures.len(),
         failures.join("\n")
     );
+}
+
+/// Each observable `worktree::on-*` function's request schema is the event
+/// its observers receive (the payload a trigger binding receives), and it
+/// answers nothing: invoking it is refused with FORBIDDEN.
+#[test]
+fn observable_functions_publish_their_event_as_request_schema() {
+    let catalog = catalog();
+    let pairs = [
+        ("worktree::on-created", "CreatedEvent"),
+        ("worktree::on-claimed", "ClaimedEvent"),
+        ("worktree::on-released", "ReleasedEvent"),
+        ("worktree::on-removed", "RemovedEvent"),
+        ("worktree::on-landed", "LandedEvent"),
+        ("worktree::on-land-blocked", "LandBlockedEvent"),
+    ];
+    for (function_id, title) in pairs {
+        let spec = catalog
+            .iter()
+            .find(|s| s.function_id == function_id)
+            .unwrap_or_else(|| panic!("{function_id} missing from the catalog"));
+        let request = serde_json::to_value(&spec.request_schema).unwrap();
+        assert_eq!(request["title"], title, "{function_id} request title");
+        assert!(
+            request["properties"]["worktree_id"].is_object()
+                && request["properties"]["timestamp"].is_object(),
+            "{function_id} request is not its event: {request}"
+        );
+        let response = serde_json::to_value(&spec.response_schema).unwrap();
+        assert_eq!(response["type"], "null", "{function_id} response");
+    }
 }
 
 /// No function may ship the permissive `AnyValue` schema — the deploy-time
