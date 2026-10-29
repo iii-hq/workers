@@ -1,10 +1,12 @@
-//! `harness::trigger::deliver` — the ONE fire handler for every agent-registered
-//! binding (architecture/trigger-bindings.md).
+//! `harness::observer::deliver` — the ONE target of every agent-created
+//! observer (architecture/observer-bindings.md).
 //!
-//! The engine hands back the trigger's stored metadata at fire time; ours holds
-//! a single key, `__binding`. Everything else — owner, target, conditions,
-//! lifecycle, frozen capability — is read from the durable record, so nothing an
-//! agent can write into metadata is ever trusted or even read.
+//! iii calls it with the `Observed` envelope of each matching call; the event
+//! is the call's `output` (for an event source, the event itself). The
+//! observer's metadata arrives as the call's metadata sidecar and holds a
+//! single key, `__binding`. Everything else — owner, target, conditions,
+//! lifecycle, frozen capability — is read from the durable record, so nothing
+//! an agent can write into metadata is ever trusted or even read.
 //!
 //! Order is load-bearing:
 //!
@@ -13,7 +15,7 @@
 //! ```
 //!
 //! The claim (the persisted fire count) lands BEFORE dispatch: a redelivered
-//! fire finds the budget already spent and stops. Retirement lands AFTER, so a
+//! event finds the budget already spent and stops. Retirement lands AFTER, so a
 //! crash mid-dispatch loses nothing that was not already claimed. Dispatch has
 //! exactly two shapes — wake the owner, or call a plain function — and never
 //! creates an agent.
@@ -21,8 +23,8 @@
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::RegisterFunction;
+use iii_sdk::protocol::CallRequest;
+use iii_sdk::{Observed, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -35,56 +37,34 @@ use crate::subscriptions::fired;
 use crate::surface::schema_value;
 use crate::types::message::AgentMessage;
 
-pub const DELIVER_ID: &str = "harness::trigger::deliver";
+pub const DELIVER_ID: &str = "harness::observer::deliver";
 pub const DELIVER_DESC: &str =
-    "Internal fire handler for a harness-registered trigger binding: evaluates the binding's \
-     conditions, projects the event into the target's payload, and dispatches it (a wake into \
-     the owner session, or a plain function call). Never called directly — register bindings \
-     with engine::register_trigger.";
+    "Internal target of every observer an agent created with harness::observe: evaluates the \
+     binding's conditions, projects the observed call's output into the target's payload, and \
+     dispatches it (a wake into the owner session, or a plain function call). Receives the \
+     Observed envelope; never called directly.";
 
-/// The metadata the engine stores on the binding. A pointer and nothing else.
+/// The observer's metadata sidecar. A pointer and nothing else.
 #[derive(Debug, Deserialize)]
 struct DeliverMetadata {
     #[serde(rename = "__binding")]
     binding: String,
 }
 
-/// Fired-event payload. Trigger events are not always objects, so this keeps a
-/// lossless `Value` while publishing a real schema (the registry publish gate
-/// rejects `AnyValue`).
-#[derive(Debug, Clone, Deserialize)]
-#[serde(transparent)]
-pub struct DeliverEvent(pub Value);
+/// What the observer's target receives: the `Observed` envelope of one call
+/// of the observed function.
+pub type DeliverEnvelope = Observed<Value, Value>;
 
-impl JsonSchema for DeliverEvent {
-    fn schema_name() -> String {
-        "DeliverEvent".to_string()
-    }
-
-    fn json_schema(_: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
-        use schemars::schema::{InstanceType, Metadata, SchemaObject};
-        SchemaObject {
-            instance_type: Some(
-                vec![
-                    InstanceType::Null,
-                    InstanceType::Boolean,
-                    InstanceType::Number,
-                    InstanceType::String,
-                    InstanceType::Array,
-                    InstanceType::Object,
-                ]
-                .into(),
-            ),
-            metadata: Some(Box::new(Metadata {
-                description: Some(
-                    "Arbitrary fired-event payload from the subscribed trigger.".to_string(),
-                ),
-                ..Default::default()
-            })),
-            ..Default::default()
-        }
-        .into()
-    }
+/// The event an envelope delivers: the call's `output` — what observers
+/// observe, and the event itself for an event source — or its `input` when
+/// the output was not captured. Events are not always objects, so this stays
+/// a lossless `Value`.
+pub fn observed_event(envelope: &DeliverEnvelope) -> Value {
+    envelope
+        .output
+        .clone()
+        .or_else(|| envelope.input.clone())
+        .unwrap_or(Value::Null)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -116,28 +96,31 @@ impl DeliverResult {
     }
 }
 
+/// Register the delivery hop. It is an observer target, so it is not private;
+/// it is kept off the agent catalog (`internal`).
 pub fn register(deps: Arc<Deps>) {
     let iii = deps.iii.clone();
     iii.register_function(
         DELIVER_ID,
-        RegisterFunction::new_async(move |event: Value, metadata: Option<Value>| {
+        RegisterFunction::new_async(move |envelope: DeliverEnvelope, metadata: Option<Value>| {
             let deps = deps.clone();
             async move {
-                let out = handle(&deps, event, metadata)
+                let out = handle(&deps, observed_event(&envelope), metadata)
                     .await
                     .unwrap_or_else(|e| DeliverResult::stopped("harness", e.to_string()));
                 Ok::<Value, Error>(json!(out))
             }
         })
         .description(DELIVER_DESC)
-        .request_format(schema_value::<DeliverEvent>())
+        .request_format(schema_value::<DeliverEnvelope>())
         .response_format(schema_value::<DeliverResult>())
         .metadata(json!({ "internal": true })),
     );
 }
 
-/// A binding fired. Never errors: an erroring trigger target only spams the
-/// engine's dispatch log, so every failure becomes a recorded non-delivery.
+/// An observed call reached a binding. Never errors: an erroring observer
+/// target only fills the engine's activation failures, so every failure
+/// becomes a recorded non-delivery.
 pub async fn handle(
     deps: &Deps,
     event: Value,
@@ -145,10 +128,10 @@ pub async fn handle(
 ) -> Result<DeliverResult, crate::error::HarnessError> {
     let Some(meta) = metadata.and_then(|m| serde_json::from_value::<DeliverMetadata>(m).ok())
     else {
-        tracing::warn!("{DELIVER_ID}: fire without a `__binding` key; dropping");
+        tracing::warn!("{DELIVER_ID}: delivery without a `__binding` key; dropping");
         return Ok(DeliverResult::stopped(
             "metadata",
-            "no __binding in trigger metadata",
+            "no __binding in the observer metadata",
         ));
     };
 
@@ -157,16 +140,16 @@ pub async fn handle(
         Ok(Some(b)) => b,
         Ok(None) => {
             // The record is the authority: no record means the binding was
-            // retired (or predates this hop). Tear the engine side down so it
-            // stops firing into nothing.
-            tracing::info!(binding = %meta.binding, "fire for an unknown binding; unregistering");
+            // retired. The binding pass disposes the observer so it stops
+            // delivering into nothing.
+            tracing::info!(binding = %meta.binding, "delivery for an unknown binding; dropping");
             return Ok(DeliverResult::stopped(
                 "unknown-binding",
                 "no binding record",
             ));
         }
         Err(e) => {
-            tracing::warn!(binding = %meta.binding, error = %e, "binding lookup failed; dropping fire");
+            tracing::warn!(binding = %meta.binding, error = %e, "binding lookup failed; dropping delivery");
             return Ok(DeliverResult::stopped(
                 "store",
                 format!("binding lookup failed: {e}"),
@@ -185,9 +168,9 @@ pub async fn handle(
     }
 
     // A record that predates the spawn-target removal must never dispatch:
-    // retire it on both sides and tell the owner what to register instead.
+    // retire it on both sides and tell the owner what to observe instead.
     // The startup sweep mass-retires these; this is the race backstop for a
-    // fire already in flight.
+    // delivery already in flight.
     if binding.target.function_id == crate::functions::SPAWN_ID {
         crate::bindings::gc::retire_stale_spawn_binding(deps, &binding).await;
         return Ok(DeliverResult::stopped(
@@ -237,8 +220,8 @@ pub async fn handle(
             // expected, not only in worker logs nobody is tailing.
             tracing::error!(binding = %binding.id, error = %e, "claim failed; dropping fire");
             let watch = binding
-                .trigger_watch()
-                .map(|(ty, cfg)| format!(" (watching `{ty}` {cfg})"))
+                .source_text()
+                .map(|source| format!(" (observing {source})"))
                 .unwrap_or_default();
             let notice = format!(
                 "[notification] binding {}{watch} is DROPPING fires: the delivery claim \
@@ -278,28 +261,24 @@ pub async fn handle(
         .err()
         .map(|e| format!("dispatch failed: {e}"));
     let record_outcome = if outcome.is_ok() {
-        fired::TriggerOutcome::Delivered
+        fired::FireOutcome::Delivered
     } else {
-        fired::TriggerOutcome::DeliveryFailed
+        fired::FireOutcome::DeliveryFailed
     };
     let retirement_reason = delivery_retirement_reason(&binding, fires_after);
-    let (trigger_type, config) = binding
-        .trigger_watch()
-        .map_or((None, None), |(trigger_type, config)| {
-            (Some(trigger_type), Some(config))
-        });
+    let (function_id, args, filters) = fired::source_fields(&binding);
     fired::emit(
         &deps.session().await,
         &binding.owner.session_id,
         &record_entry_id(&binding.id, fires_after),
-        fired::TriggerFired {
-            subscription_id: &binding.id,
-            trigger_id: binding.trigger_id.as_deref(),
+        fired::ObserverFired {
+            observer_id: &binding.id,
             target: &binding.target.function_id,
             label: binding_label(&binding),
             action: binding.event_action(),
-            trigger_type,
-            config,
+            function_id,
+            args,
+            filters,
             outcome: record_outcome,
             once: binding.lifecycle.once,
             fires: fires_after,
@@ -324,7 +303,7 @@ pub async fn handle(
 /// owner session, or a plain function call. The selection depends ONLY on the
 /// target function id — never on the event's source or shape, which is what
 /// keeps delivery generic across state, database, queue, cron, timer, and
-/// trigger types that do not exist yet. Returns the best-known delivered
+/// functions that do not exist yet. Returns the best-known delivered
 /// payload alongside the outcome so the fired record can carry it.
 async fn dispatch(deps: &Deps, binding: &Binding, event: &Value) -> (Value, Result<(), String>) {
     match binding.target.function_id.as_str() {
@@ -333,7 +312,8 @@ async fn dispatch(deps: &Deps, binding: &Binding, event: &Value) -> (Value, Resu
     }
 }
 
-/// The target's payload template with the fired event injected at its pointer.
+/// The target's payload template with the delivered event injected at its
+/// pointer.
 fn project(binding: &Binding, event: &Value) -> Value {
     let base = binding.target.payload.clone().unwrap_or_else(|| json!({}));
     inject_at(base, binding.target.event_pointer(), event.clone())
@@ -373,7 +353,7 @@ pub(crate) fn inject_at(payload: Value, pointer: &str, value: Value) -> Value {
 /// A wake: the event becomes a message in the owner's session. Routed through
 /// `send::inject` rather than an engine call to `harness::send` so it keeps the
 /// notification origin marker (clients must not render it as human-typed) and a
-/// deterministic entry id (a redelivered fire appends nothing new).
+/// deterministic entry id (a redelivered event appends nothing new).
 async fn wake_target(deps: &Deps, binding: &Binding, event: &Value) -> Result<(), String> {
     let session_id = binding
         .target
@@ -408,7 +388,7 @@ fn call_allowed(binding: &Binding, target: &str) -> Result<(), String> {
     }
     if !CompiledPolicy::from(binding.capability.as_ref()).allows(target) {
         return Err(format!(
-            "`{target}` is outside the policy this binding was registered with"
+            "`{target}` is outside the policy this binding was created with"
         ));
     }
     Ok(())
@@ -461,7 +441,7 @@ async fn call_target(
     );
     // Argument-constrained approval rules must see the payload that will
     // actually run, after event projection and trusted filesystem stamping.
-    if let Err(e) = crate::functions::subscribe::approval_allows_unattended(
+    if let Err(e) = crate::functions::observe::approval_allows_unattended(
         deps,
         target,
         &binding.owner.session_id,
@@ -472,10 +452,10 @@ async fn call_target(
         return (payload, Err(e));
     }
     // A starting scaffold runs compose::add inside the ide, unseen by approval.
-    if crate::trigger::scaffold_starts(target, &payload) {
-        if let Err(e) = crate::functions::subscribe::approval_allows_unattended(
+    if crate::call::scaffold_starts(target, &payload) {
+        if let Err(e) = crate::functions::observe::approval_allows_unattended(
             deps,
-            crate::functions::subscribe::COMPOSE_ADD_ID,
+            crate::functions::observe::COMPOSE_ADD_ID,
             &binding.owner.session_id,
             &serde_json::json!({}),
         )
@@ -499,7 +479,7 @@ async fn call_target(
     let timeout_ms = deps.cfg().await.dispatch_timeout_ms;
     let outcome = deps
         .iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: target.to_string(),
             payload: payload.clone(),
             action: None,
@@ -522,7 +502,7 @@ async fn call_target(
 }
 
 /// Ceiling on the rendered event inside a wake (the label prefix is extra).
-/// Fits 100 UUID primary keys — the native `database::row-changed` cap —
+/// Fits 100 UUID primary keys — the native `database::on-row-changed` cap —
 /// whole; only wider rows or larger composite keys shrink.
 const WAKE_TEXT_MAX: usize = 8_000;
 
@@ -620,13 +600,13 @@ fn binding_label(binding: &Binding) -> Option<&str> {
         })
 }
 
-/// Deterministic per-fire transcript id: a redelivered fire with the same
-/// ordinal appends nothing new.
+/// Deterministic per-delivery transcript id: a redelivered event with the
+/// same ordinal appends nothing new.
 fn fire_entry_id(binding_id: &str, ordinal: u64) -> String {
     format!("e_fire_{binding_id}_{ordinal}")
 }
 
-/// The delivery RECORD's id for the same fire. Distinct from [`fire_entry_id`]
+/// The delivery RECORD's id for the same delivery. Distinct from [`fire_entry_id`]
 /// by construction, and the distinction is load-bearing: session-manager is
 /// idempotent on entry ids, so when the wake message and its record shared one
 /// id, exactly one of the two appends survived per fire. Worse, WHICH one
@@ -635,18 +615,18 @@ fn fire_entry_id(binding_id: &str, ordinal: u64) -> String {
 /// immediately, and the drained wake was then deduped as a replay. A burst of
 /// three fires surfaced as one notification and two records.
 fn record_entry_id(binding_id: &str, ordinal: u64) -> String {
-    format!("e_trigfired_{binding_id}_{ordinal}")
+    format!("e_obsfired_{binding_id}_{ordinal}")
 }
 
-/// Tear a binding down on both sides. A placeholder with no provider id is
-/// compare-deleted first so a concurrent registrar either loses its attach
-/// and unregisters the returned id, or wins the attach and lets us retry
-/// against that exact id-only update. Returns `true` only to the caller whose
-/// exact binding snapshot was deleted; only that caller may report retirement.
+/// Tear a binding down on both sides. A placeholder with no observer id is
+/// compare-deleted first so a concurrent observe either loses its attach and
+/// disposes its observer, or wins the attach and lets us retry against that
+/// exact id-only update. Returns `true` only to the caller whose exact
+/// binding snapshot was deleted; only that caller may report retirement.
 async fn retire(deps: &Deps, binding: &Binding) -> bool {
     let store = deps.bindings().await;
-    if let Some(trigger_id) = binding.trigger_id.as_deref() {
-        crate::functions::subscribe::unregister_engine_trigger(deps, trigger_id).await;
+    if binding.observer_id.is_some() {
+        crate::bindings::dispose_observer(deps, &binding.id).await;
         return match store.delete_if_unchanged(binding).await {
             Ok(true) => true,
             Ok(false) => {
@@ -670,42 +650,42 @@ async fn retire(deps: &Deps, binding: &Binding) -> bool {
     }
 
     let current = match store.get(&binding.id).await {
-        Ok(Some(current)) if differs_only_by_trigger_id(binding, &current) => current,
+        Ok(Some(current)) if differs_only_by_observer_id(binding, &current) => current,
         Ok(_) => return false,
         Err(error) => {
             tracing::warn!(binding = %binding.id, %error, "binding re-read failed during retirement");
             return false;
         }
     };
-    if let Some(trigger_id) = current.trigger_id.as_deref() {
-        crate::functions::subscribe::unregister_engine_trigger(deps, trigger_id).await;
+    if current.observer_id.is_some() {
+        crate::bindings::dispose_observer(deps, &current.id).await;
     }
     match store.delete_if_unchanged(&current).await {
         Ok(true) => true,
         Ok(false) => {
-            tracing::warn!(binding = %binding.id, "binding changed after trigger-id attach during retirement");
+            tracing::warn!(binding = %binding.id, "binding changed after observer-id attach during retirement");
             false
         }
         Err(error) => {
-            tracing::warn!(binding = %binding.id, %error, "binding record delete failed after trigger-id attach");
+            tracing::warn!(binding = %binding.id, %error, "binding record delete failed after observer-id attach");
             false
         }
     }
 }
 
-fn differs_only_by_trigger_id(expected: &Binding, current: &Binding) -> bool {
+fn differs_only_by_observer_id(expected: &Binding, current: &Binding) -> bool {
     let mut normalized = current.clone();
-    normalized.trigger_id = expected.trigger_id.clone();
-    &normalized == expected && current.trigger_id != expected.trigger_id
+    normalized.observer_id = expected.observer_id.clone();
+    &normalized == expected && current.observer_id != expected.observer_id
 }
 
-/// What a fire that finds its binding already spent does.
+/// What a delivery that finds its binding already spent does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SpentAttempt {
     /// Delivered fires used the budget: this attempt is a duplicate of a
     /// delivery that already happened (the same event by a second path —
-    /// the provider's live fire and a Compose recovery replay, an
-    /// at-least-once redelivery). The claiming delivery retires the binding
+    /// the live call and a Compose recovery replay, an at-least-once
+    /// redelivery). The claiming delivery retires the binding
     /// and writes its one record; this one stops without touching either,
     /// so a once wake never shows a second, "skipped" outcome. A spent
     /// record whose claimer died is cleaned up by the binding pass.
@@ -730,7 +710,7 @@ async fn stop_spent(deps: &Deps, binding: &Binding, reason: &str) -> DeliverResu
             tracing::debug!(
                 binding = %binding.id,
                 fires = binding.fires,
-                "duplicate fire for a spent binding; its delivery owns the outcome"
+                "duplicate delivery for a spent binding; its delivery owns the outcome"
             );
         }
         SpentAttempt::Expired => {
@@ -754,24 +734,20 @@ async fn record_stop(
     retirement_reason: Option<fired::RetirementReason>,
 ) -> DeliverResult {
     let (scope, key) = fired::event_state_watch(event);
-    let (trigger_type, config) = binding
-        .trigger_watch()
-        .map_or((None, None), |(trigger_type, config)| {
-            (Some(trigger_type), Some(config))
-        });
+    let (function_id, args, filters) = fired::source_fields(binding);
     fired::emit(
         &deps.session().await,
         &binding.owner.session_id,
         &skip_record_entry_id(&binding.id, skip.gate),
-        fired::TriggerFired {
-            subscription_id: &binding.id,
-            trigger_id: binding.trigger_id.as_deref(),
+        fired::ObserverFired {
+            observer_id: &binding.id,
             target: &binding.target.function_id,
             label: binding_label(binding),
             action: binding.event_action(),
-            trigger_type,
-            config,
-            outcome: fired::TriggerOutcome::Skipped,
+            function_id,
+            args,
+            filters,
+            outcome: fired::FireOutcome::Skipped,
             once: binding.lifecycle.once,
             fires: binding.fires,
             retired: skip.retire,
@@ -847,29 +823,29 @@ fn condition_failure_text(binding: &Binding, skip: &Skip) -> String {
         .map(|l| format!(" `{l}`"))
         .unwrap_or_default();
     let watch = binding
-        .trigger_watch()
-        .map(|(ty, cfg)| format!(" watching `{ty}` {cfg}"))
+        .source_text()
+        .map(|source| format!(" observing {source}"))
         .unwrap_or_default();
     format!(
         "[notification] binding {}{label}{watch} fired but was NOT delivered: {reason}. The \
          binding stays armed and every fire will keep skipping until the condition call \
-         succeeds. If the condition is misconfigured, unregister the binding, re-register it \
-         corrected, and then read the watched state once — events from before the new \
-         registration will never fire it.",
+         succeeds. If the condition is misconfigured, unobserve it, observe again corrected, \
+         and then read the watched state once — events from before the new observer will \
+         never reach it.",
         binding.id
     )
 }
 
 /// One notice per binding, ever — session-manager's entry-id idempotence is
-/// the dedup. Distinct by construction from `e_fire_*`/`e_trigfired_*`/
-/// `e_trigskip_*`/`e_expire_*`/`e_claimfail_*`.
+/// the dedup. Distinct by construction from `e_fire_*`/`e_obsfired_*`/
+/// `e_obsskip_*`/`e_expire_*`/`e_claimfail_*`.
 fn condition_failure_entry_id(binding_id: &str) -> String {
     format!("e_condfail_{binding_id}")
 }
 
 fn skip_record_entry_id(binding_id: &str, gate: &str) -> String {
     format!(
-        "e_trigskip_{binding_id}_{gate}_{}",
+        "e_obsskip_{binding_id}_{gate}_{}",
         uuid::Uuid::new_v4().simple()
     )
 }
@@ -914,10 +890,11 @@ mod tests {
 
     #[test]
     fn notification_text_truncates_a_huge_event() {
-        use crate::bindings::{BindingTarget, Causation, Lifecycle, OwnerScope};
+        use crate::bindings::{BindingTarget, Lifecycle, OwnerScope};
         let b = Binding {
             id: "sub_1".into(),
-            trigger_id: None,
+            observer_id: None,
+            source: None,
             owner: OwnerScope {
                 session_id: "s".into(),
                 root_session_id: None,
@@ -926,7 +903,6 @@ mod tests {
             conditions: vec![],
             lifecycle: Lifecycle::default(),
             capability: None,
-            causation: Causation::default(),
             dedup_key: None,
             fires: 0,
             created_at: 0,
@@ -975,7 +951,7 @@ mod tests {
     /// changed without a second lookup.
     #[test]
     fn notification_text_keeps_a_hundred_uuid_keys_whole() {
-        let b = wake_binding("database::row-changed");
+        let b = wake_binding("database::on-row-changed");
         let text = notification_text(&b, &row_event(100));
         let event = wake_json(&text);
         assert_eq!(event["returning"].as_array().unwrap().len(), 100);
@@ -987,7 +963,7 @@ mod tests {
     /// survives — the text parses, and the reader knows what is missing.
     #[test]
     fn notification_text_shrinks_returning_to_parseable_json() {
-        let b = wake_binding("database::row-changed");
+        let b = wake_binding("database::on-row-changed");
         let text = notification_text(&b, &row_event(400));
         assert!(text.chars().count() <= WAKE_TEXT_MAX + "[notification] ".len());
         let event = wake_json(&text);
@@ -1028,7 +1004,7 @@ mod tests {
     /// does not; a null event still reads "event fired".
     #[test]
     fn notification_text_bounds_a_string_event_and_keeps_a_short_one_raw() {
-        let b = wake_binding("state");
+        let b = wake_binding("state::on-changed");
         assert_eq!(
             notification_text(&b, &json!("plain")),
             "[notification] plain"
@@ -1140,7 +1116,7 @@ mod tests {
 
     #[test]
     fn notification_text_and_records_preserve_the_label() {
-        let mut b = wake_binding("state");
+        let mut b = wake_binding("state::on-changed");
         b.target.payload = Some(json!({ "session_id": "s_owner", "label": "orders-ready" }));
         b.dedup_key.as_mut().unwrap()["label"] = json!("orders-ready");
         assert_eq!(binding_label(&b), Some("orders-ready"));
@@ -1153,7 +1129,7 @@ mod tests {
         let first = skip_record_entry_id("sub_1", "condition");
         let second = skip_record_entry_id("sub_1", "condition");
         assert_ne!(first, second);
-        assert!(first.starts_with("e_trigskip_sub_1_condition_"));
+        assert!(first.starts_with("e_obsskip_sub_1_condition_"));
     }
 
     /// Prevents: the silent-starvation variant of the parked-forever bug — a
@@ -1162,7 +1138,7 @@ mod tests {
     /// watch, the reason, the standing consequence, and the reconcile step.
     #[test]
     fn the_condition_failure_notice_is_actionable_without_lookup() {
-        let mut b = wake_binding("state");
+        let mut b = wake_binding("state::on-changed");
         b.dedup_key.as_mut().unwrap()["label"] = json!("All couriers complete");
         let skip = Skip {
             gate: "condition-error",
@@ -1202,8 +1178,8 @@ mod tests {
         assert_eq!(id, condition_failure_entry_id("sub_1"));
         for other in [
             "e_fire_sub_1_1",
-            "e_trigfired_sub_1_1",
-            "e_trigskip_sub_1_condition-error_x",
+            "e_obsfired_sub_1_1",
+            "e_obsskip_sub_1_condition-error_x",
             "e_expire_sub_1",
             "e_claimfail_sub_1",
         ] {
@@ -1213,25 +1189,25 @@ mod tests {
 
     #[test]
     fn retirement_retries_only_an_id_only_attach() {
-        let expected = wake_binding("state");
+        let expected = wake_binding("state::on-changed");
         let mut attached = expected.clone();
-        attached.trigger_id = Some("trig_1".into());
-        assert!(differs_only_by_trigger_id(&expected, &attached));
+        attached.observer_id = Some("sub_w".into());
+        assert!(differs_only_by_observer_id(&expected, &attached));
 
         let mut fired = attached.clone();
         fired.fires += 1;
-        assert!(!differs_only_by_trigger_id(&expected, &fired));
+        assert!(!differs_only_by_observer_id(&expected, &fired));
     }
 
     #[test]
     fn delivered_retirement_names_once_and_fire_budget_consumption() {
-        let once = wake_binding("state");
+        let once = wake_binding("state::on-changed");
         assert_eq!(
             delivery_retirement_reason(&once, 1),
             Some(fired::RetirementReason::OnceConsumed)
         );
 
-        let mut bounded = wake_binding("cron");
+        let mut bounded = wake_binding("cron::on-tick");
         bounded.lifecycle.once = false;
         bounded.lifecycle.max_fires = Some(3);
         assert_eq!(delivery_retirement_reason(&bounded, 2), None);
@@ -1255,13 +1231,13 @@ mod tests {
         // A once wake its delivery already consumed: any further attempt
         // (a recovery replay of the same event) is a duplicate — even past
         // its deadline, it was delivered, not expired.
-        let mut consumed = wake_binding("compose-operation");
+        let mut consumed = wake_binding("compose::on-operation-progress");
         consumed.fires = 1;
         assert_eq!(spent_attempt(&consumed), SpentAttempt::Duplicate);
         consumed.lifecycle.expires_at = Some(100);
         assert_eq!(spent_attempt(&consumed), SpentAttempt::Duplicate);
 
-        let mut bounded = wake_binding("cron");
+        let mut bounded = wake_binding("cron::on-tick");
         bounded.lifecycle.once = false;
         bounded.lifecycle.max_fires = Some(2);
         bounded.fires = 2;
@@ -1269,7 +1245,7 @@ mod tests {
 
         // An unfired wake past its deadline is an expiry: reported once, by
         // the retirement CAS winner.
-        let mut expired = wake_binding("timer");
+        let mut expired = wake_binding("harness::on-timer");
         expired.lifecycle.expires_at = Some(100);
         assert!(expired.is_exhausted(100));
         assert!(crate::bindings::expiry::is_unfired_wake(&expired));
@@ -1289,18 +1265,24 @@ mod tests {
             let record = record_entry_id("sub_1", ordinal);
             assert_ne!(wake, record, "ordinal {ordinal}");
         }
-        assert_eq!(record_entry_id("sub_1", 2), "e_trigfired_sub_1_2");
+        assert_eq!(record_entry_id("sub_1", 2), "e_obsfired_sub_1_2");
         // Redelivery of the same ordinal still dedupes against itself.
         assert_eq!(record_entry_id("sub_1", 2), record_entry_id("sub_1", 2));
     }
 
-    fn wake_binding(trigger_type: &str) -> Binding {
-        use crate::bindings::{BindingTarget, Causation, Lifecycle, OwnerScope};
+    fn wake_binding(function_id: &str) -> Binding {
+        use crate::bindings::{BindingTarget, Lifecycle, OwnerScope, SourceSpec};
         let mut target = BindingTarget::new(crate::functions::SEND_ID);
         target.payload = Some(json!({ "session_id": "s_owner", "label": null }));
         Binding {
             id: "sub_w".into(),
-            trigger_id: None,
+            observer_id: None,
+            source: Some(SourceSpec {
+                function_id: function_id.into(),
+                namespace: None,
+                args: None,
+                filters: None,
+            }),
             owner: OwnerScope {
                 session_id: "s_owner".into(),
                 root_session_id: None,
@@ -1313,20 +1295,19 @@ mod tests {
                 expires_at: None,
             },
             capability: None,
-            causation: Causation::default(),
-            dedup_key: Some(json!({ "trigger_type": trigger_type, "config": {} })),
+            dedup_key: Some(json!({ "function_id": function_id })),
             fires: 0,
             created_at: 0,
         }
     }
 
     /// The medium-agnostic claim, pinned: nothing in the wake path reads the
-    /// event's source or shape, so a trigger type that does not exist yet
+    /// event's source or shape, so a function that does not exist yet
     /// delivers through the identical owner-notification path as state,
     /// database, cron, and timer do today.
     #[test]
     fn a_wake_binding_delivers_any_source_shape() {
-        let b = wake_binding("sensor::motion-detected");
+        let b = wake_binding("sensor::on-motion-detected");
         assert!(
             crate::bindings::is_armed_wake(&b, 0),
             "a once send-target binding is an armed wake whatever its source type"
@@ -1338,7 +1319,7 @@ mod tests {
             text.contains("porch"),
             "the arbitrary event renders: {text}"
         );
-        // Non-object events deliver too — DeliverEvent is lossless.
+        // Non-object events deliver too — the event is a lossless Value.
         for odd in [json!("plain string"), json!(41.5), Value::Null] {
             assert!(notification_text(&b, &odd).starts_with("[notification] "));
         }
@@ -1350,7 +1331,7 @@ mod tests {
     #[test]
     fn a_call_dispatch_is_checked_against_the_frozen_capability() {
         use crate::types::turn::FunctionPolicy;
-        let mut b = wake_binding("state");
+        let mut b = wake_binding("state::on-changed");
         b.target = crate::bindings::BindingTarget::new("run::record");
         b.capability = Some(FunctionPolicy {
             allow: vec!["run::*".into(), "state::get".into()],
@@ -1362,7 +1343,7 @@ mod tests {
         assert!(call_allowed(&b, "harness::spawn").is_err());
         let err = call_allowed(&b, "shell::run").unwrap_err();
         assert!(
-            err.contains("outside the policy this binding was registered with"),
+            err.contains("outside the policy this binding was created with"),
             "got: {err}"
         );
 
@@ -1373,12 +1354,12 @@ mod tests {
         );
     }
 
-    /// What a ƒ-call target actually receives — the value the fired record now
+    /// What a ƒ-call target actually receives — the value the delivery record
     /// carries. Default `event_into` nests the event under `/event`; an
     /// explicit pointer places it verbatim, template fields untouched.
     #[test]
     fn a_call_payload_is_the_template_with_the_event_at_its_pointer() {
-        let mut b = wake_binding("database::row-changed");
+        let mut b = wake_binding("database::on-row-changed");
         b.target = crate::bindings::BindingTarget::new("receiving::check_completion");
         let event = json!({ "db": "primary", "table": "courier_status", "op": "update" });
 
@@ -1396,5 +1377,31 @@ mod tests {
         // An empty pointer replaces the whole payload with the raw event.
         b.target.event_into = Some(String::new());
         assert_eq!(project(&b, &event), event);
+    }
+
+    /// The event is the observed call's output — for an event source, the
+    /// event itself — and its input only when the output was not captured.
+    #[test]
+    fn the_event_is_the_observed_output() {
+        let mut envelope: DeliverEnvelope = serde_json::from_value(json!({
+            "observer_id": "sub_1",
+            "activation_id": "act_1",
+            "function_id": "state::on-changed",
+            "invocation_id": "inv_1",
+            "status": "success",
+            "input": { "scope": "run", "key": "go" },
+            "output": { "scope": "run", "key": "go", "new_value": 1 },
+            "started_at_ms": 1,
+            "duration_ms": 0.5
+        }))
+        .unwrap();
+        assert_eq!(observed_event(&envelope)["new_value"], 1);
+        envelope.output = None;
+        assert_eq!(
+            observed_event(&envelope),
+            json!({ "scope": "run", "key": "go" })
+        );
+        envelope.input = None;
+        assert_eq!(observed_event(&envelope), Value::Null);
     }
 }

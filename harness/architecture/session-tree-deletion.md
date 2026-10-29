@@ -10,9 +10,10 @@ selected session to the global root**. Its root is exactly `session_id`.
   or deletion.
 - `harness::delete-session-tree-status { operation_id: string }` returns the
   saved snapshot, or `null` for an unknown operation.
-- Trigger `harness::session-tree-deletion` accepts
-  `{ session_id?: string, operation_id?: string }`. Both filters are conjunctive.
-  The delivered event is the snapshot itself, with no wrapper:
+- The private function `harness::on-session-tree-deletion` takes no args;
+  observers filter on `input.session_id` and `input.operation_id` (both
+  filters are conjunctive). Its output, and the event an observer with
+  `deliver: 'output'` receives, is the snapshot itself, with no wrapper:
 
 ```json
 {
@@ -151,12 +152,12 @@ result to a legacy wait.
   inbox and that settings fall back to defaults, but cannot prove those ancillary
   scopes were purged through the approval worker's current public contract.
   No other worker is modified here.
-- Session-owned post-turn hook SDK handles are unregistered when still known in
-  this process. The pre-existing hook registry loses ownership across restart;
-  legacy engine hooks without a durable owner stamp need operator cleanup.
-  Normal durable harness bindings are enumerated and removed strictly.
-- Engine trigger delivery remains the SDK's existing fire-and-forget event
-  transport; durable status is authoritative. Queue redelivery republishes
+- Session-owned post-turn validator observers are disposed when still known in
+  this process. The hook registry loses ownership across restart, and the
+  observer goes with the old connection. Durable harness bindings are
+  enumerated and removed strictly.
+- iii's delivery of the deletion event is at-most-once and does not wait for
+  targets; durable status is authoritative. Queue redelivery republishes
   terminal snapshots. A disconnected client should recover status once when
   reconnecting.
 - Cancellation deadline bounds preparation; cleanup checks the deadline between
@@ -170,7 +171,7 @@ OS-assigned loopback port, an in-memory store, and synthetic session ids. It
 executes production handlers and never connects to a deployed engine or model.
 The model delivery test stops at `context::assemble` after inspecting the real
 context request, proving that delivery is not merely a UI event. Production
-registration schemas and trigger schemas are golden-tested.
+registration schemas and the deletion function's formats are golden-tested.
 
 ```sh
 SKIP_UI_BUILD=1 cargo check --locked --offline -p harness

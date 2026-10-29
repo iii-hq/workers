@@ -6,7 +6,7 @@
       "ExposeMode": {
         "description": "How allowed functions reach the model (harness.md § Exposure modes).",
         "enum": [
-          "agent_trigger",
+          "agent_call",
           "native"
         ],
         "type": "string"
@@ -34,7 +34,7 @@
                 "$ref": "#/definitions/ExposeMode"
               }
             ],
-            "default": "agent_trigger"
+            "default": "agent_call"
           }
         },
         "type": "object"

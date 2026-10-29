@@ -1,15 +1,14 @@
-//! INT-013 — the `timer` trigger type: a one-shot relative deadline that
+//! INT-013 — `harness::on-timer`: a one-shot relative deadline that
 //! parks its session and fires exactly on time.
 //!
 //! The primitive exists because every live run that needed "tell me at T
 //! that it didn't happen" reached for cron and fumbled the encoding —
 //! boundary expressions fire early, the recurring default made deadlines
 //! immortal, and discovery run 3 re-rolled an unbounded cron three times
-//! rather than apply `once: true`. Here the whole deadline is ONE
-//! registration: `{ "in_ms": 6000 }`, resolved to an absolute `at` at
-//! registration, armed by the harness's own engine-registered provider,
-//! delivered through the ordinary binding hop (claim → wake → record →
-//! retire).
+//! rather than apply `once: true`. Here the whole deadline is ONE observe:
+//! args `{ "in_ms": 6000 }`, resolved to an absolute `at` when observing,
+//! armed by the harness's own timer function, delivered through the ordinary
+//! binding hop (claim → wake → record → retire).
 //!
 //! Shape mirrors INT-017: the arm turn is a PARKED completion, the fire is an
 //! externally initiated wake turn with its own trace. No sweep-interval env
@@ -24,7 +23,7 @@ use super::dsl::{
 use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
 
-const REGISTER: &str = "engine::register_trigger";
+const OBSERVE: &str = "harness::observe";
 
 pub(super) fn scenario() -> ScenarioFixture {
     const ID: &str = "INT-013";
@@ -45,8 +44,8 @@ pub(super) fn scenario() -> ScenarioFixture {
     // Six seconds: comfortably after the scripted arm turn completes (~2s),
     // comfortably inside the scenario deadline.
     let register_args = json!({
-        "trigger_type": "timer",
-        "config": { "in_ms": 6000 },
+        "function_id": "harness::on-timer",
+        "args": { "in_ms": 6000 },
         "label": "deadline"
     });
 
@@ -61,7 +60,7 @@ pub(super) fn scenario() -> ScenarioFixture {
     .send(
         Send::message(MESSAGE)
             .idempotency_key("{{run_id}}:integration-013")
-            .allow_id(REGISTER)
+            .allow_id(OBSERVE)
             .allow_function(&record),
     )
     // The arm turn completes PARKED (a timer notify is an armed once-wake);
@@ -77,11 +76,11 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .turn_request_step(0)
                     .system_prompt_sha256("{{system_prompt_sha256}}")
                     .messages_exact([Message::user(MESSAGE)])
-                    .tools_exact_after_controls([REGISTER], [record.tool()]),
+                    .tools_exact_after_controls([OBSERVE], [record.tool()]),
             )
             .respond(Response::function_call_raw(
                 "call-arm",
-                REGISTER,
+                OBSERVE,
                 register_args,
                 8,
                 4,
@@ -96,16 +95,16 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .messages_subset([
                         json!({ "role": "user" }),
                         json!({ "role": "assistant", "content": [
-                            { "type": "function_call", "id": "call-arm", "function_id": REGISTER }
+                            { "type": "function_call", "id": "call-arm", "function_id": OBSERVE }
                         ] }),
                         json!({ "role": "function_result", "function_call_id": "call-arm",
                                 "is_error": false }),
                     ])
-                    .tools_exact_after_controls([REGISTER], [record.tool()]),
+                    .tools_exact_after_controls([OBSERVE], [record.tool()]),
             )
             .respond(Response::text("armed and parked", 10, 2)),
     )
-    // The fired turn. Retirement (engine unregister) races the woken turn's
+    // The fired turn. Retirement (observer disposal) races the woken turn's
     // start, so the registry-staleness prompt note is not deterministic here
     // — match the prompt loosely, the INT-008 way.
     .generation(
@@ -121,7 +120,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                         json!({ "role": "assistant" }),
                         json!({ "role": "user" }),
                     ])
-                    .tools_exact_after_controls([REGISTER], [record.tool()]),
+                    .tools_exact_after_controls([OBSERVE], [record.tool()]),
             )
             .respond(Response::text("deadline hit", 10, 2)),
     )
@@ -152,7 +151,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             notifications.len()
         );
         let notice = &notifications[0];
-        for needle in ["\"trigger\":\"timer\"", "scheduled_at", "actual_at"] {
+        for needle in ["scheduled_at", "actual_at"] {
             anyhow::ensure!(
                 notice.contains(needle),
                 "notification must carry the timer event field {needle:?}: {notice}"
@@ -167,12 +166,12 @@ pub(super) fn scenario() -> ScenarioFixture {
                 item.get("custom")
                     .and_then(|c| c.get("custom_type"))
                     .and_then(Value::as_str)
-                    == Some("trigger_fired")
+                    == Some("observer_fired")
             })
             .collect();
         anyhow::ensure!(
             records.len() == 1,
-            "expected exactly 1 trigger_fired record, got {}",
+            "expected exactly 1 observer_fired record, got {}",
             records.len()
         );
         let data = records[0]

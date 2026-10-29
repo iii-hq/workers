@@ -1,30 +1,31 @@
-//! Binding garbage collection.
+//! Binding garbage collection and the boot replay.
 //!
-//! The durable store survives harness restarts, but the configured state
-//! adapter may not. Startup therefore reconciles engine delivery triggers
-//! against their binding records, plus the ordinary lifecycle sweeps below:
+//! The durable store survives harness restarts; the engine's observers do
+//! not — they belong to the harness connection. Startup therefore rewrites
+//! records from before 0.26 ([`super::migrate`]), re-creates every surviving
+//! binding's observer from its record, and runs the ordinary lifecycle
+//! sweeps below:
 //!
 //! * **Owner gone.** A deleted session leaves bindings that would keep firing
 //!   — waking a session that no longer exists.
 //! * **Stale spawn targets.** Records whose target is `harness::spawn` predate
-//!   the spawn-target removal: trigger delivery never creates an agent now, so
-//!   they are retired LOUDLY — the owner gets a notification naming the
-//!   migration (register a wake, spawn directly) — never adapted.
-//! * **Legacy targets.** Engine bindings registered before the delivery hop
-//!   point at `harness::notify_agent` / `harness::trigger-call` (or straight at
-//!   `harness::spawn`). Those paths are gone, so the bindings can only fire
-//!   into nothing. They are unregistered rather than adapted: a shim would
-//!   have to trust the very metadata the new model exists to stop reading.
+//!   the spawn-target removal: delivery never creates an agent, so they are
+//!   retired LOUDLY — the owner gets a notification naming the migration
+//!   (observe for a wake, spawn directly) — never adapted.
+//! * **Orphan observers.** An observer aimed at the delivery hop whose
+//!   binding record is gone (an in-memory state adapter restarted, a record
+//!   deleted while the observer could not be disposed) is disposed.
 
 use std::collections::HashSet;
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
 use crate::deps::Deps;
 
-/// The engine-side targets that no longer have a handler. A binding pointing
-/// at one of these predates the delivery hop.
-const LEGACY_TARGETS: [&str; 2] = ["harness::notify_agent", "harness::trigger-call"];
+/// How long a replay waits to learn that its observer id is still held by
+/// the previous harness connection.
+const REPLAY_READY_WAIT: Duration = Duration::from_secs(5);
 
 /// Whether the owning session is live, provably gone, or unknown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,13 +42,14 @@ pub fn should_gc(state: OwnerState) -> bool {
     state == OwnerState::Gone
 }
 
-/// Startup sweep: drop bindings whose owner is provably gone, loudly retire
-/// records that still target `harness::spawn`, unregister delivery triggers
-/// whose record disappeared, remove bindings aimed at old handlers — then
-/// re-arm every surviving binding's engine trigger from the durable record
-/// and deliver one-shot state wakes whose key was written while no trigger
+/// Startup sweep: rewrite records from before 0.26, drop bindings whose owner
+/// is provably gone, loudly retire records that still target
+/// `harness::spawn`, dispose observers whose record disappeared — then
+/// re-create every surviving binding's observer from the durable record and
+/// deliver one-shot state wakes whose key was written while no observer
 /// existed for it.
 pub async fn run(deps: &Deps) {
+    let migrated = super::migrate::run(deps).await;
     let store = deps.bindings().await;
     let bindings = match store.list().await {
         Ok(b) => b,
@@ -57,7 +59,7 @@ pub async fn run(deps: &Deps) {
         }
     };
 
-    let orphans = reconcile_orphan_delivery_triggers(deps, &bindings).await;
+    let orphans = reconcile_orphan_observers(deps, &bindings).await;
 
     let mut dropped = 0usize;
     let mut stale_spawn = 0usize;
@@ -65,8 +67,8 @@ pub async fn run(deps: &Deps) {
     for binding in bindings {
         let owner_gone = should_gc(owner_state(deps, &binding.owner.session_id).await);
         if owner_gone {
-            if let Some(trigger_id) = binding.trigger_id.as_deref() {
-                crate::functions::subscribe::unregister_engine_trigger(deps, trigger_id).await;
+            if binding.observer_id.is_some() {
+                super::dispose_observer(deps, &binding.id).await;
             }
             if store.delete(&binding.id).await.is_ok() {
                 dropped += 1;
@@ -81,40 +83,47 @@ pub async fn run(deps: &Deps) {
         survivors.push(binding);
     }
 
-    let legacy = retire_legacy(deps).await + retire_engine_spawn_triggers(deps).await;
-    let (rearmed, caught_up) = replay_delivery_triggers(deps, survivors).await;
-    if dropped > 0 || stale_spawn > 0 || legacy > 0 || orphans > 0 || rearmed > 0 || caught_up > 0 {
+    let (rearmed, caught_up) = replay_observers(deps, survivors).await;
+    if migrated.rewritten > 0
+        || migrated.retired > 0
+        || dropped > 0
+        || stale_spawn > 0
+        || orphans > 0
+        || rearmed > 0
+        || caught_up > 0
+    {
         tracing::info!(
+            rewritten = migrated.rewritten,
+            untranslated = migrated.retired,
             owner_gone = dropped,
             stale_spawn = stale_spawn,
-            legacy = legacy,
-            orphan_engine = orphans,
+            orphan_observers = orphans,
             rearmed = rearmed,
             caught_up = caught_up,
-            "swept trigger bindings at startup"
+            "swept observer bindings at startup"
         );
     }
 }
 
-/// Re-register the engine trigger for every surviving binding.
+/// Re-create the observer of every surviving binding.
 ///
-/// The engine's trigger registry is in-memory and channel registrations are
-/// connection-scoped: an engine restart or a harness restart loses the
-/// engine-side row while the durable record stays armed — before this replay
-/// the owner then waited forever on a trigger that no longer existed
-/// (console-04e02cb7 postmortem). The store is the authority; the engine row
-/// is re-derived at every boot, and reconnects within one process are covered
-/// by the SDK's own registration replay.
-async fn replay_delivery_triggers(
-    deps: &Deps,
-    bindings: Vec<crate::bindings::Binding>,
-) -> (usize, usize) {
+/// Observers are connection-scoped: an engine restart or a harness restart
+/// loses them while the durable record stays armed — before this replay the
+/// owner then waited forever on a watch that no longer existed
+/// (console-04e02cb7 postmortem). The store is the authority; the observer is
+/// re-derived at every boot, and reconnects within one process are covered by
+/// the SDK's own observer replay.
+async fn replay_observers(deps: &Deps, bindings: Vec<crate::bindings::Binding>) -> (usize, usize) {
     let store = deps.bindings().await;
     let now_ms = crate::subscriptions::fired::now_ms();
     let mut rearmed = 0usize;
     let mut caught_up = 0usize;
     for mut binding in bindings {
-        // Deletion owns cleanup. Do not resurrect its engine bindings during
+        // This process already observes it (created after boot).
+        if deps.observer_handles.contains(&binding.id) {
+            continue;
+        }
+        // Deletion owns cleanup. Do not resurrect its observers during
         // concurrent startup recovery, or deliver a stale catch-up wake.
         let _topology = deps.topology.lock().await;
         match crate::functions::delete_session_tree::guard_owner(deps, &binding.owner.session_id)
@@ -131,44 +140,24 @@ async fn replay_delivery_triggers(
             // Expiry (bindings::expiry) owns retirement and its owner notice.
             continue;
         }
-        let Some((trigger_type, config)) = binding.trigger_watch() else {
-            // Pre-dedup-key record: nothing to re-register from.
+        let Some(handle) = super::observe_binding(deps, &binding) else {
+            // A record without a source: nothing to observe.
             continue;
         };
-        let (trigger_type, config) = (trigger_type.to_string(), config.clone());
-        // A non-`sdk:` id is a row from the retired function-path
-        // registration; it may still exist engine-side (typically parked in
-        // `default`). Clear it so nothing can double-deliver.
-        if let Some(old) = binding.trigger_id.as_deref() {
-            if !old.starts_with(crate::functions::subscribe::SDK_TRIGGER_ID_PREFIX) {
-                crate::functions::subscribe::unregister_engine_trigger(deps, old).await;
-            }
-        }
-        let trigger_id = match crate::functions::subscribe::register_delivery_trigger(
-            deps,
-            &trigger_type,
-            &config,
-            &binding.id,
-        ) {
-            Ok(id) => id,
-            Err(e) => {
-                tracing::warn!(binding = %binding.id, error = %e, "delivery trigger replay failed");
-                continue;
-            }
-        };
-        match store.rearm_trigger_id(&binding, &trigger_id).await {
+        take_over_from_previous_connection(deps, &binding, handle);
+        match store.rearm_observer_id(&binding, &binding.id).await {
             Ok(crate::bindings::AttachOutcome::Attached(current)) => {
                 binding = *current;
                 rearmed += 1;
             }
             Ok(crate::bindings::AttachOutcome::Gone) => {
-                crate::functions::subscribe::unregister_engine_trigger(deps, &trigger_id).await;
+                super::dispose_observer(deps, &binding.id).await;
                 continue;
             }
             Err(e) => {
-                tracing::warn!(binding = %binding.id, error = %e, "trigger id re-arm failed");
-                // The registration itself is live and delivers by binding id;
-                // only the recorded id is stale. Keep going.
+                tracing::warn!(binding = %binding.id, error = %e, "observer id re-arm failed");
+                // The observer itself is live and delivers by binding id;
+                // only the recorded marker is stale. Keep going.
             }
         }
         super::compose::schedule(deps, &binding);
@@ -178,28 +167,55 @@ async fn replay_delivery_triggers(
     (rearmed, caught_up)
 }
 
+/// A harness that restarted within the engine's suspension grace finds its
+/// observer ids still held by its previous connection
+/// (`OBSERVER_ID_CONFLICT`). Dispose the stale one through the engine and
+/// observe again, in the background so the replay never waits on it.
+fn take_over_from_previous_connection(
+    deps: &Deps,
+    binding: &crate::bindings::Binding,
+    handle: iii_sdk::ObserverHandle,
+) {
+    let deps = deps.clone();
+    let binding = binding.clone();
+    tokio::spawn(async move {
+        let Ok(Err(_)) = tokio::time::timeout(REPLAY_READY_WAIT, handle.ready()).await else {
+            return;
+        };
+        if handle.reason().map(|reason| reason.code).as_deref() != Some("OBSERVER_ID_CONFLICT") {
+            return;
+        }
+        deps.observer_handles.remove(&binding.id);
+        let _ = handle.dispose().await;
+        if !super::dispose_observer(&deps, &binding.id).await {
+            return;
+        }
+        if super::observe_binding(&deps, &binding).is_some() {
+            tracing::info!(binding = %binding.id, "observer taken over from the previous connection");
+        }
+    });
+}
+
 /// A one-shot state wake that has never fired watches exactly one key; that
-/// key may have been written while no engine trigger existed for it. When
-/// this binding qualifies for the replay catch-up read, name the watched
+/// key may have been written while no observer existed for it. When this
+/// binding qualifies for the replay catch-up read, name the watched
 /// `(scope, key)`.
 fn state_wake_catchup(binding: &crate::bindings::Binding) -> Option<(String, String)> {
     if binding.fires != 0 || !binding.lifecycle.once {
         return None;
     }
-    let (trigger_type, config) = binding.trigger_watch()?;
-    if trigger_type != "state" {
-        return None;
+    match binding.state_watch() {
+        (Some(scope), Some(key)) => Some((scope.to_string(), key.to_string())),
+        _ => None,
     }
-    let scope = config.get("scope")?.as_str()?;
-    let key = config.get("key")?.as_str()?;
-    Some((scope.to_string(), key.to_string()))
 }
 
-/// Deliver the wake a dead trigger missed: the watched key already holds a
-/// value, so the value read NOW stands in for the missed event. Biased
-/// deliberately toward firing — a spurious wake costs one extra turn once,
-/// a lost one strands the owner forever — and the delivery claim keeps it
-/// exactly-once against a racing live fire.
+/// Deliver the wake a lost observer missed: the watched key already holds a
+/// value, so the value read NOW stands in for the missed event (the
+/// `state::on-changed` event shape). Biased deliberately toward firing — a
+/// spurious wake costs one extra turn once, a lost one strands the owner
+/// forever — and the delivery claim keeps it exactly-once against a racing
+/// live fire.
 async fn catch_up_state_wake(deps: &Deps, binding: &crate::bindings::Binding) -> bool {
     let Some((scope, key)) = state_wake_catchup(binding) else {
         return false;
@@ -219,7 +235,7 @@ async fn catch_up_state_wake(deps: &Deps, binding: &crate::bindings::Binding) ->
         "replayed": true,
     });
     let metadata = json!({ "__binding": binding.id });
-    match crate::functions::trigger_deliver::handle(deps, event, Some(metadata)).await {
+    match crate::functions::observer_deliver::handle(deps, event, Some(metadata)).await {
         Ok(result) => {
             tracing::info!(
                 binding = %binding.id,
@@ -239,24 +255,24 @@ async fn catch_up_state_wake(deps: &Deps, binding: &crate::bindings::Binding) ->
 
 /// Tear down a stored binding that still targets `harness::spawn` — a record
 /// from before the spawn-target removal. Loud on the owner side: a silent
-/// unregister would leave the owner believing in an armed reaction it no
-/// longer has. Called from the startup sweep (mass-retire) and from delivery
-/// resolve (the race backstop for a fire already in flight).
+/// dispose would leave the owner believing in an armed reaction it no longer
+/// has. Called from the startup sweep (mass-retire) and from delivery resolve
+/// (the race backstop for a fire already in flight).
 pub async fn retire_stale_spawn_binding(deps: &Deps, binding: &crate::bindings::Binding) {
-    if let Some(trigger_id) = binding.trigger_id.as_deref() {
-        crate::functions::subscribe::unregister_engine_trigger(deps, trigger_id).await;
+    if binding.observer_id.is_some() {
+        super::dispose_observer(deps, &binding.id).await;
     }
     if let Err(e) = deps.bindings().await.delete(&binding.id).await {
         tracing::warn!(binding = %binding.id, error = %e, "stale spawn-binding delete failed");
     }
     let watch = binding
-        .trigger_watch()
-        .map(|(ty, cfg)| format!(" (was watching `{ty}` {cfg})"))
+        .source_text()
+        .map(|source| format!(" (was observing {source})"))
         .unwrap_or_default();
     let notice = format!(
-        "[notification] binding {}{watch} was RETIRED: `harness::spawn` is no longer a binding \
-         target — trigger delivery never creates an agent. Re-register the same trigger as a \
-         wake (omit `function_id`) and spawn workers directly from the woken turn.",
+        "[notification] binding {}{watch} was RETIRED: `harness::spawn` is not a binding \
+         target — delivery never creates an agent. Observe the same function as a wake (omit \
+         `target`) and spawn workers directly from the woken turn.",
         binding.id
     );
     let message = crate::types::message::AgentMessage::user_text(notice);
@@ -274,114 +290,57 @@ pub async fn retire_stale_spawn_binding(deps: &Deps, binding: &crate::bindings::
     crate::subscriptions::fired::emit(
         &deps.session().await,
         &binding.owner.session_id,
-        &format!("e_trigstale_{}", binding.id),
+        &format!("e_obsstale_{}", binding.id),
         crate::subscriptions::fired::retirement_record(
             binding,
-            crate::subscriptions::fired::TriggerOutcome::Invalidated,
+            crate::subscriptions::fired::FireOutcome::Invalidated,
             crate::subscriptions::fired::RetirementReason::Invalidated,
-            Some("harness::spawn is no longer a binding target; the binding was retired"),
+            Some("harness::spawn is not a binding target; the binding was retired"),
             crate::subscriptions::fired::now_ms(),
         ),
     )
     .await;
 }
 
-/// Unregister engine triggers aimed DIRECTLY at `harness::spawn` — worker
-/// registrations from before the delivery hop (agent registrations always
-/// pointed at the hop). No owner is knowable engine-side, so this one is
-/// log-loud only.
-async fn retire_engine_spawn_triggers(deps: &Deps) -> usize {
-    let mut retired = 0usize;
-    for id in list_binding_ids(deps, crate::functions::SPAWN_ID)
-        .await
-        .unwrap_or_default()
-    {
-        if crate::functions::subscribe::unregister_engine_trigger(deps, &id).await {
-            retired += 1;
-            tracing::info!(
-                trigger_id = %id,
-                "dropped an engine trigger aimed at harness::spawn — trigger delivery never \
-                 creates an agent"
-            );
-        }
-    }
-    retired
-}
-
-/// Unregister every engine binding still aimed at a handler this harness no
-/// longer serves. Best-effort and idempotent — a failed unregister is retried
-/// on the next startup.
-async fn retire_legacy(deps: &Deps) -> usize {
-    let mut retired = 0usize;
-    for target in LEGACY_TARGETS {
-        for id in list_binding_ids(deps, target).await.unwrap_or_default() {
-            if crate::functions::subscribe::unregister_engine_trigger(deps, &id).await {
-                retired += 1;
-                tracing::info!(
-                    trigger_id = %id,
-                    target = %target,
-                    "dropped a pre-delivery-hop binding — its handler no longer exists"
-                );
-            }
-        }
-    }
-    retired
-}
-
-/// Engine providers outlive an in-memory state adapter restart. Startup and
-/// every binding pass (each engine worker connect/disconnect/announce — the
-/// state worker coming back among them) remove delivery triggers whose
-/// trusted `__binding` pointer no longer resolves, so recurring providers do
-/// not invoke a permanent no-op forever.
-pub async fn reconcile_orphan_delivery_triggers(
+/// The state adapter may lose records the engine's observers outlive (an
+/// in-memory adapter restarting while the harness stays connected). Startup
+/// and every binding pass (each engine worker connect/disconnect/announce —
+/// the state worker coming back among them) dispose observers aimed at the
+/// delivery hop whose binding record is gone, so recurring sources do not
+/// call a permanent no-op forever. The observer id IS the binding id, which
+/// is what makes this possible: the engine's listing never returns metadata.
+pub async fn reconcile_orphan_observers(
     deps: &Deps,
     bindings: &[crate::bindings::Binding],
 ) -> usize {
     let stored: HashSet<String> = bindings.iter().map(|binding| binding.id.clone()).collect();
-    let Some(ids) = list_binding_ids(deps, crate::functions::trigger_deliver::DELIVER_ID).await
-    else {
+    let Some(ids) = delivery_observer_ids(deps).await else {
         return 0;
     };
     let store = deps.bindings().await;
     let mut retired = 0usize;
     for id in ids {
-        let Some(binding_id) = delivery_binding_id(deps, &id).await else {
-            // An unreadable detail response is not proof of orphanhood.
-            continue;
-        };
-        if !is_orphan(binding_id.as_deref(), &stored) {
+        if !is_orphan(&id, &stored) {
             continue;
         }
         // The listing is a snapshot. A registration may insert its record
-        // after that snapshot and then arm the engine trigger before this
-        // loop reaches it; a fresh read prevents us from deleting that valid
+        // after that snapshot and then create its observer before this loop
+        // reaches it; a fresh read prevents us from disposing that valid
         // newcomer.
-        if let Some(binding_id) = binding_id.as_deref() {
-            match store.get(binding_id).await {
-                Ok(Some(_)) | Err(_) => continue,
-                Ok(None) => {}
-            }
-            // A channel-registered row also lives in the SDK replay list under
-            // its synthetic id; purge it or a reconnect resurrects the row.
-            deps.trigger_handles.unregister(&format!(
-                "{}{binding_id}",
-                crate::functions::subscribe::SDK_TRIGGER_ID_PREFIX
-            ));
+        match store.get(&id).await {
+            Ok(Some(_)) | Err(_) => continue,
+            Ok(None) => {}
         }
-        if crate::functions::subscribe::unregister_engine_trigger(deps, &id).await {
+        if super::dispose_observer(deps, &id).await {
             retired += 1;
-            tracing::info!(
-                trigger_id = %id,
-                binding = binding_id.as_deref().unwrap_or("<missing>"),
-                "dropped delivery trigger with no binding record"
-            );
+            tracing::info!(observer = %id, "disposed a delivery observer with no binding record");
         }
     }
     retired
 }
 
-fn is_orphan(binding_id: Option<&str>, stored: &HashSet<String>) -> bool {
-    binding_id.is_none_or(|id| !stored.contains(id))
+fn is_orphan(observer_id: &str, stored: &HashSet<String>) -> bool {
+    !stored.contains(observer_id)
 }
 
 /// Every session's bindings, dropped when the session is deleted.
@@ -392,8 +351,8 @@ pub async fn sweep_owner(deps: &Deps, session_id: &str) -> usize {
     };
     let mut dropped = 0usize;
     for binding in bindings {
-        if let Some(trigger_id) = binding.trigger_id.as_deref() {
-            crate::functions::subscribe::unregister_engine_trigger(deps, trigger_id).await;
+        if binding.observer_id.is_some() {
+            super::dispose_observer(deps, &binding.id).await;
         }
         if store.delete(&binding.id).await.is_ok() {
             dropped += 1;
@@ -405,7 +364,7 @@ pub async fn sweep_owner(deps: &Deps, session_id: &str) -> usize {
 async fn owner_state(deps: &Deps, session_id: &str) -> OwnerState {
     let resp = deps
         .iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
+        .call(iii_sdk::protocol::CallRequest {
             function_id: "session::get".to_string(),
             payload: json!({ "session_id": session_id }),
             action: None,
@@ -419,49 +378,46 @@ async fn owner_state(deps: &Deps, session_id: &str) -> OwnerState {
     }
 }
 
-/// Engine-side binding ids currently aimed at a function.
-async fn list_binding_ids(deps: &Deps, function_id: &str) -> Option<Vec<String>> {
+/// The engine builtin listing observers.
+const OBSERVERS_LIST_ID: &str = "engine::observers::list";
+
+/// Ids of the observers aimed at the delivery hop that a harness created.
+/// `None` when the listing failed: reconciliation then leaves them alone.
+async fn delivery_observer_ids(deps: &Deps) -> Option<Vec<String>> {
     let resp = deps
         .iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
-            function_id: "engine::registered-triggers::list".to_string(),
-            payload: json!({ "function_id": function_id, "include_internal": true }),
+        .call(iii_sdk::protocol::CallRequest {
+            function_id: OBSERVERS_LIST_ID.to_string(),
+            payload: json!({ "worker": "harness" }),
             action: None,
             timeout_ms: Some(deps.cfg().await.dispatch_timeout_ms),
         })
         .await
         .ok()?;
-    Some(
-        resp.get("registered_triggers")?
-            .as_array()?
-            .iter()
-            .filter_map(|t| t.get("id").and_then(Value::as_str).map(str::to_string))
-            .collect(),
-    )
+    Some(delivery_targets(&resp))
 }
 
-/// `list` returns summaries without metadata; fetch the detail to read the
-/// trusted pointer. `Some(None)` means the detail was readable but had no
-/// pointer. `None` means lookup failed, so reconciliation leaves it alone.
-async fn delivery_binding_id(deps: &Deps, trigger_id: &str) -> Option<Option<String>> {
-    let resp = deps
-        .iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
-            function_id: "engine::registered-triggers::info".to_string(),
-            payload: json!({ "id": trigger_id, "include_internal": true }),
-            action: None,
-            timeout_ms: Some(deps.cfg().await.dispatch_timeout_ms),
+/// The ids of a listing's observers whose target is the delivery hop.
+fn delivery_targets(listing: &Value) -> Vec<String> {
+    listing
+        .get("observers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|observer| {
+            observer
+                .get("target")
+                .and_then(|target| target.get("function_id"))
+                .and_then(Value::as_str)
+                == Some(crate::functions::observer_deliver::DELIVER_ID)
         })
-        .await
-        .ok()?;
-    let detail = resp.get("registered_trigger").unwrap_or(&resp);
-    Some(
-        detail
-            .get("metadata")
-            .and_then(|metadata| metadata.get("__binding"))
-            .and_then(Value::as_str)
-            .map(str::to_string),
-    )
+        .filter_map(|observer| {
+            observer
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -477,25 +433,33 @@ mod tests {
     }
 
     #[test]
-    fn legacy_targets_name_the_removed_handlers() {
-        assert!(LEGACY_TARGETS.contains(&"harness::notify_agent"));
-        assert!(LEGACY_TARGETS.contains(&"harness::trigger-call"));
-        // The live hop must never be swept as legacy.
-        assert!(!LEGACY_TARGETS.contains(&crate::functions::trigger_deliver::DELIVER_ID));
+    fn only_delivery_observers_without_a_record_are_orphans() {
+        let stored = HashSet::from(["sub_live".to_string()]);
+        assert!(!is_orphan("sub_live", &stored));
+        assert!(is_orphan("sub_missing", &stored));
     }
 
     #[test]
-    fn only_delivery_pointers_without_a_record_are_orphans() {
-        let stored = HashSet::from(["sub_live".to_string()]);
-        assert!(!is_orphan(Some("sub_live"), &stored));
-        assert!(is_orphan(Some("sub_missing"), &stored));
-        assert!(is_orphan(None, &stored));
+    fn the_orphan_scan_reads_only_observers_of_the_delivery_hop() {
+        let listing = json!({ "observers": [
+            { "id": "sub_a", "target": { "function_id": crate::functions::observer_deliver::DELIVER_ID, "namespace": "default" } },
+            { "id": "own", "target": { "function_id": "harness::on-engine-change", "namespace": "default" } },
+            { "id": "sub_b", "target": { "function_id": crate::functions::observer_deliver::DELIVER_ID, "namespace": "default" } },
+        ]});
+        assert_eq!(delivery_targets(&listing), vec!["sub_a", "sub_b"]);
+        assert!(delivery_targets(&json!({})).is_empty());
     }
 
-    fn wake_binding(dedup: Value) -> crate::bindings::Binding {
+    fn wake_binding(filters: Option<Value>) -> crate::bindings::Binding {
         crate::bindings::Binding {
             id: "sub_r".into(),
-            trigger_id: Some("old-engine-uuid".into()),
+            observer_id: Some("sub_r".into()),
+            source: Some(crate::bindings::SourceSpec {
+                function_id: crate::bindings::STATE_ON_CHANGED_FN.into(),
+                namespace: None,
+                args: None,
+                filters,
+            }),
             owner: crate::bindings::OwnerScope {
                 session_id: "s1".into(),
                 root_session_id: None,
@@ -508,21 +472,25 @@ mod tests {
                 expires_at: None,
             },
             capability: None,
-            causation: Default::default(),
-            dedup_key: Some(dedup),
+            dedup_key: None,
             fires: 0,
             created_at: 0,
         }
     }
 
+    fn scope_key(scope: &str, key: Option<&str>) -> Option<Value> {
+        let mut filters = json!({ "input.scope": { "$eq": scope } });
+        if let Some(key) = key {
+            filters["input.key"] = json!({ "$eq": key });
+        }
+        Some(filters)
+    }
+
     /// The replay catch-up reads exactly the console-04e02cb7 shape: a
-    /// one-shot `state` wake on a scope/key, never fired.
+    /// one-shot `state::on-changed` wake on a scope/key, never fired.
     #[test]
     fn catchup_names_the_watched_key_for_unfired_one_shot_state_wakes() {
-        let b = wake_binding(json!({
-            "trigger_type": "state",
-            "config": { "scope": "calc-delivery", "key": "plan" },
-        }));
+        let b = wake_binding(scope_key("calc-delivery", Some("plan")));
         assert_eq!(
             state_wake_catchup(&b),
             Some(("calc-delivery".to_string(), "plan".to_string()))
@@ -533,10 +501,7 @@ mod tests {
     fn catchup_skips_fired_standing_keyless_and_non_state_bindings() {
         let fired = crate::bindings::Binding {
             fires: 1,
-            ..wake_binding(json!({
-                "trigger_type": "state",
-                "config": { "scope": "s", "key": "k" },
-            }))
+            ..wake_binding(scope_key("s", Some("k")))
         };
         assert_eq!(state_wake_catchup(&fired), None);
 
@@ -546,23 +511,20 @@ mod tests {
                 max_fires: None,
                 expires_at: None,
             },
-            ..wake_binding(json!({
-                "trigger_type": "state",
-                "config": { "scope": "s", "key": "k" },
-            }))
+            ..wake_binding(scope_key("s", Some("k")))
         };
         assert_eq!(state_wake_catchup(&standing), None);
 
-        let keyless = wake_binding(json!({
-            "trigger_type": "state",
-            "config": { "scope": "s" },
-        }));
+        let keyless = wake_binding(scope_key("s", None));
         assert_eq!(state_wake_catchup(&keyless), None);
 
-        let cron = wake_binding(json!({
-            "trigger_type": "cron",
-            "config": { "expression": "0 * * * * *" },
-        }));
+        let mut cron = wake_binding(None);
+        cron.source = Some(crate::bindings::SourceSpec {
+            function_id: "cron::on-tick".into(),
+            namespace: None,
+            args: Some(json!({ "expression": "0 * * * * *" })),
+            filters: None,
+        });
         assert_eq!(state_wake_catchup(&cron), None);
     }
 }

@@ -1,18 +1,18 @@
 {
-  "function_id": "harness::triggers::list",
+  "function_id": "harness::observers::list",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
       "session_id": {
         "default": null,
-        "description": "Owner session whose bindings to list; in-turn calls may omit it (the calling session is injected).",
+        "description": "Owner session whose observers to list; in-turn calls may omit it (the calling session is injected).",
         "type": [
           "string",
           "null"
         ]
       }
     },
-    "title": "TriggersListRequest",
+    "title": "ObserversListRequest",
     "type": "object"
   },
   "response_schema": {
@@ -31,23 +31,23 @@
         ],
         "type": "object"
       },
-      "TriggerRow": {
-        "description": "One binding, as data. `trigger_type`/`config` are read from the canonicalised registration request and absent on records that predate it.",
+      "ObserverRow": {
+        "description": "One binding, as data. `function_id`, `args` and `filters` are what its observer observes.",
         "properties": {
           "action": {
-            "description": "Human-readable event text declared as `metadata.action`.",
+            "description": "Human-readable event text declared as `action`.",
             "type": [
               "string",
               "null"
             ]
           },
+          "args": true,
           "conditions": {
             "items": {
               "$ref": "#/definitions/ConditionSpec"
             },
             "type": "array"
           },
-          "config": true,
           "created_at": {
             "format": "int64",
             "type": "integer"
@@ -59,10 +59,18 @@
               "null"
             ]
           },
+          "filters": true,
           "fires": {
             "format": "uint64",
             "minimum": 0.0,
             "type": "integer"
+          },
+          "function_id": {
+            "description": "The observed function.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "label": {
             "type": [
@@ -78,27 +86,21 @@
               "null"
             ]
           },
+          "namespace": {
+            "description": "Where the observed function is hosted, when the observer names it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "observer_id": {
+            "type": "string"
+          },
           "once": {
             "type": "boolean"
           },
-          "subscription_id": {
-            "type": "string"
-          },
           "target": {
-            "description": "The function a fire calls. Absent for a wake — the fire notifies the owner session.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "trigger_id": {
-            "description": "The engine's own trigger id (absent only in the brief window before the engine acknowledged the registration).",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "trigger_type": {
+            "description": "The function a delivery calls. Absent for a wake — the delivery notifies the owner session.",
             "type": [
               "string",
               "null"
@@ -108,24 +110,24 @@
         "required": [
           "created_at",
           "fires",
-          "once",
-          "subscription_id"
+          "observer_id",
+          "once"
         ],
         "type": "object"
       }
     },
     "properties": {
-      "subscriptions": {
+      "observers": {
         "items": {
-          "$ref": "#/definitions/TriggerRow"
+          "$ref": "#/definitions/ObserverRow"
         },
         "type": "array"
       }
     },
     "required": [
-      "subscriptions"
+      "observers"
     ],
-    "title": "TriggersListResponse",
+    "title": "ObserversListResponse",
     "type": "object"
   }
 }

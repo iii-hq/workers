@@ -1,106 +1,127 @@
-//! Subscriptions — register an ephemeral iii trigger and be notified when it
-//! fires, instead of polling (harness.md § Subscriptions). The agent calls
-//! `engine::register_trigger` / `engine::unregister_trigger`; the harness
-//! intercepts those calls (see [`invoke`]) so the trusted owning session is
-//! injected and teardown stays owner-checked — the agent can never supply
-//! those. Every registration becomes a durable binding whose fire either
-//! notifies the owner session (a wake) or calls a plain, policy-checked
-//! function. A binding never starts an agent: `harness::spawn` is not a
-//! target, and spawning is a direct call the owner makes on its own turn.
+//! `harness::observe` / `harness::unobserve` — the agent's observe surface
+//! (harness.md § Subscriptions). An agent observes a function and is woken
+//! with what it returns, or has a plain function called with it, instead of
+//! polling. The harness intercepts both calls (see [`invoke`]) so the trusted
+//! owning session is injected and teardown stays owner-checked — the agent
+//! can never supply those. Every observe becomes a durable binding whose
+//! delivery either notifies the owner session (a wake) or calls a plain,
+//! policy-checked function. A binding never starts an agent: `harness::spawn`
+//! is not a target, and spawning is a direct call the owner makes on its own
+//! turn.
 //!
-//! The engine-side trigger is registered over the WORKER CHANNEL
-//! ([`register_delivery_trigger`]), not by dispatching the
-//! `engine::register_trigger` function. The function path pins all three of
-//! the trigger's namespaces to `default`, so in a namespaced deployment the
-//! provider lookup misses the real provider (the binding parks as PENDING
-//! forever — MOT: console-04e02cb7 postmortem, `fires: 0` while the watched
-//! state key was written) and a fire would resolve `harness::trigger::deliver`
-//! in `default`, where this harness never registers. The channel path stamps
-//! the connection's namespace on both ends for normal triggers. The
-//! `compose-operation` provider is the exception: it is selected with the
-//! supervisor's namespace while the target stays in the harness namespace.
-//! The SDK replays both forms on reconnect. Durability across HARNESS restarts
-//! moved with it: the engine's trigger registry is in-memory, so the durable
-//! thing was always the binding record — startup now re-arms engine triggers
-//! from the store ([`crate::bindings::gc::run`]).
+//! The harness creates the binding's observer itself, over its own
+//! connection ([`crate::bindings::observe_binding`]): the observed function
+//! with the agent's args and filters, `harness::observer::deliver` as the
+//! target, the binding id as the observer id and its `__binding` metadata.
+//! The source namespace is resolved here, home-first: the harness's own
+//! namespace, then `default`, then Compose's, wherever the function is hosted
+//! — an observer of a function in another namespace would stay `pending`
+//! forever (MOT: console-04e02cb7 postmortem, `fires: 0` while the watched
+//! state key was written). Observers belong to the harness connection, so the
+//! durable thing is the binding record: startup re-creates every surviving
+//! binding's observer from the store ([`crate::bindings::gc::run`]).
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::TriggerAction;
+use std::time::Duration;
+
+use iii_sdk::protocol::CallRequest;
+use iii_sdk::{ObserverHandle, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::bindings::{
-    Binding, BindingTarget, Causation, ConditionSpec, Lifecycle, OwnerScope, ReserveOutcome,
+    Binding, BindingTarget, ConditionSpec, Lifecycle, OwnerScope, ReserveOutcome, SourceSpec,
+    STATE_ON_CHANGED_FN,
 };
+use crate::call::{self, ResultData};
 use crate::clients::EngineClient;
 use crate::deps::Deps;
 use crate::error::HarnessError;
 use crate::policy::CompiledPolicy;
 use crate::subscriptions;
-use crate::trigger::{self, ResultData};
 use crate::types::content::ContentBlock;
 use crate::types::model::AgentFunction;
 
-/// The engine function the agent calls to subscribe. The harness intercepts it
-/// (the agent never reaches the raw engine registrar) so it can stamp the
-/// trusted session and point the engine trigger at the harness delivery hop.
-pub const REGISTER_TRIGGER_ID: &str = "engine::register_trigger";
+/// The agent tool that observes a function for the calling session. The
+/// harness intercepts it so it can stamp the trusted session and aim the
+/// observer at the harness delivery hop.
+pub const OBSERVE_ID: &str = "harness::observe";
+
+/// The agent tool that removes an observer the calling session created. The
+/// harness intercepts it so it resolves the caller's binding, enforces
+/// ownership, and disposes the observer.
+pub const UNOBSERVE_ID: &str = "harness::unobserve";
 
 /// Side-effect-free "what would the gate decide" probe. Absent when the
 /// deployment runs no approval worker — see [`approval_allows_unattended`].
 const APPROVAL_EVALUATE_ID: &str = "approval::evaluate";
 
-/// Compose owns this trigger in the supervisor namespace, not in the project
-/// namespace where the harness worker runs.
-const COMPOSE_OPERATION_TRIGGER: &str = "compose-operation";
+/// Compose reports each operation's progress as calls of this function, in
+/// the supervisor namespace rather than the project namespace where the
+/// harness worker runs.
+pub const COMPOSE_PROGRESS_FN: &str = "compose::on-operation-progress";
 const COMPOSE_NAMESPACE_ENV: &str = "III_COMPOSE_NAMESPACE";
 
-/// The engine function the agent calls to unsubscribe. The harness intercepts it
-/// so it resolves the caller's subscription, enforces ownership, and unregisters
-/// the underlying engine trigger.
-pub const UNREGISTER_TRIGGER_ID: &str = "engine::unregister_trigger";
+/// The cron worker's tick: recurring by definition.
+const CRON_ON_TICK_FN: &str = "cron::on-tick";
 
-/// Agent-facing subscription contract.
+/// The engine builtin that reports where a function is hosted.
+const FUNCTIONS_INFO_ID: &str = "engine::functions::info";
+
+/// How long `harness::observe` waits for its observer to become active, so a
+/// refusal (`INVALID_ARGS`, `FORBIDDEN`, `NOT_OBSERVABLE`, a rejection by the
+/// function's worker) reaches the agent. An observer still `pending` after
+/// it is waiting for its function's worker and activates on its own.
+const OBSERVE_READY_WAIT: Duration = Duration::from_secs(5);
+
+/// Agent-facing observe contract.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
-#[schemars(rename = "SubscribeArgs")]
-pub struct SubscribeRequest {
-    /// Trigger type to listen on: `cron`, `state`, `stream`, `timer`, or
-    /// another worker's custom type (e.g. `database::row-changed`).
-    pub trigger_type: String,
-    /// Trigger config passed verbatim to the engine, a JSON object: cron
-    /// `{ "expression" }`, state scope/key, timer `{ "in_ms" }` or `{ "at" }`
-    /// (epoch ms).
+#[schemars(rename = "ObserveArgs")]
+pub struct ObserveRequest {
+    /// The function to observe: `state::on-changed`, `cron::on-tick`,
+    /// `harness::on-timer`, `database::on-row-changed`, or any other
+    /// function. What it returns is the event.
+    pub function_id: String,
+    /// Where the function is hosted; omitted: this harness's namespace, then
+    /// `default`, then Compose's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    /// Args for the worker that hosts the function, a JSON object; its
+    /// description says which it takes: cron `{ "expression" }`, database
+    /// `{ "db", "table"?, "ops"? }`, `harness::on-timer` `{ "in_ms" }` or
+    /// `{ "at" }` (epoch ms). Omit for a function that takes none.
     // Published as an object so call reconciliation parses a stringified one
     // like it does `conditions` and `lifecycle`.
     #[serde(default)]
     #[schemars(with = "Option<serde_json::Map<String, Value>>")]
-    pub config: Value,
+    pub args: Value,
+    /// Which calls reach this observer, a JSON object of explicit operators
+    /// on the call's fields: `{ "input.scope": { "$eq": "run" } }`.
+    #[serde(default)]
+    #[schemars(with = "Option<serde_json::Map<String, Value>>")]
+    pub filters: Value,
     /// A short human label echoed back in the notification text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    /// Auto-unsubscribe after the first fire; defaults to true for a wake (no
-    /// `function_id`) and `timer`, false for a call binding and `cron`.
+    /// User-facing text saying what happened, shown with each delivery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    /// Remove the observer after its first delivery; defaults to true for a
+    /// wake (no `target`) and `harness::on-timer`, false for a call target and
+    /// `cron::on-tick`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub once: Option<bool>,
-    /// Function called on each event; omit to be notified in this session
-    /// instead. `harness::spawn` is never a valid target.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub function_id: Option<String>,
-    /// Optional `{ action?, payload?, event_into? }`: user-facing event text,
-    /// the fixed call payload, and the JSON pointer where the event is
-    /// injected into it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Value>,
-    /// Long form of `function_id` + `metadata`: `{ function_id, payload?,
-    /// event_into? }`.
+    /// The function called with each event: `{ function_id, payload?,
+    /// event_into? }` — the fixed payload and the JSON pointer where the
+    /// event is injected into it (default `/event`). Omit it to be notified
+    /// in this session instead. `harness::spawn` is never a valid target.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<BindingTarget>,
-    /// Fire-time gates, in order; each is an iii function answering
+    /// Delivery-time gates, in order; each is an iii function answering
     /// `{ decision: "allow" | "skip", payload?, reason? }`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<ConditionSpec>,
-    /// When the binding stops firing; top-level `once` is the shorthand.
+    /// When the observer stops delivering; top-level `once` is the shorthand.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle: Option<LifecycleRequest>,
 }
@@ -111,14 +132,14 @@ pub struct SubscribeRequest {
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LifecycleRequest {
-    /// Auto-unsubscribe after the first fire (same as top-level `once`).
+    /// Remove the observer after its first delivery (same as top-level `once`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub once: Option<bool>,
-    /// Lifetime delivery budget; the binding retires on its Nth delivery.
+    /// Lifetime delivery budget; the observer is removed on its Nth delivery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_fires: Option<u64>,
-    /// Relative deadline: the binding stops this many milliseconds after
-    /// registration (the only deadline form).
+    /// Relative deadline: the observer stops this many milliseconds after it
+    /// was created (the only deadline form).
     // Absolute `expires_at` was retired after repeated stale-epoch guesses
     // (verify-wake-fix-1/-4: models sent months-old round numbers);
     // `deny_unknown_fields` turns it into a field-naming error instead of a
@@ -128,68 +149,67 @@ pub struct LifecycleRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct SubscribeResponse {
-    pub subscription_id: String,
-    /// The effective `once` flag applied (after the per-type default).
+pub struct ObserveResponse {
+    pub observer_id: String,
+    /// The effective `once` flag applied (after the per-function default).
     pub once: bool,
-    /// Advisory only — the registration SUCCEEDED, but its wiring looks
-    /// suspicious (e.g. a turn-event filter naming a session that doesn't
-    /// exist). Read it and fix the wiring if it applies.
+    /// Advisory only — the observer was CREATED, but its wiring looks
+    /// suspicious (e.g. a filter naming a key someone already wrote). Read it
+    /// and fix the wiring if it applies.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
 
-/// Agent-facing unsubscribe contract. The id is the harness subscription id
-/// returned by [`SubscribeResponse`], not the underlying engine binding id.
+/// Agent-facing unobserve contract. The id is the `observer_id`
+/// `harness::observe` returned.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
-#[schemars(rename = "UnsubscribeArgs")]
-pub struct UnsubscribeRequest {
+#[schemars(rename = "UnobserveArgs")]
+pub struct UnobserveRequest {
     pub id: String,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct UnsubscribeResponse {
+pub struct UnobserveResponse {
     pub removed: bool,
 }
 
-/// Subscription controls are intercepted by the harness and therefore do not
-/// appear in the engine's public function registry. Native exposure still has
-/// to publish their real contracts when the turn policy allows them.
-/// The contract agents actually get for the intercepted control ids — shown
-/// as the native tool AND overlaid onto `engine::functions::info/list`
-/// responses, which would otherwise report the raw engine registration (no
-/// `once`, no `lifecycle`, no `conditions`, `function_id` required).
-pub const REGISTER_TOOL_DESC: &str =
-    "Subscribe the current harness session to a iii trigger: omit function_id to be \
-     notified in this session, or name a non-harness function to call with the event. \
-     Returns `{ subscription_id, once }`; a `note` means registration succeeded but its wiring \
-     looks suspicious. Call-target results are discarded and do not return to this session.";
-pub const UNREGISTER_TOOL_DESC: &str =
-    "Remove a trigger subscription owned by the current harness session.";
+/// The contract agents get for the intercepted observe tools — shown as the
+/// native tool AND overlaid onto `engine::functions::info/list` responses, so
+/// discovery describes exactly what the intercept accepts.
+pub const OBSERVE_TOOL_DESC: &str =
+    "Observe a function for the current harness session: each time it runs, omit `target` to be \
+     notified in this session with what it returned, or name a non-harness `target.function_id` \
+     to call with it. Pass the function's `args` when it takes them and `filters` on its \
+     `input.<field>` to choose calls. Returns `{ observer_id, once }`; a `note` means the observer \
+     was created but its wiring looks suspicious. Call-target results are discarded and do not \
+     return to this session.";
+pub const UNOBSERVE_TOOL_DESC: &str =
+    "Remove an observer the current harness session created (`id` is the observer_id \
+     harness::observe returned).";
 
 /// The intercept's request schema for a control id, for discovery overlays.
 pub fn control_contract(function_id: &str) -> Option<(&'static str, Value)> {
     match function_id {
-        REGISTER_TRIGGER_ID => Some((
-            REGISTER_TOOL_DESC,
-            crate::surface::schema_value::<SubscribeRequest>(),
+        OBSERVE_ID => Some((
+            OBSERVE_TOOL_DESC,
+            crate::surface::schema_value::<ObserveRequest>(),
         )),
-        UNREGISTER_TRIGGER_ID => Some((
-            UNREGISTER_TOOL_DESC,
-            crate::surface::schema_value::<UnsubscribeRequest>(),
+        UNOBSERVE_ID => Some((
+            UNOBSERVE_TOOL_DESC,
+            crate::surface::schema_value::<UnobserveRequest>(),
         )),
         _ => None,
     }
 }
 
-/// What the intercept actually answers for a control id —
-/// `{ subscription_id, once, note? }` / `{ removed }` — never the engine's
-/// native `{ id }`. It keeps the raw `functions::info` details (console, hooks,
-/// contract ledger) honest; the model-visible copy strips response schemas.
+/// What the intercept answers for a control id — `{ observer_id, once,
+/// note? }` / `{ removed }`. It keeps the raw `functions::info` details
+/// (console, hooks, contract ledger) honest; the model-visible copy strips
+/// response schemas.
 pub fn control_response_schema(function_id: &str) -> Option<Value> {
     match function_id {
-        REGISTER_TRIGGER_ID => Some(crate::surface::schema_value::<SubscribeResponse>()),
-        UNREGISTER_TRIGGER_ID => Some(crate::surface::schema_value::<UnsubscribeResponse>()),
+        OBSERVE_ID => Some(crate::surface::schema_value::<ObserveResponse>()),
+        UNOBSERVE_ID => Some(crate::surface::schema_value::<UnobserveResponse>()),
         _ => None,
     }
 }
@@ -197,14 +217,14 @@ pub fn control_response_schema(function_id: &str) -> Option<Value> {
 pub fn native_control_tools(policy: &CompiledPolicy) -> Vec<AgentFunction> {
     [
         (
-            REGISTER_TRIGGER_ID,
-            REGISTER_TOOL_DESC,
-            crate::surface::schema_value::<SubscribeRequest>(),
+            OBSERVE_ID,
+            OBSERVE_TOOL_DESC,
+            crate::surface::schema_value::<ObserveRequest>(),
         ),
         (
-            UNREGISTER_TRIGGER_ID,
-            UNREGISTER_TOOL_DESC,
-            crate::surface::schema_value::<UnsubscribeRequest>(),
+            UNOBSERVE_ID,
+            UNOBSERVE_TOOL_DESC,
+            crate::surface::schema_value::<UnobserveRequest>(),
         ),
     ]
     .into_iter()
@@ -219,8 +239,19 @@ pub fn native_control_tools(policy: &CompiledPolicy) -> Vec<AgentFunction> {
     .collect()
 }
 
-/// The registering turn's dispatch policy, threaded from the dispatch
-/// chokepoints so a call binding can freeze the registrant's capability.
+/// The registered `harness::observe` / `harness::unobserve` answer only calls
+/// that bypass the turn loop's intercept: there is no calling session to
+/// observe for.
+pub async fn direct_handle<T>(function_id: &str) -> Result<T, HarnessError> {
+    Err(HarnessError::InvalidRequest(format!(
+        "{function_id} observes for the calling harness session and runs only from a turn. \
+         Outside a turn, observe with iii.observe, and remove a session's observers with \
+         harness::observers::dispose."
+    )))
+}
+
+/// The observing turn's dispatch policy, threaded from the dispatch
+/// chokepoints so a call binding can freeze the observer's capability.
 #[derive(Clone, Copy)]
 pub struct CallerModel<'a> {
     pub model: &'a str,
@@ -238,11 +269,11 @@ impl<'a> CallerModel<'a> {
     }
 }
 
-/// The single per-call invocation chokepoint. Subscription controls and a
-/// locked caller's exact self-targeted `harness::send` are handled inline with
+/// The single per-call invocation chokepoint. Observe controls and a locked
+/// caller's exact self-targeted `harness::send` are handled inline with
 /// trusted caller context; the model cannot forge session-lock ownership.
 /// Everything else invokes the target normally. Every call site (the turn loop,
-/// `harness::function::trigger`, and the hook-held release path) routes through
+/// `harness::function::call`, and the hook-held release path) routes through
 /// here so trusted context cannot be bypassed — and so every result, error
 /// results included, leaves through one capture-time size cap (MOT-4498).
 #[allow(clippy::too_many_arguments)]
@@ -257,31 +288,30 @@ pub async fn invoke(
     caller: Option<CallerModel<'_>>,
 ) -> ResultData {
     if agent_call_forbidden(function_id) {
-        return trigger::denied_result(function_id);
+        return call::denied_result(function_id);
     }
-    if function_id == REGISTER_TRIGGER_ID {
-        return intercept_register(deps, arguments, session_id, caller, policy).await;
+    if function_id == OBSERVE_ID {
+        return intercept_observe(deps, arguments, session_id, caller, policy).await;
     }
     let files_only;
     let mut start_note = None;
     let arguments =
         match scaffold_start_approval(deps, policy, function_id, arguments, session_id).await {
-            trigger::StartGate::Pass => arguments,
-            trigger::StartGate::Deny(denied) => return denied,
-            trigger::StartGate::FilesOnly(args, note) => {
+            call::StartGate::Pass => arguments,
+            call::StartGate::Deny(denied) => return denied,
+            call::StartGate::FilesOnly(args, note) => {
                 files_only = args;
                 start_note = Some(note);
                 &files_only
             }
         };
-    let witness = match super::delete_session_tree::begin_dispatch(deps, session_id, function_id)
-        .await
-    {
-        Ok(id) => id,
-        Err(error) => {
-            return trigger::invocation_error_result(Some(error.code().into()), error.to_string())
-        }
-    };
+    let witness =
+        match super::delete_session_tree::begin_dispatch(deps, session_id, function_id).await {
+            Ok(id) => id,
+            Err(error) => {
+                return call::invocation_error_result(Some(error.code().into()), error.to_string())
+            }
+        };
     let send = send_invocation_context(
         function_id,
         arguments,
@@ -292,29 +322,29 @@ pub async fn invoke(
         (intercept_send(deps, request, session_id).await, false)
     } else {
         match function_id {
-            REGISTER_TRIGGER_ID => (
-                intercept_register(deps, arguments, session_id, caller, policy).await,
+            OBSERVE_ID => (
+                intercept_observe(deps, arguments, session_id, caller, policy).await,
                 false,
             ),
-            UNREGISTER_TRIGGER_ID => (
-                intercept_unregister(deps, arguments, session_id).await,
+            UNOBSERVE_ID => (
+                intercept_unobserve(deps, arguments, session_id).await,
                 false,
             ),
-            crate::functions::triggers_list::TRIGGERS_LIST_ID
-            | crate::functions::triggers_list::TRIGGERS_UNREGISTER_ID => {
+            crate::functions::observers_list::OBSERVERS_LIST_ID
+            | crate::functions::observers_list::OBSERVERS_DISPOSE_ID => {
                 // In-turn controls always target their caller. External console
                 // calls bypass this chokepoint and continue supplying session_id.
                 let args = with_caller_session_id(arguments, session_id);
-                trigger::invoke_target_classified(engine, policy, function_id, &args).await
+                call::invoke_target_classified(engine, policy, function_id, &args).await
             }
             // Tag the job with its owner so `harness::stop` can reap it
             // (`shell::kill-session-jobs`); the stamp overwrites a forged one.
             "shell::exec_bg" => {
                 let args = with_caller_session_id(arguments, session_id);
-                trigger::invoke_target_classified(engine, policy, function_id, &args).await
+                call::invoke_target_classified(engine, policy, function_id, &args).await
             }
-            internal if agent_call_forbidden(internal) => (trigger::denied_result(internal), false),
-            _ => trigger::invoke_target_classified(engine, policy, function_id, arguments).await,
+            internal if agent_call_forbidden(internal) => (call::denied_result(internal), false),
+            _ => call::invoke_target_classified(engine, policy, function_id, arguments).await,
         }
     };
     // A timeout or broken transport does not cancel the remote invocation.
@@ -324,22 +354,22 @@ pub async fn invoke(
     // never from the target-controlled result text.
     if !outcome_unknown {
         if let Err(error) = super::delete_session_tree::end_dispatch(deps, &witness).await {
-            return trigger::invocation_error_result(Some(error.code().into()), error.to_string());
+            return call::invocation_error_result(Some(error.code().into()), error.to_string());
         }
     }
     if let (Some(note), false) = (start_note, result.is_error) {
         result.content.push(ContentBlock::text(note));
     }
-    trigger::cap_result(result, deps.cfg().await.max_result_bytes)
+    call::cap_result(result, deps.cfg().await.max_result_bytes)
 }
 
 /// Whether [`invoke`] would settle this call inside the harness — a
 /// control-plane interception with its own multi-step writes (`harness::send`
-/// into the running turn, trigger registration = engine binding + durable
-/// record) — rather than dispatch it to the engine. Interceptions are short
-/// and NOT safe to drop midway, so the stop race in the turn loop skips them:
-/// only an engine dispatch, the long-running case, is interruptible. Mirrors
-/// the match in [`invoke`].
+/// into the running turn, an observe = durable record + observer) — rather
+/// than dispatch it to the engine. Interceptions are short and NOT safe to
+/// drop midway, so the stop race in the turn loop skips them: only an engine
+/// dispatch, the long-running case, is interruptible. Mirrors the match in
+/// [`invoke`].
 pub fn is_locally_intercepted(
     function_id: &str,
     arguments: &Value,
@@ -353,21 +383,24 @@ pub fn is_locally_intercepted(
         caller_holds_session_lock,
     )
     .is_some()
-        || matches!(function_id, REGISTER_TRIGGER_ID | UNREGISTER_TRIGGER_ID)
+        || matches!(function_id, OBSERVE_ID | UNOBSERVE_ID)
 }
 
 /// Agent calls carry the harness worker's authority. Private state accessors
 /// do not check their caller, so neither those nor credential-management RPCs
 /// may be reached by agents, even with `allow = ["*"]`. Namespace claims are
-/// likewise reserved for the worker itself. Console/operator calls bypass
-/// this agent boundary; ordinary provider and public state calls remain valid.
+/// likewise reserved for the worker itself, and so is disposing observers by
+/// id: the harness created every binding's observer, so its authority would
+/// dispose any session's. Console/operator calls bypass this agent boundary;
+/// ordinary provider and public state calls remain valid.
 fn agent_call_forbidden(function_id: &str) -> bool {
     function_id.starts_with("harness::delete-session-tree")
         || function_id == crate::state::CLAIM_NAMESPACE_ID
-        // `harness::function::trigger` takes the session lock a running step
+        || function_id == crate::bindings::OBSERVERS_DISPOSE_ID
+        // `harness::function::call` takes the session lock a running step
         // already holds: an agent calling it for its own session deadlocks,
         // and recursive pipeline invocation is never an agent need.
-        || function_id == crate::functions::FUNCTION_TRIGGER_ID
+        || function_id == crate::functions::FUNCTION_CALL_ID
         || [
             "harness::state::",
             "provider::openai-codex::login::",
@@ -399,13 +432,13 @@ async fn intercept_send(
 ) -> ResultData {
     match crate::functions::send::handle_from_invoke(deps, request, caller_session_id, true).await {
         Ok(response) => match serde_json::to_value(response) {
-            Ok(value) => trigger::normalized_result(value),
-            Err(error) => trigger::invocation_error_result(
+            Ok(value) => call::normalized_result(value),
+            Err(error) => call::invocation_error_result(
                 None,
                 format!("{}: {error}", crate::functions::SEND_ID),
             ),
         },
-        Err(error) => trigger::invocation_error_result(
+        Err(error) => call::invocation_error_result(
             Some(error.code().to_string()),
             format!("{}: {error}", crate::functions::SEND_ID),
         ),
@@ -426,57 +459,59 @@ fn with_caller_session_id(arguments: &Value, session_id: &str) -> Value {
 /// five discovery runs when it was one rule for everything:
 ///
 /// * explicit always wins;
-/// * `timer` is once by definition (a deadline that repeats is a cron);
-/// * `cron` is recurring by definition;
+/// * `harness::on-timer` is once by definition (a deadline that repeats is a
+///   cron);
+/// * `cron::on-tick` is recurring by definition;
 /// * a WAKE (no target function) is once: it parks its session, and a park
 ///   that silently re-arms forever is the worse surprise;
 /// * a CALL binding is STANDING: "handle every arrival" is what agents mean
-///   when they bind work to an event stream — runs 1 and 5 both registered
+///   when they bind work to an event stream — runs 1 and 5 both created
 ///   intended-standing handlers, got the old once default, and silently lost
 ///   every event after the first.
 ///
 /// The standing default is not silent either: `standing_binding_advisory`
-/// tells the registrant it is standing and to bound or retire it.
-fn effective_once(req: &SubscribeRequest) -> bool {
+/// tells the observer it is standing and to bound or remove it.
+fn effective_once(req: &ObserveRequest) -> bool {
     if let Some(once) = req
         .once
         .or_else(|| req.lifecycle.as_ref().and_then(|l| l.once))
     {
         return once;
     }
-    match req.trigger_type.as_str() {
-        crate::timer::TIMER_TYPE => true,
-        "cron" => false,
+    match req.function_id.as_str() {
+        crate::timer::ON_TIMER_FN => true,
+        CRON_ON_TICK_FN => false,
         _ => is_wake_shape(req),
     }
 }
 
-/// Whether the registration is a wake — no explicit target function, so the
-/// fire delivers a notification into the registering session.
-fn is_wake_shape(req: &SubscribeRequest) -> bool {
-    req.function_id.is_none() && req.target.is_none()
+/// Whether the observe is a wake — no explicit target function, so each
+/// delivery is a notification into the observing session.
+fn is_wake_shape(req: &ObserveRequest) -> bool {
+    req.target.is_none()
 }
 
-/// Validate a `timer` registration and resolve `{ in_ms }` to an absolute
-/// `{ at }` BEFORE the engine stores it — the engine replays registrations to
-/// the provider on reconnect, and a relative countdown replayed after a
-/// restart would silently restart from zero. Strict here, lenient in the
-/// provider: agents get told about a nonsense deadline at registration; a
-/// replayed past-due `at` still fires.
-fn resolve_timer_request(req: &mut SubscribeRequest) -> Result<(), HarnessError> {
-    if req.trigger_type != crate::timer::TIMER_TYPE {
+/// Validate a `harness::on-timer` observe and resolve `{ in_ms }` to an
+/// absolute `{ at }` BEFORE the observer is created — observer args replay
+/// unchanged to the timer's added hook on every reconnect, and a relative
+/// countdown replayed after a restart would silently restart from zero.
+/// Strict here, lenient in the provider: agents get told about a nonsense
+/// deadline when they observe; a replayed past-due `at` still fires.
+fn resolve_timer_request(req: &mut ObserveRequest) -> Result<(), HarnessError> {
+    if req.function_id != crate::timer::ON_TIMER_FN {
         return Ok(());
     }
     if !effective_once(req) {
         return Err(HarnessError::InvalidRequest(
-            "a timer fires exactly once — for recurrence use `cron` (with a lifecycle bound)"
+            "a timer fires exactly once — for recurrence observe `cron::on-tick` (with a \
+             lifecycle bound)"
                 .into(),
         ));
     }
-    let cfg: crate::timer::TimerTriggerConfig = serde_json::from_value(req.config.clone())
-        .map_err(|e| HarnessError::InvalidRequest(format!("timer config: {e}")))?;
+    let args: crate::timer::TimerRequestArgs = serde_json::from_value(req.args.clone())
+        .map_err(|e| HarnessError::InvalidRequest(format!("harness::on-timer args: {e}")))?;
     let now = crate::types::message::AgentMessage::now_ms();
-    let at = crate::timer::resolve_fire_at(&cfg, now).map_err(HarnessError::InvalidRequest)?;
+    let at = crate::timer::resolve_fire_at(&args, now).map_err(HarnessError::InvalidRequest)?;
     if at <= now {
         return Err(HarnessError::InvalidRequest(format!(
             "timer `at` ({at}) is in the past — pass epoch MILLISECONDS, or use `in_ms` for a \
@@ -489,104 +524,106 @@ fn resolve_timer_request(req: &mut SubscribeRequest) -> Result<(), HarnessError>
              usually an epoch mix-up; use `in_ms` for a relative deadline"
         )));
     }
-    req.config = json!({ "at": at });
+    req.args = json!({ "at": at });
     Ok(())
 }
 
-/// Advisory for a standing call binding (no `once`): agents keep registering
-/// one-run kickoffs without `once: true`, leaving bindings that re-run their
+/// The `$eq` value of a top-level filter on `path` (`input.scope`).
+fn filter_eq<'a>(filters: &'a Value, path: &str) -> Option<&'a Value> {
+    filters.get(path)?.get("$eq")
+}
+
+/// Advisory for a standing call binding (no `once`): agents keep creating
+/// one-run kickoffs without `once: true`, leaving observers that re-run their
 /// call on every future matching event. Purely informative — deliberate
 /// standing watchers ignore it.
 ///
 /// Cron gets its own version: recurring is its point, but a recurring cron
-/// with NO lifecycle bound fires forever, and every live run that registered
+/// with NO lifecycle bound fires forever, and every live run that created
 /// one meant it as a deadline or a bounded sweep (rctest7's 69 fires; both
 /// discovery runs left one firing past their own teardown claim).
 ///
 /// A wake is one-shot by default, so a standing one was asked for with
 /// `once: false`: it has no call to re-run, and the cost is a new paid turn
-/// in the registering session per event (MOT-5449).
-fn standing_binding_advisory(req: &SubscribeRequest, once: bool) -> Option<String> {
+/// in the observing session per event (MOT-5449).
+fn standing_binding_advisory(req: &ObserveRequest, once: bool) -> Option<String> {
     if once {
         return None;
     }
-    if is_wake_shape(req) && req.trigger_type != "cron" {
-        let bounded = req
-            .lifecycle
-            .as_ref()
-            .is_some_and(|l| l.max_fires.is_some() || l.expires_in_ms.is_some());
+    let bounded = req
+        .lifecycle
+        .as_ref()
+        .is_some_and(|l| l.max_fires.is_some() || l.expires_in_ms.is_some());
+    if is_wake_shape(req) && req.function_id != CRON_ON_TICK_FN {
         if bounded {
             return None;
         }
         return Some(
             "note: this WAKE is STANDING (`once: false`) — every future matching event wakes \
-             this session with a new paid turn until unregistered. Bound it with lifecycle \
-             { max_fires | expires_in_ms } or unregister it in your teardown so it cannot wake \
+             this session with a new paid turn until unobserved. Bound it with lifecycle \
+             { max_fires | expires_in_ms } or unobserve it in your teardown so it cannot wake \
              you forever."
                 .to_string(),
         );
     }
-    if req.trigger_type == "cron" {
-        let bounded = req
-            .lifecycle
-            .as_ref()
-            .is_some_and(|l| l.max_fires.is_some() || l.expires_in_ms.is_some());
+    if req.function_id == CRON_ON_TICK_FN {
         if bounded {
             return None;
         }
         let expr = req
-            .config
+            .args
             .get("expression")
             .and_then(Value::as_str)
             .unwrap_or("?");
         return Some(format!(
             "warning: this cron is UNBOUNDED — `{expr}` fires at every boundary FOREVER until \
-             unregistered, and each fire delivers its own paid reaction (a woken turn or a \
-             dispatched call). This registration still SUCCEEDED. A deadline wants trigger_type \
-             \"timer\" with {{ \"in_ms\": <ms> }} (fires once, exactly on time) — or keep this \
-             cron and pass `once: true`; a bounded run sets lifecycle \
-             {{ max_fires | expires_in_ms }}; a deliberate forever-cron must be unregistered by \
+             unobserved, and each tick delivers its own paid reaction (a woken turn or a \
+             dispatched call). This observer was still CREATED. A deadline wants \
+             `harness::on-timer` with args {{ \"in_ms\": <ms> }} (fires once, exactly on time) — \
+             or keep this cron and pass `once: true`; a bounded run sets lifecycle \
+             {{ max_fires | expires_in_ms }}; a deliberate forever-cron must be unobserved by \
              your teardown."
         ));
     }
     Some(
         "note: this call binding is STANDING — it re-runs its call on EVERY future matching \
-         event until unregistered. That is the default for a call target (per-event work is \
+         event until unobserved. That is the default for a call target (per-event work is \
          what a call binding means); pass `once: true` for a one-shot, and give a standing \
-         binding a lifecycle bound ({ max_fires | expires_in_ms }) or unregister it in your \
+         binding a lifecycle bound ({ max_fires | expires_in_ms }) or unobserve it in your \
          teardown so it cannot fire forever."
             .to_string(),
     )
 }
 
-/// The `(scope, key)` a keyed state binding watches — the only shape whose
-/// pre-existing value can be checked cheaply at registration.
-fn watched_state_key(req: &SubscribeRequest) -> Option<(&str, &str)> {
-    if req.trigger_type != "state" {
+/// The `(scope, key)` a keyed `state::on-changed` observer watches through
+/// its `$eq` filters — the only shape whose pre-existing value can be checked
+/// cheaply when the observer is created.
+fn watched_state_key(req: &ObserveRequest) -> Option<(&str, &str)> {
+    if req.function_id != STATE_ON_CHANGED_FN {
         return None;
     }
     Some((
-        req.config.get("scope").and_then(Value::as_str)?,
-        req.config.get("key").and_then(Value::as_str)?,
+        filter_eq(&req.filters, "input.scope").and_then(Value::as_str)?,
+        filter_eq(&req.filters, "input.key").and_then(Value::as_str)?,
     ))
 }
 
 fn prewritten_key_note(scope: &str, key: &str) -> String {
     format!(
-        "warning: state {scope}/{key} ALREADY holds a value — state events do not replay, so \
-         writes from before this registration never fire this binding, and a condition counting \
-         arrivals (state::barrier) starts without them. If earlier writers matter, arm the \
-         binding BEFORE starting them, or reconcile the gate against what is already written."
+        "warning: state {scope}/{key} ALREADY holds a value — state changes do not replay, so \
+         writes from before this observer never reach it, and a condition counting arrivals \
+         (state::barrier) starts without them. If earlier writers matter, observe BEFORE \
+         starting them, or reconcile the gate against what is already written."
     )
 }
 
-/// Advisory for a state binding on a key somebody already wrote. Discovery
-/// run 2: the finish gate — a barrier over three suppliers — was registered
-/// mid-setup, AFTER the first supplier's done event had fired; it starved at
-/// 2/3 forever and only the deadline path saved the run. The stale value is
-/// detectable at registration, so say so. Fail-open: a lookup error produces
-/// no note.
-async fn prewritten_key_advisory(deps: &Deps, req: &SubscribeRequest) -> Option<String> {
+/// Advisory for a state observer on a key somebody already wrote. Discovery
+/// run 2: the finish gate — a barrier over three suppliers — was armed
+/// mid-setup, AFTER the first supplier's done event had happened; it starved
+/// at 2/3 forever and only the deadline path saved the run. The stale value
+/// is detectable when the observer is created, so say so. Fail-open: a lookup
+/// error produces no note.
+async fn prewritten_key_advisory(deps: &Deps, req: &ObserveRequest) -> Option<String> {
     let (scope, key) = watched_state_key(req)?;
     let timeout_ms = deps.cfg().await.session_timeout_ms;
     let existing = crate::state::state_get(&deps.iii, scope, key, timeout_ms)
@@ -598,17 +635,17 @@ async fn prewritten_key_advisory(deps: &Deps, req: &SubscribeRequest) -> Option<
     Some(prewritten_key_note(scope, key))
 }
 
-/// Advisory for a `state` binding with no `key` filter: it fires for EVERY
-/// key written in the scope (or every write anywhere, with no scope either) —
-/// order signals, done markers, completion keys, all of it. Registered beside
-/// a keyed binding it double-fires every event, and every fire delivers its
-/// own unthrottled paid reaction (rctest-k7m3 postmortem). Purely informative —
-/// a deliberate catch-all watcher ignores it.
-fn state_catchall_advisory(req: &SubscribeRequest, once: bool) -> Option<String> {
-    if req.trigger_type != "state" || req.config.get("key").is_some() {
+/// Advisory for a `state::on-changed` observer with no `input.key` filter:
+/// it fires for EVERY key written in the scope (or every write anywhere, with
+/// no scope either) — order signals, done markers, completion keys, all of
+/// it. Created beside a keyed observer it double-fires every event, and every
+/// delivery is its own unthrottled paid reaction (rctest-k7m3 postmortem).
+/// Purely informative — a deliberate catch-all watcher ignores it.
+fn state_catchall_advisory(req: &ObserveRequest, once: bool) -> Option<String> {
+    if req.function_id != STATE_ON_CHANGED_FN || filter_eq(&req.filters, "input.key").is_some() {
         return None;
     }
-    let scope = req.config.get("scope").and_then(Value::as_str);
+    let scope = filter_eq(&req.filters, "input.scope").and_then(Value::as_str);
     let gated = if req.conditions.is_empty() {
         ""
     } else {
@@ -619,46 +656,49 @@ fn state_catchall_advisory(req: &SubscribeRequest, once: bool) -> Option<String>
         // names its arrivals wakes once, on the writes it names, so no stray
         // key wins and nothing fans out.
         (Some(_), true) if names_its_arrivals(req) => None,
-        // Any other one-shot retires on the FIRST write that fires it, so the
-        // risk is the wrong write winning (a count barrier counts any key).
+        // Any other one-shot is removed on the FIRST write that reaches it,
+        // so the risk is the wrong write winning (a count barrier counts any
+        // key).
         (Some(scope), true) => Some(format!(
-            "note: this one-shot state wake has no `key` filter, so the FIRST write of ANY key \
-             in scope \"{scope}\"{gated} (a progress or done marker included) fires it and \
-             retires it. If only specific writes should wake it, add that `key`, or list their \
-             keys in a state::barrier `expect` array."
+            "note: this one-shot state wake has no `input.key` filter, so the FIRST write of ANY \
+             key in scope \"{scope}\"{gated} (a progress or done marker included) wakes it and \
+             removes it. If only specific writes should wake it, add an `input.key` filter, or \
+             list their keys in a state::barrier `expect` array."
         )),
         // No scope: every state write anywhere (the harness's own records
         // included) reaches it, conditions or not.
         (None, true) => Some(format!(
-            "warning: this one-shot state wake has neither `scope` nor `key`, so the first \
-             state write in ANY scope{gated}, other runs' traffic included, fires it. Scope it \
-             to this run at minimum."
+            "warning: this one-shot state wake filters on neither `input.scope` nor `input.key`, \
+             so the first state write in ANY scope{gated}, other runs' traffic included, wakes \
+             it. Filter it to this run's scope at minimum."
         )),
         // Scope-only is CORRECT for the per-event-unique-key shape (producers
         // writing `item-1`, `item-2`, … so nothing overwrites) — discovery
-        // run 7 registered exactly that, read the old "add a `key`" push as
-        // an instruction, pinned `key: "shipment"`, and its producers' unique
+        // run 7 armed exactly that, read the old "add a `key`" push as an
+        // instruction, pinned `key: "shipment"`, and its producers' unique
         // keys then matched nothing at all. State the trade-off; do not pick
         // a side.
         (Some(scope), false) => Some(format!(
-            "note: this state binding has no `key` filter, so it fires for EVERY key written in \
-             scope \"{scope}\" — done markers and progress keys included — and every matching \
-             write{gated} dispatches its own unthrottled paid reaction. That is the RIGHT shape \
-             when producers write one unique key per event (item-1, item-2, …); keep this scope \
-             private to those events. Add a `key` ONLY if every producer writes that exact key."
+            "note: this state observer has no `input.key` filter, so it fires for EVERY key \
+             written in scope \"{scope}\" — done markers and progress keys included — and every \
+             matching write{gated} dispatches its own unthrottled paid reaction. That is the \
+             RIGHT shape when producers write one unique key per event (item-1, item-2, …); keep \
+             this scope private to those events. Add an `input.key` filter ONLY if every producer \
+             writes that exact key."
         )),
         (None, false) => Some(format!(
-            "warning: this state binding has neither `scope` nor `key` — it fires for EVERY \
-             state write in EVERY scope, including other runs' traffic, and each one{gated} \
-             dispatches its own unthrottled paid reaction. Scope it to this run at minimum."
+            "warning: this state observer filters on neither `input.scope` nor `input.key` — it \
+             fires for EVERY state write in EVERY scope, including other runs' traffic, and each \
+             one{gated} dispatches its own unthrottled paid reaction. Filter it to this run's \
+             scope at minimum."
         )),
     }
 }
 
-/// Whether a condition picks the writes that fire the binding: a
+/// Whether a condition picks the writes that reach the binding: a
 /// `state::barrier` whose `expect` is a list accepts only those arrivals,
 /// while a count accepts any key.
-fn names_its_arrivals(req: &SubscribeRequest) -> bool {
+fn names_its_arrivals(req: &ObserveRequest) -> bool {
     req.conditions.iter().any(|condition| {
         condition.function_id == "state::barrier"
             && condition
@@ -669,16 +709,16 @@ fn names_its_arrivals(req: &SubscribeRequest) -> bool {
     })
 }
 
-async fn intercept_register(
+async fn intercept_observe(
     deps: &Deps,
     args: &Value,
     session_id: &str,
     caller: Option<CallerModel<'_>>,
     policy: &CompiledPolicy,
 ) -> ResultData {
-    let req: SubscribeRequest = match serde_json::from_value(args.clone()) {
+    let req: ObserveRequest = match serde_json::from_value(args.clone()) {
         Ok(r) => r,
-        Err(e) => return error_result(format!("invalid subscribe arguments: {e}")),
+        Err(e) => return error_result(format!("invalid {OBSERVE_ID} arguments: {e}")),
     };
 
     match handle(deps, req, session_id, caller, policy).await {
@@ -687,20 +727,18 @@ async fn intercept_register(
     }
 }
 
-async fn intercept_unregister(deps: &Deps, args: &Value, session_id: &str) -> ResultData {
-    let req: UnsubscribeRequest = match serde_json::from_value(args.clone()) {
+async fn intercept_unobserve(deps: &Deps, args: &Value, session_id: &str) -> ResultData {
+    let req: UnobserveRequest = match serde_json::from_value(args.clone()) {
         Ok(req) => req,
         Err(error) => {
-            return error_result(format!(
-                "{UNREGISTER_TRIGGER_ID} requires a string `id`: {error}"
-            ))
+            return error_result(format!("{UNOBSERVE_ID} requires a string `id`: {error}"))
         }
     };
     let id = req.id.as_str();
 
-    // Agent-registered post-turn validator? Owner-checked in the registry.
-    if let Some(removed) = deps.hooks.unregister_owned(id, session_id) {
-        return ok_result(&UnsubscribeResponse { removed });
+    // An agent-created post-turn validator? Owner-checked in the registry.
+    if let Some(removed) = deps.hooks.dispose_owned(id, session_id).await {
+        return ok_result(&UnobserveResponse { removed });
     }
 
     let store = deps.bindings().await;
@@ -710,60 +748,48 @@ async fn intercept_unregister(deps: &Deps, args: &Value, session_id: &str) -> Re
     };
 
     if let Some(binding) = binding {
-        // Owner-only: with trigger-driven spawning gone there is no reaction
-        // lineage anymore — a session tears down its own bindings, the
-        // console uses `harness::triggers::unregister`, and nothing else may.
+        // Owner-only: there is no reaction lineage — a session removes its
+        // own observers, the console uses `harness::observers::dispose`, and
+        // nothing else may.
         if binding.owner.session_id != session_id {
-            return error_result("subscription belongs to a different session".to_string());
+            return error_result("observer belongs to a different session".to_string());
         }
-        if let Some(trigger_id) = binding.trigger_id.as_deref() {
-            unregister_engine_trigger(deps, trigger_id).await;
+        if binding.observer_id.is_some() {
+            crate::bindings::dispose_observer(deps, &binding.id).await;
         }
         if let Err(e) = store.delete(id).await {
             return error_result(format!("binding delete failed: {e}"));
         }
-        return ok_result(&UnsubscribeResponse { removed: true });
+        return ok_result(&UnobserveResponse { removed: true });
     }
 
-    // No record: already retired (a `once` that fired, or someone else's
+    // No record: already removed (a `once` that fired, or someone else's
     // teardown). `removed: false` is the honest answer, not an error.
-    ok_result(&UnsubscribeResponse { removed: false })
+    ok_result(&UnobserveResponse { removed: false })
 }
 
-/// Build the durable binding a registration describes, register ONE engine
-/// trigger pointing at the delivery hop, and hand the id back. Both shapes —
-/// wake, mechanical call — produce the same record; only the target differs.
+/// Build the durable binding an observe describes, create ONE observer aimed
+/// at the delivery hop, and hand the id back. Both shapes — wake, mechanical
+/// call — produce the same record; only the target differs.
 async fn handle(
     deps: &Deps,
-    mut req: SubscribeRequest,
+    mut req: ObserveRequest,
     session_id: &str,
     caller: Option<CallerModel<'_>>,
     policy: &CompiledPolicy,
-) -> Result<SubscribeResponse, HarnessError> {
-    validate_config(&req.config)?;
-    // The one harness-internal type an agent MAY bind: a post-turn validator
+) -> Result<ObserveResponse, HarnessError> {
+    validate_object("args", &req.args)?;
+    validate_object("filters", &req.filters)?;
+    // The one harness hook point an agent MAY observe: a post-turn validator
     // for ITS OWN session. The session scope is force-stamped, so an agent
     // can gate its own completions but never anyone else's.
-    if req.trigger_type == crate::hooks::POST_TURN {
-        return register_post_turn_hook(deps, req, session_id, policy).await;
+    if req.function_id == crate::hooks::ON_POST_TURN_FN {
+        return observe_post_turn(deps, req, session_id, policy).await;
     }
-    reject_forbidden_type(&req.trigger_type)?;
-
-    // The engine's own condition contract vetoes only on a bare `false` and
-    // treats an erroring condition as "skip", silently and forever. Steer
-    // agents onto the typed one rather than letting them wire a binding that
-    // looks armed and never fires.
-    if req.config.get("condition_function_id").is_some() {
-        return Err(HarnessError::InvalidRequest(
-            "`condition_function_id` in `config` is not supported: an erroring or unknown \
-             condition silently starves the binding. Use `conditions: [{ function_id, config? }]` \
-             at the top level — those report why a fire was skipped."
-                .into(),
-        ));
-    }
+    reject_forbidden_source(&req.function_id)?;
 
     validate_lifecycle(req.lifecycle.as_ref())?;
-    validate_event_action(req.metadata.as_ref())?;
+    validate_event_action(req.action.as_deref())?;
     let once = effective_once(&req);
     // Idempotency is based on the caller's RELATIVE request (timer `in_ms`,
     // lifecycle `expires_in_ms`). Resolving first would mint a different
@@ -785,10 +811,7 @@ async fn handle(
     reject_leaf_control_plane(
         policy,
         has_parent,
-        req.target
-            .as_ref()
-            .map(|t| t.function_id.as_str())
-            .or(req.function_id.as_deref()),
+        req.target.as_ref().map(|t| t.function_id.as_str()),
     )?;
     let expires_at = leaf_wake_deadline(
         policy,
@@ -799,23 +822,30 @@ async fn handle(
     );
     let target = resolve_target(deps, &req, session_id, policy).await?;
     authorize_conditions(deps, &req.conditions, session_id, policy).await?;
+    let host = resolve_source_namespace(deps, &req).await;
 
-    let _topology = deps.topology.lock().await;
+    let topology = deps.topology.lock().await;
     super::delete_session_tree::ensure_live(deps, session_id).await?;
-    // Idempotency: an identical re-registration (a model retry, a re-run
-    // prompt in the same session) returns the standing binding instead of
-    // wiring a twin that double-delivers forever.
+    // Idempotency: an identical re-observe (a model retry, a re-run prompt in
+    // the same session) returns the standing binding instead of wiring a twin
+    // that double-delivers forever.
     let store = deps.bindings().await;
     if let Some(existing) = store.find_duplicate(session_id, &dedup).await? {
-        return Ok(SubscribeResponse {
-            subscription_id: existing,
+        return Ok(ObserveResponse {
+            observer_id: existing,
             once,
             note: None,
         });
     }
     let mut binding = Binding {
         id: format!("sub_{}", uuid::Uuid::new_v4().simple()),
-        trigger_id: None,
+        observer_id: None,
+        source: Some(SourceSpec {
+            function_id: req.function_id.clone(),
+            namespace: host.namespace.clone(),
+            args: (!req.args.is_null()).then(|| req.args.clone()),
+            filters: (!req.filters.is_null()).then(|| req.filters.clone()),
+        }),
         owner: OwnerScope {
             session_id: session_id.to_string(),
             root_session_id: None,
@@ -827,17 +857,16 @@ async fn handle(
             max_fires: req.lifecycle.as_ref().and_then(|l| l.max_fires),
             expires_at,
         },
-        // The registrant's policy, frozen: a fired call is checked against
-        // what the session could call WHEN IT REGISTERED, never against a
+        // The observer's policy, frozen: a delivered call is checked against
+        // what the session could call WHEN IT OBSERVED, never against a
         // policy that widened afterwards.
         capability: caller.and_then(|c| c.functions.cloned()),
-        causation: Causation::default(),
         dedup_key: Some(dedup),
         fires: 0,
         created_at: crate::types::message::AgentMessage::now_ms(),
     };
-    // Durable BEFORE the engine knows about it: a fire that arrives before the
-    // engine's answer must still resolve its record. The reservation and
+    // Durable BEFORE the observer exists: a delivery that arrives before the
+    // attach below must still resolve its record. The reservation and
     // per-owner capacity check are one CAS-backed operation; a deadline that
     // lapsed since resolution surfaces as `ReserveOutcome::Exhausted`.
     require_reserved(store.reserve(&binding).await?)?;
@@ -845,42 +874,57 @@ async fn handle(
     // later delete of the record (rollback below included) cancels it.
     crate::bindings::expiry::arm(deps, &binding);
 
-    let trigger_id =
-        match register_delivery_trigger(deps, &req.trigger_type, &req.config, &binding.id) {
-            Ok(id) => id,
-            Err(reason) => {
-                let _ = store.delete(&binding.id).await;
-                return Err(HarnessError::Dependency(format!(
-                    "delivery trigger registration `{}` failed: {reason}",
-                    req.trigger_type
-                )));
-            }
-        };
-    match store.attach_trigger_id(&binding, &trigger_id).await {
+    let Some(handle) = crate::bindings::observe_binding(deps, &binding) else {
+        let _ = store.delete(&binding.id).await;
+        return Err(HarnessError::Internal(format!(
+            "binding {} has no source to observe",
+            binding.id
+        )));
+    };
+    match store.attach_observer_id(&binding, &binding.id).await {
         Ok(crate::bindings::AttachOutcome::Attached(current)) => {
             binding = *current;
         }
         Ok(crate::bindings::AttachOutcome::Gone) => {
-            // A fast one-shot fired and retired before registration
-            // returned. Its provider id still needs explicit teardown.
-            unregister_engine_trigger(deps, &trigger_id).await;
+            // A fast one-shot was delivered and removed before the attach
+            // landed. Its observer still needs explicit disposal.
+            crate::bindings::dispose_observer(deps, &binding.id).await;
         }
         Err(error) => {
-            // The caller must never observe a failed registration
-            // while its provider trigger remains live.
-            unregister_engine_trigger(deps, &trigger_id).await;
+            // The caller must never see a failed observe while its observer
+            // stays live.
+            crate::bindings::dispose_observer(deps, &binding.id).await;
             let _ = store.delete(&binding.id).await;
             return Err(error);
         }
     }
 
-    // A preflight snapshot cannot close the provider's asynchronous activation
-    // window. Recover a missed terminal event now; the harness's own terminal
-    // Compose watch and every engine worker change retry it from the record.
+    // A preflight snapshot cannot close the Compose operation's asynchronous
+    // activation window. Recover a missed terminal event now; the harness's
+    // own terminal Compose watch and every engine worker change retry it from
+    // the record.
     crate::bindings::compose::schedule(deps, &binding);
+    drop(topology);
+
+    let pending = match readiness(&handle).await {
+        Readiness::Active => false,
+        Readiness::Pending => true,
+        Readiness::Failed(reason) => {
+            // Refused by the engine or by the function's worker: nothing can
+            // ever deliver, so the observe fails and leaves nothing behind.
+            crate::bindings::dispose_observer(deps, &binding.id).await;
+            let _ = store.delete(&binding.id).await;
+            return Err(HarnessError::InvalidRequest(format!(
+                "observing `{}` failed: {reason}",
+                req.function_id
+            )));
+        }
+    };
 
     let notes: Vec<String> = [
-        provider_presence_note(deps, &req.trigger_type).await,
+        pending
+            .then(|| host.parked_note(&req.function_id))
+            .flatten(),
         prewritten_key_advisory(deps, &req).await,
         standing_binding_advisory(&req, once),
         state_catchall_advisory(&req, once),
@@ -890,25 +934,46 @@ async fn handle(
     .flatten()
     .collect();
 
-    Ok(SubscribeResponse {
-        subscription_id: binding.id,
+    Ok(ObserveResponse {
+        observer_id: binding.id,
         once,
         note: compose_note(notes),
     })
 }
 
-/// A non-object `config` (above all a stringified `"{\"scope\":…}"` that
-/// reconciliation was off for) reaches the provider, which rejects it only
-/// after this call answered success: the binding parks and never fires.
-fn validate_config(config: &Value) -> Result<(), HarnessError> {
-    if config.is_object() || config.is_null() {
+/// How an observer came out of the bounded wait.
+enum Readiness {
+    Active,
+    /// Still waiting for its function's worker (or its target).
+    Pending,
+    /// Ended in `error` or `disposed`: the reason's code and message.
+    Failed(String),
+}
+
+async fn readiness(handle: &ObserverHandle) -> Readiness {
+    match tokio::time::timeout(OBSERVE_READY_WAIT, handle.ready()).await {
+        Ok(Ok(())) => Readiness::Active,
+        Ok(Err(error)) => Readiness::Failed(
+            handle
+                .reason()
+                .map(|reason| format!("{}: {}", reason.code, reason.message))
+                .unwrap_or_else(|| error.to_string()),
+        ),
+        Err(_) => Readiness::Pending,
+    }
+}
+
+/// A non-object `args` or `filters` (above all a stringified
+/// `"{\"scope\":…}"` that reconciliation was off for) is refused by the
+/// engine only after this call answered: the observer would never deliver.
+fn validate_object(field: &str, value: &Value) -> Result<(), HarnessError> {
+    if value.is_object() || value.is_null() {
         return Ok(());
     }
-    Err(HarnessError::InvalidRequest(
-        "`config` must be a JSON object such as {\"scope\": \"run\"}, not a JSON-encoded string \
-         or any other type"
-            .into(),
-    ))
+    Err(HarnessError::InvalidRequest(format!(
+        "`{field}` must be a JSON object such as {{\"input.scope\": {{\"$eq\": \"run\"}}}}, not a \
+         JSON-encoded string or any other type"
+    )))
 }
 
 fn validate_lifecycle(lifecycle: Option<&LifecycleRequest>) -> Result<(), HarnessError> {
@@ -932,59 +997,67 @@ fn require_reserved(outcome: ReserveOutcome) -> Result<(), HarnessError> {
     match outcome {
         ReserveOutcome::Reserved => Ok(()),
         ReserveOutcome::Capacity => Err(HarnessError::InvalidRequest(format!(
-            "binding cap reached ({} active for this session); unregister first",
+            "observer cap reached ({} active for this session); unobserve first",
             crate::bindings::MAX_BINDINGS_PER_SESSION
         ))),
         ReserveOutcome::Exhausted => Err(HarnessError::InvalidRequest(
-            "binding lifecycle expired before it could be reserved".into(),
+            "observer lifecycle expired before it could be reserved".into(),
         )),
     }
 }
 
 /// Join the advisories under one header that says the outcome FIRST.
-/// Discovery run 3: a model read a warning as a redo order, unregistered the
-/// binding, re-rolled the same registration twice, then tore down its whole
-/// watch set — the notes never said the registration had succeeded, so
-/// starting over looked mandatory.
+/// Discovery run 3: a model read a warning as a redo order, removed the
+/// binding, re-rolled the same request twice, then tore down its whole watch
+/// set — the notes never said the observer had been created, so starting
+/// over looked mandatory.
 fn compose_note(notes: Vec<String>) -> Option<String> {
     if notes.is_empty() {
         return None;
     }
     Some(format!(
-        "registration SUCCEEDED; everything below is advisory, not an error. Apply a named fix \
-         to THIS binding (or unregister it) rather than starting over. {}",
+        "observer CREATED; everything below is advisory, not an error. Apply a named fix to THIS \
+         observer (or unobserve it) rather than starting over. {}",
         notes.join(" ")
     ))
 }
 
-/// Turn events (and every other harness-internal type) are not agent-bindable
-/// in ANY shape: child outcomes reach a parent through the medium the children
-/// write, never through a binding on their turns. Runs before target
-/// resolution, so wake, call, and would-be spawn shapes all hit it.
-fn reject_forbidden_type(trigger_type: &str) -> Result<(), HarnessError> {
-    if subscriptions::is_forbidden_trigger_type(trigger_type) {
+/// Turn events (and every other harness function but the timer) are not
+/// agent-observable in ANY shape: child outcomes reach a parent through the
+/// medium the children write, never through an observer on their turns. Runs
+/// before target resolution, so wake, call, and would-be spawn shapes all
+/// hit it.
+fn reject_forbidden_source(function_id: &str) -> Result<(), HarnessError> {
+    if subscriptions::is_forbidden_source(function_id) {
         return Err(HarnessError::InvalidRequest(format!(
-            "cannot bind harness-internal trigger type `{trigger_type}`: turn events are not \
-             agent-bindable. Watch what the work WRITES instead — register a wake (omit \
-             `function_id`) on the state keys or database rows the tasks update."
+            "cannot observe harness function `{function_id}`: turn events are not \
+             agent-observable. Watch what the work WRITES instead — observe the state keys or \
+             database rows the tasks update (omit `target` for a wake). `{}` is the one harness \
+             function an agent observes.",
+            crate::timer::ON_TIMER_FN
         )));
     }
     Ok(())
 }
 
+/// The operation a Compose progress observer filters on, `input.operation_id`.
+fn compose_operation_id(req: &ObserveRequest) -> Option<&str> {
+    if req.function_id != COMPOSE_PROGRESS_FN {
+        return None;
+    }
+    filter_eq(&req.filters, "input.operation_id").and_then(Value::as_str)
+}
+
 /// Refuse a wake when the operation is already settled at preflight: its result
 /// is available now, so direct the caller to read it instead of parking.
 /// Completion after this read is recovered from Compose's persisted terminal
-/// event after registration and by the binding sweep. An unknown status or an
-/// unavailable diagnostic still permits registration.
+/// event after the observe and by the binding sweep. An unknown status or an
+/// unavailable diagnostic still permits the observe.
 async fn reject_settled_compose_operation(
     deps: &Deps,
-    req: &SubscribeRequest,
+    req: &ObserveRequest,
 ) -> Result<(), HarnessError> {
-    if req.trigger_type != COMPOSE_OPERATION_TRIGGER {
-        return Ok(());
-    }
-    let Some(operation_id) = req.config.get("operation_id").and_then(Value::as_str) else {
+    let Some(operation_id) = compose_operation_id(req) else {
         return Ok(());
     };
     let Ok(snapshot) = deps
@@ -1009,25 +1082,25 @@ async fn reject_settled_compose_operation(
     // reused the same fixed name (MOT-5334): say both readings.
     Err(HarnessError::InvalidRequest(format!(
         "operation `{operation_id}` already reached `{status}`. If you started it, read the \
-         result with `compose::operation` now instead of arming a wake, and register the wake \
-         BEFORE starting the operation next time, in the same message. If you have NOT started \
-         it yet, the id belongs to an earlier operation: pick a fresh id that starts with your \
-         session id and register again."
+         result with `compose::operation` now instead of arming a wake, and observe it BEFORE \
+         starting the operation next time, in the same message. If you have NOT started it yet, \
+         the id belongs to an earlier operation: pick a fresh id that starts with your session \
+         id and observe again."
     )))
 }
 
 /// A compose operation reaches one of these exactly once, and never leaves it —
 /// so a wake armed afterwards has nothing left to wait for. Anything else
 /// (`running`, or a status this harness does not know) is still in flight and
-/// registers normally: an unknown status must not silently swallow a wake.
+/// observes normally: an unknown status must not silently swallow a wake.
 fn is_settled_operation(status: &str) -> bool {
     matches!(status, "succeeded" | "failed" | "cancelled")
 }
 
 /// A leaf may arm its own wake, but may not install a mechanical call it cannot
-/// unregister. The deadline half lives in [`leaf_wake_deadline`]: a leaf's wake is stamped
-/// rather than refused, because a leaf with no way to wait is the problem this
-/// set out to fix.
+/// remove. The deadline half lives in [`leaf_wake_deadline`]: a leaf's wake is
+/// stamped rather than refused, because a leaf with no way to wait is the
+/// problem this set out to fix.
 fn reject_leaf_control_plane(
     policy: &CompiledPolicy,
     has_parent: bool,
@@ -1039,9 +1112,9 @@ fn reject_leaf_control_plane(
     if let Some(target) = explicit_target {
         return Err(HarnessError::InvalidRequest(format!(
             "a sub-agent cannot bind a mechanical call to `{target}`: that installs durable \
-             machinery it does not own and cannot unregister. Omit `function_id` to register a \
-             wake for your own session instead — the fire comes back to you as a message and you \
-             make the call yourself."
+             machinery it does not own and cannot remove. Omit `target` to observe as a wake for \
+             your own session instead — the event comes back to you as a message and you make the \
+             call yourself."
         )));
     }
     Ok(())
@@ -1051,13 +1124,12 @@ fn reject_leaf_control_plane(
 ///
 /// `once: true` is NOT one. It caps how many times a binding may fire, not how
 /// long it waits, so a `once` wake that never fires is exactly as eternal as an
-/// open-ended one — and a leaf cannot unregister it. A child that armed two
-/// `once` compose-operation wakes and ended its turn hung forever, and because
-/// an incomplete child keeps `tree_complete` false it hung the whole run with
-/// it: 15 idle minutes and a RESOURCE LIMIT on a run whose work was done
-/// (MOT-4766).
+/// open-ended one — and a leaf cannot remove it. A child that armed two `once`
+/// Compose wakes and ended its turn hung forever, and because an incomplete
+/// child keeps `tree_complete` false it hung the whole run with it: 15 idle
+/// minutes and a RESOURCE LIMIT on a run whose work was done (MOT-4766).
 ///
-/// A root keeps whatever it asked for — it can unregister, and whoever drives
+/// A root keeps whatever it asked for — it can unobserve, and whoever drives
 /// it has its own timeout. The leaf's cap is the harness's existing patience
 /// for pending work, so its wake can never outlive that.
 fn leaf_wake_deadline(
@@ -1074,25 +1146,19 @@ fn leaf_wake_deadline(
     Some(requested.map_or(cap, |asked| asked.min(cap)))
 }
 
-/// Resolve and VALIDATE the target a registration asks for. Two shapes
-/// (omitted `function_id` = wake, anything else = mechanical call); past this
-/// point they are one record. A binding never starts an agent —
-/// `harness::spawn` falls into the call arm and is refused there with the
-/// direct-spawn migration in the error.
+/// Resolve and VALIDATE the target an observe asks for. Two shapes (omitted
+/// `target` = wake, anything else = mechanical call); past this point they
+/// are one record. A binding never starts an agent — `harness::spawn` falls
+/// into the call arm and is refused there with the direct-spawn migration in
+/// the error.
 async fn resolve_target(
     deps: &Deps,
-    req: &SubscribeRequest,
+    req: &ObserveRequest,
     session_id: &str,
     policy: &CompiledPolicy,
 ) -> Result<BindingTarget, HarnessError> {
-    let explicit = req
-        .target
-        .as_ref()
-        .map(|t| t.function_id.clone())
-        .or_else(|| req.function_id.clone());
-
-    match explicit.as_deref() {
-        // A wake: the fire is injected into the owner session as a message.
+    match req.target.as_ref() {
+        // A wake: each event is injected into the owner session as a message.
         None => {
             let mut target = BindingTarget::new(crate::functions::SEND_ID);
             target.payload = Some(json!({
@@ -1101,39 +1167,20 @@ async fn resolve_target(
             }));
             Ok(target)
         }
-        // A mechanical call. Gated twice: the registrant's own policy, and the
-        // deployment's approval gate — a fired call runs outside any turn and
-        // can never raise a prompt.
-        Some(id) => {
-            let id = id.to_string();
-            validate_call_target(&id, policy).map_err(HarnessError::InvalidRequest)?;
-            let (payload, event_into) = match req.target.as_ref() {
-                Some(t) => {
-                    validate_event_into(t.event_into.as_deref())?;
-                    (t.payload.clone(), t.event_into.clone())
-                }
-                None => {
-                    let m = req.metadata.clone().unwrap_or(Value::Null);
-                    validate_call_template(&m)?;
-                    (
-                        m.get("payload").cloned(),
-                        m.get("event_into")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
-                    )
-                }
-            };
-            let target = BindingTarget {
-                function_id: id,
-                payload,
-                event_into,
-            };
+        // A mechanical call. Gated twice: the observer's own policy, and the
+        // deployment's approval gate — a delivered call runs outside any turn
+        // and can never raise a prompt.
+        Some(requested) => {
+            validate_call_target(&requested.function_id, policy)
+                .map_err(HarnessError::InvalidRequest)?;
+            validate_event_into(requested.event_into.as_deref())?;
+            let target = requested.clone();
             let arguments = target.payload.clone().unwrap_or_else(|| json!({}));
             approval_allows_unattended(deps, &target.function_id, session_id, &arguments)
                 .await
                 .map_err(HarnessError::InvalidRequest)?;
-            // A fired scaffold can start (its payload is projected only then),
-            // running a compose::add no approval hook sees.
+            // A delivered scaffold can start (its payload is projected only
+            // then), running a compose::add no approval hook sees.
             if target.function_id == crate::clients::engine::SCAFFOLD_WORKER {
                 approval_allows_unattended(deps, COMPOSE_ADD_ID, session_id, &json!({}))
                     .await
@@ -1145,7 +1192,7 @@ async fn resolve_target(
 }
 
 /// Conditions execute with worker authority too, so they cross the same
-/// registration boundary as the delivery target.
+/// observe boundary as the delivery target.
 async fn authorize_conditions(
     deps: &Deps,
     conditions: &[ConditionSpec],
@@ -1168,46 +1215,15 @@ async fn authorize_conditions(
     Ok(())
 }
 
-/// A call binding's shorthand `metadata` takes only
-/// `{ action?, payload?, event_into? }`.
-/// Reject the rest LOUDLY: sub-agent keys here mean the caller wanted a spawn
-/// binding, and a pointer that cannot be created is a silent per-event no-op at
-/// fire time.
-fn validate_call_template(metadata: &Value) -> Result<(), HarnessError> {
-    let Some(map) = metadata.as_object() else {
-        return Ok(());
-    };
-    const ALLOWED: [&str; 3] = ["action", "payload", "event_into"];
-    if let Some(unknown) = map.keys().find(|k| !ALLOWED.contains(&k.as_str())) {
-        return Err(HarnessError::InvalidRequest(format!(
-            "unknown key `{unknown}` for a call binding: `metadata` takes only \
-             {{ action?, payload?, event_into? }} — the target is the registration's `function_id`. \
-             Sub-agent fields (task/model/session_id/options) are not valid anywhere in a \
-             binding: spawn children directly from a turn."
-        )));
+/// Validate the one host-interpreted presentation field. The action is plain
+/// display text; it never participates in routing or authorization.
+fn validate_event_action(action: Option<&str>) -> Result<(), HarnessError> {
+    match action {
+        Some(action) if action.trim().is_empty() => Err(HarnessError::InvalidRequest(
+            "`action` must be a non-empty string describing the event".into(),
+        )),
+        _ => Ok(()),
     }
-    validate_event_into(map.get("event_into").and_then(Value::as_str))
-}
-
-/// Validate the one host-interpreted presentation field without constraining
-/// metadata that belongs to an explicit target. The action is plain display
-/// text; it never participates in routing or authorization.
-fn validate_event_action(metadata: Option<&Value>) -> Result<(), HarnessError> {
-    let Some(action) = metadata
-        .and_then(Value::as_object)
-        .and_then(|metadata| metadata.get("action"))
-    else {
-        return Ok(());
-    };
-    if action
-        .as_str()
-        .is_some_and(|value| !value.trim().is_empty())
-    {
-        return Ok(());
-    }
-    Err(HarnessError::InvalidRequest(
-        "`metadata.action` must be a non-empty string describing the event".into(),
-    ))
 }
 
 fn validate_event_into(pointer: Option<&str>) -> Result<(), HarnessError> {
@@ -1220,25 +1236,25 @@ fn validate_event_into(pointer: Option<&str>) -> Result<(), HarnessError> {
     Ok(())
 }
 
-/// Advisory for a one-shot state-key WAKE: the registering session parks
-/// until someone writes that exact scope/key, and the harness cannot verify
-/// any task is wired to do so. rctest postmortem: an orchestrator armed
+/// Advisory for a one-shot state-key WAKE: the observing session parks until
+/// someone writes that exact scope/key, and the harness cannot verify any
+/// task is wired to do so. rctest postmortem: an orchestrator armed
 /// `report_ready` while its finalizer's task never mentioned the key — every
-/// row landed correctly and the orchestrator still slept forever, leaving
-/// the run's teardown permanently pending. Purely informative.
-fn armed_wake_advisory(req: &SubscribeRequest, once: bool, has_deadline: bool) -> Option<String> {
+/// row landed correctly and the orchestrator still slept forever, leaving the
+/// run's teardown permanently pending. Purely informative.
+fn armed_wake_advisory(req: &ObserveRequest, once: bool, has_deadline: bool) -> Option<String> {
     // A deadline (the caller's `expires_in_ms`, or a leaf's capped wake)
     // turns a write that never comes into an expiry notice: the park-forever
     // risk this note exists for is already handled.
-    if !once || has_deadline || req.trigger_type != "state" {
+    if !once || has_deadline || req.function_id != STATE_ON_CHANGED_FN {
         return None;
     }
-    let scope = req
-        .config
-        .get("scope")
+    let scope = filter_eq(&req.filters, "input.scope")
         .and_then(Value::as_str)
         .unwrap_or("*");
-    let key = req.config.get("key").and_then(Value::as_str).unwrap_or("*");
+    let key = filter_eq(&req.filters, "input.key")
+        .and_then(Value::as_str)
+        .unwrap_or("*");
     // With a condition (a `state::barrier`), only a write that passes it
     // wakes the session.
     let gated = if req.conditions.is_empty() {
@@ -1253,9 +1269,9 @@ fn armed_wake_advisory(req: &SubscribeRequest, once: bool, has_deadline: bool) -
     // a notice).
     Some(format!(
         "note: one-shot WAKE — this session stays parked until a state write on \
-         {scope}/{key}{gated} fires it, and nothing fires it automatically. Only a state \
+         {scope}/{key}{gated} wakes it, and nothing wakes it automatically. Only a state \
          write (state::set, state::update, a swapping state::compare-and-set or state::delete) on that \
-         exact scope/key fires it — a database table or row with the same name does NOT. \
+         exact scope/key wakes it — a database table or row with the same name does NOT. \
          Double-check that a task you spawned (worker/finalizer) EXPLICITLY sets that exact scope/key when its condition is met, or this session \
          sleeps forever and its cleanup never runs. Set lifecycle \
          {{ expires_in_ms: <relative ms> }} to be woken with an expiry notice instead if the \
@@ -1276,90 +1292,86 @@ fn resolved_expires_at(lifecycle: Option<&LifecycleRequest>, now_ms: i64) -> Opt
         .map(|in_ms| now_ms.saturating_add(in_ms))
 }
 
-/// The canonicalized registration request used for same-session idempotency.
+/// The canonicalized observe request used for same-session idempotency.
 /// Built from the agent's RAW arguments (before the owner stamp) with `once`
 /// normalized to its effective value; `serde_json::Value` equality is
 /// key-order-insensitive, so semantically identical requests always match.
-fn registration_dedup_key(req: &SubscribeRequest, once: bool) -> Value {
+fn registration_dedup_key(req: &ObserveRequest, once: bool) -> Value {
     json!({
-        "trigger_type": req.trigger_type,
-        "config": req.config,
+        "function_id": req.function_id,
+        "namespace": req.namespace,
+        "args": req.args,
+        "filters": req.filters,
         "label": req.label,
+        "action": req.action,
         "lifecycle": {
             "once": once,
             "max_fires": req.lifecycle.as_ref().and_then(|l| l.max_fires),
             "expires_in_ms": req.lifecycle.as_ref().and_then(|l| l.expires_in_ms),
         },
-        "function_id": req.function_id,
-        "metadata": req.metadata,
         "target": req.target,
         "conditions": req.conditions,
     })
 }
 
-/// Gate a call binding's target. `harness::*` is refused outright — a binding
-/// can wake its owner or call a plain function, never start an agent or
-/// re-enter the harness control plane — and everything else must be callable
-/// by the REGISTRANT: the fired call runs with worker authority outside the
-/// turn loop, so without this a narrowed session could wire a reaction to any
-/// function on the bus.
-/// Register a `harness::hook::post-turn` validator on behalf of the calling
-/// agent. The validator target rides the caller's authority (same rule as
-/// call bindings: only functions you could call yourself), and the config's
-/// `sessions` filter is FORCE-STAMPED to the calling session — self-gating
-/// only. Forwarded to the engine so the binding survives like any other hook
-/// registration; the handle is kept for owner-checked teardown.
-async fn register_post_turn_hook(
+/// Observe `harness::hook::on-post-turn` with a validator on behalf of the
+/// calling agent. The validator target rides the caller's authority (same
+/// rule as call bindings: only functions you could call yourself), and the
+/// args' `sessions` scope is FORCE-STAMPED to the calling session —
+/// self-gating only. The harness hosts the hook function; the handle is kept
+/// for owner-checked removal.
+async fn observe_post_turn(
     deps: &Deps,
-    req: SubscribeRequest,
+    req: ObserveRequest,
     session_id: &str,
     policy: &CompiledPolicy,
-) -> Result<SubscribeResponse, HarnessError> {
-    let Some(function_id) = req.function_id.clone() else {
-        return Err(HarnessError::InvalidRequest(
-            "harness::hook::post-turn needs `function_id` — the validator function \
-             (e.g. fp::pipe); a wake shape is meaningless for a hook"
-                .into(),
-        ));
+) -> Result<ObserveResponse, HarnessError> {
+    let Some(validator) = req.target.as_ref().map(|t| t.function_id.clone()) else {
+        return Err(HarnessError::InvalidRequest(format!(
+            "{} needs `target.function_id` — the validator function (e.g. fp::pipe); a wake \
+             shape is meaningless for a hook",
+            crate::hooks::ON_POST_TURN_FN
+        )));
     };
-    validate_call_target(&function_id, policy).map_err(HarnessError::InvalidRequest)?;
-    let raw = if req.config.is_null() {
+    validate_call_target(&validator, policy).map_err(HarnessError::InvalidRequest)?;
+    let raw = if req.args.is_null() {
         json!({})
     } else {
-        req.config.clone()
+        req.args.clone()
     };
-    let mut cfg: crate::hooks::HookTriggerConfig = serde_json::from_value(raw)
-        .map_err(|e| HarnessError::InvalidRequest(format!("invalid post-turn hook config: {e}")))?;
-    cfg.sessions = Some(
-        validate_post_turn_scope(session_id, cfg.sessions.take())
+    let mut args: crate::hooks::HookArgs = serde_json::from_value(raw)
+        .map_err(|e| HarnessError::InvalidRequest(format!("invalid post-turn hook args: {e}")))?;
+    args.sessions = Some(
+        validate_post_turn_scope(session_id, args.sessions.take())
             .map_err(HarnessError::InvalidRequest)?,
     );
-    let config = serde_json::to_value(&cfg)
-        .map_err(|e| HarnessError::InvalidRequest(format!("hook config serialize: {e}")))?;
-    let _topology = deps.topology.lock().await;
+    let args = serde_json::to_value(&args)
+        .map_err(|e| HarnessError::InvalidRequest(format!("hook args serialize: {e}")))?;
+    let topology = deps.topology.lock().await;
     super::delete_session_tree::ensure_live(deps, session_id).await?;
-    let handle = deps
-        .iii
-        .register_trigger(iii_sdk::protocol::RegisterTriggerInput::new(
-            crate::hooks::POST_TURN.to_string(),
-            function_id.clone(),
-            config,
-        ))
-        .map_err(|e| {
-            HarnessError::InvalidRequest(format!("post-turn hook registration failed: {e}"))
-        })?;
-    let subscription_id = deps.hooks.record_owned(session_id, handle);
-    Ok(SubscribeResponse {
-        subscription_id,
+    let handle = deps.iii.observe(
+        Source::function(crate::hooks::ON_POST_TURN_FN).args(args),
+        validator.as_str(),
+    );
+    let observer_id = deps.hooks.record_owned(session_id, handle.clone());
+    drop(topology);
+    if let Readiness::Failed(reason) = readiness(&handle).await {
+        deps.hooks.dispose_owned(&observer_id, session_id).await;
+        return Err(HarnessError::InvalidRequest(format!(
+            "post-turn validator observer failed: {reason}"
+        )));
+    }
+    Ok(ObserveResponse {
+        observer_id,
         once: false,
         note: Some(format!(
-            "post-turn validator bound to THIS session only ({session_id}); unregister with this \
-             id when the goal is met."
+            "post-turn validator bound to THIS session only ({session_id}); unobserve it with \
+             this id when the goal is met."
         )),
     })
 }
 
-/// The sessions an agent-registered post-turn validator may gate: itself, or
+/// The sessions an agent-created post-turn validator may gate: itself, or
 /// children it names under the `<own-session>-` prefix (the `harness::spawn`
 /// `session_id` convention). No patterns → just itself. Anything else is out
 /// of scope — an agent must never gate sessions it does not own.
@@ -1396,27 +1408,26 @@ fn validate_post_turn_scope(
     Ok(patterns)
 }
 
+/// Gate a call binding's target. `harness::*` is refused outright — a binding
+/// can wake its owner or call a plain function, never start an agent or
+/// re-enter the harness control plane (the observe controls included) — and
+/// everything else must be callable by the OBSERVER: the delivered call runs
+/// with worker authority outside the turn loop, so without this a narrowed
+/// session could wire a reaction to any function on the bus.
 fn validate_call_target(target: &str, policy: &CompiledPolicy) -> Result<(), String> {
     if target.is_empty() {
         return Err("`function_id` must name the function to call".into());
     }
     if target.starts_with("harness::") {
         return Err(format!(
-            "`{target}` is not a binding target: a binding can wake you (omit `function_id`) or \
+            "`{target}` is not a binding target: a binding can wake you (omit `target`) or \
              call a plain non-harness function — it never starts an agent. Spawn children \
-             directly from a turn and register a wake on what they write."
+             directly from a turn and observe what they write."
         ));
     }
     if agent_call_forbidden(target) {
         return Err(format!(
             "`{target}` is not available to agents, including through bindings"
-        ));
-    }
-    // Fired targets, conditions, and post-turn validators call the raw engine,
-    // outside `invoke`. A nested registration would bypass this very guard.
-    if matches!(target, REGISTER_TRIGGER_ID | UNREGISTER_TRIGGER_ID) {
-        return Err(format!(
-            "`{target}` requires the harness's agent-call intercept; call it directly from a turn"
         ));
     }
     if !policy.allows(target) {
@@ -1425,24 +1436,24 @@ fn validate_call_target(target: &str, policy: &CompiledPolicy) -> Result<(), Str
              only call functions you can call yourself"
         ));
     }
-    // A reaction's payload is fixed or projected only at fire time, where
+    // A reaction's payload is fixed or projected only at delivery time, where
     // `start: true` would run compose::add with the ide's authority; so the
     // target needs compose::add whatever the payload says now.
     if target == crate::clients::engine::SCAFFOLD_WORKER && !policy.allows("compose::add") {
         return Err(format!(
             "`{target}` as a reaction needs compose::add as well: its `start: true` runs \
-             compose::add, and a fired payload can set it. Call it from a turn instead"
+             compose::add, and a delivered payload can set it. Call it from a turn instead"
         ));
     }
     Ok(())
 }
 
 /// The dispatch policy is only HALF the gate: it says what this turn may call,
-/// not whether the deployment wants a human to approve each call. A
-/// trigger-fired call runs with worker authority outside any turn, so it never
-/// reaches `approval::gate` and can never prompt — binding a
-/// `needs_approval` target would silently convert "a human approves each call"
-/// into "it fires unattended, forever".
+/// not whether the deployment wants a human to approve each call. A call an
+/// observer delivers runs with worker authority outside any turn, so it never
+/// reaches `approval::gate` and can never prompt — binding a `needs_approval`
+/// target would silently convert "a human approves each call" into "it runs
+/// unattended, forever".
 ///
 /// So ask the approval-gate what it WOULD decide (`approval::evaluate` is
 /// side-effect-free — probing must not write a pending record nobody asked
@@ -1461,8 +1472,8 @@ pub(crate) async fn approval_allows_unattended(
     match approval_verdict(deps, target, session_id, arguments).await {
         Ok(Verdict::Allow) => Ok(()),
         Ok(Verdict::Withheld { verdict, reason }) => Err(format!(
-            "`{target}` is `{verdict}` for this session: {reason}. A trigger-fired call runs \
-             outside any turn and cannot ask for approval, so it cannot be bound. Call it \
+            "`{target}` is `{verdict}` for this session: {reason}. A call an observer delivers \
+             runs outside any turn and cannot ask for approval, so it cannot be bound. Call it \
              yourself on a woken turn, or have an operator allow it."
         )),
         Err(problem) => {
@@ -1495,7 +1506,7 @@ async fn approval_verdict(
 ) -> Result<Verdict, String> {
     let resp = deps
         .iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: APPROVAL_EVALUATE_ID.to_string(),
             payload: approval_probe_payload(session_id, target, arguments),
             action: None,
@@ -1532,16 +1543,16 @@ async fn approval_verdict(
 /// this session first; anything but `allow` is a start this turn cannot have
 /// (files only, or refused), and the agent's own compose::add then goes
 /// through the gate, held for a human like any other. Policy is the
-/// dispatch gate's (`trigger::scaffold_start_gate`).
+/// dispatch gate's (`call::scaffold_start_gate`).
 pub(crate) async fn scaffold_start_approval(
     deps: &Deps,
     policy: &CompiledPolicy,
     function_id: &str,
     arguments: &Value,
     session_id: &str,
-) -> trigger::StartGate {
-    if !trigger::scaffold_starts(function_id, arguments) || !policy.allows(COMPOSE_ADD_ID) {
-        return trigger::StartGate::Pass;
+) -> call::StartGate {
+    if !call::scaffold_starts(function_id, arguments) || !policy.allows(COMPOSE_ADD_ID) {
+        return call::StartGate::Pass;
     }
     let verdict = approval_verdict(deps, COMPOSE_ADD_ID, session_id, &json!({})).await;
     start_after_approval(arguments, verdict)
@@ -1549,9 +1560,9 @@ pub(crate) async fn scaffold_start_approval(
 
 /// The turn's decision on a starting scaffold, given what the approval gate
 /// said about its compose::add.
-fn start_after_approval(arguments: &Value, verdict: Result<Verdict, String>) -> trigger::StartGate {
+fn start_after_approval(arguments: &Value, verdict: Result<Verdict, String>) -> call::StartGate {
     let why = match verdict {
-        Ok(Verdict::Allow) => return trigger::StartGate::Pass,
+        Ok(Verdict::Allow) => return call::StartGate::Pass,
         Ok(Verdict::Withheld { verdict, reason }) => {
             format!("its compose::add is `{verdict}` for this session ({reason})")
         }
@@ -1559,7 +1570,7 @@ fn start_after_approval(arguments: &Value, verdict: Result<Verdict, String>) -> 
             format!("the approval gate could not be asked about its compose::add ({problem})")
         }
     };
-    trigger::start_refused(
+    call::start_refused(
         arguments,
         &why,
         "Then send its compose_add to compose::add yourself: that call goes through approval, \
@@ -1589,178 +1600,112 @@ fn is_function_absent(error: &str) -> bool {
         || e.contains("unregistered")
 }
 
-/// Prefix of the synthetic trigger id stored on a binding whose engine
-/// trigger was registered over the worker channel. The SDK never returns the
-/// engine-side row id, so the binding records `sdk:<binding-id>` and the live
-/// unregister closure is held in [`crate::bindings::TriggerHandles`].
-pub const SDK_TRIGGER_ID_PREFIX: &str = "sdk:";
-
-/// The channel registration for a binding's delivery trigger. `namespace` is
-/// left unset so the SDK stamps this worker's namespace on the target and the
-/// fire resolves `harness::trigger::deliver` where THIS harness registered it.
-/// The provider also resolves home-first with `default` as fallback, except
-/// for `compose-operation`: Compose provides it in the supervisor namespace.
-fn delivery_registration_input(
-    trigger_type: &str,
-    config: &Value,
-    binding_id: &str,
-) -> iii_sdk::protocol::RegisterTriggerInput {
-    let compose_namespace = std::env::var(COMPOSE_NAMESPACE_ENV).ok();
-    delivery_registration_input_for_namespace(
-        trigger_type,
-        config,
-        binding_id,
-        compose_provider_namespace(trigger_type, compose_namespace.as_deref()),
-    )
+/// The Compose supervisor's namespace (`III_COMPOSE_NAMESPACE`), if set.
+pub(crate) fn compose_namespace() -> Option<String> {
+    let namespace = std::env::var(COMPOSE_NAMESPACE_ENV).ok()?;
+    let namespace = namespace.trim();
+    (!namespace.is_empty()).then(|| namespace.to_string())
 }
 
-fn delivery_registration_input_for_namespace(
-    trigger_type: &str,
-    config: &Value,
-    binding_id: &str,
-    provider_namespace: Option<&str>,
-) -> iii_sdk::protocol::RegisterTriggerInput {
-    let input = iii_sdk::protocol::RegisterTriggerInput::new(
-        trigger_type,
-        crate::functions::trigger_deliver::DELIVER_ID,
-        config.clone(),
-    )
-    .with_metadata(json!({ "__binding": binding_id }));
-    match provider_namespace {
-        Some(namespace) => input.in_trigger_namespace(namespace),
-        None => input,
+/// Where an observed function is hosted, as far as the engine could say.
+struct SourceHost {
+    /// The namespace the observer names; `None` resolves like a call (this
+    /// worker's namespace).
+    namespace: Option<String>,
+    /// The namespaces checked when no worker hosts the function anywhere
+    /// yet; empty when it was found or the probe could not answer.
+    unhosted_in: Vec<String>,
+}
+
+impl SourceHost {
+    /// Loud advisory when NOTHING currently hosts the observed function: the
+    /// observer is accepted engine-side but stays `pending` and cannot
+    /// deliver until a worker registers the function. Without this the
+    /// response reads "CREATED" and the owner sleeps forever on an observer
+    /// that was never live (console-04e02cb7 postmortem).
+    fn parked_note(&self, function_id: &str) -> Option<String> {
+        if self.unhosted_in.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "warning: OBSERVING but currently PENDING — no connected worker hosts `{function_id}` \
+             (checked namespace(s): {}). Nothing can deliver to this observer until a worker \
+             registers the function; it then activates automatically. If its worker should be \
+             running (e.g. the state worker for `state::on-changed`), start it.",
+            self.unhosted_in.join(", ")
+        ))
     }
 }
 
-/// The provider namespace a `compose-operation` registration must name
-/// (`III_COMPOSE_NAMESPACE`), if the supervisor set one.
-pub(crate) fn compose_operation_trigger_namespace() -> Option<String> {
-    let compose_namespace = std::env::var(COMPOSE_NAMESPACE_ENV).ok();
-    compose_provider_namespace(COMPOSE_OPERATION_TRIGGER, compose_namespace.as_deref())
-        .map(str::to_string)
-}
-
-fn compose_provider_namespace<'a>(
-    trigger_type: &str,
-    compose_namespace: Option<&'a str>,
-) -> Option<&'a str> {
-    if trigger_type != COMPOSE_OPERATION_TRIGGER {
-        return None;
-    }
-    compose_namespace
+/// Resolve the source namespace: the agent's explicit one, else the first of
+/// this harness's namespace, `default` and Compose's that hosts the function.
+/// When none does yet, the observer waits in this harness's namespace
+/// (Compose's for a `compose::*` function). Fail-open: a probe error that is
+/// not a definitive NOT_FOUND stops probing and leaves the namespace unset.
+async fn resolve_source_namespace(deps: &Deps, req: &ObserveRequest) -> SourceHost {
+    if let Some(namespace) = req
+        .namespace
+        .as_deref()
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-}
-
-/// Register a binding's engine trigger over the worker channel and record its
-/// unregister handle. Returns the synthetic trigger id to store on the
-/// binding. Registration errors from the engine arrive asynchronously (the
-/// SDK logs them); what CAN fail synchronously is serialization/channel state.
-pub fn register_delivery_trigger(
-    deps: &Deps,
-    trigger_type: &str,
-    config: &Value,
-    binding_id: &str,
-) -> Result<String, String> {
-    let input = delivery_registration_input(trigger_type, config, binding_id);
-    let handle = deps
-        .iii
-        .register_trigger(input)
-        .map_err(|e| e.to_string())?;
-    let trigger_id = format!("{SDK_TRIGGER_ID_PREFIX}{binding_id}");
-    deps.trigger_handles.insert(trigger_id.clone(), handle);
-    Ok(trigger_id)
-}
-
-/// Loud advisory when NOTHING currently provides the requested trigger type:
-/// the registration is accepted engine-side but parks as pending — invisible
-/// to `engine::registered-triggers::list` — and cannot fire until a provider
-/// registers. Without this the response reads "SUCCEEDED" and the owner sleeps
-/// forever on a binding that was never live (console-04e02cb7 postmortem).
-/// Fail-open: probe errors produce no note; only definitive NOT_FOUND in every
-/// checked namespace warns.
-async fn provider_presence_note(deps: &Deps, trigger_type: &str) -> Option<String> {
-    let compose_namespace = std::env::var(COMPOSE_NAMESPACE_ENV).ok();
-    let namespaces = provider_probe_namespaces(
-        trigger_type,
-        compose_namespace.as_deref(),
-        deps.iii.namespace().as_deref(),
-    );
+        .filter(|namespace| !namespace.is_empty())
+    {
+        return SourceHost {
+            namespace: Some(namespace.to_string()),
+            unhosted_in: Vec::new(),
+        };
+    }
+    let own = deps.iii.namespace();
+    let compose = compose_namespace();
+    let candidates = source_namespace_candidates(own.as_deref(), compose.as_deref());
     let timeout_ms = deps.cfg().await.dispatch_timeout_ms;
-    for ns in &namespaces {
+    for namespace in &candidates {
         let probe = deps
             .iii
-            .trigger(TriggerRequest {
-                function_id: "engine::triggers::info".to_string(),
-                payload: json!({ "id": trigger_type, "namespace": ns }),
+            .call(CallRequest {
+                function_id: FUNCTIONS_INFO_ID.to_string(),
+                payload: json!({ "function_id": req.function_id, "namespace": namespace }),
                 action: None,
                 timeout_ms: Some(timeout_ms),
             })
             .await;
         match probe {
-            Ok(_) => return None,
+            Ok(info) if !info.is_null() => {
+                return SourceHost {
+                    namespace: Some(namespace.clone()),
+                    unhosted_in: Vec::new(),
+                }
+            }
+            Ok(_) => {}
             Err(e) if e.to_string().contains("NOT_FOUND") => {}
-            Err(_) => return None,
+            Err(_) => {
+                return SourceHost {
+                    namespace: None,
+                    unhosted_in: Vec::new(),
+                }
+            }
         }
     }
-    Some(format!(
-        "warning: ARMED but currently PARKED — no connected worker provides trigger type \
-         `{trigger_type}` (checked namespace(s): {}). Nothing can fire this binding until a \
-         provider registers the type; it then activates automatically. If a `{trigger_type}` \
-         provider should be running (e.g. the state worker for `state`), start it.",
-        namespaces.join(", ")
-    ))
+    let fallback = if req.function_id.starts_with("compose::") {
+        compose.or(own)
+    } else {
+        own
+    };
+    SourceHost {
+        namespace: fallback,
+        unhosted_in: candidates,
+    }
 }
 
-fn provider_probe_namespaces(
-    trigger_type: &str,
-    compose_namespace: Option<&str>,
-    own_namespace: Option<&str>,
-) -> Vec<String> {
-    if let Some(namespace) = compose_provider_namespace(trigger_type, compose_namespace) {
-        return vec![namespace.to_string()];
-    }
-
-    let mut namespaces = own_namespace
-        .map(str::to_string)
-        .into_iter()
-        .collect::<Vec<_>>();
-    if !namespaces.iter().any(|namespace| namespace == "default") {
-        namespaces.push("default".to_string());
+/// The namespaces an unqualified observe looks in, in order: this harness's,
+/// `default`, then Compose's.
+fn source_namespace_candidates(own: Option<&str>, compose: Option<&str>) -> Vec<String> {
+    let mut namespaces: Vec<String> = Vec::new();
+    for namespace in [own, Some("default"), compose].into_iter().flatten() {
+        if !namespaces.iter().any(|seen| seen == namespace) {
+            namespaces.push(namespace.to_string());
+        }
     }
     namespaces
-}
-
-/// Best-effort engine-side teardown; `true` when the engine accepted it, so
-/// callers recording a fired-trigger `retired` flag report the real outcome.
-///
-/// Channel-registered triggers (`sdk:` ids) are torn down through their SDK
-/// handle so the reconnect replay list forgets them too. A `sdk:` id with no
-/// live handle is from before the last restart: its engine row died with the
-/// old connection, so there is nothing left to tear down.
-pub async fn unregister_engine_trigger(deps: &Deps, trigger_id: &str) -> bool {
-    if deps.trigger_handles.unregister(trigger_id) {
-        return true;
-    }
-    if trigger_id.starts_with(SDK_TRIGGER_ID_PREFIX) {
-        return true;
-    }
-    match deps
-        .iii
-        .trigger(TriggerRequest {
-            function_id: UNREGISTER_TRIGGER_ID.to_string(),
-            payload: json!({ "id": trigger_id }),
-            action: Some(TriggerAction::Void),
-            timeout_ms: None,
-        })
-        .await
-    {
-        Ok(_) => true,
-        Err(e) => {
-            tracing::warn!(trigger_id, error = %e, "subscription trigger unregister failed");
-            false
-        }
-    }
 }
 
 fn ok_result<T: Serialize>(value: &T) -> ResultData {
@@ -1786,109 +1731,54 @@ fn error_result(msg: String) -> ResultData {
 pub(crate) mod tests {
     use super::*;
 
-    /// An ordinary delivery trigger rides the worker channel with both
-    /// namespace fields unset. The SDK then stamps this worker's namespace on
-    /// the target and resolves the provider home-first. Compose has a separate
-    /// test below because its provider is in the supervisor namespace.
-    #[test]
-    fn delivery_registration_rides_the_channel_namespace() {
-        let input = delivery_registration_input(
-            "state",
-            &json!({ "scope": "calc-delivery", "key": "plan" }),
-            "sub_x",
-        );
-        assert_eq!(
-            input.function_id,
-            crate::functions::trigger_deliver::DELIVER_ID
-        );
-        assert_eq!(input.trigger_type, "state");
-        assert_eq!(input.metadata, Some(json!({ "__binding": "sub_x" })));
-        assert_eq!(
-            input.config,
-            json!({ "scope": "calc-delivery", "key": "plan" })
-        );
-        assert!(input.namespace.is_none());
-        assert!(input.trigger_namespace.is_none());
+    fn req(body: Value) -> ObserveRequest {
+        serde_json::from_value(body).unwrap()
     }
 
-    #[test]
-    fn compose_operation_uses_the_supervisor_as_trigger_provider() {
-        let input = delivery_registration_input_for_namespace(
-            COMPOSE_OPERATION_TRIGGER,
-            &json!({
-                "operation_id": "compose:test",
-                "terminal_only": true,
-            }),
-            "sub_compose",
-            Some("compose-host"),
-        );
-
-        assert_eq!(input.namespace, None);
-        assert_eq!(input.trigger_namespace.as_deref(), Some("compose-host"));
-        assert_eq!(
-            input.function_id,
-            crate::functions::trigger_deliver::DELIVER_ID
-        );
-        assert_eq!(
-            input.config,
-            json!({
-                "operation_id": "compose:test",
-                "terminal_only": true,
-            })
-        );
-        assert_eq!(input.metadata, Some(json!({ "__binding": "sub_compose" })));
+    fn state_filters(scope: Option<&str>, key: Option<&str>) -> Value {
+        let mut filters = json!({});
+        if let Some(scope) = scope {
+            filters["input.scope"] = json!({ "$eq": scope });
+        }
+        if let Some(key) = key {
+            filters["input.key"] = json!({ "$eq": key });
+        }
+        filters
     }
 
+    fn state(scope: Option<&str>, key: Option<&str>) -> Value {
+        json!({ "function_id": STATE_ON_CHANGED_FN, "filters": state_filters(scope, key) })
+    }
+
+    /// An unqualified observe looks home-first: this harness's namespace,
+    /// then `default`, then Compose's — each once.
     #[test]
-    fn only_compose_operation_uses_the_supervisor_provider() {
+    fn unqualified_sources_resolve_home_then_default_then_compose() {
         assert_eq!(
-            compose_provider_namespace(COMPOSE_OPERATION_TRIGGER, Some(" compose-host ")),
-            Some("compose-host")
+            source_namespace_candidates(Some("project"), Some("compose-host")),
+            vec!["project", "default", "compose-host"]
         );
+        assert_eq!(source_namespace_candidates(None, None), vec!["default"]);
         assert_eq!(
-            compose_provider_namespace("state", Some("compose-host")),
-            None
-        );
-        assert_eq!(
-            compose_provider_namespace(COMPOSE_OPERATION_TRIGGER, Some("  ")),
-            None
+            source_namespace_candidates(Some("default"), Some("default")),
+            vec!["default"]
         );
     }
 
     #[test]
-    fn compose_provider_probe_is_strictly_scoped_to_the_supervisor() {
-        assert_eq!(
-            provider_probe_namespaces(
-                COMPOSE_OPERATION_TRIGGER,
-                Some("compose-host"),
-                Some("project")
-            ),
-            vec!["compose-host"]
-        );
-        assert_eq!(
-            provider_probe_namespaces("state", Some("compose-host"), Some("project")),
-            vec!["project", "default"]
-        );
-    }
-
-    /// `sdk:` ids belong to the handle map; with the handle gone (a record
-    /// from before the last restart) there is nothing engine-side left to
-    /// tear down, so teardown reports done instead of dispatching a bogus id.
-    #[tokio::test]
-    async fn sdk_trigger_ids_never_reach_the_engine_unregistrar() {
-        let handles = crate::bindings::TriggerHandles::default();
-        let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let flag = called.clone();
-        handles.insert(
-            "sdk:sub_1".into(),
-            iii_sdk::trigger::Trigger::new(std::sync::Arc::new(move || {
-                flag.store(true, std::sync::atomic::Ordering::SeqCst);
-            })),
-        );
-        assert!(handles.unregister("sdk:sub_1"));
-        assert!(called.load(std::sync::atomic::Ordering::SeqCst));
-        // Second teardown: no handle left, nothing to call.
-        assert!(!handles.unregister("sdk:sub_1"));
+    fn a_parked_note_names_every_namespace_checked() {
+        let host = SourceHost {
+            namespace: Some("project".into()),
+            unhosted_in: vec!["project".into(), "default".into()],
+        };
+        let note = host.parked_note("state::on-changed").unwrap();
+        assert!(note.contains("PENDING"), "{note}");
+        assert!(note.contains("project, default"), "{note}");
+        let found = SourceHost {
+            namespace: Some("default".into()),
+            unhosted_in: Vec::new(),
+        };
+        assert!(found.parked_note("state::on-changed").is_none());
     }
 
     /// An agent may gate itself and its own `<session>-` children; anything
@@ -1945,43 +1835,40 @@ pub(crate) mod tests {
         );
     }
 
-    /// Turn events are not agent-bindable in ANY shape — child outcomes flow
-    /// through the medium children write, never through a binding on their
-    /// turns. The guard runs before target resolution, so wake, call, and
-    /// would-be spawn shapes all hit it.
+    /// Turn events are not agent-observable in ANY shape — child outcomes
+    /// flow through the medium children write, never through an observer on
+    /// their turns. The guard runs before target resolution, so wake, call,
+    /// and would-be spawn shapes all hit it. The timer is the one exception.
     #[test]
-    fn turn_events_are_not_bindable_in_any_shape() {
-        for ty in [
-            crate::events::TURN_STARTED,
-            crate::events::TURN_COMPLETED,
-            "harness::hook::pre-generate",
+    fn turn_events_are_not_observable_in_any_shape() {
+        for id in [
+            crate::events::ON_TURN_STARTED_FN,
+            crate::events::ON_TURN_COMPLETED_FN,
+            crate::hooks::ON_PRE_GENERATE_FN,
             "harness::notify_agent",
         ] {
-            let err = reject_forbidden_type(ty).unwrap_err().to_string();
-            assert!(err.contains("not agent-bindable"), "{ty}: {err}");
+            let err = reject_forbidden_source(id).unwrap_err().to_string();
+            assert!(err.contains("not agent-observable"), "{id}: {err}");
             assert!(
-                err.contains("register a wake"),
-                "{ty} must point at the medium instead: {err}"
+                err.contains("observe the state keys"),
+                "{id} must point at the medium instead: {err}"
             );
         }
-        assert!(reject_forbidden_type("state").is_ok());
-        assert!(reject_forbidden_type("database::row-changed").is_ok());
-        assert!(reject_forbidden_type("cron").is_ok());
-        assert!(reject_forbidden_type("timer").is_ok());
+        assert!(reject_forbidden_source(STATE_ON_CHANGED_FN).is_ok());
+        assert!(reject_forbidden_source("database::on-row-changed").is_ok());
+        assert!(reject_forbidden_source(CRON_ON_TICK_FN).is_ok());
+        assert!(reject_forbidden_source(crate::timer::ON_TIMER_FN).is_ok());
     }
 
     #[test]
-    fn state_catchall_advisory_flags_keyless_state_bindings() {
-        let mk = |ty: &str, config: serde_json::Value| -> SubscribeRequest {
-            serde_json::from_value(json!({ "trigger_type": ty, "config": config })).unwrap()
-        };
+    fn state_catchall_advisory_flags_keyless_state_observers() {
         // Scope without key: the trade-off, naming the scope — NOT a push to
         // add a key. Run 7 read the old push as an instruction, pinned an
         // exact key, and its per-event unique keys then matched nothing.
-        let note = state_catchall_advisory(&mk("state", json!({ "scope": "run-1" })), false);
+        let note = state_catchall_advisory(&req(state(Some("run-1"), None)), false);
         let note = note.as_deref().unwrap_or("");
         assert!(note.contains("run-1"), "got: {note}");
-        assert!(note.contains("no `key` filter"), "got: {note}");
+        assert!(note.contains("no `input.key` filter"), "got: {note}");
         assert!(
             note.contains("RIGHT shape when producers write one unique key per event"),
             "the legitimate scope-only design must be endorsed: {note}"
@@ -1991,20 +1878,19 @@ pub(crate) mod tests {
             "adding a key must be conditioned on the producers: {note}"
         );
         // No scope AND no key: the global catch-all, still warned hard.
-        let note = state_catchall_advisory(&mk("state", json!({})), false);
+        let note = state_catchall_advisory(&req(state(None, None)), false);
         assert!(note.as_deref().unwrap_or("").contains("EVERY scope"));
         // A key filter silences it, with or without scope.
         for once in [false, true] {
-            assert!(state_catchall_advisory(
-                &mk("state", json!({ "scope": "run-1", "key": "change" })),
-                once
-            )
-            .is_none());
             assert!(
-                state_catchall_advisory(&mk("state", json!({ "key": "change" })), once).is_none()
+                state_catchall_advisory(&req(state(Some("run-1"), Some("change"))), once).is_none()
             );
-            // Non-state trigger types are not advised on.
-            assert!(state_catchall_advisory(&mk("cron", json!({})), once).is_none());
+            assert!(state_catchall_advisory(&req(state(None, Some("change"))), once).is_none());
+            // Other functions are not advised on.
+            assert!(
+                state_catchall_advisory(&req(json!({ "function_id": CRON_ON_TICK_FN })), once)
+                    .is_none()
+            );
         }
     }
 
@@ -2014,16 +1900,15 @@ pub(crate) mod tests {
     /// silence into a notice, so neither advisory has anything true to say.
     #[test]
     fn a_barrier_gated_one_shot_wake_with_a_deadline_gets_no_advisory() {
-        let wave: SubscribeRequest = serde_json::from_value(json!({
-            "trigger_type": "state",
-            "config": { "scope": "run-r1-w1" },
+        let wave = req(json!({
+            "function_id": STATE_ON_CHANGED_FN,
+            "filters": state_filters(Some("run-r1-w1"), None),
             "conditions": [{
                 "function_id": "state::barrier",
                 "config": { "id": "run-r1-w1", "expect": ["KAN-12", "KAN-13"], "carry": "/event_type" }
             }],
             "lifecycle": { "expires_in_ms": 1_260_000 }
-        }))
-        .unwrap();
+        }));
         let once = effective_once(&wave);
         assert!(once, "a wake defaults to one-shot");
         let has_deadline = resolved_expires_at(wave.lifecycle.as_ref(), 0).is_some();
@@ -2034,51 +1919,38 @@ pub(crate) mod tests {
 
     #[test]
     fn a_keyless_one_shot_state_wake_is_told_which_write_wins() {
-        let mk =
-            |body: serde_json::Value| -> SubscribeRequest { serde_json::from_value(body).unwrap() };
         let barrier = |expect: serde_json::Value| json!([{ "function_id": "state::barrier", "config": { "id": "b", "expect": expect } }]);
-        // No condition: the first write of any key retires it.
-        let note = state_catchall_advisory(
-            &mk(json!({ "trigger_type": "state", "config": { "scope": "run-1" } })),
-            true,
-        );
+        let with_conditions = |scope: Option<&str>, conditions: Value| {
+            let mut body = state(scope, None);
+            body["conditions"] = conditions;
+            req(body)
+        };
+        // No condition: the first write of any key removes it.
+        let note = state_catchall_advisory(&req(state(Some("run-1"), None)), true);
         let note = note.as_deref().unwrap_or("");
         assert!(note.contains("FIRST write of ANY key"), "got: {note}");
         assert!(note.contains("run-1"), "got: {note}");
         assert!(
             !note.contains("every matching write"),
-            "a one-shot retires on its first fire: {note}"
+            "a one-shot is removed on its first delivery: {note}"
         );
         assert!(!note.contains("passes its conditions"), "got: {note}");
         // A count barrier counts ANY key, so a stray write can still complete
         // it: the note stays, naming the gate.
-        let note = state_catchall_advisory(
-            &mk(json!({
-                "trigger_type": "state",
-                "config": { "scope": "run-1" },
-                "conditions": barrier(json!(3))
-            })),
-            true,
-        );
+        let note =
+            state_catchall_advisory(&with_conditions(Some("run-1"), barrier(json!(3))), true);
         let note = note.as_deref().unwrap_or("");
         assert!(note.contains("that passes its conditions"), "got: {note}");
         assert!(note.contains("`expect` array"), "got: {note}");
         // No scope: conditions or not, every write anywhere reaches it.
         for conditions in [json!([]), barrier(json!(["a"]))] {
-            let note = state_catchall_advisory(
-                &mk(json!({ "trigger_type": "state", "config": {}, "conditions": conditions })),
-                true,
-            );
+            let note = state_catchall_advisory(&with_conditions(None, conditions), true);
             assert!(note.as_deref().unwrap_or("").contains("ANY scope"));
         }
         // Standing: a named barrier does not silence it, and the reaction is
         // per write the conditions allow.
         let note = state_catchall_advisory(
-            &mk(json!({
-                "trigger_type": "state",
-                "config": { "scope": "run-1" },
-                "conditions": barrier(json!(["a"]))
-            })),
+            &with_conditions(Some("run-1"), barrier(json!(["a"]))),
             false,
         );
         let note = note.as_deref().unwrap_or("");
@@ -2090,13 +1962,10 @@ pub(crate) mod tests {
 
     #[test]
     fn armed_wake_advisory_names_the_exact_key_for_one_shot_state_wakes() {
-        let mk = |ty: &str, config: serde_json::Value| -> SubscribeRequest {
-            serde_json::from_value(json!({ "trigger_type": ty, "config": config })).unwrap()
-        };
         // A one-shot state wake: warned, naming scope/key, with the
         // sleeps-forever consequence spelled out.
         let note = armed_wake_advisory(
-            &mk("state", json!({ "scope": "run-1", "key": "report_ready" })),
+            &req(state(Some("run-1"), Some("report_ready"))),
             true,
             false,
         );
@@ -2104,16 +1973,16 @@ pub(crate) mod tests {
         assert!(note.contains("run-1/report_ready"), "got: {note}");
         assert!(note.contains("sleeps forever"), "got: {note}");
         // The discovery-run failure modes, named: a DATABASE table with the
-        // watched name does not fire a state wake, and a lifecycle deadline
-        // is what converts eternal silence into a notice.
+        // watched name does not wake a state observer, and a lifecycle
+        // deadline is what converts eternal silence into a notice.
         assert!(
             note.contains("database table or row with the same name does NOT"),
             "the medium sentence is the advisory's whole point: {note}"
         );
         assert!(note.contains("expires_in_ms"), "got: {note}");
         assert!(note.contains("expiry notice"), "got: {note}");
-        // Every state write fires a state wake, compare-and-set and update
-        // included (the state worker emits the same event for them).
+        // Every state write wakes it, compare-and-set and update included
+        // (the state worker calls state::on-changed for each of them).
         for write in [
             "state::set",
             "state::update",
@@ -2127,53 +1996,48 @@ pub(crate) mod tests {
             "no condition, no gate: {note}"
         );
         // A condition gates the wake: say so.
-        let gated: SubscribeRequest = serde_json::from_value(json!({
-            "trigger_type": "state",
-            "config": { "scope": "run-1", "key": "report_ready" },
-            "conditions": [{ "function_id": "state::barrier", "config": { "id": "b", "expect": ["a"] } }]
-        }))
-        .unwrap();
-        let note = armed_wake_advisory(&gated, true, false);
+        let mut gated = state(Some("run-1"), Some("report_ready"));
+        gated["conditions"] =
+            json!([{ "function_id": "state::barrier", "config": { "id": "b", "expect": ["a"] } }]);
+        let note = armed_wake_advisory(&req(gated), true, false);
         assert!(note
             .as_deref()
             .unwrap_or("")
             .contains("that passes its conditions"));
         // A deadline (expires_in_ms, or a leaf's capped wake) already
         // converts silence into a notice.
-        let keyed = mk("state", json!({ "scope": "run-1", "key": "report_ready" }));
+        let keyed = req(state(Some("run-1"), Some("report_ready")));
         assert!(armed_wake_advisory(&keyed, true, true).is_none());
         // A lifecycle without a deadline does not: still warned.
         for lifecycle in [json!({ "once": true }), json!({ "max_fires": 1 })] {
-            let req: SubscribeRequest = serde_json::from_value(json!({
-                "trigger_type": "state",
-                "config": { "scope": "run-1", "key": "report_ready" },
-                "lifecycle": lifecycle
-            }))
-            .unwrap();
-            let has_deadline = resolved_expires_at(req.lifecycle.as_ref(), 0).is_some();
-            assert!(armed_wake_advisory(&req, true, has_deadline).is_some());
+            let mut body = state(Some("run-1"), Some("report_ready"));
+            body["lifecycle"] = lifecycle;
+            let r = req(body);
+            let has_deadline = resolved_expires_at(r.lifecycle.as_ref(), 0).is_some();
+            assert!(armed_wake_advisory(&r, true, has_deadline).is_some());
         }
-        // Standing notifies and non-state types are not wakes.
-        assert!(armed_wake_advisory(&mk("state", json!({ "key": "k" })), false, false).is_none());
-        assert!(armed_wake_advisory(&mk("cron", json!({})), true, false).is_none());
+        // Standing notifies and other functions are not wakes.
+        assert!(armed_wake_advisory(&req(state(None, Some("k"))), false, false).is_none());
+        assert!(
+            armed_wake_advisory(&req(json!({ "function_id": CRON_ON_TICK_FN })), true, false)
+                .is_none()
+        );
     }
 
     #[test]
     fn standing_binding_advisory_notes_non_once_only() {
-        let mk = |ty: &str| -> SubscribeRequest {
-            serde_json::from_value(json!({
-                "trigger_type": ty,
-                "config": {},
-                "function_id": "state::set",
+        let mk = |function_id: &str| {
+            req(json!({
+                "function_id": function_id,
+                "target": { "function_id": "state::set" },
             }))
-            .unwrap()
         };
-        // The leak shape: a state kickoff registered without once.
-        let note = standing_binding_advisory(&mk("state"), false);
+        // The leak shape: a state kickoff observed without once.
+        let note = standing_binding_advisory(&mk(STATE_ON_CHANGED_FN), false);
         assert!(note.as_deref().unwrap_or("").contains("STANDING"));
-        // once retires itself.
-        assert!(standing_binding_advisory(&mk("state"), true).is_none());
-        assert!(standing_binding_advisory(&mk("cron"), true).is_none());
+        // once removes itself.
+        assert!(standing_binding_advisory(&mk(STATE_ON_CHANGED_FN), true).is_none());
+        assert!(standing_binding_advisory(&mk(CRON_ON_TICK_FN), true).is_none());
     }
 
     /// MOT-5449: a wake asked to stand (`once: false`) has no call to re-run;
@@ -2181,12 +2045,12 @@ pub(crate) mod tests {
     /// something to tell it to pass.
     #[test]
     fn a_standing_wake_is_not_told_it_is_a_call_binding() {
-        let mk = |lifecycle: Value| -> SubscribeRequest {
-            let mut v = json!({ "trigger_type": "state", "config": { "scope": "run-1" } });
+        let mk = |lifecycle: Value| {
+            let mut v = state(Some("run-1"), None);
             if !lifecycle.is_null() {
                 v["lifecycle"] = lifecycle;
             }
-            serde_json::from_value(v).unwrap()
+            req(v)
         };
         let note = standing_binding_advisory(&mk(Value::Null), false);
         let note = note.as_deref().unwrap_or("");
@@ -2200,21 +2064,21 @@ pub(crate) mod tests {
         );
     }
 
-    /// Both discovery runs registered a recurring cron with no lifecycle and
+    /// Both discovery runs created a recurring cron with no lifecycle and
     /// left it firing past their own teardown claims — an unbounded cron is
     /// never what an agent meant, so it gets a warning of its own.
     #[test]
     fn an_unbounded_recurring_cron_is_warned() {
-        let mk = |lifecycle: Value| -> SubscribeRequest {
+        let mk = |lifecycle: Value| {
             let mut v = json!({
-                "trigger_type": "cron",
-                "config": { "expression": "0 */10 * * * *" },
-                "function_id": "state::set",
+                "function_id": CRON_ON_TICK_FN,
+                "args": { "expression": "0 */10 * * * *" },
+                "target": { "function_id": "state::set" },
             });
             if !lifecycle.is_null() {
                 v["lifecycle"] = lifecycle;
             }
-            serde_json::from_value(v).unwrap()
+            req(v)
         };
         let note = standing_binding_advisory(&mk(Value::Null), false);
         let note = note.as_deref().unwrap_or("");
@@ -2223,9 +2087,9 @@ pub(crate) mod tests {
             note.contains("0 */10 * * * *"),
             "the expression is named: {note}"
         );
-        assert!(note.contains("SUCCEEDED"), "redo-thrash guard: {note}");
+        assert!(note.contains("CREATED"), "redo-thrash guard: {note}");
         assert!(
-            note.contains("\"timer\"") && note.contains("once: true"),
+            note.contains("harness::on-timer") && note.contains("once: true"),
             "both deadline fixes are named: {note}"
         );
         // Any lifecycle bound silences it — bounded recurrence is deliberate.
@@ -2235,30 +2099,30 @@ pub(crate) mod tests {
         );
     }
 
-    /// `{ in_ms }` resolves to an absolute `at` BEFORE the engine stores the
-    /// config — a relative countdown replayed after a restart would silently
-    /// restart from zero. And the nonsense shapes fail loudly at registration.
+    /// `{ in_ms }` resolves to an absolute `at` BEFORE the observer is
+    /// created — a relative countdown replayed after a restart would silently
+    /// restart from zero. And the nonsense shapes fail loudly when observing.
     #[test]
-    fn timer_registrations_resolve_relative_and_refuse_nonsense() {
-        let mk = |config: Value, once: Option<bool>| -> SubscribeRequest {
-            let mut v = json!({ "trigger_type": "timer", "config": config });
+    fn timer_observers_resolve_relative_and_refuse_nonsense() {
+        let mk = |args: Value, once: Option<bool>| {
+            let mut v = json!({ "function_id": crate::timer::ON_TIMER_FN, "args": args });
             if let Some(o) = once {
                 v["once"] = json!(o);
             }
-            serde_json::from_value(v).unwrap()
+            req(v)
         };
         let now = crate::types::message::AgentMessage::now_ms();
 
         let mut rel = mk(json!({ "in_ms": 600_000 }), None);
         resolve_timer_request(&mut rel).unwrap();
-        let at = rel.config["at"].as_i64().unwrap();
+        let at = rel.args["at"].as_i64().unwrap();
         assert!(
             (at - now - 600_000).abs() < 5_000,
             "at ≈ now + in_ms, got {at}"
         );
         assert!(
-            rel.config.get("in_ms").is_none(),
-            "config is normalized to `at` only"
+            rel.args.get("in_ms").is_none(),
+            "args are normalized to `at` only"
         );
         assert!(effective_once(&rel), "a timer defaults to once");
 
@@ -2286,40 +2150,41 @@ pub(crate) mod tests {
             .to_string();
         assert!(err.contains("not both"), "got: {err}");
 
-        // Non-timer types pass through untouched.
-        let mut cron: SubscribeRequest = serde_json::from_value(
-            json!({ "trigger_type": "cron", "config": { "expression": "0 * * * * *" } }),
-        )
-        .unwrap();
+        // Other functions pass through untouched.
+        let mut cron = req(json!({
+            "function_id": CRON_ON_TICK_FN,
+            "args": { "expression": "0 * * * * *" }
+        }));
         resolve_timer_request(&mut cron).unwrap();
-        assert_eq!(cron.config["expression"], json!("0 * * * * *"));
+        assert_eq!(cron.args["expression"], json!("0 * * * * *"));
     }
 
-    /// The run-3 lesson: notes must SAY the registration succeeded, or a
+    /// The run-3 lesson: notes must SAY the observer was created, or a
     /// warning reads as a redo order and the model starts over.
     #[test]
     fn composed_notes_lead_with_the_outcome() {
         assert!(compose_note(vec![]).is_none());
         let note = compose_note(vec!["warning: x.".into(), "note: y.".into()]).unwrap();
-        assert!(note.starts_with("registration SUCCEEDED"), "got: {note}");
+        assert!(note.starts_with("observer CREATED"), "got: {note}");
         assert!(note.contains("rather than starting over"), "got: {note}");
         assert!(note.contains("warning: x.") && note.contains("note: y."));
     }
 
-    /// The barrier-armed-late shape: a keyed state watch is checkable for a
-    /// pre-existing value at registration; the note explains no-replay.
+    /// The barrier-armed-late shape: a keyed state observer is checkable for
+    /// a pre-existing value when it is created; the note explains no-replay.
     #[test]
-    fn prewritten_key_advisory_targets_keyed_state_watches() {
-        let mk = |ty: &str, config: Value| -> SubscribeRequest {
-            serde_json::from_value(json!({ "trigger_type": ty, "config": config })).unwrap()
-        };
+    fn prewritten_key_advisory_targets_keyed_state_observers() {
         assert_eq!(
-            watched_state_key(&mk("state", json!({ "scope": "run", "key": "done" }))),
+            watched_state_key(&req(state(Some("run"), Some("done")))),
             Some(("run", "done"))
         );
         // Keyless and non-state shapes are never probed.
-        assert!(watched_state_key(&mk("state", json!({ "scope": "run" }))).is_none());
-        assert!(watched_state_key(&mk("cron", json!({ "key": "done" }))).is_none());
+        assert!(watched_state_key(&req(state(Some("run"), None))).is_none());
+        assert!(watched_state_key(&req(json!({
+            "function_id": CRON_ON_TICK_FN,
+            "filters": state_filters(Some("run"), Some("done")),
+        })))
+        .is_none());
 
         let note = prewritten_key_note("receiving_events", "done");
         assert!(note.contains("receiving_events/done"), "got: {note}");
@@ -2333,57 +2198,56 @@ pub(crate) mod tests {
     /// The default-by-shape matrix — the semantic that killed three of five
     /// discovery runs when one rule covered everything. A wake parks and must
     /// not silently re-arm; a call binding is per-event and must not silently
-    /// retire at fire one.
+    /// retire at delivery one.
     #[test]
     fn once_defaults_by_shape() {
-        let mk = |v: Value| -> SubscribeRequest { serde_json::from_value(v).unwrap() };
+        let call = json!({ "function_id": "state::set" });
 
         // Wakes (no target): once.
-        assert!(effective_once(&mk(json!({ "trigger_type": "state" }))));
-        assert!(effective_once(&mk(
-            json!({ "trigger_type": "database::row-changed", "config": { "db": "primary" } })
-        )));
-
-        // Call bindings: STANDING, in both the shorthand and the long form.
-        assert!(!effective_once(&mk(json!({
-            "trigger_type": "database::row-changed",
-            "function_id": "state::set",
+        assert!(effective_once(&req(state(None, None))));
+        assert!(effective_once(&req(json!({
+            "function_id": "database::on-row-changed",
+            "args": { "db": "primary" }
         }))));
-        assert!(!effective_once(&mk(json!({
-            "trigger_type": "state",
-            "target": { "function_id": "state::set" },
+
+        // Call bindings: STANDING.
+        assert!(!effective_once(&req(json!({
+            "function_id": "database::on-row-changed",
+            "target": call,
         }))));
 
         // Cron recurring, timer once — by definition, regardless of target.
-        assert!(!effective_once(&mk(json!({ "trigger_type": "cron" }))));
-        assert!(!effective_once(&mk(json!({
-            "trigger_type": "cron",
-            "function_id": "state::set",
+        assert!(!effective_once(&req(
+            json!({ "function_id": CRON_ON_TICK_FN })
+        )));
+        assert!(!effective_once(&req(json!({
+            "function_id": CRON_ON_TICK_FN,
+            "target": call,
         }))));
-        assert!(effective_once(&mk(json!({
-            "trigger_type": "timer",
-            "function_id": "state::set",
+        assert!(effective_once(&req(json!({
+            "function_id": crate::timer::ON_TIMER_FN,
+            "target": call,
         }))));
 
         // Explicit always wins, in both directions.
-        assert!(effective_once(&mk(
-            json!({ "trigger_type": "cron", "once": true })
+        assert!(effective_once(&req(
+            json!({ "function_id": CRON_ON_TICK_FN, "once": true })
         )));
-        assert!(!effective_once(&mk(
-            json!({ "trigger_type": "state", "once": false })
+        assert!(!effective_once(&req(
+            json!({ "function_id": STATE_ON_CHANGED_FN, "once": false })
         )));
-        assert!(effective_once(&mk(json!({
-            "trigger_type": "state",
-            "function_id": "state::set",
+        assert!(effective_once(&req(json!({
+            "function_id": STATE_ON_CHANGED_FN,
+            "target": call,
             "once": true,
         }))));
-        assert!(effective_once(&mk(json!({
-            "trigger_type": "state",
-            "function_id": "state::set",
+        assert!(effective_once(&req(json!({
+            "function_id": STATE_ON_CHANGED_FN,
+            "target": call,
             "lifecycle": { "once": true },
         }))));
-        assert!(!effective_once(&mk(json!({
-            "trigger_type": "state",
+        assert!(!effective_once(&req(json!({
+            "function_id": STATE_ON_CHANGED_FN,
             "lifecycle": { "once": false },
         }))));
     }
@@ -2412,7 +2276,7 @@ pub(crate) mod tests {
         }))
         .is_ok());
 
-        // Relative resolves against the registration clock.
+        // Relative resolves against the observe clock.
         let lifecycle = LifecycleRequest {
             expires_in_ms: Some(60_000),
             ..Default::default()
@@ -2446,7 +2310,7 @@ pub(crate) mod tests {
         let full = require_reserved(ReserveOutcome::Capacity)
             .unwrap_err()
             .to_string();
-        assert!(full.contains("binding cap reached"));
+        assert!(full.contains("observer cap reached"));
 
         let expired = require_reserved(ReserveOutcome::Exhausted)
             .unwrap_err()
@@ -2455,11 +2319,8 @@ pub(crate) mod tests {
         assert!(!expired.contains("cap reached"));
     }
 
-    /// The intercepted controls never reach the engine registry, so native
-    /// exposure must publish their contracts itself — but only when the
-    /// turn's policy allows them (a leaf child sees neither).
     #[test]
-    fn in_turn_triggers_calls_are_forced_to_the_calling_session() {
+    fn in_turn_observer_calls_are_forced_to_the_calling_session() {
         // Absent, null, and forged explicit ids all take the caller.
         let filled = with_caller_session_id(&json!({}), "s_me");
         assert_eq!(filled["session_id"], "s_me");
@@ -2504,31 +2365,30 @@ pub(crate) mod tests {
         assert!(send_invocation_context("state::get", &self_send, "s", true).is_none());
     }
 
+    /// The intercepted controls are published by the harness itself for
+    /// native exposure — but only when the turn's policy allows them.
     #[test]
-    fn native_subscription_controls_follow_dispatch_policy() {
-        let both = policy_allowing(&["engine::register_trigger", "engine::unregister_trigger"]);
+    fn native_observe_controls_follow_dispatch_policy() {
+        let both = policy_allowing(&[OBSERVE_ID, UNOBSERVE_ID]);
         let tools = native_control_tools(&both);
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(
-            names,
-            ["engine::register_trigger", "engine::unregister_trigger"]
-        );
+        assert_eq!(names, [OBSERVE_ID, UNOBSERVE_ID]);
         assert!(tools
             .iter()
             .all(|t| t.execution_mode.as_deref() == Some("sequential")));
 
-        let register_only = policy_allowing(&["engine::register_trigger"]);
-        let names: Vec<String> = native_control_tools(&register_only)
+        let observe_only = policy_allowing(&[OBSERVE_ID]);
+        let names: Vec<String> = native_control_tools(&observe_only)
             .into_iter()
             .map(|t| t.name)
             .collect();
-        assert_eq!(names, ["engine::register_trigger"]);
+        assert_eq!(names, [OBSERVE_ID]);
 
         let mut walled = policy_allowing(&["*"]);
         assert!(native_control_tools(&walled).len() == 2);
-        // Under the leaf wall the toolset keeps registration and loses
-        // unregistration: a leaf arms its own wake but cannot retract anyone's
-        // binding, which is why its wake must be self-limiting (MOT-4766).
+        // Under the leaf wall the toolset keeps observe and loses unobserve:
+        // a leaf arms its own wake but cannot retract anyone's observer, which
+        // is why its wake must be self-limiting (MOT-4766).
         walled = CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
             allow: vec!["*".into()],
             deny: crate::policy::CONTROL_PLANE_DENY
@@ -2541,7 +2401,7 @@ pub(crate) mod tests {
             .into_iter()
             .map(|t| t.name)
             .collect();
-        assert_eq!(names, ["engine::register_trigger"]);
+        assert_eq!(names, [OBSERVE_ID]);
     }
 
     fn leaf_policy() -> CompiledPolicy {
@@ -2577,14 +2437,14 @@ pub(crate) mod tests {
     }
 
     // The half it does not: durable machinery pointed at someone else's
-    // function, which it could not unregister afterwards.
+    // function, which it could not remove afterwards.
     #[test]
     fn a_leaf_may_not_bind_a_mechanical_call() {
         let err = reject_leaf_control_plane(&leaf_policy(), true, Some("database::execute"))
             .expect_err("a mechanical call is control plane");
         let text = format!("{err:?}");
         assert!(text.contains("database::execute"), "{text}");
-        assert!(text.contains("Omit `function_id`"), "{text}");
+        assert!(text.contains("Omit `target`"), "{text}");
         // A root (or an explicit orchestrator child) keeps both shapes.
         assert!(reject_leaf_control_plane(
             &policy_allowing(&["*"]),
@@ -2608,9 +2468,31 @@ pub(crate) mod tests {
         }
     }
 
-    // `once: true` caps fires, not time: the run-30 hang was two `once`
-    // compose-operation wakes that never fired, on a child that cannot
-    // unregister. Every leaf wake gets a deadline whether it asked or not.
+    /// The settled-operation preflight reads the operation from the Compose
+    /// progress observer's `input.operation_id` filter, and only there.
+    #[test]
+    fn the_compose_preflight_reads_the_operation_filter() {
+        let watch = req(json!({
+            "function_id": COMPOSE_PROGRESS_FN,
+            "filters": {
+                "input.operation_id": { "$eq": "compose:op-1" },
+                "input.terminal": { "$eq": true },
+            }
+        }));
+        assert_eq!(compose_operation_id(&watch), Some("compose:op-1"));
+        assert_eq!(
+            compose_operation_id(&req(json!({ "function_id": COMPOSE_PROGRESS_FN }))),
+            None
+        );
+        assert_eq!(
+            compose_operation_id(&req(state(Some("compose:op-1"), None))),
+            None
+        );
+    }
+
+    // `once: true` caps deliveries, not time: the run-30 hang was two `once`
+    // Compose wakes that never fired, on a child that cannot unobserve. Every
+    // leaf wake gets a deadline whether it asked or not.
     #[test]
     fn a_leaf_wake_always_carries_a_deadline() {
         let leaf = leaf_policy();
@@ -2640,21 +2522,19 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn register_control_tool_contract_has_compact_return_guidance() {
-        let expected = "Subscribe the current harness session to a iii trigger: omit function_id to be \
-                        notified in this session, or name a non-harness function to call with the event. \
-                        Returns `{ subscription_id, once }`; a `note` means registration succeeded but its wiring \
-                        looks suspicious. Call-target results are discarded and do not return to this session.";
-        let (description, _) = control_contract(REGISTER_TRIGGER_ID)
-            .expect("register_trigger should expose a public control contract");
-        assert_eq!(description, expected);
+    fn observe_control_tool_contract_has_compact_return_guidance() {
+        let (description, _) = control_contract(OBSERVE_ID)
+            .expect("harness::observe should expose a public control contract");
+        assert_eq!(description, OBSERVE_TOOL_DESC);
+        assert!(description.contains("Returns `{ observer_id, once }`"));
+        assert!(description.contains("Call-target results are discarded"));
 
-        let tool = native_control_tools(&policy_allowing(&[REGISTER_TRIGGER_ID]))
+        let tool = native_control_tools(&policy_allowing(&[OBSERVE_ID]))
             .into_iter()
             .next()
-            .expect("register_trigger should be present on the native control surface");
-        assert_eq!(tool.name, REGISTER_TRIGGER_ID);
-        assert_eq!(tool.description, expected);
+            .expect("harness::observe should be present on the native control surface");
+        assert_eq!(tool.name, OBSERVE_ID);
+        assert_eq!(tool.description, OBSERVE_TOOL_DESC);
     }
 
     fn policy_allowing(allow: &[&str]) -> CompiledPolicy {
@@ -2670,6 +2550,7 @@ pub(crate) mod tests {
         "harness::state::list",
         "harness::state::compare-and-set",
         "state::claim-namespace",
+        "engine::observers::dispose",
         "provider::openai-codex::login::start",
         "provider::openai-codex::login::poll",
         "provider::openai-codex::login::cancel",
@@ -2682,7 +2563,7 @@ pub(crate) mod tests {
         "provider::openai-codex::auth::future-operation",
         // Re-entering the pipeline for the caller's own session would wait on
         // the session lock the running step holds across tool execution.
-        crate::functions::FUNCTION_TRIGGER_ID,
+        crate::functions::FUNCTION_CALL_ID,
         "provider-openai-codex::state::future-operation",
     ];
 
@@ -2746,9 +2627,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn intercepted_engine_controls_cannot_be_binding_targets_even_with_allow_all() {
+    fn intercepted_observe_controls_cannot_be_binding_targets_even_with_allow_all() {
         let policy = policy_allowing(&["*"]);
-        for id in [REGISTER_TRIGGER_ID, UNREGISTER_TRIGGER_ID] {
+        for id in [OBSERVE_ID, UNOBSERVE_ID] {
             assert!(policy.allows(id));
             assert!(
                 validate_call_target(id, &policy).is_err(),
@@ -2758,30 +2639,28 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn operator_only_subscription_targets_and_conditions_are_denied() {
+    async fn operator_only_observer_targets_and_conditions_are_denied() {
         let deps = disconnected_deps();
         let policy = policy_allowing(&["*"]);
         for id in AGENT_FORBIDDEN_CALLS
             .iter()
             .copied()
-            .chain([REGISTER_TRIGGER_ID, UNREGISTER_TRIGGER_ID])
+            .chain([OBSERVE_ID, UNOBSERVE_ID])
         {
-            for args in [
-                json!({ "trigger_type": "state", "function_id": id }),
-                json!({ "trigger_type": "state", "target": { "function_id": id } }),
-            ] {
-                let req = serde_json::from_value(args).unwrap();
-                let result = tokio::time::timeout(
-                    std::time::Duration::from_millis(100),
-                    resolve_target(&deps, &req, "owner", &policy),
-                )
-                .await
-                .unwrap_or_else(|_| panic!("{id} reached the approval probe"));
-                assert!(
-                    matches!(result, Err(HarnessError::InvalidRequest(_))),
-                    "{id}"
-                );
-            }
+            let r = req(json!({
+                "function_id": STATE_ON_CHANGED_FN,
+                "target": { "function_id": id }
+            }));
+            let result = tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                resolve_target(&deps, &r, "owner", &policy),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("{id} reached the approval probe"));
+            assert!(
+                matches!(result, Err(HarnessError::InvalidRequest(_))),
+                "{id}"
+            );
             let conditions = vec![ConditionSpec {
                 function_id: id.into(),
                 config: None,
@@ -2800,38 +2679,65 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn operator_only_post_turn_validators_are_denied_by_the_register_intercept() {
+    async fn operator_only_post_turn_validators_are_denied_by_the_observe_intercept() {
         let deps = disconnected_deps();
         let engine = deps.engine().await;
         let policy = policy_allowing(&["*"]);
         for id in AGENT_FORBIDDEN_CALLS
             .iter()
             .copied()
-            .chain([REGISTER_TRIGGER_ID, UNREGISTER_TRIGGER_ID])
+            .chain([OBSERVE_ID, UNOBSERVE_ID])
         {
             let result = invoke(
                 &deps,
                 &engine,
                 &policy,
-                REGISTER_TRIGGER_ID,
-                &json!({ "trigger_type": crate::hooks::POST_TURN, "function_id": id }),
+                OBSERVE_ID,
+                &json!({
+                    "function_id": crate::hooks::ON_POST_TURN_FN,
+                    "target": { "function_id": id }
+                }),
                 "owner",
                 false,
                 None,
             )
             .await;
-            assert!(result.is_error, "{id} must not register a validator");
+            assert!(result.is_error, "{id} must not become a validator");
             assert!(result.details["error"].as_str().unwrap().contains(id));
         }
     }
 
+    /// A post-turn validator names its validator as the target; without one
+    /// there is nothing to gate with.
+    #[tokio::test]
+    async fn a_post_turn_validator_needs_a_target() {
+        let deps = disconnected_deps();
+        let engine = deps.engine().await;
+        let result = invoke(
+            &deps,
+            &engine,
+            &policy_allowing(&["*"]),
+            OBSERVE_ID,
+            &json!({ "function_id": crate::hooks::ON_POST_TURN_FN }),
+            "owner",
+            false,
+            None,
+        )
+        .await;
+        assert!(result.is_error);
+        assert!(result.details["error"]
+            .as_str()
+            .unwrap()
+            .contains("target.function_id"));
+    }
+
     /// A running step holds its session lock across tool execution and
-    /// `harness::function::trigger` takes that lock: an agent reaching it for
+    /// `harness::function::call` takes that lock: an agent reaching it for
     /// its own session would deadlock, even with an allow-all policy.
     #[tokio::test]
-    async fn agents_cannot_reenter_the_function_trigger_pipeline() {
-        let id = crate::functions::FUNCTION_TRIGGER_ID;
-        assert_eq!(id, "harness::function::trigger");
+    async fn agents_cannot_reenter_the_function_call_pipeline() {
+        let id = crate::functions::FUNCTION_CALL_ID;
+        assert_eq!(id, "harness::function::call");
         assert!(agent_call_forbidden(id));
         let deps = disconnected_deps();
         let engine = deps.engine().await;
@@ -2862,6 +2768,7 @@ pub(crate) mod tests {
             "provider::openai-codex::login-info",
             "provider::openai-codex::authenticate",
             "provider-openai-codex::state-info",
+            "engine::observers::list",
         ] {
             assert!(
                 !agent_call_forbidden(id),
@@ -2874,11 +2781,11 @@ pub(crate) mod tests {
         }
     }
 
-    /// A fired call runs with WORKER authority outside the turn loop, so the
-    /// registrant's own policy is the only thing standing between a narrowed
-    /// session and every function on the bus.
+    /// A delivered call runs with WORKER authority outside the turn loop, so
+    /// the observer's own policy is the only thing standing between a
+    /// narrowed session and every function on the bus.
     #[test]
-    fn call_target_must_be_callable_by_the_registrant() {
+    fn call_target_must_be_callable_by_the_observer() {
         let policy = policy_allowing(&["fp::*", "state::get"]);
         assert!(validate_call_target("fp::pipe", &policy).is_ok());
         assert!(validate_call_target("state::get", &policy).is_ok());
@@ -2894,9 +2801,9 @@ pub(crate) mod tests {
     }
 
     /// Prevents: a binding or post-turn validator on coder::scaffold-worker
-    /// whose fired payload sets `start: true`, running compose::add with the
-    /// ide's authority for a session that may not call it (both fire paths
-    /// dispatch raw, outside the turn's scaffold_start_denial).
+    /// whose delivered payload sets `start: true`, running compose::add with
+    /// the ide's authority for a session that may not call it (both delivery
+    /// paths dispatch raw, outside the turn's scaffold_start_denial).
     #[test]
     fn a_scaffold_reaction_needs_compose_add() {
         let coder_only = policy_allowing(&["coder::*"]);
@@ -2924,10 +2831,9 @@ pub(crate) mod tests {
 
         assert!(matches!(
             start_after_approval(&default, Ok(Verdict::Allow)),
-            trigger::StartGate::Pass
+            call::StartGate::Pass
         ));
-        let trigger::StartGate::FilesOnly(sent, note) = start_after_approval(&default, held())
-        else {
+        let call::StartGate::FilesOnly(sent, note) = start_after_approval(&default, held()) else {
             panic!("a held compose::add must leave a defaulted start files-only");
         };
         assert_eq!(sent["start"], json!(false));
@@ -2935,30 +2841,30 @@ pub(crate) mod tests {
             note.contains("`hold`") && note.contains("Not started"),
             "{note}"
         );
-        let trigger::StartGate::Deny(denied) = start_after_approval(&explicit, held()) else {
+        let call::StartGate::Deny(denied) = start_after_approval(&explicit, held()) else {
             panic!("an explicit start with a held compose::add must be refused");
         };
         assert_eq!(denied.details["error"]["code"], "scaffold_start_denied");
         // An undetermined verdict fails closed.
         assert!(matches!(
             start_after_approval(&default, Err("timeout".into())),
-            trigger::StartGate::FilesOnly(..)
+            call::StartGate::FilesOnly(..)
         ));
     }
 
     #[test]
     fn only_a_scaffold_without_start_false_starts() {
         let id = "coder::scaffold-worker";
-        assert!(trigger::scaffold_starts(id, &json!({ "name": "a" })));
-        assert!(trigger::scaffold_starts(
+        assert!(call::scaffold_starts(id, &json!({ "name": "a" })));
+        assert!(call::scaffold_starts(
             id,
             &json!({ "name": "a", "start": true })
         ));
-        assert!(!trigger::scaffold_starts(
+        assert!(!call::scaffold_starts(
             id,
             &json!({ "name": "a", "start": false })
         ));
-        assert!(!trigger::scaffold_starts("coder::create-file", &json!({})));
+        assert!(!call::scaffold_starts("coder::create-file", &json!({})));
     }
 
     /// A call re-entering the harness's control plane is refused even when the
@@ -2971,7 +2877,7 @@ pub(crate) mod tests {
         for internal in [
             "harness::spawn",
             "harness::send",
-            "harness::trigger-call",
+            "harness::function::call",
             "harness::turn",
         ] {
             let err = validate_call_target(internal, &wide_open).unwrap_err();
@@ -2995,7 +2901,7 @@ pub(crate) mod tests {
         for absent in [
             "function_not_found: approval::evaluate",
             "engine: no worker registered for approval::evaluate",
-            "trigger failed: unregistered function",
+            "call failed: unregistered function",
             "approval::evaluate not found",
         ] {
             assert!(is_function_absent(absent), "must read as absent: {absent}");
@@ -3014,27 +2920,22 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_call_binding_rejects_sub_agent_keys_and_bad_pointers() {
-        // The shorthand `metadata` for a call target is
-        // {action?, payload?, event_into?}.
-        // A `task` here means the caller wanted a spawn binding; saying so beats
-        // silently ignoring it and wiring a call that fires with an empty
-        // template forever.
-        let err = validate_call_template(&json!({ "task": "do it" })).unwrap_err();
-        assert!(err.to_string().contains("unknown key `task`"));
-        // A pointer that is not a pointer is a per-event no-op at fire time.
-        let err = validate_call_template(&json!({ "event_into": "value" })).unwrap_err();
-        assert!(err.to_string().contains("JSON pointer"));
-        // The valid shapes pass, including the empty-pointer whole-payload form.
-        assert!(validate_call_template(&json!({ "payload": { "db": "primary" } })).is_ok());
-        assert!(validate_call_template(&json!({
-            "action": "new Explorer message received",
-            "payload": { "db": "primary" }
+    fn a_call_target_rejects_sub_agent_keys_and_bad_pointers() {
+        // A `task` here means the caller wanted a spawn binding; refusing it
+        // beats silently wiring a call that fires with an empty template.
+        let err = serde_json::from_value::<ObserveRequest>(json!({
+            "function_id": STATE_ON_CHANGED_FN,
+            "target": { "function_id": "state::set", "task": "do it" }
         }))
-        .is_ok());
-        assert!(validate_call_template(&json!({ "event_into": "/args/event" })).is_ok());
-        assert!(validate_call_template(&json!({ "event_into": "" })).is_ok());
-        assert!(validate_call_template(&Value::Null).is_ok());
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("task"), "{err}");
+        // A pointer that is not a pointer is a per-event no-op at delivery.
+        assert!(validate_event_into(Some("value")).is_err());
+        // The valid shapes pass, including the empty-pointer whole-payload form.
+        assert!(validate_event_into(Some("/args/event")).is_ok());
+        assert!(validate_event_into(Some("")).is_ok());
+        assert!(validate_event_into(None).is_ok());
 
         let explicit: BindingTarget = serde_json::from_value(json!({
             "function_id": "state::set",
@@ -3047,22 +2948,22 @@ pub(crate) mod tests {
     #[test]
     fn event_action_must_be_non_empty_text() {
         assert!(validate_event_action(None).is_ok());
-        assert!(validate_event_action(Some(&json!({
-            "action": "new Explorer message received"
-        })))
-        .is_ok());
-        assert!(validate_event_action(Some(&json!({ "action": "  " }))).is_err());
-        assert!(validate_event_action(Some(&json!({ "action": 7 }))).is_err());
+        assert!(validate_event_action(Some("new Explorer message received")).is_ok());
+        assert!(validate_event_action(Some("  ")).is_err());
+        assert!(serde_json::from_value::<ObserveRequest>(json!({
+            "function_id": STATE_ON_CHANGED_FN,
+            "action": 7
+        }))
+        .is_err());
     }
 
     #[test]
-    fn the_dedup_key_covers_the_long_form_too() {
-        // Two registrations that differ ONLY in their explicit target must not
-        // dedup onto each other — before `target`/`conditions` joined the key,
-        // the second would silently return the first binding's id.
-        let base = json!({ "trigger_type": "state", "config": { "scope": "run" } });
-        let mut a: SubscribeRequest = serde_json::from_value(base.clone()).unwrap();
-        let mut b: SubscribeRequest = serde_json::from_value(base).unwrap();
+    fn the_dedup_key_covers_the_target_too() {
+        // Two observes that differ ONLY in their target must not dedup onto
+        // each other — the second would silently return the first binding's
+        // id.
+        let mut a = req(state(Some("run"), None));
+        let mut b = req(state(Some("run"), None));
         a.target = Some(crate::bindings::BindingTarget::new("state::set"));
         b.target = Some(crate::bindings::BindingTarget::new("state::delete"));
         assert_ne!(
@@ -3074,18 +2975,23 @@ pub(crate) mod tests {
             registration_dedup_key(&a, true),
             registration_dedup_key(&a, true)
         );
+        // Args and filters are part of what is observed.
+        let other_scope = req(state(Some("other"), None));
+        assert_ne!(
+            registration_dedup_key(&a, true),
+            registration_dedup_key(&other_scope, true)
+        );
     }
 
     #[test]
     fn the_dedup_key_uses_raw_timers_and_normalized_lifecycle() {
-        let req: SubscribeRequest = serde_json::from_value(json!({
-            "trigger_type": "timer",
-            "config": { "in_ms": 250 },
+        let r = req(json!({
+            "function_id": crate::timer::ON_TIMER_FN,
+            "args": { "in_ms": 250 },
             "lifecycle": { "once": true, "max_fires": 1, "expires_in_ms": 1234 },
-        }))
-        .unwrap();
-        let key = registration_dedup_key(&req, effective_once(&req));
-        assert_eq!(key["config"], json!({ "in_ms": 250 }));
+        }));
+        let key = registration_dedup_key(&r, effective_once(&r));
+        assert_eq!(key["args"], json!({ "in_ms": 250 }));
         // Relative on purpose: a model retry re-sends the same relative
         // request, so the key matches even though each attempt would resolve
         // a different absolute instant.
@@ -3094,10 +3000,10 @@ pub(crate) mod tests {
             json!({ "once": true, "max_fires": 1, "expires_in_ms": 1234 })
         );
 
-        let mut different = req.clone();
+        let mut different = r.clone();
         different.lifecycle.as_mut().unwrap().expires_in_ms = Some(5678);
         assert_ne!(
-            registration_dedup_key(&req, true),
+            registration_dedup_key(&r, true),
             registration_dedup_key(&different, true)
         );
     }
@@ -3112,41 +3018,54 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn an_engine_side_condition_is_refused_at_registration() {
-        // `condition_function_id` reaches the engine's own contract, where an
-        // unknown id silently skips every fire forever. The typed `conditions`
-        // list reports why instead, so the shorthand is refused rather than
-        // quietly forwarded.
-        let req: SubscribeRequest = serde_json::from_value(json!({
-            "trigger_type": "state",
-            "config": { "scope": "run", "key": "go", "condition_function_id": "fp::get" },
-        }))
-        .unwrap();
-        assert!(req.config.get("condition_function_id").is_some());
-    }
-
-    #[test]
-    fn a_stringified_config_is_parsed_back_into_an_object() {
-        // deepwork leads sent `config` as a JSON string; the old `Value` schema
-        // accepted it, the state worker refused it, and the wake never fired.
-        let (_, schema) = control_contract(REGISTER_TRIGGER_ID).unwrap();
+    fn stringified_args_and_filters_are_parsed_back_into_objects() {
+        // deepwork leads sent objects as JSON strings; the worker refused
+        // them and the wake never fired. Reconciliation repairs both.
+        let (_, schema) = control_contract(OBSERVE_ID).unwrap();
         let reconciled = crate::reconcile::coerce(
             &schema,
-            &json!({ "trigger_type": "state", "config": "{\"scope\":\"run-r1\"}" }),
+            &json!({
+                "function_id": STATE_ON_CHANGED_FN,
+                "filters": "{\"input.scope\":{\"$eq\":\"run-r1\"}}",
+                "args": "{\"expression\":\"0 * * * * *\"}",
+            }),
         )
-        .expect("a stringified config is repairable");
-        assert_eq!(reconciled.arguments["config"], json!({ "scope": "run-r1" }));
+        .expect("stringified objects are repairable");
+        assert_eq!(
+            reconciled.arguments["filters"],
+            json!({ "input.scope": { "$eq": "run-r1" } })
+        );
+        assert_eq!(
+            reconciled.arguments["args"],
+            json!({ "expression": "0 * * * * *" })
+        );
     }
 
     #[test]
-    fn only_an_object_or_absent_config_is_accepted() {
-        assert!(validate_config(&json!({ "scope": "run" })).is_ok());
-        assert!(validate_config(&Value::Null).is_ok());
-        for bad in [json!("{\"scope\":\"run\"}"), json!(["run"]), json!(7)] {
-            let Err(HarnessError::InvalidRequest(msg)) = validate_config(&bad) else {
-                panic!("{bad} must be refused");
-            };
-            assert!(msg.contains("must be a JSON object"), "{msg}");
+    fn only_an_object_or_absent_args_and_filters_are_accepted() {
+        for field in ["args", "filters"] {
+            assert!(validate_object(field, &json!({ "scope": "run" })).is_ok());
+            assert!(validate_object(field, &Value::Null).is_ok());
+            for bad in [json!("{\"scope\":\"run\"}"), json!(["run"]), json!(7)] {
+                let Err(HarnessError::InvalidRequest(msg)) = validate_object(field, &bad) else {
+                    panic!("{bad} must be refused");
+                };
+                assert!(msg.contains("must be a JSON object"), "{msg}");
+                assert!(msg.contains(field), "{msg}");
+            }
         }
+    }
+
+    /// The registered functions only answer calls that bypassed the turn
+    /// loop, which have no session to observe for.
+    #[tokio::test]
+    async fn direct_calls_outside_a_turn_are_refused_with_the_way_out() {
+        let err = direct_handle::<ObserveResponse>(OBSERVE_ID)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("runs only from a turn"), "{err}");
+        assert!(err.contains("iii.observe"), "{err}");
+        assert!(err.contains("harness::observers::dispose"), "{err}");
     }
 }

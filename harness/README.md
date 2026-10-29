@@ -5,7 +5,7 @@
 **A thin, durable turn loop that turns a model plus a few iii workers into an agent.**
 
 <p>
-  <a href="#quickstart"><img alt="Install: iii trigger compose::add worker=harness" src="https://img.shields.io/badge/install-iii%20trigger%20compose%3A%3Aadd%20worker%3Dharness-0a84ff?style=flat-square"></a>
+  <a href="#quickstart"><img alt="Install: iii call compose::add worker=harness" src="https://img.shields.io/badge/install-iii%20call%20compose%3A%3Aadd%20worker%3Dharness-0a84ff?style=flat-square"></a>
   <a href="../LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg?style=flat-square"></a>
   <a href="https://www.rust-lang.org"><img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-rust-orange?style=flat-square&logo=rust&logoColor=white"></a>
   <a href="https://workers.iii.dev/workers/harness"><img alt="harness on the workers registry" src="https://workers.iii.dev/workers/harness/badge.svg"></a>
@@ -39,7 +39,7 @@ iii compose --up
 ```bash
 # New terminal, same folder. `compose::add` updates this Compose project.
 cd iii-app
-iii trigger compose::add worker=harness worker=ade
+iii call compose::add worker=harness worker=ade
 ```
 
 ```bash
@@ -53,7 +53,7 @@ providers read `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` from the engine
 environment, so credentials do not need to be pasted into or stored by the
 Console.
 
-`iii trigger compose::add worker=harness` installs every worker the loop needs (see the badges
+`iii call compose::add worker=harness` installs every worker the loop needs (see the badges
 above); you do not add them one by one. During bootstrap, the harness asks the
 `queue` worker to define a dedicated `harness-turn` queue before it reports
 ready. That queue is FIFO within each `session_id` and processes separate
@@ -89,7 +89,7 @@ Building a consumer — a chat UI, a Telegram/WhatsApp bridge, a cron worker, or
 any event-driven loop on top of the harness? Start with the integration
 contract in
 `architecture/integration.md`: the functions to
-trigger, the triggers to bind, and the canonical consumer patterns.
+call, the functions to observe, and the canonical consumer patterns.
 
 ## Local development
 
@@ -99,9 +99,9 @@ workers from the local source tree with `iii compose`.
 ## Working with iii
 
 iii is a language agnostic runtime where services, agents, and tools are
-composed of the same things: workers, triggers, and functions. One engine
+composed of the same things: workers, functions, and observers. One engine
 holds a live registry of every connected worker, their functions, and the
-triggers bound to them. Calls route worker to engine to worker, so the
+observers of those functions. Calls route worker to engine to worker, so the
 language, runtime, and location of a worker are invisible; the function id is
 the only contract.
 
@@ -109,29 +109,29 @@ the only contract.
 - `engine::functions::list` — every function across all workers (filter with `prefix` / `search` / `worker`)
 - `engine::functions::info { function_id }` — the request/response schema for ONE function (this is your API reference)
 - `engine::workers::list` / `engine::workers::info { name }` — connected workers and their surface
-- `engine::triggers::list` / `engine::triggers::info { id }` — legal trigger types and their config schemas
-- `engine::registered-triggers::list` — every trigger instance already bound
+- `engine::functions::info { function_id }` also gives a function's `args_format` — the args its observers pass
+- `engine::observers::list` — every observer that exists
 
-**2. Call a function.** Use `agent_trigger` with `{ function: "<worker>::<fn>", description: "<short user-facing action>", payload: { ... } }`. The description is shown as the agent's activity in chat; keep it concise and in the session's response language (named in the runtime context, detected from the user's first message). The payload is a JSON object (never a stringified one), and you fetch the contract via `engine::functions::info` before the first call.
+**2. Call a function.** Use `agent_call` with `{ function: "<worker>::<fn>", description: "<short user-facing action>", payload: { ... } }`. The description is shown as the agent's activity in chat; keep it concise and in the session's response language (named in the runtime context, detected from the user's first message). The payload is a JSON object (never a stringified one), and you fetch the contract via `engine::functions::info` before the first call.
 
 **3. Need a capability that is not registered?**
 - `directory::registry::workers::list { search: "<capability>" }`
 - `directory::registry::workers::info { name }` to judge fit
-- choose an operation id and register a one-shot `compose-operation` wake with
-  `{ "operation_id": "<operation-id>", "terminal_only": true }`
+- choose an operation id and observe `compose::on-operation-progress` with a one-shot wake
+  filtered on `{ "input.operation_id": { "$eq": "<operation-id>" }, "input.terminal": { "$eq": true } }`
 - call `compose::add { worker: "<name>", operation_id: "<operation-id>" }` with the same id
 - read `compose::operation` once for race recovery, then confirm the functions after the terminal event
 
-**4. Worker lifecycle.** `compose::status`, `compose::add`, `compose::up`, `compose::down`, `compose::restart`, `compose::update`, and `compose::remove`. `add`, `update`, and `remove` use the same `compose-operation` wake flow above; the other operations return their final result directly. `add`, `update`, and `remove` accept a `workers` list for one batch, while their singular `worker` field remains compatible. Fetch their contracts with `compose::schema { function_id: "compose::<operation>" }`. The harness routes `compose::*` to its supervising daemon and scopes each call to its own compose file.
+**4. Worker lifecycle.** `compose::status`, `compose::add`, `compose::up`, `compose::down`, `compose::restart`, `compose::update`, and `compose::remove`. `add`, `update`, and `remove` use the same Compose operation wake flow above; the other operations return their final result directly. `add`, `update`, and `remove` accept a `workers` list for one batch, while their singular `worker` field remains compatible. Fetch their contracts with `compose::schema { function_id: "compose::<operation>" }`. The harness routes `compose::*` to its supervising daemon and scopes each call to its own compose file.
 
-**5. Triggers, not polling.** To react to events (HTTP, schedule, webhook, file change), bind a trigger instead of polling. Discover the type with `engine::triggers::list`, copy config from its schema, and confirm the binding fires with a real call (e.g. `web::fetch` to its local URL).
+**5. Observers, not polling.** To react to events (HTTP, schedule, webhook, file change), observe the function that emits them: `harness::observe` from a turn, `iii.observe` from a worker. Find the function with `engine::functions::list`, copy its args and filter fields from `engine::functions::info`, and confirm the observer delivers with a real call (e.g. `web::fetch` to its local URL).
 
 **6. Handy workers.**
 - `web::fetch` — all HTTP(S); pass `format: "markdown"` to read docs without flooding context
 - `coder::*` — file ops for any code task (read/search/create/update/move/delete)
 - `slack::*` — post to Slack
 
-**7. Authoring a worker.** Read the SDK reference for your language first (Node / Python / Rust / Browser / Engine WS) at https://iii.dev/docs/reference/. Use the SDK's `registerWorker(...)` and call `iii.registerFunction` / `iii.registerTrigger` / `iii.trigger` on the returned value; they are methods, not top-level exports. Always declare `description`, `request_format`, and `response_format` so the next caller gets a real contract.
+**7. Authoring a worker.** Read the SDK reference for your language first (Node / Python / Rust / Browser / Engine WS) at https://iii.dev/docs/reference/. Use the SDK's `registerWorker(...)` and call `iii.registerFunction` / `iii.observe` / `iii.call` on the returned value; they are methods, not top-level exports. Always declare `description`, `request_format`, and `response_format` so the next caller gets a real contract.
 
 TL;DR: list, info, call. The engine tells you the truth; trust it over memory.
 
@@ -302,7 +302,7 @@ console surface authors it) and the next send picks that up, no restart;
 any store failure (directory absent, entry missing, blank body) falls back to
 the embedded prompt. What makes a child a leaf is its POLICY, not its prompt: children are
 capability-walled out of the orchestration surface (`harness::spawn`,
-`harness::send`, trigger registration) unless spawned with
+`harness::send`, `harness::unobserve`) unless spawned with
 `options: { orchestrator: true }`; spawn `options.system_prompt` remains the
 identity escape hatch.
 
@@ -481,7 +481,7 @@ reports the record's RESOLVED prompt (labeled `session (frozen at send)`) —
 the truth for what ran and what the next send inherits — instead of
 rebuilding the built-in. Set `default_only: true` to read the exact embedded
 Harness default without consulting session or runtime state. Static
-`pre_generate` hooks publish their exact contribution as trigger metadata
+`pre_generate` hooks publish their exact contribution as the observer arg
 `inject_prompt`; request-dependent hook functions and compaction are not run
 by the read-only preview and may change content when the prompt is sent.
 
@@ -492,8 +492,9 @@ The read-only `harness::context-policy` surface returns whether the destination 
 Console/operator callers use `harness::delete-session-tree { session_id }`, not
 raw session deletion. The selected session is the root; parents and siblings
 remain. The command returns `{ operation_id, attempt, session_id, status,
-deleted_session_ids, error? }` quickly. Subscribe to
-`harness::session-tree-deletion { session_id?, operation_id? }` first, read
+deleted_session_ids, error? }` quickly. Observe
+`harness::on-session-tree-deletion` (filters on `input.session_id` or
+`input.operation_id`) first, read
 `harness::delete-session-tree-status { operation_id }` once for race recovery,
 then wait for `completed` or `failed`. Pending/completed requests are idempotent;
 failed requests retry under the same operation id with an incremented required
@@ -527,7 +528,7 @@ Every device watching the session learns about it, not only the one that asked:
   runs (a live turn keeps its own status line);
 - it ends with one row: the `compaction` record (the marker), or a `notice`
   saying why there is none;
-- `harness::compaction` fires with `phase: started` and `phase: completed`;
+- `harness::on-compaction` is called with `phase: started` and `phase: completed`;
 - the `harness_context` snapshot is rewritten for the compacted window, so the
   `context` chip and `harness::status` (which returns the newer snapshot) stop
   showing the old one.
@@ -609,7 +610,7 @@ can react:
 
 **Policy and hooks.** The session's allow/deny policy still applies: a denied
 ask gets the usual `policy_denied` result. The repeated-failure breaker and
-argument reconciliation still apply too. `pre_trigger` and `post_trigger` hooks
+argument reconciliation still apply too. `pre_call` and `post_call` hooks
 are **not** consulted. An approval gate could only hold the ask, and a held
 call's release goes to the registered handler, which cannot show the card.
 
@@ -626,25 +627,106 @@ The card stays open while `harness::status` reports the same `turn_id`. Once
 the session has moved to a later turn, it becomes read-only and is marked
 answered. Typing a reply in the composer instead works the same way.
 
-## Custom trigger types
+## Observable functions
 
-The harness emits async orchestration trigger types siblings and consumers
-bind to, and registers five synchronous hook points operator-trusted siblings
-plug into in-path. Bind with the standard two-step pattern.
+The harness hosts these functions. Every one is private: observers observe it,
+and only the harness calls it. Each handler returns the event it is called
+with, so observers receive the event as the call's output (`deliver: 'output'`
+gives the event itself). Observe them with `iii.observe` from a worker; an agent
+observes only `harness::on-timer` and its own post-turn validator.
 
-| Trigger type | Kind | Fires / runs |
-|---|---|---|
-| `harness::session-tree-deletion` | async event | A subtree deletion snapshot; config `{ session_id?, operation_id? }`. Terminal statuses are `completed` and `failed`. |
-| `harness::turn-started` | async event | A turn began executing (first loop step). Payload: `session_id`, `turn_id`, `timestamp`, `depth` (0 = top level), `message_preview` (first characters of the message that started the turn, when there is one), and `parent` / `parent_session_id` for sub-agents. Worker-bindable via direct engine registration only — the agent path (`engine::register_trigger`) refuses harness-internal types in every shape. |
-| `harness::turn-completed` | async event | A turn reached a terminal status (`completed` / `cancelled` / `failed`), carrying the result and `terminal: bool` — `false` while the session still owns an armed wake (a one-shot notify), meaning a later turn carries the run's real outcome; consumers finalize a logical exchange only on `terminal: true`. Worker-bindable only, same as above. |
-| `harness::compaction` | async event | An explicit compaction (`/compact`, `harness::compact`) started (`phase: started`) or finished (`phase: completed` with `status` ok/busy/empty/failed, the user-facing `message`, `tokens_before` / `tokens_after` and the transcript `entry_ids` it wrote). Payload also carries `session_id`, `compaction_id`, `timestamp`. Worker-bindable only, same as above. |
-| `harness::hook::pre-turn` | sync hook | First step of a turn, before any model spend. May veto. |
-| `harness::hook::pre-generate` | sync hook | After context assembly, before generation. May extend the system prompt, append messages, or veto. A static-only hook may publish its exact contribution as trigger metadata `inject_prompt`; the harness appends it before context assembly, so the budget and compaction count it, and skips the compatibility handler. |
-| `harness::hook::post-generate` | sync hook | After the final assistant message. Observe only. |
-| `harness::hook::pre-trigger` | sync hook | After the allow/deny policy passes, before the target runs. May deny, hold, or rewrite arguments. Never consulted for `harness::ask`, which the turn loop answers itself. |
-| `harness::hook::post-trigger` | sync hook | After the target returns, before the result is persisted. May rewrite the result. |
+| Function | Args | Filter on | Event |
+|---|---|---|---|
+| `harness::on-ready` | none | — | `{ status: 'ready', timestamp }`. An observer added after boot receives the current ready event once it is active. |
+| `harness::on-turn-started` | none | `input.session_id`, `input.parent_session_id`, `input.parent.session_id` | `{ session_id, turn_id, timestamp, depth, message_preview?, parent?, parent_session_id? }`: a turn began executing (first loop step); `depth` is 0 at the top level. |
+| `harness::on-turn-completed` | none | as `harness::on-turn-started` | `{ session_id, turn_id, status, terminal, timestamp, result?, result_error?, reason?, parent?, parent_session_id?, context? }`: a turn reached `completed` / `cancelled` / `failed`. `terminal` is `false` while the session still owns an armed wake, so consumers finalize an exchange on `terminal: true`. |
+| `harness::on-message-queued` | none | `input.session_id` | `{ session_id, entry_id, queued_at, timestamp }`: a message parked in the session's queue while its turn streams. |
+| `harness::on-observers-changed` | none | `input.session_id` | `{ session_id, timestamp }`: the session's observers or their fire counts changed; read `harness::observers::list`. |
+| `harness::on-compaction` | none | `input.session_id`, `input.compaction_id` | `{ session_id, compaction_id, phase, timestamp, ... }`: an explicit compaction started (`phase: started`) or finished (`phase: completed` with `status` ok/busy/empty/failed, the user-facing `message`, `tokens_before` / `tokens_after` and the transcript `entry_ids`). |
+| `harness::on-session-tree-deletion` | none | `input.session_id`, `input.operation_id` | `{ operation_id, attempt, session_id, status, deleted_session_ids, error? }`: a subtree deletion changed status; terminal statuses are `completed` and `failed`. |
+| `harness::on-timer` | `{ at }` (epoch ms) | — | `{ scheduled_at, actual_at }`: called once at `at`; an observer receives the call for its own `at`. `at` more than 7 days out is refused (`CONFIG_ERROR`). |
 
-Event configs accept `{ session_id?, parent_session_id? }`; hook configs accept
-`{ functions?, priority?, timeout_ms?, on_error? }`. See the spec at
+An observer whose target is `harness::spawn` is refused (`FORBIDDEN`) on the
+turn events.
+
+### Hook points
+
+Six synchronous hook points, each a private function. At each point the
+harness calls the function with the hook input and waits for the merged
+outcome. Its deliver hook runs the chain: the observers whose `sessions` and
+`functions` globs match the input and whose filters match the call, in
+`priority` order (ties by target), each called through its observer with the
+input as the previous one left it. A target answers
+`{ decision, reason?, mutations?, annotations? }`.
+
+| Function | Runs |
+|---|---|
+| `harness::hook::on-pre-turn` | First step of a turn, before any model spend. May veto. |
+| `harness::hook::on-pre-generate` | After context assembly, before generation. May extend the system prompt, append messages, or veto. An observer whose contribution is static passes it as the arg `inject_prompt`; the harness appends it before context assembly, so the budget and compaction count it, and its target is not called. |
+| `harness::hook::on-post-generate` | After the final assistant message. Observe only. |
+| `harness::hook::on-pre-call` | After the allow/deny policy passes, before the called function runs. May deny, hold, or rewrite arguments. Never consulted for `harness::ask`, which the turn loop answers itself. |
+| `harness::hook::on-post-call` | After the called function returns, before the result is persisted. May rewrite the result. |
+| `harness::hook::on-post-turn` | At finalize, after the output contract validated the result. A deny re-prompts the turn (bounded by `max_validation_retries`). |
+
+Hook args: `{ functions?, sessions?, payload?, result_into?, retry_prompt?,
+priority?, timeout_ms?, on_error?, inject_prompt? }` — `functions` globs select
+the called functions (`on-pre-call`, `on-post-call`), `sessions` globs the
+sessions (omit for every session), `payload` + `result_into` call a plain
+composition function as an `on-post-turn` validator, `timeout_ms` bounds each
+call (default 5000), and `on_error` is `fail_closed` (default for the `pre`
+points and `on-post-turn`) or `fail_open`. A call that fails, times out, or is
+refused (`OVERFLOW`, `OBSERVER_NOT_ACTIVE`) follows `on_error`.
+
+```rust
+iii.observe(
+    Source::function("harness::hook::on-pre-generate")
+        .args(json!({ "priority": 100, "timeout_ms": 3000, "on_error": "fail_open" })),
+    "judge::mentions::pre-generate",
+);
+```
+
+### Agent observers
+
+An agent observes with `harness::observe` and removes an observer with
+`harness::unobserve { id }`; the harness intercepts both in the turn loop and
+creates the observer itself, for the calling session:
+
+```ts
+// harness::observe
+{
+  function_id: string           // the observed function
+  namespace?: string            // default: the harness's namespace, then `default`, then Compose's
+  args?: object                 // for harness::on-timer: { at } or { in_ms }
+  filters?: object              // e.g. { "input.scope": { "$eq": "run" } }
+  target?: { function_id: string; payload?: object; event_into?: string }  // omitted: wake this session
+  label?: string
+  action?: string               // user-facing text shown with each delivery
+  once?: boolean
+  conditions?: { function_id: string; config?: object }[]
+  lifecycle?: { once?: boolean; max_fires?: number; expires_in_ms?: number }
+}
+→ { observer_id: string; once: boolean; note?: string }
+```
+
+Each observer is a durable binding in the harness's state; its engine
+observer targets `harness::observer::deliver` with the binding id as observer
+id and receives the `Observed` envelope. The harness counts delivered fires
+itself (`once`, `max_fires`) and runs the conditions before a delivery; the
+lifecycle deadline is also the observer's `expires_in_ms`. The harness waits
+briefly for the observer to become active, so `INVALID_ARGS`, `FORBIDDEN`,
+`NOT_OBSERVABLE` and a worker's rejection come back to the agent. Bindings
+stored by harness versions before 0.26 are translated at boot, or retired with
+a notice to their owner. `harness::observers::list { session_id? }` and
+`harness::observers::dispose { observer_id, session_id }` are the console's
+read and teardown over a session's observers; new transcript records use the
+custom type `observer_fired`.
+
+The harness also observes, for its own plumbing: `engine::on-workers-changed`,
+`engine::on-functions-changed`, `directory::skills::on-change`, `cron::on-tick`
+(`{ expression }`, the pending-call sweep), `session::on-deleted`,
+`configuration::on-updated`, `compose::on-operation-progress` (terminal events)
+and `console::ui::asset` for its console UI.
+
+See the spec at
 [`tech-specs/2026-06-agentic/harness.md`](https://github.com/iii-hq/workers/blob/main/tech-specs/2026-06-agentic/harness.md)
 for the hook contract and chain semantics.

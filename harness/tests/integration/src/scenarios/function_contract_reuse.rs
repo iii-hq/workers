@@ -11,7 +11,7 @@ use crate::fixtures::ScenarioFixture;
 const INFO: &str = "engine::functions::info";
 // The MODEL-VISIBLE first result: the raw engine contract compacted by
 // prepare_info_result — no response-side schema, no registry envelope
-// (`worker_name`, `registered_triggers`). The raw contract stays in `details`.
+// (`worker_name`, `observer_count`). The raw contract stays in `details`.
 const FULL_CONTRACT: &str = r#"{"description":"Record one integration fixture value.","function_id":"{{run_id}}::record","request_schema":{"properties":{"value":{"type":"string"}},"required":["value"],"type":"object"}}"#;
 
 pub(super) fn scenario() -> ScenarioFixture {

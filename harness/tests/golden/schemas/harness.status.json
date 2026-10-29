@@ -49,7 +49,7 @@
       "ArmedWake": {
         "description": "One armed wake as `harness::status` reports it — enough for a console or a poller to say \"parked on state operation_meta/status since T, deadline T2\" instead of showing a session that just looks quietly done.",
         "properties": {
-          "config": true,
+          "args": true,
           "created_at": {
             "format": "int64",
             "type": "integer"
@@ -61,20 +61,21 @@
               "null"
             ]
           },
-          "subscription_id": {
-            "type": "string"
-          },
-          "trigger_type": {
-            "description": "The registered trigger's type/config, read from the canonicalised registration request. Absent on records that predate it.",
+          "filters": true,
+          "function_id": {
+            "description": "The observed function and the observer's args and filters. Absent on records without a source.",
             "type": [
               "string",
               "null"
             ]
+          },
+          "observer_id": {
+            "type": "string"
           }
         },
         "required": [
           "created_at",
-          "subscription_id"
+          "observer_id"
         ],
         "type": "object"
       },

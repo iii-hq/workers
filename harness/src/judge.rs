@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use serde_json::{json, Value};
 
 use crate::deps::Deps;
@@ -87,7 +87,7 @@ pub fn bounded(value: &Value) -> Value {
     match value {
         Value::String(text) if text.chars().nth(MAX_STRING_CHARS).is_some() => json!(format!(
             "{}…",
-            crate::trigger::truncate_chars(text, MAX_STRING_CHARS)
+            crate::call::truncate_chars(text, MAX_STRING_CHARS)
         )),
         Value::Array(values) => Value::Array(values.iter().map(bounded).collect()),
         Value::Object(map) => Value::Object(
@@ -136,7 +136,7 @@ pub async fn evaluate(deps: &Deps, evaluation: Value, timeout_ms: u64) -> Result
     if let Some(provider) = provider.as_deref() {
         payload["provider"] = json!(provider);
     }
-    let call = deps.iii.trigger(TriggerRequest {
+    let call = deps.iii.call(CallRequest {
         function_id: judge_contract::FUNCTION_ID.into(),
         payload,
         action: None,

@@ -1,11 +1,12 @@
 //! Durable binding storage, in the state worker under `harness_binding`.
 //!
-//! No in-memory cache, deliberately. Workers registering the same id
-//! load-balance, so two harness instances can serve the same engine; a cached
-//! "still live" binding in instance B after instance A retired it would
-//! double-fire a `once`. The store IS the authority, and every fire pays one
-//! private state read for it — the same round trip the fire already makes to
-//! read the owner's turn record.
+//! No in-memory cache, deliberately. A function id has one host per
+//! namespace, so a second harness instance is a standby that takes over the
+//! delivery hop when the host leaves; a cached "still live" binding in the
+//! new host after the old one retired it would double-fire a `once`. The
+//! store IS the authority, and every fire pays one private state read for it
+//! — the same round trip the fire already makes to read the owner's turn
+//! record.
 
 use iii_sdk::IIIClient;
 use serde_json::Value;
@@ -148,7 +149,7 @@ impl BindingStore {
         match self.reserve_owner_slot(binding).await {
             Ok(ReserveOutcome::Reserved) => {
                 self.events
-                    .emit_triggers_changed(&binding.owner.session_id)
+                    .emit_observers_changed(&binding.owner.session_id)
                     .await;
                 Ok(ReserveOutcome::Reserved)
             }
@@ -163,30 +164,31 @@ impl BindingStore {
         }
     }
 
-    /// Attach the engine id without overwriting an early fire's increment.
-    pub async fn attach_trigger_id(
+    /// Mark the observer as created without overwriting an early fire's
+    /// increment.
+    pub async fn attach_observer_id(
         &self,
         binding: &Binding,
-        trigger_id: &str,
+        observer_id: &str,
     ) -> Result<AttachOutcome, HarnessError> {
         const ATTEMPTS: usize = 8;
         let mut expected = binding.clone();
         for _ in 0..ATTEMPTS {
-            if let Some(current) = expected.trigger_id.as_deref() {
-                if current == trigger_id {
+            if let Some(current) = expected.observer_id.as_deref() {
+                if current == observer_id {
                     return Ok(AttachOutcome::Attached(Box::new(expected)));
                 }
                 return Err(HarnessError::State(format!(
-                    "binding {} already belongs to engine trigger {current}",
+                    "binding {} already belongs to observer {current}",
                     binding.id
                 )));
             }
             let mut next = expected.clone();
-            next.trigger_id = Some(trigger_id.to_string());
+            next.observer_id = Some(observer_id.to_string());
             match state::cas_binding(&self.iii, Some(&expected), &next, self.timeout_ms).await? {
                 None => {
                     self.events
-                        .emit_triggers_changed(&binding.owner.session_id)
+                        .emit_observers_changed(&binding.owner.session_id)
                         .await;
                     return Ok(AttachOutcome::Attached(Box::new(next)));
                 }
@@ -194,7 +196,7 @@ impl BindingStore {
                 Some(current) => {
                     expected = serde_json::from_value(current).map_err(|e| {
                         HarnessError::State(format!(
-                            "binding {} is unreadable while attaching trigger id: {e}",
+                            "binding {} is unreadable while attaching its observer id: {e}",
                             binding.id
                         ))
                     })?;
@@ -202,33 +204,33 @@ impl BindingStore {
             }
         }
         Err(HarnessError::State(format!(
-            "binding {} moved during {ATTEMPTS} trigger-id attach attempts",
+            "binding {} moved during {ATTEMPTS} observer-id attach attempts",
             binding.id
         )))
     }
 
-    /// Replay's attach: swap whatever engine id the record carries for the
-    /// freshly registered one. Distinct from [`Self::attach_trigger_id`],
-    /// which treats an existing id as a double-registration bug — on replay
-    /// the recorded id is a dead row from before the restart, so it is
+    /// Replay's attach: mark the freshly re-created observer on the record,
+    /// whatever it carried. Distinct from [`Self::attach_observer_id`], which
+    /// treats a different existing id as a double-registration bug — on
+    /// replay the recorded marker is from before the restart, so it is
     /// replaced, not defended.
-    pub async fn rearm_trigger_id(
+    pub async fn rearm_observer_id(
         &self,
         binding: &Binding,
-        trigger_id: &str,
+        observer_id: &str,
     ) -> Result<AttachOutcome, HarnessError> {
         const ATTEMPTS: usize = 8;
         let mut expected = binding.clone();
         for _ in 0..ATTEMPTS {
-            if expected.trigger_id.as_deref() == Some(trigger_id) {
+            if expected.observer_id.as_deref() == Some(observer_id) {
                 return Ok(AttachOutcome::Attached(Box::new(expected)));
             }
             let mut next = expected.clone();
-            next.trigger_id = Some(trigger_id.to_string());
+            next.observer_id = Some(observer_id.to_string());
             match state::cas_binding(&self.iii, Some(&expected), &next, self.timeout_ms).await? {
                 None => {
                     self.events
-                        .emit_triggers_changed(&binding.owner.session_id)
+                        .emit_observers_changed(&binding.owner.session_id)
                         .await;
                     return Ok(AttachOutcome::Attached(Box::new(next)));
                 }
@@ -236,7 +238,7 @@ impl BindingStore {
                 Some(current) => {
                     expected = serde_json::from_value(current).map_err(|e| {
                         HarnessError::State(format!(
-                            "binding {} is unreadable while re-arming trigger id: {e}",
+                            "binding {} is unreadable while re-arming its observer id: {e}",
                             binding.id
                         ))
                     })?;
@@ -244,7 +246,7 @@ impl BindingStore {
             }
         }
         Err(HarnessError::State(format!(
-            "binding {} moved during {ATTEMPTS} trigger-id re-arm attempts",
+            "binding {} moved during {ATTEMPTS} observer-id re-arm attempts",
             binding.id
         )))
     }
@@ -257,7 +259,7 @@ impl BindingStore {
             // The record is gone, so its deadline has nothing left to retire.
             self.expiry.cancel(&binding.id);
             self.events
-                .emit_triggers_changed(&binding.owner.session_id)
+                .emit_observers_changed(&binding.owner.session_id)
                 .await;
             if let Err(error) = self
                 .release_owner_slot(&binding.owner.session_id, &binding.id)
@@ -301,7 +303,7 @@ impl BindingStore {
             match state::cas_binding(&self.iii, Some(&expected), &next, self.timeout_ms).await? {
                 None => {
                     self.events
-                        .emit_triggers_changed(&binding.owner.session_id)
+                        .emit_observers_changed(&binding.owner.session_id)
                         .await;
                     return Ok(ClaimOutcome::Claimed(Box::new(next)));
                 }
@@ -418,7 +420,7 @@ impl BindingStore {
 }
 
 fn is_live_acknowledged_duplicate(binding: &Binding, key: &Value, now: i64) -> bool {
-    binding.trigger_id.is_some()
+    binding.observer_id.is_some()
         && !binding.is_exhausted(now)
         && binding.dedup_key.as_ref() == Some(key)
 }
@@ -439,8 +441,8 @@ fn owner_ids(reserved: Vec<String>, mut bindings: Vec<Binding>, now: i64) -> Vec
     // Fill remaining slots deterministically, preferring acknowledged legacy
     // records over concurrent placeholders.
     bindings.sort_by(|a, b| {
-        (a.trigger_id.is_none(), a.created_at, a.id.as_str()).cmp(&(
-            b.trigger_id.is_none(),
+        (a.observer_id.is_none(), a.created_at, a.id.as_str()).cmp(&(
+            b.observer_id.is_none(),
             b.created_at,
             b.id.as_str(),
         ))
@@ -482,13 +484,14 @@ fn parse_owner_ids(value: Value, owner: &str) -> Result<Vec<String>, HarnessErro
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bindings::{BindingTarget, Causation, Lifecycle, OwnerScope};
+    use crate::bindings::{BindingTarget, Lifecycle, OwnerScope};
     use serde_json::json;
 
     fn binding(id: &str, owner: &str, dedup: Option<serde_json::Value>) -> Binding {
         Binding {
             id: id.into(),
-            trigger_id: None,
+            observer_id: None,
+            source: None,
             owner: OwnerScope {
                 session_id: owner.into(),
                 root_session_id: None,
@@ -497,7 +500,6 @@ mod tests {
             conditions: vec![],
             lifecycle: Lifecycle::default(),
             capability: None,
-            causation: Causation::default(),
             dedup_key: dedup,
             fires: 0,
             created_at: 0,
@@ -526,7 +528,7 @@ mod tests {
 
     #[test]
     fn duplicate_matches_only_within_the_same_owner() {
-        let key = json!({ "trigger_type": "state", "config": { "scope": "run" } });
+        let key = json!({ "function_id": "state::on-changed", "filters": { "input.scope": { "$eq": "run" } } });
         let all = vec![
             binding("a", "s1", Some(key.clone())),
             binding("b", "s2", Some(key.clone())),
@@ -541,7 +543,7 @@ mod tests {
 
     #[test]
     fn a_keyless_binding_never_matches_a_duplicate_probe() {
-        let key = json!({ "trigger_type": "cron" });
+        let key = json!({ "function_id": "cron::on-tick" });
         let all = vec![binding("a", "s1", None)];
         assert!(owned(&all, "s1")
             .into_iter()
@@ -550,11 +552,11 @@ mod tests {
 
     #[test]
     fn duplicate_requires_an_acknowledged_live_binding() {
-        let key = json!({ "trigger_type": "state" });
+        let key = json!({ "function_id": "state::on-changed" });
         let mut b = binding("a", "s1", Some(key.clone()));
         assert!(!is_live_acknowledged_duplicate(&b, &key, 0));
 
-        b.trigger_id = Some("trig_1".into());
+        b.observer_id = Some("a".into());
         assert!(is_live_acknowledged_duplicate(&b, &key, 0));
 
         b.lifecycle.once = true;

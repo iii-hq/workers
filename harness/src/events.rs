@@ -1,337 +1,249 @@
-//! The async orchestration trigger types the harness emits —
-//! `harness::ready` after boot, `harness::turn-started` /
-//! `harness::turn-completed` at turn boundaries, `harness::message-queued`
-//! when a message parks in the mid-turn queue, `harness::triggers-changed`
-//! when a session's binding set or fire count changes, and
-//! `harness::compaction` when an explicit compaction starts and finishes
-//! (harness.md § Trigger types emitted). Consumers and siblings bind
-//! these to react without polling.
+//! The orchestration events the harness emits, each a private function whose
+//! handler returns the event it is called with: `harness::on-ready` after
+//! boot, `harness::on-turn-started` / `harness::on-turn-completed` at turn
+//! boundaries, `harness::on-message-queued` when a message parks in the
+//! mid-turn queue, `harness::on-observers-changed` when a session's observer
+//! set or fire count changes, and `harness::on-compaction` when an explicit
+//! compaction starts and finishes (harness.md § Events emitted). Consumers
+//! observe them to react without polling.
 //!
-//! Delivery is fire-and-forget (`TriggerAction::Void`), at-least-once, and
-//! unordered. Per-binding `config` filters (`session_id`, `parent_session_id`)
-//! are evaluated here by the emitting worker. The engine replays existing
-//! registrations after a restart, so the subscriber sets rebuild themselves.
+//! The harness emits an event by calling its function with `CallAction::Void`,
+//! after one `is_observed` check; iii delivers it to every observer whose
+//! filters match. None of these functions takes args: consumers select a
+//! session with filters on `input.session_id`, and a sub-agent's parent with
+//! `input.parent.session_id` or `input.parent_session_id`.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
+use iii_sdk::{CallAction, CallRequest, IIIClient, ObserveRejection, Observer, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::surface::schema_value;
 use crate::types::turn::ParentLink;
 
-pub const TURN_STARTED: &str = "harness::turn-started";
-pub const TURN_COMPLETED: &str = "harness::turn-completed";
-pub const MESSAGE_QUEUED: &str = "harness::message-queued";
-pub const TRIGGERS_CHANGED: &str = "harness::triggers-changed";
-pub const READY: &str = "harness::ready";
-pub const COMPACTION: &str = "harness::compaction";
+pub const ON_TURN_STARTED_FN: &str = "harness::on-turn-started";
+pub const ON_TURN_COMPLETED_FN: &str = "harness::on-turn-completed";
+pub const ON_MESSAGE_QUEUED_FN: &str = "harness::on-message-queued";
+pub const ON_OBSERVERS_CHANGED_FN: &str = "harness::on-observers-changed";
+pub const ON_READY_FN: &str = "harness::on-ready";
+pub const ON_COMPACTION_FN: &str = "harness::on-compaction";
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ReadyBindingConfig {}
+/// `harness::on-ready`: the harness completed boot and accepts turns.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReadyEvent {
+    /// Always `ready`.
+    pub status: String,
+    pub timestamp: i64,
+}
 
-/// Binding config shared by both turn-event types.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct TurnEventBindingConfig {
-    /// Only deliver events for this session.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
-    /// Only deliver sub-agent events whose parent is this session.
-    #[serde(skip_serializing_if = "Option::is_none")]
+/// `harness::on-turn-started`: a turn began executing (first loop step).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TurnStartedEvent {
+    pub session_id: String,
+    pub turn_id: String,
+    pub timestamp: i64,
+    /// 0 for a top-level turn.
+    pub depth: u32,
+    /// The first characters of the message that started the turn (a
+    /// sub-agent's task text for a child).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_preview: Option<String>,
+    /// The spawning call, for a sub-agent turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<ParentLink>,
+    /// The session this one is displayed under.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct BindingFilter {
-    pub session_id: Option<String>,
+/// `harness::on-turn-completed`: a turn reached a terminal status.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TurnCompletedEvent {
+    pub session_id: String,
+    pub turn_id: String,
+    /// `completed`, `cancelled` or `failed`.
+    pub status: String,
+    /// `false` while the session still owns an armed wake: the run continues
+    /// and a later turn carries the real outcome.
+    pub terminal: bool,
+    pub timestamp: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<ParentLink>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
+    /// The latest generation's context accounting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<crate::context_snapshot::ContextSnapshotV1>,
 }
 
-impl BindingFilter {
-    fn parse(raw: &Value) -> Result<Self, String> {
-        let raw = if raw.is_null() {
-            Value::Object(Default::default())
-        } else {
-            raw.clone()
-        };
-        let cfg: TurnEventBindingConfig =
-            serde_json::from_value(raw).map_err(|e| format!("invalid turn-event config: {e}"))?;
-        Ok(BindingFilter {
-            session_id: cfg.session_id,
-            parent_session_id: cfg.parent_session_id,
-        })
-    }
-
-    fn matches(
-        &self,
-        session_id: &str,
-        parent: Option<&ParentLink>,
-        display_parent: Option<&str>,
-    ) -> bool {
-        if let Some(sid) = &self.session_id {
-            if sid != session_id {
-                return false;
-            }
-        }
-        if let Some(psid) = &self.parent_session_id {
-            let link_matches = matches!(parent, Some(p) if &p.session_id == psid);
-            let display_matches = display_parent == Some(psid.as_str());
-            if !link_matches && !display_matches {
-                return false;
-            }
-        }
-        true
-    }
+/// `harness::on-message-queued`: a pointer to a message parked in the
+/// session's queue; consumers refetch `harness::status` → `queued`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MessageQueuedEvent {
+    pub session_id: String,
+    pub entry_id: String,
+    pub queued_at: i64,
+    pub timestamp: i64,
 }
 
-#[derive(Debug, Clone)]
-struct Binding {
-    function_id: String,
-    namespace: Option<String>,
-    filter: BindingFilter,
-    /// The trigger's registration `metadata`, forwarded to the bound function
-    /// as the invocation sidecar so targets like `harness::spawn` and
-    /// `harness::notify_agent` can carry per-subscription context (the spawn
-    /// spec, or the subscription id/label). Stamped once at registration and
-    /// delivered as stored — there is no fire-time stamping. Carries the
-    /// `__subscription_id` the self-edge check in `fan_out` matches on — the
-    /// engine's own registration id (`TriggerConfig.id`) is keyed on in
-    /// `SubscriberSet` but otherwise unused here.
-    metadata: Option<Value>,
+/// `harness::on-observers-changed`: a doorbell; consumers refetch
+/// `harness::observers::list`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ObserversChangedEvent {
+    pub session_id: String,
+    pub timestamp: i64,
 }
 
-#[derive(Clone, Default)]
-pub struct SubscriberSet {
-    inner: Arc<Mutex<HashMap<String, Binding>>>,
+/// `harness::on-compaction`: an explicit compaction's progress.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CompactionEvent {
+    pub session_id: String,
+    pub compaction_id: String,
+    /// `started` or `completed`.
+    pub phase: String,
+    pub timestamp: i64,
+    /// `completed` only: `ok`, `busy`, `empty` or `failed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// `completed` only: the user-facing message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_ids: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_before: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_after: Option<u64>,
 }
 
-impl SubscriberSet {
-    fn add(&self, config: TriggerConfig) -> Result<(), String> {
-        let filter = BindingFilter::parse(&config.config)?;
-        self.lock().insert(
-            config.id,
-            Binding {
-                function_id: config.function_id,
-                namespace: config.namespace,
-                filter,
-                metadata: config.metadata,
-            },
-        );
-        Ok(())
-    }
-
-    fn remove(&self, id: &str) {
-        self.lock().remove(id);
-    }
-
-    fn add_unfiltered(&self, config: TriggerConfig) -> Binding {
-        let binding = Binding {
-            function_id: config.function_id,
-            namespace: config.namespace,
-            filter: BindingFilter::default(),
-            metadata: config.metadata,
-        };
-        self.lock().insert(config.id, binding.clone());
-        binding
-    }
-
-    fn snapshot(&self) -> Vec<Binding> {
-        self.lock().values().cloned().collect()
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Binding>> {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner())
-    }
+/// Registers one event function: private, and its handler returns the event.
+fn register_event(iii: &IIIClient, id: &str, description: &str, format: Value) {
+    iii.register_function(
+        id,
+        RegisterFunction::new(|event: Value| Ok::<Value, Error>(event))
+            .description(description)
+            .request_format(format.clone())
+            .response_format(format)
+            .private(),
+    );
 }
 
-struct ReadyTriggerHandler {
-    set: SubscriberSet,
-    ready: Arc<AtomicBool>,
-    iii: Arc<IIIClient>,
+/// An observer of a turn event never targets `harness::spawn`: delivery
+/// never creates an agent, so the observer is refused when it is added
+/// rather than no-op (or worse) on every turn.
+async fn refuse_spawn_target(obs: Observer) -> Result<(), ObserveRejection> {
+    if obs.target() == crate::functions::SPAWN_ID {
+        return Err(ObserveRejection::new(
+            "FORBIDDEN",
+            "harness::spawn is not an observer target: delivery never creates an agent. Spawn \
+             children directly and watch what they write.",
+        ));
+    }
+    Ok(())
 }
 
-#[async_trait]
-impl TriggerHandler for ReadyTriggerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        let raw = if config.config.is_null() {
-            serde_json::json!({})
-        } else {
-            config.config.clone()
-        };
-        serde_json::from_value::<ReadyBindingConfig>(raw)
-            .map_err(|error| Error::Handler(format!("invalid ready-event config: {error}")))?;
-        let binding = self.set.add_unfiltered(config);
-        if self.ready.load(Ordering::Acquire) {
-            deliver_ready(&self.iii, &binding).await;
-        }
-        Ok(())
-    }
-
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        self.set.remove(&config.id);
-        Ok(())
-    }
-}
-
-struct TurnEventTriggerHandler {
-    type_id: &'static str,
-    set: SubscriberSet,
-}
-
-#[async_trait]
-impl TriggerHandler for TurnEventTriggerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        let id = config.id.clone();
-        let function_id = config.function_id.clone();
-        // Trigger delivery never creates an agent — refuse the binding loudly
-        // at registration instead of letting it no-op (or worse) at fire
-        // time. This is the engine-direct path; agent registrations are
-        // already rejected wholesale by the subscribe interceptor.
-        if function_id == crate::functions::SPAWN_ID {
-            return Err(Error::Handler(
-                "harness::spawn is not a trigger target: trigger delivery never creates an \
-                 agent. Spawn children directly and watch what they write."
-                    .to_string(),
-            ));
-        }
-        self.set.add(config).map_err(Error::Handler)?;
-        tracing::info!(trigger_type = self.type_id, %id, %function_id, "turn-event subscription registered");
-        Ok(())
-    }
-
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        self.set.remove(&config.id);
-        Ok(())
-    }
-}
-
-/// The harness's emitted turn-event subscriber sets + the engine handle for
-/// fan-out. Cloned into [`crate::deps::Deps`].
+/// The harness's event emitter. Cloned into [`crate::deps::Deps`].
 #[derive(Clone)]
 pub struct TurnEvents {
     iii: Arc<IIIClient>,
-    ready: SubscriberSet,
-    ready_emitted: Arc<AtomicBool>,
-    started: SubscriberSet,
-    completed: SubscriberSet,
-    queued: SubscriberSet,
-    triggers_changed: SubscriberSet,
-    compaction: SubscriberSet,
+    ready: Arc<AtomicBool>,
 }
 
 impl TurnEvents {
-    /// Register the trigger types and return the emitter. Must run before
-    /// function registration so the handlers capture the subscriber sets.
+    /// Set the event functions' hooks, then register them, and return the
+    /// emitter.
     pub fn register(iii: &Arc<IIIClient>) -> Self {
-        let ready = SubscriberSet::default();
-        let ready_emitted = Arc::new(AtomicBool::new(false));
-        let started = SubscriberSet::default();
-        let completed = SubscriberSet::default();
-        let queued = SubscriberSet::default();
-        let triggers_changed = SubscriberSet::default();
-        let compaction = SubscriberSet::default();
+        let ready = Arc::new(AtomicBool::new(false));
 
-        let _ = iii.register_trigger_type(
-            RegisterTriggerType::new(
-                READY,
-                "The harness completed boot and can accept turns.",
-                ReadyTriggerHandler {
-                    set: ready.clone(),
-                    ready: ready_emitted.clone(),
-                    iii: iii.clone(),
-                },
-            )
-            .trigger_request_format::<ReadyBindingConfig>(),
+        // An observer added after boot receives the current ready state
+        // through itself once it is active.
+        iii.on_observer_added_for(ON_READY_FN, {
+            let iii = iii.clone();
+            let ready = ready.clone();
+            move |obs: Observer| {
+                let iii = iii.clone();
+                let ready = ready.load(Ordering::Acquire);
+                async move {
+                    if ready {
+                        tokio::spawn(send_ready(iii, obs));
+                    }
+                    Ok::<(), ObserveRejection>(())
+                }
+            }
+        });
+        iii.on_observer_added_for(ON_TURN_STARTED_FN, refuse_spawn_target);
+        iii.on_observer_added_for(ON_TURN_COMPLETED_FN, refuse_spawn_target);
+
+        register_event(
+            iii,
+            ON_READY_FN,
+            "The harness completed boot and can accept turns. An observer added later receives \
+             the current ready event when it becomes active.",
+            schema_value::<ReadyEvent>(),
         );
-        let _ = iii.register_trigger_type(
-            RegisterTriggerType::new(
-                TURN_STARTED,
-                "A harness turn began executing (first loop step).",
-                TurnEventTriggerHandler {
-                    type_id: TURN_STARTED,
-                    set: started.clone(),
-                },
-            )
-            .trigger_request_format::<TurnEventBindingConfig>(),
+        register_event(
+            iii,
+            ON_TURN_STARTED_FN,
+            "A harness turn began executing (first loop step). Filter on input.session_id, or \
+             on input.parent.session_id / input.parent_session_id for a sub-agent's parent.",
+            schema_value::<TurnStartedEvent>(),
         );
-        let _ = iii.register_trigger_type(
-            RegisterTriggerType::new(
-                TURN_COMPLETED,
-                "A harness turn reached a terminal status (completed/cancelled/failed).",
-                TurnEventTriggerHandler {
-                    type_id: TURN_COMPLETED,
-                    set: completed.clone(),
-                },
-            )
-            .trigger_request_format::<TurnEventBindingConfig>(),
+        register_event(
+            iii,
+            ON_TURN_COMPLETED_FN,
+            "A harness turn reached a terminal status (completed/cancelled/failed). Filter on \
+             input.session_id, or on input.parent.session_id / input.parent_session_id.",
+            schema_value::<TurnCompletedEvent>(),
         );
-        let _ = iii.register_trigger_type(
-            RegisterTriggerType::new(
-                MESSAGE_QUEUED,
-                "A message parked in a session's server-side queue while its turn streams.",
-                TurnEventTriggerHandler {
-                    type_id: MESSAGE_QUEUED,
-                    set: queued.clone(),
-                },
-            )
-            .trigger_request_format::<TurnEventBindingConfig>(),
+        register_event(
+            iii,
+            ON_MESSAGE_QUEUED_FN,
+            "A message parked in a session's server-side queue while its turn streams. Filter on \
+             input.session_id.",
+            schema_value::<MessageQueuedEvent>(),
         );
-        let _ = iii.register_trigger_type(
-            RegisterTriggerType::new(
-                TRIGGERS_CHANGED,
-                "A session's trigger-binding set or fire count changed — refetch harness::triggers::list.",
-                TurnEventTriggerHandler {
-                    type_id: TRIGGERS_CHANGED,
-                    set: triggers_changed.clone(),
-                },
-            )
-            .trigger_request_format::<TurnEventBindingConfig>(),
+        register_event(
+            iii,
+            ON_OBSERVERS_CHANGED_FN,
+            "A session's observer set or fire count changed: refetch harness::observers::list. \
+             Filter on input.session_id.",
+            schema_value::<ObserversChangedEvent>(),
         );
-        let _ = iii.register_trigger_type(
-            RegisterTriggerType::new(
-                COMPACTION,
-                "An explicit compaction of a session started (`phase: started`) or finished \
-                 (`phase: completed`, with `status` ok/busy/empty/failed and the user-facing `message`).",
-                TurnEventTriggerHandler {
-                    type_id: COMPACTION,
-                    set: compaction.clone(),
-                },
-            )
-            .trigger_request_format::<TurnEventBindingConfig>(),
+        crate::deletion_events::register(iii);
+        register_event(
+            iii,
+            ON_COMPACTION_FN,
+            "An explicit compaction of a session started (`phase: started`) or finished \
+             (`phase: completed`, with `status` ok/busy/empty/failed and the user-facing \
+             `message`). Filter on input.session_id or input.compaction_id.",
+            schema_value::<CompactionEvent>(),
         );
         tracing::info!(
-            "registered harness::ready / harness::turn-started / harness::turn-completed / harness::message-queued / harness::triggers-changed / harness::compaction trigger types"
+            "registered harness::on-ready / on-turn-started / on-turn-completed / \
+             on-message-queued / on-observers-changed / on-session-tree-deletion / on-compaction"
         );
 
         Self {
             iii: iii.clone(),
             ready,
-            ready_emitted,
-            started,
-            completed,
-            queued,
-            triggers_changed,
-            compaction,
         }
     }
 
-    /// Announce readiness after all turn dependencies and lifecycle bindings
-    /// have been installed. Subscribers that bind later receive the current
-    /// ready state from [`ReadyTriggerHandler`].
+    /// Announce readiness after all turn dependencies and lifecycle observers
+    /// are in place. Observers added later receive it from the added hook.
     pub async fn emit_ready(&self) {
-        self.ready_emitted.store(true, Ordering::Release);
-        for binding in self.ready.snapshot() {
-            deliver_ready(&self.iii, &binding).await;
-        }
+        self.ready.store(true, Ordering::Release);
+        self.emit(ON_READY_FN, ready_payload()).await;
     }
 
     /// A message parked in the session's `harness_queue` (send's queue path).
@@ -339,56 +251,38 @@ impl TurnEvents {
     /// `harness::status` → `queued` (idempotent under at-least-once delivery).
     pub async fn emit_queued(&self, session_id: &str, entry_id: &str, queued_at: i64) {
         tracing::info!(session_id, entry_id, "message queued");
+        if !self.iii.is_observed(ON_MESSAGE_QUEUED_FN) {
+            return;
+        }
         let payload = serde_json::json!({
             "session_id": session_id,
             "entry_id": entry_id,
             "queued_at": queued_at,
             "timestamp": now_ms(),
         });
-        self.fan_out(
-            &self.queued,
-            MESSAGE_QUEUED,
-            session_id,
-            None,
-            None,
-            payload,
-        )
-        .await;
+        self.emit(ON_MESSAGE_QUEUED_FN, payload).await;
     }
 
-    /// Doorbell only — a session's binding set or fires count changed;
-    /// consumers refetch `harness::triggers::list`. No per-event logging:
+    /// Doorbell only — a session's observer set or fires count changed;
+    /// consumers refetch `harness::observers::list`. No per-event logging:
     /// a single fire rings twice (claim + retirement).
-    pub async fn emit_triggers_changed(&self, session_id: &str) {
+    pub async fn emit_observers_changed(&self, session_id: &str) {
+        if !self.iii.is_observed(ON_OBSERVERS_CHANGED_FN) {
+            return;
+        }
         let payload = serde_json::json!({
             "session_id": session_id,
             "timestamp": now_ms(),
         });
-        self.fan_out(
-            &self.triggers_changed,
-            TRIGGERS_CHANGED,
-            session_id,
-            None,
-            None,
-            payload,
-        )
-        .await;
+        self.emit(ON_OBSERVERS_CHANGED_FN, payload).await;
     }
 
     /// An explicit compaction's progress (`crate::compaction::event_payload`).
     /// Every client also gets it durably: the start notice and the outcome
     /// row land in the transcript; this is the live signal for consumers that
     /// track the operation itself.
-    pub async fn emit_compaction(&self, session_id: &str, payload: Value) {
-        self.fan_out(
-            &self.compaction,
-            COMPACTION,
-            session_id,
-            None,
-            None,
-            payload,
-        )
-        .await;
+    pub async fn emit_compaction(&self, _session_id: &str, payload: Value) {
+        self.emit(ON_COMPACTION_FN, payload).await;
     }
 
     /// `message_preview` is the first characters of the user message that
@@ -405,6 +299,9 @@ impl TurnEvents {
         depth: u32,
     ) {
         tracing::info!(session_id, turn_id, "turn started");
+        if !self.iii.is_observed(ON_TURN_STARTED_FN) {
+            return;
+        }
         let mut payload = serde_json::json!({
             "session_id": session_id,
             "turn_id": turn_id,
@@ -420,15 +317,7 @@ impl TurnEvents {
         if let Some(dp) = display_parent {
             payload["parent_session_id"] = Value::String(dp.to_string());
         }
-        self.fan_out(
-            &self.started,
-            TURN_STARTED,
-            session_id,
-            parent,
-            display_parent,
-            payload,
-        )
-        .await;
+        self.emit(ON_TURN_STARTED_FN, payload).await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -453,6 +342,9 @@ impl TurnEvents {
             terminal,
             "turn completed"
         );
+        if !self.iii.is_observed(ON_TURN_COMPLETED_FN) {
+            return;
+        }
         // `terminal: false` marks a turn whose session still owns an armed
         // wake (a one-shot notify) — the run continues and a later turn in the
         // same session carries the real outcome. Consumers should treat
@@ -485,74 +377,47 @@ impl TurnEvents {
         if let Some(snapshot) = context {
             payload["context"] = serde_json::to_value(snapshot).unwrap_or(Value::Null);
         }
-        self.fan_out(
-            &self.completed,
-            TURN_COMPLETED,
-            session_id,
-            parent,
-            display_parent,
-            payload,
-        )
-        .await;
+        self.emit(ON_TURN_COMPLETED_FN, payload).await;
     }
 
-    async fn fan_out(
-        &self,
-        set: &SubscriberSet,
-        trigger_type: &str,
-        session_id: &str,
-        parent: Option<&ParentLink>,
-        display_parent: Option<&str>,
-        payload: Value,
-    ) {
-        for binding in set.snapshot() {
-            if !binding.filter.matches(session_id, parent, display_parent) {
-                continue;
-            }
-            // The registration metadata is forwarded as stored; there is no
-            // fire-time stamping.
-            let request = TriggerRequest {
-                function_id: binding.function_id.clone(),
-                payload: payload.clone(),
-                action: Some(TriggerAction::Void),
-                timeout_ms: None,
-            };
-            let request: iii_sdk::protocol::TriggerRequestWithMetadata =
-                match binding.metadata.clone() {
-                    Some(metadata) => request.metadata(metadata),
-                    None => request.into(),
-                };
-            let namespace = binding.namespace.as_deref().unwrap_or("default");
-            let res = self.iii.trigger(request.namespace(namespace)).await;
-            if let Err(e) = res {
-                tracing::warn!(trigger_type, function_id = %binding.function_id, error = %e, "turn-event fan-out failed");
-            }
+    /// Call the event function, fire-and-forget: iii delivers the call to
+    /// each observer whose filters match it. Nothing is built or sent when
+    /// nobody observes the function.
+    async fn emit(&self, function_id: &str, payload: Value) {
+        if !self.iii.is_observed(function_id) {
+            return;
+        }
+        let request = CallRequest {
+            function_id: function_id.to_string(),
+            payload,
+            action: Some(CallAction::Void),
+            timeout_ms: None,
+        };
+        if let Err(error) = self.iii.call(request).await {
+            tracing::warn!(function_id, %error, "harness event call failed");
         }
     }
 }
 
-async fn deliver_ready(iii: &IIIClient, binding: &Binding) {
-    let request = TriggerRequest {
-        function_id: binding.function_id.clone(),
-        payload: serde_json::json!({
-            "status": "ready",
-            "timestamp": now_ms(),
-        }),
-        action: Some(TriggerAction::Void),
-        timeout_ms: None,
-    };
-    let request: iii_sdk::protocol::TriggerRequestWithMetadata = match &binding.metadata {
-        Some(metadata) => request.metadata(metadata.clone()),
-        None => request.into(),
-    };
-    let namespace = binding.namespace.as_deref().unwrap_or("default");
-    let result = iii.trigger(request.namespace(namespace)).await;
-    if let Err(error) = result {
+fn ready_payload() -> Value {
+    serde_json::json!({
+        "status": "ready",
+        "timestamp": now_ms(),
+    })
+}
+
+/// Send the ready event through `obs` once the observer is active.
+async fn send_ready(iii: Arc<IIIClient>, obs: Observer) {
+    if obs.accepted().await.is_err() {
+        return;
+    }
+    let request = CallRequest::observer(&obs, ready_payload()).action(CallAction::Void);
+    if let Err(error) = iii.call(request).await {
         tracing::warn!(
-            trigger_type = READY,
-            function_id = %binding.function_id,
+            function_id = ON_READY_FN,
+            observer = %obs.id(),
             %error,
-            "ready-event fan-out failed"
+            "ready event for a new observer failed"
         );
     }
 }
@@ -569,59 +434,61 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// The published formats describe exactly what the emitters send, so a
+    /// consumer's filters on `input.<field>` resolve against a real schema.
     #[test]
-    fn filter_matches_session_and_parent() {
-        let f = BindingFilter {
-            session_id: Some("s_1".into()),
-            parent_session_id: None,
-        };
-        assert!(f.matches("s_1", None, None));
-        assert!(!f.matches("s_2", None, None));
-
-        let pf = BindingFilter {
-            session_id: None,
-            parent_session_id: Some("p_1".into()),
-        };
-        let parent = ParentLink {
-            session_id: "p_1".into(),
-            turn_id: "t".into(),
-            function_call_id: "fc".into(),
-        };
-        assert!(pf.matches("child", Some(&parent), None));
-        assert!(!pf.matches("child", None, None));
-    }
-
-    #[test]
-    fn filter_matches_display_parent_for_trigger_fired_children() {
-        let pf = BindingFilter {
-            session_id: None,
-            parent_session_id: Some("root_1".into()),
-        };
-        // Trigger-spawned child: no ParentLink, display parent only.
-        assert!(pf.matches("child", None, Some("root_1")));
-        assert!(!pf.matches("child", None, Some("other_root")));
-    }
-
-    #[test]
-    fn parse_rejects_unknown_fields() {
-        assert!(BindingFilter::parse(&json!({ "sesion_id": "x" })).is_err());
-        assert_eq!(
-            BindingFilter::parse(&Value::Null).unwrap(),
-            BindingFilter::default()
-        );
-    }
-
-    #[test]
-    fn subscriber_preserves_target_namespace() {
-        let set = SubscriberSet::default();
-        set.add(TriggerConfig {
-            id: "sub-1".into(),
-            function_id: "ui::refresh".into(),
-            config: json!({}),
-            metadata: None,
-            namespace: Some("project-a".into()),
-        })
+    fn event_formats_round_trip_the_emitted_payloads() {
+        let started: TurnStartedEvent = serde_json::from_value(json!({
+            "session_id": "s_1",
+            "turn_id": "t_1",
+            "timestamp": 1,
+            "depth": 1,
+            "message_preview": "go",
+            "parent": { "session_id": "p_1", "turn_id": "t", "function_call_id": "fc" },
+            "parent_session_id": "root_1",
+        }))
         .unwrap();
-        assert_eq!(set.snapshot()[0].namespace.as_deref(), Some("project-a"));
+        assert_eq!(started.parent.unwrap().session_id, "p_1");
+
+        let completed: TurnCompletedEvent = serde_json::from_value(json!({
+            "session_id": "s_1",
+            "turn_id": "t_1",
+            "status": "completed",
+            "terminal": false,
+            "timestamp": 2,
+        }))
+        .unwrap();
+        assert!(!completed.terminal);
+
+        let compaction: CompactionEvent = serde_json::from_value(json!({
+            "session_id": "s_1",
+            "compaction_id": "c_1",
+            "phase": "completed",
+            "timestamp": 3,
+            "status": "ok",
+            "message": "compacted",
+            "entry_ids": ["e_1"],
+        }))
+        .unwrap();
+        assert_eq!(compaction.status.as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn every_event_function_follows_the_on_naming() {
+        for id in [
+            ON_READY_FN,
+            ON_TURN_STARTED_FN,
+            ON_TURN_COMPLETED_FN,
+            ON_MESSAGE_QUEUED_FN,
+            ON_OBSERVERS_CHANGED_FN,
+            ON_COMPACTION_FN,
+        ] {
+            assert!(id.starts_with("harness::on-"), "{id}");
+        }
+    }
+
+    #[test]
+    fn ready_payload_says_ready() {
+        assert_eq!(ready_payload()["status"], json!("ready"));
     }
 }

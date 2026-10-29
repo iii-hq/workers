@@ -423,9 +423,9 @@ mod tests {
             }],
             "expects_wake": true,
             "armed_wakes": [{
-                "subscription_id": "sub_1",
-                "trigger_type": "state:change",
-                "config": { "scope": "work" },
+                "observer_id": "sub_1",
+                "function_id": "state::on-changed",
+                "filters": { "input.scope": { "$eq": "work" } },
                 "created_at": 10,
                 "expires_at": 20
             }],

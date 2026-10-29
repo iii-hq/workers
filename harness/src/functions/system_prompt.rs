@@ -109,14 +109,13 @@ pub async fn handle(
         .and_then(|context| context.baseline.clone());
     let injections = deps
         .hooks
-        .pre_generate
-        .ordered()
+        .bindings(crate::hooks::HookPoint::PreGenerate)
         .into_iter()
         .filter_map(|binding| {
             let body = binding.inject_prompt?;
             Some(SystemPromptPart {
                 kind: SystemPromptPartKind::Injected,
-                name: Some(worker_name(&binding.function_id)),
+                name: Some(worker_name(&binding.target)),
                 body,
             })
         })

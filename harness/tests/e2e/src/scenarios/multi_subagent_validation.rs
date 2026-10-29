@@ -21,7 +21,7 @@ use super::{CleanupFuture, EvaluationFuture, ExecutionPolicy, ScenarioObservatio
 
 pub const ID: &str = "multi_subagent_validation";
 
-const HOOK_TYPE: &str = "harness::hook::post-turn";
+const HOOK_FN: &str = "harness::hook::on-post-turn";
 const THRESHOLD: u64 = 6;
 const EXPECTED_ROWS: u64 = 8;
 const WRITERS: [&str; 2] = ["w1", "w2"];
@@ -57,11 +57,11 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
              Step 1 — prepare the table. database::execute (db \"primary\") twice: sql \"CREATE \
              TABLE IF NOT EXISTS {table} (id INTEGER PRIMARY KEY AUTOINCREMENT, writer TEXT, note \
              TEXT)\", then sql \"DELETE FROM {table}\".\n\n\
-             Step 2 — register ONE validator PER CHILD (two engine::register_trigger calls). For \
-             each pair (N, wN) in [(1, w1), (2, w2)] call engine::register_trigger with:\n\
-             - trigger_type: \"{HOOK_TYPE}\"\n\
-             - function_id: \"fp::pipe\"\n\
-             - config: {{\"sessions\": [\"<CHILD-N>\"], \"payload\": {{\"through\": \
+             Step 2 — add ONE validator PER CHILD (two harness::observe calls). For \
+             each pair (N, wN) in [(1, w1), (2, w2)] call harness::observe with:\n\
+             - function_id: \"{HOOK_FN}\"\n\
+             - target: {{\"function_id\": \"fp::pipe\"}}\n\
+             - args: {{\"sessions\": [\"<CHILD-N>\"], \"payload\": {{\"through\": \
              [{{\"function\": \"database::query\", \"payload\": {{\"db\": \"primary\", \"sql\": \
              \"SELECT COUNT(*) AS n FROM {table} WHERE writer = 'wN'\"}}}}, {{\"function\": \
              \"fp::get\", \"payload\": {{\"path\": \"/rows/0/n\"}}}}, {{\"function\": \"fp::when\", \
@@ -73,10 +73,11 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
              where <CHILD-1> is \"{child_1}\" and <CHILD-2> is \"{child_2}\" (replace every wN \
              with the matching writer; keep the single quotes around wN in the SQL). The \
              state::set tail runs ONLY when the guard passes, so verdict-wN is written exactly \
-             when child N's work is accepted. Remember both subscription_ids.\n\n\
-             Step 3 — arm TWO once-wakes BEFORE spawning: for each wN, engine::register_trigger \
-             with trigger_type \"state\", config {{\"scope\": \"{scope}\", \"key\": \
-             \"verdict-wN\"}}, label \"wN-validated\", and NO function_id.\n\n\
+             when child N's work is accepted. Remember both observer_ids.\n\n\
+             Step 3 — arm TWO once-wakes BEFORE spawning: for each wN, harness::observe \
+             with function_id \"state::on-changed\", filters {{\"input.scope\": {{\"$eq\": \
+             \"{scope}\"}}, \"input.key\": {{\"$eq\": \"verdict-wN\"}}}}, label \
+             \"wN-validated\", and NO target.\n\n\
              Step 4 — spawn both children in THIS turn. For each pair, harness::spawn with \
              session_id <CHILD-N>, task: \"You are worker wN in a validated loop: the harness \
              checks every reply of yours and VALIDATOR messages are legitimate machinery — follow \
@@ -90,8 +91,8 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
              Step 6 — each verdict wake carries the accepted row count for one writer. Count \
              DISTINCT writers validated so far across this whole conversation (one wake may \
              report while another is still pending). If fewer than 2, END YOUR TURN and wait. \
-             When BOTH writers are validated: call engine::unregister_trigger for both validator \
-             subscription_ids from Step 2, then reply exactly: ALL CHILDREN VALIDATED: w1=<n1> \
+             When BOTH writers are validated: call harness::unobserve for both validator \
+             observer_ids from Step 2, then reply exactly: ALL CHILDREN VALIDATED: w1=<n1> \
              w2=<n2>. ORCHESTRATION DONE.",
             min = THRESHOLD + 1,
         ),
@@ -123,7 +124,7 @@ fn evaluate<'a>(
         let mut child_nudges = [0_usize; 2];
         for (index, writer) in WRITERS.iter().enumerate() {
             rows[index] = context
-                .trigger_value(
+                .call_value(
                     "database::query",
                     json!({ "db": "primary", "sql": format!(
                         "SELECT COUNT(*) AS n FROM {table} WHERE writer = '{writer}'"
@@ -135,7 +136,7 @@ fn evaluate<'a>(
                 .unwrap_or(0);
             verdicts[index] = common::state_value(
                 context
-                    .trigger(
+                    .call(
                         "state::get",
                         json!({ "scope": scope(run_id), "key": format!("verdict-{writer}") }),
                     )
@@ -153,10 +154,7 @@ fn evaluate<'a>(
         let calls = common::function_calls(&observation.transcript);
         let validator_count = calls
             .iter()
-            .filter(|call| {
-                call.function_id == "engine::register_trigger"
-                    && call.arguments.get("trigger_type").and_then(Value::as_str) == Some(HOOK_TYPE)
-            })
+            .filter(|call| common::observes(call, HOOK_FN))
             .count();
         let first_spawn = calls
             .iter()
@@ -164,7 +162,7 @@ fn evaluate<'a>(
         let registrations_before_spawn = match first_spawn {
             Some(spawn) => calls[..spawn]
                 .iter()
-                .filter(|call| call.function_id == "engine::register_trigger")
+                .filter(|call| call.function_id == common::OBSERVE)
                 .count(),
             None => 0,
         };
@@ -192,8 +190,8 @@ fn evaluate<'a>(
             ORCHESTRATION_DISCIPLINE.full_or_zero(
                 orchestration_discipline,
                 format!(
-                    "observed {validator_count} post-turn registration(s), expected two; \
-                     observed {registrations_before_spawn} registration(s) before the first \
+                    "observed {validator_count} post-turn observer(s), expected two; \
+                     observed {registrations_before_spawn} observe call(s) before the first \
                      spawn, expected at least four; child nudges {child_nudges:?}, each child \
                      needs at least one"
                 ),
@@ -217,14 +215,14 @@ fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
     Box::pin(async move {
         let table = table(run_id);
         let _: Value = context
-            .trigger(
+            .call(
                 "database::execute",
                 json!({ "db": "primary", "sql": format!("DROP TABLE IF EXISTS {table}") }),
             )
             .await?;
         for writer in WRITERS {
             let _: Value = context
-                .trigger(
+                .call(
                     "state::delete",
                     json!({ "scope": scope(run_id), "key": format!("verdict-{writer}") }),
                 )

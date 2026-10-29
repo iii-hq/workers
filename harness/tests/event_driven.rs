@@ -1,13 +1,14 @@
 //! No polling: binding deadlines and orphaned-turn recovery run on their own
 //! timers and on the engine's worker change feed, never on a periodic scan.
 //! Production handlers run against an isolated mock SDK transport that can
-//! also push engine-side invocations (the `engine::workers-available` fire).
+//! also push engine-side invocations (an `engine::on-workers-changed`
+//! activation).
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
-use harness::bindings::{Binding, BindingTarget, Causation, Lifecycle, OwnerScope};
+use harness::bindings::{Binding, BindingTarget, Lifecycle, OwnerScope, SourceSpec};
 use harness::config::WorkerConfig;
 use harness::deps::Deps;
 use harness::types::message::AgentMessage;
@@ -91,6 +92,7 @@ impl Store {
             "approval::evaluate" => Ok(json!({ "verdict": "allow" })),
             "sink::record" => Ok(json!({ "recorded": true })),
             "engine::workers::register" => Ok(json!({ "success": true })),
+            "engine::observers::dispose" => Ok(json!({ "disposed": true })),
             _ => Err(format!("unexpected mock RPC {function}")),
         }
     }
@@ -109,7 +111,7 @@ impl Store {
 struct Stack {
     deps: Arc<Deps>,
     store: Arc<Mutex<Store>>,
-    /// Engine -> worker frames (an engine-side fire of a bound trigger).
+    /// Engine -> worker frames (an observer activation).
     push: mpsc::UnboundedSender<Value>,
     server: tokio::task::JoinHandle<()>,
 }
@@ -218,16 +220,16 @@ impl Stack {
         }
     }
 
-    fn trigger_records(&self, binding: &str) -> Vec<String> {
+    fn fired_records(&self, binding: &str) -> Vec<String> {
         self.store
             .lock()
             .unwrap()
             .calls
             .iter()
             .filter(|(f, data, _)| {
-                f == "session::append" && data["custom"]["custom_type"] == "trigger_fired"
+                f == "session::append" && data["custom"]["custom_type"] == "observer_fired"
             })
-            .filter(|(_, data, _)| data["custom"]["data"]["subscription_id"] == binding)
+            .filter(|(_, data, _)| data["custom"]["data"]["observer_id"] == binding)
             .map(|(_, data, _)| data["entry_id"].as_str().unwrap_or_default().to_string())
             .collect()
     }
@@ -266,7 +268,16 @@ impl Stack {
 fn call_binding(id: &str, once: bool, expires_at: i64) -> Binding {
     Binding {
         id: id.into(),
-        trigger_id: Some(format!("sdk:{id}")),
+        observer_id: Some(id.into()),
+        source: Some(SourceSpec {
+            function_id: "state::on-changed".into(),
+            namespace: None,
+            args: None,
+            filters: Some(json!({
+                "input.scope": { "$eq": "watched" },
+                "input.key": { "$eq": "k" },
+            })),
+        }),
         owner: OwnerScope {
             session_id: "s_owner".into(),
             root_session_id: None,
@@ -283,11 +294,7 @@ fn call_binding(id: &str, once: bool, expires_at: i64) -> Binding {
             deny: vec![],
             expose: Default::default(),
         }),
-        causation: Causation::default(),
-        dedup_key: Some(json!({
-            "trigger_type": "state",
-            "config": { "scope": "watched", "key": "k" },
-        })),
+        dedup_key: Some(json!({ "function_id": "state::on-changed" })),
         fires: 0,
         created_at: 0,
     }
@@ -311,7 +318,7 @@ async fn an_expired_binding_is_retired_by_its_own_timer_without_any_sweep() {
 
     stack
         .wait_for("the expiry record", |store| {
-            store.appended("e_trigexpired_sub_deadline")
+            store.appended("e_obsexpired_sub_deadline")
         })
         .await;
     let waited = armed_at.elapsed();
@@ -343,7 +350,7 @@ async fn a_binding_that_fires_before_its_deadline_cancels_its_timer() {
     harness::bindings::expiry::arm(&stack.deps, &binding);
     assert!(stack.deps.expiry_timers.is_armed("sub_fired"));
 
-    let result = harness::functions::trigger_deliver::handle(
+    let result = harness::functions::observer_deliver::handle(
         &stack.deps,
         json!({ "type": "state", "scope": "watched", "key": "k", "new_value": 1 }),
         Some(json!({ "__binding": "sub_fired" })),
@@ -365,11 +372,11 @@ async fn a_binding_that_fires_before_its_deadline_cancels_its_timer() {
         .store
         .lock()
         .unwrap()
-        .appended("e_trigexpired_sub_fired"));
+        .appended("e_obsexpired_sub_fired"));
 }
 
 /// The e2e regression: a once Compose wake's terminal event reached the
-/// harness twice — the binding's own trigger and a recovery replay (the
+/// harness twice — the binding's own observer and a recovery replay (the
 /// standing terminal watch). The replay landed between the live delivery's
 /// claim and its retirement, found the binding spent, retired it itself and
 /// wrote a "skipped / binding exhausted" record next to the real delivery.
@@ -386,7 +393,7 @@ async fn a_duplicate_fire_during_delivery_is_not_a_second_outcome() {
         let deps = stack.deps.clone();
         let event = event.clone();
         tokio::spawn(async move {
-            harness::functions::trigger_deliver::handle(
+            harness::functions::observer_deliver::handle(
                 &deps,
                 event,
                 Some(json!({ "__binding": "sub_once" })),
@@ -401,7 +408,7 @@ async fn a_duplicate_fire_during_delivery_is_not_a_second_outcome() {
         })
         .await;
 
-    let replay = harness::functions::trigger_deliver::handle(
+    let replay = harness::functions::observer_deliver::handle(
         &stack.deps,
         event,
         Some(json!({ "__binding": "sub_once" })),
@@ -410,9 +417,9 @@ async fn a_duplicate_fire_during_delivery_is_not_a_second_outcome() {
     .unwrap();
     assert!(!replay.delivered, "{replay:?}");
     assert!(
-        stack.trigger_records("sub_once").is_empty(),
+        stack.fired_records("sub_once").is_empty(),
         "the duplicate wrote an outcome: {:?}",
-        stack.trigger_records("sub_once")
+        stack.fired_records("sub_once")
     );
     assert!(
         stack.binding_stored("sub_once"),
@@ -425,8 +432,8 @@ async fn a_duplicate_fire_during_delivery_is_not_a_second_outcome() {
     assert_eq!(stack.store.lock().unwrap().called("sink::record"), 1);
     assert!(!stack.binding_stored("sub_once"));
     assert_eq!(
-        stack.trigger_records("sub_once"),
-        vec!["e_trigfired_sub_once_1".to_string()],
+        stack.fired_records("sub_once"),
+        vec!["e_obsfired_sub_once_1".to_string()],
         "exactly one outcome: the delivery"
     );
 }
@@ -444,9 +451,9 @@ async fn a_pass_cleans_up_a_consumed_binding_without_an_outcome() {
     assert!(harness::bindings::expiry::retire_due(&stack.deps, "sub_consumed", 0).await);
     assert!(!stack.binding_stored("sub_consumed"));
     assert!(
-        stack.trigger_records("sub_consumed").is_empty(),
+        stack.fired_records("sub_consumed").is_empty(),
         "{:?}",
-        stack.trigger_records("sub_consumed")
+        stack.fired_records("sub_consumed")
     );
 }
 
@@ -480,8 +487,9 @@ async fn a_worker_disconnect_event_redrives_an_orphaned_turn() {
         "nothing re-drives without an event"
     );
 
-    // The engine fires `engine::workers-available`: the worker that held the
-    // turn's step went away.
+    // The engine calls `engine::on-workers-changed` and activates the
+    // harness's observer with the event as its output: the worker that held
+    // the turn's step went away.
     stack
         .push
         .send(json!({
@@ -489,6 +497,7 @@ async fn a_worker_disconnect_event_redrives_an_orphaned_turn() {
             "invocation_id": "6f1c1a52-7c1e-4b8e-9d0a-2f3c4b5a6d7e",
             "function_id": harness::engine_events::ENGINE_CHANGE_FN_ID,
             "data": { "event": "worker_disconnected", "worker_id": "w-gone" },
+            "activation": { "observer_id": "engine-change", "activation_id": "act-1" },
         }))
         .unwrap();
 

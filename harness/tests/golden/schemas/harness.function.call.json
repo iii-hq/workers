@@ -1,13 +1,13 @@
 {
-  "function_id": "harness::function::trigger",
+  "function_id": "harness::function::call",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
-      "TriggerCall": {
+      "CallInput": {
         "properties": {
           "arguments": true,
           "function_id": {
-            "description": "The iii function to invoke (already unwrapped from `agent_trigger`).",
+            "description": "The iii function to invoke (already unwrapped from `agent_call`).",
             "type": "string"
           },
           "id": {
@@ -25,7 +25,7 @@
     },
     "properties": {
       "call": {
-        "$ref": "#/definitions/TriggerCall"
+        "$ref": "#/definitions/CallInput"
       },
       "session_id": {
         "type": "string"
@@ -35,20 +35,81 @@
       "call",
       "session_id"
     ],
-    "title": "FunctionTriggerRequest",
+    "title": "FunctionCallRequest",
     "type": "object"
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "anyOf": [
       {
-        "$ref": "#/definitions/TriggerResultResponse"
+        "$ref": "#/definitions/CallResultResponse"
       },
       {
-        "$ref": "#/definitions/TriggerPendingResponse"
+        "$ref": "#/definitions/CallPendingResponse"
       }
     ],
     "definitions": {
+      "CallPendingResponse": {
+        "properties": {
+          "function_call_id": {
+            "type": "string"
+          },
+          "function_id": {
+            "type": "string"
+          },
+          "pending": {
+            "type": "boolean"
+          },
+          "pending_timeout_ms": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "function_call_id",
+          "function_id",
+          "pending"
+        ],
+        "type": "object"
+      },
+      "CallResultResponse": {
+        "properties": {
+          "content": {
+            "items": {
+              "$ref": "#/definitions/ContentBlock"
+            },
+            "type": "array"
+          },
+          "details": true,
+          "duration_ms": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "function_call_id": {
+            "type": "string"
+          },
+          "function_id": {
+            "type": "string"
+          },
+          "is_error": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "content",
+          "details",
+          "duration_ms",
+          "function_call_id",
+          "function_id",
+          "is_error"
+        ],
+        "type": "object"
+      },
       "ContentBlock": {
         "oneOf": [
           {
@@ -230,69 +291,8 @@
             "type": "object"
           }
         ]
-      },
-      "TriggerPendingResponse": {
-        "properties": {
-          "function_call_id": {
-            "type": "string"
-          },
-          "function_id": {
-            "type": "string"
-          },
-          "pending": {
-            "type": "boolean"
-          },
-          "pending_timeout_ms": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "function_call_id",
-          "function_id",
-          "pending"
-        ],
-        "type": "object"
-      },
-      "TriggerResultResponse": {
-        "properties": {
-          "content": {
-            "items": {
-              "$ref": "#/definitions/ContentBlock"
-            },
-            "type": "array"
-          },
-          "details": true,
-          "duration_ms": {
-            "format": "uint64",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "function_call_id": {
-            "type": "string"
-          },
-          "function_id": {
-            "type": "string"
-          },
-          "is_error": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "content",
-          "details",
-          "duration_ms",
-          "function_call_id",
-          "function_id",
-          "is_error"
-        ],
-        "type": "object"
       }
     },
-    "title": "FunctionTriggerResponse"
+    "title": "FunctionCallResponse"
   }
 }

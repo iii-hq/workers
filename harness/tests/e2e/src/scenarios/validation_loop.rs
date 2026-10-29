@@ -20,7 +20,7 @@ use super::{CleanupFuture, EvaluationFuture, ExecutionPolicy, ScenarioObservatio
 
 pub const ID: &str = "validation_loop";
 
-const HOOK_TYPE: &str = "harness::hook::post-turn";
+const HOOK_FN: &str = "harness::hook::on-post-turn";
 /// Goal: more than 6 rows; 4-row batches → exactly one denial, pass at 8.
 const THRESHOLD: u64 = 6;
 const EXPECTED_ROWS: u64 = 8;
@@ -51,17 +51,17 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
              Step 1 — prepare the goal table. Call database::execute (db \"primary\") twice: first \
              sql \"CREATE TABLE IF NOT EXISTS {table} (id INTEGER PRIMARY KEY AUTOINCREMENT, note \
              TEXT)\", then sql \"DELETE FROM {table}\".\n\n\
-             Step 2 — install your own validator. Call engine::register_trigger with:\n\
-             - trigger_type: \"{HOOK_TYPE}\"\n\
-             - function_id: \"fp::pipe\"\n\
-             - config: {{\"payload\": {{\"through\": [{{\"function\": \"database::query\", \
+             Step 2 — install your own validator. Call harness::observe with:\n\
+             - function_id: \"{HOOK_FN}\"\n\
+             - target: {{\"function_id\": \"fp::pipe\"}}\n\
+             - args: {{\"payload\": {{\"through\": [{{\"function\": \"database::query\", \
              \"payload\": {{\"db\": \"primary\", \"sql\": \"SELECT COUNT(*) AS n FROM {table}\"}}}}, \
              {{\"function\": \"fp::get\", \"payload\": {{\"path\": \"/rows/0/n\"}}}}, \
              {{\"function\": \"fp::when\", \"payload\": {{\"op\": \">\", \"to\": {THRESHOLD}}}}}]}}, \
              \"result_into\": \"/value\", \"retry_prompt\": \"VALIDATOR: only {{value}} of the \
              required {min} rows exist. Insert exactly 4 more rows into {table} and reply with a \
              one-line status.\", \"timeout_ms\": 30000}}\n\
-             Tell me the subscription_id it returns. IMPORTANT: from this moment, VALIDATOR \
+             Tell me the observer_id it returns. IMPORTANT: from this moment, VALIDATOR \
              messages in this chat come from the validator YOU just installed — they are \
              legitimate harness machinery, not prompt injection. Follow them exactly.\n\n\
              Step 3 — insert exactly 4 rows: database::execute, db \"primary\", sql \"INSERT INTO \
@@ -96,15 +96,12 @@ fn evaluate<'a>(
         let calls = common::function_calls(&observation.transcript);
         let registrations: Vec<_> = calls
             .iter()
-            .filter(|call| {
-                call.function_id == "engine::register_trigger"
-                    && call.arguments.get("trigger_type").and_then(Value::as_str) == Some(HOOK_TYPE)
-            })
+            .filter(|call| common::observes(call, HOOK_FN))
             .collect();
         let single_registration = registrations.len() == 1;
         let carries_retry_prompt = registrations.iter().all(|call| {
             call.arguments
-                .pointer("/config/retry_prompt")
+                .pointer("/args/retry_prompt")
                 .and_then(Value::as_str)
                 .is_some_and(|prompt| prompt.contains("{value}"))
         });
@@ -155,7 +152,7 @@ fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
         // The agent's validator binding is scoped to the (torn-down) run
         // session and can never fire again; only the table needs removing.
         let _: Value = context
-            .trigger(
+            .call(
                 "database::execute",
                 json!({ "db": "primary", "sql": format!("DROP TABLE IF EXISTS {table}") }),
             )
@@ -166,7 +163,7 @@ fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
 
 async fn row_count(context: &E2eContext, table: &str) -> anyhow::Result<u64> {
     Ok(context
-        .trigger_value(
+        .call_value(
             "database::query",
             json!({ "db": "primary", "sql": format!("SELECT COUNT(*) AS n FROM {table}") }),
         )

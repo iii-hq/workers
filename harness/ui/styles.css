@@ -648,7 +648,7 @@
   text-align: left;
 }
 
-/* --- function-trigger message (chat / traces card) ------------------- */
+/* --- function-call message (chat / traces card) ---------------------- */
 [data-iii-ui="harness"] .harness-ui-msg {
   background: var(--color-bg);
 }

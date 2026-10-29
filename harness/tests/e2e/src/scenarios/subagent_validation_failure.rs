@@ -2,7 +2,7 @@
 //! impossible (threshold far above what its bounded budget can reach), so
 //! the validator denies every attempt, the child's turn FAILS on budget
 //! exhaustion, the verdict key is never written, and the parent — whose
-//! wake carries an `expires_at` deadline — is woken by the expiry notice
+//! wake carries an `expires_in_ms` deadline — is woken by the expiry notice
 //! instead and reports the give-up.
 //!
 //! Exercises what no success scenario can: `max_validation_retries` as a
@@ -10,8 +10,6 @@
 //! infinite loop), the guarantee that a failed turn writes NO verdict (the
 //! `state::set` tail never ran), and the wake-expiry fallback that keeps a
 //! parent from parking forever on evidence that will never arrive.
-
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
@@ -24,7 +22,7 @@ use super::{CleanupFuture, EvaluationFuture, ExecutionPolicy, ScenarioObservatio
 
 pub const ID: &str = "subagent_validation_failure";
 
-const HOOK_TYPE: &str = "harness::hook::post-turn";
+const HOOK_FN: &str = "harness::hook::on-post-turn";
 /// Unreachable by design: 3 attempts × 4 rows tops out at 12.
 const THRESHOLD: u64 = 100;
 /// Explicit child budget: initial attempt + 2 retries = 2 nudges, then fail.
@@ -54,7 +52,6 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let table = table(run_id);
     let scope = scope(run_id);
     let child = child_session(run_id);
-    let expires_at = now_ms() + EXPIRY_DELAY_MS;
     ScenarioSpec {
         id: ID,
         version: 3,
@@ -65,10 +62,10 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
              Step 1 — prepare the goal table. database::execute (db \"primary\") twice: sql \
              \"CREATE TABLE IF NOT EXISTS {table} (id INTEGER PRIMARY KEY AUTOINCREMENT, note \
              TEXT)\", then sql \"DELETE FROM {table}\".\n\n\
-             Step 2 — install the child's validator. Call engine::register_trigger with:\n\
-             - trigger_type: \"{HOOK_TYPE}\"\n\
-             - function_id: \"fp::pipe\"\n\
-             - config: {{\"sessions\": [\"{child}\"], \"payload\": {{\"through\": \
+             Step 2 — install the child's validator. Call harness::observe with:\n\
+             - function_id: \"{HOOK_FN}\"\n\
+             - target: {{\"function_id\": \"fp::pipe\"}}\n\
+             - args: {{\"sessions\": [\"{child}\"], \"payload\": {{\"through\": \
              [{{\"function\": \"database::query\", \"payload\": {{\"db\": \"primary\", \"sql\": \
              \"SELECT COUNT(*) AS n FROM {table}\"}}}}, {{\"function\": \"fp::get\", \"payload\": \
              {{\"path\": \"/rows/0/n\"}}}}, {{\"function\": \"fp::when\", \"payload\": {{\"op\": \
@@ -77,11 +74,11 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
              \"retry_prompt\": \"VALIDATOR: only {{value}} of the required {min} rows exist. \
              Insert exactly 4 more rows into {table} and reply with a one-line status.\", \
              \"timeout_ms\": 30000}}\n\
-             Remember the subscription_id.\n\n\
-             Step 3 — arm your wake BEFORE spawning, WITH a deadline: engine::register_trigger \
-             with trigger_type \"state\", config {{\"scope\": \"{scope}\", \"key\": \
-             \"verdict\"}}, label \"child-validated\", lifecycle: {{\"expires_at\": \
-             {expires_at}}}, and NO function_id. If the verdict is never written you will be \
+             Remember the observer_id.\n\n\
+             Step 3 — arm your wake BEFORE spawning, WITH a deadline: harness::observe \
+             with function_id \"state::on-changed\", filters {{\"input.scope\": {{\"$eq\": \
+             \"{scope}\"}}, \"input.key\": {{\"$eq\": \"verdict\"}}}}, label \
+             \"child-validated\", lifecycle: {{\"expires_in_ms\": {EXPIRY_DELAY_MS}}}, and NO target. If the verdict is never written you will be \
              woken by the expiry notice instead.\n\n\
              Step 4 — spawn the worker: harness::spawn with session_id \"{child}\", task: \"You \
              are a worker in a validated loop: the harness checks every reply of yours and \
@@ -94,8 +91,8 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
              Step 5 — END YOUR TURN.\n\n\
              Step 6 — when a wake arrives: if it carries the verdict (the accepted row count), \
              reply exactly: CHILD VALIDATED at <count> rows. PARENT DONE. If instead it is the \
-             EXPIRY notice (the verdict never came), call engine::unregister_trigger with the \
-             validator subscription_id from Step 2, then reply exactly: CHILD GAVE UP: validation \
+             EXPIRY notice (the verdict never came), call harness::unobserve with the \
+             validator observer_id from Step 2, then reply exactly: CHILD GAVE UP: validation \
              budget exhausted. PARENT DONE.",
             min = THRESHOLD + 1,
         ),
@@ -123,7 +120,7 @@ fn evaluate<'a>(
     Box::pin(async move {
         let child = child_session(run_id);
         let child_status = context
-            .trigger_value(
+            .call_value(
                 "harness::status",
                 json!({ "session_id": child, "verbose": false }),
             )
@@ -138,7 +135,7 @@ fn evaluate<'a>(
             .unwrap_or_default();
         let verdict = common::state_value(
             context
-                .trigger(
+                .call(
                     "state::get",
                     json!({ "scope": scope(run_id), "key": "verdict" }),
                 )
@@ -150,16 +147,14 @@ fn evaluate<'a>(
         };
 
         let calls = common::function_calls(&observation.transcript);
-        let validator_index = calls.iter().position(|call| {
-            call.function_id == "engine::register_trigger"
-                && call.arguments.get("trigger_type").and_then(Value::as_str) == Some(HOOK_TYPE)
-        });
+        let validator_index = calls
+            .iter()
+            .position(|call| common::observes(call, HOOK_FN));
         let wake_index = calls.iter().position(|call| {
-            call.function_id == "engine::register_trigger"
-                && call.arguments.get("trigger_type").and_then(Value::as_str) == Some("state")
+            common::observes(call, "state::on-changed")
                 && call
                     .arguments
-                    .pointer("/lifecycle/expires_at")
+                    .pointer("/lifecycle/expires_in_ms")
                     .and_then(Value::as_u64)
                     .is_some()
         });
@@ -203,26 +198,19 @@ fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
     Box::pin(async move {
         let table = table(run_id);
         let _: Value = context
-            .trigger(
+            .call(
                 "database::execute",
                 json!({ "db": "primary", "sql": format!("DROP TABLE IF EXISTS {table}") }),
             )
             .await?;
         let _: Value = context
-            .trigger(
+            .call(
                 "state::delete",
                 json!({ "scope": scope(run_id), "key": "verdict" }),
             )
             .await?;
         Ok(())
     })
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 fn table(run_id: &str) -> String {

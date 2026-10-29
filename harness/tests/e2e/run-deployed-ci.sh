@@ -246,7 +246,7 @@ wait_for_engine() {
   local response
   for ((attempt = 0; attempt < wait_seconds; attempt++)); do
     kill -0 "$engine_pid" 2>/dev/null || die "engine exited before becoming ready"
-    response=$("$iii_bin" trigger engine::workers::list --port "$engine_port" \
+    response=$("$iii_bin" call engine::workers::list --port "$engine_port" \
       --json '{}' 2>>"$log_dir/discovery.log" || true)
     jq -e '.workers != null' <<<"$response" >/dev/null 2>&1 && return 0
     sleep 1
@@ -258,7 +258,7 @@ wait_for_functions() {
   local required response missing
   required=$(printf '%s\n' "$@" | jq -R . | jq -s .)
   for ((attempt = 0; attempt < wait_seconds; attempt++)); do
-    response=$("$iii_bin" trigger engine::functions::list --port "$engine_port" \
+    response=$("$iii_bin" call engine::functions::list --port "$engine_port" \
       --json '{"include_internal":true}' 2>>"$log_dir/discovery.log" || true)
     missing=$(jq -r --argjson required "$required" '
       (.functions // [] | map(.function_id)) as $available
@@ -270,27 +270,11 @@ wait_for_functions() {
   die "required functions did not register: $missing"
 }
 
-wait_for_triggers() {
-  local required response missing
-  required=$(printf '%s\n' "$@" | jq -R . | jq -s .)
-  for ((attempt = 0; attempt < wait_seconds; attempt++)); do
-    response=$("$iii_bin" trigger engine::triggers::list --port "$engine_port" \
-      --json '{"include_internal":true}' 2>>"$log_dir/discovery.log" || true)
-    missing=$(jq -r --argjson required "$required" '
-      (.triggers // [] | map(.id)) as $available
-      | ($required - $available) | join(" ")
-    ' <<<"$response" 2>/dev/null || printf 'trigger discovery failed')
-    [[ -z "$missing" ]] && return 0
-    sleep 1
-  done
-  die "required trigger types did not register: $missing"
-}
-
 wait_for_model() {
   local provider=$1 model=$2 request response
   request=$(jq -cn --arg provider "$provider" --arg id "$model" '{provider: $provider, id: $id}')
   for ((attempt = 0; attempt < wait_seconds; attempt++)); do
-    response=$("$iii_bin" trigger router::models::get --port "$engine_port" \
+    response=$("$iii_bin" call router::models::get --port "$engine_port" \
       --json "$request" 2>>"$log_dir/discovery.log" || true)
     jq -e --arg id "$model" '.model.id == $id' <<<"$response" >/dev/null 2>&1 && return 0
     sleep 1
@@ -369,11 +353,11 @@ wait_for_functions \
   harness::send harness::status worker::add database::query state::get \
   queue::define session::messages context::assemble router::models::get \
   directory::skills::list
-wait_for_triggers cron
+wait_for_functions cron::on-tick
 wait_for_model "$HARNESS_E2E_PROVIDER" "$HARNESS_E2E_MODEL"
 wait_for_model "$HARNESS_E2E_JUDGE_PROVIDER" "$HARNESS_E2E_JUDGE_MODEL"
 
-"$iii_bin" trigger engine::workers::list --port "$engine_port" \
+"$iii_bin" call engine::workers::list --port "$engine_port" \
   --json '{}' >"$project_dir/workers.json"
 
 verify_args=(

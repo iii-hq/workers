@@ -1,12 +1,12 @@
-//! INT-038 — `harness::ask` bypasses the pre_trigger hooks.
+//! INT-038 — `harness::ask` bypasses the pre_call hooks.
 //!
 //! `harness::ask` is a harness control like `submit_result`: an approval hook
 //! that holds it would park the turn, and the deferred release path cannot
 //! show the card. The fixture proves the ask never reaches the hook chain:
 //!
 //!   1. turn 1 answers in text, so the probe has a completion boundary;
-//!   2. the probe binds a `harness::hook::pre-trigger` hook that HOLDS every
-//!      call (`functions: ["*"]`, the controlled function answering
+//!   2. the probe observes `harness::hook::on-pre-call` with a hook that HOLDS
+//!      every call (args `functions: ["*"]`, the controlled function answering
 //!      `{ "decision": "hold" }`), then sends a second message;
 //!   3. turn 2's only generation calls `harness::ask`. The loop answers it
 //!      itself: `awaiting_answer`, nothing pending, turn completed, no third
@@ -24,7 +24,7 @@ use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
 
 const ASK: &str = "harness::ask";
-const PRE_TRIGGER: &str = "harness::hook::pre-trigger";
+const ON_PRE_CALL: &str = "harness::hook::on-pre-call";
 const CALL_ID: &str = "call-ask";
 const FIRST_MESSAGE: &str = "Say ready.";
 const FIRST_TEXT: &str = "ready";
@@ -52,7 +52,7 @@ pub(super) fn scenario() -> ScenarioFixture {
     Scenario::new(
         ID,
         "ask-bypasses-approval-hook",
-        "A pre_trigger hook that holds every call does not hold harness::ask: the turn loop \
+        "A pre_call hook that holds every call does not hold harness::ask: the turn loop \
          answers it before the hook chain and the turn ends on the question.",
         ScenarioDriver::Direct,
         model.clone(),
@@ -63,16 +63,13 @@ pub(super) fn scenario() -> ScenarioFixture {
             .allow_id(ASK),
     )
     .terminal_turns(2)
-    // Only the two sends make turns; the hook registration leaves no trace.
+    // Only the two sends make turns; the hook observer leaves no trace.
     .expect_traces(2)
-    .probe_after(
+    .probe_observe_after(
         1,
-        "engine::register_trigger",
-        json!({
-            "trigger_type": PRE_TRIGGER,
-            "function_id": "{{run_id}}::gate",
-            "config": { "functions": ["*"] }
-        }),
+        ON_PRE_CALL,
+        json!({ "functions": ["*"] }),
+        "{{run_id}}::gate",
     )
     // No options: the follow-up inherits the first turn's model, prompt and
     // policy (`harness::ask` allowed).
@@ -121,7 +118,7 @@ pub(super) fn scenario() -> ScenarioFixture {
         );
         anyhow::ensure!(
             run.target_calls.is_empty(),
-            "the holding pre_trigger hook was consulted {} time(s): {:?}",
+            "the holding pre_call hook was consulted {} time(s): {:?}",
             run.target_calls.len(),
             run.target_calls
         );
@@ -162,7 +159,7 @@ mod tests {
         assert_eq!(fixture.expected_traces(), 2);
         assert_eq!(fixture.script.generations.len(), 2);
 
-        // The hook is bound after turn 1 and before the ask turn's send.
+        // The hook is observed after turn 1 and before the ask turn's send.
         let actions: Vec<_> = fixture
             .probe_actions
             .iter()
@@ -170,11 +167,12 @@ mod tests {
             .collect();
         assert_eq!(
             actions,
-            [(1, "engine::register_trigger"), (1, "harness::send")]
+            [(1, crate::fixtures::OBSERVE_ACTION), (1, "harness::send")]
         );
         let hook = &fixture.probe_actions[0].payload;
-        assert_eq!(hook["trigger_type"], PRE_TRIGGER);
-        assert_eq!(hook["config"]["functions"], json!(["*"]));
+        assert_eq!(hook["function_id"], ON_PRE_CALL);
+        assert_eq!(hook["args"]["functions"], json!(["*"]));
+        assert_eq!(hook["target"], "{{run_id}}::gate");
 
         let ask_turn = serde_json::to_string(&fixture.script.generations[1]).unwrap();
         assert!(ask_turn.contains(ASK), "{ask_turn}");

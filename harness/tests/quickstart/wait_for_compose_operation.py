@@ -94,7 +94,7 @@ def fetch_operation(
         completed = subprocess.run(
             [
                 iii_bin,
-                "trigger",
+                "call",
                 "compose::operation",
                 "--port",
                 str(engine_port),

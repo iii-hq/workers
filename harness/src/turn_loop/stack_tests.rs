@@ -89,7 +89,7 @@ async fn complete_child(parent_prompt_present: bool) {
                         "options": {"model": "fake", "max_turns": 16,
                             "system_prompt": {"$ref": crate::state::prompt_digest(parent_prompt)},
                             "output": {"type": "text"},
-                            "functions": {"allow": ["*"], "deny": [], "expose": "agent_trigger"}
+                            "functions": {"allow": ["*"], "deny": [], "expose": "agent_call"}
                         }, "created_at": 1, "updated_at": 1,
                         "context_snapshot": {
                             "session_id": "parent", "turn_id": "t_parent", "step": 0,

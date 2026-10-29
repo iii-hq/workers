@@ -8,16 +8,17 @@ here is built into the platform — it is all in the prompt, which is the point.
 - Each child fetches one file, analyses it, writes one database row, and stops.
   It knows nothing about the other children, the barrier, or the coordinator.
 - Work comes UP only as writes. The coordinator learns about them through the
-  one binding it registered, gated by `state::barrier` so it wakes **once**
-  when every file has landed — not once per file.
+  one observer it armed, gated by `state::barrier` so it wakes **once** when
+  every file has landed — not once per file.
 
 ## Why a state key AND a database row
 
-The database is the state machine, as asked — but nothing emits database change
-events today (`database::row-changed` is not built). So each child writes its
-row **and** a one-line marker to state; the coordinator's binding watches the
-marker scope. The row is the record; the marker is the doorbell. When the DB
-trigger ships, the marker disappears and the binding moves to the table.
+The database is the state machine, as asked. Each child writes its row **and**
+a one-line marker to state; the coordinator's observer watches the marker scope
+through `state::on-changed`. The row is the record; the marker is the doorbell,
+and its key is the name `state::barrier` counts. A coordinator that observes
+`database::on-row-changed` (args `{ "db": "primary", "table": "<table>" }`)
+drops the marker and keys the barrier on the row's `file` column.
 
 ## The prompt
 
@@ -47,11 +48,11 @@ SETUP — do all of this in THIS turn, then stop:
    list of file keys is your expected set. Write the work list to state
    <scope>/_worklist so a later turn can resume it.
 
-3. Register ONE wake, gated so it fires a single time when every file has
+3. Arm ONE wake, gated so it delivers a single time when every file has
    landed:
-   engine::register_trigger {
-     "trigger_type": "state",
-     "config": { "scope": "<scope>" },
+   harness::observe {
+     "function_id": "state::on-changed",
+     "filters": { "input.scope": { "$eq": "<scope>" } },
      "once": true,
      "conditions": [ { "function_id": "state::barrier",
                        "config": { "id": "<run id>",
@@ -83,8 +84,8 @@ SETUP — do all of this in THIS turn, then stop:
               the same order with status 'error' and the reason in detail.
               Write them either way — something is waiting on that key. Do
               not create tables, do
-              not read other files, do not spawn anything, do not register
-              triggers.",
+              not read other files, do not spawn anything, do not observe
+              anything.",
      "session_id": "<run id>-w<i>",
      "options": { "filesystem_root": "<absolute repo root>",
                   "functions": { "allow": ["coder::read-file",
@@ -122,12 +123,12 @@ FINISH — when the wake arrives, it carries every file's summary:
 
 7. Report: files scanned, total findings, per-file lines for anything with
    findings > 0 or status 'error', and the table name so the rows can be read
-   directly. Unregister anything still armed. Stop.
+   directly. Unobserve anything still armed. Stop.
 
 RULES for every child, restated because they are what keeps this one-way:
 - one file, one analysis, two writes, stop
 - never CREATE TABLE — the schema exists before any child runs
-- never spawn, never register a trigger, never poll
+- never spawn, never observe, never poll
 - on failure, still write both records with status 'error'
 ````
 
