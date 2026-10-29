@@ -6,7 +6,7 @@ YAML, **the workflow wins** — update these docs.
 | SOP | When to use |
 |---|---|
 | [`new-worker.md`](new-worker.md) | First read when adding any worker — naming, repo wiring, CI, release checklist |
-| [`binary-worker.md`](binary-worker.md) | Scaffolding a Rust `deploy: binary` daemon (layout, functions, triggers, tests) |
+| [`binary-worker.md`](binary-worker.md) | Scaffolding a Rust `deploy: binary` daemon (layout, functions, event functions, tests) |
 | [`go-binary-worker.md`](go-binary-worker.md) | Shipping a Go binary with explicit version metadata, cross-compilation, and interface capture |
 | [`configuration.md`](configuration.md) | Integrating a worker with the `configuration` worker (schema-validated, hot-reloadable, shared config). Workers on the configuration worker do not ship a `config.yaml`; the registry and console own live config. |
 | [`trace-hidden-functions.md`](trace-hidden-functions.md) | Marking a function's spans hidden-by-default in trace UIs (`trace_hidden: true` registration metadata) — for per-turn bookkeeping and dispatch machinery that drowns timelines |

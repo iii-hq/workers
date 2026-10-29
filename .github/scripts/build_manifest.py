@@ -149,14 +149,14 @@ def _interface(descriptor: dict[str, Any], snapshot: dict[str, Any], identity: d
     _check_identity(snapshot, {"contract": "deployment-interface", **identity, "interface_capture": policy}, "captured interface")
     captured = snapshot.get("interface")
     if policy == "required":
-        if not isinstance(captured, dict) or set(captured) != {"functions", "triggers"}:
-            raise SystemExit("captured interface must contain only functions and triggers")
-        if not captured["functions"] and not captured["triggers"]:
-            raise SystemExit("required interface capture must contain a function or trigger")
+        if not isinstance(captured, dict) or set(captured) != {"functions"}:
+            raise SystemExit("captured interface must contain only functions")
+        if not captured["functions"]:
+            raise SystemExit("required interface capture must contain a function")
         return captured
     if captured is not None:
         raise SystemExit("skipped interface capture must remain null")
-    return {"functions": [], "triggers": []}
+    return {"functions": []}
 
 
 def write(args: argparse.Namespace) -> int:

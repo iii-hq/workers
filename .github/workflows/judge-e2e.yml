@@ -38,7 +38,7 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: '1'
   # Same verified configuration::ensure release as ci.yml and build.yml.
-  III_RELEASE_TAG: 'iii/v0.24.0-rc.2'
+  III_RELEASE_TAG: 'iii/v0.26.0'
 
 jobs:
   e2e:

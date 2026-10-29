@@ -86,23 +86,37 @@ def _string_or_empty(value: Any) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _args_format_or_none(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    raise ValueError("function args_format must be an object or null")
+
+
+def _observe_fields(function: dict[str, Any]) -> dict[str, Any]:
+    """What a function row says about observing the function.
+
+    `args_format` is the JSON Schema of observers' `args` (`None` when the
+    function takes no args), `private` is true when only the hosting worker
+    calls it, and `observable` is false when nobody may observe it. The engine
+    leaves the defaults out of its rows (`private: false`, `observable: true`),
+    and the Registry row states all three."""
+    return {
+        "args_format": _args_format_or_none(function.get("args_format")),
+        "private": function.get("private") is True,
+        "observable": function.get("observable") is not False,
+    }
+
+
 def _normalize_registry_function(function: dict[str, Any]) -> dict[str, Any]:
     return {
         "name": function.get("name"),
         "description": _string_or_empty(function.get("description")),
         "request_schema": _schema_or_empty(function.get("request_schema")),
         "response_schema": _schema_or_empty(function.get("response_schema")),
+        **_observe_fields(function),
         "metadata": _metadata_or_empty(function.get("metadata")),
-    }
-
-
-def _normalize_registry_trigger(trigger: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "name": trigger.get("name"),
-        "description": _string_or_empty(trigger.get("description")),
-        "invocation_schema": _schema_or_empty(trigger.get("invocation_schema")),
-        "return_schema": _schema_or_empty(trigger.get("return_schema")),
-        "metadata": _metadata_or_empty(trigger.get("metadata")),
     }
 
 
@@ -203,30 +217,11 @@ def _match_worker(workers: list[dict[str, Any]], worker_name: str) -> dict[str, 
     )
 
 
-def _normalize_registry_trigger_type(trigger_type: dict[str, Any]) -> dict[str, Any]:
-    # `engine::triggers::info` exposes the typed schemas under
-    # `configuration_schema` (the binding config, registered via the SDK's
-    # `.trigger_request_format::<T>()`) and `request_schema` (the delivered-event
-    # payload, registered via `.call_request_format::<T>()`). `engine::triggers::list`
-    # rows carry neither — they must be enriched from `::info` first (see
-    # collect_worker_interface.enrich_trigger_types_with_schemas) or these
-    # collapse to the empty `{}` that renders as 'unknown' in the registry.
-    return {
-        "name": _string_or_empty(trigger_type.get("id")),
-        "description": _string_or_empty(trigger_type.get("description")),
-        "invocation_schema": _schema_or_empty(trigger_type.get("configuration_schema")),
-        "return_schema": _schema_or_empty(trigger_type.get("request_schema")),
-        "metadata": {},
-    }
-
-
 def normalize_worker_interface(
     *,
     worker_name: str,
     workers_json: dict[str, Any],
     functions_json: dict[str, Any],
-    trigger_types_json: dict[str, Any] | None = None,
-    baseline_trigger_types_json: dict[str, Any] | None = None,
     baseline_workers_json: dict[str, Any] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     workers = _extract_array(workers_json, "workers")
@@ -260,27 +255,12 @@ def normalize_worker_interface(
                 "description": _string_or_empty(details.get("description")),
                 "request_schema": _schema_or_empty(details.get("request_schema")),
                 "response_schema": _schema_or_empty(details.get("response_schema")),
+                **_observe_fields(details),
                 "metadata": _metadata_or_empty(metadata),
             }
         )
 
-    baseline_ids = {
-        tt["id"]
-        for tt in _extract_array(baseline_trigger_types_json or {}, "triggers")
-        if isinstance(tt.get("id"), str)
-    }
-
-    triggers = []
-    if trigger_types_json:
-        for trigger_type in _extract_array(trigger_types_json, "triggers"):
-            tt_id = trigger_type.get("id")
-            if not isinstance(tt_id, str) or tt_id.startswith("engine::"):
-                continue
-            if tt_id in baseline_ids:
-                continue
-            triggers.append(_normalize_registry_trigger_type(trigger_type))
-
-    return {"functions": functions, "triggers": triggers}
+    return {"functions": functions}
 
 
 def build_payload(
@@ -305,14 +285,15 @@ def build_payload(
         raise ValueError("registry_projection.config must be an object or null")
     if interface_capture not in {"required", "skipped"}:
         raise ValueError("interface_capture must be required or skipped")
-    if not isinstance(interface, dict) or set(interface) != {"functions", "triggers"}:
-        raise ValueError("interface must contain only functions and triggers")
-    for field in ("functions", "triggers"):
-        if not isinstance(interface[field], list) or any(not isinstance(row, dict) for row in interface[field]):
-            raise ValueError(f"interface {field} must be an array of objects")
-    interface_empty = not interface["functions"] and not interface["triggers"]
+    if not isinstance(interface, dict) or set(interface) != {"functions"}:
+        raise ValueError("interface must contain only functions")
+    if not isinstance(interface["functions"], list) or any(
+        not isinstance(row, dict) for row in interface["functions"]
+    ):
+        raise ValueError("interface functions must be an array of objects")
+    interface_empty = not interface["functions"]
     if interface_capture == "required" and interface_empty:
-        raise ValueError("required interface capture must contain a function or trigger")
+        raise ValueError("required interface capture must contain a function")
     if interface_capture == "skipped" and not interface_empty:
         raise ValueError("skipped interface capture must publish an empty interface")
     _lib.validate_deployment_target_version(published_version)
@@ -335,10 +316,6 @@ def build_payload(
         "functions": [
             _normalize_registry_function(function)
             for function in interface.get("functions") or []
-        ],
-        "triggers": [
-            _normalize_registry_trigger(trigger)
-            for trigger in interface.get("triggers") or []
         ],
     }
     if deploy == "binary":

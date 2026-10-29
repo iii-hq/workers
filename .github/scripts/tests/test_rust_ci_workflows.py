@@ -162,7 +162,7 @@ def test_interface_smoke_bounds_each_engine_readiness_probe() -> None:
     assert "deadline=$((SECONDS + 60))" in run
     assert "while (( SECONDS < deadline )); do" in run
     assert (
-        "timeout --signal=KILL 5s iii trigger 'engine::workers::list' "
+        "timeout --signal=KILL 5s iii call 'engine::workers::list' "
         "--json '{}' >/dev/null 2>&1"
     ) in run
 
@@ -194,7 +194,7 @@ def test_harness_integration_downloads_latest_rc_engine_without_building_it() ->
     assert 'echo "The iii engine was resolved from the latest @rc channel: $III_ENGINE_VERSION."' in summary
 
 
-def test_other_engine_installers_use_the_atomic_configuration_release() -> None:
+def test_other_engine_installers_use_the_observe_v2_release() -> None:
     covered = set()
     for path in sorted(WORKFLOWS.glob("*.yml")):
         if path.name == "_harness-integration.yml":
@@ -211,15 +211,14 @@ def test_other_engine_installers_use_the_atomic_configuration_release() -> None:
                 }
                 tag = effective_env.get("III_RELEASE_TAG")
                 if tag == "${{ matrix.engine }}":
-                    # A matrix over engines still runs the atomic configuration
-                    # release; its other legs are extra (database-e2e: the
-                    # 0.25 engine, for the observe migration).
+                    # A matrix over engines runs the first engine that
+                    # advertises observe.v2; its other legs are extra.
                     engines = job.get("strategy", {}).get("matrix", {}).get("engine", [])
-                    assert "iii/v0.24.0-rc.2" in engines, (
+                    assert "iii/v0.26.0" in engines, (
                         path.name, job_name, step.get("name"), engines
                     )
                 else:
-                    assert tag == "iii/v0.24.0-rc.2", (
+                    assert tag == "iii/v0.26.0", (
                         path.name, job_name, step.get("name"), tag
                     )
                 covered.add(path.name)

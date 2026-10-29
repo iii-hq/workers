@@ -30,7 +30,7 @@ Every run is a first run:
 Workers and ports:
   - package:// workers found in this checkout run from source (cargo run); after
     a code change, rebuild one with
-    iii trigger compose::restart --json '{"container":"<name>"}'
+    iii call compose::restart --json '{"container":"<name>"}'
   - pnpm install runs once in this checkout first, so the workers' UI builds
     find node_modules ready instead of installing it all at once
   - ADE and http keep their default ports 3113 and 3111 when free, else take the
@@ -39,7 +39,7 @@ Workers and ports:
 
 After it starts:
   - the summary prints the ADE URL, the ports and the local workers
-  - run `iii trigger ...` from template/<template>/ to reach this stack
+  - run `iii call ...` from template/<template>/ to reach this stack
   - Ctrl+C stops it; run init.sh again for another first run
   - template/README.md has the quickstart's local compose::add commands
 

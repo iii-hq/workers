@@ -12,7 +12,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   # Atomic worker initialization requires configuration::ensure (MOT-4736).
-  III_RELEASE_TAG: 'iii/v0.24.0-rc.2'
+  III_RELEASE_TAG: 'iii/v0.26.0'
 
 jobs:
   scripts-tests:
@@ -1111,7 +1111,7 @@ jobs:
               cat iii-engine.log
               exit 1
             fi
-            if timeout --signal=KILL 5s iii trigger 'engine::workers::list' --json '{}' >/dev/null 2>&1; then
+            if timeout --signal=KILL 5s iii call 'engine::workers::list' --json '{}' >/dev/null 2>&1; then
               exit 0
             fi
             sleep 1
@@ -1121,13 +1121,11 @@ jobs:
           cat iii-engine.log || true
           exit 1
 
-      - name: Snapshot engine baselines
+      - name: Snapshot engine baseline
         if: steps.optout.outputs.skip != 'true'
         run: |
           set -euo pipefail
-          iii trigger 'engine::triggers::list' --json '{"include_internal": false}' \
-            > trigger-types-baseline.json
-          iii trigger 'engine::workers::list' --json '{}' > workers-baseline.json
+          iii call 'engine::workers::list' --json '{}' > workers-baseline.json
 
       - name: Start worker from source
         if: steps.optout.outputs.skip != 'true'
@@ -1141,7 +1139,7 @@ jobs:
 
           worker_log="worker-$WORKER.log"
           # Interface collection only needs the worker to connect and register
-          # its functions/trigger types — not a working backend. A worker may
+          # its functions — not a working backend. A worker may
           # ship config.collect.yaml to boot a lighter copy for this. storage's
           # default config.yaml declares a local bucket and spawns a rustfs
           # sidecar that isn't available here, crashing startup with
@@ -1195,7 +1193,6 @@ jobs:
             --worker "$WORKER" \
             --out worker-interface.json \
             --wait-seconds 120 \
-            --trigger-types-baseline trigger-types-baseline.json \
             --workers-baseline workers-baseline.json
 
       - name: Assert worker interface was collected
