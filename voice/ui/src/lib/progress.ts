@@ -1,7 +1,7 @@
 /**
- * `useModelProgress(host)` keeps the latest `voice::model-progress` event
- * per model id, bound through `host.iii.on` + `host.iii.registerTrigger`,
- * so any section can show a download as it happens without polling.
+ * `useModelProgress(host)` keeps the latest `voice::on-model-progress` event
+ * per model id, received through `host.iii.on` + `host.iii.observe`, so any
+ * section can show a download as it happens without polling.
  */
 
 import type { Host } from '@iii-dev/console-ui'
@@ -22,18 +22,14 @@ export function useModelProgress(host: Host, onDone?: (event: ModelProgressEvent
       setProgress((prev) => ({ ...prev, [event.id]: event }))
       if (event.done) onDone?.(event)
     })
-    let offTrigger: (() => void) | null = null
+    let offObserver: (() => void) | null = null
     try {
-      offTrigger = host.iii.registerTrigger({
-        type: 'voice::model-progress',
-        function_id: `${localFn}::${host.iii.browserId}`,
-        config: {},
-      })
+      offObserver = host.iii.observe('voice::on-model-progress', `${localFn}::${host.iii.browserId}`)
     } catch {
-      offTrigger = null
+      offObserver = null
     }
     return () => {
-      offTrigger?.()
+      offObserver?.()
       offHandler()
     }
   }, [host, instance, onDone])

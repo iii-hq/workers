@@ -2,16 +2,16 @@
 //!
 //! Ships two assets into any running console:
 //!
-//! - `voice/page.js` (`console:script`) — the mic chip in every chat header,
+//! - `voice/page.js` (a `script` asset) — the mic chip in every chat header,
 //!   the read-aloud turn summary above the composer, the voice page
 //!   (page `voice`) and the palette commands.
-//! - `voice/styles.css` (`console:style`) — the stylesheet, every rule scoped
+//! - `voice/styles.css` (a `style` asset) — the stylesheet, every rule scoped
 //!   under `[data-iii-ui="voice"]`.
 //!
 //! The registration machinery (content function `voice::ui-content`, one
-//! Message-path trigger per asset, the `III_VOICE_UI_WATCH` hot-reload
-//! watcher) lives in the shared `iii-console-ui` crate; this module only names
-//! the assets and embeds their bytes.
+//! `console::ui::asset` observer per asset, the `III_VOICE_UI_WATCH`
+//! hot-reload watcher) lives in the shared `iii-console-ui` crate; this module
+//! only names the assets and embeds their bytes.
 
 use std::sync::Arc;
 

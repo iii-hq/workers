@@ -40,8 +40,8 @@ vi.mock('@iii-dev/console-ui', () => ({ IconButton: 'button' }))
 vi.mock('./capture', () => ({ startCapture: vi.fn() }))
 vi.mock('./client', () => ({
   speak: vi.fn(),
-  dictationStart: (iii: any, req: any) => iii.trigger('voice::dictation::start', req),
-  dictationStop: (iii: any, req: any) => iii.trigger('voice::dictation::stop', req),
+  dictationStart: (iii: any, req: any) => iii.call('voice::dictation::start', req),
+  dictationStop: (iii: any, req: any) => iii.call('voice::dictation::stop', req),
 }))
 vi.mock('./playback', () => ({ useBrowserPlayback: () => playback }))
 vi.mock('./voice-chat', () => ({
@@ -86,7 +86,7 @@ describe('microphone button gestures with unresolved permission', () => {
     const requested = deferred<void>()
     vi.mocked(startCapture).mockImplementationOnce(() => { requested.resolve(); return mic.promise })
     const remoteStop = vi.fn(async () => ({ text: '' }))
-    const iii = { on: () => () => {}, browserId: 'browser', trigger: (id: string) => id.endsWith('::start')
+    const iii = { on: () => () => {}, browserId: 'browser', call: (id: string) => id.endsWith('::start')
       ? Promise.resolve({ session_id: 'session' }) : remoteStop() }
     const controller = new DictationController({ iii } as unknown as Host)
     const finish = vi.fn()
@@ -116,19 +116,19 @@ describe('microphone button gestures with unresolved permission', () => {
 
 describe('chat read-aloud controls use current availability on every attempt', () => {
   it('queues prepared streaming prose without replaying the final reply', async () => {
-    const trigger = vi.fn(async () => ({ text: 'Olá.', max_chunk_chars: 600 }))
-    const registration = createVoiceTurnSummary({ iii: { trigger } } as unknown as Host)
+    const call = vi.fn(async () => ({ text: 'Olá.', max_chunk_chars: 600 }))
+    const registration = createVoiceTurnSummary({ iii: { call } } as unknown as Host)
     const component = registration.render as (props: SessionTurnSummaryProps) => ReactNode
     const view = () => render(() => component({ sessionId: 'chat', isStreaming: true } as SessionTurnSummaryProps))
     const toggle = all(view()).find((node) => isValidElement<any>(node) && (node.props as { 'aria-pressed'?: boolean })['aria-pressed'] === false) as ReactElement<any>
     toggle.props.onClick(); view()
     const options = vi.mocked(subscribeAutoReplies).mock.calls.at(-1)![2]
     await options.streaming!.prepare('**Olá.**', false)
-    expect(trigger).toHaveBeenCalledWith('voice::speech::prepare', { text: '**Olá.**', complete: false })
+    expect(call).toHaveBeenCalledWith('voice::speech::prepare', { text: '**Olá.**', complete: false })
     options.streaming!.onChunk('Olá.')
     expect(playback.enqueue).toHaveBeenCalledOnce()
     await playback.enqueue.mock.calls[0][0]()
-    expect(speak).toHaveBeenCalledWith({ trigger }, { text: 'Olá.', text_format: 'plain' })
+    expect(speak).toHaveBeenCalledWith({ call }, { text: 'Olá.', text_format: 'plain' })
     options.onReply({ id: 'reply', text: '**Olá.**' })
     expect(playback.play).not.toHaveBeenCalled()
     options.onStarted()

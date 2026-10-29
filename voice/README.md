@@ -24,13 +24,13 @@ Three surfaces, one worker:
    model, transcribes a WAV file with per-segment timestamps, and runs a
    dictation test.
 
-Agents get the same through `voice::*` functions and the `voice::transcript`
-trigger.
+Agents get the same through `voice::*` functions and by observing
+`voice::on-transcript`.
 
 ## Install
 
 ```bash
-iii trigger compose::add worker=voice
+iii call compose::add worker=voice
 ```
 
 The first dictation or transcription downloads the streaming model (about
@@ -76,7 +76,7 @@ Install `whisper-cli` separately; downloading weights does not install the
 command. Download a catalog model ahead of use with:
 
 ```bash
-iii trigger voice::models::download id=whisper-large-v3-turbo
+iii call voice::models::download id=whisper-large-v3-turbo
 ```
 
 Whisper weights are downloaded only when requested, not during transcription.
@@ -90,7 +90,7 @@ request supplies its own `language` value.
 Transcribe a recording:
 
 ```bash
-iii trigger voice::transcribe path=./meeting.wav
+iii call voice::transcribe path=./meeting.wav
 ```
 
 ```json
@@ -125,13 +125,13 @@ Generate speech on the server and play it in the requesting browser:
 For an API caller, generate audio (this command alone does **not** play it):
 
 ```bash
-iii trigger voice::speak text="Build finished, three tests failed."
+iii call voice::speak text="Build finished, three tests failed."
 ```
 
 Check what the worker can do right now:
 
 ```bash
-iii trigger voice::doctor
+iii call voice::doctor
 ```
 
 ## Natural local voice and voice chat
@@ -325,14 +325,15 @@ that receives transcript events, then pushes 16 kHz mono 16-bit PCM in ~100 ms
 chunks:
 
 ```bash
-iii trigger voice::dictation::start output_function_id=my::transcript
-iii trigger voice::dictation::push session_id=d_… seq=1 pcm16_base64=…
-iii trigger voice::dictation::stop session_id=d_…
+iii call voice::dictation::start output_function_id=my::transcript
+iii call voice::dictation::push session_id=d_… seq=1 pcm16_base64=…
+iii call voice::dictation::stop session_id=d_…
 ```
 
 Events carry `kind` (`partial` replaces the in-progress text, `final` commits
-a segment, `closed` ends the session), `seq`, `segment`, and `text`. The same
-events fan out on the `voice::transcript` trigger, filterable by `session_id`.
+a segment, `closed` ends the session), `seq`, `segment`, and `text`. The worker
+also calls `voice::on-transcript` with each event, so any observer receives
+them; filter on `input.session_id` to follow one session.
 Sessions idle for `session_idle_secs` are closed by the worker.
 
 ## Configuration
@@ -382,10 +383,39 @@ the `openai` backend with an empty `api_key`.
 | `voice::models::list` / `voice::models::download` / `voice::models::remove` | Local model catalog, install, delete. |
 | `voice::doctor` | Backends, model state, open sessions. |
 
-Triggers: `voice::transcript`, `voice::session-started`,
-`voice::session-stopped`, `voice::model-progress`. The legacy
-`voice::speech-ended` trigger remains registered for compatibility but is no
-longer emitted: each browser uses its audio element's ended/error events.
+## Events
+
+The worker provides four event functions. Each is private (only the voice
+worker calls it; anyone may observe it), takes no args, and returns the event
+it is called with, so observers observe the event. The worker calls them only
+while something observes them. Select events with filters on the event's
+fields.
+
+| Function | Args | Filter on | Event |
+| --- | --- | --- | --- |
+| `voice::on-transcript` | none | `input.session_id`, `input.kind` | `TranscriptEvent { session_id, seq, kind: partial \| final \| closed \| error, text, segment, timestamp_ms, reason? }` |
+| `voice::on-session-started` | none | `input.session_id` | `SessionStartedEvent { session_id, model, timestamp_ms }` |
+| `voice::on-session-stopped` | none | `input.session_id` | `SessionStoppedEvent { session_id, reason: stopped \| discarded \| idle \| shutdown, timestamp_ms }` |
+| `voice::on-model-progress` | none | `input.id`, `input.done` | `Progress { id, file, received_bytes, total_bytes, done, error? }` |
+
+Follow one dictation session's transcript:
+
+```ts
+iii.observe(
+  { function_id: 'voice::on-transcript', filters: { 'input.session_id': { $eq: sessionId } }, deliver: 'output' },
+  'my::transcript',
+)
+```
+
+The session's own `output_function_id` receives every event with a plain
+call, whether or not anything observes `voice::on-transcript`.
+
+The worker observes `configuration::on-updated` (filters on `input.id` and
+`input.event_type`) to hot-reload its settings, and `console::ui::asset`
+(through the shared console UI crate) to serve its console page. The console
+page observes `voice::on-model-progress`, `harness::on-turn-started`,
+`harness::on-turn-completed` and `session::on-message-*` with filters on
+`input.session_id`.
 
 ## Limits
 

@@ -39,8 +39,10 @@ Local speech-to-text and read-aloud on the iii bus. Nothing leaves the machine b
 - `voice::models::remove` — delete a downloaded model.
 - `voice::doctor` — backends, model state, open sessions.
 
-## Reactive triggers
+## Events to observe
 
-- `voice::transcript` — partial, final, closed and error events of dictation sessions (filter `session_id`).
-- `voice::session-started`, `voice::session-stopped` — session lifecycle.
-- `voice::model-progress` — download progress, one event per megabyte and a final `done`.
+Each takes no args; select events with filters on the event's fields.
+
+- `voice::on-transcript` — partial, final, closed and error events of dictation sessions (filter `input.session_id`).
+- `voice::on-session-started`, `voice::on-session-stopped` — session lifecycle (filter `input.session_id`).
+- `voice::on-model-progress` — download progress, one event per megabyte and a final `done` (filter `input.id`).

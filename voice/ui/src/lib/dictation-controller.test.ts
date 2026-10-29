@@ -28,7 +28,7 @@ function setup() {
       handlers.push(handler)
       return off
     }),
-    trigger: vi.fn((id: string, req: unknown) => {
+    call: vi.fn((id: string, req: unknown) => {
       if (id.endsWith('::start')) return start()
       if (id.endsWith('::stop')) return stop(req)
       if (id.endsWith('::push')) return push(req)

@@ -106,18 +106,18 @@ describe('streaming phrases', () => {
 function subscriptionRig() {
   const handlers = new Map<string, (event: any) => void>()
   const on = vi.fn((id: string, handler: (event: any) => void) => { handlers.set(id, handler); return vi.fn() })
-  const registerTrigger = vi.fn(() => vi.fn())
-  const trigger = vi.fn(async () => ({ session_id: 'chat', turn_id: 'turn', status: 'running' }))
+  const observe = vi.fn(() => vi.fn())
+  const call = vi.fn(async () => ({ session_id: 'chat', turn_id: 'turn', status: 'running' }))
   const onChunk = vi.fn(), onStarted = vi.fn(), onReply = vi.fn(), onError = vi.fn()
   const readReply = vi.fn(async () => ({ id: 'entry', text: 'Primeira. Segunda sem ponto' }))
-  const off = subscribeAutoReplies({ on, registerTrigger, trigger, browserId: 'a' } as unknown as ExtensionIii, 'chat', {
+  const off = subscribeAutoReplies({ on, observe, call, browserId: 'a' } as unknown as ExtensionIii, 'chat', {
     readReply, onStarted, onReply, onError,
     streaming: { prepare: async (text) => ({ text, max_chunk_chars: 600 }), onChunk },
   })
   const emit = (kind: string, event: any) => handlers.get(`iii::voice-ui::${kind}::chat`)!(event)
   const started = (turn_id = 'turn', timestamp = 5) => emit('auto-started', { session_id: 'chat', turn_id, timestamp })
   const completed = (patch = {}) => emit('auto-completed', { session_id: 'chat', turn_id: 'turn', timestamp: 30, status: 'completed', ...patch })
-  return { emit, started, completed, off, onChunk, onStarted, onReply, onError, trigger, readReply, registerTrigger }
+  return { emit, started, completed, off, onChunk, onStarted, onReply, onError, call, readReply, observe }
 }
 
 describe('streaming event integration', () => {
@@ -125,7 +125,7 @@ describe('streaming event integration', () => {
     const r = subscriptionRig()
     r.started('old', 30)
     r.emit('message-updated', { ...snapshot('Old audio. '), origin: { turn_id: 'old' } })
-    r.trigger.mockResolvedValueOnce({ session_id: 'chat', turn_id: 'turn', status })
+    r.call.mockResolvedValueOnce({ session_id: 'chat', turn_id: 'turn', status })
     r.completed({ timestamp: 30, status }); await advance()
     expect(r.onStarted).toHaveBeenCalledTimes(2)
     expect(r.onChunk).not.toHaveBeenCalled()
@@ -140,7 +140,7 @@ describe('streaming event integration', () => {
     r.readReply.mockReturnValueOnce(new Promise((yes) => { resolve = yes }))
     r.completed({ turn_id: 'old', timestamp: 30 })
     r.onStarted.mockClear()
-    r.trigger.mockResolvedValueOnce({ session_id: 'chat', turn_id: 'turn', status: 'cancelled' })
+    r.call.mockResolvedValueOnce({ session_id: 'chat', turn_id: 'turn', status: 'cancelled' })
     r.completed({ timestamp: 40, status: 'cancelled' }); await advance()
     resolve({ id: 'old-reply', text: 'Obsolete audio.' }); await advance()
     expect(r.onReply).not.toHaveBeenCalled()
@@ -151,7 +151,7 @@ describe('streaming event integration', () => {
   it('does not stop a current turn for a nonmatching terminal status lookup', async () => {
     const r = subscriptionRig()
     r.started('current', 30)
-    r.trigger.mockResolvedValueOnce({ session_id: 'chat', turn_id: 'current', status: 'running' })
+    r.call.mockResolvedValueOnce({ session_id: 'chat', turn_id: 'current', status: 'running' })
     r.completed({ timestamp: 30, status: 'cancelled' }); await advance()
     expect(r.onStarted).toHaveBeenCalledOnce()
     r.off()
@@ -160,7 +160,7 @@ describe('streaming event integration', () => {
     const r = subscriptionRig()
     let resolve!: (current: { session_id: string; turn_id: string; status: string }) => void
     r.started('old', 30)
-    r.trigger.mockReturnValueOnce(new Promise((yes) => { resolve = yes }))
+    r.call.mockReturnValueOnce(new Promise((yes) => { resolve = yes }))
     r.completed({ timestamp: 30, status: 'cancelled' }); await advance()
     r.started('newest', 50)
     resolve({ session_id: 'chat', turn_id: 'turn', status: 'cancelled' }); await advance()
@@ -171,7 +171,7 @@ describe('streaming event integration', () => {
     const r = subscriptionRig()
     let resolve!: (current: { session_id: string; turn_id: string; status: string }) => void
     r.started('old', 20)
-    r.trigger.mockReturnValueOnce(new Promise((yes) => { resolve = yes }))
+    r.call.mockReturnValueOnce(new Promise((yes) => { resolve = yes }))
     r.completed({ timestamp: 30, status: 'cancelled' }); await advance()
     r.started('turn', 25)
     r.emit('message-updated', snapshot('Must not play. '))
@@ -183,7 +183,7 @@ describe('streaming event integration', () => {
   it('retains every entry and its newest revision while the current-turn lookup is pending', async () => {
     const r = subscriptionRig()
     let resolve!: (current: { session_id: string; turn_id: string; status: string }) => void
-    r.trigger.mockReturnValueOnce(new Promise((yes) => { resolve = yes }))
+    r.call.mockReturnValueOnce(new Promise((yes) => { resolve = yes }))
     r.emit('message-added', snapshot('First incomplete', 1, 'first'))
     r.emit('message-updated', { ...snapshot('Second. ', 1, 'second'), timestamp: 20 })
     r.emit('message-updated', snapshot('First latest. ', 3, 'first'))
@@ -191,7 +191,7 @@ describe('streaming event integration', () => {
     r.emit('message-updated', { ...snapshot('Other turn. ', 1, 'other'), timestamp: 40, origin: { turn_id: 'other' } })
     resolve({ session_id: 'chat', turn_id: 'turn', status: 'running' }); await advance()
     expect(r.onChunk.mock.calls).toEqual([['First latest.'], ['Second.']])
-    expect(r.trigger).toHaveBeenCalledOnce()
+    expect(r.call).toHaveBeenCalledOnce()
     r.started('other', 40); await advance()
     expect(r.onChunk.mock.calls.at(-1)).toEqual(['Other turn.'])
     expect(r.onStarted).toHaveBeenCalledTimes(2)
@@ -200,7 +200,7 @@ describe('streaming event integration', () => {
   it('clears buffered entries and ignores the pending status response after unsubscribe', async () => {
     const r = subscriptionRig()
     let resolve!: (current: { session_id: string; turn_id: string; status: string }) => void
-    r.trigger.mockReturnValueOnce(new Promise((yes) => { resolve = yes }))
+    r.call.mockReturnValueOnce(new Promise((yes) => { resolve = yes }))
     r.emit('message-added', snapshot('First. ', 1, 'first'))
     r.emit('message-added', snapshot('Second. ', 2, 'second'))
     r.off()
@@ -210,7 +210,7 @@ describe('streaming event integration', () => {
   })
   it('fails visibly when the reconciliation buffer reaches its entry cap', async () => {
     const r = subscriptionRig()
-    r.trigger.mockReturnValueOnce(new Promise(() => {}))
+    r.call.mockReturnValueOnce(new Promise(() => {}))
     for (let i = 0; i < 129; i++) r.emit('message-added', snapshot('Pending. ', 1, `entry-${i}`))
     await advance()
     expect(r.onError).toHaveBeenCalledOnce()
@@ -220,7 +220,7 @@ describe('streaming event integration', () => {
   it('drains all buffered entries if completion overtakes the status lookup', async () => {
     const r = subscriptionRig()
     let resolve!: (current: { session_id: string; turn_id: string; status: string }) => void
-    r.trigger.mockReturnValueOnce(new Promise((yes) => { resolve = yes }))
+    r.call.mockReturnValueOnce(new Promise((yes) => { resolve = yes }))
     r.emit('message-added', snapshot('Progress without punctuation', 1, 'progress'))
     r.emit('message-updated', { ...snapshot('Primeira. Segunda', 1), timestamp: 20 })
     r.completed(); await advance()
@@ -239,15 +239,16 @@ describe('streaming event integration', () => {
     expect(r.onChunk.mock.calls).toEqual([['Primeira.'], ['Segunda sem ponto']])
     r.completed(); await advance()
     expect(r.onChunk).toHaveBeenCalledTimes(2)
-    expect(r.registerTrigger).toHaveBeenCalledWith({ type: 'session::message-updated',
-      function_id: 'iii::voice-ui::message-updated::chat::a', config: { session_id: 'chat', roles: ['assistant'] } })
+    expect(r.observe).toHaveBeenCalledWith({ function_id: 'session::on-message-updated',
+      filters: { 'input.session_id': { $eq: 'chat' }, 'input.message.role': { $in: ['assistant'] } } },
+      'iii::voice-ui::message-updated::chat::a')
     r.off()
   })
   it('reconciles enabling mid-turn without fetching chat history', async () => {
     const r = subscriptionRig()
     r.emit('message-updated', snapshot('Primeira. Ainda'))
     await advance()
-    expect(r.trigger).toHaveBeenCalledWith('harness::status', { session_id: 'chat' })
+    expect(r.call).toHaveBeenCalledWith('harness::status', { session_id: 'chat' })
     expect(r.onChunk).toHaveBeenCalledExactlyOnceWith('Primeira.')
     expect(r.readReply).not.toHaveBeenCalled()
     r.off()
@@ -273,7 +274,7 @@ describe('streaming event integration', () => {
   it('retains a snapshot when a start arrives during current-turn reconciliation', async () => {
     const r = subscriptionRig()
     let resolve!: (value: { session_id: string; turn_id: string; status: string }) => void
-    r.trigger.mockReturnValueOnce(new Promise((yes) => { resolve = yes }))
+    r.call.mockReturnValueOnce(new Promise((yes) => { resolve = yes }))
     r.emit('message-updated', snapshot('Primeira. Ainda'))
     r.started()
     resolve({ session_id: 'chat', turn_id: 'turn', status: 'running' }); await advance()
