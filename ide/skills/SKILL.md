@@ -27,7 +27,7 @@ in-process, honor `fs.host_roots` when it's configured, and return
 structured results.
 
 Sandbox forwarding (and `shell::fs::*` into a VM) requires the `iii-sandbox`
-worker; `iii trigger compose::add worker=ide` does not pull it in. To surface `shell::*` to LLM
+worker; `iii call compose::add worker=ide` does not pull it in. To surface `shell::*` to LLM
 agents, pair with the `skills` worker.
 
 ## When to Use
@@ -35,7 +35,8 @@ agents, pair with the `skills` worker.
 - Run a one-shot command and block for its full output: `git status`, `wc`,
   `head`, a quick compile probe (`shell::exec`).
 - Kick off long work (build, watcher, wide grep) without blocking the turn,
-  then poll for completion (`shell::exec_bg` + `shell::status`).
+  observe its completion, then read its output (`shell::exec_bg` +
+  `shell::on-job-finished` + `shell::status`).
 - Survey or terminate in-flight background jobs (`shell::list`, `shell::kill`).
 - List, stat, or read files with structured output instead of shelling out to
   `ls`/`stat`/`cat` (`shell::fs::ls`, `shell::fs::stat`, `shell::fs::read`).
@@ -124,22 +125,39 @@ Every `shell::fs::*` call accepts the same optional `target` as `exec`, so host
 and sandbox share one wire shape; reads and writes move bytes over SDK channels
 rather than inlining them.
 
-## Live change feed (`shell::changed`)
+## Observable functions
 
-A custom trigger type backed by a system-level directory watch. Bind it
-with `config: { path: "/some/dir" }` to stream every change under that
-directory — whoever made it: `coder::*` calls, `shell::exec` side
-effects, or an editor outside the engine. Payload:
-`{ path, kind, root, dir }` with `kind` ∈ `created | modified | deleted`,
-`path` relative to `root`, `dir` true for directories (skip those when
-opening files). Events coalesce per path in a short window
-(create + write = `created`; deletion supersedes), `.git` internals are
-filtered, and fan-out is fire-and-forget. Ignored paths (git-ignored, or
-`data/`, `config/`, `.iii/`, `node_modules/` outside a repository) are not
-delivered unless the binding sets `include_ignored: true` — a wake on a
-project root would otherwise fire on the engine's own data writes. Read
-content on demand via `coder::read-file` — the event deliberately carries
-none.
+The worker hosts four private event functions: observe them, never call
+them. An agent observes through `harness::observe`
+(`{ function_id, args?, filters?, once? }`); a worker uses `iii.observe`.
+
+- `shell::on-job-finished`, args `{ job_id? }`: called once when a
+  background job finishes, is killed, or fails, with
+  `{ job_id, argv, status, exit_code, started_at_ms, finished_at_ms, duration_ms }`.
+  Pass your own `job_id` to `shell::exec_bg` and observe it before starting
+  the job, or observe the returned one: an observer added after its job
+  finished receives the event while the job is retained. Read the output
+  with `shell::status`.
+- `shell::on-changed`, args `{ path, include_ignored? }`: a system-level
+  directory watch. Every change under `path` reaches the observer, whoever
+  made it: `coder::*` calls, `shell::exec` side effects, or an editor
+  outside the engine. Event: `{ path, kind, root, dir, ignored }` with
+  `kind` ∈ `created | modified | deleted`, `path` relative to `root`, `dir`
+  true for directories (skip those when opening files). Events coalesce per
+  path in a short window (create + write = `created`; deletion supersedes),
+  `.git` internals are filtered, and delivery is fire-and-forget. Ignored
+  paths (git-ignored, or `data/`, `config/`, `.iii/`, `node_modules/`
+  outside a repository) are not delivered unless the observer sets
+  `include_ignored: true`: a wake on a project root would otherwise fire on
+  the engine's own data writes. Read content on demand via
+  `coder::read-file`; the event carries none.
+- `shell::on-git-changed`, args `{ path }`: one call per ~200 ms batch when
+  the repository `path` sits in changes state, with
+  `{ path, worktree?, git_dir?, common_dir?, changes }` (`head`, `index`,
+  `refs`, `worktrees`, `repository`).
+- `shell::turns::on-changed`, no args (filter on `input.session_id`):
+  `{ session_id }` when a session's change history (`shell::turns::list`)
+  changes.
 
 ## Code files (`coder::*`)
 
