@@ -2,9 +2,9 @@
 
 A file-backed kanban board for an iii project. Tickets, threaded comments,
 an activity timeline, agent assignment, subtasks, releases and projects live
-in one `board.json`; every mutation is a `kanban::*` function, and two trigger
-types (`kanban:change`, `kanban:comment`) let agents wake on what happens to a
-ticket instead of polling. The worker injects a board page, a ticket screen
+in one `board.json`; every mutation is a `kanban::*` function, and two event
+functions (`kanban::on-change`, `kanban::on-comment`) let agents and pages
+observe what happens to a ticket instead of polling. The worker injects a board page, a ticket screen
 and the Releases and Projects pages into the console, and ships five agent
 profiles — Product Manager, Tech Lead, Backend Engineer, Frontend Engineer,
 iii ADE Worker Designer — that plan, dispatch, build and review work as
@@ -16,7 +16,7 @@ tickets on this board.
 - [Quickstart](#quickstart)
 - [Configuration](#configuration)
 - [Subtasks, releases and projects](#subtasks-releases-and-projects)
-- [Custom trigger types](#custom-trigger-types)
+- [Event functions](#event-functions)
 - [Console pages](#console-pages)
 - [Native app](#native-app)
 - [Chat mentions](#chat-mentions)
@@ -27,10 +27,10 @@ tickets on this board.
 ## Install
 
 ```bash
-iii trigger compose::add worker=kanban
+iii call compose::add worker=kanban
 ```
 
-`iii trigger compose::add` declares the worker in `worker-compose.yaml` and
+`iii call compose::add` declares the worker in `worker-compose.yaml` and
 starts it as part of the Compose project. The `configuration` worker (built
 into the engine) stores the board settings; `iii-directory` is optional and
 supplies the agent profiles the board can assign to.
@@ -42,26 +42,25 @@ internal uuid and a human key (`KAN-1`); both work everywhere a ticket is
 addressed, case-insensitively.
 
 ```bash
-iii trigger kanban::ticket::create title="Search filters persist" priority=high
-iii trigger kanban::ticket::update id=KAN-1 assignee=backend-engineer status=in_progress actor=backend-engineer
-iii trigger kanban::comment::create ticket_id=KAN-1 body="Pushed the fix; ready for review." author=backend-engineer
-iii trigger kanban::ticket::move id=KAN-1 status=in_review actor=backend-engineer
-iii trigger kanban::ticket::get id=kan-1
+iii call kanban::ticket::create title="Search filters persist" priority=high
+iii call kanban::ticket::update id=KAN-1 assignee=backend-engineer status=in_progress actor=backend-engineer
+iii call kanban::comment::create ticket_id=KAN-1 body="Pushed the fix; ready for review." author=backend-engineer
+iii call kanban::ticket::move id=KAN-1 status=in_review actor=backend-engineer
+iii call kanban::ticket::get id=kan-1
 ```
 
 Break a ticket into subtasks with `parent` (a key or uuid); the new ticket is
 `KAN-2`, and `KAN-1` now reports `children` and a `progress` count:
 
 ```bash
-iii trigger kanban::ticket::create parent=KAN-1 title="Persist filters in the URL" actor=backend-engineer
-iii trigger kanban::ticket::get id=KAN-1
+iii call kanban::ticket::create parent=KAN-1 title="Persist filters in the URL" actor=backend-engineer
+iii call kanban::ticket::get id=KAN-1
 ```
 
 From a worker, the same calls go through the SDK:
 
 ```rust
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{InitOptions, register_worker};
+use iii_sdk::{CallRequest, InitOptions, register_worker};
 use serde_json::json;
 
 #[tokio::main]
@@ -69,7 +68,7 @@ async fn main() -> anyhow::Result<()> {
     let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
     let ticket = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "kanban::ticket::create".into(),
             payload: json!({ "title": "Search filters persist", "priority": "high" }),
             action: None,
@@ -79,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
     println!("{}", ticket["key"]); // KAN-1
 
     let board = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "kanban::board::get".into(),
             payload: json!({}),
             action: None,
@@ -102,9 +101,9 @@ board's columns and the list carry `total`, the matches before `offset` and
 that keeps the board live replays the events stamped after it:
 
 ```bash
-iii trigger kanban::board::get --json '{"statuses":["todo","in_progress","in_review"],"compact":true}'
-iii trigger kanban::ticket::list --json '{"status":"done","updated_since":"2026-09-10T00:00:00.000Z","compact":true}'
-iii trigger kanban::ticket::list --json '{"status":"done","offset":100,"limit":100}'
+iii call kanban::board::get --json '{"statuses":["todo","in_progress","in_review"],"compact":true}'
+iii call kanban::ticket::list --json '{"status":"done","updated_since":"2026-09-10T00:00:00.000Z","compact":true}'
+iii call kanban::ticket::list --json '{"status":"done","offset":100,"limit":100}'
 ```
 
 The writes (`kanban::ticket::create`, `kanban::ticket::update`,
@@ -113,7 +112,7 @@ comments and activity included. An agent that writes in a loop passes
 `"compact": true` to get back only the compact row instead:
 
 ```bash
-iii trigger kanban::ticket::move --json '{"id":"KAN-1","status":"in_review","actor":"backend-engineer","compact":true}'
+iii call kanban::ticket::move --json '{"id":"KAN-1","status":"in_review","actor":"backend-engineer","compact":true}'
 ```
 
 `kanban::ticket::links` returns the tickets a ticket mentions and the
@@ -127,7 +126,7 @@ board file with `deleted_at` set and `kanban::ticket::restore` undoes it —
 and it is reserved for a person on the console's ticket screen; agents move
 a finished ticket to `in_review` or `done` instead. Calls that change nothing
 (deleting a deleted ticket, restoring a live one, moving a ticket to where it
-already is, an update with no effect) record no activity and fire no trigger;
+already is, an update with no effect) record no activity and call no event function;
 a deleted ticket cannot be moved (nor have its status changed by an update;
 its other fields can still be edited). To change labels without overwriting a
 concurrent edit, `kanban::ticket::update` takes `add_labels` and
@@ -201,9 +200,9 @@ its `parent`, its live `children` and `progress: { done, total }`; board and
 list rows carry `parent_id`, `project_id` and `release_id`.
 
 ```bash
-iii trigger kanban::ticket::update id=KAN-2 parent=KAN-1 release="Phase 2" project="iii cloud"
-iii trigger kanban::ticket::update --json '{"id":"KAN-2","parent":null}'
-iii trigger kanban::ticket::list --json '{"release_id":"","compact":true}'
+iii call kanban::ticket::update id=KAN-2 parent=KAN-1 release="Phase 2" project="iii cloud"
+iii call kanban::ticket::update --json '{"id":"KAN-2","parent":null}'
+iii call kanban::ticket::list --json '{"release_id":"","compact":true}'
 ```
 
 **Subtasks.** A subtask is a ticket with a `parent`, and the hierarchy is one
@@ -242,8 +241,8 @@ still accepts tickets; a ticket in it that is not done counts as `reopened`.
 can be deleted only when no ticket, live or deleted, references it.
 
 ```bash
-iii trigger kanban::release::create name="Phase 2" target_at=2026-10-30
-iii trigger kanban::release::ship --json '{"id":"Phase 2","move_open_to":"Phase 3"}'
+iii call kanban::release::create name="Phase 2" target_at=2026-10-30
+iii call kanban::release::ship --json '{"id":"Phase 2","move_open_to":"Phase 3"}'
 ```
 
 Names are unique per kind, ignoring case and surrounding spaces, and every
@@ -261,7 +260,7 @@ live ticket in it is done. Each changed ticket gets an activity line and a
 `ticket.updated` event, and running it twice adds nothing.
 
 ```bash
-iii trigger kanban::label::convert --json '{"label":"phase-2","into":"release","name":"Phase 2","dry_run":true}'
+iii call kanban::label::convert --json '{"label":"phase-2","into":"release","name":"Phase 2","dry_run":true}'
 ```
 
 | Function | What it does | Agents |
@@ -280,46 +279,93 @@ releases and can set `parent`, `project` and `release` on tickets; planning
 them is a human's call in the console, which `iii-permissions.yaml` enforces
 (the one exception: a deepwork run creates its own project).
 
-## Custom trigger types
+## Event functions
 
-| Trigger type | Config | Fires when | Payload to subscribers |
+The worker hosts two private functions and calls them when the board
+changes: observe them; only the kanban worker calls them.
+
+| Function | Args | Called | Event (what each target receives) |
 |---|---|---|---|
-| `kanban:change` | `{ ticket_id?, parent_id?, release_id?, events?, ticket?, metadata? }` | After every mutation. `ticket_id` (uuid or key) and `events` narrow it; `parent_id` fires for that ticket and any of its children; `release_id` fires for tickets in that release and for the change that moved one out of it; an empty config fires for everything. | `{ event, ticket_id, ticket_key, ticket, comment, activity, at }` — `event` is one of `ticket.created`, `ticket.updated`, `ticket.moved`, `ticket.deleted`, `ticket.restored`, `comment.created`, `config.updated`. The last carries only `{ event, at }`: the configuration (columns, statuses, priorities) was reloaded; a binding with a `ticket_id`, `parent_id` or `release_id` filter never gets it. |
-| `kanban:comment` | `{ ticket_id \| parent_id, author?, exclude_author?, root_only?, ticket? }` | A comment is created on that ticket, or with `parent_id` on that ticket or any of its children. One of the two is required; `author` keeps one author, `exclude_author` drops one (your own id), `root_only` ignores replies. | `{ event: "comment.created", ticket_id, ticket_key, ticket, comment, author, at }` |
+| `kanban::on-change` | `{ ticket_id?, parent_id?, release_id?, events?, ticket? }` | After every mutation, once per ticket the write touched (an attach or detach also calls it for the old and new parent), and after a configuration reload. | `{ event, ticket_id, ticket_key, ticket, comment, activity, at }` — `event` is one of `ticket.created`, `ticket.updated`, `ticket.moved`, `ticket.deleted`, `ticket.restored`, `comment.created`, `config.updated`. `config.updated` carries only `{ event, at }`: the configuration (columns, statuses, priorities) was reloaded. |
+| `kanban::on-comment` | `{ ticket_id \| parent_id, author?, exclude_author?, root_only?, ticket? }` | Once per comment created. | `{ event: "comment.created", ticket_id, ticket_key, ticket, comment, author, at }` |
 
-`ticket` on either type is `full` (default: the ticket with comments and
-activity inline) or `summary` (the board-card fields only); an agent that
-re-reads the ticket on a wake should pass `summary` so each wake costs a card,
-not a thread. `kanban:change` has no author filter, so a feedback loop that
-must not wake on its own comments uses `kanban:comment` with `exclude_author`:
+The args choose which calls reach an observer:
+
+- `ticket_id` (uuid or key, any case) keeps one ticket; `parent_id` keeps that
+  ticket and every subtask of it, including subtasks attached later;
+  `release_id` (`kanban::on-change` only; id or name) keeps the tickets in
+  that release and the write that moved one out of it; `events` keeps those
+  event names. An unknown reference matches nothing; no args keep every call.
+- `config.updated` reaches only the observers of `kanban::on-change` without
+  `ticket_id`, `parent_id` or `release_id`.
+- `kanban::on-comment` needs `ticket_id` or `parent_id`: an observer with
+  neither is rejected with `TICKET_OR_PARENT_REQUIRED`. `author` keeps one
+  author, `exclude_author` drops one (your own id), `root_only` ignores
+  replies.
+- `ticket` is `full` (default: the ticket with comments and activity inline)
+  or `summary` (the board-card fields only). An agent that re-reads the
+  ticket when it wakes passes `summary`, so each wake costs a card, not a
+  thread.
+
+Both functions deliver themselves: for each call the worker picks the
+observers whose args keep it, applies their filters (on the event as
+`input`), and calls each target through its observer, fire-and-forget, with
+the event or its summary. The target receives the event itself, so `deliver`
+and `capture` do not apply. Observer metadata reaches the target as its
+metadata sidecar. An unknown arg is refused by the engine (`INVALID_ARGS`).
+
+A worker observes them with `iii.observe`:
+
+```rust
+use iii_sdk::{ObserverOptions, Source};
+use serde_json::json;
+
+iii.observe_with(
+    Source::function("kanban::on-comment")
+        .args(json!({ "ticket_id": "KAN-7", "exclude_author": "reviewer", "ticket": "summary" })),
+    "reviewer::on-kanban-comment",
+    ObserverOptions::default().metadata(json!({ "team": "backend" })),
+);
+```
+
+```ts
+iii.observe(
+  { function_id: 'kanban::on-change', args: { parent_id: 'KAN-1', events: ['ticket.moved'] } },
+  'dashboard::on-ticket-moved',
+)
+```
+
+`kanban::on-change` has no author arg, so a feedback loop that must not wake
+on its own comments observes `kanban::on-comment` with `exclude_author`. An
+agent arms the wake through the harness:
 
 ```json
-engine::register_trigger {
-  "trigger_type": "kanban:comment",
-  "config": { "ticket_id": "KAN-7", "exclude_author": "backend-engineer", "ticket": "summary" },
+harness::observe {
+  "function_id": "kanban::on-comment",
+  "args": { "ticket_id": "KAN-7", "exclude_author": "backend-engineer", "ticket": "summary" },
   "once": false,
   "lifecycle": { "max_fires": 20, "expires_in_ms": 3600000 }
 }
 ```
 
-A feature ticket with subtasks needs one binding, not one per child:
-`parent_id` on `kanban:comment` and on `kanban:change` covers the parent and
-every child, including children attached later.
+A feature ticket with subtasks needs one observer, not one per child:
+`parent_id` covers the parent and every child.
 
 ```json
-engine::register_trigger {
-  "trigger_type": "kanban:comment",
-  "config": { "parent_id": "KAN-1", "exclude_author": "tech-lead", "ticket": "summary" },
+harness::observe {
+  "function_id": "kanban::on-comment",
+  "args": { "parent_id": "KAN-1", "exclude_author": "tech-lead", "ticket": "summary" },
   "once": false,
   "lifecycle": { "max_fires": 50, "expires_in_ms": 3600000 }
 }
 ```
 
-Bindings live in the worker's in-process map and die with the process;
-`kanban::config::info` reports how many are held under `subscribers`. Pair a
-standing wake with a `cron` check-in over `kanban::comment::list`, which
-takes `ticket_id`, the author filters and `since` (no `parent_id`; list the
-parent and each child).
+Observers live in the engine: while the worker is down they are pending, and
+they are active again once it registers the functions. `kanban::config::info`
+reports how many each function has under `observers`. Pair a standing wake
+with a `cron::on-tick` check-in over `kanban::comment::list`, which takes
+`ticket_id`, the author filters and `since` (no `parent_id`; list the parent
+and each child).
 
 ## Console pages
 
@@ -369,10 +415,11 @@ While the worker is connected it injects four pages into the console:
   before anything is written, can run a batch for several labels at once, and
   keeps the label unless you ask to remove it.
 
-The pages stay live over a `kanban:change` binding, and the Kanban
+The pages stay live by observing `kanban::on-change`, and the Kanban
 settings form edits the configuration above. Chat renders `kanban::*`
-results as ticket cards and `kanban:*` trigger activity with the ticket and
-comment it carried. Command palette rows: New ticket, Refresh board, Clear
+results as ticket cards, and the activity of observers of
+`kanban::on-change` and `kanban::on-comment` with the ticket and comment it
+carried. Command palette rows: New ticket, Refresh board, Clear
 filters, Refresh ticket, Edit description, Write a comment, Back to the board.
 
 ## Native app
@@ -400,8 +447,8 @@ in the console:
   release, updated; kept on the device) and the **releases** and
   **projects** to read, each a tap away from its tickets on the board.
 
-The app follows the board live over one `kanban:change` binding while it is
-on screen. For hot reload, run `pnpm --dir kanban/native-ui watch` and
+The app follows the board live by observing `kanban::on-change` (args
+`{ "ticket": "summary" }`) while it is on screen. For hot reload, run `pnpm --dir kanban/native-ui watch` and
 start the worker with `III_KANBAN_NATIVE_UI_WATCH=1`. How a worker ships such
 an app is in [`docs/sops/native-ui.md`](../docs/sops/native-ui.md).
 
@@ -436,7 +483,7 @@ profile editor, or `directory::agents::update { id, content }`).
 |---|---|---|
 | `product-manager` | Interviews the user, writes tickets whose descriptions carry observable acceptance criteria, and gates `in_review` → `done` (any caveat goes back to `in_progress`). | `kanban/tickets/feature-planning`, `kanban/tickets/acceptance-review`, `kanban/tickets/kanban-tickets` |
 | `tech-lead` | Splits one feature on the seam between backend and frontend, dispatches each ticket with `harness::spawn`, stays reachable on comment wakes, verifies the seam. | `kanban/tickets/ticket-orchestration`, `kanban/tickets/kanban-tickets`, `kanban/tickets/acceptance-review` |
-| `backend-engineer` | Builds workers, functions, triggers and configuration; verifies with a real call; reports on the ticket. | `kanban/iii-node/index`, `kanban/iii-node/configuration`, `kanban/tickets/ticket-worker` |
+| `backend-engineer` | Builds workers, functions, observers and configuration; verifies with a real call; reports on the ticket. | `kanban/iii-node/index`, `kanban/iii-node/configuration`, `kanban/tickets/ticket-worker` |
 | `frontend-engineer` | Builds the browser app (Vite, React, TanStack, iii-browser-sdk); verifies in a real browser; reports with screenshots on the ticket. | `kanban/frontend/iii-browser-sdk`, `kanban/frontend/react`, `kanban/frontend/vite`, `kanban/frontend/tanstack-router`, `kanban/frontend/tanstack-query`, `kanban/frontend/web-accessibility`, `kanban/frontend/web-performance`, `kanban/frontend/frontend-testing`, `kanban/tickets/ticket-worker` |
 | `ade-worker-designer` | Designs and builds the UI a worker injects into the ADE console — pages, renderers, configuration forms, scoped styles — against `@iii-dev/console-ui` and the iii Schematic design system; verifies in the running console. | `kanban/ade-worker-design/index`, `kanban/ade-worker-design/console-injectable-ui`, `kanban/ade-worker-design/patterns`, `kanban/ade-worker-design/console-design`, `kanban/iii-node/configuration`, `kanban/tickets/ticket-worker` |
 
@@ -446,7 +493,7 @@ as `actor` / `author` / `exclude_author`, so the loop in
 
 ### Where they land
 
-- **Registry install.** `iii trigger compose::add worker=kanban` publishes
+- **Registry install.** `iii call compose::add worker=kanban` publishes
   the profiles into `<agents_folder>/<id>.md` and the skills under
   `<skills_folder>/kanban/…`, which is why the skill ids above are prefixed
   `kanban/`.
@@ -503,7 +550,7 @@ working doctrine the profiles preload, one folder per concern (each folder's
   `ticket-orchestration` and `ticket-worker` (the dispatcher's and the
   dispatched engineer's halves; the feature ticket is the parent of the
   tickets it dispatches).
-- `iii-node/` — building a Node worker (package shape, functions, triggers,
+- `iii-node/` — building a Node worker (package shape, functions, observers,
   asset delivery, compose wiring) with its bundled `configuration` reference.
 - `ade-worker-design/` — the designer's half: the injectable UI contract
   (`console-injectable-ui`), the iii Schematic design system
