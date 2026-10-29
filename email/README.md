@@ -3,7 +3,8 @@
 Email worker for the iii engine. SMTP send + real-time IMAP read with
 `IDLE` push. The worker refuses to fall back to polling: an IMAP server
 without `IDLE` fails fast at startup with `E610`. Inbound messages flow
-through the `email::new-mail` trigger type, fanned out the moment the
+through the `email::new-mail` trigger type and, on iii 0.25 engines, the
+observable function `email::on-new-mail`, fanned out the moment the
 server pushes `EXISTS`.
 
 Accounts, limits, and logins live in the worker's `configuration` entry
@@ -175,6 +176,7 @@ https://myaccount.google.com/apppasswords — the worker accepts both spaced
 | Name | Fires when |
 |---|---|
 | `email::new-mail` | IMAP `IDLE` push delivers a new message to a configured `(account, folder)`. |
+| `email::on-new-mail` | Observable function (iii 0.25) for the same events; see below. |
 
 Subscriber config:
 
@@ -205,6 +207,30 @@ Payload your function receives per inbound message:
 
 The dispatch is event-driven off the server's `EXISTS` push — within
 milliseconds of a new message landing in the watched folder.
+
+### Observing `email::on-new-mail` (iii 0.25)
+
+On a 0.25 engine a new consumer observes the owner-delivered function
+`email::on-new-mail` instead of binding the trigger type. Its args are the
+`email::new-mail` config above (`account` required, `folder` default
+`"INBOX"`, `handler_timeout_ms` default 30000), and each observer of an
+`(account, folder)` receives the same payload a binding receives:
+
+```typescript
+await iii.observe(
+  { function_id: 'email::on-new-mail', args: { account: 'support', folder: 'INBOX' } },
+  'my-worker::on-mail',
+)
+```
+
+Args the config refuses (no `account`, a wrong type) reject the observer
+(`INVALID_ARGS` from the engine, or `CONFIG_ERROR`). Only the email worker
+delivers events: invoking `email::on-new-mail` directly is refused with
+`FORBIDDEN`. Bindings and observers share one registry and one dispatch;
+delivery is best-effort, bounded by `handler_timeout_ms`, as for bindings.
+
+The `email::new-mail` trigger type stays registered, unchanged, so old
+consumers keep binding it on 0.24 and 0.25 engines.
 
 ## Local development & testing
 

@@ -13,7 +13,8 @@
 //!     server `EXISTS` notifications drive fan-out. If a server lacks the
 //!     `IDLE` capability, the account fails to register at startup with
 //!     `E610`.
-//!   * [`triggers`] — `email::new-mail` trigger type, event-driven dispatcher.
+//!   * [`triggers`] — `email::new-mail` trigger type, the observable
+//!     `email::on-new-mail` function (iii 0.25), event-driven dispatcher.
 //!   * [`manifest`] — `--manifest` payload exposed to the iii registry.
 
 pub mod config;

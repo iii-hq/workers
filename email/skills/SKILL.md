@@ -16,7 +16,8 @@ need to read and react to inbound mail.
 
 The worker refuses to fall back to polling. If an IMAP server does not
 advertise the `IDLE` capability, the supervisor fails at startup with
-`E610`. Inbound messages flow through the `email::new-mail` trigger type,
+`E610`. Inbound messages flow through the `email::new-mail` trigger type
+(and the observable function `email::on-new-mail` on iii 0.25 engines),
 fanned out by an `IDLE`-driven dispatcher the moment a server-side
 `EXISTS` notification lands. Credentials never live in this worker —
 every IMAP login and every `email::send` calls `auth::get_token` against
@@ -148,6 +149,24 @@ Event payload per inbound message:
 
 The dispatch is event-driven off the IMAP server's `EXISTS` push —
 within milliseconds of a new message landing in the watched folder.
+
+### Observing from code (iii 0.25)
+
+Code on a 0.25 engine observes the owner-delivered function
+`email::on-new-mail` with the same config as args; each observer of the
+`(account, folder)` gets the payload above:
+
+```typescript
+await iii.observe(
+  { function_id: 'email::on-new-mail', args: { account: 'support', folder: 'INBOX' } },
+  'my-worker::on-mail',
+)
+```
+
+Do not call `email::on-new-mail` directly: only the email worker delivers
+its events and a direct call is refused with `FORBIDDEN`. A harness session
+keeps its `email::new-mail` trigger subscription, which still works on 0.24
+and 0.25 engines.
 
 ### Delivery semantics
 

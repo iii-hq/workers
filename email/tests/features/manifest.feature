@@ -13,7 +13,7 @@ Feature: --manifest emits the registry payload
 
   Scenario: the manifest lists every public function id
     When I run `email --manifest`
-    Then the manifest lists exactly 8 functions
+    Then the manifest lists exactly 9 functions
     And  the manifest lists the function "email::send"
     And  the manifest lists the function "email::accounts::list"
     And  the manifest lists the function "email::list"
@@ -22,6 +22,7 @@ Feature: --manifest emits the registry payload
     And  the manifest lists the function "email::flag"
     And  the manifest lists the function "email::move"
     And  the manifest lists the function "email::attachment::get"
+    And  the manifest lists the function "email::on-new-mail"
 
   Scenario: the manifest declares the email::new-mail trigger type
     When I run `email --manifest`
