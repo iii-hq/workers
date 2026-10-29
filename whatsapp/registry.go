@@ -189,10 +189,11 @@ func (wireResponse[T]) JSONSchema() *reflectschema.Schema {
 func installOperation[T operation](client *iii.Client, r *Registry) error {
 	var t T
 	metadata, _ := json.Marshal(map[string]any{"description": catalogEntries[t.ID()].Description})
-	return iii.RegisterFunctionTyped[wireRequest[T], wireResponse[T]](client, t.ID(), func(ctx context.Context, input wireRequest[T]) (wireResponse[T], error) {
+	_, err := iii.RegisterFunctionTyped[wireRequest[T], wireResponse[T]](client, t.ID(), func(ctx context.Context, input wireRequest[T]) (wireResponse[T], error) {
 		result, err := r.Invoke(ctx, t.ID(), map[string]any(input))
 		return wireResponse[T]{result}, err
 	}, iii.RegisterFunctionOptions{Metadata: metadata})
+	return err
 }
 
 func stringArg(v map[string]any, key string) string { s, _ := v[key].(string); return s }

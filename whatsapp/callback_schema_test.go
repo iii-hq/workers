@@ -104,7 +104,7 @@ func TestCallbackWireSchemasAndResponses(t *testing.T) {
 			}
 		}
 	}
-	fixture, err := json.Marshal(map[string]any{"functions": functions, "triggers": []any{}})
+	fixture, err := json.Marshal(map[string]any{"functions": functions})
 	if err != nil {
 		t.Fatal(err)
 	}

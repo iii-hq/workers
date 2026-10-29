@@ -15,8 +15,9 @@ import (
 	validate "github.com/santhosh-tekuri/jsonschema/v6"
 )
 
-// Exercise the HTTP worker, Cloud archive and trigger router together. The
-// surrounding smoke test owns the isolated engine and synthetic Cloud account.
+// Exercise the HTTP worker, Cloud archive and whatsapp::cloud::on-events
+// observers together. The surrounding smoke test owns the isolated engine and
+// synthetic Cloud account.
 func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 	t.Helper()
 	const callbackID = "go-smoke::cloud-event"
@@ -24,7 +25,7 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 	const chatID = "+15550000009"
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	registrar := iii.New(engineURL, iii.WithName("go-smoke-cloud-bindings"), iii.WithNamespace(smokeNamespace))
+	registrar := iii.New(engineURL, iii.WithName("go-smoke-cloud-observers"), iii.WithNamespace(smokeNamespace))
 	consumer := iii.New(engineURL, iii.WithName("go-smoke-cloud-consumer"), iii.WithNamespace(callbackNamespace))
 	defer func() { _ = registrar.Close(); _ = consumer.Close() }()
 	if err := registrar.Connect(ctx); err != nil {
@@ -53,7 +54,7 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 		err     error
 	}
 	received := make(chan callback, 64)
-	if err := consumer.RegisterFunction(callbackID, func(callCtx context.Context, raw json.RawMessage) (any, error) {
+	if _, err := consumer.RegisterFunction(callbackID, func(callCtx context.Context, raw json.RawMessage) (any, error) {
 		var result callback
 		result.payload = raw
 		result.err = json.Unmarshal(raw, &result.event)
@@ -62,16 +63,16 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 			Binding string `json:"binding"`
 		}
 		if !ok || json.Unmarshal(metadata, &route) != nil || route.Binding == "" {
-			result.err = fmt.Errorf("callback binding metadata was lost: %s", metadata)
+			result.err = fmt.Errorf("observer metadata was lost: %s", metadata)
 		}
 		result.binding = route.Binding
 		if result.err == nil && result.event.Kind == "message.received" {
-			// Query from inside the callback: delaying this until after receipt
+			// Query from inside the target: delaying this until after receipt
 			// would fail to catch publication before the archive transaction.
 			query, _ := json.Marshal(map[string]string{"chat_id": result.event.ChatID})
-			archiveRaw, err := consumer.Trigger(callCtx, iii.TriggerRequest{FunctionID: "whatsapp::cloud::messages::list", Namespace: smokeNamespace, Data: query, Timeout: 4 * time.Second})
+			archiveRaw, err := consumer.Call(callCtx, iii.CallRequest{FunctionID: "whatsapp::cloud::messages::list", Namespace: smokeNamespace, Payload: query, Timeout: 4 * time.Second})
 			if err != nil {
-				result.err = fmt.Errorf("callback archive read: %w", err)
+				result.err = fmt.Errorf("target archive read: %w", err)
 			} else {
 				var archive struct {
 					Messages []struct {
@@ -87,7 +88,7 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 					}
 				}
 				if !found && result.err == nil {
-					result.err = fmt.Errorf("event %s reached its callback before archive visibility", result.event.MessageID)
+					result.err = fmt.Errorf("event %s reached its target before archive visibility", result.event.MessageID)
 				}
 			}
 		}
@@ -97,59 +98,63 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 		t.Fatal(err)
 	}
 	// A target with the same ID in the provider namespace must never run.
-	if err := registrar.RegisterFunction(callbackID, func(context.Context, json.RawMessage) (any, error) {
-		received <- callback{err: fmt.Errorf("Cloud callback resolved in the provider namespace")}
+	if _, err := registrar.RegisterFunction(callbackID, func(context.Context, json.RawMessage) (any, error) {
+		received <- callback{err: fmt.Errorf("Cloud event target resolved in the provider namespace")}
 		return nil, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	smokeWait(t, "Cloud callback function", func() bool {
-		_, err := smokeTrigger(engine, engineURL, "default", "engine::functions::info", map[string]any{"function_id": callbackID, "namespace": callbackNamespace})
+	smokeWait(t, "Cloud event target", func() bool {
+		_, err := smokeCall(engine, engineURL, "default", "engine::functions::info", map[string]any{"function_id": callbackID, "namespace": callbackNamespace})
 		return err == nil
 	})
-	// Execute the registration example discovered through the same engine
-	// function used by ADE. Only substitute the user's callback and metadata.
-	info, err := smokeTrigger(engine, engineURL, "default", "engine::triggers::info", map[string]any{"id": "whatsapp::cloud::events", "namespace": smokeNamespace})
+	// Observe with the source example discovered through the same engine
+	// function used by ADE. Only the target and its metadata are the test's.
+	info, err := smokeCall(engine, engineURL, "default", "engine::functions::info", map[string]any{"function_id": "whatsapp::cloud::on-events", "namespace": smokeNamespace})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Validate using the schemas actually advertised by the locally linked
-	// SDK, including every callback received below, not only the source files.
-	configSchema := compileDiscoveredCloudSchema(t, info["configuration_schema"])
-	eventSchema := compileDiscoveredCloudSchema(t, info["request_schema"])
+	if info["private"] != true {
+		t.Fatalf("whatsapp::cloud::on-events must be private: %v", info)
+	}
+	if _, takesArgs := info["args_format"]; takesArgs {
+		t.Fatalf("whatsapp::cloud::on-events takes no args: %v", info)
+	}
+	// Validate using the schema actually advertised through the locally linked
+	// SDK, including every event received below, not only the source files.
+	eventSchema := compileDiscoveredCloudSchema(t, info["response_schema"])
 	description, _ := info["description"].(string)
 	_, example, found := strings.Cut(description, "```json\n")
 	if !found {
-		t.Fatal("Cloud trigger discovery has no JSON registration example")
+		t.Fatal("Cloud event discovery has no JSON observe example")
 	}
 	example, _, found = strings.Cut(example, "\n```")
 	if !found {
-		t.Fatal("Cloud trigger discovery has an incomplete registration example")
+		t.Fatal("Cloud event discovery has an incomplete observe example")
 	}
-	var registration map[string]any
-	if err := json.Unmarshal([]byte(example), &registration); err != nil {
+	var source struct {
+		FunctionID string         `json:"function_id"`
+		Namespace  string         `json:"namespace"`
+		Filters    map[string]any `json:"filters"`
+		Deliver    iii.Deliver    `json:"deliver"`
+	}
+	if err := json.Unmarshal([]byte(example), &source); err != nil {
 		t.Fatal(err)
 	}
-	if registration["trigger_namespace"] != smokeNamespace {
-		t.Fatalf("Cloud guide did not resolve the provider namespace: %v", registration)
+	if source.FunctionID != "whatsapp::cloud::on-events" || source.Namespace != smokeNamespace {
+		t.Fatalf("Cloud guide did not resolve the provider namespace: %+v", source)
 	}
-	if err := configSchema.Validate(registration["config"]); err != nil {
-		t.Fatalf("discovered registration example does not satisfy its schema: %v", err)
-	}
-	registration["function_id"] = callbackID
-	registration["metadata"].(map[string]any)["binding"] = "discovery"
-	registrationJSON, _ := json.Marshal(registration)
-	// Function-path subscriptions outlive the registering connection. The
-	// callback's namespace differs from the provider's in the discovered guide.
-	guideRegistrar := iii.New(engineURL, iii.WithName("go-smoke-cloud-guide"), iii.WithNamespace(callbackNamespace))
-	if err := guideRegistrar.Connect(ctx); err != nil {
+	// The target resolves in the observing worker's namespace, which differs
+	// from the provider's in the discovered guide.
+	guideObserver := iii.New(engineURL, iii.WithName("go-smoke-cloud-guide"), iii.WithNamespace(callbackNamespace))
+	if err := guideObserver.Connect(ctx); err != nil {
 		t.Fatal(err)
 	}
-	defer guideRegistrar.Close()
+	defer guideObserver.Close()
 	// Connect can finish before the SDK announces worker metadata. The engine
-	// must know this connection's namespace before resolving the callback.
-	smokeWait(t, "Cloud guide registrar namespace", func() bool {
-		result, err := smokeTrigger(engine, engineURL, "default", "engine::workers::list", map[string]any{})
+	// must know this connection's namespace before resolving the target.
+	smokeWait(t, "Cloud guide observer namespace", func() bool {
+		result, err := smokeCall(engine, engineURL, "default", "engine::workers::list", map[string]any{})
 		if err != nil {
 			return false
 		}
@@ -162,76 +167,52 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 		}
 		return false
 	})
-	registered, err := guideRegistrar.Trigger(ctx, iii.TriggerRequest{FunctionID: "engine::register_trigger", Namespace: "default", Data: registrationJSON, Timeout: 5 * time.Second})
+	discovery, err := guideObserver.Observe(iii.Source{FunctionID: source.FunctionID, Namespace: source.Namespace, Filters: source.Filters, Deliver: source.Deliver}, callbackID, iii.ObserverOptions{Metadata: json.RawMessage(`{"binding":"discovery"}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var binding struct {
-		ID string `json:"id"`
+	filters := map[string]iii.Filters{
+		"matching": {
+			"input.kind":                iii.Op{"$eq": "message.received"},
+			"input.chat_id":             iii.Op{"$in": []string{"+15550009999", chatID}},
+			"input.sender_id":           iii.Op{"$eq": chatID},
+			"input.message_type":        iii.Op{"$in": []string{"image", "text"}},
+			"input.business_account_id": iii.Op{"$eq": "123"},
+			"input.phone_number_id":     iii.Op{"$eq": "456"},
+		},
+		"received":        {"input.kind": iii.Op{"$eq": "message.received"}, "input.chat_id": iii.Op{"$eq": chatID}},
+		"statuses":        {"input.kind": iii.Op{"$eq": "message.status"}, "input.chat_id": iii.Op{"$eq": chatID}, "input.status": iii.Op{"$in": []string{"sent", "delivered", "read"}}},
+		"excluded-chat":   {"input.chat_id": iii.Op{"$eq": "+15550009999"}},
+		"excluded-sender": {"input.chat_id": iii.Op{"$eq": chatID}, "input.sender_id": iii.Op{"$eq": "+15550009999"}},
+		"excluded-type":   {"input.chat_id": iii.Op{"$eq": chatID}, "input.message_type": iii.Op{"$eq": "image"}},
+		"excluded-status": {"input.kind": iii.Op{"$eq": "message.status"}, "input.chat_id": iii.Op{"$eq": chatID}, "input.status": iii.Op{"$eq": "failed"}},
+		"excluded-waba":   {"input.chat_id": iii.Op{"$eq": chatID}, "input.business_account_id": iii.Op{"$eq": "999"}},
+		"excluded-phone":  {"input.chat_id": iii.Op{"$eq": chatID}, "input.phone_number_id": iii.Op{"$eq": "999"}},
 	}
-	if err := json.Unmarshal(registered, &binding); err != nil || binding.ID == "" {
-		t.Fatalf("guide registration did not return an id: %s (%v)", registered, err)
-	}
-	t.Cleanup(func() {
-		result, err := smokeTrigger(engine, engineURL, "default", "engine::unregister_trigger", map[string]any{"id": binding.ID})
-		if err != nil || result["removed"] != true {
-			t.Errorf("guide subscription cleanup: %v (%v)", result, err)
+	handles := []*iii.ObserverHandle{discovery}
+	for name, filter := range filters {
+		metadata, _ := json.Marshal(map[string]string{"binding": name})
+		handle, err := registrar.Observe(iii.Source{FunctionID: "whatsapp::cloud::on-events", Filters: filter, Deliver: iii.DeliverOutput}, callbackID, iii.ObserverOptions{Metadata: metadata, TargetNamespace: callbackNamespace})
+		if err != nil {
+			t.Fatal(err)
 		}
-	})
-	if err := guideRegistrar.Close(); err != nil {
+		handles = append(handles, handle)
+	}
+	readyCtx, readyCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer readyCancel()
+	for _, handle := range handles {
+		if err := handle.Ready(readyCtx); err != nil {
+			t.Fatalf("Cloud event observer %s: %v", handle.ID(), err)
+		}
+	}
+	detail, err := smokeCall(engine, engineURL, "default", "engine::observers::get", map[string]any{"id": discovery.ID()})
+	if err != nil {
 		t.Fatal(err)
 	}
-	smokeWait(t, "discovered Cloud subscription after registrar disconnect", func() bool {
-		detail, err := smokeTrigger(engine, engineURL, "default", "engine::registered-triggers::info", map[string]any{"id": binding.ID})
-		if err == nil && detail["status"] == "active" {
-			function, _ := detail["function"].(map[string]any)
-			if function["namespace"] != callbackNamespace {
-				t.Fatalf("discovered subscription has wrong callback detail: %v", function)
-			}
-		}
-		return err == nil && detail["status"] == "active"
-	})
-	filters := map[string]map[string]any{
-		"matching":        {"kinds": []string{"message.received"}, "chat_ids": []string{"+15550009999", chatID}, "sender_ids": []string{chatID}, "message_types": []string{"image", "text"}, "business_account_id": "123", "phone_number_id": "456"},
-		"default":         {"chat_ids": []string{chatID}},
-		"statuses":        {"kinds": []string{"message.status"}, "chat_ids": []string{chatID}, "statuses": []string{"sent", "delivered", "read"}},
-		"excluded-chat":   {"chat_ids": []string{"+15550009999"}},
-		"excluded-sender": {"chat_ids": []string{chatID}, "sender_ids": []string{"+15550009999"}},
-		"excluded-type":   {"chat_ids": []string{chatID}, "message_types": []string{"image"}},
-		"excluded-status": {"kinds": []string{"message.status"}, "chat_ids": []string{chatID}, "statuses": []string{"failed"}},
-		"excluded-waba":   {"chat_ids": []string{chatID}, "business_account_id": "999"},
-		"excluded-phone":  {"chat_ids": []string{chatID}, "phone_number_id": "999"},
+	if target, _ := detail["target"].(map[string]any); target["function_id"] != callbackID || target["namespace"] != callbackNamespace {
+		t.Fatalf("discovered observer has the wrong target: %v", detail)
 	}
-	for name, filter := range filters {
-		config, _ := json.Marshal(filter)
-		var value any
-		if err := json.Unmarshal(config, &value); err != nil {
-			t.Fatal(err)
-		}
-		if err := configSchema.Validate(value); err != nil {
-			t.Fatalf("valid %s filter does not satisfy advertised schema: %v", name, err)
-		}
-		metadata, _ := json.Marshal(map[string]string{"binding": name})
-		if err := registrar.RegisterTriggerNamespaced("cloud-smoke-"+name, "whatsapp::cloud::events", callbackID, callbackNamespace, config, metadata); err != nil {
-			t.Fatal(err)
-		}
-	}
-	smokeWait(t, "Cloud event bindings", func() bool {
-		result, err := smokeTrigger(engine, engineURL, "default", "engine::registered-triggers::list", map[string]any{"trigger_type": "whatsapp::cloud::events", "function_id": callbackID})
-		if err != nil {
-			return false
-		}
-		rows, _ := result["registered_triggers"].([]any)
-		active := 0
-		for _, row := range rows {
-			item, _ := row.(map[string]any)
-			if item["status"] == "active" {
-				active++
-			}
-		}
-		return active == len(filters)+1
-	})
-	status, err := smokeTrigger(engine, engineURL, smokeNamespace, "whatsapp::cloud::status", map[string]any{})
+	status, err := smokeCall(engine, engineURL, smokeNamespace, "whatsapp::cloud::status", map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,10 +260,10 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 		post(change)
 	}
 	// The final fresh message follows the duplicate and status deliveries in
-	// the queue. Callback completion may still arrive in a different order.
+	// the queue. Target completion may still arrive in a different order.
 	post(message(barrierID))
 	expected := map[string]bool{}
-	for _, binding := range []string{"matching", "default", "discovery"} {
+	for _, binding := range []string{"matching", "received", "discovery"} {
 		for _, id := range []string{firstID, barrierID} {
 			expected[binding+"/"+id+"/"] = true
 		}
@@ -304,11 +285,11 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 				t.Fatal(err)
 			}
 			if err := eventSchema.Validate(value); err != nil {
-				t.Fatalf("callback does not satisfy advertised schema: %v", err)
+				t.Fatalf("event does not satisfy advertised schema: %v", err)
 			}
 			key := result.binding + "/" + event.MessageID + "/" + event.Status
 			if !expected[key] {
-				t.Fatalf("unexpected or duplicate Cloud callback: %s (%s)", key, event.Kind)
+				t.Fatalf("unexpected or duplicate Cloud event: %s (%s)", key, event.Kind)
 			}
 			delete(expected, key)
 			if event.BusinessAccountID != "123" || event.PhoneNumberID != "456" || event.ChatID != chatID || event.Data["id"] != event.MessageID {
@@ -322,12 +303,12 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 				t.Fatalf("invalid Cloud message: %+v", event)
 			}
 		case <-deadline.C:
-			t.Fatalf("missing Cloud callbacks: %v", expected)
+			t.Fatalf("missing Cloud events: %v", expected)
 		}
 	}
 	select {
 	case extra := <-received:
-		t.Fatalf("unexpected extra Cloud callback: %+v", extra)
+		t.Fatalf("unexpected extra Cloud event: %+v", extra)
 	case <-time.After(250 * time.Millisecond):
 	}
 }
@@ -335,7 +316,7 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 func compileDiscoveredCloudSchema(t *testing.T, document any) *validate.Schema {
 	t.Helper()
 	if document == nil {
-		t.Fatal("Cloud trigger discovery did not advertise a schema")
+		t.Fatal("Cloud event discovery did not advertise a schema")
 	}
 	compiler := validate.NewCompiler()
 	const id = "https://whatsapp.test/discovered.schema.json"
