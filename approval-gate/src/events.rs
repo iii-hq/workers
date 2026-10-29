@@ -31,6 +31,7 @@ use iii_sdk::{
     RegisterTriggerType, TriggerAction,
 };
 use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -345,35 +346,40 @@ pub fn forbidden(function_id: &str) -> Error {
     }
 }
 
-/// The handler of an `approval::on-*` function: refuses any input with
-/// [`forbidden`], before and regardless of its shape.
-pub fn refuse_invocation(function_id: &str, _input: Value) -> Result<(), Error> {
+/// The body of an `approval::on-*` function: refuses every event handed to
+/// it with [`forbidden`]. Its parameter is the event its observers receive,
+/// so the published request schema documents the delivered shape (an input
+/// that does not even parse as that event is refused by the SDK with a
+/// deserialization error before reaching here).
+pub fn refuse_invocation<Event>(function_id: &str, _event: Event) -> Result<(), Error> {
     Err(forbidden(function_id))
 }
 
-/// JSON Schema of `T`, generated as iii-sdk does at registration.
-fn schema_value<T: JsonSchema>() -> Value {
-    let schema = schemars::r#gen::SchemaSettings::draft07()
-        .into_generator()
-        .into_root_schema_for::<T>();
-    serde_json::to_value(schema).unwrap_or(Value::Null)
+/// The handler registered for an `approval::on-*` function: typed on the
+/// delivered `Event` (request schema) and `()` (response schema).
+pub fn observable_handler<Event>(
+    function_id: &'static str,
+) -> impl Fn(Event) -> Result<(), Error> + Send + Sync + 'static {
+    move |event: Event| refuse_invocation(function_id, event)
 }
 
 /// Registers one owner-delivered `approval::on-*` function whose observers
-/// share `set` with the trigger type next to it. Its request format
-/// documents the event its observers receive; on an engine without observe
-/// it registers as a plain function and its hooks never run.
-fn register_observable<Event: JsonSchema>(
+/// share `set` with the trigger type next to it. Its request schema (derived
+/// from the handler's `Event` parameter) documents the event its observers
+/// receive; on an engine without observe it registers as a plain function
+/// and its hooks never run.
+fn register_observable<Event>(
     iii: &IIIClient,
     function_id: &'static str,
     description: &'static str,
     set: SubscriberSet,
-) {
+) where
+    Event: DeserializeOwned + JsonSchema + Send + 'static,
+{
     iii.register_function(
         function_id,
-        RegisterFunction::new(move |input: Value| refuse_invocation(function_id, input))
+        RegisterFunction::new(observable_handler::<Event>(function_id))
             .description(description)
-            .request_format(schema_value::<Event>())
             .observe(
                 Observe::owner()
                     .args_format::<BindingConfig>()
@@ -739,20 +745,91 @@ mod tests {
         .unwrap()
     }
 
+    fn resolved_event() -> PendingResolvedEvent {
+        serde_json::from_value(json!({
+            "session_id": "s_1",
+            "turn_id": "t_1",
+            "function_call_id": "c_1",
+            "function_id": "shell::run",
+            "outcome": "allow",
+            "resolved_at": 200,
+        }))
+        .unwrap()
+    }
+
+    fn assert_forbidden(function_id: &str, result: Result<(), Error>) {
+        let err = result.unwrap_err();
+        assert!(
+            matches!(&err, Error::Remote { code, message, .. }
+                if code == "FORBIDDEN" && message.contains(function_id)),
+            "{err:?}"
+        );
+    }
+
     #[test]
     fn on_functions_refuse_direct_invocation() {
-        for function_id in [ON_PENDING_CREATED, ON_PENDING_RESOLVED] {
-            for input in [json!({}), json!({ "session_id": "s_1" }), Value::Null] {
-                let err = refuse_invocation(function_id, input).unwrap_err();
-                assert!(
-                    matches!(&err, Error::Remote { code, message, .. }
-                        if code == "FORBIDDEN" && message.contains(function_id)),
-                    "{err:?}"
-                );
-            }
-        }
+        let created = observable_handler::<PendingApprovalRecord>(ON_PENDING_CREATED);
+        assert_forbidden(ON_PENDING_CREATED, created(pending_record("s_1")));
+        let resolved = observable_handler::<PendingResolvedEvent>(ON_PENDING_RESOLVED);
+        assert_forbidden(ON_PENDING_RESOLVED, resolved(resolved_event()));
         assert_eq!(ON_PENDING_CREATED, "approval::on-pending-created");
         assert_eq!(ON_PENDING_RESOLVED, "approval::on-pending-resolved");
+    }
+
+    /// Request / response schemas of a handler, as iii-sdk extracts them
+    /// from its parameter and `Ok` types at registration.
+    fn handler_schemas<F, T, R>(_handler: &F) -> (Value, Value)
+    where
+        F: Fn(T) -> Result<R, Error>,
+        T: JsonSchema,
+        R: JsonSchema,
+    {
+        fn schema<S: JsonSchema>() -> Value {
+            serde_json::to_value(
+                schemars::r#gen::SchemaSettings::draft07()
+                    .into_generator()
+                    .into_root_schema_for::<S>(),
+            )
+            .unwrap()
+        }
+        (schema::<T>(), schema::<R>())
+    }
+
+    fn assert_typed(label: &str, schema: &Value) {
+        const DEFINING: [&str; 7] = [
+            "type",
+            "properties",
+            "$ref",
+            "allOf",
+            "anyOf",
+            "oneOf",
+            "enum",
+        ];
+        let obj = schema.as_object().expect("schema object");
+        assert!(
+            DEFINING.iter().any(|k| obj.contains_key(*k)),
+            "{label}: untyped (AnyValue/empty) schema: {schema}"
+        );
+        assert_ne!(obj.get("title"), Some(&json!("AnyValue")), "{label}");
+    }
+
+    #[test]
+    fn on_function_handlers_publish_typed_schemas() {
+        let created = observable_handler::<PendingApprovalRecord>(ON_PENDING_CREATED);
+        let resolved = observable_handler::<PendingResolvedEvent>(ON_PENDING_RESOLVED);
+        let (created_req, created_res) = handler_schemas(&created);
+        let (resolved_req, resolved_res) = handler_schemas(&resolved);
+        for (function_id, request, response) in [
+            (ON_PENDING_CREATED, created_req, created_res),
+            (ON_PENDING_RESOLVED, resolved_req, resolved_res),
+        ] {
+            assert_typed(&format!("{function_id} request_schema"), &request);
+            assert_typed(&format!("{function_id} response_schema"), &response);
+            assert!(
+                request["properties"]["session_id"].is_object(),
+                "{function_id}: request schema documents the delivered event"
+            );
+        }
     }
 
     #[test]

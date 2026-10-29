@@ -227,6 +227,14 @@ fn every_function_has_typed_request_and_response_schemas() {
             &spec.response_schema,
         );
     }
+    // The observable `approval::on-*` functions register their handler on
+    // the delivered event: that event schema is their request schema.
+    for spec in observable_catalog() {
+        support::assert_typed_schema(
+            &format!("{} request_schema", spec.function_id),
+            &spec.event_schema,
+        );
+    }
 }
 
 /// Request schemas that carry field-level doc comments must keep them — a
