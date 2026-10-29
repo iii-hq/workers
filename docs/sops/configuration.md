@@ -18,8 +18,8 @@ A server-side registry of named entries. Every entry has an id (e.g.
 Schema describing the value shape, and a JSON value validated against that
 schema. Workers call `configuration::register` once at startup to declare their
 schema and `configuration::set` to publish values; consumers call
-`configuration::get` / `configuration::list` to read, and bind a
-`configuration` trigger to react to changes without polling.
+`configuration::get` / `configuration::list` to read, and observe
+`configuration::on-updated` to react to changes without polling.
 
 The default `fs` adapter persists one YAML file per id under `./config`
 (older engines: `./data/configuration`, migrated on boot) and watches the
@@ -195,9 +195,9 @@ Keep the `WorkerConfig` struct + `serde(default)` + `default_*()` +
 - `to_json(&self) -> Value` and `json_schema() -> Value` (a
   `schemars::schema_for!` with the shipped defaults attached as `example`).
 - `boot_signature(&self) -> BootSignature` — a **comparison key** for the
-  *structural* half of config (adapters, topology, trigger bindings; see §6). On
+  *structural* half of config (adapters, topology, observers; see §6). On
   reload: equal signature → cheap tuning-only snapshot swap; different signature
-  → rebuild the affected adapter / re-bind the affected trigger and swap.
+  → rebuild the affected adapter / replace the affected observer and swap.
   **Hot-reload is the default** — refusing a change (restart required) is a
   last-resort exception that must be justified in the worker's docs (§6).
 
@@ -207,7 +207,7 @@ Path B workers do **not** need `load_config()` in the production boot path.
 
 Pick a **reload tier** (§6) and mirror the matching reference:
 
-**Tier 1 — ConfigCell + targeted rebuild/re-bind** ([`context-manager/src/configuration.rs`](../../context-manager/src/configuration.rs), [`approval-gate/src/configuration.rs`](../../approval-gate/src/configuration.rs)):
+**Tier 1 — ConfigCell + targeted rebuild/re-observe** ([`context-manager/src/configuration.rs`](../../context-manager/src/configuration.rs), [`approval-gate/src/configuration.rs`](../../approval-gate/src/configuration.rs)):
 
 - `pub type ConfigCell = Arc<RwLock<Arc<WorkerConfig>>>`
 - `register_config(iii, seed)`, `fetch_config(iii)`
@@ -215,11 +215,12 @@ Pick a **reload tier** (§6) and mirror the matching reference:
   next per-call read.
 - On a **structural** change, rebuild + swap the one affected resource rather
   than refuse: `context-manager` rebuilds its `FsLeaseStore` on a `lease_dir`
-  change; `approval-gate` re-binds its `harness::hook::pre-trigger` / `cron`
-  bindings on a `hook` / `sweep_expression` change (register the new binding,
-  then `unregister()` the old — a fail-safe overlap). Read `summarizer_timeout_ms`
-  and other numeric knobs from the live snapshot per call so they need no rebuild.
-- `register_config_trigger(iii, cell, <resource(s) to rebuild/re-bind>)`
+  change; `approval-gate` replaces its `harness::hook::on-pre-call` /
+  `cron::on-tick` observers on a `hook` / `sweep_expression` change (observe
+  the new one, then `dispose()` the old handle — a fail-safe overlap). Read
+  `summarizer_timeout_ms` and other numeric knobs from the live snapshot per
+  call so they need no rebuild.
+- `register_config_observer(iii, cell, <resource(s) to rebuild/re-observe>)`
 
 **Tier 2 — Full runtime swap** ([`session-manager/src/configuration.rs`](../../session-manager/src/configuration.rs), [`ide/src/configuration.rs`](../../ide/src/configuration.rs)):
 
@@ -230,10 +231,10 @@ Pick a **reload tier** (§6) and mirror the matching reference:
   swap; last-good on failure
 - Handlers read the live runtime per call (not captured at registration)
 - Optional `<worker>::config-status` exposing `ReloadStatus` (mirror shell)
-- **Post-reload resync** when subscribers reconcile from triggers
+- **Post-reload resync** when observers reconcile from the worker's events
   ([`session-manager/src/resync.rs`](../../session-manager/src/resync.rs)):
-  after an adapter swap, replay the new store's state through the local emitter
-  so open views stay live without a refetch
+  after an adapter swap, replay the new store's state by calling the worker's
+  event functions, so open views stay live without a refetch
 
 Common to both tiers:
 
@@ -259,14 +260,15 @@ Common to both tiers:
   `config_id()`, while `ui_form` remains the built-in family id.
 - `fetch_config(iii)` — read the authoritative, env-expanded value
   (`NOT_FOUND` ⇒ built-in default).
-- `register_config_trigger` — register `<worker>::on-config-change` and bind a
-  `configuration` trigger (see §5). Register it **exactly like `session-manager`**:
+- `register_config_observer` — register `<worker>::on-config-change` and
+  observe `configuration::on-updated` with it (see §5). Register it **exactly
+  like `session-manager`**:
   a **typed** `RegisterFunction::new_async` over a small event struct
   (`OnConfigChangeEvent { id }`) returning a typed ack
   (`OnConfigChangeResponse { ok }`) — **never a `serde_json::Value` handler**
   ([`binary-worker.md`](binary-worker.md) §7 forbids untyped handlers, and this
   one is no exception just because it is internal). The handler **re-fetches**
-  via `configuration::get` and ignores the trigger payload, so a direct call can
+  via `configuration::get` and ignores the event payload, so a direct call can
   never inject config. `session-manager`, `context-manager`, and `approval-gate`
   all follow this shape; register the handler here (not in `functions::register_all`),
   so it stays off the public `catalog()`.
@@ -281,7 +283,7 @@ Common to both tiers:
 3. register_config(seed)  +  fetch_config()        # required boot dependency
 4. resolve adapters from the fetched config
 5. build the ConfigCell; register functions
-6. register_config_trigger                         # LAST
+6. register_config_observer                        # LAST
 ```
 
 **Tier 2 (full runtime swap):**
@@ -290,25 +292,25 @@ Common to both tiers:
 1. parse CLI (--config optional seed only)
 2. connect
 3. register_config(seed) + fetch_config()         # fatal
-4. register trigger types (+ internal feeds if applicable)
+4. register event functions (+ internal feeds if applicable)
 5. build_runtime → AppState
 6. register protocol handlers (mode-gated if applicable) + functions (read AppState per call)
-7. register_config_trigger + config-status
+7. register_config_observer + config-status
 ```
 
 `configuration` is a **required boot dependency**: a failed register/fetch
-aborts startup. Bind the configuration trigger **last** so handlers close over
-fully-built state.
+aborts startup. Observe `configuration::on-updated` **last** so handlers close
+over fully-built state.
 
 **Exception — cosmetic-knob entries.** Workers whose entry carries only
 defaulted tuning/prompt knobs (the `inject_guidance` workers: `fp`, `web`,
 `workflow`, `sandbox-code-runner`) treat the whole config path as
-best-effort: register/fetch/bind failures warn and the worker runs on
+best-effort: register/fetch failures warn and the worker runs on
 built-in defaults rather than taking its real function surface off the bus,
 recovering on the next configuration event or restart. Their shared plumbing
 (retry ladder, case-sensitive `NOT_FOUND` rule, seed-only-when-nothing-stored,
-serialized reload with the fetch inside the lock, and the post-bind boot
-refresh that closes the fetch→bind gap) lives in
+serialized reload with the fetch inside the lock, and the post-observe boot
+refresh that closes the fetch→observe gap) lives in
 [`crates/config-client`](../../crates/config-client/src/lib.rs) — new
 integrations of this shape should link it rather than copying the pattern.
 
@@ -344,35 +346,40 @@ Add defense-in-depth denies next to the existing storage/database/shell entries:
   (`context-manager`, `approval-gate`) do not register a `config-status`
   surface, so there is nothing to deny.
 
-## 5. Reactive triggers
+## 5. Observing configuration changes
 
-Bind a `configuration` trigger when a function should run on every
-register/set/delete — including external `fs` edits and bridge-forwarded events:
+Observe `configuration::on-updated` when a function should run on every
+register/set/delete, including external `fs` edits and bridge-forwarded events.
+The function takes no args; select the entry and the event type with filters on
+its input, and take the event as the target's input with `Deliver::Output`:
 
 ```rust
-iii.register_trigger(RegisterTriggerInput {
-    trigger_type: "configuration".to_string(),
-    function_id: "<worker>::on-config-change".to_string(),
-    config: json!({
-        "configuration_id": "<worker>",              // omit to receive every id
-        "event_types": ["configuration:updated"],    // subset of registered|updated|deleted
-    }),
-    metadata: None,
-})?;
+iii.observe(
+    Source::function("configuration::on-updated")
+        .filters(json!({
+            "input.id": { "$eq": config_id() },                     // omit to receive every id
+            "input.event_type": { "$eq": "configuration:updated" }, // or registered / deleted
+        }))
+        .deliver(Deliver::Output),
+    "<worker>::on-config-change",
+);
 ```
 
-Reads never fire triggers. If you only need the new value inside the same
+`observe` returns an `ObserverHandle` at once. The observer stays `pending`
+until `configuration::on-updated` is registered and lives as long as the
+worker's connection; dropping the handle does not dispose it. Reads never call
+`configuration::on-updated`. If you only need the new value inside the same
 function that wrote it, `configuration::set` already returns
-`old_value` / `new_value` — bind a trigger only when a *different* component
-should react.
+`old_value` / `new_value`: observe only when a *different* component should
+react.
 
 ## 6. Hot-reload tiers and outcomes
 
 **Hot-reload is the default.** Every config field should take effect without a
 restart: read numeric/string knobs from the live snapshot per call, rebuild and
-swap cheap adapters, and re-bind triggers live (register the new binding, then
-`unregister()` the old). A field may require a restart **only** when it
-genuinely cannot be rebound or rebuilt safely at runtime — a rare exception that
+swap cheap adapters, and replace observers live (observe the new one, then
+`dispose()` the old handle). A field may require a restart **only** when it
+genuinely cannot be re-observed or rebuilt safely at runtime — a rare exception that
 must be called out explicitly in the worker's README/architecture docs. The
 workers below have **no** restart-required fields.
 
@@ -381,7 +388,7 @@ workers below have **no** restart-required fields.
 | Worker | Tier | Structural hot reload |
 |--------|------|-----------------------|
 | `context-manager` | ConfigCell + rebuild | `lease_dir` rebuilds the `FsLeaseStore`; `summarizer_timeout_ms` + other knobs read per call |
-| `approval-gate` | ConfigCell + re-bind | `hook` / `sweep_expression` re-bind the harness-hook / cron triggers live; timeouts + approval defaults read per call |
+| `approval-gate` | ConfigCell + re-observe | `hook` / `sweep_expression` replace the `harness::hook::on-pre-call` / `cron::on-tick` observers live; timeouts + approval defaults read per call |
 | `storage` | partial runtime | topology frozen; connection settings reload |
 | `ide`, `database` | full runtime swap | yes |
 | **`session-manager`** | full runtime + **resync** | yes (fs/bridge, `data_dir`, bridge `url`/`timeout_ms`) |
@@ -401,7 +408,7 @@ sequenceDiagram
     else adapter changed
         Handler->>Build: build_runtime
         Build->>State: swap SessionRuntime
-        Build->>State: resync_triggers
+        Build->>State: resync (call the event functions)
     end
 ```
 
@@ -411,8 +418,8 @@ sequenceDiagram
 2. **Tuning-only reload** — boot signature unchanged; `ConfigCell` swap only
    (Tier 1, or Tier 2 list-limit fields).
 3. **Structural reload** — boot signature changed; rebuild the affected adapter
-   (`build_runtime` / `FsLeaseStore`) or re-bind the affected trigger, then swap
-   (+ resync when subscribers reconcile from triggers).
+   (`build_runtime` / `FsLeaseStore`) or replace the affected observer, then swap
+   (+ resync when observers reconcile from the worker's events).
 4. **Rejected** — a rebuild **failed** (e.g. an unbuildable adapter config); the
    previous runtime/snapshot is kept (last-good). This is a failure path, not a
    "restart required" design choice; Tier 2 surfaces it via
@@ -429,7 +436,7 @@ the lock so overlapping events converge to the latest authoritative value.
   data migration**.
 - fs→bridge on an instance acting as **main** for other bridges breaks attached
   bridged instances.
-- Large stores may emit a brief trigger burst on resync (acceptable for rare
+- Large stores may emit a brief burst of events on resync (acceptable for rare
   operator config changes).
 
 ## 7. Checklist
@@ -438,13 +445,14 @@ the lock so overlapping events converge to the latest authoritative value.
       `from_yaml`/`from_file`/`from_json`/`to_json`/`json_schema`/`boot_signature`.
 - [ ] **No committed `config.yaml`**; `WorkerConfig::default()` seeds first boot.
 - [ ] `src/configuration.rs` implements the chosen reload tier (Tier 1:
-      `ConfigCell` + targeted rebuild/re-bind; Tier 2: `AppState` +
+      `ConfigCell` + targeted rebuild/re-observe; Tier 2: `AppState` +
       `build_runtime` + `reload_serialized` + optional resync).
-- [ ] **Every field hot-reloads** (per-call read / rebuild+swap / live trigger
-      re-bind). No field is "restart required" unless it genuinely cannot be
+- [ ] **Every field hot-reloads** (per-call read / rebuild+swap / live observer
+      replacement). No field is "restart required" unless it genuinely cannot be
       hot-applied — and any such exception is documented in the worker's docs.
 - [ ] `main.rs`: connect → register+fetch (fatal) → build runtime → register
-      functions → bind configuration trigger (+ `config-status` for Tier 2) last.
+      functions → observe `configuration::on-updated` (+ `config-status` for
+      Tier 2) last.
 - [ ] `<worker>::on-config-change` is a **typed** `RegisterFunction::new_async`
       (event struct → ack struct, never a `Value` handler) that **re-fetches**
       via `configuration::get`, registered in `configuration.rs` (off the public
@@ -455,6 +463,6 @@ the lock so overlapping events converge to the latest authoritative value.
 - [ ] README "Configuration" section documents the id, reload tier, persistence
       path, and operator risks.
 - [ ] Unit tests cover `boot_signature` (tuning-only vs structural change), JSON
-      round-trip, and the structural-change path (adapter rebuild / trigger
-      re-bind; Tier 2 also: rejected reload keeps runtime / resync emits
-      triggers); they run engine-free in CI.
+      round-trip, and the structural-change path (adapter rebuild / observer
+      replacement; Tier 2 also: rejected reload keeps runtime / resync calls the
+      event functions); they run engine-free in CI.

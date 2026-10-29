@@ -107,7 +107,7 @@ a baggage scope carrying `iii.tag.hidden = <family>`:
 ```rust
 iii_helpers::observability::run_with_baggage(
     &[("iii.tag.hidden", "harness state")],
-    iii.trigger(TriggerRequest { function_id: "state::get".into(), /* … */ }),
+    iii.call(CallRequest::new("state::get", json!({ /* … */ }))),
 )
 .await
 ```
@@ -153,7 +153,7 @@ Three deliberate boundaries:
   itself: a traced delivery of the devtools span feeds re-enters the feed
   it delivers and loops endlessly. For the same reason the engine's
   `iii:devtools:*` stream fan-out runs without spans or trace context
-  (`stream.rs::invoke_triggers`), and the live-feed subscriber drops any
+  (`stream.rs::emit_changed`), and the live-feed subscriber drops any
   observability-attributed span as a belt.
 - **Hidden only when configured.** Built-in spans inside a trace are shown
   by default; hide a family from the funnel (persisted), tag its
@@ -178,7 +178,7 @@ keeps the engine's own machinery spans out of the console streams is
       ([`timeline-span-tags.md`](../../ade/docs/timeline-span-tags.md))
       so the hide re-roots it instead of swallowing it.
 - [ ] Verify the registration: restart the worker, then
-      `iii trigger engine::functions::list --json '{"include_internal": true}'`
+      `iii call engine::functions::list --json '{"include_internal": true}'`
       and check the function's `metadata.trace_hidden`.
 - [ ] Verify the console: open Traces — the group starts hidden (funnel
       badge counts it); toggling it back on works and survives a reload.
