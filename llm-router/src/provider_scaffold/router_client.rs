@@ -5,18 +5,32 @@ use crate::types::credential::Credential;
 use crate::types::model::Model;
 use crate::types::router::{CredentialSource, ProviderResolveResponse};
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, Deliver, IIIClient, ObserverHandle, Source};
 use serde_json::{json, Value};
 
+/// The router's ready event: `RouterReadyEvent {}`, once per router start.
+const ON_READY_FN: &str = "router::on-ready";
+
 pub async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Value, Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: function_id.into(),
         payload,
         action: None,
         timeout_ms: Some(15_000),
     })
     .await
+}
+
+/// Observes `router::on-ready` with `target` (`provider::<id>::on_router_ready`),
+/// the event delivered as output, so the provider re-declares and refreshes its
+/// catalog whenever the router starts. The observer stays `pending` while
+/// llm-router is down; the router sends the ready event to an observer added
+/// after it is ready. Dropping the handle keeps the observer.
+pub fn observe_router_ready(iii: &IIIClient, target: &str) -> ObserverHandle {
+    iii.observe(
+        Source::function(ON_READY_FN).deliver(Deliver::Output),
+        target,
+    )
 }
 
 /// `router::provider::resolve` — credential + effective settings.
@@ -115,6 +129,22 @@ pub fn apply_credential_env_fallback(
 ) -> ProviderResolveResponse {
     let key = credential_env_var.and_then(|name| std::env::var(name).ok());
     with_api_key_fallback(resp, key)
+}
+
+#[cfg(test)]
+mod observe_tests {
+    use super::observe_router_ready;
+    use iii_sdk::{IIIClient, ObserverState};
+
+    /// `observe` returns at once: without a router (here, without an engine)
+    /// the observer waits `pending`.
+    #[tokio::test]
+    async fn router_ready_observer_waits_pending_for_the_router() {
+        let iii = IIIClient::new("ws://127.0.0.1:1");
+        let handle = observe_router_ready(&iii, "provider::test::on_router_ready");
+        assert_eq!(handle.state(), ObserverState::Pending);
+        assert!(!handle.id().is_empty());
+    }
 }
 
 #[cfg(test)]

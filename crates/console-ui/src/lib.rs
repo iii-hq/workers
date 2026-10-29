@@ -6,15 +6,17 @@
 //! cannot get it subtly wrong:
 //!
 //! - the *content function* (`<worker>::ui-content` by default) the console
-//!   invokes with `{path}` to fetch an asset's source,
-//! - one `console:script` / `console:style` / `console:module` trigger per
-//!   asset, registered over the SDK Message path (disconnect GC + reconnect
-//!   replay — never `engine::register_trigger`),
+//!   calls through each asset's observer with `{path}` to fetch its source,
+//! - one observer of `console::ui::asset` per asset, with args
+//!   `{ kind: "script" | "style" | "module", path }` and the content function
+//!   as its target (the SDK replays it by id after a reconnect, and the
+//!   engine disposes it once the worker stays disconnected),
 //! - the dev-loop hot-reload watcher (`III_<WORKER>_UI_WATCH` by default):
-//!   poll the build output, swap the served bytes, register a FRESH trigger
-//!   for the same path, THEN unregister the previous handle — register-first
-//!   avoids a zero-trigger flash in open tabs, and the trailing unregister
-//!   keeps the SDK's reconnect-replay map at one entry per path.
+//!   poll the build output, swap the served bytes, observe the same path
+//!   AFRESH, THEN dispose the previous observer — observe-first avoids a
+//!   flash without the asset in open tabs (the console supersedes the old
+//!   observer), and the trailing dispose keeps the SDK's replay map at one
+//!   observer per path.
 //!
 //! ```rust,ignore
 //! use iii_console_ui::ConsoleUi;
@@ -40,8 +42,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::RegisterTriggerInput;
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{IIIClient, ObserverHandle, ObserverState, RegisterFunction, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -74,14 +75,17 @@ pub fn register_configuration_identity(iii: &IIIClient, worker: &str, id: &'stat
     );
 }
 
+/// The console's asset function: one observer per asset, its args naming the
+/// asset and its target the content function.
+const ASSET_FN: &str = "console::ui::asset";
 const WATCH_POLL: Duration = Duration::from_millis(1000);
-/// Console-enforced ceiling on `config.path` length.
+/// Console-enforced ceiling on the `path` arg's length.
 const MAX_PATH_LEN: usize = 512;
 
 /// Input of the content function: the console asks for one asset by path.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct UiContentInput {
-    /// The asset path from the trigger config (e.g. `state/page.js`).
+    /// The asset path from the observer's args (e.g. `state/page.js`).
     pub path: String,
 }
 
@@ -103,11 +107,12 @@ enum AssetKind {
 }
 
 impl AssetKind {
-    fn trigger_type(self) -> &'static str {
+    /// The `kind` arg of the asset's `console::ui::asset` observer.
+    fn as_str(self) -> &'static str {
         match self {
-            AssetKind::Script => "console:script",
-            AssetKind::Style => "console:style",
-            AssetKind::Module => "console:module",
+            AssetKind::Script => "script",
+            AssetKind::Style => "style",
+            AssetKind::Module => "module",
         }
     }
 
@@ -127,7 +132,7 @@ impl AssetKind {
 }
 
 struct AssetSpec {
-    /// Asset identity — the trigger `config.path` and `/ui/<path>` URL.
+    /// Asset identity — the observer's `path` arg and `/ui/<path>` URL.
     path: String,
     kind: AssetKind,
     /// File inside the watch dir the dev watcher polls (last path segment).
@@ -174,7 +179,7 @@ impl ConsoleUi {
         }
     }
 
-    /// Add a `console:script` asset (an ES module the console tabs
+    /// Add a `script` asset (an ES module the console tabs
     /// `import()` and call `setup(host)` on). `content` is the initial
     /// source — typically `include_str!` of the build output.
     ///
@@ -183,7 +188,7 @@ impl ConsoleUi {
         self.asset(AssetKind::Script, path.into(), content.into())
     }
 
-    /// Add a `console:style` asset (a stylesheet the console tabs mount as a
+    /// Add a `style` asset (a stylesheet the console tabs mount as a
     /// `<link>`); every rule must be scoped under `[data-iii-ui="<worker>"]`.
     ///
     /// Panics on a path the console would reject (see crate docs).
@@ -191,7 +196,7 @@ impl ConsoleUi {
         self.asset(AssetKind::Style, path.into(), content.into())
     }
 
-    /// Add a `console:module` asset: an ES module the console serves but
+    /// Add a `module` asset: an ES module the console serves but
     /// never imports at mount. A script loads it on demand with
     /// `host.importModule(path)`, so heavy code that only one view needs
     /// (a terminal emulator, a diagram renderer) stays out of every tab's
@@ -241,13 +246,14 @@ impl ConsoleUi {
         self
     }
 
-    /// Register the content function and one trigger per asset; spawn the
-    /// dev watcher when the watch env var is set. Call once, after the
-    /// worker's regular functions are registered.
+    /// Register the content function and observe `console::ui::asset` once
+    /// per asset; spawn the dev watcher when the watch env var is set. Call
+    /// once, after the worker's regular functions are registered.
     ///
-    /// Trigger registration failures are warn-logged, not fatal — injected
-    /// UI is an accessory, and the SDK replays surviving registrations on
-    /// reconnect.
+    /// Each observer stays `pending` until the console registers the asset
+    /// function, and the SDK replays it on reconnect. A rejection (an asset
+    /// the console refuses, a failed content fetch) is warn-logged, not
+    /// fatal — injected UI is an accessory.
     pub fn register(self, iii: &Arc<IIIClient>) {
         if self.assets.is_empty() {
             tracing::warn!(
@@ -280,8 +286,9 @@ impl ConsoleUi {
                     async move { served.content_for(&input.path).await }
                 })
                 .description(format!(
-                    "Serve the {} worker's injected console UI assets (content function \
-                     for its console:script / console:style / console:module triggers).",
+                    "Serve the {} worker's injected console UI assets (the target of its \
+                     console::ui::asset observers; the console calls it through each \
+                     asset's observer with {{path}}).",
                     self.worker
                 ))
                 // Console plumbing, not an API for agents/workers to discover.
@@ -290,39 +297,29 @@ impl ConsoleUi {
         }
 
         let mut watched = Vec::new();
-        // Modules first: the console commits assets in registration order,
-        // so a script never reaches a tab before the modules it imports are
-        // served.
+        // Modules first: the console commits assets in the order their
+        // observers arrive, so a script never reaches a tab before the
+        // modules it imports are served.
         let mut ordered: Vec<_> = self.assets.iter().collect();
         ordered.sort_by_key(|spec| spec.kind != AssetKind::Module);
         for spec in ordered {
-            match register_asset_trigger(iii, &self.content_function_id, spec.kind, &spec.path) {
-                Ok(handle) => {
-                    tracing::info!(path = spec.path, "registered console ui asset");
-                    watched.push(WatchedAsset {
-                        path: spec.path.clone(),
-                        kind: spec.kind,
-                        file: spec.file.clone(),
-                        handle,
-                        prev: spec.content.clone(),
-                    });
-                }
-                Err(e) => tracing::warn!(
-                    error = %e,
-                    path = spec.path,
-                    "failed to register console ui trigger"
-                ),
-            }
+            let handle = observe_asset(iii, &self.content_function_id, spec.kind, &spec.path);
+            tracing::info!(
+                path = spec.path,
+                observer_id = handle.id(),
+                "observing console ui asset"
+            );
+            watched.push(WatchedAsset {
+                path: spec.path.clone(),
+                kind: spec.kind,
+                file: spec.file.clone(),
+                handle,
+                prev: spec.content.clone(),
+            });
         }
 
         if let Some(dist) = watch_target(&self.watch_env, &self.watch_default_dir) {
-            if watched.is_empty() {
-                tracing::warn!(
-                    "ui watch requested but no ui trigger registered — watcher not started"
-                );
-            } else {
-                spawn_watcher(iii.clone(), served, self.content_function_id, watched, dist);
-            }
+            spawn_watcher(iii.clone(), served, self.content_function_id, watched, dist);
         }
     }
 }
@@ -359,7 +356,7 @@ fn validate_path(path: &str, kind: AssetKind) {
         path.ends_with(kind.extension()),
         "ui asset path '{path}' must end with '{}' for a {} asset",
         kind.extension(),
-        kind.trigger_type()
+        kind.as_str()
     );
 }
 
@@ -421,21 +418,41 @@ impl Served {
     }
 }
 
-// `register_trigger` is deprecated in iii-sdk 0.25 but still served by every
-// engine: the console:script / console:style types stay until the console
-// moves to observe.
-#[allow(deprecated)]
-fn register_asset_trigger(
+/// Observe `console::ui::asset` for one asset, with the content function as
+/// the target. A rejection is logged when it arrives.
+fn observe_asset(
     iii: &Arc<IIIClient>,
     function_id: &str,
     kind: AssetKind,
     path: &str,
-) -> Result<iii_sdk::trigger::Trigger, Error> {
-    iii.register_trigger(RegisterTriggerInput::new(
-        kind.trigger_type().to_string(),
-        function_id.to_string(),
-        serde_json::json!({ "path": path }),
-    ))
+) -> ObserverHandle {
+    let handle = iii.observe(
+        Source::function(ASSET_FN).args(asset_args(kind, path)),
+        function_id,
+    );
+    let path = path.to_string();
+    // The listener lives as long as the observer; the returned token only
+    // unsubscribes it.
+    let _listener = handle.on_state_change(move |state, reason| {
+        if *state != ObserverState::Error {
+            return;
+        }
+        let (code, message) = reason
+            .map(|r| (r.code.as_str(), r.message.as_str()))
+            .unwrap_or(("OBSERVER_ERROR", ""));
+        if code == "UI_ASSET_SUPERSEDED" {
+            // Hot reload observes the path afresh before disposing this one.
+            tracing::debug!(path = %path, "console ui asset superseded");
+        } else {
+            tracing::warn!(path = %path, code, message, "console ui asset rejected");
+        }
+    });
+    handle
+}
+
+/// The args of an asset's `console::ui::asset` observer.
+fn asset_args(kind: AssetKind, path: &str) -> serde_json::Value {
+    serde_json::json!({ "kind": kind.as_str(), "path": path })
 }
 
 fn watch_target(env: &str, default_dir: &Path) -> Option<PathBuf> {
@@ -462,13 +479,14 @@ struct WatchedAsset {
     path: String,
     kind: AssetKind,
     file: String,
-    handle: iii_sdk::trigger::Trigger,
+    handle: ObserverHandle,
     prev: String,
 }
 
 /// Dev-loop hot reload: poll the built files; on change, swap the served
-/// bytes, register a fresh trigger for the same path (the console supersedes
-/// + re-fetches + pushes to every tab), THEN unregister the previous handle.
+/// bytes, observe the same path afresh (the console supersedes the old
+/// observer, re-fetches, and pushes to every tab), THEN dispose the previous
+/// observer.
 fn spawn_watcher(
     iii: Arc<IIIClient>,
     served: Arc<Served>,
@@ -490,18 +508,16 @@ fn spawn_watcher(
                 }
                 served.swap(&asset.path, next.clone()).await;
                 asset.prev = next;
-                match register_asset_trigger(&iii, &function_id, asset.kind, &asset.path) {
-                    Ok(next_handle) => {
-                        let old = std::mem::replace(&mut asset.handle, next_handle);
-                        old.unregister();
-                        tracing::info!(path = asset.path, "ui asset re-registered (hot reload)");
-                    }
-                    Err(e) => tracing::warn!(
+                let next_handle = observe_asset(&iii, &function_id, asset.kind, &asset.path);
+                let old = std::mem::replace(&mut asset.handle, next_handle);
+                if let Err(e) = old.dispose().await {
+                    tracing::warn!(
                         error = %e,
                         path = asset.path,
-                        "ui hot-reload re-register failed"
-                    ),
+                        "ui hot-reload dispose of the previous observer failed"
+                    );
                 }
+                tracing::info!(path = asset.path, "ui asset observed afresh (hot reload)");
             }
         }
     });
@@ -558,10 +574,27 @@ mod tests {
     fn assets_record_kind_and_watch_file() {
         let ui = two_assets();
         assert_eq!(ui.assets.len(), 2);
-        assert_eq!(ui.assets[0].kind.trigger_type(), "console:script");
+        assert_eq!(ui.assets[0].kind.as_str(), "script");
         assert_eq!(ui.assets[0].file, "page.js");
-        assert_eq!(ui.assets[1].kind.trigger_type(), "console:style");
+        assert_eq!(ui.assets[1].kind.as_str(), "style");
         assert_eq!(ui.assets[1].file, "styles.css");
+    }
+
+    #[test]
+    fn each_asset_observes_the_asset_function_with_kind_and_path_args() {
+        assert_eq!(ASSET_FN, "console::ui::asset");
+        assert_eq!(
+            asset_args(AssetKind::Script, "demo/page.js"),
+            serde_json::json!({ "kind": "script", "path": "demo/page.js" })
+        );
+        assert_eq!(
+            asset_args(AssetKind::Style, "demo/styles.css"),
+            serde_json::json!({ "kind": "style", "path": "demo/styles.css" })
+        );
+        assert_eq!(
+            asset_args(AssetKind::Module, "demo/heavy.js"),
+            serde_json::json!({ "kind": "module", "path": "demo/heavy.js" })
+        );
     }
 
     #[tokio::test]
@@ -635,9 +668,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn modules_register_their_own_trigger_type_and_serve_as_javascript() {
+    async fn modules_observe_with_their_own_kind_and_serve_as_javascript() {
         let ui = two_assets().module("demo/heavy.js", "export const x = 1");
-        assert_eq!(ui.assets[2].kind.trigger_type(), "console:module");
+        assert_eq!(ui.assets[2].kind.as_str(), "module");
         assert_eq!(ui.assets[2].file, "heavy.js");
         let served = Served::new(&ui.assets);
         let heavy = served.content_for("demo/heavy.js").await.unwrap();
