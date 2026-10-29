@@ -23,7 +23,7 @@ async function render(transport: 'cloud' | 'native' = 'cloud', ready = true) {
   let listFailure: Error | undefined, sendFailure: Error | undefined
   let baseline: Promise<MessagePage> | undefined
   let sendResponse: Promise<SentMessage> | undefined
-  const trigger = vi.fn(async (id: string, input: { chat_id?: string }) => {
+  const call = vi.fn(async (id: string, input: { chat_id?: string }) => {
     if (id.endsWith('::list')) {
       if (listFailure) throw listFailure
       return baseline ?? page
@@ -31,7 +31,7 @@ async function render(transport: 'cloud' | 'native' = 'cloud', ready = true) {
     if (sendFailure) throw sendFailure
     return sendResponse ?? { message_id: 'test-send-id', chat_id: input.chat_id }
   })
-  const host = { iii: { trigger } } as unknown as Host
+  const host = { iii: { call } } as unknown as Host
   const container = document.createElement('div')
   document.body.appendChild(container)
   const root = createRoot(container)
@@ -48,7 +48,7 @@ async function render(transport: 'cloud' | 'native' = 'cloud', ready = true) {
   const unmount = () => { if (mounted) { act(() => root.unmount()); mounted = false }; container.remove() }
   cleanups.push(unmount)
   return {
-    container, trigger, onOpen, onDirty, unmount,
+    container, call, onOpen, onDirty, unmount,
     draftCount() { return memory?.values.size ?? 0 },
     async scope(next: string) { scope = next; await act(async () => renderTest()) },
     async visible(next: boolean) { visible = next; await act(async () => renderTest()) },
@@ -77,7 +77,7 @@ async function render(transport: 'cloud' | 'native' = 'cloud', ready = true) {
     async send() { await act(async () => container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))) },
     async key(options: KeyboardEventInit) { await act(async () => container.querySelector('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...options }))) },
     async refresh() { await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Refresh test results"]')!.click()) },
-    sendCalls() { return trigger.mock.calls.filter(([id]) => id.endsWith('::send_text')) },
+    sendCalls() { return call.mock.calls.filter(([id]) => id.endsWith('::send_text')) },
   }
 }
 afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); vi.restoreAllMocks(); vi.useRealTimers() })
@@ -85,7 +85,7 @@ afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); vi.restor
 describe('Explicit integration tests', () => {
   it.each(['cloud', 'native'] as const)('uses only the %s transport and never sends on mount', async (transport) => {
     const view = await render(transport)
-    expect(view.trigger).not.toHaveBeenCalled()
+    expect(view.call).not.toHaveBeenCalled()
     await view.recipient()
     await view.send()
     expect(view.sendCalls()).toEqual([[transport === 'cloud' ? 'whatsapp::cloud::messages::send_text' : 'whatsapp::messages::send_text', {
@@ -156,7 +156,7 @@ describe('Explicit integration tests', () => {
     await view.refresh()
     expect(view.container.textContent).not.toContain('Could not verify results')
     expect(view.sendCalls()).toHaveLength(1)
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('::list')).every(([id]) => id === (transport === 'cloud' ? 'whatsapp::cloud::messages::list' : 'whatsapp::messages::list'))).toBe(true)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('::list')).every(([id]) => id === (transport === 'cloud' ? 'whatsapp::cloud::messages::list' : 'whatsapp::messages::list'))).toBe(true)
   })
 
   it('keeps native and Cloud test results separate and resets them for a new session incarnation', async () => {
@@ -320,11 +320,11 @@ describe('Explicit integration tests', () => {
     await view.visible(false); await view.visible(true)
     await view.key({ metaKey: true })
     expect(view.sendCalls()).toHaveLength(1)
-    const callsBeforeCheck = view.trigger.mock.calls.length
+    const callsBeforeCheck = view.call.mock.calls.length
     const restoredCheck = view.container.querySelector<HTMLButtonElement>('[role="alert"] button')!
     await act(async () => restoredCheck.click())
     expect(view.onOpen).toHaveBeenCalledWith({ chat_id: transport === 'cloud' ? '+15551234567' : '15551234567@s.whatsapp.net', title: '+15551234567', is_group: false })
-    expect(view.trigger.mock.calls).toHaveLength(callsBeforeCheck)
+    expect(view.call.mock.calls).toHaveLength(callsBeforeCheck)
     view.restoreSend()
     await act(async () => view.container.querySelector<HTMLButtonElement>('[type="submit"]')!.click())
     expect(view.sendCalls()).toHaveLength(2)
@@ -380,7 +380,7 @@ describe('Explicit integration tests', () => {
     await view.send()
     await act(async () => { await vi.advanceTimersByTimeAsync(7500) })
     expect(view.sendCalls()).toHaveLength(1)
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('::list'))).toHaveLength(1)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('::list'))).toHaveLength(1)
     await act(async () => resolve({ message_id: 'test-send-id', chat_id: '+15551234567' }))
     expect(view.container.querySelector('dl')?.textContent).toContain('Send requestAccepted')
     expect(view.container.textContent).toContain('Awaiting receipt')
@@ -398,7 +398,7 @@ describe('Explicit integration tests', () => {
     await view.recipient()
     expect(view.container.querySelector<HTMLButtonElement>('[type="submit"]')!.disabled).toBe(true)
     await view.send()
-    expect(view.trigger).not.toHaveBeenCalled()
+    expect(view.call).not.toHaveBeenCalled()
     expect(view.container.textContent).toContain('Start and connect the session')
   })
 
@@ -406,7 +406,7 @@ describe('Explicit integration tests', () => {
     const view = await render()
     await view.recipient('not-a-phone')
     await view.send()
-    expect(view.trigger).not.toHaveBeenCalled()
+    expect(view.call).not.toHaveBeenCalled()
     expect(view.container.querySelector('[role="alert"]')).not.toBeNull()
   })
 
@@ -419,7 +419,7 @@ describe('Explicit integration tests', () => {
     Object.defineProperty(result, 'scrollIntoView', { configurable: true, value: vi.fn() })
     await view.recipient('not-a-phone')
     await view.send()
-    expect(view.trigger).not.toHaveBeenCalled()
+    expect(view.call).not.toHaveBeenCalled()
     expect(document.activeElement).toBe(input)
     expect(resultFocus).not.toHaveBeenCalled()
     expect(input.getAttribute('aria-invalid')).toBe('true')
@@ -428,7 +428,7 @@ describe('Explicit integration tests', () => {
     await view.recipient('+15551234567')
     expect(input.hasAttribute('aria-invalid')).toBe(false)
     expect(document.getElementById(errorId)).toBeNull()
-    expect(view.trigger).not.toHaveBeenCalled()
+    expect(view.call).not.toHaveBeenCalled()
   })
 
   it.each(['cloud', 'native'] as const)('focuses the invalid %s message, associates its error and clears it on correction', async (transport) => {
@@ -437,7 +437,7 @@ describe('Explicit integration tests', () => {
     await view.text(transport === 'cloud' ? 'x'.repeat(4097) : 'x'.repeat(65537))
     const input = view.container.querySelector<HTMLTextAreaElement>('textarea')!
     await view.send()
-    expect(view.trigger).not.toHaveBeenCalled()
+    expect(view.call).not.toHaveBeenCalled()
     expect(document.activeElement).toBe(input)
     expect(input.getAttribute('aria-invalid')).toBe('true')
     const errorId = input.getAttribute('aria-describedby')!.split(' ').find((id) => id.endsWith('-message-error'))!
@@ -445,7 +445,7 @@ describe('Explicit integration tests', () => {
     await view.text('Corrected test message')
     expect(input.hasAttribute('aria-invalid')).toBe(false)
     expect(document.getElementById(errorId)).toBeNull()
-    expect(view.trigger).not.toHaveBeenCalled()
+    expect(view.call).not.toHaveBeenCalled()
   })
 
   it('validates touched fields without adding empty validation-only drafts or announcing untouched initial fields', async () => {
@@ -461,7 +461,7 @@ describe('Explicit integration tests', () => {
     await view.visible(false); await view.visible(true)
     expect(view.container.querySelector<HTMLInputElement>('input')?.getAttribute('aria-invalid')).toBe('true')
     expect(view.draftCount()).toBe(0)
-    expect(view.trigger).not.toHaveBeenCalled()
+    expect(view.call).not.toHaveBeenCalled()
     await view.recipient('+15551234567')
     expect(view.container.querySelector('[aria-invalid="true"]')).toBeNull()
   })

@@ -19,11 +19,11 @@ export function CloudTunnel({ host, webhookReady }: { host: Host; webhookReady: 
   const [pending, setPending] = useState<'start' | 'stop' | null>(null)
   const [actionError, setActionError] = useState<{ action: 'start' | 'stop'; message: string } | null>(null)
   const [actionStatus, setActionStatus] = useState<CloudTunnelStatus | null>(null)
-  const live = useWorkerLive<Snapshot>({ iii: host.iii, triggers: [], pollMs: 4000,
+  const live = useWorkerLive<Snapshot>({ iii: host.iii, sources: [], pollMs: 4000,
     handlerId: `iii::whatsapp-ui::cloud-tunnel::${instance}`,
     fetch: async () => {
       const current = revision.current
-      const status = await host.iii.trigger<CloudTunnelStatus>('whatsapp::cloud::tunnel::status', {})
+      const status = await host.iii.call<CloudTunnelStatus>('whatsapp::cloud::tunnel::status', {})
       if (current === revision.current && !busy.current) {
         setActionError((previous) => previous && (previous.action === 'start' ? status.enabled : !status.enabled) ? null : previous)
       }
@@ -49,7 +49,7 @@ export function CloudTunnel({ host, webhookReady }: { host: Host; webhookReady: 
     const current = scope.current.begin()
     setPending(action); setActionError(null)
     try {
-      const result = await host.iii.trigger<CloudTunnelStatus>(`whatsapp::cloud::tunnel::${action}`, {})
+      const result = await host.iii.call<CloudTunnelStatus>(`whatsapp::cloud::tunnel::${action}`, {})
       if (current()) setActionStatus(result)
     } catch (cause) { if (current()) setActionError({ action, message: errorMessage(cause) }) }
     finally {

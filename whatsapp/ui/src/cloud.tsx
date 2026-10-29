@@ -21,8 +21,8 @@ export function CloudPanel({ host, narrow, panelSide, onDirty, navigate, configu
 }) {
   const instance = useId()
   const [archiveIdentity, setArchiveIdentity] = useState<string | null>(null)
-  const status = useWorkerLive<CloudStatus>({ iii: host.iii, triggers: [], pollMs: 10000,
-    handlerId: `iii::whatsapp-ui::cloud::${instance}`, fetch: () => host.iii.trigger('whatsapp::cloud::status', {}) })
+  const status = useWorkerLive<CloudStatus>({ iii: host.iii, sources: [], pollMs: 10000,
+    handlerId: `iii::whatsapp-ui::cloud::${instance}`, fetch: () => host.iii.call('whatsapp::cloud::status', {}) })
   if (!status.data) return status.error
     ? <div className="wa-ui-reader-notice"><StatusPanel role="alert" variant="alert" headline="Cloud API status unavailable" detail={status.error} action={<Button variant="ghost" onClick={status.refresh}>Try again</Button>} /></div>
     : <Skeleton className="wa-ui-loading" />
@@ -85,7 +85,7 @@ function CloudWorkspace({ host, status, statusError, refreshStatus, narrow, pane
   useEffect(() => setDetailsOpen(needsSetup), [needsSetup])
   const chats = useInboxPages({ identity: search, enabled: status.enabled,
     fetchPage: async (cursor?: string) => {
-      const page = await host.iii.trigger<ChatPage>('whatsapp::cloud::chats::list', { query: search || undefined, cursor, limit: 100 })
+      const page = await host.iii.call<ChatPage>('whatsapp::cloud::chats::list', { query: search || undefined, cursor, limit: 100 })
       return { ...page, items: page.chats }
     }, merge: mergeChats })
   useEffect(() => () => checkScope.current.invalidate(), [])
@@ -95,7 +95,7 @@ function CloudWorkspace({ host, status, statusError, refreshStatus, narrow, pane
     const current = checkScope.current.begin()
     setChecking(true); setCheckError(null); setConnection(null)
     try {
-      const result = await host.iii.trigger<CloudConnection>('whatsapp::cloud::check_connection', {})
+      const result = await host.iii.call<CloudConnection>('whatsapp::cloud::check_connection', {})
       if (current()) setConnection(result)
     } catch (cause) { if (current()) setCheckError(errorMessage(cause)) }
     finally { if (current()) { checkBusy.current = false; setChecking(false) } }
@@ -156,7 +156,7 @@ function CloudConversation({ host, chat, readOnly, ready, narrow, onBack, onDirt
   onDirty(value: boolean): void; onSent(result: CloudSent, mode: CloudMessageMode): void; onCheckConversation(target: ChatTarget): void; initialMode?: CloudMessageMode; initialSent?: CloudSent
 }) {
   const archive = useInboxPages({ identity: chat?.chat_id ?? '', enabled: !!chat,
-    fetchPage: async (cursor?: string) => { const page = await host.iii.trigger<MessagePage>('whatsapp::cloud::messages::list', { chat_id: chat!.chat_id, cursor, limit: 50 }); return { ...page, items: page.messages } },
+    fetchPage: async (cursor?: string) => { const page = await host.iii.call<MessagePage>('whatsapp::cloud::messages::list', { chat_id: chat!.chat_id, cursor, limit: 50 }); return { ...page, items: page.messages } },
     merge: (previous, incoming) => mergeMessages(previous, incoming, chat!.chat_id) })
   const scroll = useRef<HTMLDivElement>(null)
   const followLatest = useRef(true)
