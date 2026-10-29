@@ -1637,12 +1637,8 @@
   /* Motion: the rail fills, a mark trades its number for a tick, the open
      step's controls rise in, and the setup enters once, staggered. None of
      it repeats often; reduced motion keeps the fades and drops the travel. */
-  @keyframes shui-repo-rise {
-    from { opacity: 0; translate: 0 8px; filter: blur(4px); }
-  }
-  @keyframes shui-repo-appear {
-    from { opacity: 0; }
-  }
+  /* (keyframes shui-repo-rise / shui-repo-appear are top level, below:
+     @keyframes cannot nest inside a style rule) */
   @media (prefers-reduced-motion: no-preference) {
     .shui-repo-step-rail-fill { transition: transform calc(var(--motion-duration-panel) * 2) var(--motion-ease-enter); }
     .shui-repo-step-mark { transition-property: background-color, border-color, color, outline-color; transition-duration: var(--motion-duration-control); transition-timing-function: var(--motion-ease-standard); }
@@ -4630,6 +4626,16 @@
     translate: none;
     border-radius: 0;
   }
+}
+
+/* The repo setup's entrance (see "Motion" in the repo setup rules). At the
+   top level: @keyframes may not nest inside a style rule, and Lightning CSS
+   (the Storybook / Vite build) rejects it there. */
+@keyframes shui-repo-rise {
+  from { opacity: 0; translate: 0 8px; filter: blur(4px); }
+}
+@keyframes shui-repo-appear {
+  from { opacity: 0; }
 }
 
 @keyframes shui-file-change-metric-in {
