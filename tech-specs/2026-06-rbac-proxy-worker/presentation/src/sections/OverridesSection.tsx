@@ -17,7 +17,7 @@ export function OverridesSection() {
       index="06"
       eyebrow="discovery overrides"
       title="discovery shows only what you can call."
-      lede="an engine rbac listener gates invocation but only partly filters discovery: 2 of 8 functions, and only in-process. the proxy lets the engine compute the full result, then rewrites all eight to the caller's boundaries before they reach the worker."
+      lede="an engine rbac listener gates invocation but only partly filters discovery: 4 of 6 functions, and only in-process. the proxy lets the engine compute the full result, then rewrites all six to the caller's boundaries before they reach the worker."
     >
       <StepReveal
         title="engine::workers::list, filtered client-side"
@@ -34,7 +34,7 @@ export function OverridesSection() {
       </div>
 
       <div className="mt-6 grid grid-cols-1 gap-4">
-        <SpecSheet title="the eight rewrites" meta="filter table">
+        <SpecSheet title="the six rewrites" meta="filter table">
           <div className="overflow-x-auto">
             <div className="min-w-[680px] flex flex-col">
               <div className="grid grid-cols-[240px_1fr_200px] gap-x-4 px-1 pb-2 border-b border-rule font-mono text-[10px] uppercase tracking-[0.12em] text-ink-faint">
@@ -66,7 +66,7 @@ export function OverridesSection() {
 
         <SpecSheet title="why not just patch the engine?" meta="the design choice">
           <p className="font-mono text-[13px] leading-[1.7] text-ink-faint lowercase">
-            making all eight discovery functions session-aware in the engine is
+            making the discovery functions session-aware in the engine is
             the smaller change if rbac stays in-engine, and it is the right fix
             for worker-gateway. but it does nothing for a proxy fronting a remote
             or managed engine you cannot patch. filtering in the proxy makes

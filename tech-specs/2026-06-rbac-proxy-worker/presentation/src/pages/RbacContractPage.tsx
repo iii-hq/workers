@@ -146,7 +146,7 @@ export function RbacContractPage() {
         <M>rbac:</M>
         {'\n  '}auth_function_id: <S>my-project::auth-function</S>
         {'\n  '}on_function_registration_function_id: <S>my-project::on-function-reg</S>
-        {'\n  '}on_trigger_registration_function_id: <S>my-project::on-trigger-reg</S>
+        {'\n  '}on_observer_registration_function_id: <S>my-project::on-observer-reg</S>
         {'\n  '}expose_functions:
         {'\n    - '}
         <S>match(&quot;api::*&quot;)</S>
