@@ -314,8 +314,10 @@ impl ObserveHandler for OnChangedHandler {
 }
 
 /// The handler of [`ON_CHANGED`]: overviews only come from the poll loop,
-/// so every invocation is refused, whatever its input.
-pub fn refuse_invocation(_input: Value) -> Result<(), Error> {
+/// so every invocation is refused. It takes the [`Overview`] every observer
+/// receives, so the function publishes that as its request schema (the
+/// interface boot smoke refuses an untyped one).
+pub fn refuse_invocation(_overview: Overview) -> Result<(), Error> {
     Err(Error::Remote {
         code: observe_codes::FORBIDDEN.to_string(),
         message: format!(
@@ -469,11 +471,7 @@ mod tests {
 
     #[test]
     fn on_changed_refuses_direct_invocation() {
-        for input in [
-            Value::Null,
-            serde_json::json!({}),
-            serde_json::to_value(overview(1)).unwrap(),
-        ] {
+        for input in [overview(0), overview(1)] {
             match refuse_invocation(input) {
                 Err(Error::Remote { code, message, .. }) => {
                     assert_eq!(code, observe_codes::FORBIDDEN);
@@ -482,6 +480,57 @@ mod tests {
                 }
                 other => panic!("expected FORBIDDEN, got {other:?}"),
             }
+        }
+    }
+
+    /// A handler's (request, response) schemas.
+    type Formats = (Option<Value>, Option<Value>);
+
+    /// The request and response schemas `RegisterFunction::new` derives
+    /// from a sync handler's types.
+    fn derived_formats<F, M>(_handler: &F) -> Formats
+    where
+        F: iii_sdk::iii::IntoSyncHandler<M>,
+    {
+        (F::request_format(), F::response_format())
+    }
+
+    fn is_typed(schema: &Value) -> bool {
+        [
+            "type",
+            "properties",
+            "$ref",
+            "allOf",
+            "anyOf",
+            "oneOf",
+            "enum",
+        ]
+        .iter()
+        .any(|key| schema.get(*key).is_some())
+    }
+
+    /// Every on-* handler publishes typed request and response schemas: the
+    /// interface boot smoke refuses an untyped (AnyValue or empty) schema.
+    #[test]
+    fn on_handlers_publish_typed_schemas() {
+        // One entry per on-* handler this worker registers.
+        let on_handlers: [(&str, Formats); 1] = [(ON_CHANGED, derived_formats(&refuse_invocation))];
+        for (id, (request, response)) in on_handlers {
+            let request = request.unwrap_or(Value::Null);
+            let response = response.unwrap_or(Value::Null);
+            assert!(
+                is_typed(&request),
+                "{id} request schema is untyped: {request}"
+            );
+            assert!(
+                is_typed(&response),
+                "{id} response schema is untyped: {response}"
+            );
+            assert!(
+                request["properties"]["sessions"].is_object()
+                    && request["properties"]["ports"].is_object(),
+                "{id} request schema is not the overview: {request}"
+            );
         }
     }
 
