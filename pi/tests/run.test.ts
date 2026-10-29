@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../src/session.js', () => ({ buildSession: vi.fn() }));
 
 import { type Config, loadConfig } from '../src/config.js';
-import { AGENT_EVENT_TRIGGER, RAW_EVENT_TRIGGER, registerAgentFeeds } from '../src/agent-feed.js';
+import { ON_AGENT_EVENT_FN, ON_RAW_EVENT_FN, registerAgentFeeds } from '../src/agent-feed.js';
 import { executeRun, RunPayloadSchema } from '../src/run.js';
 import { buildSession } from '../src/session.js';
 import { type FakeIii, fakeIii } from './_helpers/fake-iii.js';
@@ -17,11 +17,11 @@ import {
 
 const buildMock = vi.mocked(buildSession);
 
-/** Both feeds, with a consumer bound to each for `session_id`. */
-async function boundFeeds(fake: FakeIii, session_id = 's1') {
+/** Both feeds, with an observer of each for `session_id`. */
+async function observedFeeds(fake: FakeIii, session_id = 's1') {
   const feeds = registerAgentFeeds(fake.iii);
-  await fake.bindFeed(AGENT_EVENT_TRIGGER, session_id);
-  await fake.bindFeed(RAW_EVENT_TRIGGER, session_id);
+  await fake.observeFeed(ON_AGENT_EVENT_FN, session_id);
+  await fake.observeFeed(ON_RAW_EVENT_FN, session_id);
   return feeds;
 }
 
@@ -46,7 +46,7 @@ async function runTurn(
   const fake = fakeIii();
   const cfg = { ...(await baseConfig()), ...cfgOverrides };
   const capture = script(events);
-  const feeds = await boundFeeds(fake, String(payload.session_id ?? 's1'));
+  const feeds = await observedFeeds(fake, String(payload.session_id ?? 's1'));
   const emit = feeds.agent.emit;
   const emitRaw = feeds.raw.emit;
   const result = await executeRun(fake.iii, cfg, emit, emitRaw, RunPayloadSchema.parse(payload));
@@ -63,12 +63,12 @@ describe('executeRun', () => {
     const cfg = await baseConfig();
     script();
     // make every state::set reject — the working-save during setup throws
-    const realTrigger = fake.iii.trigger.bind(fake.iii);
-    (fake.iii as { trigger: unknown }).trigger = async (req: { function_id: string }) => {
+    const realCall = fake.iii.call.bind(fake.iii);
+    (fake.iii as { call: unknown }).call = async (req: { function_id: string }) => {
       if (req.function_id === 'state::set') throw new Error('store down');
-      return realTrigger(req as never);
+      return realCall(req as never);
     };
-    const emit = (await boundFeeds(fake)).agent.emit;
+    const emit = (await observedFeeds(fake)).agent.emit;
     await executeRun(
       fake.iii,
       cfg,
@@ -117,17 +117,15 @@ describe('executeRun', () => {
 
   it('mirrors every Pi event verbatim onto pi::raw-event', async () => {
     const { fake } = await runTurn({ prompt: 'x', session_id: 's1' });
-    const raw = fake.feedFrames(RAW_EVENT_TRIGGER).map((f) => f.event);
+    const raw = fake.feedFrames(ON_RAW_EVENT_FN).map((f) => f.event);
     expect(raw).toEqual(fullTurnEvents);
-    const sessionIds = fake.feedFrames(RAW_EVENT_TRIGGER).map((f) => f.session_id);
+    const sessionIds = fake.feedFrames(ON_RAW_EVENT_FN).map((f) => f.session_id);
     expect(new Set(sessionIds)).toEqual(new Set(['s1']));
   });
 
   it('emits the translated AgentEvent sequence on pi::agent-event', async () => {
     const { fake } = await runTurn({ prompt: 'x', session_id: 's1' });
-    const types = fake
-      .feedFrames(AGENT_EVENT_TRIGGER)
-      .map((f) => (f.event as { type: string }).type);
+    const types = fake.feedFrames(ON_AGENT_EVENT_FN).map((f) => (f.event as { type: string }).type);
     expect(types).toEqual([
       'function_execution_start',
       'function_execution_end',
@@ -136,7 +134,7 @@ describe('executeRun', () => {
       'agent_end',
     ]);
     const [start, end] = fake
-      .feedFrames(AGENT_EVENT_TRIGGER)
+      .feedFrames(ON_AGENT_EVENT_FN)
       .map((f) => f.event as Record<string, unknown>)
       .filter((d) => String(d.type).startsWith('function_execution'));
     expect(start).toMatchObject({
@@ -150,7 +148,7 @@ describe('executeRun', () => {
   it('prepends the iii runtime context to the prompt by default on a fresh session', async () => {
     const { capture } = await runTurn({ prompt: 'do it', session_id: 's1' });
     expect(capture.promptText).toContain('# iii runtime');
-    expect(capture.promptText).toContain('iii trigger engine::functions::list');
+    expect(capture.promptText).toContain('iii call engine::functions::list');
     expect(capture.promptText?.trimEnd().endsWith('do it')).toBe(true);
   });
 
@@ -204,7 +202,7 @@ describe('executeRun', () => {
     });
     const cfg = await baseConfig();
     const capture = script();
-    const emit = (await boundFeeds(fake)).agent.emit;
+    const emit = (await observedFeeds(fake)).agent.emit;
     const result = await executeRun(
       fake.iii,
       cfg,
@@ -234,7 +232,7 @@ describe('executeRun', () => {
     });
     const cfg = await baseConfig();
     const capture = script();
-    const emit = (await boundFeeds(fake)).agent.emit;
+    const emit = (await observedFeeds(fake)).agent.emit;
     await executeRun(
       fake.iii,
       cfg,
@@ -271,7 +269,7 @@ describe('executeRun', () => {
     const fake = fakeIii();
     const cfg = await baseConfig();
     script([], new Error('spawn failed'));
-    const emit = (await boundFeeds(fake)).agent.emit;
+    const emit = (await observedFeeds(fake)).agent.emit;
     const result = await executeRun(
       fake.iii,
       cfg,
@@ -284,9 +282,7 @@ describe('executeRun', () => {
     expect(String(result.result)).toContain('spawn failed');
     const record = fake.state.get('pi_sessions/s1') as { status: string };
     expect(record.status).toBe('error');
-    const types = fake
-      .feedFrames(AGENT_EVENT_TRIGGER)
-      .map((f) => (f.event as { type: string }).type);
+    const types = fake.feedFrames(ON_AGENT_EVENT_FN).map((f) => (f.event as { type: string }).type);
     expect(types).toContain('turn_end');
     expect(types).toContain('agent_end');
   });
@@ -303,16 +299,16 @@ describe('executeRun', () => {
 });
 
 describe('event feed delivery during a turn', () => {
-  it('a failing consumer never fails the turn', async () => {
+  it('a refused feed call never fails the turn', async () => {
     const fake = fakeIii();
     const cfg = await baseConfig();
     script();
-    const feeds = registerAgentFeeds(fake.iii);
-    await fake.bindFeed(AGENT_EVENT_TRIGGER, 's1', { function_id: 'gone::agent' });
-    await fake.bindFeed(RAW_EVENT_TRIGGER, 's1', { function_id: 'gone::raw' });
-    const real = fake.iii.trigger.bind(fake.iii);
-    (fake.iii as { trigger: unknown }).trigger = async (req: { function_id: string }) => {
-      if (req.function_id.startsWith('gone::')) throw new Error('function_not_found');
+    const feeds = await observedFeeds(fake);
+    const real = fake.iii.call.bind(fake.iii);
+    (fake.iii as { call: unknown }).call = async (req: { function_id: string }) => {
+      if (req.function_id === ON_AGENT_EVENT_FN || req.function_id === ON_RAW_EVENT_FN) {
+        throw new Error('OVERFLOW');
+      }
       return real(req as never);
     };
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -324,15 +320,19 @@ describe('event feed delivery during a turn', () => {
       RunPayloadSchema.parse({ prompt: 'x', session_id: 's1' }),
     );
     expect(result).toMatchObject({ session_id: 's1', result: 'done' });
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('gone::agent'));
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('gone::raw'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(ON_AGENT_EVENT_FN));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(ON_RAW_EVENT_FN));
     warn.mockRestore();
   });
 
   it('does not touch iii-stream at all', async () => {
     const { fake } = await runTurn({ prompt: 'x', session_id: 's1' });
     expect(fake.calls.some((c) => c.function_id.startsWith('stream::'))).toBe(false);
-    for (const call of fake.calls.filter((c) => c.function_id.startsWith('test::on::'))) {
+    const feedCalls = fake.calls.filter(
+      (c) => c.function_id === ON_AGENT_EVENT_FN || c.function_id === ON_RAW_EVENT_FN,
+    );
+    expect(feedCalls.length).toBeGreaterThan(0);
+    for (const call of feedCalls) {
       expect(call.action).toEqual({ type: 'void' });
     }
   });

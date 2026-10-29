@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../src/session.js', () => ({ buildSession: vi.fn() }));
 
 import { loadConfig } from '../src/config.js';
-import { AGENT_EVENT_TRIGGER, RAW_EVENT_TRIGGER, registerAgentFeeds } from '../src/agent-feed.js';
+import { ON_AGENT_EVENT_FN, ON_RAW_EVENT_FN, registerAgentFeeds } from '../src/agent-feed.js';
 import { register } from '../src/run.js';
 import { buildSession } from '../src/session.js';
 import { fakeIii, type FakeIii } from './_helpers/fake-iii.js';
@@ -44,6 +44,8 @@ describe('register', () => {
     const fake = await registeredWorker();
     expect([...fake.registered.keys()].sort()).toEqual([
       'pi::follow_up',
+      'pi::on-agent-event',
+      'pi::on-raw-event',
       'pi::run',
       'pi::sessions::list',
       'pi::start',
@@ -105,14 +107,14 @@ describe('register', () => {
   it('pi::task publishes frames on both feeds through the record wrapper', async () => {
     const fake = await registeredWorker();
     script();
-    await fake.bindFeed(AGENT_EVENT_TRIGGER, 'task-1');
-    await fake.bindFeed(RAW_EVENT_TRIGGER, 'task-1');
+    await fake.observeFeed(ON_AGENT_EVENT_FN, 'task-1');
+    await fake.observeFeed(ON_RAW_EVENT_FN, 'task-1');
 
     await fake.registered.get('pi::task')?.({ task: 'review', session_id: 'task-1' });
     await vi.waitFor(() => {
       expect(fake.state.get('agent_tasks/task-1')).toMatchObject({ status: 'done' });
     });
-    const agent = fake.feedFrames(AGENT_EVENT_TRIGGER);
+    const agent = fake.feedFrames(ON_AGENT_EVENT_FN);
     expect(agent.map((f) => (f.event as { type: string }).type)).toEqual([
       'function_execution_start',
       'function_execution_end',
@@ -121,7 +123,7 @@ describe('register', () => {
       'agent_end',
     ]);
     expect(agent.map((f) => f.seq)).toEqual([0, 1, 2, 3, 4]);
-    expect(fake.feedFrames(RAW_EVENT_TRIGGER).map((f) => f.event)).toEqual(fullTurnEvents);
+    expect(fake.feedFrames(ON_RAW_EVENT_FN).map((f) => f.event)).toEqual(fullTurnEvents);
     // The wrapper still captures the transcript for session::append.
     expect(fake.calls.some((c) => c.function_id === 'session::append')).toBe(true);
   });
