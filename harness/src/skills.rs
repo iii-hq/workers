@@ -112,7 +112,9 @@ pub(crate) fn plan_sync(
             body: view.body.clone(),
             ack: next,
         },
-        (None, _, EffectiveView::Removed { .. }) => SyncPlan::Acknowledge(next),
+        // A session that started without skills stays without them: record
+        // the first view instead of injecting the catalog mid-session.
+        (None, _, _) => SyncPlan::Acknowledge(next),
         (_, _, EffectiveView::Available(view)) => SyncPlan::Append {
             message: format!(
                 "The available skills have changed. This list supersedes the previous\navailable skills list.\n{}",
@@ -740,8 +742,23 @@ mod tests {
             SyncPlan::FreezeBaseline { .. }
         ));
 
-        let SyncPlan::Append { message, ack } = plan_sync(None, true, &available) else {
-            panic!("late first availability must be explicit");
+        assert_eq!(
+            plan_sync(None, true, &available),
+            SyncPlan::Acknowledge(SkillAck {
+                generation: 2,
+                fingerprint: Some("sha256:one".into()),
+            }),
+            "late first availability is acknowledged, never appended mid-session"
+        );
+        let SyncPlan::Append { message, ack } = plan_sync(
+            Some(&SkillAck {
+                generation: 1,
+                fingerprint: Some("sha256:old".into()),
+            }),
+            true,
+            &available,
+        ) else {
+            panic!("a real change after a baseline must append");
         };
         assert_eq!(
             message,
