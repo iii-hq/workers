@@ -93,6 +93,9 @@ fn viewer(iii: &IIIClient, function_id: &str, delay: Duration) -> Seen {
     seen
 }
 
+// The old consumer's path: a computer::frame-changed binding (register_trigger
+// is deprecated in iii 0.25; the trigger type stays).
+#[allow(deprecated)]
 fn bind(iii: &IIIClient, function_id: &str, config: Value) -> iii_sdk::trigger::Trigger {
     iii.register_trigger(RegisterTriggerInput {
         trigger_type: "computer::frame-changed".to_string(),

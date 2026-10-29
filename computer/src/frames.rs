@@ -16,19 +16,38 @@
 //! - delivery is a synchronous call with a timeout (not fire-and-forget), so a
 //!   slow consumer keeps its slot busy and the provider coalesces instead of
 //!   pushing into engine or socket buffers.
+//!
+//! `computer::on-frame-changed` is the observable function next to the
+//! trigger type (iii 0.25): an observer passes the binding config as args and
+//! gets a slot of its own in the same notifier, under the same bounds;
+//! delivery is `obs.call` with the same timeout. Notifications are routed
+//! in-process and the function refuses invocations (FORBIDDEN).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType};
+use iii_sdk::{
+    IIIClient, Observe, ObserveHandler, ObserveRejection, Observer, RegisterFunction,
+    RegisterTriggerType,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::events::{codes, refuse_invocation};
+
+/// The handler registered for `computer::on-frame-changed`: refuses every
+/// invocation with FORBIDDEN. It takes [`FrameChange`], the notification each
+/// observer receives, so the request schema documents the delivered shape.
+pub fn refuse_on_frame_changed(_change: FrameChange) -> Result<(), Error> {
+    Err(refuse_invocation(ON_FRAME_CHANGED))
+}
 
 pub const FRAME_CHANGED: &str = "computer::frame-changed";
 pub const FRAME_CHANGED_DESC: &str =
@@ -37,11 +56,20 @@ pub const FRAME_CHANGED_DESC: &str =
      Payload: { session_id, epoch, frame_seq, change, width, height, mime?, bytes?, timestamp }; \
      no image: read it with computer::frame. Latest state only: intermediate notifications are \
      coalesced for slow consumers, nothing is stored or replayed.";
-/// Upper bound on live `computer::frame-changed` bindings.
+/// Upper bound on live `computer::frame-changed` bindings and
+/// `computer::on-frame-changed` observers, counted together.
 pub const MAX_FRAME_BINDINGS: usize = 64;
 /// Per-delivery timeout; a consumer slower than this only loses intermediate
 /// notifications, never blocks the pump.
 pub const DELIVERY_TIMEOUT_MS: u64 = 5_000;
+
+pub const ON_FRAME_CHANGED: &str = "computer::on-frame-changed";
+pub const ON_FRAME_CHANGED_DESC: &str =
+    "The newest screencast frame of one session changed (stored or cleared). Observe it with \
+     args { session_id } (required); each observer receives { session_id, epoch, frame_seq, \
+     change, width, height, mime?, bytes?, timestamp }, no image: read it with computer::frame. \
+     Latest state only: slow observers are coalesced, nothing is stored or replayed. Only the \
+     computer worker emits it: invoking it directly is refused.";
 
 /// Binding filter for `computer::frame-changed`. `session_id` is required:
 /// a viewer follows one desktop; unknown keys fail the registration.
@@ -93,6 +121,35 @@ pub struct FrameTarget {
     pub metadata: Option<Value>,
 }
 
+/// One observer of `computer::on-frame-changed`, as its delivery slot sees
+/// it. Production wraps the SDK's [`Observer`]; tests record.
+#[async_trait]
+pub trait FrameObserver: Send + Sync {
+    fn id(&self) -> &str;
+    /// Deliver one notification and wait for the target, like a binding's
+    /// delivery, so a slow observer keeps its slot busy and is coalesced.
+    async fn deliver(&self, payload: Value) -> Result<(), String>;
+}
+
+#[async_trait]
+impl FrameObserver for Observer {
+    fn id(&self) -> &str {
+        Observer::id(self)
+    }
+
+    async fn deliver(&self, payload: Value) -> Result<(), String> {
+        self.call_with_timeout::<Value>(payload, Duration::from_millis(DELIVERY_TIMEOUT_MS))
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// The notifier's key for an observer: apart from engine binding ids.
+fn observer_key(observer_id: &str) -> String {
+    format!("observer:{observer_id}")
+}
+
 /// How one notification reaches its target. Production calls the bus;
 /// tests record (and can be slow on purpose).
 #[async_trait]
@@ -142,17 +199,33 @@ struct SlotState {
     closed: bool,
 }
 
-/// One binding's coalescing mailbox: one pending notification, one delivery
-/// in flight.
+/// Where one slot delivers: a trigger binding (through the sink) or an
+/// observer of `computer::on-frame-changed` (through `obs.call`).
+enum SlotTarget {
+    Binding(FrameTarget),
+    Observer(Arc<dyn FrameObserver>),
+}
+
+impl SlotTarget {
+    fn label(&self) -> String {
+        match self {
+            SlotTarget::Binding(target) => target.function_id.clone(),
+            SlotTarget::Observer(observer) => format!("observer {}", observer.id()),
+        }
+    }
+}
+
+/// One binding's or observer's coalescing mailbox: one pending
+/// notification, one delivery in flight.
 pub struct DeliverySlot {
-    target: FrameTarget,
+    target: SlotTarget,
     state: Mutex<SlotState>,
     delivered: AtomicU64,
     coalesced: AtomicU64,
 }
 
 impl DeliverySlot {
-    fn new(target: FrameTarget) -> Arc<Self> {
+    fn new(target: SlotTarget) -> Arc<Self> {
         Arc::new(Self {
             target,
             state: Mutex::new(SlotState::default()),
@@ -198,12 +271,16 @@ impl DeliverySlot {
                     }
                 }
             };
-            match sink.deliver(&self.target, next).await {
+            let result = match &self.target {
+                SlotTarget::Binding(target) => sink.deliver(target, next).await,
+                SlotTarget::Observer(observer) => observer.deliver(next).await,
+            };
+            match result {
                 Ok(()) => {
                     self.delivered.fetch_add(1, Ordering::Relaxed);
                 }
                 Err(e) => {
-                    tracing::debug!(function_id = %self.target.function_id, error = %e, "frame-changed delivery failed");
+                    tracing::debug!(target = %self.target.label(), error = %e, "frame-changed delivery failed");
                 }
             }
         }
@@ -259,26 +336,56 @@ impl FrameNotifier {
     /// Validate and store a binding. Rejects a missing/empty `session_id`,
     /// unknown keys, and anything past [`MAX_FRAME_BINDINGS`].
     pub fn add(&self, config: TriggerConfig) -> Result<(), String> {
-        let filter: FrameBindingConfig = serde_json::from_value(config.config.clone())
-            .map_err(|e| format!("invalid {FRAME_CHANGED} config: {e}"))?;
-        let session_id = filter.session_id.trim().to_string();
-        if session_id.is_empty() {
-            return Err(format!(
-                "invalid {FRAME_CHANGED} config: session_id must not be empty"
-            ));
-        }
-        let mut map = self.lock();
-        if !map.contains_key(&config.id) && map.len() >= MAX_FRAME_BINDINGS {
-            return Err(format!(
-                "{FRAME_CHANGED}: binding limit ({MAX_FRAME_BINDINGS}) reached"
-            ));
-        }
-        let slot = DeliverySlot::new(FrameTarget {
+        let target = SlotTarget::Binding(FrameTarget {
             function_id: config.function_id,
             namespace: config.namespace,
             metadata: config.metadata,
         });
-        if let Some(old) = map.insert(config.id, FrameBinding { session_id, slot }) {
+        self.insert(config.id, config.config, target)
+            .map_err(|(_, message)| message)
+    }
+
+    /// Validate and store an observer of `computer::on-frame-changed`: its
+    /// args are the binding config, with the same rules and the same cap
+    /// (bindings and observers count together).
+    pub fn add_observer(
+        &self,
+        observer: Arc<dyn FrameObserver>,
+        args: Value,
+    ) -> Result<(), ObserveRejection> {
+        let key = observer_key(observer.id());
+        self.insert(key, args, SlotTarget::Observer(observer))
+            .map_err(|(code, message)| ObserveRejection::new(code, message))
+    }
+
+    fn insert(
+        &self,
+        id: String,
+        config: Value,
+        target: SlotTarget,
+    ) -> Result<(), (&'static str, String)> {
+        let filter: FrameBindingConfig = serde_json::from_value(config).map_err(|e| {
+            (
+                codes::INVALID_ARGS,
+                format!("invalid {FRAME_CHANGED} config: {e}"),
+            )
+        })?;
+        let session_id = filter.session_id.trim().to_string();
+        if session_id.is_empty() {
+            return Err((
+                codes::INVALID_ARGS,
+                format!("invalid {FRAME_CHANGED} config: session_id must not be empty"),
+            ));
+        }
+        let mut map = self.lock();
+        if !map.contains_key(&id) && map.len() >= MAX_FRAME_BINDINGS {
+            return Err((
+                codes::LIMIT_REACHED,
+                format!("{FRAME_CHANGED}: binding limit ({MAX_FRAME_BINDINGS}) reached"),
+            ));
+        }
+        let slot = DeliverySlot::new(target);
+        if let Some(old) = map.insert(id, FrameBinding { session_id, slot }) {
             old.slot.close();
         }
         Ok(())
@@ -288,6 +395,10 @@ impl FrameNotifier {
         if let Some(binding) = self.lock().remove(id) {
             binding.slot.close();
         }
+    }
+
+    pub fn remove_observer(&self, observer_id: &str) {
+        self.remove(&observer_key(observer_id));
     }
 
     pub fn binding_count(&self) -> usize {
@@ -302,6 +413,11 @@ impl FrameNotifier {
     /// The slot of one binding (tests and diagnostics).
     pub fn slot(&self, id: &str) -> Option<Arc<DeliverySlot>> {
         self.lock().get(id).map(|b| b.slot.clone())
+    }
+
+    /// The slot of one observer (tests and diagnostics).
+    pub fn observer_slot(&self, observer_id: &str) -> Option<Arc<DeliverySlot>> {
+        self.slot(&observer_key(observer_id))
     }
 
     /// Offer `change` to every binding for its session. Never blocks on a
@@ -350,10 +466,36 @@ impl TriggerHandler for FrameTriggerHandler {
     }
 }
 
-/// Register `computer::frame-changed` with the engine and return the notifier
-/// the screencast pump feeds.
+/// Files each observer of `computer::on-frame-changed` in the notifier the
+/// trigger type uses (same session filter, same cap, its own coalescing
+/// slot), and takes it out again when the engine removes it.
+struct FrameObserveHandler {
+    notifier: Arc<FrameNotifier>,
+}
+
+#[async_trait]
+impl ObserveHandler for FrameObserveHandler {
+    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
+        self.notifier
+            .add_observer(Arc::new(obs.clone()), obs.args_value().clone())?;
+        tracing::info!(observer = %obs.id(), target = %obs.target(), "frame-changed observer added");
+        Ok(())
+    }
+
+    async fn on_observer_removed(&self, obs: &Observer) {
+        self.notifier.remove_observer(obs.id());
+        tracing::info!(observer = %obs.id(), "frame-changed observer removed");
+    }
+}
+
+/// Register `computer::frame-changed` with the engine, and the observable
+/// `computer::on-frame-changed` next to it, and return the notifier the
+/// screencast pump feeds.
 pub fn register_frame_trigger_type(iii: &Arc<IIIClient>) -> Arc<FrameNotifier> {
     let notifier = FrameNotifier::new(Arc::new(IiiFrameSink::new(iii.clone())));
+    // Kept for consumers that bind the trigger type, on 0.24 and 0.25
+    // engines alike.
+    #[allow(deprecated)]
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
             FRAME_CHANGED,
@@ -366,6 +508,24 @@ pub fn register_frame_trigger_type(iii: &Arc<IIIClient>) -> Arc<FrameNotifier> {
         .call_request_format::<FrameChange>(),
     );
     tracing::info!(trigger_type = FRAME_CHANGED, "registered trigger type");
+    // Owner-delivered; on an engine without observe it registers as a plain
+    // function and its hooks never run.
+    iii.register_function(
+        ON_FRAME_CHANGED,
+        RegisterFunction::new(refuse_on_frame_changed)
+            .description(ON_FRAME_CHANGED_DESC)
+            .observe(
+                Observe::owner()
+                    .args_format::<FrameBindingConfig>()
+                    .handler(FrameObserveHandler {
+                        notifier: notifier.clone(),
+                    }),
+            ),
+    );
+    tracing::info!(
+        function_id = ON_FRAME_CHANGED,
+        "registered observable function"
+    );
     notifier
 }
 
@@ -547,5 +707,130 @@ mod tests {
             .collect();
         assert_eq!(seqs, vec![1]);
         assert!(!slot.in_flight());
+    }
+
+    /// An observer of `computer::on-frame-changed` that records its frames.
+    struct FrameObserverRecorder {
+        id: String,
+        seen: Mutex<Vec<Value>>,
+    }
+
+    #[async_trait]
+    impl FrameObserver for FrameObserverRecorder {
+        fn id(&self) -> &str {
+            &self.id
+        }
+
+        async fn deliver(&self, payload: Value) -> Result<(), String> {
+            self.seen.lock().unwrap().push(payload);
+            Ok(())
+        }
+    }
+
+    fn frame_observer(id: &str) -> Arc<FrameObserverRecorder> {
+        Arc::new(FrameObserverRecorder {
+            id: id.to_string(),
+            seen: Mutex::new(Vec::new()),
+        })
+    }
+
+    async fn settle_observer(notifier: &FrameNotifier, id: &str) {
+        for _ in 0..500 {
+            if notifier
+                .observer_slot(id)
+                .map(|s| !s.in_flight())
+                .unwrap_or(true)
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("observer slot did not settle");
+    }
+
+    #[test]
+    fn on_frame_changed_refuses_direct_invocation() {
+        // The very handler computer::on-frame-changed is registered with: a
+        // well-formed notification, forged by a caller, is refused.
+        for forged in [change("c1", 1), change("c2", 7)] {
+            let err = refuse_on_frame_changed(forged).unwrap_err();
+            assert!(
+                matches!(&err, Error::Remote { code, message, .. }
+                    if code == codes::FORBIDDEN && message.contains(ON_FRAME_CHANGED)),
+                "{err:?}"
+            );
+        }
+        let err = refuse_invocation(ON_FRAME_CHANGED);
+        assert!(
+            matches!(&err, Error::Remote { code, message, .. }
+                if code == codes::FORBIDDEN && message.contains(ON_FRAME_CHANGED)),
+            "{err:?}"
+        );
+        assert_eq!(ON_FRAME_CHANGED, "computer::on-frame-changed");
+    }
+
+    #[tokio::test]
+    async fn an_observer_receives_the_notification_a_binding_receives() {
+        let sink = recorder(0);
+        let n = FrameNotifier::new(sink.clone());
+        n.add(binding("a", json!({ "session_id": "c1" }))).unwrap();
+        let watcher = frame_observer("o1");
+        n.add_observer(watcher.clone(), json!({ "session_id": "c1" }))
+            .unwrap();
+        let elsewhere = frame_observer("o2");
+        n.add_observer(elsewhere.clone(), json!({ "session_id": "c2" }))
+            .unwrap();
+
+        n.notify(&change("c1", 1));
+        settle(&n, &["a"]).await;
+        settle_observer(&n, "o1").await;
+
+        let bound: Vec<Value> = sink
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, payload)| payload.clone())
+            .collect();
+        assert_eq!(bound.len(), 1);
+        assert_eq!(*watcher.seen.lock().unwrap(), bound);
+        assert_eq!(bound[0], serde_json::to_value(change("c1", 1)).unwrap());
+        assert!(elsewhere.seen.lock().unwrap().is_empty());
+
+        n.remove_observer("o1");
+        assert!(n.observer_slot("o1").is_none());
+        n.notify(&change("c1", 2));
+        settle(&n, &["a"]).await;
+        assert_eq!(watcher.seen.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn observer_args_follow_the_binding_rules_and_share_the_cap() {
+        let n = FrameNotifier::new(recorder(0));
+        for bad in [Value::Null, json!({}), json!({ "session_id": " " })] {
+            let rejection = n.add_observer(frame_observer("bad"), bad).unwrap_err();
+            assert_eq!(rejection.code, codes::INVALID_ARGS);
+        }
+        for i in 0..MAX_FRAME_BINDINGS - 1 {
+            n.add(binding(&format!("b{i}"), json!({ "session_id": "c1" })))
+                .unwrap();
+        }
+        n.add_observer(frame_observer("o1"), json!({ "session_id": "c1" }))
+            .unwrap();
+        let rejection = n
+            .add_observer(frame_observer("o2"), json!({ "session_id": "c1" }))
+            .unwrap_err();
+        assert_eq!(rejection.code, codes::LIMIT_REACHED);
+        assert!(n
+            .add(binding("one-too-many", json!({ "session_id": "c1" })))
+            .is_err());
+        // An observer id never collides with a binding id.
+        n.add_observer(frame_observer("b0"), json!({ "session_id": "c1" }))
+            .unwrap_err();
+        assert!(n.slot("b0").is_some());
+        // Replacing an existing observer is not a new one.
+        n.add_observer(frame_observer("o1"), json!({ "session_id": "c2" }))
+            .unwrap();
+        assert_eq!(n.binding_count(), MAX_FRAME_BINDINGS);
     }
 }
