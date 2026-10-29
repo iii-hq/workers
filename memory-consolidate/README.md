@@ -31,7 +31,7 @@ The report names every group: the surviving memory, the retired duplicates, and 
 
 | Function | Input | What it does |
 |---|---|---|
-| `memory-consolidate::run` | `{ bank?, dry_run? }` | One consolidation pass now, over every configured bank or one bank; returns the per-bank report |
+| `memory-consolidate::run` | `{ bank?, dry_run? }` | One consolidation pass on demand, over every configured bank or one bank; returns the per-bank report |
 | `memory-consolidate::status` | `{}` | The schedule and the last pass: `enabled`, `interval_hours`, `last_run`, `due`, the latest per-bank results |
 | `memory-consolidate::on-tick` | the `cron::on-tick` event | Internal: the schedule heartbeat |
 | `memory-consolidate::on-config-change` | the `configuration::on-updated` event | Internal: hot-reloads the configuration |
