@@ -161,7 +161,7 @@ describe('reads through the worker', () => {
     const calls: Array<Record<string, unknown>> = []
     const host = {
       iii: {
-        trigger: async (fn: string, payload: Record<string, unknown>) => {
+        call: async (fn: string, payload: Record<string, unknown>) => {
           expect(fn).toBe('storage::getObject')
           calls.push(payload)
           if (!ranged) {
@@ -213,7 +213,7 @@ describe('reads through the worker', () => {
   it('explains an older worker cannot read past 10 MiB', async () => {
     const host = {
       iii: {
-        trigger: async () => {
+        call: async () => {
           // As the published worker sends it: no `message` inside.
           throw {
             code: 'invocation_failed',

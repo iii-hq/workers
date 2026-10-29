@@ -1,5 +1,5 @@
 /**
- * Per-kind renderers for a `github::called` event's budgeted `result_preview`
+ * Per-kind renderers for a `github::on-called` event's budgeted `result_preview`
  * (see the `preview()` budgeter in github/src/events.rs). The worker tags each
  * event with a `kind` discriminator so the feed can pick a renderer without
  * re-parsing the payload:

@@ -1,17 +1,17 @@
 //! Tiny in-process smoke tests. Real IMAP/SMTP integration tests land in PR 1.5
 //! with greenmail + mock-smtp containers; these checks just verify config
-//! parsing, manifest shape, and trigger-registry semantics so refactors don't
-//! silently drift.
+//! parsing, manifest shape, and the `email::on-new-mail` event shape so
+//! refactors don't silently drift.
 
 use email::config::WorkerConfig;
+use email::events::new_mail::{NewMailEvent, ON_NEW_MAIL_FN};
 use email::manifest::build_manifest;
-use email::triggers::registry::TriggerRegistry;
 
 #[test]
-fn manifest_lists_eight_functions_and_new_mail_trigger() {
+fn manifest_lists_nine_functions_with_private_on_new_mail() {
     let m = build_manifest();
     let fns = m["functions"].as_array().expect("functions array");
-    assert_eq!(fns.len(), 8, "expected 8 functions in manifest");
+    assert_eq!(fns.len(), 9, "expected 9 functions in manifest");
     let ids: Vec<_> = fns.iter().map(|f| f["id"].as_str().unwrap_or("")).collect();
     for expected in [
         "email::send",
@@ -22,12 +22,15 @@ fn manifest_lists_eight_functions_and_new_mail_trigger() {
         "email::flag",
         "email::move",
         "email::attachment::get",
+        "email::on-new-mail",
     ] {
         assert!(ids.contains(&expected), "missing {expected}");
     }
-    let triggers = m["trigger_types"].as_array().expect("trigger_types array");
-    assert_eq!(triggers.len(), 1);
-    assert_eq!(triggers[0]["name"], "email::new-mail");
+    let on_new_mail = fns
+        .iter()
+        .find(|f| f["id"] == ON_NEW_MAIL_FN)
+        .expect("email::on-new-mail entry");
+    assert_eq!(on_new_mail["private"], true);
 }
 
 #[test]
@@ -40,50 +43,19 @@ fn config_defaults_apply() {
 }
 
 #[test]
-fn registry_fan_out_keying() {
-    let reg = TriggerRegistry::new();
-    reg.register(
-        "support".into(),
-        "INBOX".into(),
-        "trig-1".into(),
-        "h::on_mail".into(),
-        Some("project-a".into()),
-        30_000,
-    );
-    reg.register(
-        "support".into(),
-        "INBOX".into(),
-        "trig-2".into(),
-        "audit::log".into(),
-        None,
-        5_000,
-    );
-    reg.register(
-        "billing".into(),
-        "INBOX".into(),
-        "trig-3".into(),
-        "billing::ingest".into(),
-        Some("project-b".into()),
-        30_000,
-    );
-
-    let subs = reg.subscribers_for("support", "INBOX");
-    assert_eq!(subs.len(), 2);
-    let fns: Vec<_> = subs.iter().map(|s| s.function_id.as_str()).collect();
-    assert!(fns.contains(&"h::on_mail"));
-    assert!(fns.contains(&"audit::log"));
-    assert_eq!(
-        subs.iter()
-            .find(|s| s.function_id == "h::on_mail")
-            .and_then(|s| s.namespace.as_deref()),
-        Some("project-a")
-    );
-
-    reg.unregister("trig-1");
-    let subs = reg.subscribers_for("support", "INBOX");
-    assert_eq!(subs.len(), 1);
-    assert_eq!(subs[0].function_id, "audit::log");
-
-    let billing = reg.subscribers_for("billing", "INBOX");
-    assert_eq!(billing.len(), 1);
+fn new_mail_event_round_trips_the_wire_shape() {
+    let wire = serde_json::json!({
+        "account": "support",
+        "folder": "INBOX",
+        "uid": 12345,
+        "message_id": "<abc@mx.example.com>",
+        "from": "sender@example.com",
+        "subject": "Ticket #42",
+        "snippet": "first ~200 chars of body",
+        "ts": "2026-05-28T10:14:00+00:00",
+    });
+    let event: NewMailEvent = serde_json::from_value(wire.clone()).expect("event parses");
+    assert_eq!(event.account, "support");
+    assert_eq!(event.uid, 12345);
+    assert_eq!(serde_json::to_value(&event).unwrap(), wire);
 }

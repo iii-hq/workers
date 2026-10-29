@@ -1,7 +1,7 @@
 //! S3 → SQS poller. Long-polls SQS, normalizes the S3 event JSON,
 //! and yields `ObjectEventNormalized`s for the dispatcher to deliver.
 
-use crate::triggers::normalize::{normalize_s3, EventKind, NormalizeError, ObjectEventNormalized};
+use crate::events::normalize::{normalize_s3, EventKind, NormalizeError, ObjectEventNormalized};
 use aws_sdk_sqs::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -90,7 +90,7 @@ impl SqsPoller {
                     Ok(true) => {}
                     Ok(false) => all_acked = false,
                     Err(_) => {
-                        tracing::warn!("trigger dispatch timed out");
+                        tracing::warn!("object event dispatch timed out");
                         all_acked = false;
                     }
                 }
@@ -125,7 +125,7 @@ impl SqsPoller {
 /// hammer SQS when the queue is quiet. Cancel by aborting the JoinHandle.
 pub async fn run_loop<D>(poller: SqsPoller, dispatcher: std::sync::Arc<D>)
 where
-    D: crate::triggers::dispatcher::EventDispatcher + 'static,
+    D: crate::events::dispatcher::EventDispatcher + 'static,
 {
     use tokio::time::{sleep, Duration};
     loop {
@@ -143,8 +143,8 @@ where
     }
 }
 
-/// Filter helper: should we dispatch this event to a trigger that subscribes
-/// to `direction`? Used by the registration layer.
+/// Filter helper: is this event of `direction` (a call of that kind's
+/// object function)?
 pub fn matches_direction(event: &ObjectEventNormalized, direction: EventKind) -> bool {
     event.event_kind == direction
 }
@@ -152,7 +152,7 @@ pub fn matches_direction(event: &ObjectEventNormalized, direction: EventKind) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::triggers::normalize::EventKind;
+    use crate::events::normalize::EventKind;
 
     #[test]
     fn matches_direction_filters_by_kind() {

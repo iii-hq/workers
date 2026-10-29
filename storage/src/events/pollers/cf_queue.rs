@@ -5,7 +5,7 @@
 //! during the Phase 15 spike — if CF's API turns out to require different
 //! pagination or auth shape, this module is the place to adjust.
 
-use crate::triggers::normalize::{normalize_r2, EventKind, NormalizeError, ObjectEventNormalized};
+use crate::events::normalize::{normalize_r2, EventKind, NormalizeError, ObjectEventNormalized};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -159,7 +159,7 @@ impl CfQueuePoller {
 /// so we sleep ~2s between empty pulls.
 pub async fn run_loop<D>(poller: CfQueuePoller, dispatcher: std::sync::Arc<D>)
 where
-    D: crate::triggers::dispatcher::EventDispatcher + 'static,
+    D: crate::events::dispatcher::EventDispatcher + 'static,
 {
     use tokio::time::{sleep, Duration};
     loop {
@@ -176,7 +176,7 @@ where
 }
 
 /// Probe the CF Queues consume endpoint at startup so a misconfigured token
-/// fails before any trigger fires (rather than silently never delivering).
+/// fails before any object event is called (rather than silently never delivering).
 pub async fn probe_auth(
     account_id: &str,
     queue_id: &str,

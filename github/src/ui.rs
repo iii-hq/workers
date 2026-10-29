@@ -4,18 +4,18 @@
 //!
 //! Ships two assets into any running console:
 //!
-//! - `github/page.js` (`console:script`) — the `github` page: a live
-//!   ACTIVITY feed of what the agent does with the github worker. It binds a
-//!   tab-scoped `github::called` trigger (the type the worker registers in
-//!   `events.rs`) and renders each call — function id, arg echo, ok/error,
-//!   duration, and a short result summary. Read-only; a passive observer of
-//!   the bus, it invokes nothing.
-//! - `github/styles.css` (`console:style`) — the stylesheet, every rule
+//! - `github/page.js` (a `script` asset) — the `github` page: a live
+//!   ACTIVITY feed of what the agent does with the github worker. It observes
+//!   `github::on-called` (the function the worker registers in `events.rs`)
+//!   with a tab-scoped target and renders each call — function id, arg echo,
+//!   ok/error, duration, and a short result summary. Read-only; a passive
+//!   observer of the bus, it invokes nothing.
+//! - `github/styles.css` (a `style` asset) — the stylesheet, every rule
 //!   scoped under `[data-iii-ui="github"]`; the console mounts it as a
 //!   `<link>` and link-swaps it on change, styles-before-scripts on boot.
 //!
 //! The registration machinery (content function `github::ui-content`, one
-//! Message-path trigger per asset, `III_GITHUB_UI_WATCH` hot-reload watcher)
+//! `console::ui::asset` observer per asset, `III_GITHUB_UI_WATCH` hot-reload watcher)
 //! lives in the shared `iii-console-ui` crate (path-linked from
 //! `workers/crates/console-ui`); this module only names the assets and embeds
 //! their bytes.
@@ -24,8 +24,8 @@
 //! external — they resolve through the console's import map at runtime) and
 //! embedded at compile time so the worker stays one self-contained binary.
 //! For the dev loop, set `III_GITHUB_UI_WATCH` to the build output directory
-//! (or `1` for `ui/dist`): the worker polls both files and re-registers a
-//! changed asset's trigger — every open console tab hot-swaps it.
+//! (or `1` for `ui/dist`): the worker polls both files and observes a
+//! changed asset again — every open console tab hot-swaps it.
 
 use std::sync::Arc;
 

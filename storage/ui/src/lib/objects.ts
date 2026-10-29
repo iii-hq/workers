@@ -186,7 +186,7 @@ export async function readThroughWorker(
     if (options.signal?.aborted) throw new RelayError('Cancelled.')
     let response: GetObjectResponse
     try {
-      response = await host.iii.trigger<GetObjectResponse>(
+      response = await host.iii.call<GetObjectResponse>(
         'storage::getObject',
         size > 0 ? { bucket, key, offset, length } : { bucket, key },
         { timeoutMs: 60_000 },

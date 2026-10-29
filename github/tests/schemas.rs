@@ -135,9 +135,11 @@ fn schemas_carry_field_descriptions() {
     }
 }
 
+/// `github::pr::on-event`: its observers' `args_format` and the event its
+/// handler returns (its request and response format).
 #[test]
-fn pr_event_trigger_schemas_match_goldens() {
-    let config =
+fn pr_on_event_schemas_match_goldens() {
+    let args =
         serde_json::to_string_pretty(&schemars::schema_for!(github::webhooks::EventFilter))
             .unwrap()
             + "\n";
@@ -146,6 +148,6 @@ fn pr_event_trigger_schemas_match_goldens() {
     ))
     .unwrap()
         + "\n";
-    support::check_golden("schemas/github.pr.event.config.json", &config).unwrap();
-    support::check_golden("schemas/github.pr.event.payload.json", &event).unwrap();
+    support::check_golden("schemas/github.pr.on-event.args.json", &args).unwrap();
+    support::check_golden("schemas/github.pr.on-event.event.json", &event).unwrap();
 }

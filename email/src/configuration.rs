@@ -2,15 +2,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, Deliver, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 
 use crate::config::{Provider, WorkerConfig};
+use crate::events::dispatcher::EventDispatcher;
 use crate::provider::imap::ImapPool;
-use crate::triggers::dispatcher::EventDispatcher;
 
 pub type ConfigCell = Arc<RwLock<Arc<WorkerConfig>>>;
 
@@ -29,6 +28,8 @@ pub fn config_id() -> &'static str {
 }
 
 const CONFIG_FN_ID: &str = "email::on-config-change";
+/// The configuration worker's change event.
+const CONFIG_UPDATED_FN: &str = "configuration::on-updated";
 const CONFIG_STATUS_FN_ID: &str = "email::config-status";
 const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
@@ -164,7 +165,7 @@ mod initialization;
 /// Initialize atomically when supported, otherwise use the warned legacy path.
 async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
     initialization::ensure_with(payload, |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload)
+        call_configuration_with_retry(iii, function, payload)
     })
     .await
 }
@@ -214,7 +215,7 @@ async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
 
 /// Return absence only for the entry's NOT_FOUND code, not a service failure.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
+    match call_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
         .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
@@ -293,7 +294,12 @@ pub struct OnConfigChangeResponse {
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct ConfigStatusRequest {}
 
-pub fn register_config_trigger(iii: &Arc<IIIClient>, state: AppState) -> Result<(), Error> {
+/// Registers the internal `email::on-config-change` reload handler and
+/// observes `configuration::on-updated` with it: filters on this worker's
+/// entry id and on `configuration:updated`, the event delivered as output.
+/// The observer stays `pending` until the configuration worker registers the
+/// function.
+pub fn observe_config_changes(iii: &Arc<IIIClient>, state: AppState) {
     let iii_inner = iii.clone();
     iii.register_function(
         CONFIG_FN_ID,
@@ -314,15 +320,17 @@ pub fn register_config_trigger(iii: &Arc<IIIClient>, state: AppState) -> Result<
         )
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration".to_string(),
-        CONFIG_FN_ID.to_string(),
-        json!({
-            "configuration_id": config_id(),
-            "event_types": ["configuration:updated"],
-        }),
-    ))?;
-    Ok(())
+    // The observer lives as long as the worker's connection; dropping the
+    // handle does not dispose it.
+    iii.observe(
+        Source::function(CONFIG_UPDATED_FN)
+            .filters(json!({
+                "input.id": { "$eq": config_id() },
+                "input.event_type": { "$eq": "configuration:updated" },
+            }))
+            .deliver(Deliver::Output),
+        CONFIG_FN_ID,
+    );
 }
 
 pub fn register_config_status(iii: &IIIClient, state: AppState) {
@@ -345,7 +353,7 @@ pub fn register_config_status(iii: &IIIClient, state: AppState) {
     );
 }
 
-async fn trigger_configuration_with_retry(
+async fn call_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -353,8 +361,8 @@ async fn trigger_configuration_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: function_id.to_string(),
                     payload: payload.clone(),
                     action: None,
@@ -431,7 +439,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::triggers::Event;
+    use crate::events::Event;
     use async_trait::async_trait;
 
     struct NoopDispatcher;

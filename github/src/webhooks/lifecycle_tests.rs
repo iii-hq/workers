@@ -63,7 +63,7 @@ async fn service(dir: &Path) -> Service {
     s.bus = Some(MockBus::default());
     s
 }
-fn subscriber(s: &Service, namespace: Option<&str>) {
+fn subscriber(s: &Service) {
     s.store()
         .unwrap()
         .change(|d| {
@@ -71,10 +71,7 @@ fn subscriber(s: &Service, namespace: Option<&str>) {
                 "s".into(),
                 Subscriber {
                     id: "s".into(),
-                    function_id: "notify".into(),
                     filter: EventFilter::default(),
-                    metadata: Some(json!({"tenant":7})),
-                    namespace: namespace.map(str::to_owned),
                 },
             );
             Ok(())
@@ -213,12 +210,11 @@ async fn queued_tunnel_job_uses_authoritative_status_and_acknowledges_only_succe
 }
 
 #[tokio::test]
-async fn notification_none_namespace_routes_default_and_preserves_metadata() {
+async fn notification_calls_on_event_naming_the_subscriber() {
     let dir = tempfile::tempdir().unwrap();
     let s = service(dir.path()).await;
     tests::seed(&s);
-    s.iii.set_namespace("provider");
-    subscriber(&s, None);
+    subscriber(&s);
     s.store()
         .unwrap()
         .change(|d| {
@@ -238,11 +234,13 @@ async fn notification_none_namespace_routes_default_and_preserves_metadata() {
         .next()
         .unwrap()
         .clone();
-    s.bus.as_ref().unwrap().reply("notify", Ok(Value::Null));
+    s.bus.as_ref().unwrap().reply(ON_EVENT_FN, Ok(Value::Null));
     s.process(&id).await.unwrap();
     let calls = s.bus.as_ref().unwrap().calls();
-    assert_eq!(calls[0].namespace.as_deref(), Some("default"));
-    assert_eq!(calls[0].metadata, Some(json!({"tenant":7})));
+    assert_eq!(calls[0].function, ON_EVENT_FN);
+    // The engine routes to the subscriber's target; only its observer id rides along.
+    assert_eq!(calls[0].namespace, None);
+    assert_eq!(calls[0].metadata, Some(json!({"subscriber":"s"})));
     assert_eq!(calls[0].payload["watch_id"], "w1");
     s.iii.shutdown_async().await;
 }
@@ -251,7 +249,7 @@ async fn notification_none_namespace_routes_default_and_preserves_metadata() {
 async fn merged_fallback_publishes_and_cleans_up_even_without_queue() {
     let dir = tempfile::tempdir().unwrap();
     let s = service(dir.path()).await;
-    subscriber(&s, None);
+    subscriber(&s);
     std::fs::write(
         dir.path().join("mock.json"),
         json!({"pr":{"head":{"sha":"current"},"state":"closed","merged":true}}).to_string(),
@@ -433,13 +431,10 @@ fn listen(d: &mut Data, id: &str, watch_id: &str) {
         id.into(),
         Subscriber {
             id: id.into(),
-            function_id: "notify".into(),
             filter: EventFilter {
                 watch_id: Some(watch_id.into()),
                 ..Default::default()
             },
-            metadata: None,
-            namespace: None,
         },
     );
 }
@@ -552,7 +547,7 @@ async fn one_shot_wake_leaving_only_marks_and_a_rearm_keeps_the_watch() {
     assert!(data.watches["w1"].live());
     assert!(data.watches["w1"].orphaned_at.is_some());
     assert_eq!(data.watches["w1"].lease_id.as_deref(), Some("lease-w1"));
-    // The agent re-arms at the end of its turn: maintenance clears the mark.
+    // The agent observes again at the end of its turn: maintenance clears the mark.
     s.store()
         .unwrap()
         .change(|d| {

@@ -1,6 +1,8 @@
+//! `email::on-new-mail`: the observable function an IMAP `IDLE` push calls
+//! once per new message, and the dispatcher that calls it.
+
 pub mod dispatcher;
 pub mod new_mail;
-pub mod registry;
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;

@@ -1,12 +1,18 @@
 //! Loopback test transport, based on http/tests/common/fake_engine.rs.
-//! Only engine infrastructure is emulated. Registered function/trigger handlers
-//! are dispatched through their real SDK connections, including namespaces.
+//! Only engine infrastructure is emulated: registration and routing by
+//! namespace, the observer lifecycle (`observe` → `observeradded` →
+//! `observerack` → `observerstatechanged`, and `unobserve`), and calls through
+//! an observer, which reach its stored target with its metadata. Registered
+//! function handlers and observer hooks run on their real SDK connections.
 use futures::{SinkExt, StreamExt};
 use iii_sdk::{register_worker, IIIClient, InitOptions};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
 };
 use tokio::{
@@ -20,19 +26,41 @@ use tokio_tungstenite::tungstenite::{
 };
 
 type Sender = mpsc::UnboundedSender<Value>;
-type Routes = HashMap<(String, String), Sender>;
+/// `(namespace, function_id)`.
+type Key = (String, String);
 struct Channel {
     tx: mpsc::UnboundedSender<Message>,
     rx: Option<mpsc::UnboundedReceiver<Message>>,
 }
+/// A registered function: the connection that hosts it and its
+/// `registerfunction` frame.
+struct Host {
+    tx: Sender,
+    registration: Value,
+}
+/// One observer, as the engine keeps it.
+struct Observer {
+    function: Key,
+    target: Key,
+    /// What the function's host sees (`observeradded.observer`).
+    view: Value,
+    metadata: Option<Value>,
+    observing: Sender,
+    state: &'static str,
+    /// Whether `observeradded` went to the function's host.
+    announced: bool,
+}
 #[derive(Default)]
 struct State {
-    functions: Mutex<Routes>,
-    providers: Mutex<Routes>,
+    functions: Mutex<HashMap<Key, Host>>,
+    observers: Mutex<HashMap<String, Observer>>,
+    revision: AtomicU64,
     pending: Mutex<HashMap<String, Sender>>,
-    registrations: Mutex<HashMap<String, Sender>>,
     channels: Mutex<HashMap<String, Channel>>,
+    /// Every frame a worker sent.
     frames: Mutex<Vec<Value>>,
+    /// Every invocation the engine forwarded to a host.
+    dispatched: Mutex<Vec<Value>>,
     bytes: Mutex<Vec<Vec<u8>>>,
 }
 
@@ -87,17 +115,22 @@ impl Engine {
     pub fn frames(&self) -> Vec<Value> {
         self.state.frames.lock().unwrap().clone()
     }
+    pub fn dispatched(&self) -> Vec<Value> {
+        self.state.dispatched.lock().unwrap().clone()
+    }
     pub fn bytes(&self) -> Vec<Vec<u8>> {
         self.state.bytes.lock().unwrap().clone()
     }
-    pub async fn registered(&self, trigger_type: &str, function: &str) {
+    /// Waits until an observer of `function` with target `target` is active:
+    /// its host acked it.
+    pub async fn observed(&self, function: &str, target: &str) {
         wait(|| {
-            self.frames().iter().any(|f| {
-                f["type"] == "triggerregistrationresult"
-                    && f["trigger_type"] == trigger_type
-                    && f["function_id"] == function
-                    && f["error"].is_null()
-            })
+            self.state
+                .observers
+                .lock()
+                .unwrap()
+                .values()
+                .any(|o| o.function.1 == function && o.target.1 == target && o.state == "active")
         })
         .await;
     }
@@ -144,9 +177,17 @@ fn response(frame: &Value, result: Value) -> Value {
     json!({"type":"invocationresult", "invocation_id":frame["invocation_id"],
         "function_id":frame["function_id"], "result":result})
 }
-fn error(frame: &Value, message: &str) -> Value {
-    json!({"type":"invocationresult", "invocation_id":frame["invocation_id"],
-        "function_id":frame["function_id"], "error":{"code":"FUNCTION_NOT_FOUND", "message":message}})
+/// Answers `frame` with an error; a fire-and-forget call gets no answer.
+fn fail(tx: &Sender, frame: &Value, code: &str, message: &str) {
+    if frame["invocation_id"].is_string() {
+        let _ = tx.send(
+            json!({"type":"invocationresult", "invocation_id":frame["invocation_id"],
+            "function_id":frame["function_id"], "error":{"code":code, "message":message}}),
+        );
+    }
+}
+fn state_changed(id: &str, state: &str, reason: Option<Value>) -> Value {
+    json!({"type":"observerstatechanged", "id":id, "state":state, "reason":reason, "fires":0})
 }
 
 #[expect(clippy::result_large_err)]
@@ -203,6 +244,17 @@ async fn connection(stream: TcpStream, state: Arc<State>) {
         }
         return;
     }
+    // An engine with observe v2: the SDK registers private functions, args
+    // formats and deliver hooks only after this hello.
+    let hello = json!({"type":"workerregistered", "worker_id":"test-worker",
+        "features":["observe.v1", "observe.v2"]});
+    if sink
+        .send(Message::Text(hello.to_string().into()))
+        .await
+        .is_err()
+    {
+        return;
+    }
     let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
     loop {
         tokio::select! {
@@ -226,47 +278,167 @@ async fn connection(stream: TcpStream, state: Arc<State>) {
         }
     }
 }
+
+/// Sends `observeradded` to the host of `function` for each of its observers
+/// not announced yet. Like the engine, it refuses args to a function that
+/// declares no `args_format` (`INVALID_ARGS`) and a private target
+/// (`FORBIDDEN`).
+fn announce(state: &State, function: &Key) {
+    let (host, private_targets) = {
+        let functions = state.functions.lock().unwrap();
+        let host = functions
+            .get(function)
+            .map(|h| (h.tx.clone(), !h.registration["args_format"].is_null()));
+        let private: Vec<Key> = functions
+            .iter()
+            .filter(|(_, h)| h.registration["private"] == true)
+            .map(|(k, _)| k.clone())
+            .collect();
+        (host, private)
+    };
+    let Some((host, takes_args)) = host else {
+        return;
+    };
+    let mut observers = state.observers.lock().unwrap();
+    for (id, observer) in observers.iter_mut() {
+        if observer.function != *function || observer.announced || observer.state != "pending" {
+            continue;
+        }
+        let has_args = observer.view["args"]
+            .as_object()
+            .is_some_and(|args| !args.is_empty());
+        let refusal = if has_args && !takes_args {
+            Some(("INVALID_ARGS", "the function takes no args"))
+        } else if private_targets.contains(&observer.target) {
+            Some(("FORBIDDEN", "a private function cannot be a target"))
+        } else {
+            None
+        };
+        if let Some((code, message)) = refusal {
+            observer.state = "error";
+            let reason = json!({"code":code, "message":message});
+            let _ = observer
+                .observing
+                .send(state_changed(id, "error", Some(reason)));
+            continue;
+        }
+        observer.announced = true;
+        let revision = state.revision.fetch_add(1, Ordering::SeqCst) + 1;
+        let _ = host.send(json!({"type":"observeradded", "function_id":function.1,
+            "namespace":function.0, "revision":revision, "observer":observer.view}));
+    }
+}
+
+/// Forwards an invocation to `host`, as the engine does: answers return to
+/// `caller`, and the engine's transport metadata is injected.
+fn forward(state: &State, mut frame: Value, caller: &Sender, host: &Sender) {
+    if let Some(invocation_id) = frame["invocation_id"].as_str() {
+        state
+            .pending
+            .lock()
+            .unwrap()
+            .insert(invocation_id.to_owned(), caller.clone());
+    }
+    if let Some(data) = frame["data"].as_object_mut() {
+        data.insert("_caller_worker_id".into(), json!("test-worker"));
+    }
+    state.dispatched.lock().unwrap().push(frame.clone());
+    let _ = host.send(frame);
+}
+
 fn route(frame: Value, namespace: &str, tx: &Sender, state: &State) {
     let text = |field: &str| frame[field].as_str().unwrap_or_default().to_owned();
     match text("type").as_str() {
         "registerfunction" => {
-            state
-                .functions
-                .lock()
-                .unwrap()
-                .insert((namespace.into(), text("id")), tx.clone());
+            let key = (namespace.to_owned(), text("id"));
+            state.functions.lock().unwrap().insert(
+                key.clone(),
+                Host {
+                    tx: tx.clone(),
+                    registration: frame.clone(),
+                },
+            );
+            // Observers of a function are announced once its host registers it.
+            announce(state, &key);
         }
-        "registertriggertype" => {
-            state
-                .providers
-                .lock()
-                .unwrap()
-                .insert((namespace.into(), text("id")), tx.clone());
+        "observe" => {
+            let source = &frame["source"];
+            let target = &frame["target"];
+            let function = (
+                source["namespace"].as_str().unwrap_or(namespace).to_owned(),
+                source["function_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            );
+            let target = (
+                target["namespace"].as_str().unwrap_or(namespace).to_owned(),
+                target["function_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            );
+            let id = text("id");
+            let mut view = json!({"id":id, "args":source["args"], "filters":source["filters"],
+                "target":target.1});
+            for field in ["capture", "on"] {
+                if !source[field].is_null() {
+                    view[field] = source[field].clone();
+                }
+            }
+            state.observers.lock().unwrap().insert(
+                id.clone(),
+                Observer {
+                    function: function.clone(),
+                    target,
+                    view,
+                    metadata: frame.get("metadata").filter(|m| !m.is_null()).cloned(),
+                    observing: tx.clone(),
+                    state: "pending",
+                    announced: false,
+                },
+            );
+            let _ = tx.send(json!({"type":"observeresult", "id":id, "state":"pending"}));
+            announce(state, &function);
         }
-        "registertrigger" => {
-            let provider_ns = frame["trigger_namespace"].as_str().unwrap_or(namespace);
-            let provider = state
-                .providers
-                .lock()
-                .unwrap()
-                .get(&(provider_ns.into(), text("trigger_type")))
-                .cloned();
-            let provider = provider.expect("trigger provider must register before binding");
-            state
-                .registrations
-                .lock()
-                .unwrap()
-                .insert(text("id"), tx.clone());
-            provider.send(frame).unwrap();
+        "observerack" => {
+            let id = text("id");
+            let mut observers = state.observers.lock().unwrap();
+            if let Some(observer) = observers.get_mut(&id) {
+                let refused = frame.get("error").filter(|e| !e.is_null()).cloned();
+                observer.state = if refused.is_some() { "error" } else { "active" };
+                let _ = observer
+                    .observing
+                    .send(state_changed(&id, observer.state, refused));
+            }
         }
-        "triggerregistrationresult" => {
-            assert!(frame["error"].is_null(), "registration rejected: {frame}");
-            if let Some(target) = state.registrations.lock().unwrap().remove(&text("id")) {
-                let _ = target.send(frame);
+        "unobserve" => {
+            let id = text("id");
+            let removed = state.observers.lock().unwrap().remove(&id);
+            if let Some(observer) = removed {
+                let host = state
+                    .functions
+                    .lock()
+                    .unwrap()
+                    .get(&observer.function)
+                    .map(|h| h.tx.clone());
+                if let (true, Some(host)) = (observer.announced, host) {
+                    let revision = state.revision.fetch_add(1, Ordering::SeqCst) + 1;
+                    let _ = host.send(json!({"type":"observerremoved",
+                        "function_id":observer.function.1, "namespace":observer.function.0,
+                        "revision":revision, "id":id}));
+                }
+                let reason = json!({"code":"UNOBSERVED", "message":"disposed"});
+                let _ = tx.send(state_changed(&id, "disposed", Some(reason)));
             }
         }
         "invocationresult" => {
             if let Some(target) = state.pending.lock().unwrap().remove(&text("invocation_id")) {
+                // The engine activates `observed` itself and strips it.
+                let mut frame = frame;
+                if let Some(result) = frame.as_object_mut() {
+                    result.remove("observed");
+                }
                 let _ = target.send(frame);
             }
         }
@@ -296,29 +468,72 @@ fn route(frame: Value, namespace: &str, tx: &Sender, state: &State) {
                 let _ = tx.send(response(&frame, value));
                 return;
             }
-            let ns = frame["namespace"].as_str().unwrap_or(namespace);
-            let target = state
+            if let Some(observer_id) = frame["activation"]["observer_id"].as_str() {
+                // A call through an observer: only its function's host may make
+                // it, and it reaches the observer's stored target with the
+                // observer's metadata.
+                let observer = state.observers.lock().unwrap().get(observer_id).map(|o| {
+                    (
+                        o.function.clone(),
+                        o.target.clone(),
+                        o.metadata.clone(),
+                        o.state,
+                    )
+                });
+                let Some((function, target, metadata, observer_state)) = observer else {
+                    fail(tx, &frame, "OBSERVER_NOT_FOUND", "no such observer");
+                    return;
+                };
+                if observer_state != "active" {
+                    fail(tx, &frame, "OBSERVER_NOT_ACTIVE", "observer not active");
+                    return;
+                }
+                let (owner, host) = {
+                    let functions = state.functions.lock().unwrap();
+                    (
+                        functions
+                            .get(&function)
+                            .is_some_and(|h| h.tx.same_channel(tx)),
+                        functions.get(&target).map(|h| h.tx.clone()),
+                    )
+                };
+                if !owner {
+                    fail(tx, &frame, "NOT_FUNCTION_OWNER", "not the host");
+                    return;
+                }
+                let Some(host) = host else {
+                    fail(tx, &frame, "TARGET_UNAVAILABLE", "target not registered");
+                    return;
+                };
+                let mut frame = frame.clone();
+                frame["function_id"] = json!(target.1);
+                frame["namespace"] = json!(target.0);
+                frame["metadata"] = metadata.unwrap_or(Value::Null);
+                frame["activation"] = json!({"observer_id":observer_id,
+                    "activation_id":uuid::Uuid::new_v4().to_string()});
+                forward(state, frame, tx, &host);
+                return;
+            }
+            let ns = frame["namespace"].as_str().unwrap_or(namespace).to_owned();
+            let host = state
                 .functions
                 .lock()
                 .unwrap()
-                .get(&(ns.into(), text("function_id")))
-                .cloned();
-            if let Some(target) = target {
-                if frame["invocation_id"].is_string() {
-                    state
-                        .pending
-                        .lock()
-                        .unwrap()
-                        .insert(text("invocation_id"), tx.clone());
+                .get(&(ns, text("function_id")))
+                .map(|h| (h.tx.clone(), h.registration["private"] == true));
+            match host {
+                Some((host, true)) if !host.same_channel(tx) => {
+                    fail(tx, &frame, "FORBIDDEN", "private function");
                 }
-                // Mirror the engine's transport metadata injection before SDK dispatch.
-                let mut frame = frame;
-                if let Some(data) = frame["data"].as_object_mut() {
-                    data.insert("_caller_worker_id".into(), json!("test-worker"));
+                Some((host, _)) => forward(state, frame.clone(), tx, &host),
+                None => {
+                    fail(
+                        tx,
+                        &frame,
+                        "FUNCTION_NOT_FOUND",
+                        "unregistered test function/namespace",
+                    );
                 }
-                let _ = target.send(frame);
-            } else {
-                let _ = tx.send(error(&frame, "unregistered test function/namespace"));
             }
         }
         "ping" => {

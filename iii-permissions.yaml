@@ -184,7 +184,7 @@ rules:
   - '!session::on-config-change'
   # (coder::on-config-change retired: the code surface folded into the shell
   # worker, whose shell::on-config-change is already denied above.)
-  # storage: the secrets::changed sink and bucket management (rewrites which
+  # storage: the secrets::on-changed sink and bucket management (rewrites which
   # providers and credentials the worker uses; testBucket sends a candidate's
   # credentials wherever the candidate points; getBucket returns stored
   # entries) are the human's call, made from a bucket editor.
@@ -358,8 +358,8 @@ rules:
   - '!slack::on-turn-completed'
   - '!slack::on-pending-created'
   - '!slack::on-pending-resolved'
-  # github: internal hot-reload hook — invoked only by the engine's
-  # configuration:updated trigger dispatch, never agent-callable.
+  # github: internal hot-reload hook — the target of its observer of
+  # configuration::on-updated, never agent-callable.
   - '!github::on-config-change'
   # Webhook ingress, queue consumers, and tunnel lifecycle callbacks are
   # trusted engine plumbing, never direct agent calls. Starting/stopping a

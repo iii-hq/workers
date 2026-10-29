@@ -22,7 +22,7 @@ use crate::api::{
 use crate::detect::{Detector, SourceKind};
 use crate::envwatch::EnvWatch;
 use crate::error::{codes, SecretsError};
-use crate::events::{self, ChangedEvent, Subscribers};
+use crate::events::{self, ChangedEvent};
 use crate::names::{parse_reference, validate_name};
 use crate::store::{validate_detect_names, Store};
 
@@ -31,7 +31,6 @@ pub struct Ctx {
     pub iii: Arc<IIIClient>,
     pub store: Arc<Store>,
     pub callers: CallerDirectory,
-    pub subscribers: Subscribers,
     pub detector: Detector,
     /// Follows the env file the store reads; replaced when the configuration
     /// points it elsewhere ([`crate::envwatch::follow`]).
@@ -47,16 +46,16 @@ impl Ctx {
         }
     }
 
-    /// Log and deliver one `secrets::changed` event.
+    /// Log one change and call `secrets::on-changed` with it.
     pub fn changed(&self, event: &ChangedEvent) {
         tracing::info!(name = event.name, action = ?event.action, "secret changed");
-        events::emit(&self.iii, &self.subscribers, event);
+        events::emit(&self.iii, event);
     }
 }
 
-/// Register the `secrets::changed` trigger type and every function.
+/// Register `secrets::on-changed` and every function.
 pub fn register(ctx: &Arc<Ctx>) {
-    events::register_trigger_type(&ctx.iii, &ctx.subscribers);
+    events::register(&ctx.iii);
     register_fn::<SetRequest, SecretMeta, _, _>(
         ctx,
         ids::SET,
@@ -148,7 +147,9 @@ fn register_fn<Req, Resp, F, Fut>(
     })
     .description(description)
     .request_format(schema::<Req>())
-    .response_format(schema::<Resp>());
+    .response_format(schema::<Resp>())
+    // A value in the input or the output never reaches an observer.
+    .observable(!ids::UNOBSERVABLE.contains(&id));
     ctx.iii.register_function(id, registration);
 }
 
