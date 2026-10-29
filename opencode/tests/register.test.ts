@@ -5,7 +5,7 @@ vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
 import { spawn } from 'node:child_process';
 import { loadConfig } from '../src/config.js';
 import { register } from '../src/run.js';
-import { boundFeeds, fakeIii, type FakeIii } from './_helpers/fake-iii.js';
+import { observedFeeds, fakeIii, type FakeIii } from './_helpers/fake-iii.js';
 import { fullTurn, newSpawnCapture, scriptedSpawn } from './_helpers/fake-opencode.js';
 
 const spawnMock = vi.mocked(spawn);
@@ -13,7 +13,7 @@ const spawnMock = vi.mocked(spawn);
 async function registeredWorker(): Promise<FakeIii> {
   const fake = fakeIii();
   const cfg = await loadConfig('/nonexistent/config.yaml');
-  const { emit, emitRaw } = await boundFeeds(fake, 's1', 's2', 'bg1', 'busy1', 'live1');
+  const { emit, emitRaw } = await observedFeeds(fake, 's1', 's2', 'bg1', 'busy1', 'live1');
   register(fake.iii, () => cfg, emit, emitRaw);
   return fake;
 }
@@ -24,6 +24,8 @@ describe('register', () => {
   it('registers the full opencode::* surface plus the shared entrypoint', async () => {
     const fake = await registeredWorker();
     expect([...fake.registered.keys()].sort()).toEqual([
+      'opencode::on-agent-event',
+      'opencode::on-raw-event',
       'opencode::run',
       'opencode::sessions::list',
       'opencode::start',

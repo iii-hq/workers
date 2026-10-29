@@ -5,7 +5,7 @@ deploy: bundle
 manifest: package.json
 license: Apache-2.0
 tags: [coding-agent, claude, anthropic, cli, headless, terminal, console-ui]
-description: Claude Code as an iii worker — claude::* runs headless turns and claude::terminal::* runs the same CLI in a shell::pty session on its own console page. Both publish raw messages on the claude::raw-event trigger type and AgentEvent frames on claude::agent-event.
+description: Claude Code as an iii worker — claude::* runs headless turns and claude::terminal::* runs the same CLI in a shell::pty session on its own console page. Both publish raw messages on the claude::on-raw-event function and AgentEvent frames on claude::on-agent-event.
 
 runtime:
   kind: javascript

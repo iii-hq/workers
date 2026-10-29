@@ -32,7 +32,7 @@ export async function resolveModel(worker, preferred) {
 
   let models = [];
   try {
-    const res = await worker.trigger({ function_id: 'router::models::list', payload: {} });
+    const res = await worker.call({ function_id: 'router::models::list', payload: {} });
     models = res?.models || (Array.isArray(res) ? res : []);
   } catch {
     // router unavailable — fall back to the preferred id unresolved; harness
@@ -55,7 +55,7 @@ export function clearModelCache() {
 export async function listModels(worker) {
   let models = [];
   try {
-    const res = await worker.trigger({ function_id: 'router::models::list', payload: {} });
+    const res = await worker.call({ function_id: 'router::models::list', payload: {} });
     models = res?.models || (Array.isArray(res) ? res : []);
   } catch {
     return [];

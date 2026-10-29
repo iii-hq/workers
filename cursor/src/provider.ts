@@ -230,11 +230,12 @@ export class CursorProvider {
         metadata: { internal: true },
       },
     );
-    this.iii.registerTrigger({
-      type: 'router::ready',
-      function_id: 'provider::cursor::on_router_ready',
-      config: {},
-    });
+    // Pending while llm-router is down; the router sends the ready event to
+    // an observer added after it is ready.
+    this.iii.observe(
+      { function_id: 'router::on-ready', deliver: 'output' },
+      'provider::cursor::on_router_ready',
+    );
     void this.rebindAndRefresh();
     this.refreshTimer = setInterval(() => {
       void this.refreshModels().catch((error) => {
@@ -252,7 +253,7 @@ export class CursorProvider {
       .object({ registration_token: z.string().min(1) })
       .passthrough()
       .parse(
-        await this.iii.trigger({
+        await this.iii.call({
           function_id: 'router::provider::register',
           payload,
           timeoutMs: 15_000,
@@ -469,7 +470,7 @@ export class CursorProvider {
 
   private async loadToken(): Promise<string | null> {
     if (this.registrationToken) return this.registrationToken;
-    const value = await this.iii.trigger({
+    const value = await this.iii.call({
       function_id: 'state::get',
       payload: { scope: TOKEN_SCOPE, key: TOKEN_KEY },
     });
@@ -484,7 +485,7 @@ export class CursorProvider {
     let delay = 200;
     for (let attempt = 0; attempt < 5; attempt += 1) {
       try {
-        await this.iii.trigger({
+        await this.iii.call({
           function_id: 'state::set',
           payload: { scope: TOKEN_SCOPE, key: TOKEN_KEY, value: token },
         });
@@ -500,7 +501,7 @@ export class CursorProvider {
   }
 
   private async reconcile(models: JsonObject[], token: string | null): Promise<void> {
-    await this.iii.trigger({
+    await this.iii.call({
       function_id: 'router::models::reconcile',
       payload: {
         provider: CURSOR_PROVIDER_ID,

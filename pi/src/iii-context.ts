@@ -41,7 +41,7 @@ let cached: { at: number; value: IiiContext } | null = null;
 
 async function systemPrompt(iii: IIIClient): Promise<{ body: string; detail: string }> {
   try {
-    const res = await iii.trigger<unknown, { body?: string }>({
+    const res = await iii.call<unknown, { body?: string }>({
       function_id: 'directory::system-prompts::get',
       payload: { name: RUNTIME_PROMPT_NAME },
       timeoutMs: TIMEOUT_MS,
@@ -63,7 +63,7 @@ async function systemPrompt(iii: IIIClient): Promise<{ body: string; detail: str
 
 async function skillsIndex(iii: IIIClient): Promise<{ body: string; detail: string }> {
   try {
-    const res = await iii.trigger<unknown, { body?: string; workers_count?: number }>({
+    const res = await iii.call<unknown, { body?: string; workers_count?: number }>({
       function_id: 'directory::skills::index',
       payload: {},
       timeoutMs: TIMEOUT_MS,

@@ -105,7 +105,7 @@ async function planWikiLLM(worker, { inventory, repoName, repoUrl, repoDir, mode
     'KEY DOCS:\n' +
     keyDocs;
 
-  const res = await worker.trigger({
+  const res = await worker.call({
     function_id: 'router::complete',
     payload: {
       model,
@@ -201,7 +201,7 @@ async function generatePageLLM(
     'SOURCE FILES (verbatim, may be truncated):\n' +
     sourceBlocks;
 
-  const res = await worker.trigger({
+  const res = await worker.call({
     function_id: 'router::complete',
     payload: {
       model,

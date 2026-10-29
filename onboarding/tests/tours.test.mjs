@@ -56,14 +56,27 @@ test('every step anchors on a console class that still exists', () => {
   }
 })
 
-/** A condition has to be bindable: a trigger type, a config, and a label. */
-test('every condition is a complete trigger binding', () => {
+/**
+ * A condition has to be observable: a function id, args and filters that are
+ * objects when present, every filter an explicit operator, and a label.
+ */
+test('every condition is a complete observe source', () => {
   for (const tour of TOURS) {
     for (const step of tour.steps) {
       if (!step.condition) continue
-      const { type, config, label } = step.condition
-      assert.ok(type?.length, `${step.id}: condition has no trigger type`)
-      assert.equal(typeof config, 'object', `${step.id}: condition config is not an object`)
+      const { function_id, args, filters, label } = step.condition
+      assert.match(function_id ?? '', /^[\w-]+(::[\w-]+)+$/, `${step.id}: condition has no function id`)
+      for (const [name, value] of Object.entries({ args, filters })) {
+        if (value === undefined) continue
+        assert.equal(typeof value, 'object', `${step.id}: condition ${name} is not an object`)
+      }
+      for (const [path, filter] of Object.entries(filters ?? {})) {
+        assert.ok(path.startsWith('input.'), `${step.id}: filter ${path} does not select the event`)
+        assert.ok(
+          filter && typeof filter === 'object' && Object.keys(filter).every((op) => op.startsWith('$')),
+          `${step.id}: filter ${path} has no explicit operator`,
+        )
+      }
       assert.ok(label?.length, `${step.id}: condition has no label`)
     }
   }
@@ -141,16 +154,17 @@ test('every to_open step names its screen, a body, and anchors the console still
  * A step the agent finishes, rather than the operator, reports itself done by
  * writing one key into the learn-iii state scope. Two halves have to agree
  * or the step never closes: the sentence the prompt ends with, and the
- * `state` trigger the page binds. This is the check that fails when one of
- * them moves.
+ * `state::on-changed` filters the page observes with. This is the check that
+ * fails when one of them moves.
  */
-test('every agent-finished step names the state key its trigger waits on', () => {
+test('every agent-finished step names the state key its observer waits on', () => {
   for (const tour of TOURS) {
     for (const step of tour.steps) {
-      if (step.condition?.type !== 'state') continue
+      if (step.condition?.function_id !== 'state::on-changed') continue
       const key = `step_${step.id}_completed`
-      assert.equal(step.condition.config.scope, 'learn-iii', `${step.id}: wrong state scope`)
-      assert.equal(step.condition.config.key, key, `${step.id}: trigger waits on the wrong key`)
+      const { filters } = step.condition
+      assert.deepEqual(filters['input.scope'], { $eq: 'learn-iii' }, `${step.id}: wrong state scope`)
+      assert.deepEqual(filters['input.key'], { $eq: key }, `${step.id}: observer waits on the wrong key`)
       assert.ok(step.ask?.text.includes(key), `${step.id}: the prompt never asks for ${key}`)
       assert.ok(
         step.ask.text.includes('learn-iii'),
@@ -166,7 +180,7 @@ test('every step that asks the agent to build waits for it to report done', () =
   for (const id of agentSteps) {
     const step = getTour('learn-iii').steps.find((entry) => entry.id === id)
     assert.ok(step, `${id} is no longer a step`)
-    assert.equal(step.condition?.type, 'state', `${id}: does not wait on a state write`)
+    assert.equal(step.condition?.function_id, 'state::on-changed', `${id}: does not wait on a state write`)
   }
 })
 

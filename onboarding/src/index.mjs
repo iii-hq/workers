@@ -70,7 +70,7 @@ iii.registerFunction(
 const progressKey = (subject) => `progress:${subject}`
 
 const stateGet = (key) =>
-  iii.trigger({
+  iii.call({
     function_id: 'state::get',
     payload: { scope: STATE_SCOPE, key },
     timeoutMs: STATE_TIMEOUT_MS,
@@ -87,7 +87,7 @@ const stateGet = (key) =>
  * through this worker at all.
  */
 const stateUpdate = (key, ops) =>
-  iii.trigger({
+  iii.call({
     function_id: 'state::update',
     payload: { scope: STATE_SCOPE, key, ops },
     timeoutMs: STATE_TIMEOUT_MS,
@@ -112,7 +112,7 @@ const tourIsComplete = (tour, record) =>
   tour.steps.every((step) => record?.steps?.[step.id]?.status === 'complete')
 
 /**
- * A fired trigger is evidence the page shows back to the operator, so it is
+ * A fired condition is evidence the page shows back to the operator, so it is
  * stored with the step. ponytail: payloads are capped rather than paged —
  * `state` refuses oversized values, and a tour step needs the shape of the
  * event, not every byte of it.
@@ -138,7 +138,7 @@ iii.registerFunction(
   },
   {
     description:
-      'Read an operator\u2019s tour progress: per tour, the status of every step and the trigger evidence that closed it, plus which tour to offer next.',
+      'Read an operator\u2019s tour progress: per tour, the status of every step and the observed event that closed it, plus which tour to offer next.',
     request_format: object({ subject: string }),
     response_format: object(
       {
@@ -169,7 +169,7 @@ const STEP_TOPIC = 'onboarding:steps:complete'
  */
 const publishStep = (data) =>
   iii
-    .trigger({
+    .call({
       function_id: 'iii::durable::publish',
       payload: { topic: STEP_TOPIC, data },
       timeoutMs: STATE_TIMEOUT_MS,
@@ -196,12 +196,11 @@ async function completeStep(input) {
   const record = {
     status: 'complete',
     at,
-    // Present only when a trigger closed the step, so the page can tell a
-    // condition apart from a step the operator closed by hand.
+    // Present only when an observed event closed the step, so the page can
+    // tell a condition apart from a step the operator closed by hand.
     fired: input.fired
       ? {
-          trigger_type: input.fired.trigger_type ?? step.condition?.type ?? null,
-          function_id: input.fired.function_id ?? null,
+          function_id: input.fired.function_id ?? step.condition?.function_id ?? null,
           payload: cap(input.fired.payload),
           at,
         }
@@ -229,14 +228,13 @@ iii.registerFunction(
   completeStep,
   {
     description:
-      'Mark one tour step complete. Pass `fired` when a trigger closed it \u2014 its type and payload are kept as the evidence the tour shows back.',
+      'Mark one tour step complete. Pass `fired` when an observed event closed it \u2014 the observed function id and the event are kept as the evidence the tour shows back.',
     request_format: object(
       {
         subject: string,
         tour_id: string,
         step_id: string,
         fired: object({
-          trigger_type: string,
           function_id: string,
           payload: {},
         }),
@@ -313,7 +311,7 @@ const IDENTIFY_TOPIC = 'email:signup'
  */
 const publishIdentify = (email, source) =>
   iii
-    .trigger({
+    .call({
       function_id: 'iii::durable::publish',
       payload: { topic: IDENTIFY_TOPIC, data: { email, source } },
       timeoutMs: STATE_TIMEOUT_MS,
@@ -385,12 +383,12 @@ iii.registerFunction(
 const uiAssets = {
   'learn-iii/page.js': {
     file: 'page.js',
-    type: 'console:script',
+    kind: 'script',
     content_type: 'text/javascript',
   },
   'learn-iii/styles.css': {
     file: 'styles.css',
-    type: 'console:style',
+    kind: 'style',
     content_type: 'text/css',
   },
 }
@@ -427,19 +425,28 @@ iii.registerFunction(
   },
 )
 
-const registerUiAsset = (path) =>
-  iii.registerTrigger({
-    type: uiAssets[path].type,
-    function_id: 'learn-iii::ui-content',
-    config: { path },
+// One `console::ui::asset` observer per asset; the console fetches its
+// content by calling through the observer with `{ path }`.
+const observeUiAsset = (path) => {
+  const handle = iii.observe(
+    { function_id: 'console::ui::asset', args: { kind: uiAssets[path].kind, path } },
+    'learn-iii::ui-content',
+  )
+  handle.onStateChange((state, reason) => {
+    // Hot reload observes the path afresh, which supersedes the previous one.
+    if (state === 'error' && reason?.code !== 'UI_ASSET_SUPERSEDED') {
+      console.error(`[${WORKER}] ui asset ${path} rejected: ${reason?.code} ${reason?.message ?? ''}`)
+    }
   })
+  return handle
+}
 
-const uiTriggers = new Map(
-  Object.keys(uiAssets).map((path) => [path, registerUiAsset(path)]),
+const uiObservers = new Map(
+  Object.keys(uiAssets).map((path) => [path, observeUiAsset(path)]),
 )
 
-// Re-registering a path with different bytes hot-swaps the asset in every open
-// console tab, so editing the page is one rebuild away from being visible.
+// Observing a path afresh with different bytes hot-swaps the asset in every
+// open console tab, so editing the page is one rebuild away from being visible.
 if (process.env.III_LEARN_III_UI_WATCH) {
   const pending = new Map()
   watch(uiDir, (_event, file) => {
@@ -449,9 +456,9 @@ if (process.env.III_LEARN_III_UI_WATCH) {
     pending.set(
       path,
       setTimeout(() => {
-        const previous = uiTriggers.get(path)
-        uiTriggers.set(path, registerUiAsset(path))
-        previous?.unregister()
+        const previous = uiObservers.get(path)
+        uiObservers.set(path, observeUiAsset(path))
+        previous?.dispose().catch(() => {})
         console.error(`[${WORKER}] reloaded ui asset ${path}`)
       }, 150),
     )

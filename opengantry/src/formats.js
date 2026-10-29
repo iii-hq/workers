@@ -87,16 +87,36 @@ export const FunctionIdEnvelopeSchema = z
   })
   .strict();
 
-export const OnTriggerTypeRegistrationRequestSchema = z
+// The engine's `on_observer_registration_function_id` input. Passthrough: the
+// engine owns the envelope and may add fields.
+export const ObserverRegistrationRequestSchema = z
   .object({
-    type_id: z.string(),
+    observer_id: z.string(),
+    function_id: z.string(),
+    namespace: z.string().optional(),
+    args: z.record(z.string(), z.unknown()).optional(),
+    filters: z.record(z.string(), z.unknown()).nullable().optional(),
+    target_function_id: z.string(),
+    target_namespace: z.string().optional(),
+    metadata: z.record(z.string(), z.unknown()).nullable().optional(),
+    context: z.record(z.string(), z.unknown()).nullable().optional(),
+  })
+  .passthrough();
+
+// An accepted observer is answered with the empty object, which rewrites
+// nothing; a denial throws GantryDenied.
+export const ObserverRegistrationResponseSchema = z.object({}).strict();
+
+// What gantry::on-verdict observers observe: one event per completed verify.
+export const VerdictEventSchema = z
+  .object({
+    status: z.string(),
+    error_code: z.string().nullable(),
+    repo_root: z.string().nullable(),
+    msn_id: z.string().nullable(),
+    mission_rel_path: z.string().nullable(),
   })
   .strict();
-
-// onTriggerTypeRegistration is an unconditional deny — it always throws
-// GantryDenied and has no success shape. Declared as the empty strict object so
-// the schema stays typed (see the note on MiddlewareResponseSchema).
-export const OnTriggerTypeRegistrationResponseSchema = z.object({}).strict();
 
 export const FUNCTION_FORMATS = {
   'gantry::middleware': {
@@ -113,13 +133,16 @@ export const FUNCTION_FORMATS = {
     request: FunctionIdEnvelopeSchema,
     response: FunctionIdEnvelopeSchema,
   },
-  'gantry::on-trigger-registration': {
-    request: FunctionIdEnvelopeSchema,
-    response: FunctionIdEnvelopeSchema,
+  'gantry::on-observer-registration': {
+    request: ObserverRegistrationRequestSchema,
+    response: ObserverRegistrationResponseSchema,
   },
-  'gantry::on-trigger-type-registration': {
-    request: OnTriggerTypeRegistrationRequestSchema,
-    response: OnTriggerTypeRegistrationResponseSchema,
+  'gantry::on-verdict': {
+    description:
+      'Called once per completed gantry::verify with its verdict: { status, error_code, repo_root, msn_id, mission_rel_path }. Private: observe it; only opengantry calls it.',
+    request: VerdictEventSchema,
+    response: VerdictEventSchema,
+    private: true,
   },
 };
 

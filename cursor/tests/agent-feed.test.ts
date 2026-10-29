@@ -1,142 +1,125 @@
-import { TriggerAction } from 'iii-sdk';
+import { CallAction } from 'iii-sdk';
 import { describe, expect, it, vi } from 'vitest';
 import {
-  AGENT_EVENT_TRIGGER_TYPE,
   createAgentFeeds,
   createFeed,
-  MAX_BINDINGS,
-  RAW_EVENT_TRIGGER_TYPE,
+  FEED_ARGS_FORMAT,
+  MAX_OBSERVERS,
+  ON_AGENT_EVENT_FN,
+  ON_RAW_EVENT_FN,
   releaseEmitterSequence,
-  validateFeedConfig,
 } from '../src/agent-feed.js';
 import { AGENT, MockIII, RAW } from './helpers.js';
 
 const EVENT_ID = /^(.+)-([0-9a-f-]{36}-[0-9a-f-]{36})-(\d{8})$/;
 
 describe('cursor agent feeds', () => {
-  it('registers both owned trigger types', () => {
+  it('registers both feeds as private functions with session args', () => {
     const iii = new MockIII();
     createAgentFeeds(iii.asClient());
-    expect([...iii.triggerTypes.keys()].sort()).toEqual([
-      'cursor::agent-event',
-      'cursor::raw-event',
+    expect([...iii.functions.keys()].sort()).toEqual([
+      'cursor::on-agent-event',
+      'cursor::on-raw-event',
     ]);
-    expect(AGENT_EVENT_TRIGGER_TYPE).toBe(AGENT);
-    expect(RAW_EVENT_TRIGGER_TYPE).toBe(RAW);
+    for (const id of [AGENT, RAW]) {
+      const options = iii.functions.get(id)?.options;
+      expect(options).toMatchObject({ private: true, args_format: FEED_ARGS_FORMAT });
+      expect(options?.request_format).toEqual(options?.response_format);
+    }
+    expect(FEED_ARGS_FORMAT).toMatchObject({
+      required: ['session_id'],
+      additionalProperties: false,
+      properties: { session_id: { type: 'string', minLength: 1, maxLength: 512 } },
+    });
+    expect(ON_AGENT_EVENT_FN).toBe(AGENT);
+    expect(ON_RAW_EVENT_FN).toBe(RAW);
   });
 
-  it('delivers a frame with namespace, config metadata and Void action', async () => {
+  it('returns the frame it is called with', async () => {
+    const iii = new MockIII();
+    createAgentFeeds(iii.asClient());
+    const frame = {
+      session_id: 's',
+      event_id: 'e',
+      seq: 0,
+      epoch: 'x',
+      source: 'cursor',
+      event: {},
+    };
+    expect(await iii.functions.get(AGENT)?.handler(frame)).toBe(frame);
+  });
+
+  it('calls itself with a Void action and iii delivers the frame to the observer', async () => {
     const iii = new MockIII();
     const { emit } = createAgentFeeds(iii.asClient());
-    await iii.bind(AGENT, 'a-1', {
-      id: 'b1',
-      function_id: 'acp::__on_event::c1',
-      namespace: 'tenant-a',
-      metadata: { from: 'binding' },
-      config: { session_id: 'a-1', metadata: { from: 'config' } },
-    });
+    await iii.addObserver(AGENT, 'a-1', { id: 'o1', target: 'acp::__on_event::c1' });
     await expect(emit('a-1', { type: 'turn_end' })).resolves.toBe(true);
-    const call = iii.triggerCalls.find((c) => c.function_id === 'acp::__on_event::c1');
-    expect(call).toMatchObject({
-      namespace: 'tenant-a',
-      metadata: { from: 'config' },
-      action: TriggerAction.Void(),
-      payload: { session_id: 'a-1', seq: 0, source: 'cursor', event: { type: 'turn_end' } },
+    expect(iii.calls).toHaveLength(1);
+    expect(iii.calls[0]).toMatchObject({ function_id: AGENT, action: CallAction.Void() });
+    expect(iii.calls[0]).not.toHaveProperty('metadata');
+    const delivery = iii.deliveries.find((d) => d.target === 'acp::__on_event::c1');
+    expect(delivery?.payload).toMatchObject({
+      session_id: 'a-1',
+      seq: 0,
+      source: 'cursor',
+      event: { type: 'turn_end' },
     });
-    const payload = call?.payload as { event_id: string; epoch: string };
+    const payload = delivery?.payload as { event_id: string; epoch: string };
     expect(payload.event_id).toBe(`a-1-${payload.epoch}-00000000`);
   });
 
-  it('uses binding metadata as fallback and omits metadata when neither is set', async () => {
-    const iii = new MockIII();
-    const { emit } = createAgentFeeds(iii.asClient());
-    await iii.bind(AGENT, 'm-1', { id: 'with', function_id: 'f::with', metadata: { m: 1 } });
-    await iii.bind(AGENT, 'm-1', { id: 'without', function_id: 'f::without' });
-    await emit('m-1', { type: 'turn_end' });
-    expect(iii.triggerCalls.find((c) => c.function_id === 'f::with')?.metadata).toEqual({ m: 1 });
-    expect(iii.triggerCalls.find((c) => c.function_id === 'f::without')).not.toHaveProperty(
-      'metadata',
-    );
-  });
-
-  it('filters by session and reports false when no consumer is bound', async () => {
+  it('delivers by session and reports false when nobody observes the session', async () => {
     const iii = new MockIII();
     const { emit, emitRaw } = createAgentFeeds(iii.asClient());
-    await iii.bind(AGENT, 'A', { id: 'a', function_id: 'f::a' });
-    await iii.bind(RAW, 'A', { id: 'a-raw', function_id: 'f::a-raw' });
+    await iii.addObserver(AGENT, 'A', { target: 'f::a' });
+    await iii.addObserver(RAW, 'A', { target: 'f::a-raw' });
     await expect(emit('B', { type: 'turn_end' })).resolves.toBe(false);
     await expect(emitRaw('B', { type: 'frame' })).resolves.toBe(false);
-    expect(iii.triggerCalls).toHaveLength(0);
+    expect(iii.calls).toHaveLength(0);
     await expect(emit('A', { type: 'turn_end' })).resolves.toBe(true);
-    expect(iii.triggerCalls.map((c) => c.function_id)).toEqual(['f::a']);
+    expect(iii.deliveries.map((d) => d.target)).toEqual(['f::a']);
   });
 
-  it('stops delivering after unbind', async () => {
+  it('matches observers by session id keys', async () => {
+    const iii = new MockIII();
+    createAgentFeeds(iii.asClient());
+    expect(iii.isObserved(AGENT, { input: { session_id: 's' } })).toBe(false);
+    await iii.addObserver(AGENT, 's');
+    expect(iii.isObserved(AGENT, { input: { session_id: 's' } })).toBe(true);
+    expect(iii.isObserved(AGENT, { input: { session_id: 't' } })).toBe(false);
+    expect(iii.isObserved(RAW, { input: { session_id: 's' } })).toBe(false);
+  });
+
+  it('stops delivering once the observer is removed', async () => {
     const iii = new MockIII();
     const { emit } = createAgentFeeds(iii.asClient());
-    await iii.bind(AGENT, 'u-1');
+    await iii.addObserver(AGENT, 'u-1');
     await emit('u-1', { n: 1 });
-    await iii.unbind(AGENT, `${AGENT}:u-1`);
+    await iii.removeObserver(`${AGENT}:u-1`);
     await expect(emit('u-1', { n: 2 })).resolves.toBe(false);
     expect(iii.feedEvents(AGENT)).toEqual([{ n: 1 }]);
   });
 
-  it('rejects invalid configs', async () => {
+  it('caps observers per feed with OBSERVER_LIMIT, and a removed observer frees its slot', async () => {
     const iii = new MockIII();
-    createAgentFeeds(iii.asClient());
-    const handler = iii.triggerTypes.get(RAW);
-    const reg = (config: unknown) =>
-      handler?.registerTrigger({ id: 'x', function_id: 'f::x', config });
-    await expect(reg({})).rejects.toThrow(/session_id/);
-    await expect(reg({ session_id: '' })).rejects.toThrow(/session_id/);
-    await expect(reg({ session_id: 1 })).rejects.toThrow(/session_id/);
-    await expect(reg({ session_id: 'x'.repeat(513) })).rejects.toThrow(/512/);
-    await expect(reg({ session_id: 's', stream_name: 'agent::events' })).rejects.toThrow(
-      /unknown config key/,
-    );
-    await expect(reg({ session_id: 's', metadata: 3 })).rejects.toThrow(/metadata/);
-    await expect(reg({ session_id: 's', metadata: null })).rejects.toThrow(/metadata/);
-    await expect(reg('s')).rejects.toThrow(/object/);
-    expect(validateFeedConfig(RAW, { session_id: 's', metadata: { a: 1 } })).toEqual({
-      session_id: 's',
-      metadata: { a: 1 },
-    });
-  });
-
-  it('caps bindings per trigger type, while re-registering an id replaces it', async () => {
-    const iii = new MockIII();
-    const feed = createFeed(iii.asClient(), {
-      id: 'cap::feed',
-      source: 'cursor',
-      description: 'd',
-    });
-    const handler = iii.triggerTypes.get('cap::feed');
-    for (let i = 0; i < MAX_BINDINGS; i++) {
-      await handler?.registerTrigger({
-        id: `b${i}`,
-        function_id: 'f',
-        config: { session_id: 's' },
-      });
+    createFeed(iii.asClient(), { id: 'cap::feed', source: 'cursor', description: 'd' });
+    for (let i = 0; i < MAX_OBSERVERS; i++) {
+      await iii.addObserver('cap::feed', 's', { id: `o${i}` });
     }
-    await expect(
-      handler?.registerTrigger({ id: 'b0', function_id: 'g', config: { session_id: 's' } }),
-    ).resolves.toBeUndefined();
-    await expect(
-      handler?.registerTrigger({ id: 'overflow', function_id: 'f', config: { session_id: 's' } }),
-    ).rejects.toThrow(/binding limit/);
-    expect(feed.bindingCount()).toBe(MAX_BINDINGS);
-    await handler?.unregisterTrigger({ id: 'b1', function_id: 'f', config: {} });
-    await expect(
-      handler?.registerTrigger({ id: 'overflow', function_id: 'f', config: { session_id: 's' } }),
-    ).resolves.toBeUndefined();
+    await expect(iii.addObserver('cap::feed', 's', { id: 'overflow' })).rejects.toMatchObject({
+      code: 'OBSERVER_LIMIT',
+    });
+    expect(iii.observers('cap::feed')).toHaveLength(MAX_OBSERVERS);
+    await iii.removeObserver('o1');
+    await expect(iii.addObserver('cap::feed', 's', { id: 'overflow' })).resolves.toBe('overflow');
   });
 
   it('numbers agent and raw frames independently, contiguous from 0, and keeps stable ids', async () => {
     const iii = new MockIII();
     const { emit, emitRaw } = createAgentFeeds(iii.asClient());
     for (const session of ['q-1', 'q-2']) {
-      await iii.bind(AGENT, session);
-      await iii.bind(RAW, session);
+      await iii.addObserver(AGENT, session);
+      await iii.addObserver(RAW, session);
     }
     await emitRaw('q-1', { r: 0 }, 'cursor-abc-raw');
     await emit('q-1', { a: 0 }, 'cursor-abc');
@@ -168,20 +151,28 @@ describe('cursor agent feeds', () => {
     expect(iii.feedPayloads(AGENT).filter((p) => p.session_id === 'q-2')).toHaveLength(1);
   });
 
-  it('logs and swallows a failing delivery and still delivers to the other binding', async () => {
+  it('advances seq for frames nobody observes', async () => {
     const iii = new MockIII();
-    const original = iii.trigger.bind(iii);
-    iii.trigger = async (request: Record<string, unknown>) => {
-      if (request.function_id === 'f::gone') throw new Error('function_not_found');
+    const { emit } = createAgentFeeds(iii.asClient());
+    await emit('late', { n: 0 });
+    await iii.addObserver(AGENT, 'late');
+    await emit('late', { n: 1 });
+    expect(iii.feedPayloads(AGENT).map((p) => p.seq)).toEqual([1]);
+  });
+
+  it('logs a refused call and resolves false', async () => {
+    const iii = new MockIII();
+    const original = iii.call.bind(iii);
+    iii.call = async (request: Record<string, unknown>) => {
+      if (request.function_id === AGENT) throw new Error('OVERFLOW');
       return original(request);
     };
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const { emit } = createAgentFeeds(iii.asClient());
-    await iii.bind(AGENT, 'g-1', { id: 'gone', function_id: 'f::gone' });
-    await iii.bind(AGENT, 'g-1');
-    await expect(emit('g-1', { type: 'turn_end' })).resolves.toBe(true);
-    expect(iii.feedEvents(AGENT)).toEqual([{ type: 'turn_end' }]);
-    expect(warning).toHaveBeenCalledWith(expect.stringContaining('f::gone'));
+    await iii.addObserver(AGENT, 'g-1');
+    await expect(emit('g-1', { type: 'turn_end' })).resolves.toBe(false);
+    expect(iii.feedEvents(AGENT)).toEqual([]);
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining(AGENT));
     warning.mockRestore();
   });
 });
