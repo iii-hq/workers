@@ -256,6 +256,11 @@ interface ChatViewProps {
   density?: 'route' | 'dock'
   /** Header label for a session-pinned workspace panel. */
   panelTitle?: string
+  /**
+   * The open-chats tab row: when set (and there is no ← back button), it
+   * takes the header's left side in place of the title and agent label.
+   */
+  headerTabs?: ReactNode
   /** Close the hosting pane — the header's standard ✕ when present. */
   onRequestClose?: () => void
   /** The pane's command registrar: chat's keys and palette rows. */
@@ -307,6 +312,7 @@ export function ChatView({
   catalogLoading,
   density = 'route',
   panelTitle,
+  headerTabs,
   onRequestClose,
   commands,
   onBack,
@@ -3184,15 +3190,21 @@ export function ChatView({
                 </button>
               </Hint>
             ) : null}
-            <span className="min-w-0 truncate font-medium text-ink">
-              {panelTitle ?? 'Chat'}
-            </span>
-            <span className="shrink-0 text-ink-ghost">·</span>
-            <span className="min-w-0 truncate">
-              {readOnly
-                ? 'Read-only'
-                : (conversation.agentProfile?.name ?? effectiveModel)}
-            </span>
+            {headerTabs && !onBack ? (
+              headerTabs
+            ) : (
+              <>
+                <span className="min-w-0 truncate font-medium text-ink">
+                  {panelTitle ?? 'Chat'}
+                </span>
+                <span className="shrink-0 text-ink-ghost">·</span>
+                <span className="min-w-0 truncate">
+                  {readOnly
+                    ? 'Read-only'
+                    : (conversation.agentProfile?.name ?? effectiveModel)}
+                </span>
+              </>
+            )}
           </div>
         </PageHeader>
       )}

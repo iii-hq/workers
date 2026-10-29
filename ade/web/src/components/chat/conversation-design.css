@@ -804,3 +804,23 @@
     }
   }
 }
+
+/* Chat header tabs: a hovered or focused tab fades its label's end under
+   the ✕ (always on touch, where the ✕ always shows). */
+.chat-tab:is(:hover, :focus-within) .chat-tab-label {
+  mask-image: linear-gradient(
+    to right,
+    black calc(100% - 2.25rem),
+    transparent calc(100% - 1.25rem)
+  );
+}
+@media (pointer: coarse) {
+  .chat-tab .chat-tab-label {
+    mask-image: linear-gradient(
+      to right,
+      black calc(100% - 2.25rem),
+      transparent calc(100% - 1.25rem)
+    );
+  }
+}
+

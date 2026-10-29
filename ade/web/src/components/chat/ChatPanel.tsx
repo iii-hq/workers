@@ -1,5 +1,5 @@
 import { PanelLeft, PanelRight, SquarePen } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   NewChatDialog,
   type NewChatDraft,
@@ -28,11 +28,20 @@ import { useConversationsCtx } from '@/lib/conversations-context'
 import { errText } from '@/lib/errors'
 import { NEUTRAL_SURFACE } from '@/lib/neutral-surface'
 import {
+  closeChatTab,
+  loadOpenChatTabs,
+  type OpenChatTabs,
+  openChatTab,
+  pruneChatTabs,
+  saveOpenChatTabs,
+} from '@/lib/open-chat-tabs'
+import {
   getRemovalPreview,
   type RemovalPreview,
 } from '@/lib/sessions/removal-preview'
 import { cn } from '@/lib/utils'
 import type { PageCommandsApi, PanelSide } from '@/types/injectable-ui'
+import { ChatTabs } from './ChatTabs'
 import { ChatView } from './ChatView'
 import { ConversationLoadNotice } from './ConversationLoadNotice'
 import { ImportConversationsDialog } from './ImportConversationsDialog'
@@ -243,6 +252,46 @@ export function ChatPanel({
       setNarrowView('chat')
     },
     [select],
+  )
+
+  // The header's open-chat tabs (an unpinned, wide pane only): the chat on
+  // screen always has one; side chats live in the aside, not here.
+  const [chatTabs, setChatTabs] = useState<OpenChatTabs>(loadOpenChatTabs)
+  useEffect(() => saveOpenChatTabs(chatTabs), [chatTabs])
+  useEffect(() => {
+    if (pinned || !activeId) return
+    const shown = conversations.find((c) => c.id === activeId)
+    if (shown && isSideChat(shown)) return
+    setChatTabs((current) => openChatTab(current, activeId))
+  }, [pinned, activeId, conversations])
+  useEffect(() => {
+    if (!listed) return
+    const tabbable = new Set(
+      conversations.filter((c) => !isSideChat(c)).map((c) => c.id),
+    )
+    setChatTabs((current) => pruneChatTabs(current, (id) => tabbable.has(id)))
+  }, [listed, conversations])
+  const tabConversations = useMemo(
+    () =>
+      chatTabs.ids
+        .map((id) => conversations.find((c) => c.id === id))
+        .filter((c): c is (typeof conversations)[number] => c !== undefined),
+    [chatTabs.ids, conversations],
+  )
+  const recentConversations = useMemo(
+    () =>
+      conversations
+        .filter((c) => !isSideChat(c))
+        .sort((a, b) => b.updatedAt - a.updatedAt),
+    [conversations],
+  )
+  const handleCloseTab = useCallback(
+    (id: string) => {
+      const { state, next } = closeChatTab(chatTabs, id)
+      setChatTabs(state)
+      if (id === activeId && next) select(next)
+    },
+    [chatTabs, activeId, select],
   )
 
   // The sidebar's verbs, beside the chat's own: both live in the same pane.
@@ -515,6 +564,18 @@ export function ChatPanel({
             catalogLoading={catalogLoading}
             density={density}
             panelTitle={pinned ? displayedConversation.title : undefined}
+            headerTabs={
+              pinned || narrow ? undefined : (
+                <ChatTabs
+                  tabs={tabConversations}
+                  activeId={activeId}
+                  recent={recentConversations}
+                  onSelect={handleSelect}
+                  onClose={handleCloseTab}
+                  onNew={() => setNewChatOpen(true)}
+                />
+              )
+            }
             onRequestClose={onRequestClose}
             commands={commands}
             onBack={narrow && !pinned ? handleBack : undefined}
