@@ -3,7 +3,7 @@ import { errorMessage } from '@iii-dev/console-ui/format'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { EMPTY_FEED, feedForSession, mergeEvents, pairingIsCurrent, type EventFeed, type EventPage, type PairingCode, type Session } from './model'
 
-/** Serial cursor polling: events are best-effort, so a live binding cannot replace reconciliation. */
+/** Serial cursor polling: events are best-effort, so a live observer cannot replace reconciliation. */
 export function useSession(host: Host, sessionId: string, paused: boolean) {
   const [session, setSession] = useState<Session | null>(null)
   const [qr, setQr] = useState<PairingCode | null>(null)

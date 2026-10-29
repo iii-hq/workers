@@ -48,10 +48,10 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 		Data              map[string]any `json:"data"`
 	}
 	type callback struct {
-		binding string
-		event   eventPayload
-		payload json.RawMessage
-		err     error
+		observer string
+		event    eventPayload
+		payload  json.RawMessage
+		err      error
 	}
 	received := make(chan callback, 64)
 	if _, err := consumer.RegisterFunction(callbackID, func(callCtx context.Context, raw json.RawMessage) (any, error) {
@@ -60,12 +60,12 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 		result.err = json.Unmarshal(raw, &result.event)
 		metadata, ok := iii.MetadataFromContext(callCtx)
 		var route struct {
-			Binding string `json:"binding"`
+			Observer string `json:"observer"`
 		}
-		if !ok || json.Unmarshal(metadata, &route) != nil || route.Binding == "" {
+		if !ok || json.Unmarshal(metadata, &route) != nil || route.Observer == "" {
 			result.err = fmt.Errorf("observer metadata was lost: %s", metadata)
 		}
-		result.binding = route.Binding
+		result.observer = route.Observer
 		if result.err == nil && result.event.Kind == "message.received" {
 			// Query from inside the target: delaying this until after receipt
 			// would fail to catch publication before the archive transaction.
@@ -167,7 +167,7 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 		}
 		return false
 	})
-	discovery, err := guideObserver.Observe(iii.Source{FunctionID: source.FunctionID, Namespace: source.Namespace, Filters: source.Filters, Deliver: source.Deliver}, callbackID, iii.ObserverOptions{Metadata: json.RawMessage(`{"binding":"discovery"}`)})
+	discovery, err := guideObserver.Observe(iii.Source{FunctionID: source.FunctionID, Namespace: source.Namespace, Filters: source.Filters, Deliver: source.Deliver}, callbackID, iii.ObserverOptions{Metadata: json.RawMessage(`{"observer":"discovery"}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +191,7 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 	}
 	handles := []*iii.ObserverHandle{discovery}
 	for name, filter := range filters {
-		metadata, _ := json.Marshal(map[string]string{"binding": name})
+		metadata, _ := json.Marshal(map[string]string{"observer": name})
 		handle, err := registrar.Observe(iii.Source{FunctionID: "whatsapp::cloud::on-events", Filters: filter, Deliver: iii.DeliverOutput}, callbackID, iii.ObserverOptions{Metadata: metadata, TargetNamespace: callbackNamespace})
 		if err != nil {
 			t.Fatal(err)
@@ -263,9 +263,9 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 	// the queue. Target completion may still arrive in a different order.
 	post(message(barrierID))
 	expected := map[string]bool{}
-	for _, binding := range []string{"matching", "received", "discovery"} {
+	for _, observer := range []string{"matching", "received", "discovery"} {
 		for _, id := range []string{firstID, barrierID} {
-			expected[binding+"/"+id+"/"] = true
+			expected[observer+"/"+id+"/"] = true
 		}
 	}
 	for _, value := range []string{"delivered", "read", "sent"} {
@@ -287,7 +287,7 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 			if err := eventSchema.Validate(value); err != nil {
 				t.Fatalf("event does not satisfy advertised schema: %v", err)
 			}
-			key := result.binding + "/" + event.MessageID + "/" + event.Status
+			key := result.observer + "/" + event.MessageID + "/" + event.Status
 			if !expected[key] {
 				t.Fatalf("unexpected or duplicate Cloud event: %s (%s)", key, event.Kind)
 			}
@@ -295,7 +295,7 @@ func smokeCloudEvents(t *testing.T, engine, engineURL string, port int) {
 			if event.BusinessAccountID != "123" || event.PhoneNumberID != "456" || event.ChatID != chatID || event.Data["id"] != event.MessageID {
 				t.Fatalf("Cloud envelope lost account, recipient or raw object: %+v", event)
 			}
-			if result.binding == "statuses" {
+			if result.observer == "statuses" {
 				if event.Kind != "message.status" || event.TimestampMS != 1700000001000 || event.Data["status"] != event.Status {
 					t.Fatalf("invalid Cloud receipt: %+v", event)
 				}
