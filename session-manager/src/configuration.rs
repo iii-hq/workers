@@ -406,14 +406,17 @@ pub fn register_config_trigger(iii: &IIIClient, state: AppState) -> Result<(), E
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
+    // Deprecated in 0.25 and still served by 0.24 and 0.25 engines.
+    #[allow(deprecated)]
+    let bound = iii.register_trigger(RegisterTriggerInput::new(
         "configuration".to_string(),
         CONFIG_FN_ID.to_string(),
         json!({
             "configuration_id": config_id(),
             "event_types": ["configuration:updated"],
         }),
-    ))?;
+    ));
+    bound?;
     Ok(())
 }
 

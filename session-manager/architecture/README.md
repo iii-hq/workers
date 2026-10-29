@@ -26,8 +26,9 @@ conversations. A session is an append-only log of typed message entries
 supports branching and copy-on-fork, plus a small metadata record (title,
 description, coarse status, app-defined metadata, parked composer draft).
 Fifteen `session::*`
-functions mutate and read it; six custom trigger types announce every
-mutation so consumers render live without polling. It runs no agent logic,
+functions mutate and read it; six custom trigger types and their
+`session::on-*` observable functions (iii 0.25) announce every mutation so
+consumers render live without polling. It runs no agent logic,
 calls no LLMs, and binds no triggers of its own. Storage is pluggable behind
 one trait: a filesystem backend (one JSONL file per session) or a bridge
 backend that defers storage — and event fan-out — to a *main* session-manager

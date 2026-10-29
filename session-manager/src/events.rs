@@ -32,6 +32,18 @@
 //! relay re-emits through its local `Emitter`. One canonical path, no
 //! dedup needed, and filters are evaluated at every edge because the
 //! envelope carries the session metadata.
+//!
+//! Observable functions (iii 0.25): next to each of the six trigger
+//! types an owner-delivered function — `session::on-created`,
+//! `session::on-message-added`, `session::on-message-updated`,
+//! `session::on-status-changed`, `session::on-meta-updated` and
+//! `session::on-deleted`. Its observers pass the trigger type's binding
+//! config as args, are filed in that type's [`SubscriberSet`] next to its
+//! bindings, and receive every event a binding with the same config
+//! receives, through `obs.call`. The functions' handlers refuse every
+//! invocation with `FORBIDDEN`: events only come from the [`Emitter`]. The
+//! six trigger types stay registered for consumers that bind them, and the
+//! internal [`STORE_EVENTS`] type is unchanged.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -40,7 +52,10 @@ use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
+use iii_sdk::{
+    IIIClient, Observe, ObserveHandler, ObserveRejection, Observer, RegisterFunction,
+    RegisterTriggerType, TriggerAction,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -57,6 +72,17 @@ pub const DELETED: &str = "session::deleted";
 /// Internal trigger type: envelope feed for bridged instances. Served
 /// only by the main (fs-mode) instance.
 pub const STORE_EVENTS: &str = "session::store::events";
+
+/// The observable functions next to the six trigger types (iii 0.25).
+pub const ON_CREATED: &str = "session::on-created";
+pub const ON_MESSAGE_ADDED: &str = "session::on-message-added";
+pub const ON_MESSAGE_UPDATED: &str = "session::on-message-updated";
+pub const ON_STATUS_CHANGED: &str = "session::on-status-changed";
+pub const ON_META_UPDATED: &str = "session::on-meta-updated";
+pub const ON_DELETED: &str = "session::on-deleted";
+
+/// The code a direct invocation of an observable function is refused with.
+pub const FORBIDDEN: &str = "FORBIDDEN";
 
 /// Which of the six trigger types an event belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -78,6 +104,65 @@ impl EventKind {
             EventKind::StatusChanged => STATUS_CHANGED,
             EventKind::MetaUpdated => META_UPDATED,
             EventKind::Deleted => DELETED,
+        }
+    }
+
+    /// The observable function next to this trigger type.
+    pub fn observable_function(&self) -> &'static str {
+        match self {
+            EventKind::Created => ON_CREATED,
+            EventKind::MessageAdded => ON_MESSAGE_ADDED,
+            EventKind::MessageUpdated => ON_MESSAGE_UPDATED,
+            EventKind::StatusChanged => ON_STATUS_CHANGED,
+            EventKind::MetaUpdated => ON_META_UPDATED,
+            EventKind::Deleted => ON_DELETED,
+        }
+    }
+
+    /// The description the observable function registers with.
+    pub fn observable_description(&self) -> &'static str {
+        match self {
+            EventKind::Created => {
+                "Fires when a new session exists (session::create or session::fork). Observe it \
+                 with args { metadata? } (subset match against the session's metadata); every \
+                 observer receives { session_id, title, description, status, forked_from?, \
+                 created_at }, the event session::created bindings receive. Only the \
+                 session-manager worker fires it: invoking it directly is refused (FORBIDDEN)."
+            }
+            EventKind::MessageAdded => {
+                "Fires when an entry is appended to a session. Observe it with args { session_id?, \
+                 roles?, metadata? }; every observer receives { session_id, entry_id, parent_id, \
+                 message? | custom?, origin?, timestamp }, the event session::message-added \
+                 bindings receive. Only the session-manager worker fires it: invoking it directly \
+                 is refused (FORBIDDEN)."
+            }
+            EventKind::MessageUpdated => {
+                "Fires when a message entry's content changes (e.g. streaming deltas). Observe it \
+                 with args { session_id?, roles?, metadata? }; every observer receives { \
+                 session_id, entry_id, message, revision, origin?, timestamp }, the event \
+                 session::message-updated bindings receive. Only the session-manager worker fires \
+                 it: invoking it directly is refused (FORBIDDEN)."
+            }
+            EventKind::StatusChanged => {
+                "Fires when a session's status changes (idle/working/done/error). Observe it with \
+                 args { session_id?, metadata? }; every observer receives { session_id, status, \
+                 previous_status, status_reason?, timestamp }, the event session::status-changed \
+                 bindings receive. Only the session-manager worker fires it: invoking it directly \
+                 is refused (FORBIDDEN)."
+            }
+            EventKind::MetaUpdated => {
+                "Fires when a session's title/description/metadata change. Observe it with args { \
+                 session_id?, metadata? }; every observer receives { session_id, title, \
+                 description, metadata?, timestamp }, the event session::meta-updated bindings \
+                 receive. Only the session-manager worker fires it: invoking it directly is \
+                 refused (FORBIDDEN)."
+            }
+            EventKind::Deleted => {
+                "Fires when a session and its entries are removed. Observe it with args { \
+                 session_id?, metadata? }; every observer receives { session_id, timestamp }, the \
+                 event session::deleted bindings receive. Only the session-manager worker fires \
+                 it: invoking it directly is refused (FORBIDDEN)."
+            }
         }
     }
 
@@ -446,11 +531,14 @@ pub struct Binding {
 /// Thread-safe subscriber registry for one trigger type, keyed by
 /// trigger-instance id. Cloned into both the [`TriggerHandler`]
 /// (mutates on register/unregister) and the [`Emitter`] (iterates
-/// read-only snapshots).
+/// read-only snapshots). It also files the observers of the observable
+/// function next to the trigger type, which receive the same events
+/// under the same filters.
 #[derive(Clone)]
 pub struct SubscriberSet {
     kind: EventKind,
     inner: Arc<Mutex<HashMap<String, Binding>>>,
+    observers: Arc<Mutex<HashMap<String, ObserverEntry>>>,
 }
 
 impl SubscriberSet {
@@ -458,6 +546,7 @@ impl SubscriberSet {
         Self {
             kind,
             inner: Arc::new(Mutex::new(HashMap::new())),
+            observers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -492,6 +581,40 @@ impl SubscriberSet {
 
     pub fn is_empty(&self) -> bool {
         self.lock().is_empty()
+    }
+
+    /// Parse + file an observer of the observable function next to this
+    /// trigger type; `args` is a binding config. Rejects malformed args
+    /// the way [`Self::add`] rejects a malformed binding config.
+    pub fn add_observer(
+        &self,
+        args: &Value,
+        observer: Arc<dyn EventObserver>,
+    ) -> Result<(), String> {
+        let filter = self.kind.parse_binding_config(args)?;
+        let id = observer.id().to_string();
+        self.lock_observers()
+            .insert(id, ObserverEntry { observer, filter });
+        Ok(())
+    }
+
+    pub fn remove_observer(&self, id: &str) {
+        self.lock_observers().remove(id);
+    }
+
+    /// Snapshot so the mutex isn't held across awaits.
+    pub fn observers(&self) -> Vec<ObserverEntry> {
+        self.lock_observers().values().cloned().collect()
+    }
+
+    pub fn observer_count(&self) -> usize {
+        self.lock_observers().len()
+    }
+
+    fn lock_observers(&self) -> std::sync::MutexGuard<'_, HashMap<String, ObserverEntry>> {
+        self.observers
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Binding>> {
@@ -573,6 +696,138 @@ impl TriggerHandler for SessionTriggerHandler {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Observable functions (iii 0.25): session::on-*
+// ---------------------------------------------------------------------------
+
+/// One observer as a sink of a trigger type's [`SubscriberSet`].
+/// Abstracted so the fan-out is testable without an engine.
+#[async_trait]
+pub trait EventObserver: Send + Sync + 'static {
+    /// The observer's id (stable across replays).
+    fn id(&self) -> &str;
+
+    /// Hands one event to the observer's target.
+    async fn deliver(&self, event: Value) -> Result<(), String>;
+}
+
+#[async_trait]
+impl EventObserver for Observer {
+    fn id(&self) -> &str {
+        Observer::id(self)
+    }
+
+    async fn deliver(&self, event: Value) -> Result<(), String> {
+        // Same `iii.tag.hidden` scope as the binding fan-out
+        // ([`IiiDeliverer`]): per-event bookkeeping, hidden in trace UIs.
+        observer_delivery_outcome(
+            iii_helpers::observability::run_with_baggage(
+                &[("iii.tag.hidden", "session events")],
+                self.call::<Value>(event),
+            )
+            .await,
+        )
+    }
+}
+
+/// What one `obs.call` result means for the fan-out: the observer's own
+/// filters declining the event (`FILTERS_NOT_MATCHED`) is not a failure, so
+/// it is neither logged nor reported; any other error is.
+pub fn observer_delivery_outcome(result: Result<Value, Error>) -> Result<(), String> {
+    match result {
+        Ok(_) => Ok(()),
+        Err(Error::Remote { code, .. })
+            if code == iii_sdk::protocol::observe_codes::FILTERS_NOT_MATCHED =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// One observer filed in a [`SubscriberSet`], with its parsed args.
+#[derive(Clone)]
+pub struct ObserverEntry {
+    pub observer: Arc<dyn EventObserver>,
+    pub filter: BindingFilter,
+}
+
+/// The error an observable function's handler answers every invocation
+/// with: its events only come from the [`Emitter`].
+pub fn refuse_invocation(kind: EventKind) -> Error {
+    let function_id = kind.observable_function();
+    Error::Remote {
+        code: FORBIDDEN.to_string(),
+        message: format!(
+            "{function_id} is an event source: observe it \
+             (iii.observe({{ function_id: '{function_id}', args: {{}} }}, target)); \
+             only the session-manager worker delivers its events"
+        ),
+        stacktrace: None,
+    }
+}
+
+/// The handler of `kind`'s observable function: refuses every invocation,
+/// so nobody can make this worker hand observers a forged event. `E` is the
+/// event payload observers of `kind` receive (e.g. [`SessionCreatedEvent`]),
+/// so the function publishes that typed request schema, never `AnyValue`.
+pub fn refuse_observable_call<E>(kind: EventKind, _event: E) -> Result<(), Error> {
+    Err(refuse_invocation(kind))
+}
+
+/// The observe hooks of one `session::on-*` function: observers join the
+/// subscriber set of the trigger type next to it.
+struct SessionObserveHandler {
+    set: SubscriberSet,
+}
+
+#[async_trait]
+impl ObserveHandler for SessionObserveHandler {
+    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
+        self.set
+            .add_observer(obs.args_value(), Arc::new(obs.clone()))
+            .map_err(ObserveRejection::from)?;
+        tracing::info!(
+            function_id = self.set.kind().observable_function(),
+            observer = %obs.id(),
+            target = %obs.target(),
+            "observer added"
+        );
+        Ok(())
+    }
+
+    async fn on_observer_removed(&self, obs: &Observer) {
+        self.set.remove_observer(obs.id());
+        tracing::info!(
+            function_id = self.set.kind().observable_function(),
+            observer = %obs.id(),
+            "observer removed"
+        );
+    }
+}
+
+/// Register the observable function next to `set`'s trigger type,
+/// owner-delivered, with the trigger type's binding config `A` as its
+/// args_format and the event payload `E` its observers receive as its
+/// (typed) request schema.
+fn register_observable<A, E>(iii: &Arc<IIIClient>, set: &SubscriberSet)
+where
+    A: JsonSchema,
+    E: serde::de::DeserializeOwned + JsonSchema + Send + 'static,
+{
+    let kind = set.kind();
+    iii.register_function(
+        kind.observable_function(),
+        RegisterFunction::new(move |event: E| refuse_observable_call(kind, event))
+            .description(kind.observable_description())
+            .observe(
+                Observe::owner()
+                    .args_format::<A>()
+                    .handler(SessionObserveHandler { set: set.clone() }),
+            ),
+    );
+}
+
 /// Unfiltered subscriber registry for the internal [`STORE_EVENTS`]
 /// trigger type: binding id -> relay function id. One subscriber per
 /// attached bridged instance.
@@ -652,6 +907,8 @@ impl TriggerHandler for StoreEventsTriggerHandler {
 /// attached bridges survive a main restart.
 pub fn register_store_events_type(iii: &Arc<IIIClient>) -> BridgeSubscribers {
     let subscribers = BridgeSubscribers::new();
+    // Deprecated in 0.25 and still served by 0.24 and 0.25 engines.
+    #[allow(deprecated)]
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
             STORE_EVENTS,
@@ -667,12 +924,15 @@ pub fn register_store_events_type(iii: &Arc<IIIClient>) -> BridgeSubscribers {
     subscribers
 }
 
-/// Register the six custom trigger types with the engine. Must run
+/// Register the six custom trigger types with the engine, and next to
+/// each its observable function over the same subscriber set. Must run
 /// **before** `functions::register_all` so handlers can capture the
 /// subscriber sets.
 pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
     let sets = TriggerSets::new();
 
+    // Deprecated in 0.25 and still served by 0.24 and 0.25 engines.
+    #[allow(deprecated)]
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
             CREATED,
@@ -683,6 +943,8 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
         )
         .trigger_request_format::<CreatedBindingConfig>(),
     );
+    // Deprecated in 0.25 and still served by 0.24 and 0.25 engines.
+    #[allow(deprecated)]
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
             MESSAGE_ADDED,
@@ -693,6 +955,8 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
         )
         .trigger_request_format::<MessageBindingConfig>(),
     );
+    // Deprecated in 0.25 and still served by 0.24 and 0.25 engines.
+    #[allow(deprecated)]
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
             MESSAGE_UPDATED,
@@ -703,6 +967,8 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
         )
         .trigger_request_format::<MessageBindingConfig>(),
     );
+    // Deprecated in 0.25 and still served by 0.24 and 0.25 engines.
+    #[allow(deprecated)]
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
             STATUS_CHANGED,
@@ -713,6 +979,8 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
         )
         .trigger_request_format::<SessionBindingConfig>(),
     );
+    // Deprecated in 0.25 and still served by 0.24 and 0.25 engines.
+    #[allow(deprecated)]
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
             META_UPDATED,
@@ -723,6 +991,8 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
         )
         .trigger_request_format::<SessionBindingConfig>(),
     );
+    // Deprecated in 0.25 and still served by 0.24 and 0.25 engines.
+    #[allow(deprecated)]
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
             DELETED,
@@ -734,10 +1004,20 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
         .trigger_request_format::<SessionBindingConfig>(),
     );
 
+    // Next to each trigger type, its observable function over the same
+    // subscriber set; args_format is the trigger type's binding config.
+    register_observable::<CreatedBindingConfig, SessionCreatedEvent>(iii, &sets.created);
+    register_observable::<MessageBindingConfig, MessageAddedEvent>(iii, &sets.message_added);
+    register_observable::<MessageBindingConfig, MessageUpdatedEvent>(iii, &sets.message_updated);
+    register_observable::<SessionBindingConfig, StatusChangedEvent>(iii, &sets.status_changed);
+    register_observable::<SessionBindingConfig, MetaUpdatedEvent>(iii, &sets.meta_updated);
+    register_observable::<SessionBindingConfig, SessionDeletedEvent>(iii, &sets.deleted);
+
     for kind in EventKind::all() {
         tracing::info!(
             trigger_type = kind.trigger_type(),
-            "registered trigger type"
+            observable_function = kind.observable_function(),
+            "registered trigger type and observable function"
         );
     }
 
@@ -874,8 +1154,10 @@ impl Emitter {
     /// Local fan-out: filter evaluation + delivery to matching bindings.
     async fn emit(&self, ev: &EmittableEvent) {
         let kind = ev.event.kind();
-        let bindings = self.sets.for_kind(kind).snapshot();
-        if bindings.is_empty() {
+        let set = self.sets.for_kind(kind);
+        let bindings = set.snapshot();
+        let observers = set.observers();
+        if bindings.is_empty() && observers.is_empty() {
             return;
         }
         let payload = ev.event.payload();
@@ -889,6 +1171,26 @@ impl Emitter {
                 self.deliverer
                     .deliver(kind.trigger_type(), &binding.function_id, payload.clone())
                     .await;
+            }
+        }
+        // Observers of the observable function next to this trigger type get
+        // the same event under the same filter. Each delivery runs on its own
+        // task: `obs.call` waits for the target, and a slow one must never
+        // hold up the mutation that emitted the event.
+        for entry in observers {
+            if binding_matches(&entry.filter, &ctx) {
+                let observer = entry.observer;
+                let event = payload.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = observer.deliver(event).await {
+                        tracing::warn!(
+                            trigger_type = kind.trigger_type(),
+                            observer = %observer.id(),
+                            %error,
+                            "observer delivery failed"
+                        );
+                    }
+                });
             }
         }
     }
@@ -987,11 +1289,15 @@ pub fn attach_bridge_relay(remote: &Arc<IIIClient>, local_emitter: Arc<Emitter>)
         .metadata(serde_json::json!({ "trace_hidden": true })),
     );
 
-    match remote.register_trigger(iii_sdk::protocol::RegisterTriggerInput::new(
+    // Deprecated in 0.25 and still served by 0.24 and 0.25 engines: the
+    // internal feed stays a trigger type.
+    #[allow(deprecated)]
+    let attached = remote.register_trigger(iii_sdk::protocol::RegisterTriggerInput::new(
         STORE_EVENTS.to_string(),
         relay_id.clone(),
         serde_json::json!({}),
-    )) {
+    ));
+    match attached {
         Ok(_) => tracing::info!(relay = %relay_id, "attached to the main instance's event feed"),
         Err(e) => tracing::warn!(
             error = %e,
@@ -1329,5 +1635,175 @@ mod tests {
 
         set.remove("t1");
         assert!(set.is_empty());
+    }
+
+    /// Stands in for the SDK observer: forwards what `obs.call` would carry
+    /// to its target.
+    struct ObserverRecorder {
+        id: String,
+        tx: tokio::sync::mpsc::UnboundedSender<Value>,
+    }
+
+    fn observer(
+        id: &str,
+    ) -> (
+        Arc<ObserverRecorder>,
+        tokio::sync::mpsc::UnboundedReceiver<Value>,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        (Arc::new(ObserverRecorder { id: id.into(), tx }), rx)
+    }
+
+    #[async_trait]
+    impl EventObserver for ObserverRecorder {
+        fn id(&self) -> &str {
+            &self.id
+        }
+
+        async fn deliver(&self, event: Value) -> Result<(), String> {
+            self.tx.send(event).map_err(|e| e.to_string())
+        }
+    }
+
+    async fn next(rx: &mut tokio::sync::mpsc::UnboundedReceiver<Value>) -> Value {
+        tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("observer delivery within 5s")
+            .expect("observer channel open")
+    }
+
+    #[test]
+    fn each_on_function_refuses_direct_invocation() {
+        for kind in EventKind::all() {
+            let function_id = kind.observable_function();
+            let forged = SessionDeletedEvent {
+                session_id: "s_1".into(),
+                timestamp: 1,
+            };
+            match refuse_observable_call(kind, forged) {
+                Err(Error::Remote { code, message, .. }) => {
+                    assert_eq!(code, FORBIDDEN);
+                    assert_eq!(code, iii_sdk::protocol::observe_codes::FORBIDDEN);
+                    assert!(message.contains(function_id), "{message}");
+                }
+                other => panic!("{function_id}: expected FORBIDDEN, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn an_observer_declining_by_its_own_filters_is_not_a_delivery_failure() {
+        let remote = |code: &str| Error::Remote {
+            code: code.into(),
+            message: "declined".into(),
+            stacktrace: None,
+        };
+        assert_eq!(observer_delivery_outcome(Ok(Value::Null)), Ok(()));
+        assert_eq!(observer_delivery_outcome(Ok(json!({ "ok": true }))), Ok(()));
+        // The observer's own filters declined the event: nothing to warn about.
+        assert_eq!(
+            observer_delivery_outcome(Err(remote(
+                iii_sdk::protocol::observe_codes::FILTERS_NOT_MATCHED
+            ))),
+            Ok(())
+        );
+        // Anything else is still a failed delivery and gets logged.
+        assert!(observer_delivery_outcome(Err(remote("TIMEOUT"))).is_err());
+        assert!(observer_delivery_outcome(Err(remote(FORBIDDEN))).is_err());
+        assert!(observer_delivery_outcome(Err(Error::Handler("target failed".into()))).is_err());
+    }
+
+    #[test]
+    fn observable_functions_sit_next_to_the_six_trigger_types() {
+        let pairs: Vec<_> = EventKind::all()
+            .iter()
+            .map(|kind| (kind.trigger_type(), kind.observable_function()))
+            .collect();
+        assert_eq!(
+            pairs,
+            [
+                (CREATED, "session::on-created"),
+                (MESSAGE_ADDED, "session::on-message-added"),
+                (MESSAGE_UPDATED, "session::on-message-updated"),
+                (STATUS_CHANGED, "session::on-status-changed"),
+                (META_UPDATED, "session::on-meta-updated"),
+                (DELETED, "session::on-deleted"),
+            ]
+        );
+        for kind in EventKind::all() {
+            assert!(kind.observable_description().contains("FORBIDDEN"));
+        }
+    }
+
+    #[tokio::test]
+    async fn observer_receives_the_event_a_binding_receives() {
+        let deliverer = Arc::new(TestDeliverer {
+            seen: Mutex::new(Vec::new()),
+        });
+        let emitter = Emitter::new(TriggerSets::new(), deliverer.clone());
+        let set = emitter.sets().for_kind(EventKind::Deleted);
+        let config = json!({ "session_id": "s_1" });
+        set.add(TriggerConfig {
+            id: "b1".into(),
+            function_id: "ui::recv".into(),
+            config: config.clone(),
+            metadata: None,
+            namespace: None,
+        })
+        .unwrap();
+        let (matching, mut matching_rx) = observer("o1");
+        let (other, mut other_rx) = observer("o2");
+        set.add_observer(&config, matching).unwrap();
+        set.add_observer(&json!({ "session_id": "s_2" }), other)
+            .unwrap();
+        assert_eq!(set.observer_count(), 2);
+        assert_eq!(set.len(), 1, "observers are not bindings");
+
+        let envelope = |session_id: &str| EventEnvelope {
+            trigger_type: DELETED.into(),
+            payload: json!({ "session_id": session_id, "timestamp": 5 }),
+            session_metadata: None,
+        };
+        assert_eq!(emitter.emit_envelopes(&[envelope("s_1")]).await, 1);
+
+        let bound = deliverer.seen.lock().unwrap().clone();
+        assert_eq!(bound.len(), 1);
+        assert_eq!(bound[0].1, "ui::recv");
+        assert_eq!(next(&mut matching_rx).await, bound[0].2);
+        assert!(other_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn observer_args_are_checked_and_removal_stops_delivery() {
+        let deliverer = Arc::new(TestDeliverer {
+            seen: Mutex::new(Vec::new()),
+        });
+        let emitter = Emitter::new(TriggerSets::new(), deliverer.clone());
+        let set = emitter.sets().for_kind(EventKind::StatusChanged);
+        // Args the trigger type would refuse as a binding config.
+        for bad in [json!({ "roles": ["assistant"] }), json!({ "bogus": true })] {
+            let (rejected, _rx) = observer("bad");
+            let err = set.add_observer(&bad, rejected).unwrap_err();
+            assert!(err.contains("unknown field"), "{err}");
+        }
+        assert_eq!(set.observer_count(), 0);
+
+        let (watcher, mut rx) = observer("o1");
+        set.add_observer(&Value::Null, watcher).unwrap();
+        set.remove_observer("o1");
+        assert_eq!(set.observer_count(), 0);
+        let envelope = EventEnvelope {
+            trigger_type: STATUS_CHANGED.into(),
+            payload: json!({
+                "session_id": "s_1",
+                "status": "working",
+                "previous_status": "idle",
+                "timestamp": 5
+            }),
+            session_metadata: None,
+        };
+        emitter.emit_envelopes(&[envelope]).await;
+        tokio::task::yield_now().await;
+        assert!(rx.try_recv().is_err(), "a removed observer gets nothing");
     }
 }

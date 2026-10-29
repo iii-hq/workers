@@ -1,0 +1,54 @@
+{
+  "function_id": "session::on-status-changed",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SessionStatus": {
+        "description": "Coarse session lifecycle status, rendered directly by consumers.",
+        "enum": [
+          "idle",
+          "working",
+          "done",
+          "error"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "`session::status-changed` — a session's status changed.",
+    "properties": {
+      "previous_status": {
+        "$ref": "#/definitions/SessionStatus"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/definitions/SessionStatus"
+      },
+      "status_reason": {
+        "description": "Short lifecycle detail retained on `working`, `done`, and `error`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "timestamp": {
+        "format": "int64",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "previous_status",
+      "session_id",
+      "status",
+      "timestamp"
+    ],
+    "title": "StatusChangedEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Null",
+    "type": "null"
+  }
+}

@@ -6,7 +6,7 @@ manifest: Cargo.toml
 license: Apache-2.0
 bin: session-manager
 tags: [session, conversation, chat, history]
-description: Durable, reactive, branching store of typed conversation entries with six emitted trigger types.
+description: Durable, reactive, branching store of typed conversation entries with six emitted trigger types and their observable session::on-* functions (iii 0.25).
 
 dependencies:
   configuration: "latest"

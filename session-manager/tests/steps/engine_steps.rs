@@ -171,12 +171,14 @@ async fn engine_subscriber(
     // before routing events at it.
     tokio::time::sleep(Duration::from_millis(150)).await;
 
-    iii.register_trigger(RegisterTriggerInput::new(
+    // Deprecated in 0.25 and still served by 0.24 and 0.25 engines.
+    #[allow(deprecated)]
+    let bound = iii.register_trigger(RegisterTriggerInput::new(
         trigger_type,
         function_id.clone(),
         config,
-    ))
-    .expect("register engine trigger");
+    ));
+    bound.expect("register engine trigger");
     // And a beat for the registration to round-trip to our handler.
     tokio::time::sleep(Duration::from_millis(250)).await;
 

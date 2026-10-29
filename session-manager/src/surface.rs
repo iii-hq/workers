@@ -3,7 +3,9 @@
 //! schemas.
 //!
 //! Golden-tested in `tests/schemas.rs`; keep in lockstep with the boot
-//! registration in `main.rs`: `store_protocol::register_store_protocol`, then
+//! registration in `main.rs`: the `session::on-*` observable functions
+//! (`events::register_trigger_types`), then
+//! `store_protocol::register_store_protocol`, then
 //! `functions::register_all`, then the two `configuration::register_*`
 //! handlers. Schema generation MUST mirror iii-sdk's internal `json_schema_for`
 //! (`SchemaSettings::draft07()` on the handler's request/response types) so a
@@ -16,6 +18,11 @@
 
 use crate::configuration::{
     ConfigStatusRequest, OnConfigChangeEvent, OnConfigChangeResponse, ReloadStatus,
+};
+use crate::events::{
+    MessageAddedEvent, MessageUpdatedEvent, MetaUpdatedEvent, SessionCreatedEvent,
+    SessionDeletedEvent, StatusChangedEvent, ON_CREATED, ON_DELETED, ON_MESSAGE_ADDED,
+    ON_MESSAGE_UPDATED, ON_META_UPDATED, ON_STATUS_CHANGED,
 };
 use crate::functions::{
     append, append_many, create, delete, delete_attachment, ensure, fork, get, get_attachment,
@@ -59,6 +66,14 @@ where
 pub fn catalog() -> Vec<FunctionSpec> {
     use store_protocol as sp;
     vec![
+        // 0. observable functions (register_trigger_types order): each refuses
+        //    every invocation, typed with the event payload its observers get
+        spec::<SessionCreatedEvent, ()>(ON_CREATED),
+        spec::<MessageAddedEvent, ()>(ON_MESSAGE_ADDED),
+        spec::<MessageUpdatedEvent, ()>(ON_MESSAGE_UPDATED),
+        spec::<StatusChangedEvent, ()>(ON_STATUS_CHANGED),
+        spec::<MetaUpdatedEvent, ()>(ON_META_UPDATED),
+        spec::<SessionDeletedEvent, ()>(ON_DELETED),
         // 1. internal store protocol (register_store_protocol order)
         spec::<sp::SessionIdRequest, Option<SessionMeta>>(sp::GET_META),
         spec::<sp::PutMetaRequest, sp::OkResponse>(sp::PUT_META),

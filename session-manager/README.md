@@ -4,9 +4,10 @@ Durable, reactive store for conversations. A session is an append-only
 log of typed message entries (user, assistant, function_result, custom
 — with optional fork branches) plus a small metadata record (title,
 description, coarse status, app-defined metadata). Any worker or client
-appends and reads over the bus; every mutation fires a trigger type
-consumers bind to, so a chat UI, bot, or dashboard renders live with no
-polling and no separate publish call. It runs no agent logic — it is
+appends and reads over the bus; every mutation fires an event consumers
+observe (`session::on-*`, iii 0.25) or bind to as a trigger type, so a
+chat UI, bot, or dashboard renders live with no polling and no separate
+publish call. It runs no agent logic — it is
 the conversation database the [harness](https://github.com/iii-hq/workers/tree/main/harness) family drives, and
 it is independently useful as a real-time chat store for any app.
 
@@ -24,7 +25,7 @@ exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 Create a session, append a message, read the transcript back:
 
 ```rust
-use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use iii_sdk::{protocol::TriggerRequest, register_worker, InitOptions};
 use serde_json::json;
 
 #[tokio::main]
@@ -65,34 +66,51 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-To render live instead of polling, register a handler function and bind
-it to a trigger type (the two-step reactive pattern):
+To render live instead of polling, register a handler function and
+observe the matching `session::on-*` function with the binding config as
+args (iii 0.25; see [Observable functions](#observable-functions-iii-025)):
 
 ```rust
-use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput};
+use iii_sdk::{Error, Observed, RegisterFunction, Source};
 use serde_json::{json, Value};
 
 iii.register_function(
     "my-ui::on-message-updated",
-    RegisterFunction::new_async(|event: Value| async move {
-        // full updated message + monotonic revision; keep the highest
-        println!("{} rev {}", event["entry_id"], event["revision"]);
-        Ok::<_, IIIError>(json!({ "ok": true }))
+    RegisterFunction::new_async(|event: Observed<Value>| async move {
+        // event.input: full updated message + monotonic revision; keep the highest
+        let update = event.input.unwrap_or_default();
+        println!("{} rev {}", update["entry_id"], update["revision"]);
+        Ok::<_, Error>(json!({ "ok": true }))
     }),
 );
 
-iii.register_trigger(RegisterTriggerInput {
-    trigger_type: "session::message-updated".into(),
-    function_id: "my-ui::on-message-updated".into(),
-    config: json!({ "session_id": session_id, "roles": ["assistant"] }),
-    metadata: None,
-})?;
+let live = iii.observe(
+    Source::function("session::on-message-updated")
+        .args(json!({ "session_id": session_id, "roles": ["assistant"] })),
+    "my-ui::on-message-updated",
+);
+live.ready().await?;
+```
+
+On an older engine or SDK, bind the trigger type instead (deprecated in
+0.25; the handler then receives the event payload itself, not an
+`Observed` envelope):
+
+```rust
+use iii_sdk::protocol::RegisterTriggerInput;
+
+#[allow(deprecated)]
+iii.register_trigger(RegisterTriggerInput::new(
+    "session::message-updated",
+    "my-ui::on-message-updated",
+    json!({ "session_id": session_id, "roles": ["assistant"] }),
+))?;
 ```
 
 Streaming an assistant reply uses the same primitives: append an
 (initially empty) assistant message, then call `session::update-message`
-as tokens arrive — each update fires `session::message-updated` with an
-incremented `revision`.
+as tokens arrive — each update fires `session::message-updated` (and
+`session::on-message-updated`) with an incremented `revision`.
 
 The full function surface (21 `session::*` functions: lifecycle,
 messages, branching/fork, attachments) is documented in the spec and on each
@@ -129,6 +147,40 @@ rejected at registration.
 Delivery is fire-and-forget, at-least-once, and unordered — reconcile
 message updates by `revision` (keep the highest) and transcript order
 by the parent chain, never by arrival order.
+
+### Observable functions (iii 0.25)
+
+On a 0.25 engine a new consumer observes an owner-delivered function
+instead of binding a trigger type. Each shares its trigger type's
+subscriber registry and takes that type's binding config as args, so an
+observer receives exactly the event a binding with the same config
+receives, at the same moments and through the same filters:
+
+| Function | Args | Event |
+|---|---|---|
+| `session::on-created` | `{ metadata? }` | as `session::created` |
+| `session::on-message-added` | `{ session_id?, roles?, metadata? }` | as `session::message-added` |
+| `session::on-message-updated` | `{ session_id?, roles?, metadata? }` | as `session::message-updated` |
+| `session::on-status-changed` | `{ session_id?, metadata? }` | as `session::status-changed` |
+| `session::on-meta-updated` | `{ session_id?, metadata? }` | as `session::meta-updated` |
+| `session::on-deleted` | `{ session_id?, metadata? }` | as `session::deleted` |
+
+```typescript
+iii.registerFunction('my-ui::render', async ({ observer_id, input }) => render(input))
+
+const live = iii.observe(
+  { function_id: 'session::on-message-updated', args: { session_id, roles: ['assistant'] } },
+  'my-ui::render',
+)
+```
+
+Events are routed inside session-manager: invoking any `session::on-*`
+function directly is refused with `FORBIDDEN`. Malformed args are
+rejected when the observer is added, as malformed configs are at
+registration. The six trigger types stay registered, unchanged, so
+consumers that bind them keep working on 0.24 and 0.25 engines (binding
+is deprecated in iii 0.25; new consumers observe instead); the
+internal `session::store::events` feed is unchanged.
 
 ## Storage adapters
 

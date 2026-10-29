@@ -1,0 +1,63 @@
+{
+  "function_id": "session::on-created",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SessionStatus": {
+        "description": "Coarse session lifecycle status, rendered directly by consumers.",
+        "enum": [
+          "idle",
+          "working",
+          "done",
+          "error"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "`session::created` — a new session exists (create or fork).",
+    "properties": {
+      "created_at": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "description": {
+        "type": "string"
+      },
+      "forked_from": {
+        "description": "Source session id when created by fork.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "status": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/SessionStatus"
+          }
+        ],
+        "description": "`\"idle\"` on create."
+      },
+      "title": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "created_at",
+      "description",
+      "session_id",
+      "status",
+      "title"
+    ],
+    "title": "SessionCreatedEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Null",
+    "type": "null"
+  }
+}

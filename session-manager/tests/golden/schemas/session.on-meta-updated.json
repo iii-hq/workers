@@ -1,0 +1,42 @@
+{
+  "function_id": "session::on-meta-updated",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`session::meta-updated` — title/description/metadata changed.",
+    "properties": {
+      "description": {
+        "type": "string"
+      },
+      "metadata": {
+        "additionalProperties": true,
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "timestamp": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "title": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "description",
+      "session_id",
+      "timestamp",
+      "title"
+    ],
+    "title": "MetaUpdatedEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Null",
+    "type": "null"
+  }
+}
