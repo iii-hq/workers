@@ -115,7 +115,8 @@ await bindConfigTrigger(iii, refresh);
 
 // The two owned event feeds: claude::agent-event (AgentEvent frames) and
 // claude::raw-event (verbatim Claude Code messages), each with its own
-// binding table and sequence counter.
+// binding table and sequence counter, and each observable on iii 0.25 as
+// claude::on-agent-event / claude::on-raw-event (same table, same frames).
 const feeds = registerAgentFeeds(iii);
 const emit = feeds.agent.emit;
 const emitRaw = feeds.raw.emit;

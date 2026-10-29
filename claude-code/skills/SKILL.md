@@ -19,7 +19,11 @@ SDK option verbatim, and every message Claude Code emits is published untouched
 on the `claude::raw-event` trigger type. A translated AgentEvent view is
 published on `claude::agent-event`, which is what the iii console and the acp
 worker render. Bind either with `{ session_id }`; frames are live only (not
-stored or replayed), ordered by `(epoch, seq)`.
+stored or replayed), ordered by `(epoch, seq)`. On iii 0.25 engines the same
+frames reach observers of the owner-delivered functions
+`claude::on-agent-event` and `claude::on-raw-event`:
+`iii.observe({ function_id: 'claude::on-agent-event', args: { session_id } }, target)`.
+The trigger types keep working on 0.24 and 0.25 engines.
 
 Requires the `claude` CLI on the host with an existing login or
 `ANTHROPIC_API_KEY` in the worker environment. When a turn needs a
@@ -67,6 +71,9 @@ instead of bolting anything onto this one.
   `function_execution_start/end`, `turn_end`, `agent_end`); token deltas
   exist only on `claude::raw-event` and only when `includePartialMessages` is
   set.
+- `claude::on-agent-event` and `claude::on-raw-event` are event sources:
+  observe them, never invoke them (a direct call is refused with
+  `FORBIDDEN`).
 
 ## Functions
 

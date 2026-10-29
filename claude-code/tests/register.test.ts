@@ -27,6 +27,8 @@ describe('register', () => {
   it('registers the full claude::* surface plus the shared entrypoint', async () => {
     const fake = await registeredWorker();
     expect([...fake.registered.keys()].sort()).toEqual([
+      'claude::on-agent-event',
+      'claude::on-raw-event',
       'claude::run',
       'claude::sessions::list',
       'claude::start',
