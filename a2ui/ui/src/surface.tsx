@@ -191,7 +191,7 @@ export function Surface({ host, surface, compact = false }: SurfaceProps) {
         <StatusPanel
           variant="warn"
           headline="Deprecated live binding"
-          detail={`${deprecatedBindings.join(', ')} uses the stream trigger type. stream is deprecated (iii-stream) and will be removed in an upcoming release. Rebind to a worker-owned trigger type.`}
+          detail={`${deprecatedBindings.join(', ')} observes stream::on-changed. stream is deprecated (iii-stream) and will be removed in an upcoming release. Bind to the producing worker's own event function.`}
         />
       ) : null}
       {components.has('root') ? (

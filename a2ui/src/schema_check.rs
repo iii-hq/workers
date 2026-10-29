@@ -1,6 +1,7 @@
 //! Dependency-free, lenient JSON Schema subset used to validate live-binding
-//! configuration and query payloads against the schemas a provider registered
-//! with the engine (`trigger_request_format`, function `request_schema`).
+//! args and query payloads against the schemas a worker registered with the
+//! engine (the observed function's `args_format`, the query function's
+//! `request_schema`).
 //!
 //! Supported keywords: boolean schemas, `type`, `enum`, `const`, `required`,
 //! `properties`, `additionalProperties`, `items`, `minLength`, `maxLength`,

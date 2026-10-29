@@ -3,8 +3,8 @@ import {
   Badge,
   Skeleton,
   StatusPanel,
-  type FunctionTriggerMessage,
-  type FunctionTriggerRenderer,
+  type FunctionCallMessage,
+  type FunctionCallRenderer,
   type Host,
 } from '@iii-dev/console-ui'
 import { getSurface } from './data'
@@ -12,7 +12,7 @@ import { Surface } from './surface'
 import { parseReceipt, type SurfaceRecord, type SurfaceReceipt } from './types'
 
 
-export function createA2uiTriggerRenderer(host: Host): FunctionTriggerRenderer {
+export function createA2uiCallRenderer(host: Host): FunctionCallRenderer {
   return {
     id: 'a2ui/page.js#renderer',
     isMatch: (functionId) => functionId.startsWith('a2ui::'),
@@ -26,17 +26,17 @@ export function createA2uiTriggerRenderer(host: Host): FunctionTriggerRenderer {
   }
 }
 
-function renderDisplay(message: FunctionTriggerMessage): ReactNode | null {
+function renderDisplay(message: FunctionCallMessage): ReactNode | null {
   if (message.functionId === 'a2ui::action') return null
   const receipt = parseReceipt(message.output)
   if (!receipt) return null
   const deleted = receipt.status === 'deleted'
   return (
     <div
-      className="a2ui-trigger-display"
+      className="a2ui-call-display"
       data-a2ui-display-state={deleted ? 'deleted' : 'ready'}
     >
-      <div className="a2ui-trigger-display-copy">
+      <div className="a2ui-call-display-copy">
         <strong>{receipt.title}</strong>
         <span>
           {deleted
@@ -49,14 +49,14 @@ function renderDisplay(message: FunctionTriggerMessage): ReactNode | null {
   )
 }
 
-function renderResult(host: Host, message: FunctionTriggerMessage): ReactNode | null {
+function renderResult(host: Host, message: FunctionCallMessage): ReactNode | null {
   if (message.functionId === 'a2ui::action') return null
   const receipt = parseReceipt(message.output)
   if (!receipt) return null
   if (receipt.status === 'deleted') {
     return (
-      <div className="a2ui-trigger">
-        <div className="a2ui-trigger-head">
+      <div className="a2ui-call">
+        <div className="a2ui-call-head">
           <Badge>Deleted</Badge>
           <span>{receipt.surface_id}</span>
         </div>
@@ -66,7 +66,7 @@ function renderResult(host: Host, message: FunctionTriggerMessage): ReactNode | 
   return <GeneratedSurface host={host} receipt={receipt} />
 }
 
-function renderRunning(message: FunctionTriggerMessage): ReactNode | null {
+function renderRunning(message: FunctionCallMessage): ReactNode | null {
   if (
     !['a2ui::generate', 'a2ui::surface::apply', 'a2ui::surface::patch'].includes(
       message.functionId,
@@ -75,12 +75,12 @@ function renderRunning(message: FunctionTriggerMessage): ReactNode | null {
     return null
   }
   return (
-    <div className="a2ui-trigger">
-      <div className="a2ui-trigger-head">
+    <div className="a2ui-call">
+      <div className="a2ui-call-head">
         <Badge variant="accent">Composing</Badge>
         <span>Building interface…</span>
       </div>
-      <Skeleton className="a2ui-trigger-skeleton" />
+      <Skeleton className="a2ui-call-skeleton" />
     </div>
   )
 }
@@ -99,14 +99,14 @@ function GeneratedSurface({ host, receipt }: { host: Host; receipt: SurfaceRecei
   }, [host, receipt.session_id, receipt.surface_id, receipt.revision])
 
   return (
-    <div className="a2ui-trigger">
-      <div className="a2ui-trigger-head">
+    <div className="a2ui-call">
+      <div className="a2ui-call-head">
         <Badge variant="accent">A2UI</Badge>
         <strong>{receipt.title}</strong>
         <span>{receipt.component_count} components</span>
         <button
           type="button"
-          className="a2ui-trigger-open"
+          className="a2ui-call-open"
           onClick={() =>
             host.panels?.open({
               pageId: 'a2ui',
@@ -122,7 +122,7 @@ function GeneratedSurface({ host, receipt }: { host: Host; receipt: SurfaceRecei
       ) : surface ? (
         <Surface host={host} surface={surface} compact />
       ) : (
-        <Skeleton className="a2ui-trigger-skeleton" />
+        <Skeleton className="a2ui-call-skeleton" />
       )}
     </div>
   )

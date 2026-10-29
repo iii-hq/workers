@@ -7,8 +7,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
@@ -62,7 +61,7 @@ impl Store {
         function_id: &str,
         payload: Value,
     ) -> Result<Value, String> {
-        iii.trigger(TriggerRequest {
+        iii.call(CallRequest {
             function_id: function_id.to_string(),
             payload,
             action: None,

@@ -3,8 +3,7 @@
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -67,7 +66,7 @@ const IMPORT_DESC: &str =
     "Import a portable A2UI surface package into the current Harness session.";
 const EXPORT_CODE_DESC: &str =
     "Generate source code from an A2UI surface: a React app or a data-serving iii worker.";
-const BINDING_SET_DESC: &str = "Attach a declarative live binding to a surface: a worker-owned trigger type (optionally with its provider's read-only query), state, or shell::changed. Legacy stream bindings are deprecated.";
+const BINDING_SET_DESC: &str = "Attach a declarative live binding to a surface: a worker's event function observed with args or filters (optionally with its worker's read-only query), state::on-changed, or shell::on-changed. Legacy stream::on-changed bindings are deprecated.";
 const BINDING_DELETE_DESC: &str = "Remove a declarative live event binding from an A2UI surface.";
 const BINDING_APPLY_DESC: &str =
     "Console-only: persist a value delivered by a declared A2UI live binding.";
@@ -403,8 +402,9 @@ pub struct BindingRefreshRequest {
 pub struct BindingSetReceipt {
     #[serde(flatten)]
     pub receipt: SurfaceReceipt,
-    /// Present when the binding uses a deprecated trigger type (`stream`);
-    /// the binding is stored and keeps working while iii-stream runs.
+    /// Present when the binding observes a deprecated source
+    /// (`stream::on-changed`); the binding is stored and keeps working while
+    /// iii-stream runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deprecation: Option<String>,
 }
@@ -471,7 +471,7 @@ pub struct TemplateApplyRequest {
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TemplateListRequest {
-    /// Harness session is injected by the trusted pre-trigger hook.
+    /// Harness session is injected by the trusted pre-call hook.
     #[serde(default)]
     #[schemars(skip)]
     pub session_id: Option<String>,
@@ -875,7 +875,7 @@ pub async fn action(deps: &Deps, req: ActionRequest) -> Result<ActionResponse, S
         });
         match deps
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "harness::send".into(),
                 payload: json!({
                     "session_id": session_id,
@@ -1053,8 +1053,8 @@ pub async fn import_surface(deps: &Deps, req: ImportRequest) -> Result<SurfaceRe
 pub async fn set_binding(deps: &Deps, req: BindingSetRequest) -> Result<BindingSetReceipt, String> {
     let kind = validate_live_binding(&req.binding)?;
     if kind == BindingKind::Owned {
-        let (trigger, query) = registry_facts(deps, &req.binding).await?;
-        check_owned_binding(&req.binding, &trigger, query.as_ref())?;
+        let (source, query) = registry_facts(deps, &req.binding).await?;
+        check_owned_binding(&req.binding, &source, query.as_ref())?;
     }
     let deprecation = (kind == BindingKind::LegacyStream).then(|| {
         tracing::warn!(
@@ -1094,17 +1094,8 @@ pub async fn set_binding(deps: &Deps, req: BindingSetRequest) -> Result<BindingS
     })
 }
 
-/// Registry facts about a worker-owned trigger type (`engine::triggers::info`).
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct TriggerTypeFacts {
-    pub id: String,
-    #[serde(default)]
-    pub worker_name: String,
-    #[serde(default)]
-    pub configuration_schema: Option<Value>,
-}
-
-/// Registry facts about a binding query function (`engine::functions::info`).
+/// Registry facts about a function (`engine::functions::info`): the function
+/// an owned binding observes, or its query.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct FunctionFacts {
     pub function_id: String,
@@ -1114,6 +1105,12 @@ pub struct FunctionFacts {
     pub request_schema: Option<Value>,
     #[serde(default)]
     pub metadata: Option<Value>,
+    /// JSON Schema of the function's observer args; absent when it takes none.
+    #[serde(default)]
+    pub args_format: Option<Value>,
+    /// `false` when nobody may observe the function.
+    #[serde(default)]
+    pub observable: Option<bool>,
 }
 
 async fn engine_lookup<T: DeserializeOwned>(
@@ -1123,7 +1120,7 @@ async fn engine_lookup<T: DeserializeOwned>(
 ) -> Result<T, String> {
     let value = deps
         .iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: function_id.into(),
             payload,
             action: None,
@@ -1135,66 +1132,82 @@ async fn engine_lookup<T: DeserializeOwned>(
         .map_err(|error| format!("unexpected {function_id} reply: {error}"))
 }
 
-/// Resolve the trigger type (and query function) of an owned binding through
-/// engine introspection. Fails closed when the engine cannot answer.
+async fn function_facts(deps: &Deps, function_id: &str) -> Result<FunctionFacts, String> {
+    engine_lookup(
+        deps,
+        "engine::functions::info",
+        json!({ "function_id": function_id }),
+    )
+    .await
+}
+
+/// Resolve the observed function (and query function) of an owned binding
+/// through engine introspection. Fails closed when the engine cannot answer.
 async fn registry_facts(
     deps: &Deps,
     binding: &LiveBinding,
-) -> Result<(TriggerTypeFacts, Option<FunctionFacts>), String> {
-    let trigger: TriggerTypeFacts = engine_lookup(
-        deps,
-        "engine::triggers::info",
-        json!({ "id": binding.trigger_type }),
-    )
-    .await
-    .map_err(|error| {
-        format!(
-            "trigger type `{}` is not registered with the engine; start its provider worker before binding ({error})",
-            binding.trigger_type
-        )
-    })?;
-    let function = match &binding.query {
-        Some(query) => Some(
-            engine_lookup::<FunctionFacts>(
-                deps,
-                "engine::functions::info",
-                json!({ "function_id": query.function_id }),
+) -> Result<(FunctionFacts, Option<FunctionFacts>), String> {
+    let source = function_facts(deps, &binding.function_id)
+        .await
+        .map_err(|error| {
+            format!(
+                "function `{}` is not registered with the engine; start the worker that hosts it before binding ({error})",
+                binding.function_id
             )
-            .await
-            .map_err(|error| {
-                format!(
-                    "binding query function `{}` is not registered with the engine ({error})",
-                    query.function_id
-                )
-            })?,
-        ),
-        None => None,
-    };
-    Ok((trigger, function))
+        })?;
+    let query =
+        match &binding.query {
+            Some(query) => Some(function_facts(deps, &query.function_id).await.map_err(
+                |error| {
+                    format!(
+                        "binding query function `{}` is not registered with the engine ({error})",
+                        query.function_id
+                    )
+                },
+            )?),
+            None => None,
+        };
+    Ok((source, query))
 }
 
-/// Registry checks for a worker-owned trigger-type binding: config matches
-/// the registered configuration schema, and the optional query is a
-/// read-only function registered by the same worker as the trigger type.
+/// Registry checks for a binding on a worker's function: the function is
+/// observable, `args` match its registered `args_format` (and are absent when
+/// it takes none), and the optional query is a read-only function registered
+/// by the same worker as the observed function.
 pub fn check_owned_binding(
     binding: &LiveBinding,
-    trigger: &TriggerTypeFacts,
-    function: Option<&FunctionFacts>,
+    source: &FunctionFacts,
+    query_function: Option<&FunctionFacts>,
 ) -> Result<(), String> {
-    let owner = trigger.worker_name.trim();
+    let owner = source.worker_name.trim();
     if owner.is_empty() || owner == "a2ui" {
         return Err(format!(
-            "trigger type `{}` has no external owning worker",
-            binding.trigger_type
+            "function `{}` has no external hosting worker",
+            binding.function_id
         ));
     }
-    if let Some(schema) = &trigger.configuration_schema {
-        schema_check::validate("binding config", schema, &binding.config)?;
+    if source.observable == Some(false) {
+        return Err(format!(
+            "function `{}` is not observable",
+            binding.function_id
+        ));
+    }
+    match (&source.args_format, &binding.args) {
+        (Some(schema), args) => {
+            schema_check::validate("binding args", schema, args.as_ref().unwrap_or(&json!({})))?
+        }
+        (None, Some(_)) => {
+            return Err(format!(
+                "function `{}` takes no args; select its calls with filters on `input.<field>`",
+                binding.function_id
+            ))
+        }
+        (None, None) => {}
     }
     let Some(query) = &binding.query else {
         return Ok(());
     };
-    let function = function.ok_or_else(|| {
+    let function = query_function.ok_or_else(|| {
         format!(
             "binding query function `{}` is not registered",
             query.function_id
@@ -1202,8 +1215,8 @@ pub fn check_owned_binding(
     })?;
     if function.worker_name.trim() != owner {
         return Err(format!(
-            "binding query function `{}` must be registered by `{owner}`, the worker that owns `{}`",
-            query.function_id, binding.trigger_type
+            "binding query function `{}` must be registered by `{owner}`, the worker that hosts `{}`",
+            query.function_id, binding.function_id
         ));
     }
     let read_only = function
@@ -1271,13 +1284,13 @@ pub async fn refresh_binding(
         .clone()
         .ok_or_else(|| "binding has no query; its events are applied directly".to_string())?;
     if validate_live_binding(&binding)? != BindingKind::Owned {
-        return Err("binding query is only supported for worker-owned trigger types".into());
+        return Err("binding query is only supported for a worker's own event functions".into());
     }
-    let (trigger, function) = registry_facts(deps, &binding).await?;
-    check_owned_binding(&binding, &trigger, function.as_ref())?;
+    let (source, function) = registry_facts(deps, &binding).await?;
+    check_owned_binding(&binding, &source, function.as_ref())?;
     let result = deps
         .iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: query.function_id.clone(),
             payload: query_payload(&query),
             action: None,
@@ -1911,7 +1924,7 @@ fn worker_compose() -> String {
         .into()
 }
 fn worker_package() -> String {
-    "{\n  \"name\": \"generated-a2ui-worker\",\n  \"version\": \"0.1.0\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"engines\": { \"node\": \">=22\" },\n  \"scripts\": { \"start\": \"node src/index.mjs\" },\n  \"dependencies\": { \"iii-sdk\": \"^0.21.6\" }\n}\n"
+    "{\n  \"name\": \"generated-a2ui-worker\",\n  \"version\": \"0.1.0\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"engines\": { \"node\": \">=22\" },\n  \"scripts\": { \"start\": \"node src/index.mjs\" },\n  \"dependencies\": { \"iii-sdk\": \"^0.26.0\" }\n}\n"
         .into()
 }
 fn worker_source() -> String {
@@ -2353,7 +2366,7 @@ mod tests {
     fn exported_worker_uses_the_current_javascript_contract() {
         assert!(worker_compose().contains("kind: javascript-bundle"));
         assert!(worker_compose().contains("package_manifest: package.json"));
-        assert!(worker_package().contains("\"iii-sdk\": \"^0.21.6\""));
+        assert!(worker_package().contains("\"iii-sdk\": \"^0.26.0\""));
         assert!(worker_source().contains("registerWorker(url"));
         assert!(worker_source().contains("process.env.III_URL"));
     }
@@ -2439,8 +2452,9 @@ mod tests {
         fn owned() -> LiveBinding {
             LiveBinding {
                 id: "counter".into(),
-                trigger_type: "demo::counter-changed".into(),
-                config: json!({"counter": "clicks"}),
+                function_id: "demo::on-counter-changed".into(),
+                args: Some(json!({"counter": "clicks"})),
+                filters: None,
                 target_path: "/count".into(),
                 event_path: None,
                 query: Some(BindingQuery {
@@ -2451,20 +2465,21 @@ mod tests {
             }
         }
 
-        fn trigger_facts() -> TriggerTypeFacts {
-            TriggerTypeFacts {
-                id: "demo::counter-changed".into(),
+        fn source_facts() -> FunctionFacts {
+            FunctionFacts {
+                function_id: "demo::on-counter-changed".into(),
                 worker_name: "demo-provider".into(),
-                configuration_schema: Some(json!({
+                args_format: Some(json!({
                     "type": "object",
                     "required": ["counter"],
                     "properties": {"counter": {"type": "string", "minLength": 1}},
                     "additionalProperties": false
                 })),
+                ..FunctionFacts::default()
             }
         }
 
-        fn function_facts() -> FunctionFacts {
+        fn query_facts() -> FunctionFacts {
             FunctionFacts {
                 function_id: "demo::counter::get".into(),
                 worker_name: "demo-provider".into(),
@@ -2474,6 +2489,7 @@ mod tests {
                     "properties": {"counter": {"type": "string"}}
                 })),
                 metadata: Some(json!({"read_only": true})),
+                ..FunctionFacts::default()
             }
         }
 
@@ -2485,8 +2501,11 @@ mod tests {
                 &deps,
                 set_request(json!({
                     "id": "events",
-                    "trigger_type": "stream",
-                    "config": {"stream_name": "agent::events", "group_id": "s1"},
+                    "function_id": "stream::on-changed",
+                    "filters": {
+                        "input.stream_name": {"$eq": "agent::events"},
+                        "input.group_id": {"$eq": "s1"}
+                    },
                     "target_path": "/events"
                 })),
             )
@@ -2502,14 +2521,17 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("deprecated (iii-stream)"));
-            assert_eq!(stored(&deps).await.bindings[0].trigger_type, "stream");
+            assert_eq!(
+                stored(&deps).await.bindings[0].function_id,
+                "stream::on-changed"
+            );
 
             let builtin = set_binding(
                 &deps,
                 set_request(json!({
                     "id": "files",
-                    "trigger_type": "shell::changed",
-                    "config": {"path": "/workspace"},
+                    "function_id": "shell::on-changed",
+                    "args": {"path": "/workspace"},
                     "target_path": "/files"
                 })),
             )
@@ -2523,7 +2545,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn owned_bindings_fail_closed_when_the_engine_cannot_confirm_the_trigger_type() {
+        async fn owned_bindings_fail_closed_when_the_engine_cannot_confirm_the_function() {
             let deps = deps();
             seed(&deps, Vec::new()).await;
             let error = set_binding(&deps, set_request(serde_json::to_value(owned()).unwrap()))
@@ -2542,8 +2564,9 @@ mod tests {
             let bindings = (0..MAX_BINDINGS_PER_SURFACE)
                 .map(|index| LiveBinding {
                     id: format!("b{index}"),
-                    trigger_type: "shell::changed".into(),
-                    config: json!({"path": "/workspace"}),
+                    function_id: "shell::on-changed".into(),
+                    args: Some(json!({"path": "/workspace"})),
+                    filters: None,
                     target_path: format!("/b{index}"),
                     event_path: None,
                     query: None,
@@ -2554,8 +2577,8 @@ mod tests {
                 &deps,
                 set_request(json!({
                     "id": "one-more",
-                    "trigger_type": "shell::changed",
-                    "config": {"path": "/workspace"},
+                    "function_id": "shell::on-changed",
+                    "args": {"path": "/workspace"},
                     "target_path": "/x"
                 })),
             )
@@ -2566,8 +2589,8 @@ mod tests {
                 &deps,
                 set_request(json!({
                     "id": "b0",
-                    "trigger_type": "shell::changed",
-                    "config": {"path": "/other"},
+                    "function_id": "shell::on-changed",
+                    "args": {"path": "/other"},
                     "target_path": "/b0"
                 })),
             )
@@ -2579,63 +2602,67 @@ mod tests {
         }
 
         #[test]
-        fn registry_checks_validate_config_owner_read_only_and_payload() {
+        fn registry_checks_validate_args_owner_read_only_and_payload() {
             let binding = owned();
-            assert!(
-                check_owned_binding(&binding, &trigger_facts(), Some(&function_facts())).is_ok()
-            );
+            assert!(check_owned_binding(&binding, &source_facts(), Some(&query_facts())).is_ok());
 
-            let mut bad_config = binding.clone();
-            bad_config.config = json!({"counter": "clicks", "group": "x"});
-            let error = check_owned_binding(&bad_config, &trigger_facts(), Some(&function_facts()))
-                .unwrap_err();
-            assert_eq!(error, "binding config: unsupported field `group`");
-            bad_config.config = json!({});
-            let error = check_owned_binding(&bad_config, &trigger_facts(), Some(&function_facts()))
-                .unwrap_err();
+            let mut bad_args = binding.clone();
+            bad_args.args = Some(json!({"counter": "clicks", "group": "x"}));
+            let error =
+                check_owned_binding(&bad_args, &source_facts(), Some(&query_facts())).unwrap_err();
+            assert_eq!(error, "binding args: unsupported field `group`");
+            bad_args.args = None;
+            let error =
+                check_owned_binding(&bad_args, &source_facts(), Some(&query_facts())).unwrap_err();
             assert!(
                 error.contains("missing required field `counter`"),
                 "{error}"
             );
 
-            let mut no_schema = trigger_facts();
-            no_schema.configuration_schema = None;
-            assert!(check_owned_binding(&bad_config, &no_schema, Some(&function_facts())).is_ok());
-
-            let mut unowned = trigger_facts();
-            unowned.worker_name = String::new();
-            assert!(check_owned_binding(&binding, &unowned, Some(&function_facts())).is_err());
-            unowned.worker_name = "a2ui".into();
-            assert!(check_owned_binding(&binding, &unowned, Some(&function_facts())).is_err());
-
-            let mut foreign = function_facts();
-            foreign.worker_name = "other-worker".into();
+            let mut no_args_format = source_facts();
+            no_args_format.args_format = None;
+            assert!(check_owned_binding(&bad_args, &no_args_format, Some(&query_facts())).is_ok());
             let error =
-                check_owned_binding(&binding, &trigger_facts(), Some(&foreign)).unwrap_err();
+                check_owned_binding(&binding, &no_args_format, Some(&query_facts())).unwrap_err();
+            assert!(error.contains("takes no args"), "{error}");
+
+            let mut hidden = source_facts();
+            hidden.observable = Some(false);
+            let error = check_owned_binding(&binding, &hidden, Some(&query_facts())).unwrap_err();
+            assert!(error.contains("not observable"), "{error}");
+
+            let mut unowned = source_facts();
+            unowned.worker_name = String::new();
+            assert!(check_owned_binding(&binding, &unowned, Some(&query_facts())).is_err());
+            unowned.worker_name = "a2ui".into();
+            assert!(check_owned_binding(&binding, &unowned, Some(&query_facts())).is_err());
+
+            let mut foreign = query_facts();
+            foreign.worker_name = "other-worker".into();
+            let error = check_owned_binding(&binding, &source_facts(), Some(&foreign)).unwrap_err();
             assert!(
                 error.contains("must be registered by `demo-provider`"),
                 "{error}"
             );
 
-            let mut writable = function_facts();
+            let mut writable = query_facts();
             writable.metadata = None;
             let error =
-                check_owned_binding(&binding, &trigger_facts(), Some(&writable)).unwrap_err();
+                check_owned_binding(&binding, &source_facts(), Some(&writable)).unwrap_err();
             assert!(error.contains("read_only"), "{error}");
             writable.metadata = Some(json!({"read_only": "yes"}));
-            assert!(check_owned_binding(&binding, &trigger_facts(), Some(&writable)).is_err());
+            assert!(check_owned_binding(&binding, &source_facts(), Some(&writable)).is_err());
 
             let mut bad_payload = binding.clone();
             bad_payload.query.as_mut().unwrap().payload = json!({"counter": 7});
-            let error =
-                check_owned_binding(&bad_payload, &trigger_facts(), Some(&function_facts()))
-                    .unwrap_err();
+            let error = check_owned_binding(&bad_payload, &source_facts(), Some(&query_facts()))
+                .unwrap_err();
             assert!(error.starts_with("binding query payload"), "{error}");
-            assert!(check_owned_binding(&binding, &trigger_facts(), None).is_err());
+            assert!(check_owned_binding(&binding, &source_facts(), None).is_err());
 
             let mut event_mode = binding.clone();
             event_mode.query = None;
-            assert!(check_owned_binding(&event_mode, &trigger_facts(), None).is_ok());
+            assert!(check_owned_binding(&event_mode, &source_facts(), None).is_ok());
         }
 
         #[test]

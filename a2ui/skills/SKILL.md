@@ -9,7 +9,7 @@ description: >-
 
 Use `a2ui` when the result should be an interface the person can scan or act on. Describe the desired experience and supply the underlying data; the worker delegates composition through `llm-router`, validates A2UI v0.9.1, and returns a compact receipt while the Console renders the surface.
 
-Surfaces belong to the current Harness session. The Harness pre-trigger hook stamps that identity authoritatively, and Console actions return to the same conversation as structured user interactions.
+Surfaces belong to the current Harness session. The Harness pre-call hook stamps that identity authoritatively, and Console actions return to the same conversation as structured user interactions.
 
 ## When to Use
 
@@ -20,7 +20,7 @@ Surfaces belong to the current Harness session. The Harness pre-trigger hook sta
 - Export a finished surface as portable A2UI JSON for reuse outside the current conversation.
 - Reuse, undo, pin, duplicate, import, or export a surface as a runnable React app or a data-serving iii worker template.
 - Materialize the React app into the selected workspace when the person wants to inspect and edit its files in Shell, then preview it through Browser.
-- Bind surface data to a worker-owned trigger type (optionally with its provider's read-only query), exact state, or Shell change events when the UI should stay live.
+- Bind surface data to a worker's event function (optionally with its worker's read-only query), an exact state entry (`state::on-changed`), or Shell change events (`shell::on-changed`) when the UI should stay live.
 
 ## Boundaries
 
@@ -28,8 +28,8 @@ Surfaces belong to the current Harness session. The Harness pre-trigger hook sta
 - Generated surfaces use the fixed Console catalog; they cannot execute HTML, JavaScript, CSS, or arbitrary components.
 - Use `canvas` for diagrams and freeform drawing, and use a domain worker directly when no visual surface is needed.
 - `a2ui::action`, `a2ui::binding::apply`, `a2ui::binding::refresh`, `a2ui::stamp-session`, and `a2ui::on-config-change` are internal Console/Harness lifecycle functions, not agent tools.
-- Live bindings never bind `browser::*`, `harness::*`, `engine::*`, hook, `http`, `cron`, or queue trigger types. A binding `query` must be a function registered by the trigger type's own worker with metadata `{"read_only": true}`.
-- Do not create new `stream` bindings: `stream` is deprecated (iii-stream) and will be removed in an upcoming release. Existing ones keep working while iii-stream runs. Bind the producing worker's own trigger type instead.
+- Live bindings never observe `browser::*`, `harness::*`, `engine::*`, hook, `http::on-request`, `cron::on-tick`, or `queue::on-message`. A binding passes `args` only to a function that registered an `args_format`; otherwise it selects calls with `filters` on `input.<field>`. A binding `query` must be a function registered by the observed function's own worker with metadata `{"read_only": true}`.
+- Do not create new `stream::on-changed` bindings: iii-stream is deprecated and will be removed in an upcoming release. Existing ones keep working while iii-stream runs. Bind the producing worker's own event function.
 
 ## Functions
 
@@ -42,8 +42,8 @@ Surfaces belong to the current Harness session. The Harness pre-trigger hook sta
 - `a2ui::surface::export` — return a session-free, replayable A2UI JSON package.
 - `a2ui::surface::history`, `undo`, `duplicate`, and `pin` — manage the surface library and revisions.
 - `a2ui::surface::import` and `export-code` — move surfaces between sessions or into source code.
-- `a2ui::binding::set` and `delete` — manage safe declarative live-data bindings. Example: `{ "id": "clicks-count", "trigger_type": "demo::counter-changed", "config": { "counter": "clicks" }, "target_path": "/count", "query": { "function_id": "demo::counter::get", "payload": { "counter": "clicks" }, "result_path": "/value" } }`.
+- `a2ui::binding::set` and `delete` — manage safe declarative live-data bindings. Example: `{ "id": "clicks-count", "function_id": "demo::on-counter-changed", "args": { "counter": "clicks" }, "target_path": "/count", "query": { "function_id": "demo::counter::get", "payload": { "counter": "clicks" }, "result_path": "/value" } }`.
 - `a2ui::template::*` — save, list, read, apply, and delete reusable session templates.
 - `a2ui::action` — internal Console action ingress and optional Harness forwarding.
-- `a2ui::stamp-session` — internal Harness hook that stamps authoritative turn context.
+- `a2ui::stamp-session` — internal `harness::hook::on-pre-call` observer that stamps authoritative turn context.
 - `a2ui::on-config-change` — internal authoritative configuration reload handler.
