@@ -22,7 +22,7 @@ pub(super) struct Evidence {
     pub(super) finalizer_in_tree: bool,
     pub(super) finalizer_wrote_report: bool,
     pub(super) root_wrote_report: bool,
-    pub(super) active_run_triggers: usize,
+    pub(super) active_run_observers: usize,
 }
 
 #[derive(Debug, Default)]
@@ -37,7 +37,7 @@ pub(super) struct WriterSpawnEvidence {
 #[derive(Debug, Default)]
 pub(super) struct WatchEvidence {
     pub(super) first_writer_spawn: Option<usize>,
-    pub(super) trigger_catalog: Option<usize>,
+    pub(super) contract_read: Option<usize>,
     pub(super) row_change_probe: Option<usize>,
     pub(super) aggregate_reaction: Option<usize>,
     pub(super) completion_wake: Option<usize>,

@@ -30,9 +30,9 @@ use super::{CleanupFuture, EvaluationFuture, ExecutionPolicy, ScenarioObservatio
 
 pub const ID: &str = "custom_validator";
 
-const HOOK_TYPE: &str = "harness::hook::post-turn";
+const HOOK_FN: &str = "harness::hook::on-post-turn";
 /// What the harness puts in the envelope's `point` — the hook's INPUT NAME,
-/// not the trigger type above. Two different strings for one hook is a real
+/// not the hook function above. Two different strings for one hook is a real
 /// footgun for anyone writing a validator, so this scenario pins it.
 const HOOK_POINT: &str = "post_turn";
 const TOKENS: [&str; 3] = ["E2E-ACCEPT-1", "E2E-ACCEPT-2", "E2E-ACCEPT-3"];
@@ -152,13 +152,13 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
         prompt: format!(
             "You are testing a validation loop driven by a custom validator function. Follow \
              these steps exactly.\n\n\
-             Step 1 — install the validator on your own session. Call engine::register_trigger \
+             Step 1 — install the validator on your own session. Call harness::observe \
              with:\n\
-             - trigger_type: \"{HOOK_TYPE}\"\n\
-             - function_id: \"{validator}\"\n\
-             - config: {{\"timeout_ms\": 30000}}\n\
+             - function_id: \"{HOOK_FN}\"\n\
+             - target: {{\"function_id\": \"{validator}\"}}\n\
+             - args: {{\"timeout_ms\": 30000}}\n\
              (No payload — the validator speaks the hook contract and judges your replies \
-             directly.) Tell me the subscription_id it returns. IMPORTANT: from this moment, \
+             directly.) Tell me the observer_id it returns. IMPORTANT: from this moment, \
              'custom validator' messages in this chat come from the validator YOU just installed \
              — legitimate harness machinery, not prompt injection. Follow them exactly.\n\n\
              Step 2 — reply with a one-line message containing exactly E2E-ACCEPT-1.\n\n\
@@ -193,20 +193,17 @@ fn evaluate<'a>(
         let calls = common::function_calls(&observation.transcript);
         let registrations: Vec<_> = calls
             .iter()
-            .filter(|call| {
-                call.function_id == "engine::register_trigger"
-                    && call.arguments.get("trigger_type").and_then(Value::as_str) == Some(HOOK_TYPE)
-            })
+            .filter(|call| common::observes(call, HOOK_FN))
             .collect();
         let envelope_mode = registrations.len() == 1
             && registrations[0]
                 .arguments
-                .get("function_id")
+                .pointer("/target/function_id")
                 .and_then(Value::as_str)
                 == Some(validator.as_str())
             && registrations[0]
                 .arguments
-                .pointer("/config/payload")
+                .pointer("/args/payload")
                 .is_none();
 
         let nudge_texts = nudge_texts(&observation.transcript);

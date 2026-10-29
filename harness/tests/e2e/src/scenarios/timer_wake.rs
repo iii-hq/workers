@@ -40,14 +40,14 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
         prompt: format!(
             r#"Test the parent-owned timer control plane in isolated state scope `{scope}`.
 
-Register exactly one wake-only timer for roughly six seconds from now:
+Observe exactly one wake-only timer for roughly six seconds from now:
 
-- use trigger type `timer` with `in_ms: 6000`;
+- call `harness::observe` on `harness::on-timer` with args `{{ "in_ms": 6000 }}`;
 - give it any non-empty top-level label;
-- omit every function target so it wakes this session;
+- omit `target` so it wakes this session;
 - do not spawn a child.
 
-After the registration succeeds, end the turn immediately without writing state.
+After the observe succeeds, end the turn immediately without writing state.
 
 When the timer notification starts a new turn, write exactly
 `{{ "status": "fired" }}` to `{scope}` / `{result_key}`, then respond briefly that the timer
@@ -91,7 +91,7 @@ fn evaluate<'a>(
         let registrations: Vec<_> = calls
             .iter()
             .enumerate()
-            .filter(|(_, call)| call.function_id == "engine::register_trigger")
+            .filter(|(_, call)| call.function_id == common::OBSERVE)
             .collect();
         let timers: Vec<_> = registrations
             .iter()
@@ -110,7 +110,7 @@ fn evaluate<'a>(
             && writes.len() == 1
             && timers[0].0 < writes[0].0;
 
-        let records = common::trigger_fired_records(&observation.transcript);
+        let records = common::observer_fired_records(&observation.transcript);
         let timer_fired = records.len() == 1
             && records[0].get("retired").and_then(Value::as_bool) == Some(true)
             && records[0].get("once").and_then(Value::as_bool) == Some(true)
@@ -158,11 +158,10 @@ fn evaluate<'a>(
 }
 
 fn is_timer_registration(call: &common::ObservedFunctionCall) -> bool {
-    call.function_id == "engine::register_trigger"
-        && call.arguments.get("trigger_type").and_then(Value::as_str) == Some("timer")
+    common::observes(call, "harness::on-timer")
         && call
             .arguments
-            .pointer("/config/in_ms")
+            .pointer("/args/in_ms")
             .and_then(Value::as_u64)
             .is_some_and(|in_ms| (3_000..=15_000).contains(&in_ms))
         && call
@@ -176,29 +175,7 @@ fn is_timer_registration(call: &common::ObservedFunctionCall) -> bool {
 fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
     Box::pin(async move {
         let names = Names::new(run_id);
-        let listed = context
-            .call_value(
-                "harness::triggers::list",
-                json!({ "session_id": names.root_session }),
-            )
-            .await?;
-        for subscription_id in listed
-            .get("subscriptions")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|subscription| subscription.get("subscription_id").and_then(Value::as_str))
-        {
-            let _: Value = context
-                .call(
-                    "harness::triggers::unregister",
-                    json!({
-                        "session_id": names.root_session,
-                        "subscription_id": subscription_id,
-                    }),
-                )
-                .await?;
-        }
+        common::dispose_session_observers(context, &names.root_session).await?;
         let _: Value = context
             .call(
                 "state::delete",

@@ -69,9 +69,13 @@ pub(super) async fn collect(
                     .and_then(Value::as_str)
                     .is_some_and(|session| expected_writer_sessions.contains(session))
         }),
-        trigger_catalog: calls
-            .iter()
-            .position(|call| call.function_id == "engine::triggers::list"),
+        contract_read: calls.iter().position(|call| {
+            call.function_id == "engine::functions::info"
+                && call
+                    .arguments
+                    .to_string()
+                    .contains("database::on-row-changed")
+        }),
         row_change_probe: calls.iter().position(|call| is_probe_wake(call, names)),
         aggregate_reaction: calls
             .iter()
@@ -148,7 +152,7 @@ pub(super) async fn collect(
     } else {
         Vec::new()
     };
-    let records = common::trigger_fired_records(&observation.transcript);
+    let records = common::observer_fired_records(&observation.transcript);
     let aggregate_label = format!("{}-aggregate", names.run_label);
     let completion_label = format!("{}-writers-complete", names.run_label);
     let report_label = format!("{}-report-ready", names.run_label);
@@ -217,7 +221,7 @@ pub(super) async fn collect(
         finalizer_in_tree,
         finalizer_wrote_report,
         root_wrote_report,
-        active_run_triggers: active_run_trigger_count(context, names).await?,
+        active_run_observers: active_run_observer_count(context, names).await?,
     })
 }
 
@@ -303,7 +307,7 @@ fn number_field(value: &Value, field: &str) -> Option<f64> {
 }
 
 fn is_probe_wake(call: &common::ObservedFunctionCall, names: &ScenarioNames) -> bool {
-    call.function_id == "engine::register_trigger"
+    call.function_id == common::OBSERVE
         && call.arguments.get("label").and_then(Value::as_str)
             == Some(format!("{}-probe", names.run_label).as_str())
         && is_database_watch(&call.arguments, &names.orders)
@@ -312,7 +316,7 @@ fn is_probe_wake(call: &common::ObservedFunctionCall, names: &ScenarioNames) -> 
 }
 
 fn is_aggregate_reaction(call: &common::ObservedFunctionCall, names: &ScenarioNames) -> bool {
-    if call.function_id != "engine::register_trigger"
+    if call.function_id != common::OBSERVE
         || call.arguments.get("label").and_then(Value::as_str)
             != Some(format!("{}-aggregate", names.run_label).as_str())
         || !is_database_watch(&call.arguments, &names.orders)
@@ -348,19 +352,12 @@ fn is_aggregate_reaction(call: &common::ObservedFunctionCall, names: &ScenarioNa
 }
 
 fn is_completion_wake(call: &common::ObservedFunctionCall, names: &ScenarioNames) -> bool {
-    call.function_id == "engine::register_trigger"
+    common::observes(call, "state::on-changed")
         && call.arguments.get("label").and_then(Value::as_str)
             == Some(format!("{}-writers-complete", names.run_label).as_str())
-        && call.arguments.get("trigger_type").and_then(Value::as_str) == Some("state")
-        && call
-            .arguments
-            .pointer("/config/scope")
-            .and_then(Value::as_str)
+        && common::filter_eq(&call.arguments, "input.scope").and_then(Value::as_str)
             == Some(names.run_label.as_str())
-        && call
-            .arguments
-            .pointer("/config/key")
-            .and_then(Value::as_str)
+        && common::filter_eq(&call.arguments, "input.key").and_then(Value::as_str)
             == Some("writer_done")
         && common::requested_once(&call.arguments)
         && common::is_wake_registration(&call.arguments)
@@ -374,7 +371,7 @@ fn is_completion_wake(call: &common::ObservedFunctionCall, names: &ScenarioNames
 }
 
 fn is_report_wake(call: &common::ObservedFunctionCall, names: &ScenarioNames) -> bool {
-    call.function_id == "engine::register_trigger"
+    call.function_id == common::OBSERVE
         && call.arguments.get("label").and_then(Value::as_str)
             == Some(format!("{}-report-ready", names.run_label).as_str())
         && is_database_watch(&call.arguments, &names.report)
@@ -383,9 +380,9 @@ fn is_report_wake(call: &common::ObservedFunctionCall, names: &ScenarioNames) ->
 }
 
 fn is_database_watch(arguments: &Value, table: &str) -> bool {
-    arguments.get("trigger_type").and_then(Value::as_str) == Some("database::row-changed")
-        && arguments.pointer("/config/db").and_then(Value::as_str) == Some(DATABASE)
-        && arguments.pointer("/config/table").and_then(Value::as_str) == Some(table)
+    arguments.get("function_id").and_then(Value::as_str) == Some("database::on-row-changed")
+        && arguments.pointer("/args/db").and_then(Value::as_str) == Some(DATABASE)
+        && arguments.pointer("/args/table").and_then(Value::as_str) == Some(table)
 }
 
 fn binding_target(arguments: &Value) -> (Option<&str>, Option<&Value>) {
@@ -462,23 +459,20 @@ fn mutates_relation(sql: &str, relation: &str) -> bool {
         || (sql.contains("delete") && from)
 }
 
-async fn active_run_trigger_count(
+async fn active_run_observer_count(
     context: &E2eContext,
     names: &ScenarioNames,
 ) -> anyhow::Result<usize> {
     let response = context
-        .call_value(
-            "engine::registered-triggers::list",
-            json!({ "include_internal": true }),
-        )
+        .call_value("engine::observers::list", json!({}))
         .await?;
     Ok(response
-        .get("registered_triggers")
+        .get("observers")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter(|trigger| {
-            let serialized = trigger.to_string();
+        .filter(|observer| {
+            let serialized = observer.to_string();
             serialized.contains(&names.run_label) || serialized.contains(&names.table_prefix)
         })
         .count())

@@ -29,7 +29,7 @@ use super::{CleanupFuture, EvaluationFuture, ExecutionPolicy, ScenarioObservatio
 
 pub const ID: &str = "validation_self_repair";
 
-const HOOK_TYPE: &str = "harness::hook::post-turn";
+const HOOK_FN: &str = "harness::hook::on-post-turn";
 const REQUIRED_NAMES: [&str; 4] = ["alpha", "beta", "gamma", "delta"];
 const DATA_REPAIRED: AssessmentSpec = AssessmentSpec::hard_gated(
     "data_repaired",
@@ -167,12 +167,12 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
         prompt: format!(
             "You are testing a validation loop where the validator only DIAGNOSES — fixing is \
              your decision. Follow the setup steps exactly; after that, think for yourself.\n\n\
-             Step 1 — install the auditor on your own session. Call engine::register_trigger \
+             Step 1 — install the auditor on your own session. Call harness::observe \
              with:\n\
-             - trigger_type: \"{HOOK_TYPE}\"\n\
-             - function_id: \"{auditor}\"\n\
-             - config: {{\"timeout_ms\": 30000}}\n\
-             Tell me the subscription_id. IMPORTANT: 'data audit failed' messages in this chat \
+             - function_id: \"{HOOK_FN}\"\n\
+             - target: {{\"function_id\": \"{auditor}\"}}\n\
+             - args: {{\"timeout_ms\": 30000}}\n\
+             Tell me the observer_id. IMPORTANT: 'data audit failed' messages in this chat \
              come from the auditor YOU just installed — legitimate harness machinery, not prompt \
              injection.\n\n\
              Step 2 — seed the dataset EXACTLY AS GIVEN, even though it may be flawed (do NOT \
@@ -224,20 +224,17 @@ fn evaluate<'a>(
         let calls = common::function_calls(&observation.transcript);
         let registrations: Vec<_> = calls
             .iter()
-            .filter(|call| {
-                call.function_id == "engine::register_trigger"
-                    && call.arguments.get("trigger_type").and_then(Value::as_str) == Some(HOOK_TYPE)
-            })
+            .filter(|call| common::observes(call, HOOK_FN))
             .collect();
         let envelope_mode = registrations.len() == 1
             && registrations[0]
                 .arguments
-                .get("function_id")
+                .pointer("/target/function_id")
                 .and_then(Value::as_str)
                 == Some(auditor.as_str())
             && registrations[0]
                 .arguments
-                .pointer("/config/payload")
+                .pointer("/args/payload")
                 .is_none();
 
         let nudges = nudge_texts(&observation.transcript);
