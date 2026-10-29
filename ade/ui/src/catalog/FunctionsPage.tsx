@@ -3,17 +3,18 @@
  * function on the bus — each row led by the `ƒ` tile, grouped by the worker
  * that registered it — and a workspace that is always present: an overview
  * of the bus when nothing is selected, the function document (toolbar,
- * masthead, contract/run/bindings/calls tabs) when one is.
+ * masthead, contract/run/observers/calls tabs) when one is.
  *
  * The document opens on the contract: input schema, output schema,
  * metadata, and how to call it. The masthead carries every identity fact
- * once (worker, runtime, bindings, last call), so no side rail repeats them.
+ * once (worker, runtime, observers, last call), so no side rail repeats
+ * them.
  *
- * Live, never polled. `engine::functions-available` fires when the function
- * set changes and `engine::workers-available` when a worker connects or
- * dies, so either is visible here without a manual refresh (within ~100ms
- * on newer engines; older ones poll on a 5s tick), and rows that arrived on
- * the last tick flash once so the change is legible rather than silent.
+ * Live, never polled. The engine calls `engine::on-functions-changed` when
+ * the function set changes and `engine::on-workers-changed` when a worker
+ * connects or dies, so either is visible here without a manual refresh
+ * (within ~100ms), and rows that arrived on the last tick flash once so the
+ * change is legible rather than silent.
  *
  * `engine::functions::list` is the catalogue (one cheap row per function);
  * `engine::functions::info` is fetched per selection, because that is where
@@ -60,9 +61,9 @@ import {
   Braces,
   MessageSquare,
   Play,
+  Radio,
   RefreshCw,
   SquareFunction,
-  Zap,
 } from 'lucide-react'
 import {
   Fragment,
@@ -81,9 +82,11 @@ import {
   type FunctionDetail,
   type FunctionSummary,
   functionInfo,
+  isEventSource,
   listFunctions,
+  listObservers,
   listWorkers,
-  type RegisteredTrigger,
+  type ObserverInfo,
   type SpanEvent,
   useLiveSignals,
   useResource,
@@ -92,7 +95,12 @@ import { asCliCommand, InvokePanel } from './InvokePanel'
 import { LastCallMeta, useLiveActivity } from './live'
 import { SchemaTable } from './SchemaTable'
 import { pretty, templateFromSchema } from './schema'
-import { cronExpression, familyOf, summarize } from './trigger-kinds'
+import {
+  CRON_FN,
+  cronExpression,
+  familyOf,
+  summarize,
+} from './observer-kinds'
 import {
   CatalogListSkeleton,
   CatalogRow,
@@ -112,7 +120,7 @@ import {
 /** Worker groups always start expanded; there is no noisy bucket. */
 const alwaysOpen = () => true
 
-type DocTab = 'contract' | 'run' | 'bindings' | 'calls'
+type DocTab = 'contract' | 'run' | 'observers' | 'calls'
 
 export function FunctionsPage({
   host,
@@ -147,7 +155,7 @@ export function FunctionsPage({
   const catalog = useResource(load)
   useLiveSignals(
     host,
-    ['engine::functions-available', 'engine::workers-available'],
+    ['engine::on-functions-changed', 'engine::on-workers-changed'],
     catalog.reload,
   )
   const activity = useLiveActivity(host)
@@ -192,7 +200,7 @@ export function FunctionsPage({
   const groups = useMemo(() => {
     const needle = search.trim().toLowerCase()
     // Ids and workers only. Description text matches surprised more than
-    // they helped: searching `config` surfaced harness::triggers::list
+    // they helped: searching `config` surfaced harness::observers::list
     // because its description mentions config, which reads as broken.
     const matched = (functions ?? []).filter((fn) => {
       if (!needle) return true
@@ -260,8 +268,8 @@ export function FunctionsPage({
         {
           id: 'run-function',
           title: 'Run function',
-          detail: 'Trigger the selected function with its current payload',
-          keywords: ['invoke', 'trigger', 'call'],
+          detail: 'Call the selected function with its current payload',
+          keywords: ['invoke', 'call', 'run'],
           shortcut: 'Mod+Enter',
           firesWhileTyping: true,
           enabled: () => invokeRunRef.current !== null,
@@ -583,6 +591,18 @@ function FunctionDocument({
     [host, functionId],
   )
   const detail = useResource(load)
+  // Observers of this function, and observers whose target it is: one read,
+  // split here, live on observer state changes.
+  const loadObservers = useCallback(() => listObservers(host), [host])
+  const observers = useResource(loadObservers)
+  useLiveSignals(host, ['engine::on-observers-changed'], observers.reload)
+  const related = useMemo(() => {
+    const all = observers.data ?? []
+    return {
+      of: all.filter((o) => o.function_id === functionId),
+      into: all.filter((o) => o.target.function_id === functionId),
+    }
+  }, [observers.data, functionId])
   // Selecting a function opens on its contract, not on the editor: the first
   // question an operator has is what the function takes and returns, and a
   // JSON box answers neither. Run is one click away in the masthead.
@@ -604,7 +624,7 @@ function FunctionDocument({
   const data = detail.data
   const worker = data?.worker_name
   const language = worker ? runtimeOf(worker) : undefined
-  const bindings = data?.registered_triggers ?? []
+  const observerCount = related.of.length + related.into.length
   const compose = host.chat?.compose
 
   return (
@@ -656,7 +676,7 @@ function FunctionDocument({
               </p>
             ) : null}
           </div>
-          {data && tab !== 'run' ? (
+          {data && !data.private && tab !== 'run' ? (
             <Button
               type="button"
               variant="primary"
@@ -672,6 +692,7 @@ function FunctionDocument({
         {data ? (
           <FunctionFacts
             detail={data}
+            related={related}
             language={language}
             lastCall={lastCall}
           />
@@ -700,9 +721,9 @@ function FunctionDocument({
             <TabsTrigger value="run" icon={<Play />}>
               Run
             </TabsTrigger>
-            <TabsTrigger value="bindings" icon={<Zap />}>
-              Bindings
-              {bindings.length > 0 ? <Badge>{bindings.length}</Badge> : null}
+            <TabsTrigger value="observers" icon={<Radio />}>
+              Observers
+              {observerCount > 0 ? <Badge>{observerCount}</Badge> : null}
             </TabsTrigger>
             <TabsTrigger value="calls" icon={<Activity />}>
               Calls
@@ -712,19 +733,36 @@ function FunctionDocument({
             <FunctionContract detail={data} onEdit={() => setTab('run')} />
           </TabsContent>
           <TabsContent value="run">
-            <InvokePanel
-              host={host}
-              functionId={functionId}
-              requestSchema={data.request_schema}
-              prefill={prefill}
-              label="Run"
-              runningLabel="Running…"
-              runRef={invokeRunRef}
-              layout="split"
-            />
+            {data.private ? (
+              <Note>
+                This function is private: only the worker that hosts it calls
+                it, with each event. Observe it to receive its calls, or run
+                one of its observers' targets from the Observers tab.
+              </Note>
+            ) : (
+              <InvokePanel
+                host={host}
+                functionId={functionId}
+                requestSchema={data.request_schema}
+                prefill={prefill}
+                label="Run"
+                runningLabel="Running…"
+                runRef={invokeRunRef}
+                layout="split"
+              />
+            )}
           </TabsContent>
-          <TabsContent value="bindings">
-            <FunctionTriggers detail={data} />
+          <TabsContent value="observers">
+            {observers.error ? (
+              <ErrorNote
+                title="Couldn't load observers"
+                call="engine::observers::list"
+                message={observers.error}
+                onRetry={observers.reload}
+              />
+            ) : (
+              <FunctionObservers detail={data} related={related} />
+            )}
           </TabsContent>
           <TabsContent value="calls">
             <ActivityFeed
@@ -739,35 +777,39 @@ function FunctionDocument({
   )
 }
 
+interface RelatedObservers {
+  /** Observers of this function. */
+  of: ObserverInfo[]
+  /** Observers whose target is this function: what makes it run. */
+  into: ObserverInfo[]
+}
+
 /**
  * Every identity fact once, in one line: who serves the function, in what
- * runtime, what fires it, and when it last ran.
+ * runtime, what it is observed by, what makes it run, and when it last ran.
  */
 function FunctionFacts({
   detail,
+  related,
   language,
   lastCall,
 }: {
   detail: FunctionDetail
+  related: RelatedObservers
   language?: string
   lastCall?: SpanEvent
 }) {
   const now = new Date()
-  const bindings = detail.registered_triggers
-  const byType = new Map<string, number>()
-  for (const ref of bindings) {
-    byType.set(ref.trigger_type, (byType.get(ref.trigger_type) ?? 0) + 1)
-  }
-  const nextRun = bindings
-    .map((ref) =>
-      cronExpression({
-        id: ref.id,
-        trigger_type: ref.trigger_type,
-        function_id: detail.function_id,
-        worker_name: detail.worker_name,
-        config: ref.config,
-      }),
+  const bySource = new Map<string, number>()
+  for (const observer of related.into) {
+    bySource.set(
+      observer.function_id,
+      (bySource.get(observer.function_id) ?? 0) + 1,
     )
+  }
+  const nextRun = related.into
+    .filter((observer) => observer.function_id === CRON_FN)
+    .map(cronExpression)
     .map((expression) => (expression ? nextCronRun(expression, now) : null))
     .filter((d): d is Date => d !== null)
     .sort((a, b) => a.getTime() - b.getTime())[0]
@@ -785,15 +827,24 @@ function FunctionFacts({
         </div>
       ) : null}
       <div>
-        <dt>Bindings</dt>
+        <dt>Runs on</dt>
         <dd>
-          {bindings.length === 0
-            ? 'None, runs only when called'
-            : [...byType.entries()]
-                .map(([type, n]) => `${n} ${type}`)
+          {bySource.size === 0
+            ? 'Calls only'
+            : [...bySource.entries()]
+                .map(([source, n]) => `${n} ${source}`)
                 .join(', ')}
         </dd>
       </div>
+      {isEventSource(detail) || related.of.length > 0 ? (
+        <div>
+          <dt>Observers</dt>
+          <dd>
+            {related.of.length}
+            {detail.private ? ' · private source' : ''}
+          </dd>
+        </div>
+      ) : null}
       {nextRun ? (
         <div>
           <dt>Next run</dt>
@@ -908,42 +959,68 @@ function parseOr(text: string, fallback: unknown): unknown {
 }
 
 /**
- * What fires this function, one card per binding: the family tile, the
- * binding in its family's words (`GET /users/:id`, `every 5 min`), and the
- * raw config for the cases those words compress away.
+ * The observers around this function, one card each: those whose target it
+ * is (what makes it run), then those that observe it. Each card names the
+ * observer in its family's words (`GET /users/:id`, `every 5 min`) and keeps
+ * the raw args and filters for the cases those words compress away.
  */
-function FunctionTriggers({ detail }: { detail: FunctionDetail }) {
-  if (detail.registered_triggers.length === 0) {
+function FunctionObservers({
+  detail,
+  related,
+}: {
+  detail: FunctionDetail
+  related: RelatedObservers
+}) {
+  if (related.of.length === 0 && related.into.length === 0) {
     return (
       <Note>
-        Nothing is bound to this function. It runs only when something calls it.
+        {detail.private
+          ? 'Nothing observes this function yet, and nothing calls it through an observer.'
+          : 'Nothing observes this function, and no observer calls it. It runs only when something calls it.'}
       </Note>
     )
   }
+  return (
+    <div className="console-catalog-obscards-groups">
+      {related.into.length > 0 ? (
+        <section>
+          <Eyebrow>Runs on</Eyebrow>
+          <ObserverCards observers={related.into} side="source" />
+        </section>
+      ) : null}
+      {related.of.length > 0 ? (
+        <section>
+          <Eyebrow>Observed by</Eyebrow>
+          <ObserverCards observers={related.of} side="target" />
+        </section>
+      ) : null}
+    </div>
+  )
+}
+
+function ObserverCards({
+  observers,
+  side,
+}: {
+  observers: ObserverInfo[]
+  /** Which end of each observer the card names beside its summary. */
+  side: 'source' | 'target'
+}) {
   const now = new Date()
   return (
-    <div className="console-catalog-trigcards">
-      {detail.registered_triggers.map((ref) => {
-        // The refs on a function detail carry no worker/summary fields; the
-        // function's own identity fills them so trigger-kinds can read the
-        // binding the same way the triggers page does.
-        const binding: RegisteredTrigger = {
-          id: ref.id,
-          trigger_type: ref.trigger_type,
-          function_id: detail.function_id,
-          worker_name: detail.worker_name,
-          config: ref.config,
-        }
-        const spec = familyOf(ref.trigger_type)
-        const expression = cronExpression(binding)
+    <div className="console-catalog-obscards">
+      {observers.map((observer) => {
+        const spec = familyOf(observer.function_id)
+        const expression = cronExpression(observer)
         const next = expression ? nextCronRun(expression, now) : null
-        const config = pretty(ref.config ?? {})
+        const args = pretty(observer.args)
+        const filters = pretty(observer.filters)
         return (
-          <div key={ref.id} className="console-catalog-trigcard">
+          <div key={observer.id} className="console-catalog-obscard">
             <FamilyGlyph family={spec.family} tone={spec.tone} />
             <div className="copy">
               <div className="line1">
-                <span className="name">{summarize(binding)}</span>
+                <span className="name">{summarize(observer)}</span>
                 <span
                   className={`${uiClasses.eyebrow} console-catalog-tag`}
                   data-tone={spec.tone}
@@ -952,20 +1029,30 @@ function FunctionTriggers({ detail }: { detail: FunctionDetail }) {
                 </span>
               </div>
               <span className="type">
-                {ref.trigger_type} · {ref.id}
+                {side === 'source'
+                  ? observer.function_id
+                  : `→ ${observer.target.function_id}`}{' '}
+                · {observer.state} · {observer.id}
               </span>
               {next ? (
                 <span className="fine">Next run {untilLabel(next, now)}</span>
               ) : null}
-              {config !== '{}' ? (
+              {args !== '{}' ? (
                 <JsonHighlight
-                  code={config}
+                  code={args}
+                  className="console-catalog-json"
+                  wrap
+                />
+              ) : null}
+              {filters !== '{}' ? (
+                <JsonHighlight
+                  code={filters}
                   className="console-catalog-json"
                   wrap
                 />
               ) : null}
             </div>
-            <CopyIconButton value={ref.id} label="Copy binding id" />
+            <CopyIconButton value={observer.id} label="Copy observer id" />
           </div>
         )
       })}

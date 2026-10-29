@@ -2,8 +2,8 @@ import {
   Button,
   Card,
   CardBody,
-  type FunctionTriggerMessage,
-  type FunctionTriggerRenderer,
+  type FunctionCallMessage,
+  type FunctionCallRenderer,
   type Host,
 } from '@iii-dev/console-ui'
 import { unwrapEnvelope } from '@iii-dev/console-ui/format'
@@ -86,7 +86,7 @@ function ProposalCard({
   )
 }
 
-function render(host: Host, message: FunctionTriggerMessage) {
+function render(host: Host, message: FunctionCallMessage) {
   if (message.functionId !== PROPOSE_ID || message.running) return null
   const proposal = parseProposal(message.output)
   return proposal ? <ProposalCard host={host} proposal={proposal} /> : null
@@ -105,7 +105,7 @@ function FunctionIdLabel() {
 
 export function createWorkingDirectoryProposalRenderer(
   host: Host,
-): FunctionTriggerRenderer {
+): FunctionCallRenderer {
   return {
     id: 'console/workspace-proposal.js#working-directory',
     isMatch: (functionId) => functionId === PROPOSE_ID,

@@ -148,9 +148,9 @@ export function InjectableUiConfigForm(props: ConfigFormProps & { host: Host }) 
   useEffect(() => {
     let cancelled = false
     Promise.all([
-      host.iii.trigger<UiManifest>('console::ui-manifest', {}),
+      host.iii.call<UiManifest>('console::ui-manifest', {}),
       host.iii
-        .trigger<ConfigurationList>('configuration::list', {})
+        .call<ConfigurationList>('configuration::list', {})
         .catch(() => ({ configurations: [] }) as ConfigurationList),
     ])
       .then(([manifest, configs]) => {

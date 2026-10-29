@@ -11,7 +11,7 @@
  *
  * Every list row leads with a glyph tile so the list reads as WHAT it is
  * at a glance: `ƒ` for functions, a family icon (globe, clock, layers…)
- * for triggers. The same tiles reappear scaled up in the identity head and
+ * for observers. The same tiles reappear scaled up in the identity head and
  * the hero, so the sidebar and the workspace visibly describe one thing.
  */
 
@@ -42,12 +42,13 @@ import {
   FileText,
   Globe,
   Layers,
+  Rows3,
   Waves,
   Webhook,
   Zap,
 } from 'lucide-react'
 import { Fragment, type ReactNode, useCallback, useState } from 'react'
-import type { Family, Tone } from './trigger-kinds'
+import type { Family, Tone } from './observer-kinds'
 
 /**
  * Open/closed state for collapsible groups, stored as the set of ids whose
@@ -56,7 +57,7 @@ import type { Family, Tone } from './trigger-kinds'
  * the newcomer follows the default instead of arriving collapsed.
  *
  * The default is a predicate because the pages disagree: function groups
- * always open, trigger types open only when something is bound to them.
+ * always open, observed functions open only when something observes them.
  */
 export function useGroupToggle(defaultOpen: (id: string) => boolean) {
   const [flipped, setFlipped] = useState<ReadonlySet<string>>(new Set())
@@ -268,9 +269,9 @@ export function CopyButton({
 
 /**
  * A collapsible group heading. The chevron is its own button so the label
- * can be a second, independent target: the triggers page selects the TYPE
- * by its heading (no phantom "type detail" row), the functions page just
- * toggles.
+ * can be a second, independent target: the observers page selects the
+ * observed FUNCTION by its heading (no phantom "source detail" row), the
+ * functions page just toggles.
  */
 export function GroupHeader({
   label,
@@ -291,13 +292,13 @@ export function GroupHeader({
   countLabel?: string
   open: boolean
   onToggle: () => void
-  /** Clicking the label selects the group's own detail (trigger types). */
+  /** Clicking the label selects the group's own detail (observed functions). */
   onSelect?: () => void
   selected?: boolean
   /** Family color for the leading tag, when the page groups by family. */
   tone?: string
   toneLabel?: string
-  /** Empty trigger types have nothing to disclose. */
+  /** A function nobody observes has nothing to disclose. */
   collapsible?: boolean
 }) {
   const countText = count === undefined ? null : String(count)
@@ -431,13 +432,14 @@ const FAMILY_ICONS: Record<Family, ReactNode> = {
   cron: <Clock />,
   queue: <Layers />,
   state: <Database />,
+  database: <Rows3 />,
   stream: <Waves />,
   hook: <Webhook />,
   asset: <FileText />,
   other: <Zap />,
 }
 
-/** The family tile that marks a trigger: globe, clock, layers, waves… */
+/** The family tile that marks an observer: globe, clock, layers, waves… */
 export function FamilyGlyph({
   family,
   tone,
@@ -567,7 +569,7 @@ export function ContextPanel({
   )
 }
 
-/** A dense object summary used for related triggers and target functions. */
+/** A dense object summary used for observers and target functions. */
 export function ContextItem({
   glyph,
   title,
@@ -748,7 +750,7 @@ export function CatalogListSkeleton({ label }: { label: string }) {
   )
 }
 
-/** Key/value chips for a trigger config, ids, counts. */
+/** Key/value chips for an observer's args and filters, ids, counts. */
 const CHIP_TONES = {
   accent: 'accent',
   ok: 'success',

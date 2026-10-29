@@ -3,9 +3,10 @@
  * and what came back — updating as the engine records spans.
  *
  * The old console could not show this. It exists here because the console
- * worker already streams: the `trace` trigger is a coalesced "spans changed"
- * tick, so the feed re-reads `engine::traces::spans` filtered to this
- * function's span name on each beat instead of polling a timer.
+ * worker already streams: `observability::on-span` is called with a
+ * coalesced "spans changed" tick, so the feed re-reads `engine::traces::spans`
+ * filtered to this function's span name on each beat instead of polling a
+ * timer.
  *
  * Every row is replayable — the recorded input becomes the invoke editor's
  * body, which turns "this call failed in production" into one click.
@@ -99,7 +100,9 @@ export function ActivityFeed({
 
   // Trace ticks are frequent under load, so this debounces harder than the
   // catalogue subscriptions do.
-  useLiveSignals(host, ['trace'], calls.reload, { debounceMs: 1200 })
+  useLiveSignals(host, ['observability::on-span'], calls.reload, {
+    debounceMs: 1200,
+  })
 
   if (calls.error) {
     return (
