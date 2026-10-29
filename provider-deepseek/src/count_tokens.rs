@@ -20,11 +20,9 @@
 
 use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::deepseek_v41::{
-    effort_budget, prompt, Mode, DEFAULT_EFFORT_BUDGET,
+    effort_budget, prompt, vocabulary, Mode, DEFAULT_EFFORT_BUDGET,
 };
-use llm_router::provider_scaffold::vocabulary_count::{
-    resolve, VocabularyRef, ESTIMATOR_TOKENIZER,
-};
+use llm_router::provider_scaffold::vocabulary_count::{resolve, ESTIMATOR_TOKENIZER};
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::{AgentFunction, ThinkingLevel};
 use llm_router::types::router::ResponseFormat;
@@ -35,14 +33,6 @@ use crate::reasoning::{is_reasoning_model, reasoning_effort_for};
 use crate::request::build_response_format;
 use crate::wire::messages::to_wire_messages;
 use crate::wire::tools::functions_to_wire;
-
-/// Every DeepSeek chat model shares one vocabulary, so the reference is fixed
-/// rather than per-model: the id list changes far more often than the
-/// tokenizer behind it. V4.1's file has the same vocabulary as V3's plus the
-/// prompt's own markers (`<think>`, `｜DSML｜`, `<｜System｜>`) as single tokens.
-fn vocabulary() -> VocabularyRef {
-    VocabularyRef::huggingface("deepseek-ai/DeepSeek-V4.1-Flash")
-}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CountTokensRequest {

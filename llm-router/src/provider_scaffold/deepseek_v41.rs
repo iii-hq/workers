@@ -11,6 +11,15 @@
 use serde_json::Value;
 
 use crate::provider_scaffold::python_json::python_json;
+use crate::provider_scaffold::vocabulary_count::VocabularyRef;
+
+/// Every DeepSeek chat model shares one vocabulary, so the reference is fixed
+/// rather than per-model: the id list changes far more often than the
+/// tokenizer behind it. V4.1's file has the same vocabulary as V3's plus the
+/// prompt's own markers (`<think>`, `｜DSML｜`, `<｜System｜>`) as single tokens.
+pub fn vocabulary() -> VocabularyRef {
+    VocabularyRef::huggingface("deepseek-ai/DeepSeek-V4.1-Flash")
+}
 
 pub const BOS: &str = "<｜begin▁of▁sentence｜>";
 pub const EOS: &str = "<｜end▁of▁sentence｜>";
@@ -112,7 +121,17 @@ pub fn prompt(
                 continue;
             }
             Some("tool") => (format!("<tool_result>{content}</tool_result>"), false),
-            _ => (content.to_string(), true),
+            // Rows with images carry a parts array; only its text parts are prompt text.
+            _ => match row["content"].as_array() {
+                Some(parts) => {
+                    let texts: Vec<&str> = parts
+                        .iter()
+                        .filter_map(|part| part["text"].as_str())
+                        .collect();
+                    (texts.join("\n"), true)
+                }
+                None => (content.to_string(), true),
+            },
         };
         match turns.last_mut() {
             Some(Turn::User { parts, text: any }) => {
@@ -304,6 +323,23 @@ mod tests {
                 "<｜begin▁of▁sentence｜><｜System｜>{prefix}<｜User｜>Hello<｜Assistant｜></think>Hi!\
                  <｜end▁of▁sentence｜><｜User｜>And again?\n\nTwice.<｜Assistant｜></think>Sure.\
                  <｜end▁of▁sentence｜><｜User｜>Last one.<｜Assistant｜><think>"
+            )
+        );
+    }
+
+    #[test]
+    fn user_rows_with_image_parts_keep_their_text() {
+        let rows = [serde_json::json!({"role": "user", "content": [
+            {"type": "text", "text": "What is this?"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+            {"type": "text", "text": "[image result of tool call t1]"},
+        ]})];
+        let prefix = reasoning_effort(DEFAULT_EFFORT_BUDGET);
+        assert_eq!(
+            prompt(&rows, &[], None, Mode::Thinking { budget: 75 }),
+            format!(
+                "<｜begin▁of▁sentence｜><｜System｜>{prefix}<｜User｜>What is this?\n\
+                 [image result of tool call t1]<｜Assistant｜><think>"
             )
         );
     }
