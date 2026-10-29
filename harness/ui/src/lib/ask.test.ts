@@ -23,7 +23,7 @@ type ConsoleRow = FunctionTriggerMessage & {
   unloaded?: boolean
 }
 
-/** The model's arguments (the `payload` inside agent_trigger). */
+/** The model's arguments (the `payload` inside agent_call). */
 const REQUEST = {
   questions: [
     {
@@ -64,7 +64,7 @@ function okOutput(details: unknown): unknown {
   return { content: [{ type: 'text', text: AWAITING_TEXT }], details }
 }
 
-/** A settled row for an agent_trigger-wrapped call: `unwrapFunctionTrigger`
+/** A settled row for an agent_call-wrapped call: `unwrapFunctionTrigger`
  *  lifts `function`/`payload`/`description`; the result pairing sets
  *  `output`, `running: false`, `pendingApproval: false`, `resultEntryId`. */
 function wrappedRow(output: unknown): ConsoleRow {
@@ -108,7 +108,7 @@ const VIEW: AskView = {
 }
 
 describe('parseAsk', () => {
-  it('builds the view from an accepted ask wrapped in agent_trigger', () => {
+  it('builds the view from an accepted ask wrapped in agent_call', () => {
     expect(parseAsk(wrappedRow(okOutput(DETAILS)))).toStrictEqual(VIEW)
   })
 

@@ -1,5 +1,5 @@
 //! The function-trigger pipeline (harness.md § Functions / §
-//! `harness::function::trigger`): the fail-closed allow/deny globs first,
+//! `harness::function::call`): the fail-closed allow/deny globs first,
 //! then the target invocation, then result normalisation. Discovery results
 //! (`engine::functions::list` / `info`) are post-filtered through the same
 //! globs so the model only discovers what it can call.
@@ -84,7 +84,7 @@ fn unique_visible_result<'a>(
                         .and_then(|arguments| arguments.get("function"))
                         .and_then(Value::as_str);
                     let is_info = function_id == Some("engine::functions::info")
-                        || (function_id == Some("agent_trigger")
+                        || (function_id.is_some_and(crate::policy::is_agent_call_name)
                             && wrapped_target == Some("engine::functions::info"));
                     if call_seen || !is_info {
                         return None;
@@ -652,7 +652,7 @@ pub(crate) fn repeated_failure_result(
 }
 
 /// The outcome of triggering one call.
-pub enum TriggerResult {
+pub enum CallOutcome {
     /// A settled result (success, policy denial, or target error).
     Result(ResultData),
     /// Deferred — the result arrives later via `harness::function::resolve`.
@@ -676,18 +676,18 @@ pub struct PendingInfo {
 
 /// Run the trigger pipeline for one call. `function_id` is the unwrapped
 /// target; `arguments` the target payload.
-pub async fn trigger_call(
+pub async fn call_function(
     engine: &EngineClient,
     policy: &CompiledPolicy,
     function_id: &str,
     arguments: &Value,
-) -> TriggerResult {
+) -> CallOutcome {
     // Fail-closed glob policy — structural and final.
     if !policy.allows(function_id) {
-        return TriggerResult::Result(denied_result(function_id));
+        return CallOutcome::Result(denied_result(function_id));
     }
 
-    TriggerResult::Result(invoke_target(engine, policy, function_id, arguments).await)
+    CallOutcome::Result(invoke_target(engine, policy, function_id, arguments).await)
 }
 
 /// Invoke the target and normalise its result — WITHOUT the policy gate (the
@@ -1057,10 +1057,10 @@ fn edit_distance(a: &str, b: &str) -> usize {
     row[b.len()]
 }
 
-/// The `is_error` result for an `agent_trigger` call with no resolvable
+/// The `is_error` result for an `agent_call` call with no resolvable
 /// target — arguments were empty, null, or unparseable (local models emit
 /// malformed JSON args). Dispatching the wrapper name to the engine would
-/// only return a cryptic `function_not_found: agent_trigger`.
+/// only return a cryptic `function_not_found: agent_call`.
 /// Char-safe ≤200-char preview of raw arguments for error messages —
 /// model-emitted JSON serializes with literal UTF-8, and a byte-indexed
 /// `String::truncate` panics mid-char on CJK/emoji payloads.
@@ -1080,14 +1080,14 @@ pub(crate) fn truncate_chars(s: &str, max: usize) -> String {
 pub fn wrapper_without_target_result(arguments: &Value) -> ResultData {
     let got = arguments_preview(&without_salvage_markers(arguments));
     let msg = format!(
-        "agent_trigger was called without a usable target (arguments were {got}); expected \
+        "agent_call was called without a usable target (arguments were {got}); expected \
          {{\"function\": \"<function id>\", \"payload\": {{...}}}}. Re-issue the call with the \
          target function id."
     );
     ResultData {
         content: vec![ContentBlock::text(msg.clone())],
         is_error: true,
-        details: json!({ "error": "agent_trigger_no_target", "message": msg }),
+        details: json!({ "error": "agent_call_no_target", "message": msg }),
     }
 }
 
@@ -2254,7 +2254,7 @@ mod tests {
                     "content": [{
                         "type": "function_call",
                         "id": "source",
-                        "function_id": "agent_trigger",
+                        "function_id": "agent_call",
                         "arguments": { "function": "engine::functions::info" }
                     }]
                 }),
@@ -2806,7 +2806,7 @@ mod tests {
             content::ContentBlock,
             turn::{ExposeMode, FunctionPolicy},
         };
-        for expose in [ExposeMode::Native, ExposeMode::AgentTrigger] {
+        for expose in [ExposeMode::Native, ExposeMode::AgentCall] {
             for raw_policy in [
                 None,
                 Some(FunctionPolicy {
@@ -2826,7 +2826,7 @@ mod tests {
                         function_id: if expose == ExposeMode::Native {
                             id.into()
                         } else {
-                            crate::policy::AGENT_TRIGGER_NAME.into()
+                            crate::policy::AGENT_CALL_NAME.into()
                         },
                         arguments: if expose == ExposeMode::Native {
                             args

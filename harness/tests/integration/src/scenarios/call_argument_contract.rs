@@ -1,4 +1,4 @@
-//! INT-040 — through the `agent_trigger` wrapper the model holds no request
+//! INT-040 — through the `agent_call` wrapper the model holds no request
 //! schema until it fetches the contract, so a malformed call's diagnosis
 //! carries the schema itself and the retry needs no `engine::functions::info`
 //! step. Once the contract is in context, a later diagnosis only points at it.
@@ -12,7 +12,7 @@ use super::ScenarioDriver;
 use crate::evidence_data::message_text;
 use crate::fixtures::ScenarioFixture;
 
-const AGENT_TRIGGER: &str = "agent_trigger";
+const AGENT_TRIGGER: &str = "agent_call";
 const INFO: &str = "engine::functions::info";
 const LOOKUP: &str = "{{run_id}}::lookup";
 
@@ -55,7 +55,7 @@ pub(super) fn scenario() -> ScenarioFixture {
     Scenario::new(
         ID,
         "call-argument-contract",
-        "A malformed agent_trigger call whose contract the model never fetched gets the request schema in its diagnosis; after a contract fetch, the next diagnosis only points at it.",
+        "A malformed agent_call call whose contract the model never fetched gets the request schema in its diagnosis; after a contract fetch, the next diagnosis only points at it.",
         ScenarioDriver::Direct,
         model.clone(),
     )
@@ -64,7 +64,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             .idempotency_key("{{run_id}}:integration-040")
             .allow_function(&lookup)
             .allow_id(INFO)
-            .agent_trigger(),
+            .agent_call(),
     )
     .function(lookup.clone())
     .generation(

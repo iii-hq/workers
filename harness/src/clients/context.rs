@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -155,7 +155,7 @@ impl ContextClient {
     pub async fn assemble(&self, params: AssembleParams) -> Result<AssembleOutput, String> {
         let resp = self
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "context::assemble".into(),
                 payload: assemble_payload(params),
                 action: None,
@@ -187,7 +187,7 @@ impl ContextClient {
         }
         let resp = self
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "context::compact".into(),
                 payload: json!({
                     "messages": params.messages,
@@ -225,7 +225,7 @@ impl ContextClient {
 
         let resp = self
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "context::count-tokens".into(),
                 payload,
                 action: None,

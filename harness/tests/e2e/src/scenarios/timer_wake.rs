@@ -81,7 +81,7 @@ fn evaluate<'a>(
         let expected = json!({ "status": "fired" });
         let observed = common::state_value(
             context
-                .trigger_value(
+                .call_value(
                     "state::get",
                     json!({ "scope": names.scope, "key": RESULT_KEY }),
                 )
@@ -177,7 +177,7 @@ fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
     Box::pin(async move {
         let names = Names::new(run_id);
         let listed = context
-            .trigger_value(
+            .call_value(
                 "harness::triggers::list",
                 json!({ "session_id": names.root_session }),
             )
@@ -190,7 +190,7 @@ fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
             .filter_map(|subscription| subscription.get("subscription_id").and_then(Value::as_str))
         {
             let _: Value = context
-                .trigger(
+                .call(
                     "harness::triggers::unregister",
                     json!({
                         "session_id": names.root_session,
@@ -200,7 +200,7 @@ fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
                 .await?;
         }
         let _: Value = context
-            .trigger(
+            .call(
                 "state::delete",
                 json!({ "scope": names.scope, "key": RESULT_KEY }),
             )

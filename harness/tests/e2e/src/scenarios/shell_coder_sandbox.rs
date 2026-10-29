@@ -773,10 +773,10 @@ async fn cleanup_owned_sandbox(context: &E2eContext, expected_name: &str) -> any
     if !context.function_exists("sandbox::list").await? {
         return Ok(());
     }
-    let listed = context.trigger_value("sandbox::list", json!({})).await?;
+    let listed = context.call_value("sandbox::list", json!({})).await?;
     for sandbox_id in owned_running_sandbox_ids(&listed, expected_name) {
         let _: Value = context
-            .trigger(
+            .call(
                 "sandbox::stop",
                 json!({ "sandbox_id": sandbox_id, "wait": true }),
             )
@@ -896,7 +896,7 @@ mod tests {
         json!({
             "type": "function_call",
             "id": call_id,
-            "function_id": "agent_trigger",
+            "function_id": "agent_call",
             "arguments": {
                 "function": "compose::add",
                 "payload": { "worker": worker }

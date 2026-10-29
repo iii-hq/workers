@@ -7,7 +7,7 @@
 //! (harness.md § Trigger types emitted). Consumers and siblings bind
 //! these to react without polling.
 //!
-//! Delivery is fire-and-forget (`TriggerAction::Void`), at-least-once, and
+//! Delivery is fire-and-forget (`CallAction::Void`), at-least-once, and
 //! unordered. Per-binding `config` filters (`session_id`, `parent_session_id`)
 //! are evaluated here by the emitting worker. The engine replays existing
 //! registrations after a restart, so the subscriber sets rebuild themselves.
@@ -18,9 +18,9 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
+use iii_sdk::{IIIClient, RegisterTriggerType, CallAction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -511,19 +511,19 @@ impl TurnEvents {
             }
             // The registration metadata is forwarded as stored; there is no
             // fire-time stamping.
-            let request = TriggerRequest {
+            let request = CallRequest {
                 function_id: binding.function_id.clone(),
                 payload: payload.clone(),
-                action: Some(TriggerAction::Void),
+                action: Some(CallAction::Void),
                 timeout_ms: None,
             };
-            let request: iii_sdk::protocol::TriggerRequestWithMetadata =
+            let request: iii_sdk::protocol::CallRequestWithMetadata =
                 match binding.metadata.clone() {
                     Some(metadata) => request.metadata(metadata),
                     None => request.into(),
                 };
             let namespace = binding.namespace.as_deref().unwrap_or("default");
-            let res = self.iii.trigger(request.namespace(namespace)).await;
+            let res = self.iii.call(request.namespace(namespace)).await;
             if let Err(e) = res {
                 tracing::warn!(trigger_type, function_id = %binding.function_id, error = %e, "turn-event fan-out failed");
             }
@@ -532,21 +532,21 @@ impl TurnEvents {
 }
 
 async fn deliver_ready(iii: &IIIClient, binding: &Binding) {
-    let request = TriggerRequest {
+    let request = CallRequest {
         function_id: binding.function_id.clone(),
         payload: serde_json::json!({
             "status": "ready",
             "timestamp": now_ms(),
         }),
-        action: Some(TriggerAction::Void),
+        action: Some(CallAction::Void),
         timeout_ms: None,
     };
-    let request: iii_sdk::protocol::TriggerRequestWithMetadata = match &binding.metadata {
+    let request: iii_sdk::protocol::CallRequestWithMetadata = match &binding.metadata {
         Some(metadata) => request.metadata(metadata.clone()),
         None => request.into(),
     };
     let namespace = binding.namespace.as_deref().unwrap_or("default");
-    let result = iii.trigger(request.namespace(namespace)).await;
+    let result = iii.call(request.namespace(namespace)).await;
     if let Err(error) = result {
         tracing::warn!(
             trigger_type = READY,

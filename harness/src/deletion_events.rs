@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{Error, IIIClient, RegisterTriggerType, TriggerAction};
+use iii_sdk::{Error, IIIClient, RegisterTriggerType, CallAction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
@@ -73,11 +73,11 @@ impl DeletionEvents {
             if !binding.filter.matches(snapshot) {
                 continue;
             }
-            let request = TriggerRequest {
+            let request = CallRequest {
                 function_id: binding.target.function_id,
                 payload: serde_json::to_value(snapshot)
                     .map_err(|e| HarnessError::Internal(e.to_string()))?,
-                action: Some(TriggerAction::Void),
+                action: Some(CallAction::Void),
                 timeout_ms: None,
             };
             let request = match binding.target.metadata {
@@ -85,7 +85,7 @@ impl DeletionEvents {
                 None => request.into(),
             };
             self.iii
-                .trigger(
+                .call(
                     request.namespace(binding.target.namespace.as_deref().unwrap_or("default")),
                 )
                 .await

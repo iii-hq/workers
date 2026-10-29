@@ -15,7 +15,7 @@
 //! Every other validation scenario prescribes the correction ("insert 4 more
 //! rows", "reply with token X"); this one pins the diagnose-and-decide loop.
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 
@@ -76,7 +76,7 @@ pub fn violations(rows: &[(String, i64)]) -> Vec<String> {
 
 async fn fetch_rows(client: &IIIClient, table: &str) -> Result<Vec<(String, i64)>, String> {
     let response = client
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "database::query".into(),
             payload: json!({ "db": "primary", "sql": format!("SELECT name, amount FROM {table} ORDER BY id") }),
             action: None,
@@ -283,7 +283,7 @@ fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
     Box::pin(async move {
         let table = table(run_id);
         let _: Value = context
-            .trigger(
+            .call(
                 "database::execute",
                 json!({ "db": "primary", "sql": format!("DROP TABLE IF EXISTS {table}") }),
             )

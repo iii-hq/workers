@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::protocol::{RegisterTriggerInput, CallRequest};
 use iii_sdk::trigger::Trigger;
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
@@ -452,8 +452,8 @@ async fn trigger_configuration_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: function_id.to_string(),
                     payload: payload.clone(),
                     action: None,

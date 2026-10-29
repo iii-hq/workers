@@ -13,7 +13,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -98,7 +98,7 @@ pub(crate) async fn state_get(
     let call = || async {
         run_hidden(
             HIDDEN_FAMILY,
-            iii.trigger(TriggerRequest {
+            iii.call(CallRequest {
                 function_id: function_id.into(),
                 payload: json!({ "scope": scope, "key": key }),
                 action: None,
@@ -145,7 +145,7 @@ pub(crate) async fn state_set(
     }
     run_hidden(
         HIDDEN_FAMILY,
-        iii.trigger(TriggerRequest {
+        iii.call(CallRequest {
             function_id: STATE_SET_ID.into(),
             payload: json!({ "scope": scope, "key": key, "value": value }),
             action: None,
@@ -168,7 +168,7 @@ pub(crate) async fn state_delete(
     }
     run_hidden(
         HIDDEN_FAMILY,
-        iii.trigger(TriggerRequest {
+        iii.call(CallRequest {
             function_id: STATE_DELETE_ID.into(),
             payload: json!({ "scope": scope, "key": key }),
             action: None,
@@ -706,7 +706,7 @@ pub(crate) async fn cas_value(
     let resp = with_private_namespace(iii, timeout_ms, || async {
         run_hidden(
             HIDDEN_FAMILY,
-            iii.trigger(TriggerRequest {
+            iii.call(CallRequest {
                 function_id: STATE_CAS_ID.into(),
                 payload: payload.clone(),
                 action: None,
@@ -748,7 +748,7 @@ pub(crate) async fn state_list(
     let call = || async {
         run_hidden(
             HIDDEN_FAMILY,
-            iii.trigger(TriggerRequest {
+            iii.call(CallRequest {
                 function_id: function_id.into(),
                 payload: json!({ "scope": scope }),
                 action: None,
@@ -773,7 +773,7 @@ async fn state_list_keys(
 ) -> Result<Value, HarnessError> {
     run_hidden(
         HIDDEN_FAMILY,
-        iii.trigger(TriggerRequest {
+        iii.call(CallRequest {
             function_id: STATE_LIST_KEYS_ID.into(),
             payload: json!({ "scope": scope }),
             action: None,
@@ -790,7 +790,7 @@ async fn state_list_keys(
 async fn claim_private_namespace(iii: &IIIClient, timeout_ms: u64) -> Result<(), HarnessError> {
     run_hidden(
         HIDDEN_FAMILY,
-        iii.trigger(TriggerRequest {
+        iii.call(CallRequest {
             function_id: CLAIM_NAMESPACE_ID.into(),
             payload: json!({
                 "functions_prefix": NAMESPACE_PREFIX,

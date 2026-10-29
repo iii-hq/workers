@@ -13,7 +13,7 @@
 //! Hence the ladder below: fail-open presence probe, OK-shaped existence
 //! check, and only then the direct get.
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
@@ -85,7 +85,7 @@ async fn stored_default_body(iii: &IIIClient) -> Option<String> {
 async fn trigger(iii: &IIIClient, function_id: &str, payload: Value) -> Option<Value> {
     run_hidden(
         HIDDEN_FAMILY,
-        iii.trigger(TriggerRequest {
+        iii.call(CallRequest {
             function_id: function_id.into(),
             payload,
             action: None,

@@ -126,7 +126,7 @@ pub async fn evaluate(deps: &Deps, binding: &Binding, event: Value) -> Result<Va
         let timeout_ms = deps.cfg().await.dispatch_timeout_ms;
         let raw = deps
             .iii
-            .trigger(iii_sdk::protocol::TriggerRequest {
+            .call(iii_sdk::protocol::CallRequest {
                 function_id: condition.function_id.clone(),
                 payload,
                 action: None,

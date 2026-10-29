@@ -93,7 +93,7 @@ async fn kill_session_jobs(deps: &Deps, session_ids: Vec<String>) {
     }
     if let Err(error) = deps
         .iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
+        .call(iii_sdk::protocol::CallRequest {
             function_id: "shell::kill-session-jobs".into(),
             payload: serde_json::json!({ "session_ids": session_ids }),
             action: None,
@@ -170,7 +170,7 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcom
     if let Some(request_id) = &record.stream_request_id {
         if let Err(error) = deps
             .iii
-            .trigger(iii_sdk::protocol::TriggerRequest {
+            .call(iii_sdk::protocol::CallRequest {
                 function_id: "router::abort".into(),
                 payload: serde_json::json!({"request_id": request_id}),
                 action: None,

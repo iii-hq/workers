@@ -3,7 +3,7 @@
  * no host.
  *
  * The shapes come from ade/web/src/lib/sessions/entry-mapper.ts:
- * - `message.input` is the model's arguments: the agent_trigger `payload`
+ * - `message.input` is the model's arguments: the agent_call `payload`
  *   for a wrapped call (plus `_streaming` while it streams), the raw
  *   arguments for a native call, and `undefined` on a paged-out
  *   (`unloaded`) row.

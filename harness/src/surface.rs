@@ -12,7 +12,7 @@ use crate::functions::{
     compact::CompactRequest,
     context_policy::{ContextPolicyRequest, ContextPolicyResponse},
     function_resolve::{FunctionResolveRequest, FunctionResolveResponse},
-    function_trigger::{FunctionTriggerRequest, FunctionTriggerResponse},
+    function_call::{FunctionCallRequest, FunctionCallResponse},
     metrics::{SessionMetricsRequestV1, SessionMetricsResponseV1},
     send::{SendRequest, SendResponse},
     session_tree::{SessionTreeRequestV1, SessionTreeResponseV1},
@@ -26,7 +26,7 @@ use crate::functions::{
     },
 };
 use crate::functions::{
-    ASK_ID, COMPACT_ID, CONTEXT_POLICY_ID, FUNCTION_RESOLVE_ID, FUNCTION_TRIGGER_ID, METRICS_ID,
+    ASK_ID, COMPACT_ID, CONTEXT_POLICY_ID, FUNCTION_RESOLVE_ID, FUNCTION_CALL_ID, METRICS_ID,
     SEND_ID, SESSION_TREE_ID, SPAWN_ID, STATUS_ID, STOP_ID, SYSTEM_PROMPT_ID, TURN_ID,
 };
 use crate::turn_loop::{TurnStepPayload, TurnStepResult};
@@ -72,7 +72,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<SpawnRequest, SpawnResponse>(SPAWN_ID),
         spec::<AskRequest, AskResponse>(ASK_ID),
         spec::<TurnStepPayload, TurnStepResult>(TURN_ID),
-        spec::<FunctionTriggerRequest, FunctionTriggerResponse>(FUNCTION_TRIGGER_ID),
+        spec::<FunctionCallRequest, FunctionCallResponse>(FUNCTION_CALL_ID),
         spec::<FunctionResolveRequest, FunctionResolveResponse>(FUNCTION_RESOLVE_ID),
         spec::<StopRequest, StopResponse>(STOP_ID),
         spec::<

@@ -155,7 +155,7 @@ fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
         // The agent's validator binding is scoped to the (torn-down) run
         // session and can never fire again; only the table needs removing.
         let _: Value = context
-            .trigger(
+            .call(
                 "database::execute",
                 json!({ "db": "primary", "sql": format!("DROP TABLE IF EXISTS {table}") }),
             )
@@ -166,7 +166,7 @@ fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
 
 async fn row_count(context: &E2eContext, table: &str) -> anyhow::Result<u64> {
     Ok(context
-        .trigger_value(
+        .call_value(
             "database::query",
             json!({ "db": "primary", "sql": format!("SELECT COUNT(*) AS n FROM {table}") }),
         )

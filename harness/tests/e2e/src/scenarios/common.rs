@@ -71,7 +71,7 @@ fn normalize_invocation(block: &Value) -> Option<ObservedFunctionInvocation> {
     let call_id = block.get("id").and_then(Value::as_str).map(str::to_owned);
     let function_id = block.get("function_id")?.as_str()?;
     let arguments = block.get("arguments").cloned().unwrap_or_else(|| json!({}));
-    if function_id == "agent_trigger" {
+    if function_id == "agent_call" {
         return Some(ObservedFunctionInvocation {
             call_id,
             call: ObservedFunctionCall {
@@ -199,7 +199,7 @@ pub fn trigger_fired_records(transcript: &Value) -> Vec<&Value> {
 
 pub async fn active_binding_count(context: &E2eContext, session_id: &str) -> anyhow::Result<usize> {
     Ok(context
-        .trigger_value(
+        .call_value(
             "harness::triggers::list",
             json!({ "session_id": session_id }),
         )
@@ -253,7 +253,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalizes_agent_trigger_and_native_function_calls() {
+    fn normalizes_agent_call_and_native_function_calls() {
         let transcript = json!({
             "messages": [{
                 "message": {
@@ -262,7 +262,7 @@ mod tests {
                         {
                             "type": "function_call",
                             "id": "call-state",
-                            "function_id": "agent_trigger",
+                            "function_id": "agent_call",
                             "arguments": {
                                 "function": "state::set",
                                 "payload": { "scope": "s", "key": "k", "value": 1 }
@@ -291,7 +291,7 @@ mod tests {
                 {"message": {"role": "assistant", "content": [{
                     "type": "function_call",
                     "id": "call-match",
-                    "function_id": "agent_trigger",
+                    "function_id": "agent_call",
                     "arguments": {
                         "function": "state::set",
                         "payload": { "scope": "s", "key": "k", "value": 1 }

@@ -444,10 +444,10 @@ impl Send {
         self
     }
 
-    /// Expose the harness's single `agent_trigger` wrapper while retaining
+    /// Expose the harness's single `agent_call` wrapper while retaining
     /// the concrete target in the compiled allow-list. This is the public
     /// model surface for harness-owned functions such as `harness::spawn`.
-    pub(super) fn agent_trigger(mut self) -> Self {
+    pub(super) fn agent_call(mut self) -> Self {
         self.expose = CompiledFunctionExposureV1::AgentTrigger;
         self
     }

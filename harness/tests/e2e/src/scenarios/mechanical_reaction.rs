@@ -94,7 +94,7 @@ fn evaluate<'a>(
         let source = source_value(run_id);
         let mirror = common::state_value(
             context
-                .trigger_value(
+                .call_value(
                     "state::get",
                     json!({ "scope": names.scope, "key": MIRROR_KEY }),
                 )
@@ -283,7 +283,7 @@ fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
     Box::pin(async move {
         let names = Names::new(run_id);
         let listed = context
-            .trigger_value(
+            .call_value(
                 "harness::triggers::list",
                 json!({ "session_id": names.root_session }),
             )
@@ -296,7 +296,7 @@ fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
             .filter_map(|subscription| subscription.get("subscription_id").and_then(Value::as_str))
         {
             let _: Value = context
-                .trigger(
+                .call(
                     "harness::triggers::unregister",
                     json!({
                         "session_id": names.root_session,
@@ -307,7 +307,7 @@ fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
         }
         for key in [SOURCE_KEY, MIRROR_KEY] {
             let _: Value = context
-                .trigger("state::delete", json!({ "scope": names.scope, "key": key }))
+                .call("state::delete", json!({ "scope": names.scope, "key": key }))
                 .await?;
         }
         Ok(())

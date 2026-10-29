@@ -348,7 +348,7 @@ fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
                     continue;
                 }
                 let _: Value = context
-                    .trigger(
+                    .call(
                         "database::execute",
                         json!({
                             "db": DATABASE,
@@ -645,7 +645,7 @@ fn normalize_call(entry: usize, block: &Value) -> Option<CallAt> {
     }
     let function_id = block.get("function_id")?.as_str()?;
     let arguments = block.get("arguments").cloned().unwrap_or_else(|| json!({}));
-    if function_id == "agent_trigger" {
+    if function_id == "agent_call" {
         return Some(CallAt {
             entry,
             function_id: arguments.get("function")?.as_str()?.to_string(),
@@ -804,7 +804,7 @@ async fn count_rows(context: &E2eContext, table: &str) -> anyhow::Result<i64> {
 
 async fn query_rows(context: &E2eContext, sql: &str) -> anyhow::Result<Vec<Value>> {
     context
-        .trigger_value("database::query", json!({ "db": DATABASE, "sql": sql }))
+        .call_value("database::query", json!({ "db": DATABASE, "sql": sql }))
         .await?
         .get("rows")
         .and_then(Value::as_array)
@@ -814,7 +814,7 @@ async fn query_rows(context: &E2eContext, sql: &str) -> anyhow::Result<Vec<Value
 
 async fn available_databases(context: &E2eContext) -> anyhow::Result<BTreeSet<String>> {
     Ok(context
-        .trigger_value("database::listDatabases", json!({}))
+        .call_value("database::listDatabases", json!({}))
         .await?
         .get("databases")
         .and_then(Value::as_array)

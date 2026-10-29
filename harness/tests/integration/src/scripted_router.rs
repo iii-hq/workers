@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use iii_sdk::channel::{ChannelWriter, StreamChannelRef};
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 
@@ -705,7 +705,7 @@ async fn perform_serve_effect(client: &IIIClient, effect: &ServeEffectV1) -> Res
     let outer = std::time::Duration::from_millis(DEFAULT_CALL_TIMEOUT_MS + 5_000);
     match tokio::time::timeout(
         outer,
-        client.trigger(TriggerRequest {
+        client.call(CallRequest {
             function_id: "harness::send".to_string(),
             payload: json!({
                 "session_id": steer.session_id,

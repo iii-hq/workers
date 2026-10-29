@@ -123,7 +123,7 @@ fn evaluate<'a>(
 ) -> EvaluationFuture<'a> {
     Box::pin(async move {
         let rows = context
-            .trigger_value(
+            .call_value(
                 "database::query",
                 json!({ "db": "primary", "sql": format!("SELECT COUNT(*) AS n FROM {}", table(run_id)) }),
             )
@@ -133,7 +133,7 @@ fn evaluate<'a>(
             .unwrap_or(0);
         let marker = common::state_value(
             context
-                .trigger(
+                .call(
                     "state::get",
                     json!({ "scope": scope(run_id), "key": "marker" }),
                 )
@@ -199,13 +199,13 @@ fn evaluate<'a>(
 fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
     Box::pin(async move {
         let _: Value = context
-            .trigger(
+            .call(
                 "database::execute",
                 json!({ "db": "primary", "sql": format!("DROP TABLE IF EXISTS {}", table(run_id)) }),
             )
             .await?;
         let _: Value = context
-            .trigger(
+            .call(
                 "state::delete",
                 json!({ "scope": scope(run_id), "key": "marker" }),
             )

@@ -1,7 +1,7 @@
 //! `harness::spawn` — spawn a sub-agent in a child session (harness.md §
 //! Sub-agents). Fire-and-forget: the caller gets the child's ids immediately
 //! and never its result. Designed to be called by the model through
-//! `agent_trigger`; the dispatch layer records the child linkage on a `Done`
+//! `agent_call`; the dispatch layer records the child linkage on a `Done`
 //! checkpoint (creation count, status, stop cascade).
 
 use schemars::JsonSchema;

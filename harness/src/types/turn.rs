@@ -46,7 +46,9 @@ impl TurnStatus {
 #[serde(rename_all = "snake_case")]
 pub enum ExposeMode {
     #[default]
-    AgentTrigger,
+    // Stored configuration written before 0.26 names it `agent_trigger`.
+    #[serde(alias = "agent_trigger")]
+    AgentCall,
     Native,
 }
 
@@ -110,7 +112,7 @@ pub struct AgentIdentity {
 
 /// The language every user-facing text of a session is written in: detected
 /// from the user's first message with enough prose (`crate::language`), then
-/// pinned. Named to the model in the runtime context and the `agent_trigger`
+/// pinned. Named to the model in the runtime context and the `agent_call`
 /// schema so it never guesses one from names, paths or the locale.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ResponseLanguage {
@@ -274,8 +276,9 @@ impl TurnOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CallState {
-    #[serde(alias = "dispatched")]
-    Triggered,
+    // Turn records written before 0.26 name it `triggered`.
+    #[serde(alias = "triggered")]
+    Dispatched,
     Pending,
     Done,
 }
@@ -464,7 +467,7 @@ impl TurnRecord {
     pub fn pending_call_ids(&self) -> Vec<String> {
         self.calls
             .iter()
-            .filter(|(_, c)| matches!(c.state, CallState::Pending | CallState::Triggered))
+            .filter(|(_, c)| matches!(c.state, CallState::Pending | CallState::Dispatched))
             .map(|(id, _)| id.clone())
             .collect()
     }
@@ -502,7 +505,7 @@ impl TurnRecord {
     /// Drop what only a running turn reads, before the terminal write: done
     /// calls without a child, the per-turn failure counts, the steering
     /// watermark and the stream id. Open calls stay (deletion refuses a
-    /// `Triggered` one; verbose status lists pending ids) and so do calls with
+    /// `Dispatched` one; verbose status lists pending ids) and so do calls with
     /// a child (status children, stop cascade). `seed_new` resets all of these
     /// for the next turn.
     pub(crate) fn slim_finished(&mut self) {
@@ -730,7 +733,7 @@ pub(crate) mod tests {
         r.calls
             .insert("b".into(), cp(CallState::Pending, None, false));
         r.calls
-            .insert("c".into(), cp(CallState::Triggered, None, false));
+            .insert("c".into(), cp(CallState::Dispatched, None, false));
         let mut ids = r.pending_call_ids();
         ids.sort();
         assert_eq!(ids, vec!["b", "c"]);
@@ -783,7 +786,7 @@ pub(crate) mod tests {
         r.calls
             .insert("pending".into(), cp(CallState::Pending, None, false));
         r.calls
-            .insert("triggered".into(), cp(CallState::Triggered, None, false));
+            .insert("triggered".into(), cp(CallState::Dispatched, None, false));
         r.failed_calls.insert(
             "digest".into(),
             FailedCall {

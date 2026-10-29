@@ -21,7 +21,7 @@
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::RegisterFunction;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -472,7 +472,7 @@ async fn call_target(
         return (payload, Err(e));
     }
     // A starting scaffold runs compose::add inside the ide, unseen by approval.
-    if crate::trigger::scaffold_starts(target, &payload) {
+    if crate::call::scaffold_starts(target, &payload) {
         if let Err(e) = crate::functions::subscribe::approval_allows_unattended(
             deps,
             crate::functions::subscribe::COMPOSE_ADD_ID,
@@ -499,7 +499,7 @@ async fn call_target(
     let timeout_ms = deps.cfg().await.dispatch_timeout_ms;
     let outcome = deps
         .iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: target.to_string(),
             payload: payload.clone(),
             action: None,

@@ -21,7 +21,7 @@ const CHILD_B: &str = "child-b-work";
 const QUEUED_MESSAGE: &str = "queued while the root is generating";
 const GATE: &str = "stop-cancel-cascade-in-flight";
 const SPAWN: &str = "harness::spawn";
-const AGENT_TRIGGER: &str = "agent_trigger";
+const AGENT_TRIGGER: &str = "agent_call";
 
 pub(super) fn scenario() -> ScenarioFixture {
     let model = Model::scripted("fixture-model");
@@ -37,7 +37,7 @@ pub(super) fn scenario() -> ScenarioFixture {
         Send::message(ROOT_MESSAGE)
             .idempotency_key("{{run_id}}:integration-011")
             .allow_id(SPAWN)
-            .agent_trigger(),
+            .agent_call(),
     )
     .stop_cancel_cascade(GATE, QUEUED_MESSAGE)
     .generation(
@@ -48,7 +48,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .system_prompt_sha256("{{system_prompt_sha256}}")
                     .messages_exact([Message::user(ROOT_MESSAGE)])
                     // `harness::spawn` is dispatched through the public
-                    // `agent_trigger` wrapper; the scripted router only
+                    // `agent_call` wrapper; the scripted router only
                     // requires that the tool list is present here.
                     .tools_subset([]),
             )

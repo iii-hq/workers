@@ -539,7 +539,7 @@ verify_first_capability() {
 
   call_count=$(jq -er --arg function "$capability_function" '
     def normalized_function_id:
-      if .function_id == "agent_trigger"
+      if .function_id == "agent_call"
       then .arguments.function
       else .function_id
       end;

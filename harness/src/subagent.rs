@@ -19,7 +19,7 @@ use crate::functions::spawn::{SpawnRequest, SubagentDisplay};
 use crate::ids;
 use crate::policy;
 use crate::prompt;
-use crate::trigger::ResultData;
+use crate::call::ResultData;
 use crate::types::content::ContentBlock;
 use crate::types::message::AgentMessage;
 use crate::types::model::ThinkingLevel;
@@ -257,7 +257,7 @@ fn child_contract_ids(
     task: &str,
     profile_preloaded: Option<&BTreeMap<String, Option<String>>>,
 ) -> Vec<String> {
-    let Some(p) = policy.filter(|p| p.expose == ExposeMode::AgentTrigger && !p.allow.is_empty())
+    let Some(p) = policy.filter(|p| p.expose == ExposeMode::AgentCall && !p.allow.is_empty())
     else {
         return Vec::new();
     };
@@ -1745,7 +1745,7 @@ mod tests {
     }
 
     #[test]
-    fn only_a_short_explicit_agent_trigger_allow_list_is_seeded_whole() {
+    fn only_a_short_explicit_agent_call_allow_list_is_seeded_whole() {
         let policy = |allow: Vec<String>, expose: ExposeMode| FunctionPolicy {
             allow,
             deny: vec![],
@@ -1755,10 +1755,10 @@ mod tests {
             .map(|i| format!("w::f{i}"))
             .collect();
         for p in [
-            policy(vec!["state::*".into()], ExposeMode::AgentTrigger),
-            policy(vec!["*".into()], ExposeMode::AgentTrigger),
-            policy(many, ExposeMode::AgentTrigger),
-            policy(vec![], ExposeMode::AgentTrigger),
+            policy(vec!["state::*".into()], ExposeMode::AgentCall),
+            policy(vec!["*".into()], ExposeMode::AgentCall),
+            policy(many, ExposeMode::AgentCall),
+            policy(vec![], ExposeMode::AgentCall),
             policy(vec!["state::set".into()], ExposeMode::Native),
         ] {
             assert!(
@@ -1802,7 +1802,7 @@ mod tests {
         let policy = FunctionPolicy {
             allow: [allow.clone(), vec!["x::*".into()]].concat(),
             deny: vec![],
-            expose: ExposeMode::AgentTrigger,
+            expose: ExposeMode::AgentCall,
         };
         // The glob disqualifies the allow-list; task ids fill up to the cap.
         let task = allow.join(" ");

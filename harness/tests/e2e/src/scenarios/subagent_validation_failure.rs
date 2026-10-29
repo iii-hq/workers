@@ -123,7 +123,7 @@ fn evaluate<'a>(
     Box::pin(async move {
         let child = child_session(run_id);
         let child_status = context
-            .trigger_value(
+            .call_value(
                 "harness::status",
                 json!({ "session_id": child, "verbose": false }),
             )
@@ -138,7 +138,7 @@ fn evaluate<'a>(
             .unwrap_or_default();
         let verdict = common::state_value(
             context
-                .trigger(
+                .call(
                     "state::get",
                     json!({ "scope": scope(run_id), "key": "verdict" }),
                 )
@@ -203,13 +203,13 @@ fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
     Box::pin(async move {
         let table = table(run_id);
         let _: Value = context
-            .trigger(
+            .call(
                 "database::execute",
                 json!({ "db": "primary", "sql": format!("DROP TABLE IF EXISTS {table}") }),
             )
             .await?;
         let _: Value = context
-            .trigger(
+            .call(
                 "state::delete",
                 json!({ "scope": scope(run_id), "key": "verdict" }),
             )

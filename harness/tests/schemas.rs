@@ -53,7 +53,7 @@ fn catalog_lists_all_functions_in_registration_order() {
             "harness::spawn",
             "harness::ask",
             "harness::turn",
-            "harness::function::trigger",
+            "harness::function::call",
             "harness::function::resolve",
             "harness::stop",
             "harness::delete-session-tree",

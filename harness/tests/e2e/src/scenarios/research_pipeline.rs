@@ -324,7 +324,7 @@ fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
     Box::pin(async move {
         let names = Names::new(run_id);
         let listed = context
-            .trigger_value(
+            .call_value(
                 "harness::triggers::list",
                 json!({ "session_id": names.root_session }),
             )
@@ -337,7 +337,7 @@ fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
             .filter_map(|subscription| subscription.get("subscription_id").and_then(Value::as_str))
         {
             let _: Value = context
-                .trigger(
+                .call(
                     "harness::triggers::unregister",
                     json!({
                         "session_id": names.root_session,
@@ -348,7 +348,7 @@ fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
         }
         for key in [ARTICLE_KEY, SUMMARY_KEY, FACTS_KEY] {
             let _: Value = context
-                .trigger("state::delete", json!({ "scope": names.scope, "key": key }))
+                .call("state::delete", json!({ "scope": names.scope, "key": key }))
                 .await?;
         }
         // The barrier record is NOT ours to delete: `state_barrier` is the state
@@ -362,7 +362,7 @@ fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
 async fn get_state(context: &E2eContext, scope: &str, key: &str) -> anyhow::Result<Value> {
     Ok(common::state_value(
         context
-            .trigger_value("state::get", json!({ "scope": scope, "key": key }))
+            .call_value("state::get", json!({ "scope": scope, "key": key }))
             .await?,
     ))
 }
@@ -609,7 +609,7 @@ fn normalized_block_call(block: &Value) -> Option<(&str, &Value)> {
     }
     let function = block.get("function_id")?.as_str()?;
     let arguments = block.get("arguments")?;
-    if function == "agent_trigger" {
+    if function == "agent_call" {
         return Some((
             arguments.get("function")?.as_str()?,
             arguments.get("payload")?,

@@ -24,8 +24,8 @@
 //! thing was always the binding record — startup now re-arms engine triggers
 //! from the store ([`crate::bindings::gc::run`]).
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::TriggerAction;
+use iii_sdk::protocol::CallRequest;
+use iii_sdk::CallAction;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -38,7 +38,7 @@ use crate::deps::Deps;
 use crate::error::HarnessError;
 use crate::policy::CompiledPolicy;
 use crate::subscriptions;
-use crate::trigger::{self, ResultData};
+use crate::call::{self, ResultData};
 use crate::types::content::ContentBlock;
 use crate::types::model::AgentFunction;
 
@@ -242,7 +242,7 @@ impl<'a> CallerModel<'a> {
 /// locked caller's exact self-targeted `harness::send` are handled inline with
 /// trusted caller context; the model cannot forge session-lock ownership.
 /// Everything else invokes the target normally. Every call site (the turn loop,
-/// `harness::function::trigger`, and the hook-held release path) routes through
+/// `harness::function::call`, and the hook-held release path) routes through
 /// here so trusted context cannot be bypassed — and so every result, error
 /// results included, leaves through one capture-time size cap (MOT-4498).
 #[allow(clippy::too_many_arguments)]
@@ -257,7 +257,7 @@ pub async fn invoke(
     caller: Option<CallerModel<'_>>,
 ) -> ResultData {
     if agent_call_forbidden(function_id) {
-        return trigger::denied_result(function_id);
+        return call::denied_result(function_id);
     }
     if function_id == REGISTER_TRIGGER_ID {
         return intercept_register(deps, arguments, session_id, caller, policy).await;
@@ -266,9 +266,9 @@ pub async fn invoke(
     let mut start_note = None;
     let arguments =
         match scaffold_start_approval(deps, policy, function_id, arguments, session_id).await {
-            trigger::StartGate::Pass => arguments,
-            trigger::StartGate::Deny(denied) => return denied,
-            trigger::StartGate::FilesOnly(args, note) => {
+            call::StartGate::Pass => arguments,
+            call::StartGate::Deny(denied) => return denied,
+            call::StartGate::FilesOnly(args, note) => {
                 files_only = args;
                 start_note = Some(note);
                 &files_only
@@ -279,7 +279,7 @@ pub async fn invoke(
     {
         Ok(id) => id,
         Err(error) => {
-            return trigger::invocation_error_result(Some(error.code().into()), error.to_string())
+            return call::invocation_error_result(Some(error.code().into()), error.to_string())
         }
     };
     let send = send_invocation_context(
@@ -305,16 +305,16 @@ pub async fn invoke(
                 // In-turn controls always target their caller. External console
                 // calls bypass this chokepoint and continue supplying session_id.
                 let args = with_caller_session_id(arguments, session_id);
-                trigger::invoke_target_classified(engine, policy, function_id, &args).await
+                call::invoke_target_classified(engine, policy, function_id, &args).await
             }
             // Tag the job with its owner so `harness::stop` can reap it
             // (`shell::kill-session-jobs`); the stamp overwrites a forged one.
             "shell::exec_bg" => {
                 let args = with_caller_session_id(arguments, session_id);
-                trigger::invoke_target_classified(engine, policy, function_id, &args).await
+                call::invoke_target_classified(engine, policy, function_id, &args).await
             }
-            internal if agent_call_forbidden(internal) => (trigger::denied_result(internal), false),
-            _ => trigger::invoke_target_classified(engine, policy, function_id, arguments).await,
+            internal if agent_call_forbidden(internal) => (call::denied_result(internal), false),
+            _ => call::invoke_target_classified(engine, policy, function_id, arguments).await,
         }
     };
     // A timeout or broken transport does not cancel the remote invocation.
@@ -324,13 +324,13 @@ pub async fn invoke(
     // never from the target-controlled result text.
     if !outcome_unknown {
         if let Err(error) = super::delete_session_tree::end_dispatch(deps, &witness).await {
-            return trigger::invocation_error_result(Some(error.code().into()), error.to_string());
+            return call::invocation_error_result(Some(error.code().into()), error.to_string());
         }
     }
     if let (Some(note), false) = (start_note, result.is_error) {
         result.content.push(ContentBlock::text(note));
     }
-    trigger::cap_result(result, deps.cfg().await.max_result_bytes)
+    call::cap_result(result, deps.cfg().await.max_result_bytes)
 }
 
 /// Whether [`invoke`] would settle this call inside the harness — a
@@ -364,10 +364,10 @@ pub fn is_locally_intercepted(
 fn agent_call_forbidden(function_id: &str) -> bool {
     function_id.starts_with("harness::delete-session-tree")
         || function_id == crate::state::CLAIM_NAMESPACE_ID
-        // `harness::function::trigger` takes the session lock a running step
+        // `harness::function::call` takes the session lock a running step
         // already holds: an agent calling it for its own session deadlocks,
         // and recursive pipeline invocation is never an agent need.
-        || function_id == crate::functions::FUNCTION_TRIGGER_ID
+        || function_id == crate::functions::FUNCTION_CALL_ID
         || [
             "harness::state::",
             "provider::openai-codex::login::",
@@ -399,13 +399,13 @@ async fn intercept_send(
 ) -> ResultData {
     match crate::functions::send::handle_from_invoke(deps, request, caller_session_id, true).await {
         Ok(response) => match serde_json::to_value(response) {
-            Ok(value) => trigger::normalized_result(value),
-            Err(error) => trigger::invocation_error_result(
+            Ok(value) => call::normalized_result(value),
+            Err(error) => call::invocation_error_result(
                 None,
                 format!("{}: {error}", crate::functions::SEND_ID),
             ),
         },
-        Err(error) => trigger::invocation_error_result(
+        Err(error) => call::invocation_error_result(
             Some(error.code().to_string()),
             format!("{}: {error}", crate::functions::SEND_ID),
         ),
@@ -1495,7 +1495,7 @@ async fn approval_verdict(
 ) -> Result<Verdict, String> {
     let resp = deps
         .iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: APPROVAL_EVALUATE_ID.to_string(),
             payload: approval_probe_payload(session_id, target, arguments),
             action: None,
@@ -1539,9 +1539,9 @@ pub(crate) async fn scaffold_start_approval(
     function_id: &str,
     arguments: &Value,
     session_id: &str,
-) -> trigger::StartGate {
-    if !trigger::scaffold_starts(function_id, arguments) || !policy.allows(COMPOSE_ADD_ID) {
-        return trigger::StartGate::Pass;
+) -> call::StartGate {
+    if !call::scaffold_starts(function_id, arguments) || !policy.allows(COMPOSE_ADD_ID) {
+        return call::StartGate::Pass;
     }
     let verdict = approval_verdict(deps, COMPOSE_ADD_ID, session_id, &json!({})).await;
     start_after_approval(arguments, verdict)
@@ -1549,9 +1549,9 @@ pub(crate) async fn scaffold_start_approval(
 
 /// The turn's decision on a starting scaffold, given what the approval gate
 /// said about its compose::add.
-fn start_after_approval(arguments: &Value, verdict: Result<Verdict, String>) -> trigger::StartGate {
+fn start_after_approval(arguments: &Value, verdict: Result<Verdict, String>) -> call::StartGate {
     let why = match verdict {
-        Ok(Verdict::Allow) => return trigger::StartGate::Pass,
+        Ok(Verdict::Allow) => return call::StartGate::Pass,
         Ok(Verdict::Withheld { verdict, reason }) => {
             format!("its compose::add is `{verdict}` for this session ({reason})")
         }
@@ -1559,7 +1559,7 @@ fn start_after_approval(arguments: &Value, verdict: Result<Verdict, String>) -> 
             format!("the approval gate could not be asked about its compose::add ({problem})")
         }
     };
-    trigger::start_refused(
+    call::start_refused(
         arguments,
         &why,
         "Then send its compose_add to compose::add yourself: that call goes through approval, \
@@ -1690,7 +1690,7 @@ async fn provider_presence_note(deps: &Deps, trigger_type: &str) -> Option<Strin
     for ns in &namespaces {
         let probe = deps
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "engine::triggers::info".to_string(),
                 payload: json!({ "id": trigger_type, "namespace": ns }),
                 action: None,
@@ -1747,10 +1747,10 @@ pub async fn unregister_engine_trigger(deps: &Deps, trigger_id: &str) -> bool {
     }
     match deps
         .iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: UNREGISTER_TRIGGER_ID.to_string(),
             payload: json!({ "id": trigger_id }),
-            action: Some(TriggerAction::Void),
+            action: Some(CallAction::Void),
             timeout_ms: None,
         })
         .await
@@ -2682,7 +2682,7 @@ pub(crate) mod tests {
         "provider::openai-codex::auth::future-operation",
         // Re-entering the pipeline for the caller's own session would wait on
         // the session lock the running step holds across tool execution.
-        crate::functions::FUNCTION_TRIGGER_ID,
+        crate::functions::FUNCTION_CALL_ID,
         "provider-openai-codex::state::future-operation",
     ];
 
@@ -2826,12 +2826,12 @@ pub(crate) mod tests {
     }
 
     /// A running step holds its session lock across tool execution and
-    /// `harness::function::trigger` takes that lock: an agent reaching it for
+    /// `harness::function::call` takes that lock: an agent reaching it for
     /// its own session would deadlock, even with an allow-all policy.
     #[tokio::test]
     async fn agents_cannot_reenter_the_function_trigger_pipeline() {
-        let id = crate::functions::FUNCTION_TRIGGER_ID;
-        assert_eq!(id, "harness::function::trigger");
+        let id = crate::functions::FUNCTION_CALL_ID;
+        assert_eq!(id, "harness::function::call");
         assert!(agent_call_forbidden(id));
         let deps = disconnected_deps();
         let engine = deps.engine().await;
@@ -2924,9 +2924,9 @@ pub(crate) mod tests {
 
         assert!(matches!(
             start_after_approval(&default, Ok(Verdict::Allow)),
-            trigger::StartGate::Pass
+            call::StartGate::Pass
         ));
-        let trigger::StartGate::FilesOnly(sent, note) = start_after_approval(&default, held())
+        let call::StartGate::FilesOnly(sent, note) = start_after_approval(&default, held())
         else {
             panic!("a held compose::add must leave a defaulted start files-only");
         };
@@ -2935,30 +2935,30 @@ pub(crate) mod tests {
             note.contains("`hold`") && note.contains("Not started"),
             "{note}"
         );
-        let trigger::StartGate::Deny(denied) = start_after_approval(&explicit, held()) else {
+        let call::StartGate::Deny(denied) = start_after_approval(&explicit, held()) else {
             panic!("an explicit start with a held compose::add must be refused");
         };
         assert_eq!(denied.details["error"]["code"], "scaffold_start_denied");
         // An undetermined verdict fails closed.
         assert!(matches!(
             start_after_approval(&default, Err("timeout".into())),
-            trigger::StartGate::FilesOnly(..)
+            call::StartGate::FilesOnly(..)
         ));
     }
 
     #[test]
     fn only_a_scaffold_without_start_false_starts() {
         let id = "coder::scaffold-worker";
-        assert!(trigger::scaffold_starts(id, &json!({ "name": "a" })));
-        assert!(trigger::scaffold_starts(
+        assert!(call::scaffold_starts(id, &json!({ "name": "a" })));
+        assert!(call::scaffold_starts(
             id,
             &json!({ "name": "a", "start": true })
         ));
-        assert!(!trigger::scaffold_starts(
+        assert!(!call::scaffold_starts(
             id,
             &json!({ "name": "a", "start": false })
         ));
-        assert!(!trigger::scaffold_starts("coder::create-file", &json!({})));
+        assert!(!call::scaffold_starts("coder::create-file", &json!({})));
     }
 
     /// A call re-entering the harness's control plane is refused even when the

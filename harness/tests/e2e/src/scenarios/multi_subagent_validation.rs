@@ -123,7 +123,7 @@ fn evaluate<'a>(
         let mut child_nudges = [0_usize; 2];
         for (index, writer) in WRITERS.iter().enumerate() {
             rows[index] = context
-                .trigger_value(
+                .call_value(
                     "database::query",
                     json!({ "db": "primary", "sql": format!(
                         "SELECT COUNT(*) AS n FROM {table} WHERE writer = '{writer}'"
@@ -135,7 +135,7 @@ fn evaluate<'a>(
                 .unwrap_or(0);
             verdicts[index] = common::state_value(
                 context
-                    .trigger(
+                    .call(
                         "state::get",
                         json!({ "scope": scope(run_id), "key": format!("verdict-{writer}") }),
                     )
@@ -217,14 +217,14 @@ fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
     Box::pin(async move {
         let table = table(run_id);
         let _: Value = context
-            .trigger(
+            .call(
                 "database::execute",
                 json!({ "db": "primary", "sql": format!("DROP TABLE IF EXISTS {table}") }),
             )
             .await?;
         for writer in WRITERS {
             let _: Value = context
-                .trigger(
+                .call(
                     "state::delete",
                     json!({ "scope": scope(run_id), "key": format!("verdict-{writer}") }),
                 )

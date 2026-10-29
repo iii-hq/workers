@@ -8,7 +8,7 @@ pub mod context_policy;
 pub mod delete_session_tree;
 pub mod filesystem;
 pub mod function_resolve;
-pub mod function_trigger;
+pub mod function_call;
 pub mod metrics;
 pub mod on_session_deleted;
 pub mod projects;
@@ -69,9 +69,9 @@ pub const TURN_ID: &str = "harness::turn";
 pub const TURN_DESC: &str =
     "Internal durable loop step (enqueued onto the harness-turn queue); not called directly.";
 
-pub const FUNCTION_TRIGGER_ID: &str = "harness::function::trigger";
-pub const FUNCTION_TRIGGER_DESC: &str =
-    "Internal: invoke one iii function (unwrapped from agent_trigger), enforce the dispatch \
+pub const FUNCTION_CALL_ID: &str = "harness::function::call";
+pub const FUNCTION_CALL_DESC: &str =
+    "Internal: invoke one iii function (unwrapped from agent_call), enforce the dispatch \
      policy, and capture the normalised result — or report it pending.";
 
 pub const FUNCTION_RESOLVE_ID: &str = "harness::function::resolve";
@@ -339,9 +339,9 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     register_internal(
         iii,
         deps,
-        FUNCTION_TRIGGER_ID,
-        FUNCTION_TRIGGER_DESC,
-        |d, r| async move { function_trigger::handle(&d, r).await },
+        FUNCTION_CALL_ID,
+        FUNCTION_CALL_DESC,
+        |d, r| async move { function_call::handle(&d, r).await },
     );
     register_internal(
         iii,

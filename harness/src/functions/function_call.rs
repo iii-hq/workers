@@ -1,6 +1,6 @@
-//! `harness::function::trigger` — invoke a single iii function and return a
-//! normalised result (harness.md § `harness::function::trigger`). The loop
-//! unwraps `agent_trigger` before calling this; it can also be called directly
+//! `harness::function::call` — invoke a single iii function and return a
+//! normalised result (harness.md § `harness::function::call`). The loop
+//! unwraps `agent_call` before calling this; it can also be called directly
 //! with an already-unwrapped target.
 
 use std::time::Instant;
@@ -13,20 +13,20 @@ use crate::deps::Deps;
 use crate::error::HarnessError;
 use crate::hooks::runner::PreTriggerOutcome;
 use crate::policy::CompiledPolicy;
-use crate::trigger;
+use crate::call;
 use crate::types::content::ContentBlock;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct TriggerCall {
     /// function_call id, echoed into the result.
     pub id: String,
-    /// The iii function to invoke (already unwrapped from `agent_trigger`).
+    /// The iii function to invoke (already unwrapped from `agent_call`).
     pub function_id: String,
     pub arguments: Value,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
-pub struct FunctionTriggerRequest {
+pub struct FunctionCallRequest {
     pub session_id: String,
     pub call: TriggerCall,
 }
@@ -42,7 +42,7 @@ impl Default for TriggerCall {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct TriggerResultResponse {
+pub struct CallResultResponse {
     pub function_call_id: String,
     pub function_id: String,
     pub content: Vec<ContentBlock>,
@@ -62,15 +62,15 @@ pub struct TriggerPendingResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
-pub enum FunctionTriggerResponse {
-    Result(TriggerResultResponse),
+pub enum FunctionCallResponse {
+    Result(CallResultResponse),
     Pending(TriggerPendingResponse),
 }
 
 pub async fn handle(
     deps: &Deps,
-    req: FunctionTriggerRequest,
-) -> Result<FunctionTriggerResponse, HarnessError> {
+    req: FunctionCallRequest,
+) -> Result<FunctionCallResponse, HarnessError> {
     let _guard = deps.locks.guard(&req.session_id).await;
     super::delete_session_tree::ensure_live(deps, &req.session_id).await?;
     let cfg = deps.cfg().await;
@@ -83,9 +83,9 @@ pub async fn handle(
 
     // Trigger is a pipeline: fail-closed globs, then the pre_trigger chain,
     // then the target, then the post_trigger chain (harness.md §
-    // `harness::function::trigger`).
+    // `harness::function::call`).
     if !policy.allows(&req.call.function_id) {
-        let data = trigger::denied_result(&req.call.function_id);
+        let data = call::denied_result(&req.call.function_id);
         return Ok(result_response(
             &req.call.id,
             &req.call.function_id,
@@ -139,7 +139,7 @@ pub async fn handle(
                 );
             }
             PreTriggerOutcome::Deny(reason) => {
-                let data = trigger::ResultData {
+                let data = call::ResultData {
                     content: vec![ContentBlock::text(reason.clone())],
                     is_error: true,
                     details: serde_json::json!({ "error": "hook_denied", "message": reason }),
@@ -152,7 +152,7 @@ pub async fn handle(
                 ));
             }
             PreTriggerOutcome::Hold { .. } => {
-                return Ok(FunctionTriggerResponse::Pending(TriggerPendingResponse {
+                return Ok(FunctionCallResponse::Pending(TriggerPendingResponse {
                     function_call_id: req.call.id,
                     function_id: req.call.function_id,
                     pending: true,
@@ -202,7 +202,7 @@ pub async fn handle(
         {
             crate::hooks::runner::PostTriggerOutcome::Result { result, .. } => result,
             crate::hooks::runner::PostTriggerOutcome::Hold { .. } => {
-                return Ok(FunctionTriggerResponse::Pending(TriggerPendingResponse {
+                return Ok(FunctionCallResponse::Pending(TriggerPendingResponse {
                     function_call_id: req.call.id,
                     function_id: req.call.function_id,
                     pending: true,
@@ -229,10 +229,10 @@ fn elapsed(started: Instant) -> u64 {
 fn result_response(
     call_id: &str,
     function_id: &str,
-    data: trigger::ResultData,
+    data: call::ResultData,
     duration_ms: u64,
-) -> FunctionTriggerResponse {
-    FunctionTriggerResponse::Result(TriggerResultResponse {
+) -> FunctionCallResponse {
+    FunctionCallResponse::Result(CallResultResponse {
         function_call_id: call_id.to_string(),
         function_id: function_id.to_string(),
         content: data.content,

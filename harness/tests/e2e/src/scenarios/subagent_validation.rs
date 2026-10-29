@@ -113,7 +113,7 @@ fn evaluate<'a>(
         let table = table(run_id);
         let child = child_session(run_id);
         let rows = context
-            .trigger_value(
+            .call_value(
                 "database::query",
                 json!({ "db": "primary", "sql": format!("SELECT COUNT(*) AS n FROM {table}") }),
             )
@@ -123,7 +123,7 @@ fn evaluate<'a>(
             .unwrap_or(0);
         let verdict = common::state_value(
             context
-                .trigger(
+                .call(
                     "state::get",
                     json!({ "scope": scope(run_id), "key": "verdict" }),
                 )
@@ -218,13 +218,13 @@ fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
     Box::pin(async move {
         let table = table(run_id);
         let _: Value = context
-            .trigger(
+            .call(
                 "database::execute",
                 json!({ "db": "primary", "sql": format!("DROP TABLE IF EXISTS {table}") }),
             )
             .await?;
         let _: Value = context
-            .trigger(
+            .call(
                 "state::delete",
                 json!({ "scope": scope(run_id), "key": "verdict" }),
             )

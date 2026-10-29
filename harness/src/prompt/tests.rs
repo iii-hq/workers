@@ -79,10 +79,10 @@ fn resolve_disabled_omits_system_prompt() {
 }
 
 #[test]
-fn identity_line_and_agent_trigger_preserved() {
+fn identity_line_and_agent_call_preserved() {
     let out = default_prompt();
     assert!(out.contains("You are an iii agent worker"));
-    assert!(out.contains("agent_trigger"));
+    assert!(out.contains("agent_call"));
     assert!(out.contains("engine::functions::list"));
 }
 
@@ -495,7 +495,7 @@ fn default_variant_teaches_only_the_two_binding_shapes() {
 fn default_variant_invariants() {
     let out = variants::DEFAULT;
     assert!(out.starts_with("You are an iii agent worker."));
-    assert!(out.contains("agent_trigger"));
+    assert!(out.contains("agent_call"));
     assert!(out.contains("directory::registry::workers::list"));
     assert!(out.contains("coder::move"));
     assert!(out.contains("the FIRST line of worker code"));

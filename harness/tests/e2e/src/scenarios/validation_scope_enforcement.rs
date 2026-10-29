@@ -102,7 +102,7 @@ fn evaluate<'a>(
     Box::pin(async move {
         let marker = common::state_value(
             context
-                .trigger(
+                .call(
                     "state::get",
                     json!({ "scope": scope(run_id), "key": "marker" }),
                 )
@@ -170,7 +170,7 @@ fn evaluate<'a>(
 fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
     Box::pin(async move {
         let _: Value = context
-            .trigger(
+            .call(
                 "state::delete",
                 json!({ "scope": scope(run_id), "key": "marker" }),
             )

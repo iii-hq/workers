@@ -241,7 +241,7 @@ pub(super) async fn existing_tables(
 
 pub(super) async fn drop_table(context: &E2eContext, table: &str) -> anyhow::Result<()> {
     let _: Value = context
-        .trigger(
+        .call(
             "database::execute",
             json!({
                 "db": DATABASE,
@@ -254,7 +254,7 @@ pub(super) async fn drop_table(context: &E2eContext, table: &str) -> anyhow::Res
 
 async fn query_rows(context: &E2eContext, sql: &str) -> anyhow::Result<Vec<Value>> {
     let response = context
-        .trigger_value("database::query", json!({ "db": DATABASE, "sql": sql }))
+        .call_value("database::query", json!({ "db": DATABASE, "sql": sql }))
         .await?;
     response
         .get("rows")
@@ -467,7 +467,7 @@ async fn active_run_trigger_count(
     names: &ScenarioNames,
 ) -> anyhow::Result<usize> {
     let response = context
-        .trigger_value(
+        .call_value(
             "engine::registered-triggers::list",
             json!({ "include_internal": true }),
         )
@@ -515,7 +515,7 @@ fn spawn_session(block: &Value) -> Option<&str> {
         Some("harness::spawn") => block
             .pointer("/arguments/session_id")
             .and_then(Value::as_str),
-        Some("agent_trigger")
+        Some("agent_call")
             if block.pointer("/arguments/function").and_then(Value::as_str)
                 == Some("harness::spawn") =>
         {

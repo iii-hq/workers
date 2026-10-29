@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use globset::{Glob, GlobSetBuilder};
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use serde_json::{Map, Value};
 
 use super::{HookBinding, HookPoint, HookRegistry};
@@ -62,7 +62,7 @@ pub enum PreTriggerOutcome {
 
 pub enum PostTriggerOutcome {
     Result {
-        result: crate::trigger::ResultData,
+        result: crate::call::ResultData,
         annotations: Map<String, Value>,
     },
     Hold {
@@ -234,7 +234,7 @@ impl HookRegistry {
         call_id: &str,
         function_id: &str,
         arguments: &Value,
-        mut result: crate::trigger::ResultData,
+        mut result: crate::call::ResultData,
     ) -> PostTriggerOutcome {
         let mut annotations = Map::new();
         for binding in self.post_trigger.ordered() {
@@ -375,7 +375,7 @@ impl HookRegistry {
         payload: Value,
     ) -> Result<Value, String> {
         let baggage = [("iii.tag.kind", "harness.hook"), ("iii.hook.point", point)];
-        let request = TriggerRequest {
+        let request = CallRequest {
             function_id: binding.function_id.clone(),
             payload,
             action: None,
@@ -383,7 +383,7 @@ impl HookRegistry {
         };
         let namespace = binding.namespace.as_deref().unwrap_or("default");
         let request = request.namespace(namespace);
-        let fut = iii_helpers::observability::run_with_baggage(&baggage, self.iii.trigger(request));
+        let fut = iii_helpers::observability::run_with_baggage(&baggage, self.iii.call(request));
         let bounded = tokio::time::timeout(
             Duration::from_millis(binding.timeout_ms.saturating_add(1_000)),
             fut,

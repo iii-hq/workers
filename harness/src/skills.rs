@@ -3,7 +3,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::protocol::{RegisterTriggerInput, CallRequest};
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -366,7 +366,7 @@ struct DirectoryClient {
 impl DirectoryClient {
     async fn skills_list(&self) -> Result<Value, String> {
         self.iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: SKILLS_LIST_ID.to_string(),
                 payload: json!({ "include_description": true }),
                 action: None,

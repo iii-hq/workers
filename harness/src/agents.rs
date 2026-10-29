@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, HashMap};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 
 use crate::config::WorkerConfig;
 use crate::deps::Deps;
@@ -131,7 +131,7 @@ pub async fn resolve(
 ) -> Result<ResolvedAgent, HarnessError> {
     let value = deps
         .iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: AGENTS_GET_ID.into(),
             payload: json!({ "id": id }),
             action: None,
@@ -187,7 +187,7 @@ async fn attach_preloaded_skills(
         }
         let response = deps
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: SKILLS_GET_ID.into(),
                 payload: json!({ "id": id }),
                 action: None,
@@ -312,7 +312,7 @@ impl PreloadedContract {
     fn new(function_id: &str, description: Option<&str>, request_schema: Option<Value>) -> Self {
         let mut request_schema = request_schema.filter(|schema| !schema.is_null());
         if let Some(schema) = request_schema.as_mut() {
-            crate::trigger::compact_schema(schema);
+            crate::call::compact_schema(schema);
         }
         Self {
             function_id: function_id.to_string(),
@@ -479,7 +479,7 @@ pub(crate) async fn lookup_contracts(
     for chunk in pending.chunks(INFO_BATCH_MAX) {
         let response = deps
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: FUNCTIONS_INFO_ID.into(),
                 payload: json!({ "function_ids": chunk }),
                 action: None,
@@ -579,7 +579,7 @@ pub(crate) fn render_preloaded_functions(
          `engine::functions::info` for these ids (fetch a contract again only after an \
          `invalid_arguments` error or a registry-change notice). Every other function still goes \
          through normal discovery.",
-        tool = crate::policy::AGENT_TRIGGER_NAME,
+        tool = crate::policy::AGENT_CALL_NAME,
     );
     for contract in contracts {
         body.push_str("\n\n### `");
@@ -1098,7 +1098,7 @@ mod tests {
         ));
         assert!(block.ends_with("\n</preloaded_functions>"));
         assert!(block.contains("pre-verified"));
-        assert!(block.contains("through `agent_trigger`"));
+        assert!(block.contains("through `agent_call`"));
         let tree = block.find("### `coder::tree`").expect("first contract");
         let bare = block.find("### `bare`").expect("second contract");
         assert!(tree < bare, "declaration order is kept");
@@ -1151,7 +1151,7 @@ mod tests {
             .into_iter()
             .map(str::to_string)
             .collect();
-        for expose in [ExposeMode::Native, ExposeMode::AgentTrigger] {
+        for expose in [ExposeMode::Native, ExposeMode::AgentCall] {
             for policy in [
                 None,
                 Some(FunctionPolicy {
