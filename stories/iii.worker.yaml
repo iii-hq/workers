@@ -6,7 +6,7 @@ manifest: Cargo.toml
 license: Apache-2.0
 bin: stories
 tags: [stories, storybook, components, visual-regression, screenshots, react, console-ui]
-description: Component stories for any React project — builds CSF story files with the project's own Vite (monorepo-aware), indexes components and their states per git line, compares the working tree with a branch, a commit or a chat turn, renders deterministic screenshots and DOM/React trees through the browser worker, and injects an explorer and compare page into the console.
+description: Component stories for any React project — builds CSF story files with the project's own Vite (monorepo-aware), indexes components and their states per git line, compares the working tree with a branch, a commit or a chat turn, renders deterministic screenshots and DOM/React trees through the browser worker, and injects an explorer and compare page into the console; observe stories::on-changed / stories::on-build (or bind stories:changed / stories:build) for change and build events.
 
 runtime:
   kind: rust

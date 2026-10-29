@@ -143,6 +143,13 @@ conversation:
 Each delivery carries the classified `changes` against the previous build;
 run steps 4–5 for the components it names.
 
+Code on a 0.25 engine can observe `stories::on-changed` instead, with the
+same config as args (`iii.observe({ function_id: 'stories::on-changed',
+args: { workspace: '<ws>', kinds: ['direct', 'indirect'] } }, target)`);
+each observer receives exactly what a binding with that config receives.
+`stories::on-build` mirrors `stories:build` the same way. Never invoke an
+`on-*` function directly: it is refused with `FORBIDDEN`.
+
 ## Pitfalls
 
 - Do not override `function` or `element` args; choose another state.

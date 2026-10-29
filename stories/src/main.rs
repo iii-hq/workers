@@ -1,10 +1,10 @@
 //! `stories` binary entry.
 //!
-//! Boot: parse the CLI, connect to the engine, register the trigger types,
-//! register the `stories` configuration entry and load it, materialize the
-//! Node compiler under the data folder, register the `stories::*` functions
-//! and the console UI, start the working-tree watchers, then sleep until
-//! SIGINT/SIGTERM.
+//! Boot: parse the CLI, connect to the engine, register the trigger types
+//! and their observable functions, register the `stories` configuration
+//! entry and load it, materialize the Node compiler under the data folder,
+//! register the `stories::*` functions and the console UI, start the
+//! working-tree watchers, then sleep until SIGINT/SIGTERM.
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
