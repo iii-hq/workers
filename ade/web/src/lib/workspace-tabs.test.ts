@@ -27,8 +27,10 @@ import {
   withActiveTabId,
   withColumnAdded,
   withColumnRemoved,
+  withOnlyPane,
   withPaneMoved,
   withPaneRemoved,
+  withPaneSplit,
   withScreenDetached,
   withScreenOpenedBeside,
   withTabClosed,
@@ -511,6 +513,29 @@ describe('withWorkspaceScreenOpened', () => {
     ).toEqual({ tabs, activeTabId: 'chat-and-shell' })
   })
 
+  it('opens chat beside the asking screen instead of jumping to another tab', () => {
+    const tabs: WorkspaceTab[] = [
+      { id: 'chat', screens: [CHAT_SCREEN, 'traces'] },
+      { id: 'ide', screens: ['ext:ide'] },
+    ]
+    const opened = withWorkspaceScreenOpened(
+      tabs,
+      'ide',
+      CHAT_SCREEN,
+      () => 'new',
+      () => 'pane-new',
+      'ext:ide',
+      'right',
+    )
+    expect(opened.activeTabId).toBe('ide')
+    expect(opened.tabs[1].screens).toEqual(['ext:ide', CHAT_SCREEN])
+    // Without an anchor in this tab, the open chat elsewhere still wins.
+    expect(
+      withWorkspaceScreenOpened(tabs, 'ide', CHAT_SCREEN, () => 'new')
+        .activeTabId,
+    ).toBe('chat')
+  })
+
   it('reuses the exact chat session but keeps distinct sessions distinct', () => {
     const tabs: WorkspaceTab[] = [
       {
@@ -840,5 +865,141 @@ describe('withTabSizes', () => {
     expect(withTabSizes(tab, [0.5, 0, 0.5])).toBe(tab)
     expect(withTabSizes(tab, [0.5, Number.NaN, 0.5])).toBe(tab)
     expect(withTabSizes(tab, undefined)).toBe(tab)
+  })
+})
+
+describe('withPaneSplit', () => {
+  const tab: WorkspaceTab = {
+    id: 't',
+    columns: 2,
+    screens: ['ext:ide', 'traces'],
+    paneIds: ['ide', 'traces'],
+    sizes: [0.6, 0.4],
+  }
+
+  it('puts the new column right beside the pane, at half its width', () => {
+    const next = withPaneSplit(tab, 'ide', 'right', CHAT_SCREEN, () => 'new')
+    expect(next.screens).toEqual(['ext:ide', CHAT_SCREEN, 'traces'])
+    expect(next.paneIds).toEqual(['ide', 'new', 'traces'])
+    // The other pane keeps its width.
+    expect(next.sizes).toEqual([0.3, 0.3, 0.4])
+  })
+
+  it('splits to the left, empty when no screen is named', () => {
+    const next = withPaneSplit(tab, 'traces', 'left', null, () => 'new')
+    expect(next.screens).toEqual(['ext:ide', null, 'traces'])
+    expect(next.paneIds).toEqual(['ide', 'new', 'traces'])
+    expect(next.sizes).toEqual([0.6, 0.2, 0.2])
+  })
+
+  it('fills an empty neighbour on that side instead of adding a column', () => {
+    const withEmpty: WorkspaceTab = {
+      ...tab,
+      columns: 3,
+      screens: ['ext:ide', null, 'traces'],
+      paneIds: ['ide', 'empty', 'traces'],
+      sizes: [0.4, 0.2, 0.4],
+    }
+    const next = withPaneSplit(withEmpty, 'ide', 'right', CHAT_SCREEN)
+    expect(next.screens).toEqual(['ext:ide', CHAT_SCREEN, 'traces'])
+    expect(next.paneIds).toEqual(['ide', 'empty', 'traces'])
+    expect(next.sizes).toEqual([0.4, 0.2, 0.4])
+  })
+
+  it('leaves the tab alone for a screen it shows, or a pane it lacks', () => {
+    expect(withPaneSplit(tab, 'ide', 'right', 'traces')).toBe(tab)
+    expect(withPaneSplit(tab, 'gone', 'right', CHAT_SCREEN)).toBe(tab)
+  })
+
+  it('stops at the column ceiling', () => {
+    const full: WorkspaceTab = {
+      id: 'full',
+      columns: MAX_COLUMNS,
+      screens: Array.from({ length: MAX_COLUMNS }, () => null),
+    }
+    expect(withPaneSplit(full, tabPaneIds(full)[0], 'right')).toBe(full)
+  })
+})
+
+describe('withOnlyPane', () => {
+  it('keeps one pane, at full width, under its own identity', () => {
+    const tab: WorkspaceTab = {
+      id: 't',
+      columns: 3,
+      screens: [CHAT_SCREEN, 'ext:ide', null],
+      paneIds: ['chat', 'ide', 'empty'],
+      sizes: [0.3, 0.5, 0.2],
+    }
+    expect(withOnlyPane(tab, 'ide')).toEqual({
+      id: 't',
+      columns: 1,
+      screens: ['ext:ide'],
+      paneIds: ['ide'],
+      sizes: [1],
+    })
+  })
+
+  it('is a no-op for a lone pane or an unknown one', () => {
+    const lone: WorkspaceTab = { id: 't', columns: 1, screens: ['traces'] }
+    expect(withOnlyPane(lone, tabPaneIds(lone)[0])).toBe(lone)
+    expect(withOnlyPane(lone, 'gone')).toBe(lone)
+  })
+})
+
+describe("the IDE's retired side-chat column", () => {
+  it('reads back as the chat, keeping the tab', () => {
+    const [tab] = parseWorkspaceTabs({
+      tabs: [{ id: 'ide', columns: 2, screens: ['ext:ide', 'side-chat'] }],
+    })
+    expect(tab.screens).toEqual(['ext:ide', CHAT_SCREEN])
+  })
+
+  it('becomes an empty column when the tab already shows a chat', () => {
+    const [tab] = parseWorkspaceTabs({
+      tabs: [
+        {
+          id: 'ide',
+          columns: 3,
+          screens: [CHAT_SCREEN, 'ext:ide', 'side-chat'],
+        },
+      ],
+    })
+    expect(tab.screens).toEqual([CHAT_SCREEN, 'ext:ide', null])
+  })
+})
+
+describe('the chat asked for beside the IDE', () => {
+  it('joins the IDE in this tab, even when another tab shows a chat', () => {
+    const tabs: WorkspaceTab[] = [
+      { id: 'home', columns: 1, screens: [CHAT_SCREEN] },
+      { id: 'code', columns: 1, screens: ['ext:ide'], paneIds: ['ide'] },
+    ]
+    const result = withWorkspaceScreenOpened(
+      tabs,
+      'code',
+      CHAT_SCREEN,
+      () => 'tab-new',
+      () => 'pane-new',
+      'ext:ide',
+      'right',
+    )
+    expect(result.activeTabId).toBe('code')
+    expect(result.tabs[1].screens).toEqual(['ext:ide', CHAT_SCREEN])
+    expect(result.tabs[0]).toBe(tabs[0])
+  })
+
+  it('stays put when this tab already shows the chat', () => {
+    const tabs: WorkspaceTab[] = [
+      { id: 'code', columns: 2, screens: [CHAT_SCREEN, 'ext:ide'] },
+    ]
+    const result = withWorkspaceScreenOpened(
+      tabs,
+      'code',
+      CHAT_SCREEN,
+      undefined,
+      undefined,
+      'ext:ide',
+    )
+    expect(result.tabs).toBe(tabs)
   })
 })

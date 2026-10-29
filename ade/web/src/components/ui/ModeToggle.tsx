@@ -2,8 +2,8 @@ import uiClasses from '@iii-dev/console-ui/ui-classes'
 import type * as React from 'react'
 import { useRef } from 'react'
 import { cn } from '@/lib/utils'
+import { Hint } from './Hint'
 import { TabIconSlot } from './TabIcon'
-import { Tooltip, TooltipContent, TooltipTrigger } from './Tooltip'
 
 export interface SegmentedControlOption<T extends string> {
   value: T
@@ -131,10 +131,9 @@ export function SegmentedControl<T extends string>({
         )
         if (!renderIconOnly) return button
         return (
-          <Tooltip key={opt.value}>
-            <TooltipTrigger asChild>{button}</TooltipTrigger>
-            <TooltipContent>{opt.label}</TooltipContent>
-          </Tooltip>
+          <Hint key={opt.value} label={opt.label}>
+            {button}
+          </Hint>
         )
       })}
     </div>

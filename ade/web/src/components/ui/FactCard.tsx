@@ -35,7 +35,10 @@ export interface FactCardProps extends ComponentProps<'div'> {
   accent?: string
 }
 
-/** The floating shell. Popover-styled; stacks header, status, list, meter. */
+/**
+ * The floating shell: the shadcn Card's 12px radius and 10% ink ring on the
+ * popover fill, since it floats. Stacks header, status, list, meter.
+ */
 export function FactCard({
   accent,
   className,
@@ -46,7 +49,7 @@ export function FactCard({
     <div
       data-slot="fact-card"
       className={cn(
-        'flex min-w-0 flex-col gap-2 rounded-lg bg-popover px-3 py-2.5 font-inter text-sm text-ink shadow-md ring-1 ring-foreground/10',
+        'flex min-w-0 flex-col gap-2 rounded-xl bg-popover px-3 py-2.5 font-inter text-sm text-ink shadow-md ring-1 ring-foreground/10',
         className,
       )}
       style={{ ...accentStyle(accent), ...style }}

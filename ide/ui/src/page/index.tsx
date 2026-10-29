@@ -23,6 +23,12 @@ import {
   Button,
   ConfirmDialog,
   DirectoryPicker,
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
   type Host,
   PageBody,
   PageHeader,
@@ -31,6 +37,7 @@ import {
   type PageRenderProps,
   PageShell,
   PageSidebar,
+  Toggle,
   Tooltip,
   useConfirm,
 } from '@iii-dev/console-ui'
@@ -39,6 +46,7 @@ import {
   ArrowLeft,
   ArrowRight,
   CircleAlert,
+  Ellipsis,
   Eye,
   EyeOff,
   FolderX,
@@ -48,10 +56,14 @@ import {
   RefreshCw,
   SquareTerminal,
   Terminal,
+  X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { ActivityBar, SIDE_VIEWS, type SideView } from './ActivityBar'
+import { EditorWarmup } from './EditorWarmup'
+import { editorFontStack, useEditorPrefs } from './editor-prefs'
+import { createFilePrefetcher } from './file-prefetch'
 import { BranchChangesView } from './BranchChangesView'
 import { isProtectedPath } from './protected-paths'
 import {
@@ -68,8 +80,8 @@ import { createTurnCache, loadDiffContents, sameDiffContents } from './diff-load
 import { type DiffSource, diffSourceFollowsDisk } from './diff-source'
 import { DEFAULT_DIFF_OPTIONS, DiffTab, type DiffOptions, type DiffTabActions, type DiffTabState } from './DiffTab'
 import { EditorTabs } from './EditorTabs'
-import { type EditorCache, EditorPane, RevisionPane } from './EditorPane'
-import { refreshCleanEditorCacheEntry } from './editor-cache'
+import { type EditorCache, EditorPane, type ReferenceDelivery, RevisionPane } from './EditorPane'
+import { keepUnsavedEdits, refreshCleanEditorCacheEntry, rejoinKeptEdits, takeUnsavedEdits } from './editor-cache'
 import { copyText } from '@iii-dev/console-ui/format'
 import { createEntry, deleteEntry, duplicateFile, duplicateName, renameEntry } from './file-actions'
 import { createObjectUrlRegistry } from './file-bytes'
@@ -95,9 +107,9 @@ import {
 } from './nav-history'
 import { paneScopeToken, paneStateKey } from './pane-scope'
 import { parseShellPanelContext } from './panel-context'
-import { QUICK_OPEN_SHORTCUT } from './quick-open'
+import { isQuickOpenKey, QUICK_OPEN_SHORTCUT, quickOpenPlatform } from './quick-open'
 import { QuickOpen } from './QuickOpen'
-import { formatFileReference, type LineRange, mentionPathFor } from './reference'
+import { recordFileUse } from './file-use'
 import { dirname, isUnder } from './paths'
 import { createTabUiStateSaver, loadTabUiState, type TabUiState, type TerminalDock } from './persist'
 import {
@@ -143,6 +155,7 @@ import {
 import { createTerminalWorkspace, normalizeTerminalWorkspace, reduceTerminalWorkspace } from './terminal-layout'
 import type { TerminalOutputRouter } from './terminal-output-router'
 import type { TerminalConnectionCoordinator } from './terminal-session-state'
+import { queueTerminalStartupCommand } from './terminal-startup'
 import { TerminalPanel } from './TerminalPanel'
 import { TimelineTab } from './TimelineTab'
 import { TurnReviewBridge } from './TurnReviewBridge'
@@ -179,9 +192,9 @@ type WorkingDirectoryHost = Host & {
   }
 }
 
-const SIDEBAR_DEFAULT_WIDTH = 260
-const SIDEBAR_MIN_WIDTH = 200
-const SIDEBAR_MAX_WIDTH = 560
+const SIDEBAR_DEFAULT_WIDTH = 300
+const SIDEBAR_MIN_WIDTH = 220
+const SIDEBAR_MAX_WIDTH = 600
 const TERMINAL_BOTTOM_DEFAULT_SIZE = 280
 const TERMINAL_RIGHT_DEFAULT_SIZE = 480
 const LIVE_COALESCE_MS = 400
@@ -280,6 +293,7 @@ export function ShellExplorerPage({
   const [quickOpen, setQuickOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
   const [narrow, setNarrow] = useState(false)
+  // The sidebar's top row, where the open view renders its header.
   // A callback ref, not useRef: the page renders a placeholder shell before
   // the workspace frame exists, so an effect that reads a ref once would
   // observe nothing.
@@ -353,7 +367,12 @@ export function ShellExplorerPage({
   const [tabs, setTabs] = useState<TabsState>(EMPTY_TABS)
   const tabsRef = useRef(tabs)
   tabsRef.current = tabs
-  const [dirtyPaths, setDirtyPaths] = useState<ReadonlySet<string>>(new Set())
+  const [dirtyPaths, setDirtyPaths] = useState<ReadonlySet<string>>(() => new Set())
+  // The open file tabs, for the Search view's "only in open editors".
+  const openFilePaths = useMemo(
+    () => tabs.tabs.flatMap((tab) => (tab.target.kind === 'file' ? [tab.target.path] : [])),
+    [tabs.tabs],
+  )
   const [diffOptions, setDiffOptions] = useState<DiffOptions>(DEFAULT_DIFF_OPTIONS)
   const [fileBump, setFileBump] = useState(0)
   // Open file tabs whose file is gone from disk (`missing-files.ts`), and
@@ -374,7 +393,46 @@ export function ShellExplorerPage({
   const [missingRoot, setMissingRoot] = useState<string | null>(null)
   const missingRootRef = useRef<string | null>(null)
   const cacheRef = useRef<EditorCache>(new Map())
+  // Unsaved buffers outlive the page (another workspace tab shown): kept
+  // under this pane and its folder, they rejoin once the pane is back on
+  // that folder (`withKeptEdits`), dirty marks and all.
+  useEffect(() => () => keepUnsavedEdits(paneKey, rootRef.current, cacheRef.current), [paneKey])
+  const withKeptEdits = useCallback(
+    (folder: string, base: TabsState): TabsState => {
+      const rejoined = rejoinKeptEdits(takeUnsavedEdits(paneKey, folder), cacheRef.current, base)
+      setDirtyPaths((previous) =>
+        previous.size === 0 && rejoined.dirty.size === 0 ? previous : rejoined.dirty,
+      )
+      return rejoined.tabs
+    },
+    [paneKey],
+  )
   const objectUrlsRef = useRef(createObjectUrlRegistry())
+  // The file under the pointer is read ahead into the cache (`file-prefetch`),
+  // so the click opens it from memory. Protected paths are never read.
+  const isProtectedRef = useRef<(path: string | null) => boolean>(() => false)
+  const prefetcherRef = useRef<ReturnType<typeof createFilePrefetcher> | null>(null)
+  if (prefetcherRef.current === null) {
+    prefetcherRef.current = createFilePrefetcher({
+      host,
+      cache: cacheRef.current,
+      resolve: (rel) => {
+        const currentRoot = rootRef.current
+        if (!currentRoot || isProtectedRef.current(rel)) return null
+        return { abs: joinPath(currentRoot, rel), token: rootGenerationRef.current }
+      },
+      isOpen: (rel) => tabsRef.current.tabs.some((tab) => tab.target.kind === 'file' && tab.target.path === rel),
+    })
+  }
+  const prefetcher = prefetcherRef.current
+  isProtectedRef.current = isProtected
+  // The code face from Settings: Monaco reads --font-code off its host and
+  // the terminal --font-mono, both inherited from the page's root.
+  const [editorPrefs] = useEditorPrefs()
+  const codeFontStyle = useMemo(() => {
+    const stack = editorFontStack(editorPrefs.fontFamily)
+    return { '--font-code': stack, '--font-mono': stack } as React.CSSProperties
+  }, [editorPrefs.fontFamily])
   useEffect(() => {
     const registry = objectUrlsRef.current
     return () => registry.releaseAll()
@@ -394,6 +452,12 @@ export function ShellExplorerPage({
   /** Clear only the acknowledged request; a newer navigation must remain pending. */
   const onRevealHandled = useCallback((path: string, seq: number) => {
     setRevealLineRequest((pending) => (pending?.path === path && pending.seq === seq ? null : pending))
+  }, [])
+  // The explorer's Open preview: the file's tab, switched to its rendered view.
+  const [previewFileRequest, setPreviewFileRequest] = useState<{ path: string; seq: number } | null>(null)
+  const previewSeqRef = useRef(0)
+  const onPreviewHandled = useCallback((path: string, seq: number) => {
+    setPreviewFileRequest((pending) => (pending?.path === path && pending.seq === seq ? null : pending))
   }, [])
   const historyRef = useRef<NavHistory>(EMPTY_HISTORY)
   const [historyState, setHistoryState] = useState({ back: false, forward: false })
@@ -444,8 +508,9 @@ export function ShellExplorerPage({
     // A page that is gone cannot ask, and its dialog would never answer.
     if (!mountedRef.current) return false
     return confirm({
-      title: `discard unsaved changes in ${dirty.size} ${dirty.size === 1 ? 'file' : 'files'}?`,
-      confirmLabel: 'Discard',
+      title: `Discard unsaved changes in ${dirty.size} ${dirty.size === 1 ? 'file' : 'files'}?`,
+      description: "Your edits are lost. This can't be undone.",
+      confirmLabel: 'Discard changes',
       tone: 'danger',
     })
   }, [confirm])
@@ -492,6 +557,51 @@ export function ShellExplorerPage({
       if (missingRootRef.current !== null && missingRootRef.current !== next) setMissingRoot(missingRootRef.current)
       missingRootRef.current = null
     }
+    /* What the pane had comes back on the folder it settled on — the one
+       asked for, or the primary folder when that could not be opened. The
+       folder memory is read either way: a fallback that skipped it would
+       save over every folder's open tabs on its first change. */
+    const applyRestored = (next: string) => {
+      if (!restored) {
+        setTabs(withKeptEdits(next, EMPTY_TABS))
+        dispatchTerminalWorkspace({ type: 'workspace-restored', state: createTerminalWorkspace(next) })
+        return
+      }
+      // The pane's own state (view, options, terminal layout) comes back
+      // whatever the folder; what was open comes back per folder. Saves
+      // older than the per-folder memory hold one folder's tabs at the
+      // top level: restored when that is the folder in front, and kept
+      // under it otherwise, so the first save here does not drop them.
+      const topLevel = { open: restored.open, active: restored.active, expanded: restored.expanded }
+      const memory = parseRootMemory(restored.roots)
+      rootMemoryRef.current =
+        restored.root && restored.root !== next && recallRoot(memory, restored.root) === null
+          ? rememberRoot(memory, restored.root, topLevel)
+          : memory
+      const slice =
+        recallRoot(rootMemoryRef.current, next) ??
+        (restored.root === next || (!restored.root && next === info.primary_root)
+          ? topLevel
+          : null)
+      setTabs(withKeptEdits(next, slice !== null ? restoreTabs(slice.open, slice.active) : EMPTY_TABS))
+      if (slice !== null) setExpanded(slice.expanded)
+      setShowHidden(!(restored.hideDotfiles ?? false))
+      if (isSideView(restored.sideView)) setSideTab(restored.sideView)
+      if (restored.diffOptions) setDiffOptions({ ...DEFAULT_DIFF_OPTIONS, ...restored.diffOptions })
+      if (restored.terminalOpen) setTerminalOpen(true)
+      if (restored.gitOpen) setGitOpen(true)
+      if (restored.gitTab) setGitTab(restored.gitTab)
+      if (restored.terminalDock) setTerminalDock(restored.terminalDock)
+      if (restored.terminalActive) setTerminalActive(true)
+      setTerminalBottomSize(clampTerminalSize(restored.terminalBottomSize, TERMINAL_BOTTOM_DEFAULT_SIZE))
+      setTerminalRightSize(clampTerminalSize(restored.terminalRightSize, TERMINAL_RIGHT_DEFAULT_SIZE))
+      dispatchTerminalWorkspace({
+        type: 'workspace-restored',
+        state: restored.terminalWorkspace
+          ? normalizeTerminalWorkspace(restored.terminalWorkspace, next)
+          : createTerminalWorkspace(next),
+      })
+    }
     workspaceValidate(host, requested)
       .then(({ path: next }) => {
         if (cancelled || rootResolveSeqRef.current !== seq) return
@@ -509,40 +619,7 @@ export function ShellExplorerPage({
         }
         setRoot(next)
         setRootPinned(pinnedRoot !== null)
-        if (!restored) {
-          dispatchTerminalWorkspace({ type: 'workspace-restored', state: createTerminalWorkspace(next) })
-          return
-        }
-        // The pane's own state (view, options, terminal layout) comes back
-        // whatever the folder; what was open comes back per folder. Saves
-        // older than the per-folder memory hold one folder's tabs at the
-        // top level, restored when that is the folder in front.
-        rootMemoryRef.current = parseRootMemory(restored.roots)
-        const slice =
-          recallRoot(rootMemoryRef.current, next) ??
-          (restored.root === next || (!restored.root && next === info.primary_root)
-            ? { open: restored.open, active: restored.active, expanded: restored.expanded }
-            : null)
-        if (slice !== null) {
-          setTabs(restoreTabs(slice.open, slice.active))
-          setExpanded(slice.expanded)
-        }
-        setShowHidden(!(restored.hideDotfiles ?? false))
-        if (isSideView(restored.sideView)) setSideTab(restored.sideView)
-        if (restored.diffOptions) setDiffOptions({ ...DEFAULT_DIFF_OPTIONS, ...restored.diffOptions })
-        if (restored.terminalOpen) setTerminalOpen(true)
-        if (restored.gitOpen) setGitOpen(true)
-        if (restored.gitTab) setGitTab(restored.gitTab)
-        if (restored.terminalDock) setTerminalDock(restored.terminalDock)
-        if (restored.terminalActive) setTerminalActive(true)
-        setTerminalBottomSize(clampTerminalSize(restored.terminalBottomSize, TERMINAL_BOTTOM_DEFAULT_SIZE))
-        setTerminalRightSize(clampTerminalSize(restored.terminalRightSize, TERMINAL_RIGHT_DEFAULT_SIZE))
-        dispatchTerminalWorkspace({
-          type: 'workspace-restored',
-          state: restored.terminalWorkspace
-            ? normalizeTerminalWorkspace(restored.terminalWorkspace, next)
-            : createTerminalWorkspace(next),
-        })
+        applyRestored(next)
       })
       .catch(() => {
         if (cancelled || rootResolveSeqRef.current !== seq) return
@@ -555,12 +632,12 @@ export function ShellExplorerPage({
         if (requestedWorkingDir === null && requested !== info.primary_root) missingRootRef.current = requested
         settled(info.primary_root)
         setRoot(info.primary_root)
-        dispatchTerminalWorkspace({ type: 'workspace-restored', state: createTerminalWorkspace(info.primary_root) })
+        applyRestored(info.primary_root)
       })
     return () => {
       cancelled = true
     }
-  }, [host, info, restored, root, workingDir])
+  }, [host, info, restored, root, workingDir, withKeptEdits])
 
   // ── git status (gated on the resolved root) ──
   const gitSeqRef = useRef(0)
@@ -711,7 +788,11 @@ export function ShellExplorerPage({
 
   const openFileTab = useCallback(
     (relPath: string, options: { pin?: boolean; line?: number; column?: number; endLine?: number } = {}) => {
-      showTab((s) => (options.pin ? openPinned(s, fileTarget(relPath)) : openPreview(s, fileTarget(relPath))))
+      // Every file gets a tab of its own: opening the next one never closes
+      // this one (no VS Code preview slot for files; diffs keep it).
+      showTab((s) => openPinned(s, fileTarget(relPath)))
+      // Counted for Go to file (⌘P): the files in use rank first there.
+      if (rootRef.current !== null) recordFileUse(rootRef.current, relPath)
       if (options.line !== undefined) {
         const line = options.line
         setRevealLineRequest({
@@ -740,6 +821,7 @@ export function ShellExplorerPage({
     objectUrlsRef.current.release(cacheRef.current.get(path)?.image)
     cacheRef.current.delete(path)
     setRevealLineRequest((pending) => pending?.path === path ? null : pending)
+    setPreviewFileRequest((pending) => pending?.path === path ? null : pending)
   }, [])
 
   const closeTabIds = useCallback(
@@ -756,9 +838,10 @@ export function ShellExplorerPage({
         !(await confirm({
           title:
             dirty.length === 1
-              ? `discard unsaved changes to ${dirty[0]}?`
-              : `discard unsaved changes in ${dirty.length} files?`,
-          confirmLabel: 'Discard',
+              ? `Discard unsaved changes to ${dirty[0]}?`
+              : `Discard unsaved changes in ${dirty.length} files?`,
+          description: "Your edits are lost. This can't be undone.",
+          confirmLabel: 'Discard changes',
           tone: 'danger',
         }))
       ) {
@@ -864,6 +947,21 @@ export function ShellExplorerPage({
         paneId: `pane-dir-${stamp}`,
         root: joinPath(currentRoot, dir),
       })
+      setTerminalOpen(true)
+      if (terminalDock === 'editor') setTerminalActive(true)
+    },
+    [terminalDock],
+  )
+
+  /** A new terminal tab at the root with `command` typed into its shell. */
+  const runInTerminal = useCallback(
+    (command: string) => {
+      const currentRoot = rootRef.current
+      if (!currentRoot) return
+      const stamp = `${Date.now().toString(36)}`
+      const paneId = `pane-run-${stamp}`
+      queueTerminalStartupCommand(paneId, command)
+      dispatchTerminalWorkspace({ type: 'tab-created', tabId: `tab-run-${stamp}`, paneId, root: currentRoot })
       setTerminalOpen(true)
       if (terminalDock === 'editor') setTerminalActive(true)
     },
@@ -1393,6 +1491,7 @@ export function ShellExplorerPage({
         rootTransitionRef.current = true
         rootGenerationRef.current += 1
         gitSeqRef.current += 1
+        prefetcher.reset()
         if (liveTimerRef.current !== null) window.clearTimeout(liveTimerRef.current)
         liveTimerRef.current = null
         changedAbsRef.current = new Map()
@@ -1403,6 +1502,7 @@ export function ShellExplorerPage({
         diffCacheRef.current.clear()
         revisionCacheRef.current.clear()
         setRevealLineRequest(null)
+        setPreviewFileRequest(null)
         historyRef.current = EMPTY_HISTORY
         setHistoryState({ back: false, forward: false })
         // The folder being left keeps what was open in it; the one being
@@ -1416,9 +1516,10 @@ export function ShellExplorerPage({
           })
         }
         const recalled = recallRoot(rootMemoryRef.current, path)
-        setDirtyPaths((previous) => (previous.size === 0 ? previous : new Set()))
         setMissingPaths(NO_MISSING)
-        setTabs(recalled !== null ? restoreTabs(recalled.open, recalled.active) : EMPTY_TABS)
+        // What was left unsaved there when the page last unmounted comes
+        // back with it (and the dirty marks are that folder's, or none).
+        setTabs(withKeptEdits(path, recalled !== null ? restoreTabs(recalled.open, recalled.active) : EMPTY_TABS))
         setExpanded(recalled?.expanded ?? [])
         setBrowsePath(null)
         setGit(null)
@@ -1431,7 +1532,7 @@ export function ShellExplorerPage({
       })
       return true
     },
-    [confirmDiscardAllEdits, host, refreshGit, refreshTree],
+    [confirmDiscardAllEdits, host, refreshGit, refreshTree, withKeptEdits],
   )
 
   // ── follow the chat's working directory ──
@@ -1767,20 +1868,30 @@ export function ShellExplorerPage({
     [root, openFileTab, requestOpen],
   )
 
-  // "Reference in chat" from a selection: a `#file(path:from-to)` token
-  // appended to the composer's draft. The path is relative to the chat's
-  // folder when the file lives under it, absolute otherwise, so the send
-  // path can read it back whichever folder this pane happens to browse.
+  // "Add to Chat" (⌘L): the selection's `#file(path:from-to)` reference goes
+  // to THE chat, the console's own, beside this pane: the one chat open in
+  // the workspace, or a new chat column to the right of the IDE when there
+  // is none. With several chats open the console does not guess, and the
+  // editor copies the reference instead, for the person to paste into the
+  // chat they mean. The path is absolute so it reads the same file in any
+  // chat, whatever folder that chat works in.
   const composeInChat = host.chat?.compose
-  const referenceInChat = useMemo(() => {
+  const addReferenceToChat = useMemo(() => {
     if (!composeInChat) return undefined
-    return (relPath: string, range: LineRange) => {
-      const base = rootRef.current
-      if (base === null) return
-      const path = mentionPathFor(joinPath(base, relPath), workingDirRef.current)
-      composeInChat({ text: formatFileReference(path, range), inline: true })
-    }
+    return (reference: string): ReferenceDelivery =>
+      composeInChat({ text: reference, inline: true, beside: 'ext:ide', ifUnambiguous: true }) === 'ambiguous'
+        ? 'ambiguous'
+        : 'composed'
   }, [composeInChat])
+  // The chat beside the IDE without a selection: the console's chat, to the
+  // right of this pane (reused where the workspace already shows it).
+  const openScreen = host.panels?.openScreen
+  const openChatBeside = useMemo(() => {
+    if (!openScreen) return undefined
+    return () => openScreen({ screen: 'chat', relativeTo: 'ext:ide', direction: 'right', sizes: [2, 1] })
+  }, [openScreen])
+  const openChatBesideRef = useRef(openChatBeside)
+  openChatBesideRef.current = openChatBeside
 
   const appliedContextRef = useRef(0)
   useEffect(() => {
@@ -1967,7 +2078,7 @@ export function ShellExplorerPage({
           id: 'open-file',
           title: 'Go to file…',
           detail: 'Find a file in this folder by typing any part of its path',
-          keywords: ['quick open', 'open file', 'path', 'ctrl+p'],
+          keywords: ['quick open', 'open file', 'path', 'cmd+p', 'ctrl+p'],
           shortcut: QUICK_OPEN_SHORTCUT,
           firesWhileTyping: true,
           run: () => setQuickOpen(true),
@@ -2039,13 +2150,21 @@ export function ShellExplorerPage({
           run: () => setCollapsed((current) => !current),
         },
         {
+          id: 'chat-beside',
+          title: 'Open chat beside the IDE',
+          detail: 'The chat in a column to the right of the editor',
+          keywords: ['ask', 'question', 'chat', 'ai', 'explain', 'split'],
+          enabled: () => openChatBesideRef.current !== undefined,
+          run: () => openChatBesideRef.current?.(),
+        },
+        {
           id: 'toggle-terminal',
           title: 'Toggle the terminal',
           detail: 'Open or close the terminal for this directory',
           keywords: ['pty', 'console', 'command line'],
-          shortcut: 'Ctrl+`',
-          // Fires from the editor and from the terminal itself, so one key
-          // opens it and hides it again. xterm leaves Ctrl+` uncancelled.
+          // ⌘J like VS Code (Ctrl+` too). Fires from the editor and from the
+          // terminal itself, so one key opens it and hides it again.
+          shortcut: { mac: ['Mod+J', 'Ctrl+`'], other: ['Ctrl+`'] },
           firesWhileTyping: true,
           run: () => verbsRef.current.toggleTerminal(),
         },
@@ -2178,104 +2297,94 @@ export function ShellExplorerPage({
   // The folder picker is the chat composer's: remembered projects first,
   // a browse to add one, every pick validated by the worker. The branch
   // beside it is the composer's worktree menu, for the IDE's folder.
+  const sideViewLabel = SIDE_VIEWS.find((view) => view.id === sideTab)?.label ?? 'Explorer'
   const header = (
     <PageHeader
       className="shui-page-header"
       icon={<SquareTerminal />}
       title="IDE"
-      actions={
-        info && root ? (
-          <div className="shui-page-actions">
-            <Tooltip label="Go back (Shift+Alt+Left)">
-              <button
-                type="button"
-                className="shui-side-tab"
-                onClick={() => navigate(-1)}
-                disabled={!historyState.back}
-                aria-label="Go back"
-              >
-                <ArrowLeft aria-hidden className="shui-side-tab-icon" />
-              </button>
-            </Tooltip>
-            <Tooltip label="Go forward (Shift+Alt+Right)">
-              <button
-                type="button"
-                className="shui-side-tab"
-                onClick={() => navigate(1)}
-                disabled={!historyState.forward}
-                aria-label="Go forward"
-              >
-                <ArrowRight aria-hidden className="shui-side-tab-icon" />
-              </button>
-            </Tooltip>
-            {sideTab === 'files' && !collapsed ? (
-              <Tooltip label={showHidden ? 'Hide hidden files (dotfiles)' : 'Show hidden files (dotfiles)'}>
-                <button
-                  type="button"
-                  className={`shui-side-tab${showHidden ? ' active' : ''}`}
-                  onClick={() => setShowHidden((value) => !value)}
-                  aria-pressed={showHidden}
-                  aria-label={showHidden ? 'Hide hidden files' : 'Show hidden files'}
-                >
-                  {showHidden ? <Eye aria-hidden className="shui-side-tab-icon" /> : <EyeOff aria-hidden className="shui-side-tab-icon" />}
-                </button>
-              </Tooltip>
-            ) : null}
-            <Tooltip label={terminalOpen ? 'Hide terminal' : 'Open terminal (zsh)'}>
-              <button
-                type="button"
-                className={`shui-side-tab${terminalOpen ? ' active' : ''}`}
-                onClick={toggleTerminal}
-                aria-pressed={terminalOpen}
-                aria-label={terminalOpen ? 'Hide terminal' : 'Open terminal'}
-              >
-                <Terminal aria-hidden className="shui-side-tab-icon" />
-              </button>
-            </Tooltip>
-            <Tooltip label={gitOpen ? 'Hide Git (Shift+Alt+G)' : 'Open Git (Shift+Alt+G)'}>
-              <button
-                ref={gitToggleRef}
-                type="button"
-                className={`shui-side-tab${gitOpen ? ' active' : ''}`}
-                onClick={toggleGit}
-                aria-pressed={gitOpen}
-                aria-label={gitOpen ? 'Hide Git' : 'Open Git'}
-                data-git-toggle=""
-              >
-                <GitGraph aria-hidden className="shui-side-tab-icon" />
-              </button>
-            </Tooltip>
-            {narrow ? (
-              <Tooltip label={collapsed ? 'Show the sidebar' : 'Hide the sidebar'}>
-                <button
-                  type="button"
-                  className="shui-collapse-btn"
-                  onClick={() => setCollapsed((value) => !value)}
-                  aria-label={collapsed ? 'Show sidebar' : 'Hide sidebar'}
-                >
-                  {panelSide === 'right' ? (
-                    <PanelRight aria-hidden className="shui-side-tab-icon" />
-                  ) : (
-                    <PanelLeft aria-hidden className="shui-side-tab-icon" />
-                  )}
-                </button>
-              </Tooltip>
-            ) : null}
-          </div>
-        ) : undefined
-      }
-      onClose={
-        onRequestClose === undefined
-          ? undefined
-          : () => {
-              void confirmDiscardAllEdits().then((ok) => {
-                if (ok) onRequestClose()
-              })
-            }
+      // The rest of the pane's controls, and its Settings, behind one ⋯.
+      menu={
+        info && root
+          ? [
+              {
+                id: 'terminal',
+                label: 'Terminal',
+                icon: <Terminal aria-hidden />,
+                shortcut: '⌘J',
+                checked: terminalOpen,
+                onSelect: toggleTerminal,
+              },
+              {
+                id: 'git',
+                label: 'Git',
+                icon: <GitGraph aria-hidden />,
+                shortcut: '⇧⌥G',
+                checked: gitOpen,
+                onSelect: toggleGit,
+              },
+              {
+                id: 'sidebar',
+                label: 'Sidebar',
+                icon: panelSide === 'right' ? <PanelRight aria-hidden /> : <PanelLeft aria-hidden />,
+                checked: !collapsed,
+                onSelect: () => setCollapsed((value) => !value),
+              },
+              {
+                id: 'hidden-files',
+                label: 'Hidden files',
+                icon: showHidden ? <Eye aria-hidden /> : <EyeOff aria-hidden />,
+                checked: showHidden,
+                onSelect: () => setShowHidden(!showHidden),
+              },
+              ...(onRequestClose
+                ? [
+                    {
+                      id: 'close',
+                      label: 'Close IDE',
+                      icon: <X aria-hidden />,
+                      onSelect: () => {
+                        void confirmDiscardAllEdits().then((ok) => {
+                          if (ok) onRequestClose()
+                        })
+                      },
+                    },
+                  ]
+                : []),
+            ]
+          : undefined
       }
     >
       {/* In the header's middle, not its description: that one clips focus
           rings and the chip's larger touch target. */}
+      {/* Back / forward first, beside the title, the way a browser and VS
+          Code put them: the eye looks for them where navigation starts. */}
+      {info && root ? (
+        <span className="shui-header-nav">
+          <Tooltip label="Go back (Shift+Alt+Left)">
+            <button
+              type="button"
+              className="shui-side-tab"
+              onClick={() => navigate(-1)}
+              disabled={!historyState.back}
+              aria-label="Go back"
+            >
+              <ArrowLeft aria-hidden className="shui-side-tab-icon" />
+            </button>
+          </Tooltip>
+          <Tooltip label="Go forward (Shift+Alt+Right)">
+            <button
+              type="button"
+              className="shui-side-tab"
+              onClick={() => navigate(1)}
+              disabled={!historyState.forward}
+              aria-label="Go forward"
+            >
+              <ArrowRight aria-hidden className="shui-side-tab-icon" />
+            </button>
+          </Tooltip>
+        </span>
+      ) : null}
       {root ? (
         <span className="shui-header-project">
           <DirectoryPicker
@@ -2349,11 +2458,38 @@ export function ShellExplorerPage({
     [showTab, narrow, closeGit],
   )
   const openPreviewFile = useCallback((rel: string) => openFileTab(rel), [openFileTab])
+  const openRenderedFile = useCallback(
+    (rel: string) => {
+      openFileTab(rel, { pin: true })
+      setPreviewFileRequest({ path: rel, seq: ++previewSeqRef.current })
+    },
+    [openFileTab],
+  )
   const openMatch = useCallback(
     (rel: string, line: number, column: number, pin: boolean) => openFileTab(rel, { pin, line, column }),
     [openFileTab],
   )
   const openQuickOpen = useCallback(() => setQuickOpen(true), [])
+  // ⌘P, the key every editor opens files with. The console's registry keeps
+  // it for Print, so the page answers it itself, and only while focus is in
+  // this pane (or nowhere): Print still works everywhere else.
+  useEffect(() => {
+    if (!frameEl) return
+    const platform = quickOpenPlatform()
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.repeat || !isQuickOpenKey(event, platform)) return
+      const active = document.activeElement
+      const inQuickOpen = event.target instanceof Element && event.target.closest('.shui-quick-open') !== null
+      const inside = active instanceof Node && frameEl.contains(active)
+      if (!inQuickOpen && !inside && active !== document.body) return
+      if (!frameEl.isConnected || frameEl.getClientRects().length === 0) return
+      event.preventDefault()
+      event.stopPropagation()
+      setQuickOpen(true)
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [frameEl])
   // The Close of the editor and of a revision tab: either is on screen only
   // while its tab is the active one.
   const closeActiveTab = useCallback(() => {
@@ -2402,7 +2538,7 @@ export function ShellExplorerPage({
 
   if (infoError) {
     return (
-      <PageShell>
+      <PageShell style={codeFontStyle}>
         {header}
         <div className="shui-side-note warn pad">
           the IDE needs the worker's coder surface — coder::info failed: {infoError}
@@ -2412,7 +2548,7 @@ export function ShellExplorerPage({
   }
   if (!info || !root) {
     return (
-      <PageShell>
+      <PageShell style={codeFontStyle}>
         {header}
         <div className="shui-side-note pad">connecting to IDE worker…</div>
       </PageShell>
@@ -2427,7 +2563,7 @@ export function ShellExplorerPage({
   const activeSourceTitle = activeDiff?.source.type === 'turn' ? turnTitles.get(activeDiff.source.turnId) : undefined
 
   return (
-    <PageShell>
+    <PageShell style={codeFontStyle}>
       <TurnReviewBridge
         host={host}
         root={root}
@@ -2446,17 +2582,52 @@ export function ShellExplorerPage({
       {/* A narrow page stacks a right dock under the editor, as a bottom one:
           decided here, since the frame is the container the stylesheet's
           narrow rules query, and a container query cannot style its own. */}
-      <div
-        ref={setFrameEl}
-        className={`shui-workspace-frame terminal-${gitOpen || (narrow && terminalDock === 'right') ? 'bottom' : terminalDock}`}
-      >
+      <div ref={setFrameEl} className="shui-workspace-frame">
         {narrow && !collapsed ? (
           <button type="button" className="shui-sidebar-scrim" aria-label="Hide sidebar" onClick={() => setCollapsed(true)} />
         ) : null}
         <PageBody side={panelSide}>
           <PageSidebar
-            label={SIDE_VIEWS.find((view) => view.id === sideTab)?.label ?? 'Explorer'}
+            label={sideViewLabel}
             side={panelSide}
+            // The sidebar's top row is the view strip, as in the reference
+            // sidebar: one icon per view and an overflow menu at its end.
+            // Each view then names itself in its own section header.
+            header={
+              <ActivityBar
+                active={sideTab}
+                badges={activityBadges}
+                changes={branchChanges !== null}
+                onSelect={(view) => {
+                  if (view === sideTab && !narrow) {
+                    setCollapsed(true)
+                    return
+                  }
+                  setSideTab(view)
+                  setCollapsed(false)
+                }}
+              >
+                <DropdownMenu>
+                  <Tooltip label="More">
+                    <DropdownMenuTrigger asChild>
+                      <button type="button" className="shui-activity-more" aria-label="Sidebar options">
+                        <Ellipsis aria-hidden className="shui-activity-icon" />
+                      </button>
+                    </DropdownMenuTrigger>
+                  </Tooltip>
+                  <DropdownMenuContent align="end" className="shui-context-menu">
+                    <DropdownMenuCheckboxItem checked={showHidden} onCheckedChange={(next) => setShowHidden(next === true)}>
+                      Show hidden files
+                    </DropdownMenuCheckboxItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onSelect={() => explorerActions.newWorker('workers')}>New worker…</DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => workspaceTree.refresh()}>Refresh explorer</DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onSelect={() => setCollapsed(true)}>Hide sidebar</DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </ActivityBar>
+            }
             storageKey={`shell:${tabId || 'page'}:sidebar`}
             defaultWidth={SIDEBAR_DEFAULT_WIDTH}
             minWidth={SIDEBAR_MIN_WIDTH}
@@ -2471,7 +2642,7 @@ export function ShellExplorerPage({
             collapsedActions={
               <ActivityBar
                 active={sideTab}
-                side={panelSide}
+                orientation="vertical"
                 badges={activityBadges}
                 changes={branchChanges !== null}
                 onSelect={(view) => {
@@ -2481,51 +2652,51 @@ export function ShellExplorerPage({
               />
             }
           >
-            <div className={`shui-side-body side-${panelSide}`}>
-              <ActivityBar
-                active={sideTab}
-                side={panelSide}
-                badges={activityBadges}
-                changes={branchChanges !== null}
-                onSelect={(view) => {
-                  if (view === sideTab && !narrow) {
-                    setCollapsed(true)
-                    return
-                  }
-                  setSideTab(view)
-                  setCollapsed(false)
-                }}
-              />
+            <div className="shui-side-body">
               <div className="shui-side-view">
-                {sideTab === 'files' && (pendingRoot !== null || tree === null) ? (
-                  <div className="shui-side-note">opening {lastSegments(pendingRoot ?? root ?? '')}…</div>
-                ) : sideTab === 'files' ? (
-                  <FilesTab
-                    tree={tree}
-                    gitStatus={treeGitStatus}
-                    theme={theme}
-                    hiddenFiltered={!showHidden}
-                    rootLabel={rootLabel}
-                    expanded={expanded}
-                    onExpandedChange={setExpanded}
-                    onExpandDir={ensureDir}
-                    loadingDirs={loadingDirs}
-                    reveal={reveal}
-                    onRevealed={onRevealed}
-                    activePath={tabVisible ? (activeTab?.target.path ?? null) : null}
-                    onActivateFile={openPreviewFile}
-                    onPinFile={openPinnedFile}
-                    actions={explorerActions}
-                  />
-                ) : sideTab === 'search' ? (
+                {/* The explorer stays mounted behind the other views: its
+                    tree model, expansion and scroll position are costly to
+                    rebuild, and coming back to it must be instant. */}
+                <div className="shui-side-pane" hidden={sideTab !== 'files'}>
+                  {pendingRoot !== null || tree === null ? (
+                    <div className="shui-side-note">opening {lastSegments(pendingRoot ?? root ?? '')}…</div>
+                  ) : (
+                    <FilesTab
+                      tree={tree}
+                      gitStatus={treeGitStatus}
+                      theme={theme}
+                      hiddenFiltered={!showHidden}
+                      rootLabel={rootLabel}
+                      expanded={expanded}
+                      onExpandedChange={setExpanded}
+                      onExpandDir={ensureDir}
+                      loadingDirs={loadingDirs}
+                      reveal={reveal}
+                      onRevealed={onRevealed}
+                      activePath={tabVisible ? (activeTab?.target.path ?? null) : null}
+                      onActivateFile={openPreviewFile}
+                      onPinFile={openPinnedFile}
+                      onOpenPreview={openRenderedFile}
+                      onPrefetchFile={prefetcher.prefetch}
+                      onPrefetchDir={workspaceTree.prefetchDir}
+                      onPrefetchCancel={prefetcher.cancel}
+                      actions={explorerActions}
+                    />
+                  )}
+                </div>
+                {sideTab === 'files' ? null : sideTab === 'search' ? (
                   <SearchTab
                     host={host}
                     root={root}
+                    memoryKey={paneKey}
                     request={searchRequest}
                     onOpenMatch={openMatch}
                     onPreviewFile={openPreviewFile}
                     onPinFile={openPinnedFile}
                     onRevealFolder={revealFolder}
+                    dirtyPaths={dirtyPaths}
+                    openPaths={openFilePaths}
+                    confirm={confirm}
                   />
                 ) : sideTab === 'changes' && branchChanges !== null && root !== null ? (
                   <BranchChangesView
@@ -2547,6 +2718,7 @@ export function ShellExplorerPage({
                     host={host}
                     root={root}
                     conversationId={conversationId}
+                    memoryKey={paneKey}
                     scm={scm}
                     refreshEpoch={gitEpoch}
                     activeDiff={activeDiff ? { path: activeDiff.path, source: activeDiff.source } : null}
@@ -2555,6 +2727,7 @@ export function ShellExplorerPage({
                     onCompare={compareFile}
                     onShowHistory={showHistory}
                     onDeleteFile={(rel) => explorerActions.remove(rel, false)}
+                    onRunInTerminal={runInTerminal}
                     onChanged={afterDiskChange}
                   />
                 ) : (
@@ -2579,6 +2752,12 @@ export function ShellExplorerPage({
           </PageSidebar>
 
           <PageMain>
+            {/* The editor column and, under or beside it, the docked Git
+                window or terminal: the panel starts after the sidebar, as
+                VS Code's does, never under it. A narrow page stacks a right
+                dock under the editor, as a bottom one. */}
+            <div className={`shui-main-frame terminal-${gitOpen || (narrow && terminalDock === 'right') ? 'bottom' : terminalDock}`}>
+            <div className="shui-main-column">
             {workingDirError ? (
               <Panel className="shui-review-notice warn" role="alert">
                 <span className="shui-review-notice-icon" aria-hidden="true">
@@ -2703,7 +2882,9 @@ export function ShellExplorerPage({
               <EditorPane
                 // One pane per file: an agent-side write to it (fileBump)
                 // refills this one from the refreshed cache entry in place.
-                key={activeFilePath}
+                // Keyed by folder too: the same path in another worktree is
+                // another file, and must not inherit this one's cursor.
+                key={`${root ?? ''}\u0000${activeFilePath}`}
                 host={host}
                 root={root}
                 rootLabel={rootLabel}
@@ -2714,6 +2895,8 @@ export function ShellExplorerPage({
                 wordWrap={diffOptions.wordWrap}
                 reveal={revealLineRequest?.path === activeFilePath ? revealLineRequest : null}
                 onRevealHandled={onRevealHandled}
+                previewRequest={previewFileRequest?.path === activeFilePath ? previewFileRequest : null}
+                onPreviewHandled={onPreviewHandled}
                 goToLineSeq={goToLineSeq}
                 onDirtyChange={onDirtyChange}
                 onRevealDir={revealFolder}
@@ -2722,7 +2905,8 @@ export function ShellExplorerPage({
                 protectedPath={isProtected(activeFilePath)}
                 onMissing={onFileMissing}
                 onClose={closeActiveTab}
-                onReferenceInChat={referenceInChat}
+                onAddToChat={addReferenceToChat}
+                conversationId={conversationId}
                 onQuickOpen={openQuickOpen}
               />
             ) : activeDiff !== null ? (
@@ -2781,6 +2965,8 @@ export function ShellExplorerPage({
                 onOpenFile={(rel) => openFileTab(rel, { pin: true })}
               />
             ) : (
+              <>
+              <EditorWarmup />
               <ShellLauncher
                 root={root}
                 pendingRoot={pendingRoot}
@@ -2822,7 +3008,60 @@ export function ShellExplorerPage({
                   setCollapsed(false)
                 }}
               />
+              </>
             )}
+            </div>
+            {gitMounted && root !== null ? (
+              <DockPanel
+                hidden={!gitOpen}
+                dock="bottom"
+                size={terminalBottomSize}
+                narrow={narrow}
+                maximized={narrow}
+                label="Git"
+                noun="Git window"
+                onSizeChange={setTerminalBottomSize}
+              >
+                <GitToolWindow
+                  host={host}
+                  root={root}
+                  page={worktreesPage}
+                  open={gitOpen}
+                  tab={gitTab}
+                  onTabChange={setGitTab}
+                  onHide={closeGit}
+                  narrow={narrow}
+                  paneKey={paneKey}
+                  onOpenCommitFile={openCommitFile}
+                  onOpenCompareFile={openCompareFile}
+                  onOpenWorkingFile={openWorkingFile}
+                  onOpenRevision={openRevision}
+                  focusPaths={historyFor}
+                />
+              </DockPanel>
+            ) : null}
+            {/* The Git window taking the docked slot hides the terminal, which
+                stays mounted with its shells attached. */}
+            {terminalMounted && terminalDock !== 'editor' ? (
+              <TerminalPanel
+                state={terminalWorkspace}
+                dispatch={dispatchTerminalWorkspace}
+                root={root}
+                visible
+                router={terminalRouter}
+                leaseStore={terminalLeaseStore}
+                storageKey={terminalStorageKey}
+                connectionCoordinators={terminalConnectionCoordinators}
+                dock={terminalDock}
+                size={terminalDock === 'bottom' ? terminalBottomSize : terminalRightSize}
+                onDockChange={changeTerminalDock}
+                narrow={narrow}
+                onSizeChange={terminalDock === 'bottom' ? setTerminalBottomSize : setTerminalRightSize}
+                onClose={closeTerminal}
+                hidden={!terminalOpen || gitOpen}
+              />
+            ) : null}
+            </div>
           </PageMain>
         </PageBody>
         <QuickOpen
@@ -2849,9 +3088,8 @@ export function ShellExplorerPage({
             if (!open) setPendingDiscard(null)
           }}
           title={`Discard changes in ${pendingDiscard ? lastSegments(pendingDiscard.path, 1) : ''}?`}
-          description="Working-tree changes are lost; an untracked file is deleted. This cannot be undone."
-          details={pendingDiscard ? [pendingDiscard.path] : undefined}
-          confirmLabel="Discard"
+          description="Your uncommitted changes are lost, and an untracked file is deleted. This can't be undone."
+          confirmLabel="Discard changes"
           onConfirm={() => {
             const change = pendingDiscard
             setPendingDiscard(null)
@@ -2859,56 +3097,6 @@ export function ShellExplorerPage({
           }}
           onCancel={() => setPendingDiscard(null)}
         />
-        {gitMounted && root !== null ? (
-          <DockPanel
-            hidden={!gitOpen}
-            dock="bottom"
-            size={terminalBottomSize}
-            narrow={narrow}
-            maximized={narrow}
-            label="Git"
-            noun="Git window"
-            onSizeChange={setTerminalBottomSize}
-          >
-            <GitToolWindow
-              host={host}
-              root={root}
-              page={worktreesPage}
-              open={gitOpen}
-              tab={gitTab}
-              onTabChange={setGitTab}
-              onHide={closeGit}
-              narrow={narrow}
-              paneKey={paneKey}
-              onOpenCommitFile={openCommitFile}
-              onOpenCompareFile={openCompareFile}
-              onOpenWorkingFile={openWorkingFile}
-              onOpenRevision={openRevision}
-              focusPaths={historyFor}
-            />
-          </DockPanel>
-        ) : null}
-        {/* The Git window taking the docked slot hides the terminal, which
-            stays mounted with its shells attached. */}
-        {terminalMounted && terminalDock !== 'editor' ? (
-          <TerminalPanel
-            state={terminalWorkspace}
-            dispatch={dispatchTerminalWorkspace}
-            root={root}
-            visible
-            router={terminalRouter}
-            leaseStore={terminalLeaseStore}
-            storageKey={terminalStorageKey}
-            connectionCoordinators={terminalConnectionCoordinators}
-            dock={terminalDock}
-            size={terminalDock === 'bottom' ? terminalBottomSize : terminalRightSize}
-            onDockChange={changeTerminalDock}
-            narrow={narrow}
-            onSizeChange={terminalDock === 'bottom' ? setTerminalBottomSize : setTerminalRightSize}
-            onClose={closeTerminal}
-            hidden={!terminalOpen || gitOpen}
-          />
-        ) : null}
       </div>
     </PageShell>
   )

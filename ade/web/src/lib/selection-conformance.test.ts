@@ -43,7 +43,9 @@ const neutralSelectionRules: Array<[path: string, selector: string]> = [
   ['eval/ui/styles.css', '.eval-ui-session-option.selected'],
   ['eval/ui/styles.css', '.eval-ui-run-card.selected'],
   ['ide/ui/styles.css', '.shui-etab.active'],
-  ['ide/ui/styles.css', '.shui-terminal-tab.active'],
+  // The terminal tabs mark the open one with an attribute since the tab-row
+  // redesign.
+  ['ide/ui/styles.css', '.shui-terminal-tab[data-active]'],
   ['ade/ui/styles.css', '.console-catalog-header-toggle[aria-pressed="true"]'],
   ['sandbox-code-runner/ui/src/styles/page.css', '.cr-page-toggle.on'],
 ]

@@ -19,8 +19,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { TooltipProvider as HintProvider } from '@/components/shadcn/tooltip'
-import { TooltipProvider } from '@/components/ui/Tooltip'
+import { TooltipProvider } from '@/components/shadcn/tooltip'
 import { __setIiiClientDepsForTests } from '@/lib/iii-client'
 import { TracesV2 } from '@/pages/TracesV2'
 import { STRESS_TRACE_ID } from '@/pages/TracesV2/fixtures/stress-traces'
@@ -73,11 +72,9 @@ createRoot(root).render(
   <StrictMode>
     <QueryClientProvider client={new QueryClient()}>
       <TooltipProvider>
-        <HintProvider>
-          <div className="flex h-screen flex-col bg-bg font-sans text-ink">
-            <TracesV2 initialTraceId={STRESS_TRACE_ID} />
-          </div>
-        </HintProvider>
+        <div className="flex h-screen flex-col bg-bg font-sans text-ink">
+          <TracesV2 initialTraceId={STRESS_TRACE_ID} />
+        </div>
       </TooltipProvider>
     </QueryClientProvider>
   </StrictMode>,

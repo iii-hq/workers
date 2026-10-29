@@ -30,9 +30,11 @@ import {
 import { attachmentsFromFiles } from '@/lib/attachments/from-files'
 import type { PermissionMode } from '@/lib/backend/approval-settings'
 import {
+  markComposerUsed,
   onComposerAttach,
   onComposerFocusRequest,
   onComposerInsert,
+  registerComposer,
   requestComposerFocus,
 } from '@/lib/composer-insert'
 import type { FileMentionRef } from '@/lib/file-mention-token'
@@ -294,6 +296,10 @@ interface ComposerProps {
    * chat.
    */
   externalInput?: boolean
+  /** This composer's address on the insert bus (`lib/composer-insert`):
+      with several chats open, an insert or a focus request reaches one
+      composer only. Generated when absent. */
+  composerId?: string
   /** Shown at the top of the card, above attachments: a side chat's quote. */
   header?: ReactNode
   /**
@@ -426,6 +432,7 @@ export function Composer({
   idlePlaceholder = GENERIC_COMPOSER_PLACEHOLDER,
   autoFocus,
   externalInput = true,
+  composerId: composerIdProp,
   header,
   compact = false,
   initialContent,
@@ -727,12 +734,19 @@ export function Composer({
     },
     [handleAttach],
   )
+  const generatedComposerId = useId()
+  const composerId = composerIdProp ?? generatedComposerId
+  // One of the chats outside text can be handed to while it is mounted.
+  useEffect(
+    () => (externalInput ? registerComposer(composerId) : undefined),
+    [composerId, externalInput],
+  )
   useEffect(
     () =>
       externalInput
-        ? onComposerAttach((files) => void attachFiles(files))
+        ? onComposerAttach((files) => void attachFiles(files), composerId)
         : undefined,
-    [attachFiles, externalInput],
+    [attachFiles, externalInput, composerId],
   )
 
   // A folded card can neither take the caret nor show what lands in it, so
@@ -752,21 +766,21 @@ export function Composer({
       refocusAfterUnfoldRef.current = true
       setFolded(false)
     }
-    const offFocus = onComposerFocusRequest(unfold)
+    const offFocus = onComposerFocusRequest(unfold, composerId)
     const offInsert = onComposerInsert((insert) => {
       if (insert.submit) pendingSubmitRef.current = true
       unfold()
-    })
+    }, composerId)
     return () => {
       offFocus()
       offInsert()
     }
-  }, [setFolded, externalInput])
+  }, [setFolded, externalInput, composerId])
   useEffect(() => {
     if (collapsed || !refocusAfterUnfoldRef.current) return
     refocusAfterUnfoldRef.current = false
-    requestComposerFocus()
-  }, [collapsed])
+    requestComposerFocus(composerId)
+  }, [collapsed, composerId])
 
   // The drop zone is the whole chat pane, claimed in the capture phase — see
   // `use-file-drop`. A drop onto the transcript, where people actually let go
@@ -904,6 +918,7 @@ export function Composer({
         disabled={inputDisabled}
         autoFocus={autoFocus}
         externalInput={externalInput}
+        composerId={composerId}
         initialContent={resolvedInitialContent}
         functionEntries={functionEntries}
         searchFiles={searchFiles}
@@ -920,6 +935,9 @@ export function Composer({
   return (
     <div
       ref={shell}
+      // The chat the person typed in last is where outside text goes when
+      // several are open.
+      onFocusCapture={() => markComposerUsed(composerId)}
       data-composer-streaming={isStreaming ? 'true' : undefined}
       data-composer-compact={compactRow ? 'true' : undefined}
       className="onboarding-composer composer-shell relative"
@@ -934,7 +952,7 @@ export function Composer({
         )}
       >
         {showWorkingDir && onWorkingDirChange ? (
-          <div className="composer-project-context flex min-w-0 flex-wrap items-center gap-1.5 px-3 pt-3 pb-1 font-inter text-xs text-ink-faint">
+          <div className="composer-project-context flex min-w-0 flex-nowrap items-center gap-1 px-3 pt-3 pb-1 font-inter text-xs text-ink-faint">
             <DirectoryPicker
               value={workingDir ?? null}
               onChange={onWorkingDirChange}
@@ -945,7 +963,7 @@ export function Composer({
               worktrees={worktreePicker}
               triggerAppearance="chip"
               popoverAlign="start"
-              className="min-w-0 max-w-full [&>button]:min-h-8 [&>button]:rounded-lg [&>button]:bg-surface [&>button]:px-2.5 [&>button]:text-xs [&>button]:text-ink-faint [&>button:hover]:bg-surface-hover"
+              className="min-w-0 max-w-[55%] shrink-0 [&>button]:min-h-8 [&>button]:rounded-lg [&>button]:bg-surface [&>button]:px-2.5 [&>button]:text-xs [&>button]:text-ink-faint [&>button:hover]:bg-surface-hover"
             />
             {projectControls}
             <Hint

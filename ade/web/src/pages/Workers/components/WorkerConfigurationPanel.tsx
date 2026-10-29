@@ -1,12 +1,12 @@
 import { RefreshCw } from 'lucide-react'
 import { useCallback, useRef } from 'react'
-import { Button } from '@/components/ui/Button'
+import { Button } from '@/components/shadcn/button'
 import { Skeleton } from '@/components/ui/Skeleton'
-import { StatusPanel } from '@/components/ui/StatusPanel'
 import { cn } from '@/lib/utils'
 import type { JsonValue } from '@/pages/Configuration/tabs/WorkersTab/api'
 import { useConfigurationSchema } from '@/pages/Configuration/tabs/WorkersTab/hooks'
 import { WorkerEditor } from '@/pages/Configuration/tabs/WorkersTab/WorkerEditor'
+import { Notice } from './kit'
 
 export interface WorkerConfigurationPanelProps {
   /** The configuration entry to edit; `null` renders nothing. */
@@ -57,7 +57,7 @@ export function WorkerConfigurationPanel({
     >
       {schemaQuery.error ? (
         <div className="px-4 pb-4">
-          <StatusPanel
+          <Notice
             role="alert"
             variant="alert"
             headline="Could not load these settings"
@@ -69,10 +69,9 @@ export function WorkerConfigurationPanel({
             action={
               <Button
                 type="button"
-                variant="ghost"
-                size="sm"
+                variant="outline"
                 onClick={() => void schemaQuery.refetch()}
-                className="shrink-0"
+                className="wk-press shrink-0 font-inter"
               >
                 <RefreshCw className="size-4" aria-hidden />
                 Retry

@@ -63,10 +63,6 @@ const viewportAllowlist: Record<string, { max: number; reason: string }> = {
   'components/chat/engine/RegisterTriggerView.tsx': { max: 10, reason: TOUCH },
   'components/chat/harness/SpawnView.tsx': { max: 7, reason: TOUCH },
   'components/chat/sandbox/ErrorCard.tsx': { max: 18, reason: TOUCH },
-  'components/function-trigger/FunctionTriggerCard.tsx': {
-    max: 11,
-    reason: TOUCH,
-  },
   'components/permissions/FullModeConfirmDialog.tsx': {
     max: 8,
     reason: 'phone chrome: stacked 48px buttons in the phone dialog',

@@ -132,7 +132,7 @@ export function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
                     </span>
                   ) : null}
                 </div>
-                <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border">
+                <ul className="divide-y divide-border overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
                   {entries.map((entry) => (
                     <li
                       key={entry.id}

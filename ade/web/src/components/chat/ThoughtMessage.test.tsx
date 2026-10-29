@@ -20,7 +20,7 @@ describe('ThoughtMessage', () => {
       <ThoughtMessage message={thought(true)} />,
     )
 
-    expect(html).toContain('Thought…')
+    expect(html).toContain('Thinking')
     expect(html).toContain('Inspecting the message stream')
     expect(html).toContain('data-state="streaming"')
     expect(html).toContain('chat-thought__viewport')

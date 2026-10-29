@@ -22,14 +22,6 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Badge } from '@/components/shadcn/badge'
 import { Button } from '@/components/shadcn/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from '@/components/shadcn/card'
 import { Tabs, TabsList, TabsTrigger } from '@/components/shadcn/tabs'
 import {
   Tooltip,
@@ -57,6 +49,7 @@ import {
   findSideChat,
   folderGh,
   githubWorkerGh,
+  isSideChat,
   lastSpokenEntry,
   SIDE_CHAT_KEY,
   SIDE_CHAT_QUOTES_KEY,
@@ -248,6 +241,15 @@ export function ChatAside({
     if (forkRef.current) return forkRef.current.id
     if (forkIdRef.current) return forkIdRef.current
     if (forkingRef.current) return forkingRef.current
+    // A side chat of a side chat is never wanted, and a loop that forks the
+    // fork would fill the session list: refuse outright.
+    if (
+      isSideChat(conversation) ||
+      (conversation.title ?? '').startsWith('Side chat · ')
+    ) {
+      setForkError('This is already a side chat. Ask in it directly.')
+      return null
+    }
     const run = (async () => {
       setForking(true)
       setForkError(null)
@@ -269,7 +271,12 @@ export function ChatAside({
         const point = lastSpokenEntry(
           (await tail(conversation.id, 20))?.messages ?? [],
         )
-        if (!point) return null
+        if (!point) {
+          setForkError(
+            'A side chat sees the conversation up to now, and this one has no messages yet. Send one in the chat first.',
+          )
+          return null
+        }
         const forked = await client.trigger<{
           session_id: string
           meta: SessionMeta
@@ -849,54 +856,74 @@ function SideChatIntro({
   since?: number
   action?: { label: string; onClick: () => void }
 }) {
-  const facts: { icon: typeof History; text: string }[] = [
+  const facts: { icon: typeof History; label: string; value: string }[] = [
     {
       icon: History,
-      text:
+      label: 'Context',
+      value:
         since === undefined
-          ? 'Sees this conversation up to now'
-          : `Sees this conversation up to ${clockTime(since)}`,
+          ? 'This chat, up to now'
+          : `This chat, up to ${clockTime(since)}`,
     },
-    { icon: Wrench, text: 'Has the same tools and approvals' },
-    { icon: MessageSquareOff, text: 'Nothing here lands in the main chat' },
-    { icon: Timer, text: 'Deleted after 2 hours unused, or with this chat' },
+    { icon: Wrench, label: 'Tools', value: 'Same tools and approvals' },
+    {
+      icon: MessageSquareOff,
+      label: 'Main chat',
+      value: 'Nothing lands there',
+    },
+    {
+      icon: Timer,
+      label: 'Lifetime',
+      value: '2 hours unused, or with this chat',
+    },
   ]
   return (
-    <Card size="sm" className="font-inter" data-side-chat-intro="">
-      <CardHeader>
-        <span
-          aria-hidden
-          className="mb-1 flex size-8 items-center justify-center rounded-md bg-muted text-muted-foreground"
-        >
-          <MessagesSquare className="size-4" />
-        </span>
-        <CardTitle>Ask on the side</CardTitle>
-        <CardDescription className="text-pretty">
-          A scratch chat beside this one, for the question you do not want in
-          the main thread.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <ul className="flex flex-col gap-2">
-          {facts.map(({ icon: Icon, text }) => (
-            <li
-              key={text}
-              className="flex items-start gap-2.5 text-sm text-muted-foreground"
-            >
-              <Icon aria-hidden className="mt-0.5 size-4 shrink-0" />
-              <span>{text}</span>
-            </li>
-          ))}
-        </ul>
-      </CardContent>
+    <section
+      aria-labelledby="side-chat-intro-title"
+      data-side-chat-intro=""
+      className="mx-auto flex w-full max-w-[26rem] flex-col items-center px-1 pt-6 pb-2 text-center font-inter"
+    >
+      {/* A quiet tile: a hairline ring over a faint wash, no fill to shout. */}
+      <span
+        aria-hidden
+        className="flex size-10 items-center justify-center rounded-lg bg-gradient-to-b from-foreground/[0.07] to-foreground/[0.02] text-foreground ring-1 ring-foreground/10"
+      >
+        <MessagesSquare className="size-5" />
+      </span>
+      <h2
+        id="side-chat-intro-title"
+        className="mt-4 text-[15px] font-medium tracking-[-0.01em] text-foreground"
+      >
+        Ask on the side
+      </h2>
+      <p className="mt-1.5 text-sm text-balance text-muted-foreground">
+        A scratch chat beside this one, for the question you don't want in the
+        main thread.
+      </p>
+      <dl className="mt-5 w-full divide-y divide-foreground/[0.07] rounded-xl bg-card text-left ring-1 ring-foreground/10">
+        {facts.map(({ icon: Icon, label, value }) => (
+          <div key={label} className="flex items-center gap-3 px-3.5 py-2.5">
+            <dt className="flex w-24 shrink-0 items-center gap-2 text-xs font-medium text-muted-foreground">
+              <Icon aria-hidden className="size-4 shrink-0" />
+              {label}
+            </dt>
+            <dd className="min-w-0 flex-1 truncate text-sm text-foreground">
+              {value}
+            </dd>
+          </div>
+        ))}
+      </dl>
       {action ? (
-        <CardFooter className="border-foreground/10">
-          <Button variant="secondary" size="sm" onClick={action.onClick}>
-            {action.label}
-          </Button>
-        </CardFooter>
+        <Button
+          variant="secondary"
+          size="sm"
+          className="mt-5"
+          onClick={action.onClick}
+        >
+          {action.label}
+        </Button>
       ) : null}
-    </Card>
+    </section>
   )
 }
 

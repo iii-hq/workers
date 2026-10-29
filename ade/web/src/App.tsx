@@ -57,6 +57,7 @@ import {
   useThemePreference,
 } from '@/hooks/use-theme'
 import {
+  type SplitTarget,
   type UseWorkspaceTabsReturn,
   useWorkspaceTabs,
 } from '@/hooks/use-workspace-tabs'
@@ -69,6 +70,7 @@ import {
 } from '@/lib/conversations-context'
 import { registerPageCommands } from '@/lib/page-commands'
 import { onPaletteOpenRequest } from '@/lib/palette/open-request'
+import { PaneActionsProvider } from '@/lib/pane-actions'
 import {
   focusPane,
   requestPaneFocus,
@@ -105,6 +107,7 @@ import {
   tabPaneIds,
   tabSizes,
   type WorkspaceTab,
+  withPaneSplit,
 } from '@/lib/workspace-tabs'
 import { Configuration } from '@/pages/Configuration'
 import { useUnsavedGuard } from '@/pages/Configuration/tabs/WorkersTab/useUnsavedGuard'
@@ -137,7 +140,9 @@ function focusRequestedPane(tab: WorkspaceTab): void {
   const paneId = tabPaneIds(tab)[tab.screens.indexOf(screen)]
   if (!paneId) return
   const root = paneRoot(paneId)
-  if (root) focusPane(root)
+  // Already inside it (the chat's composer takes the caret as it mounts):
+  // moving focus to the pane's root would only take it away again.
+  if (root && !root.contains(document.activeElement)) focusPane(root)
 }
 
 /**
@@ -187,7 +192,16 @@ function paneIdsByTab(tabs: WorkspaceTab[]): Map<string, Set<string>> {
 
 interface WorkspacePanelCommands {
   openScreen: (screen: TabScreen, placement?: ScreenPlacement) => void
-  split: (side: 'left' | 'right') => void
+  split: (side: 'left' | 'right', beside?: SplitTarget) => void
+}
+
+/** The pane of `tab` that holds focus, if any. */
+function focusedPaneId(tab: WorkspaceTab): string | null {
+  const active = document.activeElement
+  if (!active) return null
+  return (
+    tabPaneIds(tab).find((paneId) => paneRoot(paneId)?.contains(active)) ?? null
+  )
 }
 
 export function App({
@@ -260,7 +274,6 @@ export function App({
   const dirtyEntries = useDirtyEntries()
   const [discardPrompt, setDiscardPrompt] = useState<{
     title: string
-    details: string[]
     proceed: () => void
   } | null>(null)
   const discardPromptRef = useRef(discardPrompt)
@@ -289,16 +302,17 @@ export function App({
     }
     setDiscardPrompt({
       title: 'Close this workspace?',
-      details: reasons,
       proceed,
     })
   }, [])
-  const requestClosePane = useCallback(
-    (tabId: string, paneId: string, close: () => void) => {
+  const requestClosePanes = useCallback(
+    (tabId: string, paneIds: readonly string[], close: () => void) => {
       if (discardPromptRef.current) return
-      const reasons = dirtyReasonsForPane(tabId, paneId)
+      const reasons = paneIds.flatMap((paneId) =>
+        dirtyReasonsForPane(tabId, paneId),
+      )
       const proceed = () => {
-        setPaneDirty(tabId, paneId, false)
+        for (const paneId of paneIds) setPaneDirty(tabId, paneId, false)
         close()
       }
       if (reasons.length === 0) {
@@ -306,8 +320,10 @@ export function App({
         return
       }
       setDiscardPrompt({
-        title: 'Close this panel?',
-        details: reasons,
+        title:
+          paneIds.length === 1
+            ? 'Close this panel?'
+            : `Close ${paneIds.length} panels?`,
         proceed,
       })
     },
@@ -342,13 +358,15 @@ export function App({
       current === -1 ? start : (current + delta + roots.length) % roots.length
     focusPane(roots[next])
   }, [])
+  // The keys split the pane you are in, the way an editor splits the group
+  // it is in; with focus outside every pane, the tab grows at that edge.
   const splitWorkspacePanel = useCallback((side: 'left' | 'right') => {
+    const current = workspaceRef.current
+    const paneId = focusedPaneId(current.activeTab)
+    const beside = paneId ? { paneId } : undefined
     const commands = panelCommandsRef.current
-    if (commands) commands.split(side)
-    else {
-      const current = workspaceRef.current
-      current.addColumn(current.activeTab.id, side)
-    }
+    if (commands) commands.split(side, beside)
+    else current.addColumn(current.activeTab.id, side, beside)
   }, [])
   useEffect(
     () =>
@@ -497,7 +515,7 @@ export function App({
           commandsRef={panelCommandsRef}
           mobilePanelIndex={mobilePanelIndex}
           onMobilePanelIndexChange={setMobilePanelIndex}
-          onRequestClosePane={requestClosePane}
+          onRequestClosePanes={requestClosePanes}
         />
         <ExtOverlays />
         <ConfirmDialog
@@ -507,7 +525,6 @@ export function App({
           }}
           title={discardPrompt?.title ?? ''}
           description="Unsaved work in it will be lost."
-          details={discardPrompt?.details}
           confirmLabel="Close and discard"
           cancelLabel="Keep working"
           onConfirm={() => discardPrompt?.proceed()}
@@ -545,8 +562,12 @@ interface WorkspacePanesProps {
   commandsRef: MutableRefObject<WorkspacePanelCommands | null>
   mobilePanelIndex: number
   onMobilePanelIndexChange: (index: number) => void
-  /** Close a pane after the dirty-work guard has had its say. */
-  onRequestClosePane: (tabId: string, paneId: string, close: () => void) => void
+  /** Close panes after the dirty-work guard has had its say. */
+  onRequestClosePanes: (
+    tabId: string,
+    paneIds: readonly string[],
+    close: () => void,
+  ) => void
 }
 
 interface PanelPresence {
@@ -591,7 +612,7 @@ function WorkspacePanes({
   commandsRef,
   mobilePanelIndex,
   onMobilePanelIndexChange,
-  onRequestClosePane,
+  onRequestClosePanes,
 }: WorkspacePanesProps) {
   const { screenOptions } = useScreenOptions()
   const { activeTab } = workspace
@@ -1178,6 +1199,35 @@ function WorkspacePanes({
 
       const side = command.side
       const target = current.tabs.find((tab) => tab.id === command.tabId)
+      const beside = command.beside
+      if (beside) {
+        if (!target) return false
+        const split = withPaneSplit(
+          target,
+          beside.paneId,
+          side,
+          beside.screen ?? null,
+        )
+        if (split === target) return false
+        const anchor = tabPaneIds(target).indexOf(beside.paneId)
+        if (
+          current.activeTab.id === command.tabId &&
+          !reducedMotion &&
+          tabColumns(split) > tabColumns(target)
+        ) {
+          pendingPanelEntryRef.current = {
+            tabId: target.id,
+            column: side === 'left' ? anchor : anchor + 1,
+            direction: side,
+          }
+        }
+        if (edgeNudge) {
+          saveEdgeAddDiscovered()
+          setEdgeNudge(false)
+        }
+        current.addColumn(command.tabId, side, beside)
+        return true
+      }
       if (!target || tabColumns(target) >= MAX_COLUMNS) {
         if (
           command.type === 'add' &&
@@ -1273,8 +1323,13 @@ function WorkspacePanes({
           tabId: activeTab.id,
           placement,
         }),
-      split: (side) =>
-        dispatchPanelCommand({ type: 'add', tabId: activeTab.id, side }),
+      split: (side, beside) =>
+        dispatchPanelCommand({
+          type: 'add',
+          tabId: activeTab.id,
+          side,
+          beside,
+        }),
     }
     commandsRef.current = commands
     return () => {
@@ -1315,6 +1370,38 @@ function WorkspacePanes({
     panelCommandQueued ||
     panelRemovalQueued ||
     isResizing
+
+  // "Close other panes": one write, no exit motion (several panes leaving
+  // at once would only be noise), behind the unsaved-work guard.
+  const requestOnlyPane = useCallback(
+    (paneId: string) => {
+      const others = paneIds.filter((id) => id !== paneId)
+      if (others.length === 0) return
+      onRequestClosePanes(activeTab.id, others, () => {
+        const current = workspaceRef.current
+        const tab = current.tabs.find(
+          (candidate) => candidate.id === activeTab.id,
+        )
+        if (!tab || !tabPaneIds(tab).includes(paneId)) return
+        setPanelCommandInFlight(workspaceSignatureRef.current)
+        current.keepOnlyPane(activeTab.id, paneId)
+      })
+    },
+    [activeTab.id, onRequestClosePanes, paneIds, setPanelCommandInFlight],
+  )
+
+  const openScreens = activeTab.screens.filter(
+    (candidate): candidate is TabScreen => candidate !== null,
+  )
+
+  const resetSizes = () => {
+    if (enteringPanel || exitingPanelRef.current) return
+    const equal = Array.from({ length: columns }, () => 1 / columns)
+    commitPendingRef.current = false
+    dragSizesRef.current = equal
+    setDragSizes(equal)
+    commitResize()
+  }
 
   const requestPanelReorder = useCallback(
     (paneId: string, targetPaneId: string) => {
@@ -1387,7 +1474,7 @@ function WorkspacePanes({
           // last column detaches its screen instead (back to the attach
           // affordance) — a tab never loses its final pane.
           const closePane = () =>
-            onRequestClosePane(activeTab.id, paneId, () =>
+            onRequestClosePanes(activeTab.id, [paneId], () =>
               columns > 1
                 ? requestPanelRemoval(column)
                 : workspace.detachScreen(activeTab.id, column),
@@ -1490,21 +1577,43 @@ function WorkspacePanes({
                     onRemove={
                       columns > 1
                         ? () =>
-                            onRequestClosePane(activeTab.id, paneId, () =>
+                            onRequestClosePanes(activeTab.id, [paneId], () =>
                               requestPanelRemoval(column),
                             )
                         : undefined
                     }
                   />
                 ) : (
-                  <ScreenBody
-                    key={screen}
-                    screen={screen}
-                    panelSide={panelSide}
-                    tabId={activeTab.id}
-                    paneId={paneId}
-                    onClose={closePane}
-                  />
+                  <PaneActionsProvider
+                    actions={
+                      desktopPanelMotion
+                        ? {
+                            split: (side, next) =>
+                              dispatchPanelCommand({
+                                type: 'add',
+                                tabId: activeTab.id,
+                                side,
+                                beside: { paneId, screen: next },
+                              }),
+                            closeOthers:
+                              columns > 1
+                                ? () => requestOnlyPane(paneId)
+                                : undefined,
+                            openScreens: openScreens,
+                            busy: panelInteractionDisabled,
+                          }
+                        : undefined
+                    }
+                  >
+                    <ScreenBody
+                      key={screen}
+                      screen={screen}
+                      panelSide={panelSide}
+                      tabId={activeTab.id}
+                      paneId={paneId}
+                      onClose={closePane}
+                    />
+                  </PaneActionsProvider>
                 )}
               </div>
             </section>
@@ -1525,6 +1634,7 @@ function WorkspacePanes({
                   }
                   onResize={(delta) => resizePair(column - 1, delta)}
                   onCommit={commitResize}
+                  onReset={resetSizes}
                   onResizeStart={startResize}
                   onResizeEnd={endResize}
                   containerWidth={() =>

@@ -1,0 +1,131 @@
+/* The conversation list on the sidebar's own rhythm rather than the tree
+   recipe's: 36px rows, a 10px inset on both edges, rounded-xl and 14px
+   titles — the same box as the New chat / Add project / Search rows above,
+   so a selected chat and a hovered nav row paint one identical wash. These
+   live here, not as Tailwind utilities on the container, because
+   `.iii-ui-tree*` in ui-recipes.css is unlayered and beats any utility. */
+
+/* Doubled with the recipe's class so the overrides outrank `.iii-ui-tree`
+   whichever stylesheet loads first. */
+.iii-ui-tree.conversation-tree {
+  --iii-ui-tree-inset: 10px;
+  --iii-ui-tree-trailing: 10px;
+}
+
+.iii-ui-tree.conversation-tree:not([data-narrow]) {
+  --iii-ui-tree-row: 2.25rem;
+}
+
+.conversation-tree .iii-ui-tree-item {
+  border-radius: var(--radius-xl);
+  font-family: var(--font-inter);
+  font-size: 0.875rem;
+}
+
+.conversation-tree .iii-ui-tree-item__meta {
+  font-size: 0.75rem;
+}
+
+/* One selected wash for the sidebar: the nav rows' hover uses the same
+   neutral-200/70 and neutral-900 (ConversationSidebar's NAV_ROW). Hover
+   is a lighter step of it, so the open chat still reads as selected; the
+   selected rules come last so a hovered open chat keeps its wash. */
+.conversation-tree .iii-ui-tree-item:hover {
+  background: color-mix(in oklab, var(--color-neutral-200) 45%, transparent);
+}
+
+:where([data-theme="dark"]) .conversation-tree .iii-ui-tree-item:hover {
+  background: color-mix(in oklab, var(--color-neutral-900) 60%, transparent);
+}
+
+.conversation-tree .iii-ui-tree-item[aria-current="page"] {
+  background: color-mix(in oklab, var(--color-neutral-200) 70%, transparent);
+}
+
+:where([data-theme="dark"])
+  .conversation-tree
+  .iii-ui-tree-item[aria-current="page"] {
+  background: var(--color-neutral-900);
+}
+
+/* ── row menu and pin ─────────────────────────────────────────────── */
+
+/* While a row's menu is open the pointer is on the popover, not the row:
+   keep the cluster in flow and the row washed so the trigger does not
+   vanish from under its own menu. */
+.conversation-tree .iii-ui-tree-item[data-menu-open] {
+  background: color-mix(in oklab, var(--color-neutral-200) 45%, transparent);
+}
+
+:where([data-theme="dark"])
+  .conversation-tree
+  .iii-ui-tree-item[data-menu-open] {
+  background: color-mix(in oklab, var(--color-neutral-900) 60%, transparent);
+}
+
+.conversation-tree .iii-ui-tree-item[data-menu-open] .iii-ui-tree-item__action {
+  opacity: 1;
+}
+
+@media (hover: hover) {
+  .iii-ui-tree.conversation-tree:not([data-narrow])
+    .iii-ui-tree-item[data-menu-open]
+    .iii-ui-tree-item__actions {
+    position: static;
+    transform: none;
+  }
+
+  .iii-ui-tree.conversation-tree:not([data-narrow])
+    .iii-ui-tree-item[data-menu-open]
+    .iii-ui-tree-item__trailing
+    > :not(.iii-ui-tree-item__actions) {
+    position: absolute;
+    opacity: 0;
+  }
+}
+
+/* A pinned chat shows its pin at rest, in the quiet metadata tone. */
+.conversation-tree .conversation-row__pinned {
+  color: var(--color-ink-ghost);
+}
+
+/* The open menu's rows: 14px Inter with an icon column, on the popover
+   canon; the destructive row keeps its own tone. */
+.conversation-row-menu [data-slot="dropdown-menu-item"] svg {
+  color: var(--color-ink-faint);
+}
+
+.conversation-row-menu
+  [data-slot="dropdown-menu-item"][data-variant="destructive"]
+  svg {
+  color: inherit;
+}
+
+/* ── project sections ─────────────────────────────────────────────── */
+
+/* A project's chats sit under its name: the row content starts where the
+   header's label does (7px gutter + 24px tile + 10px gap), and the wash
+   still spans the full row. */
+.conversation-tree .conversation-project-rows {
+  --iii-ui-tree-inset: 41px;
+}
+
+.conversation-project-header:hover {
+  background: color-mix(in oklab, var(--color-neutral-200) 45%, transparent);
+}
+
+:where([data-theme="dark"]) .conversation-project-header:hover {
+  background: color-mix(in oklab, var(--color-neutral-900) 60%, transparent);
+}
+
+/* The plus shows with the pointer on the project; touch keeps it visible. */
+@media (hover: hover) and (pointer: fine) {
+  .conversation-project-header .conversation-project-new {
+    opacity: 0;
+  }
+
+  .conversation-project-header:hover .conversation-project-new,
+  .conversation-project-header:focus-within .conversation-project-new {
+    opacity: 1;
+  }
+}

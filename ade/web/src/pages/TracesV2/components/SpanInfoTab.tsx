@@ -37,7 +37,7 @@ function Group({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="flex flex-col gap-1.5">
       <h3 className="text-xs font-semibold text-foreground">{title}</h3>
-      <div className="divide-y divide-border rounded-lg border border-border">
+      <div className="divide-y divide-border rounded-xl bg-card ring-1 ring-foreground/10">
         {children}
       </div>
     </section>
@@ -194,7 +194,7 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
       {/* Timing */}
       <section className="flex flex-col gap-1.5">
         <h3 className="text-xs font-semibold text-foreground">Timing</h3>
-        <div className="rounded-lg border border-border px-3 py-2.5">
+        <div className="rounded-xl bg-card ring-1 ring-foreground/10 px-3 py-2.5">
           <div className="flex items-baseline justify-between gap-3">
             <span className="font-mono text-lg font-semibold text-foreground tabular-nums">
               {formatDuration(span.duration_ms)}

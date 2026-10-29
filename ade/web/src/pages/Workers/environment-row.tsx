@@ -1,10 +1,10 @@
 import { Trash2, Undo2 } from 'lucide-react'
 import { useId } from 'react'
-import { Badge } from '@/components/ui/Badge'
-import { Button } from '@/components/ui/Button'
+import { Badge } from '@/components/shadcn/badge'
+import { Button } from '@/components/shadcn/button'
 import { IconButton } from '@/components/ui/IconButton'
-import { Input } from '@/components/ui/Input'
 import { SettingsRow } from '@/components/ui/Settings'
+import { TextInput } from './components/kit'
 import { type EnvDraft, isSecretValue, MASK } from './model'
 
 export function EnvironmentRow({
@@ -27,7 +27,7 @@ export function EnvironmentRow({
       data-removed={row.removed || undefined}
       label={
         row.isNew ? (
-          <Input
+          <TextInput
             aria-label="Variable name"
             aria-invalid={!!error}
             aria-describedby={describedBy}
@@ -54,10 +54,12 @@ export function EnvironmentRow({
         row.secret && !row.replacing ? (
           <span className="wk-secret">
             <span className="wk-mono wk-faint">{MASK}</span>
-            <Badge>secret</Badge>
+            <Badge variant="secondary" className="wk-badge font-inter">
+              secret
+            </Badge>
             <Button
-              variant="ghost"
-              size="sm"
+              variant="outline"
+              className="wk-press font-inter"
               disabled={row.removed}
               onClick={() => onChange({ replacing: true, value: '' })}
             >
@@ -66,7 +68,7 @@ export function EnvironmentRow({
           </span>
         ) : (
           <span className="wk-env-value">
-            <Input
+            <TextInput
               aria-label={`${row.key || 'New variable'} value`}
               aria-invalid={!!error}
               aria-describedby={describedBy}

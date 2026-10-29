@@ -2316,6 +2316,7 @@ dependencies = [
  "async-trait",
  "base64",
  "clap",
+ "core-foundation-sys",
  "futures",
  "hound",
  "iii-console-ui",

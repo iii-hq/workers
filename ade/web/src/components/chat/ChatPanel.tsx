@@ -1,18 +1,13 @@
 import { PanelLeft, PanelRight, SquarePen } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AddProjectDialog } from '@/components/chat/AddProjectDialog'
 import {
   NewChatDialog,
   type NewChatDraft,
 } from '@/components/chat/NewChatDialog'
+import { OpenProjectPicker } from '@/components/chat/OpenProjectPicker'
 import { ConversationSidebar } from '@/components/sidebar/ConversationSidebar'
 import { Button } from '@/components/ui/Button'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-} from '@/components/ui/Dialog'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { IconButton } from '@/components/ui/IconButton'
 import { PageHeader, PageSidebar } from '@/components/ui/PageChrome'
 import { StatusPanel } from '@/components/ui/StatusPanel'
@@ -215,7 +210,6 @@ export function ChatPanel({
   const [removalPending, setRemovalPending] = useState(false)
   const [removalError, setRemovalError] = useState<string | null>(null)
   const removalWaitRef = useRef<AbortController | null>(null)
-  const cancelRemovalRef = useRef<HTMLButtonElement | null>(null)
 
   useEffect(
     () => () => {
@@ -379,9 +373,28 @@ export function ChatPanel({
     setRemovalError(null)
   }, [])
 
+  // The dialog stays open (busy) until the deletion is confirmed, and says
+  // why when it isn't; its confirm control then tries again.
   const confirmRemoval = useCallback(async () => {
-    if (pendingRemoval) await performRemoval(pendingRemoval)
-  }, [pendingRemoval, performRemoval])
+    const target = pendingRemoval
+    if (!target || removalWaitRef.current) return
+    const wait = new AbortController()
+    removalWaitRef.current = wait
+    setRemovalPending(true)
+    setRemovalError(null)
+    try {
+      await remove(target.id, { signal: wait.signal })
+    } catch (error) {
+      if (!wait.signal.aborted) {
+        throw new Error(`The deletion wasn't confirmed: ${errText(error)}`)
+      }
+    } finally {
+      if (removalWaitRef.current === wait) {
+        removalWaitRef.current = null
+        setRemovalPending(false)
+      }
+    }
+  }, [pendingRemoval, remove])
 
   const removalAction = pendingRemoval?.hasRunningWork
     ? 'Stop and delete'
@@ -415,7 +428,7 @@ export function ChatPanel({
         onOpenChange={setImportOpen}
         onImported={handleSelect}
       />
-      <AddProjectDialog
+      <OpenProjectPicker
         open={addProjectOpen}
         onOpenChange={setAddProjectOpen}
         onAdded={handleProjectAdded}
@@ -484,6 +497,7 @@ export function ChatPanel({
               narrow={narrow}
               onCreate={() => setNewChatOpen(true)}
               onAddProject={() => setAddProjectOpen(true)}
+              onCreateInProject={handleProjectAdded}
               onImport={() => setImportOpen(true)}
               onSelect={handleSelect}
               onRename={rename}
@@ -544,7 +558,8 @@ export function ChatPanel({
           detail={previewError.message}
           action={
             <Button
-              variant="ghost"
+              variant="secondary"
+              size="sm"
               onClick={() => void requestRemoval(previewError.id)}
             >
               Try again
@@ -552,89 +567,34 @@ export function ChatPanel({
           }
         />
       ) : null}
-      <Dialog
+      <ConfirmDialog
         open={pendingRemoval !== null}
-        onOpenChange={(open) => !open && cancelRemoval()}
-      >
-        <DialogContent
-          data-chat-delete-dialog=""
-          aria-busy={removalPending}
-          onOpenAutoFocus={(event) => {
-            event.preventDefault()
-            cancelRemovalRef.current?.focus()
-          }}
-          onEscapeKeyDown={(event) => {
-            if (removalPending) event.preventDefault()
-          }}
-          onInteractOutside={(event) => {
-            if (removalPending) event.preventDefault()
-          }}
-        >
-          <DialogTitle className="pr-8">
-            {removalAction} conversation?
-          </DialogTitle>
-          <DialogDescription className="mt-2 break-words leading-relaxed">
-            <span className="font-medium text-ink">
-              “{pendingRemoval?.title}”
-            </span>
-            {pendingRemoval?.hasChildren
-              ? ' and its subagent conversations will be permanently deleted.'
-              : ' will be permanently deleted.'}{' '}
-            This cannot be undone.
-            {pendingRemoval?.hasRunningWork || pendingRemoval?.parentId ? (
-              <span className="mt-2 block">
-                {pendingRemoval.hasRunningWork
-                  ? 'Running work will be stopped first. '
-                  : null}
-                {pendingRemoval.parentId
-                  ? 'The parent will be notified, not stopped or deleted.'
-                  : null}
-              </span>
-            ) : null}
-          </DialogDescription>
-          {removalPending ? (
-            <StatusPanel
-              className="mt-3"
-              role="status"
-              headline={removalProgress}
-              detail="Waiting for confirmation. Closing the panel won't cancel deletion."
-            />
-          ) : null}
-          {removalError ? (
-            <StatusPanel
-              className="mt-3"
-              variant="alert"
-              role="alert"
-              headline="Deletion could not be confirmed."
-              data-chat-delete-error=""
-              detail={removalError}
-            />
-          ) : null}
-          <div data-chat-delete-actions="">
-            <Button
-              ref={cancelRemovalRef}
-              type="button"
-              variant="ghost"
-              disabled={removalPending}
-              onClick={cancelRemoval}
-            >
-              {removalError ? 'Close' : 'Cancel'}
-            </Button>
-            <Button
-              type="button"
-              variant="primary"
-              disabled={removalPending}
-              onClick={() => void confirmRemoval()}
-            >
-              {removalPending
-                ? removalProgress
-                : removalError
-                  ? `Retry ${removalAction.toLowerCase()}`
-                  : removalAction}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+        onOpenChange={(open) => {
+          if (!open) cancelRemoval()
+        }}
+        title={`${removalAction} conversation?`}
+        description={
+          pendingRemoval ? (
+            <>
+              {pendingRemoval.hasChildren
+                ? 'This conversation and its subagent conversations will be permanently deleted.'
+                : 'This conversation will be permanently deleted.'}{' '}
+              {pendingRemoval.hasRunningWork
+                ? 'Running work will be stopped first. '
+                : null}
+              {pendingRemoval.parentId
+                ? 'The parent will be notified, not stopped or deleted. '
+                : null}
+              This cannot be undone.
+            </>
+          ) : null
+        }
+        confirmLabel={removalAction}
+        busyLabel={removalProgress}
+        error={removalError}
+        tone="danger"
+        onConfirm={confirmRemoval}
+      />
     </div>
   )
 }

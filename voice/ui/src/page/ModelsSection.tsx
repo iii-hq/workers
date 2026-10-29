@@ -120,8 +120,8 @@ export function ModelsSection({
                     actions={
                       <>
                         {!role ? (
-                          <Button variant={m.installed ? 'primary' : 'ghost'} size="sm"
-                            className="voice-model-use" aria-label={`${modelUseLabel(m)}: ${m.name}`}
+                          <Button variant={m.installed ? 'primary' : 'secondary'} size="sm"
+                            aria-label={`${modelUseLabel(m)}: ${m.name}`}
                             disabled={busy !== null || downloading} onClick={() => pickModel(m)}>
                             <Check />
                             {modelUseLabel(m)}

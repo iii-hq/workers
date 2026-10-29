@@ -49,28 +49,32 @@
 
 .chat-message {
   min-width: 0;
-  gap: 12px;
+  gap: 10px;
 }
 
-.chat-user-header {
-  padding-right: 4px;
-  font-size: 12px;
-  color: var(--color-ink-faint);
-}
+/* ── the two speakers ─────────────────────────────────────────────── */
 
-.chat-user-bubble {
-  max-width: 86%;
-  padding: 14px 20px;
-  border-radius: 22px 22px 6px 22px;
-  background: var(--color-surface);
-}
-
+/* A reply opens with the model's mark, the agent's name and the model id
+   as a quiet chip, so one line says who answered and with what. */
 .chat-agent-header {
   display: flex;
   min-width: 0;
-  gap: 6px;
+  min-height: 24px;
+  align-items: center;
+  gap: 8px;
   font-size: 13px;
   line-height: 20px;
+}
+
+.chat-agent-mark {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--color-surface);
+  box-shadow: inset 0 0 0 1px var(--color-edge);
 }
 
 .chat-agent-name {
@@ -80,18 +84,84 @@
 
 .chat-agent-model {
   min-width: 0;
-  max-width: 60%;
+  max-width: 50%;
   overflow: hidden;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--color-surface);
+  font-family: var(--font-geist-mono);
+  font-size: 11.5px;
+  line-height: 18px;
+  font-weight: 400;
+  color: var(--color-ink-faint);
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
-  font-weight: 400;
+}
+
+/* The person's message is the bubble; its copy sits on the bubble's top
+   edge, inside the right corner, and shows on hover.
+
+   The row spans the column so the bubble's 80% cap resolves against the
+   transcript width. Inside a shrink-to-fit row the percentage resolved
+   against the bubble's own content, and a short message wrapped onto a
+   second line with room to spare. */
+.chat-user-row {
+  display: flex;
+  width: 100%;
+  justify-content: flex-end;
+}
+
+.chat-user-bubble-wrap {
+  position: relative;
+  min-width: 0;
+  max-width: 80%;
+}
+
+.chat-user-bubble {
+  padding: 12px 16px;
+  border-radius: 18px 18px 6px 18px;
+  background: var(--color-surface);
+}
+
+.chat-user-copy {
+  position: absolute;
+  top: -12px;
+  right: 14px;
+  z-index: 1;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--color-bg);
+  box-shadow: 0 0 0 1px var(--color-rule);
   color: var(--color-ink-faint);
 }
 
+.chat-user-copy:hover {
+  color: var(--color-ink);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .chat-user-copy {
+    opacity: 0;
+    transform: translateY(2px);
+    transition:
+      opacity 140ms ease-out,
+      transform 140ms ease-out,
+      color 140ms ease-out;
+  }
+
+  .chat-message[data-message-role="user"]:hover .chat-user-copy,
+  .chat-message[data-message-role="user"]:focus-within .chat-user-copy {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ── the prose ────────────────────────────────────────────────────── */
+
 .chat-prose :is(p, ul, ol) {
   font-family: var(--font-inter);
-  line-height: 1.8;
+  line-height: 1.7;
   letter-spacing: -0.006em;
 }
 
@@ -101,41 +171,210 @@
   font-size: 15px;
 }
 
-.chat-prose li {
-  margin-block: 7px;
-  padding-left: 3px;
+.chat-prose p {
+  margin-block: 12px;
 }
 
-.chat-prose :not(pre) > code {
-  padding: 2px 5px;
-  border-radius: 5px;
-  background: var(--color-surface);
-  font-size: 0.9em;
-  overflow-wrap: anywhere;
+.chat-prose :is(h1, h2, h3, h4) {
+  font-family: var(--font-inter);
+  color: var(--color-ink);
+  text-wrap: balance;
 }
 
-.chat-message-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+.chat-prose .chat-prose-h1 {
+  margin: 28px 0 10px;
+  font-size: 22px;
+  line-height: 1.3;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.chat-prose .chat-prose-h2 {
+  margin: 26px 0 8px;
+  font-size: 17px;
+  line-height: 1.35;
+  font-weight: 600;
+  letter-spacing: -0.012em;
+}
+
+.chat-prose .chat-prose-h3 {
+  margin: 22px 0 6px;
+  font-size: 15px;
+  line-height: 1.4;
+  font-weight: 600;
+}
+
+.chat-prose .chat-prose-h4 {
+  margin: 18px 0 6px;
+  font-size: 14px;
+  line-height: 1.4;
+  font-weight: 600;
   color: var(--color-ink-faint);
 }
 
-/* With a pointer, a reply's copy / quote actions wait until the reader
-   hovers or tabs into the message (the user bubble already does this), so
-   a long transcript is prose, not a column of icons. Touch keeps them. */
-@media (hover: hover) and (pointer: fine) {
-  .chat-message[data-message-role="assistant"] .chat-message-actions {
-    opacity: 0;
-    transition: opacity 160ms ease-out;
-  }
+.chat-prose :is(h1, h2, h3, h4):first-child {
+  margin-top: 0;
+}
 
-  .chat-message[data-message-role="assistant"]:hover .chat-message-actions,
-  .chat-message[data-message-role="assistant"]:focus-within
-    .chat-message-actions {
-    opacity: 1;
+.chat-prose :is(ul, ol) {
+  margin-block: 10px;
+  padding-left: 22px;
+}
+
+.chat-prose li {
+  margin-block: 5px;
+  padding-left: 2px;
+}
+
+.chat-prose li > :is(ul, ol) {
+  margin-block: 4px;
+}
+
+.chat-prose ul > li::marker {
+  color: var(--color-ink-ghost);
+}
+
+.chat-prose ol > li::marker {
+  color: var(--color-ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-prose strong {
+  font-weight: 600;
+}
+
+.chat-prose :not(pre) > code {
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: var(--color-surface);
+  box-shadow: inset 0 0 0 1px var(--color-edge);
+  font-family: var(--font-geist-mono);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.chat-prose .chat-prose-link {
+  color: var(--color-ink);
+  text-decoration-color: color-mix(in srgb, var(--color-ink) 35%, transparent);
+  text-decoration-thickness: 1px;
+  transition: text-decoration-color 160ms ease-out;
+}
+
+@media (hover: hover) {
+  .chat-prose .chat-prose-link:hover {
+    text-decoration-color: var(--color-ink);
   }
 }
+
+.chat-prose .chat-prose-quote {
+  margin: 14px 0;
+  padding: 2px 0 2px 14px;
+  border-left: 2px solid color-mix(in srgb, var(--color-ink) 22%, transparent);
+  font-style: normal;
+}
+
+.chat-prose hr {
+  margin: 22px 0;
+  border-top-color: var(--color-edge);
+}
+
+.chat-prose .chat-prose-image {
+  display: block;
+  max-width: 100%;
+  margin: 12px 0;
+  border-radius: 12px;
+  box-shadow: inset 0 0 0 1px var(--color-edge);
+}
+
+/* An image the page cannot show inline is a file chip; the picture, when
+   it loads, waits in a hover card above it. */
+.chat-prose-image-chip {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px 3px 8px;
+  border-radius: 999px;
+  background: var(--color-surface);
+  box-shadow: inset 0 0 0 1px var(--color-edge);
+  font-family: var(--font-inter);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--color-ink);
+  vertical-align: middle;
+}
+
+.chat-prose-image-chip__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-prose-image-chip__alt {
+  overflow: hidden;
+  color: var(--color-ink-faint);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-prose-image-chip-trigger {
+  display: inline-block;
+  max-width: 100%;
+  cursor: zoom-in;
+}
+
+.chat-prose-image-preview {
+  max-width: min(420px, 90vw);
+}
+
+.chat-prose-image-preview__img {
+  display: block;
+  max-width: 100%;
+  max-height: 320px;
+  border-radius: 8px;
+  object-fit: contain;
+}
+
+.chat-prose-image-preview__missing {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  font-size: 13px;
+  color: var(--color-ink-faint);
+}
+
+/* Tables sit in a rounded hairline frame with a tinted header row. */
+.chat-prose .iii-ui-table-viewport {
+  margin: 14px 0;
+  border-radius: 12px;
+  box-shadow: inset 0 0 0 1px var(--color-edge);
+}
+
+.chat-prose .iii-ui-table {
+  font-family: var(--font-inter);
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.chat-prose .iii-ui-table .iii-ui-table__head,
+.chat-prose .iii-ui-table .iii-ui-table__cell {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--color-edge);
+}
+
+.chat-prose .iii-ui-table .iii-ui-table__head {
+  background: var(--color-surface);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-ink-faint);
+}
+
+.chat-prose .iii-ui-table tr:last-child .iii-ui-table__cell {
+  border-bottom: 0;
+}
+
+/* ── reply actions ────────────────────────────────────────────────── */
 
 .chat-message-action {
   border-radius: 7px;
@@ -148,6 +387,131 @@
   .chat-message-action:hover {
     background: var(--color-surface-hover);
   }
+}
+
+.chat-message-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: -2px;
+  color: var(--color-ink-faint);
+}
+
+/* A reply closes with its facts and its tools on one always-visible line:
+   how long the turn took and when it landed, then copy and the more menu,
+   then a chip per file the turn wrote. */
+.chat-reply-footer {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.chat-reply-meta {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-right: 2px;
+  font-family: var(--font-inter);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--color-ink-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.chat-reply-meta__dot {
+  color: var(--color-ink-ghost);
+}
+
+.chat-reply-chip {
+  display: inline-flex;
+  max-width: 100%;
+  height: 28px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px 0 8px;
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px var(--color-edge);
+  font-family: var(--font-inter);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--color-ink);
+  cursor: pointer;
+  transition:
+    background-color 160ms ease-out,
+    box-shadow 160ms ease-out;
+}
+
+@media (hover: hover) {
+  .chat-reply-chip:hover {
+    background: var(--color-surface);
+  }
+}
+
+.chat-reply-chip:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.chat-reply-chip[data-kind="delete"] {
+  color: var(--color-ink-faint);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--color-ink) 40%, transparent);
+}
+
+.chat-reply-chip__name {
+  max-width: 14ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-reply-chip__stat {
+  font-family: var(--font-geist-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-reply-chip__stat[data-sign="plus"] {
+  color: var(--color-ok);
+}
+
+.chat-reply-chip__stat[data-sign="minus"] {
+  color: var(--color-alert);
+}
+
+.chat-message .chat-message-action {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  color: var(--color-ink-faint);
+}
+
+/* ── the live thought ─────────────────────────────────────────────── */
+
+.chat-thought__summary {
+  font-family: var(--font-inter);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--color-ink-faint);
+  transition: color 160ms ease-out;
+}
+
+.chat-thought__summary:hover {
+  color: var(--color-ink);
+}
+
+.chat-thought__body {
+  margin: 8px 0 0 7px;
+  padding-left: 14px;
+  border-left: 1px solid var(--color-edge);
+  font-family: var(--font-inter);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--color-ink-faint);
 }
 
 .conversation-transcript [data-history-edge] {
@@ -163,26 +527,6 @@
   height: 1px;
   width: 32px;
   background: var(--color-edge);
-}
-
-.chat-activity-toggle {
-  min-height: 32px;
-  padding: 5px 10px;
-  border-radius: 8px;
-  background: var(--color-surface);
-  font-family: var(--font-inter);
-  font-size: 12px;
-  transition: background-color 160ms ease-out;
-}
-
-.chat-activity-toggle:hover {
-  background: var(--color-surface-hover);
-}
-
-.conversation-transcript [data-function-trigger-group-calls] {
-  margin-top: 6px;
-  padding-left: 12px;
-  border-left: 1px solid var(--color-edge);
 }
 
 .conversation-transcript .function-trigger-surface {
@@ -254,18 +598,27 @@
   position: relative;
 }
 
-.composer-shell .composer-desktop-toolbar [data-iii-ui='voice'] .voice-recording-bar {
+.composer-shell
+  .composer-desktop-toolbar
+  [data-iii-ui="voice"]
+  .voice-recording-bar {
   inset: 0 10px 10px;
 }
 
-.composer-shell .composer-mobile-toolbar [data-iii-ui='voice'] .voice-recording-bar {
+.composer-shell
+  .composer-mobile-toolbar
+  [data-iii-ui="voice"]
+  .voice-recording-bar {
   inset: 0 8px 8px;
 }
 
 @container (max-width: 480px) {
-  .chat-user-bubble {
+  .chat-user-bubble-wrap {
     max-width: 94%;
-    padding: 12px 15px;
+  }
+
+  .chat-user-bubble {
+    padding: 11px 14px;
   }
 
   .chat-prose :is(p, ul, ol) {
@@ -276,15 +629,15 @@
     max-width: 50%;
   }
 
-  .conversation-transcript [data-function-trigger-group-calls] {
-    padding-left: 8px;
+  .chat-tool-group__list {
+    padding-inline: 4px;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .chat-message-action,
   .chat-message-actions,
-  .chat-activity-toggle,
+  .chat-user-copy,
   .composer-shell .composer-card {
     transition: none;
   }
@@ -325,10 +678,6 @@
     margin-inline-start: auto;
     max-width: 100%;
   }
-
-  .composer-suggestions {
-    justify-content: flex-start;
-  }
 }
 
 @media (pointer: coarse) {
@@ -339,4 +688,46 @@
 
 .composer-shell[data-composer-welcome] .composer-editor {
   min-height: 88px;
+}
+
+/* A narrow pane (a side panel, a split): a compact composer, so the card
+   doesn't dwarf the pane. The placeholder keeps to one line and ellipsizes
+   rather than wrapping, the welcome editor is a couple of lines tall, and
+   the starter prompts are kept for a wide pane. On
+   a pointer the text drops to 14px and the welcome sits centred; touch
+   keeps its 16px field (smaller text zooms the page on iOS) and its
+   top-aligned welcome (the keyboard takes the bottom half). */
+@container (max-width: 480px) {
+  .composer-shell .composer-card {
+    border-radius: 16px;
+  }
+
+  .composer-shell .composer-placeholder {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .composer-shell .composer-editor,
+  .composer-shell[data-composer-welcome] .composer-editor {
+    min-height: 52px;
+  }
+
+  .composer-suggestions {
+    display: none;
+  }
+
+  @media (pointer: fine) {
+    .composer-shell .composer-editor,
+    .composer-shell .composer-placeholder {
+      padding: 10px 14px 6px;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    .chat-conversation-body[data-welcome] {
+      justify-content: safe center;
+      padding-block: 16px 48px;
+    }
+  }
 }

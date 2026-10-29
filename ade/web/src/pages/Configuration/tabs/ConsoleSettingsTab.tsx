@@ -38,6 +38,12 @@ import {
 } from '@/lib/completion-bell'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { filterAllowlistCandidates } from '@/lib/permissions/allowlist-filter'
+import {
+  loadUiSoundsEnabled,
+  playUiSound,
+  saveUiSoundsEnabled,
+  subscribeUiSoundsPreference,
+} from '@/lib/ui-sounds'
 import { settingsFade } from '../components/motion'
 import {
   SettingsList,
@@ -119,6 +125,23 @@ export function ConsoleSettingsTab({
   const handleCompletionBellChange = useCallback((enabled: boolean) => {
     setCompletionBellEnabled(enabled)
     saveCompletionBellEnabled(enabled)
+  }, [])
+
+  const [uiSoundsEnabled, setUiSoundsEnabled] = useState(loadUiSoundsEnabled)
+
+  useEffect(
+    () =>
+      subscribeUiSoundsPreference(() => {
+        setUiSoundsEnabled(loadUiSoundsEnabled())
+      }),
+    [],
+  )
+
+  const handleUiSoundsChange = useCallback((enabled: boolean) => {
+    setUiSoundsEnabled(enabled)
+    saveUiSoundsEnabled(enabled)
+    // Turning them on answers with the cue itself.
+    if (enabled) playUiSound('switch')
   }, [])
 
   useEffect(() => {
@@ -274,6 +297,19 @@ export function ConsoleSettingsTab({
             }
           />
           <SettingsRow
+            id={GENERAL_ANCHOR.uiSounds}
+            label="Interface sounds"
+            description="A soft tick when you open the model picker and a short tone when you switch models."
+            layout="inline"
+            control={
+              <Switch
+                aria-label="Interface sounds"
+                checked={uiSoundsEnabled}
+                onCheckedChange={handleUiSoundsChange}
+              />
+            }
+          />
+          <SettingsRow
             id={GENERAL_ANCHOR.soundCheck}
             label="Sound check"
             description="Play the success tone now. Your first tap also enables audio for later completions."
@@ -369,7 +405,7 @@ export function ConsoleSettingsTab({
               Auto mode. Existing conversations keep their current selection.
             </DialogDescription>
           </DialogHeader>
-          <div className="min-h-[280px] flex-1 overflow-y-auto overscroll-contain rounded-lg border border-neutral-200 p-2 dark:border-neutral-800">
+          <div className="min-h-[280px] flex-1 overflow-y-auto overscroll-contain rounded-xl border border-neutral-200 p-2 dark:border-neutral-800">
             <FunctionAllowlistTree
               functions={allowlistCandidates}
               allowlist={allowlistSet}

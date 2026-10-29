@@ -408,6 +408,20 @@
     color: currentColor;
   }
 
+  /* Quick Edit (components/ui/code-editor-quick-edit.tsx): the picked code
+     while the card is open, then the lines the model changed. */
+  .monaco-editor .iii-quick-edit-target {
+    background-color: var(--color-surface-selected);
+  }
+  .monaco-editor .iii-quick-edit-line {
+    background-color: color-mix(in oklab, var(--color-ok) 14%, transparent);
+  }
+  .monaco-editor .iii-quick-edit-gutter {
+    width: 2px !important;
+    margin-left: 3px;
+    background-color: var(--color-ok);
+  }
+
   /* A passage the side chat holds a quote of (lib/chat-aside.ts). */
   ::highlight(side-chat-quote) {
     background-color: var(--color-surface-selected);
@@ -723,7 +737,7 @@
 
 .configuration-surface .iii-observability-ui .obs-card {
   padding: 24px;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
 }
 
 .configuration-surface .iii-observability-ui .obs-card h3 {
@@ -868,7 +882,7 @@
 .configuration-surface .iii-observability-ui .obs-signal-panel,
 .configuration-surface .iii-observability-ui .obs-empty,
 .configuration-surface .iii-observability-ui .obs-banner {
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
 }
 
 [data-theme="dark"] .configuration-surface .iii-observability-ui {

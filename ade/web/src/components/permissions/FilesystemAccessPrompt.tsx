@@ -1,11 +1,6 @@
 import { useState } from 'react'
 import { Button } from '@/components/ui/Button'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-} from '@/components/ui/Dialog'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 
 export type FilesystemAccessAction = 'once' | 'session' | 'always' | 'deny'
 
@@ -144,41 +139,17 @@ export function FilesystemAccessPrompt({
         </button>
       ) : null}
 
-      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <DialogContent className="max-w-md">
-          <DialogTitle className="text-[14px]">
-            always allow this folder?
-          </DialogTitle>
-          <DialogDescription className="mt-3 text-ink">
-            this adds{' '}
-            <code className="px-1 bg-paper-2 text-accent">{requestedRoot}</code>{' '}
-            to the permanent allowed folders (IDE fs.host_roots) for every
-            conversation.
-          </DialogDescription>
-          <DialogDescription className="mt-2 text-ink-faint">
-            prefer "allow this session" if you only need it for this task.
-          </DialogDescription>
-          <div className="mt-6 flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => setConfirmOpen(false)}
-              className="font-mono text-[12px] px-3 py-1 rounded-sm bg-surface text-ink-faint hover:bg-surface-hover hover:text-ink transition-colors"
-            >
-              cancel
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setConfirmOpen(false)
-                void run('always')
-              }}
-              className="font-mono text-[12px] px-3 py-1 rounded-sm bg-alert text-bg hover:bg-alert/90 transition-colors"
-            >
-              always allow {requestedRoot}
-            </button>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title="Always allow this folder?"
+        description={`${requestedRoot} joins the folders every conversation can use. Allow it for this session instead if you only need it for this task.`}
+        confirmLabel="Always allow"
+        tone="danger"
+        onConfirm={() => {
+          void run('always')
+        }}
+      />
     </div>
   )
 }

@@ -3,6 +3,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -17,11 +18,6 @@ import { LiveRegion } from '@/components/ui/LiveRegion'
 import { PageHeader } from '@/components/ui/PageChrome'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { StatusPanel } from '@/components/ui/StatusPanel'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/Tooltip'
 import { useApprovalSettings } from '@/hooks/use-approval-settings'
 import { uid } from '@/hooks/use-conversations'
 import { useFilesystemGrants } from '@/hooks/use-filesystem-grants'
@@ -337,6 +333,13 @@ export function ChatView({
     imported &&
     importedTurnEstablished === false &&
     (!conversation.model || !conversation.workingDir)
+  // An imported history with no ADE turn yet is a fresh session as far as
+  // the pickers are concerned: its messages came from elsewhere, so they
+  // must not lock the model and agent the reader is being asked to choose.
+  const importedAwaitingSetup = imported && importedTurnEstablished === false
+  // This chat's composer on the insert bus: its own palette row focuses it,
+  // not whichever chat beside it was used last.
+  const composerId = useId()
   const [isStreaming, setIsStreaming] = useState(false)
   // Pre-content phase of this tab's in-flight send, for the thinking
   // waiting indicator detail: submit → harness::send ack → turn-started.
@@ -581,7 +584,20 @@ export function ChatView({
   // covers reloads and turns observed from another tab. Local isStreaming
   // covers the gap before the first status event lands.
   const serverWorking = conversation.status === 'working'
-  const streamingIndicator = isStreaming || serverWorking
+  // A stop is honoured on the spot: the moment the reader asks, the turn
+  // reads as over here — composer back to Send, waiting indicator gone —
+  // while the harness winds the real turn down (a running tool can take it
+  // a while). The override lifts once the server reports idle, or when the
+  // stop RPC itself fails and the turn is genuinely still running.
+  const [stopRequested, setStopRequested] = useState(false)
+  useEffect(() => {
+    if (!serverWorking && !isStreaming) setStopRequested(false)
+  }, [serverWorking, isStreaming])
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a stop belongs to one conversation; switching drops it.
+  useEffect(() => {
+    setStopRequested(false)
+  }, [conversation.id])
+  const streamingIndicator = (isStreaming || serverWorking) && !stopRequested
 
   // Stop requested but not yet finalized server-side. Disables the stop button
   // until status-changed flips the indicator off. The ref is the dedupe guard:
@@ -2321,6 +2337,10 @@ export function ChatView({
               break
             }
             case 'stop-reason': {
+              // The reader stopped this turn themselves: the composer already
+              // said so by returning to Send, and a card restating it under
+              // the partial reply is noise.
+              if (event.reason === 'aborted' && stopSeenRef.current) break
               let noticeContent = formatStopReason(event.reason, event.message)
               if (event.partialResultAvailable) {
                 noticeContent +=
@@ -2503,6 +2523,7 @@ export function ChatView({
     stopRequestedRef.current = true
     stopSeenRef.current = true
     setStopping(true)
+    setStopRequested(true)
     abortRef.current?.abort()
     // Re-enable the button if the stop RPC fails while the server still
     // reports working — otherwise `stopping` never clears (the reset
@@ -2510,6 +2531,7 @@ export function ChatView({
     void backend.abortRun?.(sessionId).catch(() => {
       stopRequestedRef.current = false
       setStopping(false)
+      setStopRequested(false)
     })
   }, [backend, sessionId, readOnly])
 
@@ -2896,7 +2918,7 @@ export function ChatView({
         enabled: () => !readOnly,
         detail: 'Start typing a message',
         keywords: ['type', 'write', 'input', 'message', 'composer'],
-        run: () => requestComposerFocus(),
+        run: () => requestComposerFocus(composerId),
       },
       {
         id: 'next-message',
@@ -3010,6 +3032,7 @@ export function ChatView({
     ])
   }, [
     commands,
+    composerId,
     handleOpenModelPicker,
     handleStop,
     working,
@@ -3046,9 +3069,10 @@ export function ChatView({
         selectionLocked={
           streamingIndicator ||
           harnessBlocked ||
-          sessionHydrating ||
-          conversation.started === true ||
-          conversation.messages.length > 0
+          (!importedAwaitingSetup &&
+            (sessionHydrating ||
+              conversation.started === true ||
+              conversation.messages.length > 0))
         }
         details={
           composerControls?.footer?.length ? composerControls.footer : undefined
@@ -3109,37 +3133,36 @@ export function ChatView({
                 sr-only role="status" span so transitions still announce.
                 `self-stretch px-1` turns a 6px dot into a full-height hover
                 target without letting an error widen the header. */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    {/* viewport: phone chrome — hidden from the phone header, touch size */}
-                    <div className="flex size-12 items-center justify-center max-sm:hidden sm:size-10 @5xl:self-stretch @5xl:size-auto @5xl:px-1">
-                      <StatusDot
-                        tone={
-                          conversation.status === 'error'
-                            ? 'alert'
-                            : streamingIndicator
-                              ? 'accent'
-                              : 'ok'
-                        }
-                        pulse={streamingIndicator}
-                      />
-                      <span role="status" className="sr-only">
-                        {streamingIndicator
-                          ? 'working'
-                          : conversation.status === 'error'
-                            ? 'error'
-                            : 'ready'}
-                      </span>
-                    </div>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {conversation.status === 'error'
+                <Hint
+                  label={
+                    conversation.status === 'error'
                       ? `error${conversation.statusReason ? ` — ${conversation.statusReason}` : ''}`
                       : streamingIndicator
                         ? 'working'
-                        : 'ready'}
-                  </TooltipContent>
-                </Tooltip>
+                        : 'ready'
+                  }
+                >
+                  {/* viewport: phone chrome — hidden from the phone header, touch size */}
+                  <div className="flex size-12 items-center justify-center max-sm:hidden sm:size-10 @5xl:self-stretch @5xl:size-auto @5xl:px-1">
+                    <StatusDot
+                      tone={
+                        conversation.status === 'error'
+                          ? 'alert'
+                          : streamingIndicator
+                            ? 'accent'
+                            : 'ok'
+                      }
+                      pulse={streamingIndicator}
+                    />
+                    <span role="status" className="sr-only">
+                      {streamingIndicator
+                        ? 'working'
+                        : conversation.status === 'error'
+                          ? 'error'
+                          : 'ready'}
+                    </span>
+                  </div>
+                </Hint>
               </div>
             )
           }
@@ -3301,7 +3324,7 @@ export function ChatView({
               />
               {queuedStrip.length > 0 ? (
                 <section
-                  className="mb-1 rounded-md bg-surface"
+                  className="mb-1 rounded-xl bg-surface"
                   aria-label="queued messages"
                 >
                   {/* The message being edited is pulled out of the queue and lives
@@ -3386,7 +3409,8 @@ export function ChatView({
                 catalogLoading={catalogLoading}
                 modelPickerOpenRequest={modelPickerOpenRequest}
                 modelLocked={
-                  modelLocked || modelSwitch.pending || sessionHydrating
+                  modelSwitch.pending ||
+                  (!importedAwaitingSetup && (modelLocked || sessionHydrating))
                 }
                 functionEntries={functionEntries}
                 searchFiles={searchFiles}
@@ -3450,6 +3474,7 @@ export function ChatView({
                   !harnessBlocked
                 }
                 externalInput={!side}
+                composerId={composerId}
                 compact={side?.compact}
                 header={
                   side?.quote ? (

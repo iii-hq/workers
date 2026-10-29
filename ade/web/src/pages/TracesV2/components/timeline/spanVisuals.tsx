@@ -6,8 +6,8 @@
  */
 
 import { Flame, Sparkle, SquareFunction, Zap } from 'lucide-react'
-import type { CSSProperties } from 'react'
 import { getWorkerColor, SPAN_STATUS_COLORS } from '../../lib/traceColors'
+import { MiddleTruncate } from '../MiddleTruncate'
 import type { TimelineSpan, TimelineSpanKind } from './layout'
 
 export const KIND_ICONS: Record<
@@ -67,32 +67,18 @@ export function ringFor(
   return undefined
 }
 
-/** LRM mark: pins the label's edge punctuation to LTR inside the RTL clip. */
-const LRM = '‎'
-
-const BAR_LABEL_STYLE: CSSProperties = {
-  // Leading-ellipsis trick: RTL direction makes text-overflow clip the
-  // START of the (LTR) name, so a too-long "chat.respond.stream" reads
-  // "…respond.stream" — the tail is the discriminating part of span names.
-  direction: 'rtl',
-  textAlign: 'left',
-}
-
 /**
  * The span name inside a bar, in the bar's own ink (it inherits the bar's
  * `color`). Reveals naturally as the bar grows (flex min-w-0 + overflow
- * clip); when it doesn't fit, the ellipsis sits at the BEGINNING of the
- * name.
+ * clip); when it doesn't fit, the MIDDLE of the name gives way, Finder
+ * style (`MiddleTruncate`), so the namespace and the function both stay
+ * readable: `iii-dir…search_functions`.
  */
 export function BarLabel({ text }: { text: string }) {
   return (
-    <span
-      className="min-w-0 flex-1 overflow-hidden font-mono text-xs font-semibold leading-none whitespace-nowrap text-ellipsis"
-      style={BAR_LABEL_STYLE}
-    >
-      {LRM}
-      {text}
-      {LRM}
-    </span>
+    <MiddleTruncate
+      text={text}
+      className="flex-1 font-mono text-xs font-semibold leading-none"
+    />
   )
 }

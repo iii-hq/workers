@@ -434,21 +434,28 @@ a.iii-ui-tree-item {
   }
 }
 
+/* Cards and panels are the shadcn Card (components/shadcn/card.tsx) written
+ * as plain CSS so worker UIs without Tailwind get the same surface: a 12px
+ * radius, a 1px edge of ink at 10% (`ring-1 ring-foreground/10`), the card
+ * fill and no drop shadow. The edge is a border rather than a box-shadow
+ * ring: this rule is unlayered, so a box-shadow here would beat the
+ * `shadow-floating` utility on panels that float (Selector, Sections menu),
+ * and callers already recolour it with `border-color`. Every card reads like
+ * a popover: Inter at 14px. */
 .iii-ui-card,
 .iii-ui-panel {
   min-width: 0;
   overflow: hidden;
-  border: 1px solid var(--color-edge);
-  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in oklab, var(--color-ink) 10%, transparent);
+  border-radius: var(--radius-xl);
   background: var(--color-panel-raised);
   color: var(--color-ink);
-  /* Every card and panel reads like a popover: Inter at 14px. */
   font-family: var(--font-inter);
   font-size: 0.875rem;
+  line-height: 1.25rem;
 }
 
 .iii-ui-card {
-  box-shadow: var(--shadow-raised);
   transition:
     background-color var(--motion-duration-control) var(--motion-ease-standard),
     border-color var(--motion-duration-control) var(--motion-ease-standard),
@@ -464,11 +471,8 @@ a.iii-ui-tree-item {
 }
 
 .iii-ui-card[data-selected="true"] {
-  border-color: var(--color-edge);
   background: var(--color-surface-selected);
-  box-shadow:
-    inset 2px 0 0 var(--color-edge),
-    var(--shadow-raised);
+  box-shadow: inset 2px 0 0 var(--color-edge);
 }
 
 .iii-ui-card:focus-visible {
@@ -713,6 +717,8 @@ a.iii-ui-tree-item {
   }
 }
 
+/* Like the shadcn CardHeader: no fill of its own, the title in Inter 14px
+ * medium. Padding matches the `size="sm"` card (12px). */
 .iii-ui-card__header,
 .iii-ui-panel__header {
   display: flex;
@@ -721,7 +727,6 @@ a.iii-ui-tree-item {
   gap: 0.75rem;
   min-height: 2.5rem;
   padding: 0.625rem 0.75rem;
-  background: var(--color-surface);
   color: var(--color-ink);
   font-family: var(--font-inter);
   font-size: 0.875rem;
@@ -1320,11 +1325,13 @@ a.iii-ui-tree-item {
   justify-content: flex-end;
 }
 
+/* A settings list is a card: the same radius, ring and fill as
+ * `.iii-ui-card`. */
 .iii-ui-settings-list {
   min-width: 0;
   overflow: hidden;
-  border: 1px solid var(--color-edge);
-  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in oklab, var(--color-ink) 10%, transparent);
+  border-radius: var(--radius-xl);
   background: var(--color-panel-raised);
   color: var(--color-ink);
 }

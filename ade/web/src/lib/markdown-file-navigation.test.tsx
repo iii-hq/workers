@@ -153,7 +153,10 @@ describe('chat file navigation', () => {
         </Markdown>
       </ChatFileNavigation>,
     )
-    expect(container.querySelectorAll('button')).toHaveLength(1)
+    // The fenced block's own copy button is not a file opener.
+    expect(
+      container.querySelectorAll('button:not(.chat-code-block__copy)'),
+    ).toHaveLength(1)
     await click()
     expectFile('/repo/src/a.ts', 12, 40)
   })

@@ -179,7 +179,7 @@ export function ViewsDropdown({
             />
             <div className="flex items-center justify-end gap-2">
               <DialogClose
-                render={<Button variant="ghost" size="sm" type="button" />}
+                render={<Button variant="secondary" size="sm" type="button" />}
               >
                 Cancel
               </DialogClose>

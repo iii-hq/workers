@@ -15,6 +15,7 @@ import { hideSideChats } from '@/lib/chat-aside'
 import {
   countConversations,
   groupConversationRoots,
+  NO_PROJECT_GROUP_KEY,
 } from '@/lib/conversation-groups'
 import {
   buildConversationTree,
@@ -37,12 +38,14 @@ import {
 } from '@/lib/keybindings/registry'
 import { NEUTRAL_SURFACE } from '@/lib/neutral-surface'
 import { requestPaletteOpen } from '@/lib/palette/open-request'
+import { usePinnedConversations } from '@/lib/pinned-conversations'
 import { requestShortcutsDialog } from '@/lib/shortcuts-request'
 import { cn } from '@/lib/utils'
 import type { Conversation } from '@/types/chat'
 import { ConversationFilterMenu } from './ConversationFilterMenu'
 import { ConversationGroupHeader } from './ConversationGroupHeader'
 import { ConversationRow } from './ConversationRow'
+import './conversation-tree.css'
 
 // viewport: phone chrome — the sm and md utilities here are the console's
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
@@ -59,6 +62,8 @@ interface ConversationSidebarProps {
   onAddProject?: () => void
   /** Import conversations from a file — a quiet action beside the list title. */
   onImport?: () => void
+  /** Start a chat scoped to a project folder — a project header's plus. */
+  onCreateInProject?: (path: string) => void
   onSelect: (id: string) => void
   onRename: (id: string, title: string) => void
   onRemove: (id: string) => void
@@ -75,7 +80,7 @@ const LEGACY_GROUPING_KEY = 'iii-chat-grouping'
  * and a label on a rounded-xl wash that only paints on hover or focus.
  */
 const NAV_ROW =
-  'group/row flex w-full min-w-0 items-center gap-2.5 rounded-xl px-2.5 text-left font-inter font-medium text-neutral-600 transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-200/70 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-50 dark:focus-visible:ring-neutral-400'
+  'group/row flex w-full min-w-0 items-center gap-2.5 rounded-xl px-2.5 text-left font-inter font-medium text-neutral-600 transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-200/70 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 dark:text-neutral-400 dark:hover:bg-neutral-900 dark:hover:text-neutral-50 dark:focus-visible:ring-neutral-400'
 
 /**
  * A row's shortcut, spelled plainly (⌘K, ⌃N) and shown only while the row
@@ -144,6 +149,7 @@ export function ConversationSidebar({
   onCreate,
   onAddProject,
   onImport,
+  onCreateInProject,
   onSelect,
   onRename,
   onRemove,
@@ -168,6 +174,7 @@ export function ConversationSidebar({
 
   /* Kinds shown, grouping and order — one record, one Clear filters. */
   const [view, setView] = useState<ConversationListView>(loadListView)
+  const { pinned, togglePin } = usePinnedConversations()
   useEffect(() => {
     if (typeof window === 'undefined') return
     try {
@@ -230,17 +237,20 @@ export function ConversationSidebar({
      update. */
   const sections = useMemo(
     () =>
-      groupConversationRoots(roots, view.grouping, Date.now()).map((group) => ({
-        group,
-        count: countConversations(group.roots),
-        rows: collapsedGroups.has(group.key)
-          ? []
-          : flattenConversationTree(group.roots, collapsedNodes),
-      })),
-    [roots, view.grouping, collapsedGroups, collapsedNodes],
+      groupConversationRoots(roots, view.grouping, Date.now(), pinned).map(
+        (group) => ({
+          group,
+          count: countConversations(group.roots),
+          rows: collapsedGroups.has(group.key)
+            ? []
+            : flattenConversationTree(group.roots, collapsedNodes),
+        }),
+      ),
+    [roots, view.grouping, collapsedGroups, collapsedNodes, pinned],
   )
-  /* The flat list has one section and no header to collapse it by. */
-  const headers = view.grouping !== 'none'
+  /* The flat list has one section and no header to collapse it by — unless
+     pins split it, when both halves need naming. */
+  const headers = view.grouping !== 'none' || pinned.size > 0
   /* Once any row carries a sub-agent caret at its end, every row keeps that
      column so timestamps and actions line up down the list. */
   const caretColumn = sections.some((section) =>
@@ -355,26 +365,19 @@ export function ConversationSidebar({
           <div
             className={cn(
               uiClasses.tree,
-              // 14px/500 titles in full ink on 36px rows, 12px timestamps:
-              // the list reads at the sidebar's own size and weight, not the
-              // tree recipe's 13px faint rows (the nav rows above are ink).
-              '[--iii-ui-tree-row:2.25rem] [&_.iii-ui-tree-item]:rounded-xl [&_.iii-ui-tree-item]:text-sm [&_.iii-ui-tree-item]:text-ink [&_.iii-ui-tree-item__meta]:text-xs',
+              // 14px titles on the nav rows' 36px box, 12px timestamps and
+              // the shared neutral-900 selected wash (conversation-tree.css).
+              'conversation-tree',
             )}
             data-narrow={narrow || undefined}
           >
-            {sections.map(({ group, count, rows }) => (
-              <Fragment key={group.key}>
-                {headers ? (
-                  <ConversationGroupHeader
-                    label={group.label}
-                    title={group.title}
-                    count={count}
-                    collapsed={collapsedGroups.has(group.key)}
-                    onToggle={() => toggleGroup(group.key)}
-                    narrow={narrow}
-                  />
-                ) : null}
-                {rows.map(({ conversation: c, depth, hasChildren }) => (
+            {sections.map(({ group, count, rows }) => {
+              // A project folder heads its own chats; date buckets stay labels.
+              const project =
+                group.key.startsWith('project:') &&
+                group.key !== NO_PROJECT_GROUP_KEY
+              const rowList = rows.map(
+                ({ conversation: c, depth, hasChildren }) => (
                   <ConversationRow
                     key={c.id}
                     conversation={c}
@@ -390,10 +393,37 @@ export function ConversationSidebar({
                     onSelect={() => onSelect(c.id)}
                     onRename={(title) => onRename(c.id, title)}
                     onRemove={() => onRemove(c.id)}
+                    pinned={pinned.has(c.id)}
+                    onTogglePin={() => togglePin(c.id)}
                   />
-                ))}
-              </Fragment>
-            ))}
+                ),
+              )
+              return (
+                <Fragment key={group.key}>
+                  {headers ? (
+                    <ConversationGroupHeader
+                      label={group.label}
+                      title={group.title}
+                      count={count}
+                      collapsed={collapsedGroups.has(group.key)}
+                      onToggle={() => toggleGroup(group.key)}
+                      narrow={narrow}
+                      project={project}
+                      onCreate={
+                        project && group.title && onCreateInProject
+                          ? () => onCreateInProject(group.title as string)
+                          : undefined
+                      }
+                    />
+                  ) : null}
+                  {project && rowList.length ? (
+                    <div className="conversation-project-rows">{rowList}</div>
+                  ) : (
+                    rowList
+                  )}
+                </Fragment>
+              )
+            })}
           </div>
         )}
       </div>

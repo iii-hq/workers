@@ -17,60 +17,92 @@ import {
   IconButton,
   StatusDot,
   StatusPanel,
+  Tooltip,
   WorkerConfigurationDialog,
 } from '@iii-dev/console-ui'
 import {
   Check,
-  ChevronDown,
   CircleAlert,
   History,
   Settings,
-  SlidersHorizontal,
   Sparkles,
   Square,
   TriangleAlert,
 } from 'lucide-react'
-import { type Ref, useState } from 'react'
+import { type Ref, useEffect, useState } from 'react'
 import { changeSummary } from './commit-tree'
+import { CONFIGURATION_ID, GenerateOptions } from './GenerateOptions'
 import { gitHeadMessage, gitRecentMessages } from './git-log'
 import { TextDialog } from './TextDialog'
 import { modelLabel, useCommitMessage } from './use-commit-message'
+import { createPaneMemory, paneFolderKey } from './pane-memory'
 import type { SourceControlState } from './use-source-control'
 
 /** The subject length git tooling and most reviewers expect. */
 const SUBJECT_LIMIT = 72
-/** The configuration entry the Generate settings live in. */
-const CONFIGURATION_ID = 'ide'
+
+/** What the box held when it last unmounted (another Source Control tab or
+    sidebar view, or the page remounting), per pane and folder. In memory
+    only (`pane-memory.ts`): a message or author is not for saving. */
+interface CommitDraft {
+  message: string
+  amend: boolean
+  amendSeed: string | null
+  signOff: boolean
+  runHooks: boolean
+  author: string
+  replacedDraft: string | null
+  /** The branch the message was written on: another one starts afresh. */
+  branch: string | null
+}
+
+const commitDrafts = createPaneMemory<CommitDraft>()
 
 interface CommitBoxProps {
   host: Host
   root: string | null
   conversationId?: string | null
+  /** The pane; with no key nothing is kept. */
+  memoryKey?: string
   scm: SourceControlState
   /** The message field, for "Commit file…" to move to. */
   messageRef?: Ref<HTMLTextAreaElement>
 }
 
-export function CommitBox({ host, root, conversationId, scm, messageRef }: CommitBoxProps) {
-  const [message, setMessage] = useState('')
-  const [amend, setAmend] = useState(false)
-  const [amendSeed, setAmendSeed] = useState<string | null>(null)
-  const [signOff, setSignOff] = useState(false)
-  const [runHooks, setRunHooks] = useState(true)
-  const [author, setAuthor] = useState('')
+export function CommitBox({ host, root, conversationId, memoryKey, scm, messageRef }: CommitBoxProps) {
+  const draftKey = memoryKey === undefined ? null : paneFolderKey(memoryKey, root)
+  const [kept] = useState(() => (draftKey === null ? undefined : commitDrafts.read(draftKey)))
+  const [message, setMessage] = useState(kept?.message ?? '')
+  const [amend, setAmend] = useState(kept?.amend ?? false)
+  const [amendSeed, setAmendSeed] = useState<string | null>(kept?.amendSeed ?? null)
+  const [signOff, setSignOff] = useState(kept?.signOff ?? false)
+  const [runHooks, setRunHooks] = useState(kept?.runHooks ?? true)
+  const [author, setAuthor] = useState(kept?.author ?? '')
   const [authorOpen, setAuthorOpen] = useState(false)
   const [recent, setRecent] = useState<string[] | null>(null)
-  const [replacedDraft, setReplacedDraft] = useState<string | null>(null)
+  const [replacedDraft, setReplacedDraft] = useState<string | null>(kept?.replacedDraft ?? null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const gen = useCommitMessage(host, root, conversationId)
 
-  // A branch switch starts a fresh message (adjusted during render).
-  const [branchSeen, setBranchSeen] = useState(scm.branch)
-  if (branchSeen !== scm.branch) {
+  // A branch switch starts a fresh message (adjusted during render) — one
+  // made while the box was away too, against the branch it was kept on.
+  // A branch not read yet (null: the page just mounted) is no switch.
+  const [branchSeen, setBranchSeen] = useState(kept ? kept.branch : scm.branch)
+  if (scm.branch !== null && branchSeen !== scm.branch) {
     setBranchSeen(scm.branch)
-    setMessage('')
-    setAmend(false)
+    if (branchSeen !== null) {
+      setMessage('')
+      setAmend(false)
+    }
   }
+
+  // Kept as it changes (a map write, no render); an empty box keeps nothing.
+  useEffect(() => {
+    if (draftKey === null) return
+    const blank = message === '' && !amend && !signOff && runHooks && author === '' && replacedDraft === null
+    if (blank) commitDrafts.forget(draftKey)
+    else commitDrafts.write(draftKey, { message, amend, amendSeed, signOff, runHooks, author, replacedDraft, branch: branchSeen })
+  }, [draftKey, message, amend, amendSeed, signOff, runHooks, author, replacedDraft, branchSeen])
 
   const writing = gen.state.phase === 'writing'
   const ticked = scm.included
@@ -112,7 +144,6 @@ export function CommitBox({ host, root, conversationId, scm, messageRef }: Commi
     }
   }
 
-  const modelText = gen.model ? modelLabel(gen.model) : 'No model available'
   const generateTitle =
     ticked.length === 0
       ? 'Tick the changes to describe'
@@ -167,45 +198,29 @@ export function CommitBox({ host, root, conversationId, scm, messageRef }: Commi
           </Button>
         ) : (
           <span className="shui-generate-split">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="shui-generate"
-              disabled={ticked.length === 0 || scm.busy}
-              title={generateTitle}
-              onClick={() => void generate()}
-            >
-              <Sparkles aria-hidden />
-              Generate
-            </Button>
-            <DropdownMenu onOpenChange={(open) => (open ? gen.loadConfig() : undefined)}>
-              <DropdownMenuTrigger asChild>
-                <IconButton label="Generate options" className="shui-generate-more">
-                  <ChevronDown aria-hidden />
-                </IconButton>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="shui-commit-menu">
-                <DropdownMenuLabel>Model</DropdownMenuLabel>
-                <div className="shui-generate-model">
-                  <span>{modelText}</span>
-                  <span className="meta">
-                    {gen.model
-                      ? `${gen.usesChatDefault ? 'chat default · ' : ''}thinking ${gen.config?.thinking ?? 'default'}`
-                      : 'set one in Settings'}
-                  </span>
-                </div>
-                <DropdownMenuLabel>Instructions</DropdownMenuLabel>
-                <p className="shui-generate-instructions">
-                  {gen.config?.instructions.trim() || 'None. Add some in Settings, e.g. "Use Conventional Commits".'}
-                </p>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
-                  <SlidersHorizontal aria-hidden />
-                  Commit message settings…
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <Tooltip label={generateTitle}>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="shui-generate"
+                disabled={ticked.length === 0 || scm.busy}
+                aria-description={generateTitle}
+                onClick={() => void generate()}
+              >
+                <Sparkles aria-hidden />
+                Generate
+              </Button>
+            </Tooltip>
+            <GenerateOptions
+              host={host}
+              config={gen.config}
+              model={gen.model}
+              usesChatDefault={gen.usesChatDefault}
+              chatModel={host.chat?.composerModel?.(conversationId ?? null) ?? null}
+              onReload={gen.loadConfig}
+              onOpenSettings={() => setSettingsOpen(true)}
+            />
           </span>
         )}
       </div>

@@ -13,6 +13,7 @@ import type { Host } from '@iii-dev/console-ui'
 import { createVoiceSessionChip } from './src/chip'
 import { createVoiceComposerAction } from './src/composer'
 import { createVoiceConfigForm } from './src/configuration'
+import { installDictationKeys } from './src/keys'
 import { createDictationController } from './src/lib/dictation'
 import type { ComposerCapableChat } from './src/lib/types'
 import { createVoiceLiveSummary } from './src/live'
@@ -21,6 +22,8 @@ import { createVoiceTurnSummary } from './src/turn-summary'
 
 export default function setup(host: Host) {
   const controller = createDictationController(host)
+  // Hold fn or right Option anywhere, chat or IDE, and the text lands where you type.
+  const keys = installDictationKeys(host, controller)
   const chat = host.chat as (Host['chat'] & ComposerCapableChat) | undefined
 
   host.pages.register({
@@ -52,12 +55,15 @@ export default function setup(host: Host) {
 
   if (typeof chat?.registerComposerAction === 'function') {
     // The mic shows the live words beside itself; nothing stacks above the editor.
-    chat.registerComposerAction(createVoiceComposerAction(host, controller))
+    chat.registerComposerAction(createVoiceComposerAction(host, controller, keys))
   } else {
     chat?.registerSessionChip(createVoiceSessionChip(host, controller))
     chat?.registerTurnSummary?.(createVoiceLiveSummary(host, controller))
   }
   chat?.registerTurnSummary?.(createVoiceTurnSummary(host))
 
-  return () => { void controller.cancel() }
+  return () => {
+    keys.dispose()
+    void controller.cancel()
+  }
 }

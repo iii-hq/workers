@@ -80,6 +80,7 @@ export const CollapsibleCard = React.forwardRef<
           ref={ref}
           {...props}
           className={cn(uiClasses.card, uiClasses.collapsibleCard, className)}
+          data-slot="card"
           data-disabled={disabled || undefined}
           data-state={open ? 'open' : 'closed'}
         >

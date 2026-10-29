@@ -25,6 +25,7 @@ import {
   formatFileMentionInner,
   formatLineRange,
   type LineRange,
+  mentionDisplayPath,
   parseFileMentionInner,
 } from '@/lib/file-mention-token'
 import { cn } from '@/lib/utils'
@@ -210,7 +211,7 @@ export function FileMentionPill({
       ref={pillRef}
       contentEditable={false}
       data-file-path={formatFileMentionInner({ path, range })}
-      title={openable ? `open ${path} in the IDE` : undefined}
+      title={openable ? `open ${path} in the IDE` : path}
       className={cn(
         'inline-flex items-center gap-1 px-1.5 h-[20px] -mt-[2px] rounded-xs align-middle font-mono text-[13px] text-ink select-none transition-colors',
         selected ? 'bg-surface-selected cursor-pointer' : 'bg-surface',
@@ -221,7 +222,9 @@ export function FileMentionPill({
       <span aria-hidden className="text-accent leading-none shrink-0">
         <PathGlyph path={path} />
       </span>
-      <span className="leading-none truncate max-w-[280px]">{path}</span>
+      <span className="leading-none truncate max-w-[280px]">
+        {mentionDisplayPath(path)}
+      </span>
       {range ? (
         <span className="leading-none text-ink-faint tabular-nums shrink-0">
           :{formatLineRange(range)}

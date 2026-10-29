@@ -8,6 +8,7 @@ import {
   X,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import { Hint } from '@/components/ui/Hint'
 import {
   ImageThumbnailButton,
   ImageViewer,
@@ -315,20 +316,21 @@ function DownloadButton({
     )
   }
   return (
-    <button
-      type="button"
-      onClick={() => void download()}
-      disabled={state.phase === 'busy'}
-      className="text-ink-faint hover:text-accent transition-colors shrink-0 disabled:cursor-progress"
-      aria-label={`download ${name}`}
-      title={`download ${name}`}
-    >
-      {state.phase === 'busy' ? (
-        <Loader2 size={16} aria-hidden className="animate-spin" />
-      ) : (
-        <Download size={16} aria-hidden />
-      )}
-    </button>
+    <Hint label={`Download ${name}`} side="top">
+      <button
+        type="button"
+        onClick={() => void download()}
+        disabled={state.phase === 'busy'}
+        className="text-ink-faint hover:text-accent transition-colors shrink-0 disabled:cursor-progress"
+        aria-label={`download ${name}`}
+      >
+        {state.phase === 'busy' ? (
+          <Loader2 size={16} aria-hidden className="animate-spin" />
+        ) : (
+          <Download size={16} aria-hidden />
+        )}
+      </button>
+    </Hint>
   )
 }
 

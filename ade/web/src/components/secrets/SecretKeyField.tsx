@@ -236,21 +236,14 @@ export function SecretKeyField({
 
   const actions = (
     <span className="flex shrink-0 items-center gap-2">
-      <Button
-        variant="pill"
-        size="sm"
-        onClick={choose}
-        disabled={locked}
-        className="rounded-lg bg-panel ring-1 ring-inset ring-edge hover:bg-surface-hover"
-      >
+      <Button variant="secondary" size="sm" onClick={choose} disabled={locked}>
         Replace
       </Button>
       <Button
-        variant="ghost"
+        variant="destructive"
         size="sm"
         onClick={() => void remove()}
         disabled={locked}
-        className="rounded-lg"
       >
         {busy === 'remove' ? 'Removing…' : 'Remove'}
       </Button>
@@ -316,7 +309,7 @@ export function SecretKeyField({
         <div className="flex items-center justify-end gap-1">
           {editing && (value?.trim() || referenced) ? (
             <Button
-              variant="ghost"
+              variant="secondary"
               size="sm"
               onClick={() => setEditing(false)}
               disabled={locked}
@@ -325,7 +318,7 @@ export function SecretKeyField({
             </Button>
           ) : null}
           <Button
-            variant="pill"
+            variant="primary"
             size="sm"
             onClick={() => void store(pending)}
             disabled={locked || !keyInputReady(pending)}

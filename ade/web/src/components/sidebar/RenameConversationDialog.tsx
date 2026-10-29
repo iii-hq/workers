@@ -1,12 +1,12 @@
 import type { RefObject } from 'react'
 import { useEffect, useRef, useState } from 'react'
+import { Button } from '@/components/shadcn/button'
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogTitle,
 } from '@/components/shadcn/dialog'
-import { cn } from '@/lib/utils'
 
 interface RenameConversationDialogProps {
   open: boolean
@@ -18,9 +18,6 @@ interface RenameConversationDialogProps {
   /** Where focus returns on close — the row, not the hover-revealed pencil. */
   returnFocusTo?: RefObject<HTMLElement | null>
 }
-
-const pillClassName =
-  'inline-flex h-9 min-w-20 items-center justify-center rounded-full px-4 text-[13px] font-medium transition-[background-color,color,transform] duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 dark:focus-visible:ring-neutral-400'
 
 /**
  * Renaming in a centred dialog instead of the row's inline field: the
@@ -98,29 +95,17 @@ export function RenameConversationDialog({
             className="h-10 w-full rounded-lg bg-neutral-100 px-3 text-[14px] text-neutral-900 ring-1 ring-transparent outline-none transition-[box-shadow] duration-[var(--motion-duration-control)] selection:bg-neutral-900 selection:text-neutral-50 placeholder:text-neutral-400 focus-visible:ring-neutral-400 dark:bg-neutral-800 dark:text-neutral-50 dark:selection:bg-white dark:selection:text-neutral-900 dark:placeholder:text-neutral-500 dark:focus-visible:ring-neutral-500"
           />
           <div className="flex items-center justify-end gap-2">
-            <button
+            <Button
               type="button"
+              variant="secondary"
+              size="lg"
               onClick={() => onOpenChange(false)}
-              className={cn(
-                pillClassName,
-                'bg-neutral-100 text-neutral-900 hover:bg-neutral-200 dark:bg-neutral-800 dark:text-neutral-50 dark:hover:bg-neutral-700',
-              )}
             >
               Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={!canSave}
-              className={cn(
-                pillClassName,
-                'disabled:cursor-not-allowed',
-                canSave
-                  ? 'bg-neutral-900 text-neutral-50 hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200'
-                  : 'bg-neutral-100 text-neutral-400 dark:bg-neutral-800 dark:text-neutral-500',
-              )}
-            >
+            </Button>
+            <Button type="submit" size="lg" disabled={!canSave}>
               Save
-            </button>
+            </Button>
           </div>
         </form>
       </DialogContent>

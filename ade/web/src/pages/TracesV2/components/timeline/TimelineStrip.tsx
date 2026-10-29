@@ -112,7 +112,7 @@ const LIVENESS_TICK_MS = 500
     bars rather than dots and to take a 1px hover ring without filling in */
 const BAR_HEIGHT = 5
 const ROW_PITCH = 11
-const CONTENT_PAD_Y = 6
+const CONTENT_PAD_Y = 4
 /** minimum left inset of a child bar from its parent's — the hierarchy padding */
 const DEPTH_INDENT = 12
 /** breathing room between sequential bars sharing a line */
@@ -958,12 +958,12 @@ export function TimelineStrip({
   return (
     <div
       className={cn(
-        'flex h-44 flex-shrink-0 flex-col overflow-hidden border-b border-border font-inter',
+        'flex h-36 flex-shrink-0 flex-col overflow-hidden border-b border-border font-inter',
         className,
       )}
     >
-      <div className="flex h-9 shrink-0 items-center justify-between bg-background">
-        <div className="flex items-center gap-2.5 px-3">
+      <div className="flex h-8 shrink-0 items-center justify-between bg-background">
+        <div className="flex items-center gap-2 px-3">
           <span className="text-[13px] font-semibold text-foreground">
             Activity
           </span>
@@ -976,7 +976,7 @@ export function TimelineStrip({
         </div>
 
         {(spanFilter || onToggleFollowTurns) && (
-          <div className="flex items-center gap-1 px-2">
+          <div className="flex items-center gap-0.5 px-1.5">
             {onToggleFollowTurns && (
               <Toggle
                 pressed={!!followTurns}

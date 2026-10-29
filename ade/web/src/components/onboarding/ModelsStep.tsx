@@ -251,7 +251,7 @@ export function ModelsStep({
       {snapshot.toolsError ? (
         <p
           role="alert"
-          className="rounded-lg border border-alert/30 bg-alert-muted px-3 py-2 font-sans text-[13px] text-ink"
+          className="rounded-xl border border-alert/30 bg-alert-muted px-3 py-2 font-sans text-[13px] text-ink"
         >
           Unable to scan this machine: {snapshot.toolsError}
         </p>
@@ -332,7 +332,7 @@ export function ModelsStep({
             {needsKey.map(({ choice, key }) => (
               <div
                 key={choice.providerId}
-                className="flex flex-col rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950"
+                className="flex flex-col rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950"
               >
                 <span className="flex h-9 items-center gap-2 border-b border-neutral-200 px-3.5 font-sans text-[13px] font-medium text-ink dark:border-neutral-800">
                   <ProviderMark

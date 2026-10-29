@@ -27,6 +27,8 @@ export interface HintProps {
   align?: 'start' | 'center' | 'end'
   /** Nothing to say right now (a control with its own visible label). */
   disabled?: boolean
+  /** On the pill, e.g. a wider `max-w-*` for a long message. */
+  className?: string
   children: ReactElement
 }
 
@@ -45,6 +47,7 @@ export function Hint({
   side = 'bottom',
   align = 'center',
   disabled = false,
+  className,
   children,
 }: HintProps) {
   if (disabled) return children
@@ -52,13 +55,11 @@ export function Hint({
   return (
     <Tooltip>
       <TooltipTrigger render={children} />
-      <TooltipContent side={side} align={align}>
+      <TooltipContent side={side} align={align} className={className}>
         {label}
         {chord ? (
-          <kbd
-            data-slot="kbd"
-            className="ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-sm bg-background/20 px-1 font-inter text-[11px] font-medium tracking-wide text-background"
-          >
+          // The cap's look lives in the tooltip recipe (`data-slot=kbd`).
+          <kbd data-slot="kbd" className="ml-0.5">
             {chord}
           </kbd>
         ) : null}

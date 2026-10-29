@@ -50,6 +50,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/DropdownMenu'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { Hint } from '@/components/ui/Hint'
 import {
   ImageThumbnailButton,
   ImageViewer,
@@ -762,7 +763,7 @@ export function ChatContextPanel({
               detail={prError}
               action={
                 <Button
-                  variant="ghost"
+                  variant="secondary"
                   size="sm"
                   onClick={() => setPrError(null)}
                 >
@@ -902,20 +903,21 @@ export function ChatContextPanel({
                   )
                 }
                 actions={
-                  <button
-                    type="button"
-                    className={uiClasses.treeItemAction}
-                    data-tone="alert"
-                    aria-label={`Unregister ${label}`}
-                    title="Unregister"
-                    disabled={busyTriggerId === trigger.id}
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      setConfirmTrigger(trigger)
-                    }}
-                  >
-                    <X aria-hidden />
-                  </button>
+                  <Hint label="Unregister">
+                    <button
+                      type="button"
+                      className={uiClasses.treeItemAction}
+                      data-tone="alert"
+                      aria-label={`Unregister ${label}`}
+                      disabled={busyTriggerId === trigger.id}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        setConfirmTrigger(trigger)
+                      }}
+                    >
+                      <X aria-hidden />
+                    </button>
+                  </Hint>
                 }
               />
             )
@@ -996,7 +998,7 @@ export function ChatContextPanel({
             detail="The worktree conflicts with its base. Resolve the conflicts, then land again."
             action={
               <Button
-                variant="ghost"
+                variant="secondary"
                 size="sm"
                 onClick={() => openSourceControl(workingDir)}
               >
@@ -1242,18 +1244,19 @@ function PullRequestMenu({
   const mergeReason = !canWrite ? 'needs gh' : draft ? 'draft' : null
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          className={uiClasses.treeItemAction}
-          aria-label={`Actions for ${pr.repo}#${pr.number}`}
-          title="More actions"
-          disabled={busy}
-          onClick={(event) => event.stopPropagation()}
-        >
-          <EllipsisVertical aria-hidden />
-        </button>
-      </DropdownMenuTrigger>
+      <Hint label="More actions">
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            className={uiClasses.treeItemAction}
+            aria-label={`Actions for ${pr.repo}#${pr.number}`}
+            disabled={busy}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <EllipsisVertical aria-hidden />
+          </button>
+        </DropdownMenuTrigger>
+      </Hint>
       <DropdownMenuContent align="end">
         <DropdownMenuItem onSelect={() => openExternal(pr.url)}>
           <ExternalLink aria-hidden className="size-4 text-ink-faint" />
@@ -1378,7 +1381,7 @@ function Section({
       data-reorder-item={id}
       hidden={hidden}
       className={cn(
-        'group/section flex shrink-0 flex-col rounded-md border border-edge bg-panel-raised data-[dragging]:relative data-[dragging]:z-10 data-[dragging]:shadow-floating data-[dragging]:ring-1 data-[dragging]:ring-rule-focus',
+        'group/section flex shrink-0 flex-col rounded-xl border border-foreground/10 bg-card data-[dragging]:relative data-[dragging]:z-10 data-[dragging]:shadow-floating data-[dragging]:ring-1 data-[dragging]:ring-rule-focus',
         open && 'pb-1',
       )}
     >
@@ -1611,18 +1614,19 @@ const Row = forwardRef<HTMLButtonElement, RowProps>(function Row(
 
 function CopyAction({ text, label }: { text: string; label: string }) {
   return (
-    <button
-      type="button"
-      className={uiClasses.treeItemAction}
-      aria-label={label}
-      title={label}
-      onClick={(event) => {
-        event.stopPropagation()
-        void copyTextToClipboard(text)
-      }}
-    >
-      <Copy aria-hidden />
-    </button>
+    <Hint label={label}>
+      <button
+        type="button"
+        className={uiClasses.treeItemAction}
+        aria-label={label}
+        onClick={(event) => {
+          event.stopPropagation()
+          void copyTextToClipboard(text)
+        }}
+      >
+        <Copy aria-hidden />
+      </button>
+    </Hint>
   )
 }
 

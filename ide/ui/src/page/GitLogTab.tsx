@@ -1145,7 +1145,7 @@ export function GitLogTab({
                   ? `Its commits go to ${pushing.target.name}.`
                   : `${pushing.target.ahead} ${pushing.target.ahead === 1 ? 'commit goes' : 'commits go'} to ${pushing.target.name}.`
         }
-        confirmLabel="Push"
+        confirmLabel="Push branch"
         onConfirm={() => {
           if (pushing !== null) ops.pushBranch(pushing.branch, pushing.target)
           setPushing(null)

@@ -15,8 +15,7 @@
 
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { TooltipProvider as HintProvider } from '@/components/shadcn/tooltip'
-import { TooltipProvider } from '@/components/ui/Tooltip'
+import { TooltipProvider } from '@/components/shadcn/tooltip'
 import { LandingDemo } from './LandingDemo'
 import { setScenarioSpeed } from './scenario'
 import '../index.css'
@@ -105,15 +104,13 @@ function mount() {
   const render = () =>
     reactRoot.render(
       <StrictMode>
-        <HintProvider delay={400} closeDelay={0}>
-          <TooltipProvider delayDuration={150}>
-            <LandingDemo
-              key={runKey}
-              active={active}
-              loop={params.get('loop') === '1'}
-            />
-          </TooltipProvider>
-        </HintProvider>
+        <TooltipProvider>
+          <LandingDemo
+            key={runKey}
+            active={active}
+            loop={params.get('loop') === '1'}
+          />
+        </TooltipProvider>
       </StrictMode>,
     )
 

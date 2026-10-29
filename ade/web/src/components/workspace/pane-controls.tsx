@@ -106,6 +106,8 @@ interface ResizeHandleProps {
   onResize: (leftDelta: number) => void
   /** Gesture over — persist the current fractions. */
   onCommit: () => void
+  /** Double-click: every pane back to the same width. */
+  onReset?: () => void
   /** Container width in px, for px→fraction conversion. */
   containerWidth: () => number
   /** Temporarily remove all resize interaction during panel presence motion. */
@@ -121,7 +123,8 @@ interface ResizeHandleProps {
  * The 6px gap between two panes, promoted to a col-resize grip. Deltas
  * are reported as FRACTIONS of the container width; the parent clamps
  * and re-renders, so the handle itself stays stateless. Focusable:
- * arrow keys nudge the split by 2% a press.
+ * arrow keys nudge the split by 2% a press. A double-click (or Enter while
+ * focused) evens every pane out, the way an editor's sash does.
  */
 export function ResizeHandle({
   value,
@@ -132,6 +135,7 @@ export function ResizeHandle({
   motionState,
   onResizeStart,
   onResizeEnd,
+  onReset,
 }: ResizeHandleProps) {
   const [active, setActive] = useState(false)
   const pointerIdRef = useRef<number | null>(null)
@@ -175,6 +179,14 @@ export function ResizeHandle({
       role="separator"
       aria-orientation="vertical"
       aria-label="resize panels"
+      aria-keyshortcuts={onReset ? 'ArrowLeft ArrowRight Enter' : undefined}
+      title={
+        disabled || motionState
+          ? undefined
+          : onReset
+            ? 'Drag to resize. Double-click to even out.'
+            : 'Drag to resize'
+      }
       aria-valuenow={Math.round(value)}
       aria-valuemin={0}
       aria-valuemax={100}
@@ -193,8 +205,16 @@ export function ResizeHandle({
           ? 'after:bg-accent'
           : 'after:bg-transparent hover:after:bg-edge focus-visible:after:bg-accent',
       )}
+      onDoubleClick={() => {
+        if (!disabled) onReset?.()
+      }}
       onKeyDown={(e) => {
         if (disabled) return
+        if (e.key === 'Enter' && onReset) {
+          e.preventDefault()
+          onReset()
+          return
+        }
         if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
         e.preventDefault()
         onResize(e.key === 'ArrowLeft' ? -KEY_STEP : KEY_STEP)

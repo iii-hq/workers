@@ -1,8 +1,28 @@
 import type * as monacoNs from 'monaco-editor'
 import * as React from 'react'
 import { createPortal } from 'react-dom'
+import { bindingMatchesEvent } from '@/lib/keybindings/bindings'
+import { matchesKeybinding } from '@/lib/keybindings/registry'
+import { requestPaletteOpen } from '@/lib/palette/open-request'
+import { NEUTRAL_SURFACE } from '@/lib/neutral-surface'
 import { centeredScrollTop, clampLine, scrollParentOf } from '@/lib/reveal-line'
 import { cn } from '@/lib/utils'
+import {
+  type CodeEditorQuickEdit,
+  type CodeEditorQuickEditScope,
+  changedLineSpan,
+  insertedEnd,
+  QUICK_EDIT_DEFAULT_SHORTCUT,
+  QuickEditCard,
+  type QuickEditPhase,
+  shortcutLabel,
+} from './code-editor-quick-edit'
+
+export type {
+  CodeEditorQuickEdit,
+  CodeEditorQuickEditRequest,
+  CodeEditorQuickEditScope,
+} from './code-editor-quick-edit'
 
 export interface CodeEditorHandle {
   focus(): void
@@ -25,11 +45,15 @@ export interface CodeEditorSelection {
   text: string
 }
 
-/** An action offered on a selection, in a small floating bar by its end. */
+/** An action offered on a selection, in a small floating bar above it. */
 export interface CodeEditorSelectionAction {
   id: string
   label: string
   icon?: React.ReactNode
+  /** A chord that runs the action while text is selected and the editor
+      has focus, in the console's shortcut syntax (`Mod+L`); the bar shows
+      it beside the label. */
+  shortcut?: string
   run(selection: CodeEditorSelection): void
 }
 
@@ -73,9 +97,25 @@ export interface CodeEditorProps {
   wordWrap?: boolean
   /** Render the minimap; only meaningful together with `fill`. */
   minimap?: boolean
+  /** Code size in px; line height follows at 1.5×. Default 12.5 on 19. */
+  fontSize?: number
   /** Actions shown in a discreet floating bar whenever text is selected
       ("Reference in chat", …). Empty or absent: no bar. */
   selectionActions?: readonly CodeEditorSelectionAction[]
+  /** Offer Quick Edit on a selection (⌘I by default, and a "Quick Edit"
+      button in the selection bar): an inline prompt whose answer, from
+      `run`, replaces the selected code. Absent: no Quick Edit. */
+  quickEdit?: CodeEditorQuickEdit
+  /** The editor's right-click menu, VS Code's: Go to Definition, Rename,
+      Format Document, Refactor…, Cut / Copy / Paste, Command Palette, and
+      the selection actions and Quick Edit. Off by default (prose fields). */
+  contextMenu?: boolean
+  /** Where the reader was (scroll, cursor, selection), from an earlier
+      `onViewStateChange`: restored once, when the editor mounts. Opaque. */
+  initialViewState?: unknown
+  /** The reader's place, reported as they scroll or move the cursor and
+      once more as the editor goes away, so a remount can come back to it. */
+  onViewStateChange?: (state: unknown) => void
 }
 
 /* The pre-Monaco fallback (and permanent degraded mode if the editor chunk
@@ -91,13 +131,17 @@ function presentationOptions({
   lineNumbers,
   wordWrap,
   minimap,
+  fontSize,
 }: {
   fill: boolean
   lineNumbers: boolean
   wordWrap: boolean
   minimap: boolean
+  fontSize?: number
 }): monacoNs.editor.IEditorOptions {
   return {
+    fontSize: fontSize ?? 12.5,
+    lineHeight: fontSize ? Math.round(fontSize * 1.5) : 19,
     wordWrap: wordWrap ? 'on' : 'off',
     lineNumbers: lineNumbers ? 'on' : 'off',
     folding: lineNumbers,
@@ -165,6 +209,230 @@ const TOUCH_TAP_MAX_DISTANCE = 30
 const TOUCH_TAP_MAX_DURATION_MS = 700
 
 let selectionWidgetSeq = 0
+let quickEditSeq = 0
+
+/** The Quick Edit card's widest; a narrow editor gets its content width. */
+const QUICK_EDIT_MAX_WIDTH = 640
+/** Room between the card and the first selected line. */
+const QUICK_EDIT_GAP_PX = 6
+
+/** A remembered view state without its folds: a region folded once (or
+    by a stray click on the gutter) must not come back folded on its own and
+    leave the line numbers looking like lines went missing. */
+function withoutFolds(
+  state: monacoNs.editor.ICodeEditorViewState,
+): monacoNs.editor.ICodeEditorViewState {
+  const contributions = state.contributionsState as
+    | Record<string, unknown>
+    | undefined
+  if (!contributions || !('editor.contrib.folding' in contributions))
+    return state
+  const { 'editor.contrib.folding': _folds, ...rest } = contributions
+  return { ...state, contributionsState: rest }
+}
+
+/** `Mod+L` as a Monaco keybinding (letters and digits only), for the label
+    the right-click menu shows beside an action. */
+function monacoKeybinding(
+  monaco: typeof monacoNs,
+  binding: string,
+): number | null {
+  const parts = binding.split('+')
+  const key = parts.at(-1) ?? ''
+  const code = /^[a-z]$/i.test(key)
+    ? (monaco.KeyCode as unknown as Record<string, number>)[`Key${key.toUpperCase()}`]
+    : /^\d$/.test(key)
+      ? (monaco.KeyCode as unknown as Record<string, number>)[`Digit${key}`]
+      : undefined
+  if (code === undefined) return null
+  let mods = 0
+  for (const part of parts.slice(0, -1)) {
+    if (part === 'Mod') mods |= monaco.KeyMod.CtrlCmd
+    else if (part === 'Shift') mods |= monaco.KeyMod.Shift
+    else if (part === 'Alt') mods |= monaco.KeyMod.Alt
+    else if (part === 'Ctrl') mods |= monaco.KeyMod.WinCtrl
+    else return null
+  }
+  return mods | code
+}
+
+/** The editor's selection as the bar and Quick Edit take it; null when empty. */
+function currentSelection(
+  editor: monacoNs.editor.IStandaloneCodeEditor,
+): CodeEditorSelection | null {
+  const model = editor.getModel()
+  const sel = editor.getSelection()
+  if (!model || !sel || sel.isEmpty()) return null
+  return {
+    startLine: sel.startLineNumber,
+    startColumn: sel.startColumn,
+    endLine: sel.endLineNumber,
+    endColumn: sel.endColumn,
+    text: model.getValueInRange(sel),
+  }
+}
+
+/** One open Quick Edit card and everything it put into the editor. */
+interface QuickEditSession {
+  /** The card renders into this (Monaco's content widget node). */
+  node: HTMLDivElement
+  abort: AbortController | null
+  /** Where the picked code is now (edits above it move it). */
+  targetRange(): monacoNs.IRange | null
+  /** Put `after` in place of `range` (one undo step) and tint `span`. */
+  apply(
+    range: monacoNs.IRange,
+    before: string,
+    after: string,
+    span: { start: number; end: number } | null,
+  ): void
+  /** Put the code from before `apply` back. */
+  revert(): void
+  dispose(): void
+}
+
+function createQuickEditSession(
+  editor: monacoNs.editor.IStandaloneCodeEditor,
+  picked: CodeEditorSelection,
+): QuickEditSession {
+  const node = document.createElement('div')
+  node.className = 'z-10'
+  node.style.paddingBottom = `${QUICK_EDIT_GAP_PX}px`
+  const zoneNode = document.createElement('div')
+  let anchorLine = picked.startLine
+  const zone: monacoNs.editor.IViewZone = {
+    afterLineNumber: anchorLine - 1,
+    heightInPx: 104,
+    domNode: zoneNode,
+    suppressMouseDown: true,
+  }
+  let zoneId: string | null = null
+  const widgetId = `iii-quick-edit-${++quickEditSeq}`
+  // ABOVE the first selected line, i.e. over the zone that line now has.
+  const widget: monacoNs.editor.IContentWidget = {
+    getId: () => widgetId,
+    getDomNode: () => node,
+    getPosition: () => ({
+      position: { lineNumber: anchorLine, column: 1 },
+      preference: [1],
+    }),
+  }
+  const fitWidth = () => {
+    const layout = editor.getLayoutInfo()
+    const room = layout.contentWidth - layout.verticalScrollbarWidth - 16
+    node.style.width = `${Math.max(220, Math.min(QUICK_EDIT_MAX_WIDTH, room))}px`
+  }
+  const placeZone = () => {
+    zone.afterLineNumber = anchorLine - 1
+    editor.changeViewZones((accessor) => {
+      if (zoneId !== null) accessor.removeZone(zoneId)
+      zoneId = accessor.addZone(zone)
+    })
+    editor.layoutContentWidget(widget)
+  }
+  fitWidth()
+  editor.addContentWidget(widget)
+  placeZone()
+  // The card grows with its text and its phase: the zone follows, so the
+  // code under it moves down instead of hiding behind it.
+  const resize = new ResizeObserver(() => {
+    const height = Math.ceil(node.getBoundingClientRect().height)
+    if (height <= QUICK_EDIT_GAP_PX || height === zone.heightInPx) return
+    zone.heightInPx = height
+    editor.changeViewZones((accessor) => {
+      if (zoneId !== null) accessor.layoutZone(zoneId)
+    })
+    editor.layoutContentWidget(widget)
+  })
+  resize.observe(node)
+  const layoutListener = editor.onDidLayoutChange(() => {
+    fitWidth()
+    editor.layoutContentWidget(widget)
+  })
+  // 1 = TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges.
+  const target = editor.createDecorationsCollection([
+    {
+      range: {
+        startLineNumber: picked.startLine,
+        startColumn: picked.startColumn,
+        endLineNumber: picked.endLine,
+        endColumn: picked.endColumn,
+      },
+      options: { stickiness: 1, className: 'iii-quick-edit-target' },
+    },
+  ])
+  let inserted: monacoNs.editor.IEditorDecorationsCollection | null = null
+  let tint: monacoNs.editor.IEditorDecorationsCollection | null = null
+  let original: string | null = null
+
+  return {
+    node,
+    abort: null,
+    targetRange: () => target.getRange(0),
+    apply(range, before, after, span) {
+      editor.pushUndoStop()
+      editor.executeEdits('quick-edit', [
+        { range, text: after, forceMoveMarkers: true },
+      ])
+      editor.pushUndoStop()
+      original = before
+      target.clear()
+      const end = insertedEnd(range.startLineNumber, range.startColumn, after)
+      inserted = editor.createDecorationsCollection([
+        {
+          range: {
+            startLineNumber: range.startLineNumber,
+            startColumn: range.startColumn,
+            endLineNumber: end.line,
+            endColumn: end.column,
+          },
+          options: { stickiness: 1 },
+        },
+      ])
+      tint = span
+        ? editor.createDecorationsCollection([
+            {
+              range: {
+                startLineNumber: range.startLineNumber + span.start,
+                startColumn: 1,
+                endLineNumber: range.startLineNumber + span.end,
+                endColumn: 1,
+              },
+              options: {
+                isWholeLine: true,
+                className: 'iii-quick-edit-line',
+                linesDecorationsClassName: 'iii-quick-edit-gutter',
+              },
+            },
+          ])
+        : null
+      // A rewrite can fold the zone into the replaced text; put the card
+      // back over a line that still exists.
+      anchorLine = Math.min(anchorLine, editor.getModel()?.getLineCount() ?? 1)
+      placeZone()
+    },
+    revert() {
+      const range = inserted?.getRange(0)
+      if (!range || original === null) return
+      editor.pushUndoStop()
+      editor.executeEdits('quick-edit', [
+        { range, text: original, forceMoveMarkers: true },
+      ])
+      editor.pushUndoStop()
+    },
+    dispose() {
+      resize.disconnect()
+      layoutListener.dispose()
+      target.clear()
+      inserted?.clear()
+      tint?.clear()
+      editor.removeContentWidget(widget)
+      editor.changeViewZones((accessor) => {
+        if (zoneId !== null) accessor.removeZone(zoneId)
+      })
+    },
+  }
+}
 
 type PendingReveal =
   | { kind: 'line'; line: number; column: number }
@@ -204,7 +472,12 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
       lineNumbers = false,
       wordWrap = true,
       minimap = false,
-      selectionActions,
+      fontSize,
+      selectionActions: callerActions,
+      quickEdit,
+      contextMenu = false,
+      initialViewState,
+      onViewStateChange,
     },
     ref,
   ) => {
@@ -217,6 +490,7 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
     // reading the whole buffer back on each keystroke.
     const editorValueRef = React.useRef<string | null>(null)
     const pendingRevealRef = React.useRef<PendingReveal | null>(null)
+    const reportViewStateOnDisposeRef = React.useRef<(() => void) | null>(null)
     const touchStartRef = React.useRef<{
       pointerId: number
       x: number
@@ -313,6 +587,7 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
       lineNumbers,
       wordWrap,
       minimap,
+      fontSize,
     })
     latest.current = {
       value,
@@ -322,12 +597,40 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
       lineNumbers,
       wordWrap,
       minimap,
+      fontSize,
     }
     const onChangeRef = React.useRef(onChange)
     onChangeRef.current = onChange
+    const initialViewStateRef = React.useRef(initialViewState)
+    const onViewStateChangeRef = React.useRef(onViewStateChange)
+    onViewStateChangeRef.current = onViewStateChange
+
+    // Quick Edit joins the caller's actions in the bar (its plumbing is
+    // further down; the bar reaches it through this ref).
+    const quickEditRef = React.useRef(quickEdit)
+    quickEditRef.current = quickEdit
+    const openQuickEditRef = React.useRef<
+      (selection: CodeEditorSelection) => void
+    >(() => {})
+    const hasQuickEdit = Boolean(quickEdit) && !readOnly && !disabled
+    const quickEditShortcut = quickEdit?.shortcut ?? QUICK_EDIT_DEFAULT_SHORTCUT
+    const selectionActions = React.useMemo<
+      readonly CodeEditorSelectionAction[] | undefined
+    >(() => {
+      if (!hasQuickEdit) return callerActions
+      return [
+        ...(callerActions ?? []),
+        {
+          id: 'quick-edit',
+          label: 'Quick Edit',
+          shortcut: quickEditShortcut,
+          run: (selection) => openQuickEditRef.current(selection),
+        },
+      ]
+    }, [callerActions, hasQuickEdit, quickEditShortcut])
 
     // ── selection actions ──
-    // A floating bar by the end of a non-empty selection, offering the
+    // A floating bar above the start of a non-empty selection, offering the
     // caller's actions. Monaco positions it as a content widget (so it
     // follows scrolling and escapes the wrapper's clipping); React renders
     // into the widget's node through a portal.
@@ -366,7 +669,12 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
           hideSelectionBar()
           return
         }
-        const end = sel.getEndPosition()
+        // Above the first selected line, where the eye already is; below it
+        // when the selection starts at the top of the viewport.
+        const anchor = {
+          lineNumber: sel.startLineNumber,
+          column: sel.startColumn,
+        }
         if (!selectionNodeRef.current) {
           const node = document.createElement('div')
           node.className = 'z-10'
@@ -379,18 +687,18 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
             getId: () => widgetId,
             getDomNode: () => node,
             getPosition: () => ({
-              position: { lineNumber: end.lineNumber, column: end.column },
+              position: anchor,
               // monaco ContentWidgetPositionPreference: 2 = BELOW, 1 = ABOVE
-              preference: [2, 1],
+              preference: [1, 2],
             }),
             allowEditorOverflow: true,
           }
         }
         const widget = selectionWidgetRef.current
-        // Re-anchor at the new end of the selection.
+        // Re-anchor at the new start of the selection.
         widget.getPosition = () => ({
-          position: { lineNumber: end.lineNumber, column: end.column },
-          preference: [2, 1],
+          position: anchor,
+          preference: [1, 2],
         })
         if (selectionShownRef.current) editor.layoutContentWidget(widget)
         else editor.addContentWidget(widget)
@@ -405,6 +713,162 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
       },
       [hideSelectionBar],
     )
+
+    // ── quick edit ──
+    // A card in a view zone above the selection (a content widget laid over
+    // the zone, so it scrolls with the code and its text box takes focus),
+    // the selection tracked by a decoration while the model works, then the
+    // answer applied as one undoable edit with its changed lines tinted.
+    const [quickEditState, setQuickEditState] = React.useState<{
+      phase: QuickEditPhase
+      scope: CodeEditorQuickEditScope
+      instruction: string
+      error: string | null
+      model: string | null
+      thinkingLevel: string
+    } | null>(null)
+    // The model picked in the card outlives one card: the next ⌘I opens on it.
+    const quickEditModelRef = React.useRef<{
+      model: string | null
+      thinkingLevel: string
+    }>({ model: null, thinkingLevel: 'default' })
+    const quickEditSessionRef = React.useRef<QuickEditSession | null>(null)
+    const quickEditInputRef = React.useRef<HTMLTextAreaElement | null>(null)
+    const quickEditRootRef = React.useRef<HTMLDivElement | null>(null)
+    const quickEditStateRef = React.useRef(quickEditState)
+    quickEditStateRef.current = quickEditState
+
+    const closeQuickEdit = React.useCallback((refocus = true) => {
+      const session = quickEditSessionRef.current
+      if (!session) return
+      quickEditSessionRef.current = null
+      session.abort?.abort()
+      session.dispose()
+      setQuickEditState(null)
+      if (refocus) editorRef.current?.focus()
+    }, [])
+
+    const openQuickEdit = React.useCallback(
+      (picked: CodeEditorSelection) => {
+        const editor = editorRef.current
+        const model = editor?.getModel()
+        if (!editor || !model || !quickEditRef.current) return
+        // A second ⌘I moves the card to the new selection.
+        closeQuickEdit(false)
+        hideSelectionBar()
+        const session = createQuickEditSession(editor, picked)
+        quickEditSessionRef.current = session
+        setQuickEditState({
+          phase: 'prompt',
+          scope: 'selection',
+          instruction: '',
+          error: null,
+          ...quickEditModelRef.current,
+        })
+        requestAnimationFrame(() => quickEditInputRef.current?.focus())
+      },
+      [closeQuickEdit, hideSelectionBar],
+    )
+    openQuickEditRef.current = openQuickEdit
+
+    const submitQuickEdit = React.useCallback(() => {
+      const editor = editorRef.current
+      const model = editor?.getModel()
+      const session = quickEditSessionRef.current
+      const state = quickEditStateRef.current
+      const run = quickEditRef.current?.run
+      if (!editor || !model || !session || !state || !run) return
+      const instruction = state.instruction.trim()
+      if (instruction === '' || state.phase !== 'prompt') return
+      const target = session.targetRange()
+      if (!target) {
+        closeQuickEdit()
+        return
+      }
+      const abort = new AbortController()
+      session.abort = abort
+      setQuickEditState({ ...state, phase: 'running', error: null })
+      const value = model.getValue()
+      const scope = state.scope
+      run({
+        instruction,
+        scope,
+        selection: {
+          startLine: target.startLineNumber,
+          startColumn: target.startColumn,
+          endLine: target.endLineNumber,
+          endColumn: target.endColumn,
+          text: model.getValueInRange(target),
+        },
+        value,
+        language: latest.current.language,
+        model: state.model,
+        thinkingLevel: state.thinkingLevel,
+        signal: abort.signal,
+      })
+        .then((answer) => {
+          if (abort.signal.aborted || quickEditSessionRef.current !== session)
+            return
+          // The text moved while the model worked: the answer no longer fits.
+          if (model.getValue() !== value) {
+            setQuickEditState((current) =>
+              current && {
+                ...current,
+                phase: 'prompt',
+                error: 'The file changed while the edit was written. Send it again.',
+              },
+            )
+            return
+          }
+          const range =
+            scope === 'file' ? model.getFullModelRange() : target
+          const before = model.getValueInRange(range)
+          if (answer === before) {
+            setQuickEditState((current) =>
+              current && {
+                ...current,
+                phase: 'prompt',
+                error: 'The model left the code as it was.',
+              },
+            )
+            return
+          }
+          session.apply(range, before, answer, changedLineSpan(before, answer))
+          setQuickEditState((current) => current && { ...current, phase: 'review' })
+          requestAnimationFrame(() => quickEditRootRef.current?.focus())
+        })
+        .catch((err: unknown) => {
+          if (abort.signal.aborted || quickEditSessionRef.current !== session)
+            return
+          setQuickEditState((current) =>
+            current && {
+              ...current,
+              phase: 'prompt',
+              error: err instanceof Error ? err.message : String(err),
+            },
+          )
+          requestAnimationFrame(() => quickEditInputRef.current?.focus())
+        })
+    }, [closeQuickEdit])
+
+    const stopQuickEdit = React.useCallback(() => {
+      quickEditSessionRef.current?.abort?.abort()
+      setQuickEditState((current) => current && { ...current, phase: 'prompt' })
+      requestAnimationFrame(() => quickEditInputRef.current?.focus())
+    }, [])
+
+    const acceptQuickEdit = React.useCallback(() => closeQuickEdit(), [closeQuickEdit])
+
+    const rejectQuickEdit = React.useCallback(() => {
+      quickEditSessionRef.current?.revert()
+      closeQuickEdit()
+    }, [closeQuickEdit])
+
+    // Withdrawn (read-only now, or the caller dropped it) or unmounted: close.
+    React.useEffect(() => {
+      if (!hasQuickEdit) closeQuickEdit(false)
+    }, [hasQuickEdit, closeQuickEdit])
+    React.useEffect(() => () => closeQuickEdit(false), [closeQuickEdit])
 
     React.useImperativeHandle(ref, () => ({
       focus: () => {
@@ -421,15 +885,25 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
         .then(({ monaco, CONSOLE_THEME, codeFontFamily }) => {
           if (disposed || !hostRef.current) return
           const filled = latest.current.fill
+          const fontFamily = codeFontFamily(hostRef.current)
           const editor = monaco.editor.create(hostRef.current, {
             ...MONACO_OPTIONS,
             ...presentationOptions(latest.current),
             value: latest.current.value,
             language: latest.current.language,
             theme: CONSOLE_THEME,
-            fontFamily: codeFontFamily(),
+            fontFamily,
           })
           editorRef.current = editor
+          // Monaco measures glyphs once, at creation: a webfont that lands
+          // later leaves the cursor and selection off by a fraction per
+          // column until the editor measures again.
+          void document.fonts
+            ?.load(`${MONACO_OPTIONS.fontSize}px ${fontFamily}`)
+            .then(() => {
+              if (!disposed) monaco.editor.remeasureFonts()
+            })
+            .catch(() => {})
           editorValueRef.current = latest.current.value
           editor.getModel()?.updateOptions({ tabSize: 2, insertSpaces: true })
 
@@ -462,6 +936,8 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
           // (9 = monaco MouseTargetType.CONTENT_WIDGET.)
           const onWidget = (target: { type: number } | null) =>
             target?.type === 9
+          // The right-click menu is the selection's surface while it is up.
+          editor.onContextMenu?.(() => hideSelectionBar())
           editor.onMouseDown((event) => {
             if (onWidget(event.target)) return
             mouseDownRef.current = true
@@ -470,10 +946,16 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
           editor.onMouseUp((event) => {
             if (onWidget(event.target)) return
             mouseDownRef.current = false
-            if (actionsRef.current?.length) showSelectionBar(editor)
+            if (actionsRef.current?.length && !quickEditSessionRef.current)
+              showSelectionBar(editor)
           })
           editor.onDidChangeCursorSelection((event) => {
             if (!actionsRef.current?.length) return
+            // The Quick Edit card is the selection's surface while it is open.
+            if (quickEditSessionRef.current) {
+              hideSelectionBar()
+              return
+            }
             // An outside refill collapses the selection, then restores the
             // reader's: neither is a selection the person just made.
             if (applyingRef.current) {
@@ -498,6 +980,39 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
               if (editorRef.current === editor) showSelectionBar(editor)
             }, SELECTION_BAR_DELAY_MS)
           })
+
+          // Back where the reader left it; an explicit reveal below wins.
+          const restored = initialViewStateRef.current
+          if (restored) {
+            try {
+              editor.restoreViewState(
+                withoutFolds(restored as monacoNs.editor.ICodeEditorViewState),
+              )
+            } catch {
+              // A state from another Monaco version: start at the top.
+            }
+          }
+          // Report the place as it moves, at most once a frame.
+          let reportFrame = 0
+          const reportViewState = () => {
+            if (!onViewStateChangeRef.current || reportFrame) return
+            reportFrame = requestAnimationFrame(() => {
+              reportFrame = 0
+              const state = editor.saveViewState()
+              if (state) onViewStateChangeRef.current?.(state)
+            })
+          }
+          // Decided at mount, like `fill`: only a caller that keeps the
+          // place pays for the listeners.
+          if (onViewStateChangeRef.current) {
+            editor.onDidScrollChange(reportViewState)
+            editor.onDidChangeCursorSelection(reportViewState)
+            reportViewStateOnDisposeRef.current = () => {
+              if (reportFrame) cancelAnimationFrame(reportFrame)
+              const state = editor.saveViewState()
+              if (state) onViewStateChangeRef.current?.(state)
+            }
+          }
 
           if (latest.current.autoFocus) editor.focus()
           setReady(true)
@@ -525,6 +1040,8 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
         }
         selectionShownRef.current = false
         selectionWidgetRef.current = null
+        reportViewStateOnDisposeRef.current?.()
+        reportViewStateOnDisposeRef.current = null
         editorRef.current?.dispose()
         editorRef.current = null
       }
@@ -540,6 +1057,8 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
     React.useLayoutEffect(() => {
       const editor = editorRef.current
       if (!ready || !editor || value === editorValueRef.current) return
+      // New text from outside: a card over the old text no longer applies.
+      closeQuickEdit(false)
       // The same editor refilled from outside (an agent rewriting the open
       // file) keeps the reader's place: setValue alone drops the cursor and
       // selection and scrolls to the top. Restored positions past the new
@@ -550,7 +1069,7 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
       editorValueRef.current = value
       if (viewState) editor.restoreViewState(viewState)
       applyingRef.current = false
-    }, [ready, value])
+    }, [ready, value, closeQuickEdit])
 
     React.useEffect(() => {
       const editor = editorRef.current
@@ -567,9 +1086,58 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
       const editor = editorRef.current
       if (!editor) return
       editor.updateOptions(
-        presentationOptions({ fill, lineNumbers, wordWrap, minimap }),
+        presentationOptions({ fill, lineNumbers, wordWrap, minimap, fontSize }),
       )
-    }, [ready, fill, lineNumbers, wordWrap, minimap])
+    }, [ready, fill, lineNumbers, wordWrap, minimap, fontSize])
+
+    // ── right-click menu ──
+    // Monaco's own (VS Code's) menu, with the selection actions and Quick
+    // Edit on top. Their keys stay with the capture handler below; the
+    // keybinding registered here is what puts "⌘L" beside the row.
+    const menuActionsKey = contextMenu
+      ? (selectionActions ?? [])
+          .map((action) => `${action.id}\u0000${action.label}\u0000${action.shortcut ?? ''}`)
+          .join('\n')
+      : ''
+    React.useEffect(() => {
+      const editor = editorRef.current
+      if (!ready || !editor) return
+      editor.updateOptions({ contextmenu: contextMenu })
+      if (!contextMenu || !menuActionsKey) return
+      let cancelled = false
+      const registered: monacoNs.IDisposable[] = []
+      void import('@/lib/monaco').then(({ monaco }) => {
+        if (cancelled || editorRef.current !== editor) return
+        ;(actionsRef.current ?? []).forEach((action, index) => {
+          const keybinding = action.shortcut
+            ? monacoKeybinding(monaco, action.shortcut)
+            : null
+          registered.push(
+            editor.addAction({
+              id: `iii.selection.${action.id}`,
+              label: action.label,
+              contextMenuGroupId: '0_iii',
+              contextMenuOrder: index,
+              precondition: 'editorHasSelection',
+              ...(keybinding ? { keybindings: [keybinding] } : {}),
+              run: (target) => {
+                const picked = currentSelection(
+                  target as monacoNs.editor.IStandaloneCodeEditor,
+                )
+                const current = actionsRef.current?.find(
+                  (candidate) => candidate.id === action.id,
+                )
+                if (picked && current) current.run(picked)
+              },
+            }),
+          )
+        })
+      })
+      return () => {
+        cancelled = true
+        for (const disposable of registered) disposable.dispose()
+      }
+    }, [ready, contextMenu, menuActionsKey])
 
     React.useEffect(() => {
       if (!ready) return
@@ -687,6 +1255,44 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
       }
     }, [ready, completionsKey, language])
 
+    const quickEditCard =
+      quickEditState && quickEditSessionRef.current
+        ? createPortal(
+            <QuickEditCard
+              phase={quickEditState.phase}
+              scope={quickEditState.scope}
+              onScopeChange={(scope) =>
+                setQuickEditState((current) => current && { ...current, scope })
+              }
+              instruction={quickEditState.instruction}
+              onInstructionChange={(instruction) =>
+                setQuickEditState(
+                  (current) => current && { ...current, instruction, error: null },
+                )
+              }
+              error={quickEditState.error}
+              modelLabel={quickEdit?.modelLabel}
+              model={quickEditState.model}
+              defaultModel={quickEdit?.model}
+              thinkingLevel={quickEditState.thinkingLevel}
+              onModelChange={(model, thinkingLevel) => {
+                quickEditModelRef.current = { model, thinkingLevel }
+                setQuickEditState(
+                  (current) => current && { ...current, model, thinkingLevel },
+                )
+              }}
+              onSubmit={submitQuickEdit}
+              onStop={stopQuickEdit}
+              onClose={() => closeQuickEdit()}
+              onAccept={acceptQuickEdit}
+              onReject={rejectQuickEdit}
+              inputRef={quickEditInputRef}
+              rootRef={quickEditRootRef}
+            />,
+            quickEditSessionRef.current.node,
+          )
+        : null
+
     const selectionBar =
       selection && selectionNodeRef.current && selectionActions?.length
         ? createPortal(
@@ -763,6 +1369,40 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
         data-keybindings-standdown=""
         onKeyDown={onKeyDown}
         onKeyDownCapture={(event) => {
+          // A selection's shortcuts (⌘L, ⌘I) run before Monaco sees the
+          // key: it has bindings of its own on these keys.
+          const focused = editorRef.current
+          if (
+            focused?.hasTextFocus() &&
+            !event.nativeEvent.isComposing &&
+            selectionActions?.length
+          ) {
+            const action = selectionActions.find(
+              (candidate) =>
+                candidate.shortcut &&
+                bindingMatchesEvent(candidate.shortcut, event.nativeEvent),
+            )
+            const picked = action ? currentSelection(focused) : null
+            if (action && picked) {
+              event.preventDefault()
+              event.stopPropagation()
+              hideSelectionBar()
+              action.run(picked)
+              return
+            }
+          }
+          // ⌘K is the ADE's Search everywhere, the editor included: Monaco
+          // would take it as the start of one of its chords and swallow it.
+          if (
+            focused?.hasTextFocus() &&
+            !event.nativeEvent.isComposing &&
+            matchesKeybinding('palette.toggle', event.nativeEvent)
+          ) {
+            event.preventDefault()
+            event.stopPropagation()
+            requestPaletteOpen()
+            return
+          }
           if (fill || !editorRef.current?.hasTextFocus()) return
           const target = event.target as HTMLElement
           const reveal = () => {
@@ -909,6 +1549,7 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
           />
         ) : null}
         {selectionBar}
+        {quickEditCard}
       </div>
     )
   },
@@ -916,9 +1557,10 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
 CodeEditor.displayName = 'CodeEditor'
 
 /**
- * The bar itself: a raised chip with one quiet button per action, tucked
- * just under the selection's end. Mouse-down is swallowed so pressing a
- * button never collapses the selection it acts on.
+ * The bar itself: a raised strip of quiet buttons over the selection's first
+ * line, each with its shortcut ("Add to Chat ⌘L", "Quick Edit ⌘I").
+ * Mouse-down is swallowed so pressing a button never collapses the
+ * selection it acts on.
  */
 function SelectionActionBar({
   actions,
@@ -933,23 +1575,41 @@ function SelectionActionBar({
     <div
       role="toolbar"
       aria-label="selection actions"
-      className="mt-1.5 flex items-center gap-0.5 rounded-md bg-panel-raised p-0.5 shadow-floating"
+      className={cn(
+        NEUTRAL_SURFACE,
+        'my-1 flex items-center gap-0.5 rounded-lg bg-popover p-1 font-inter text-popover-foreground shadow-md ring-1 ring-foreground/10',
+      )}
       onMouseDown={(event) => event.preventDefault()}
     >
       {actions.map((action) => (
         <button
           key={action.id}
           type="button"
+          aria-keyshortcuts={action.shortcut ? ariaShortcut(action.shortcut) : undefined}
           onClick={() => {
             action.run(selection)
             onRun()
           }}
-          className="inline-flex h-6 items-center gap-1.5 rounded-sm px-2 font-sans text-[11px] font-semibold text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus [&>svg]:size-4 [&>svg]:shrink-0 [&>svg]:text-ink-faint"
+          className="inline-flex h-7 items-center gap-2 rounded-md px-2 text-sm text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus [&>svg]:size-4 [&>svg]:shrink-0 [&>svg]:text-ink-faint"
         >
           {action.icon}
           {action.label}
+          {action.shortcut ? (
+            <kbd className="rounded-md bg-surface-hover px-1.5 font-inter text-xs leading-5 text-ink-faint">
+              {shortcutLabel(action.shortcut)}
+            </kbd>
+          ) : null}
         </button>
       ))}
     </div>
   )
+}
+
+/** `Mod+L` in ARIA's spelling: `Meta+L` on a Mac, `Control+L` elsewhere. */
+function ariaShortcut(binding: string): string {
+  const mac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.userAgent)
+  return binding
+    .split('+')
+    .map((part) => (part === 'Mod' ? (mac ? 'Meta' : 'Control') : part === 'Ctrl' ? 'Control' : part))
+    .join('+')
 }

@@ -1,11 +1,10 @@
 import { copyText, errorMessage } from '@iii-dev/console-ui/format'
 import { Check, Copy, FileText, Plus, RotateCw, Undo2, X } from 'lucide-react'
 import { useEffect, useId, useRef, useState } from 'react'
-import { Button } from '@/components/ui/Button'
+import { Button } from '@/components/shadcn/button'
 import { CodeEditor, type CodeEditorHandle } from '@/components/ui/CodeEditor'
 import { FileDiff } from '@/components/ui/FileDiff'
 import { IconButton } from '@/components/ui/IconButton'
-import { Input } from '@/components/ui/Input'
 import { KeyCombo } from '@/components/ui/KeyCombo'
 import { Selector } from '@/components/ui/Selector'
 import {
@@ -15,10 +14,10 @@ import {
   SettingsSection,
 } from '@/components/ui/Settings'
 import { Skeleton } from '@/components/ui/Skeleton'
-import { StatusPanel, type StatusVariant } from '@/components/ui/StatusPanel'
 import { Toolbar } from '@/components/ui/Toolbar'
 import { shortcutPlatform } from '@/lib/keybindings/bindings'
 import type { PageCommandsApi } from '@/types/injectable-ui'
+import { Notice, type NoticeVariant, TextInput } from './components/kit'
 import { WorkerConfigurationReference } from './components/WorkerConfigurationReference'
 import type {
   ComposeApi,
@@ -47,6 +46,7 @@ import {
   shortPath,
   submittedSettingsEntry,
   validateSettingsDraft,
+  withAlsoStarts,
 } from './model'
 
 const FILE = 'worker-compose.yaml'
@@ -157,18 +157,14 @@ export function SettingsTab(props: SettingsProps) {
   if (error)
     return (
       <div className="wk-settings">
-        <StatusPanel
+        <Notice
           className="wk-save-notice"
           role="alert"
           variant="alert"
           headline={`Settings for ${name} could not be loaded`}
           detail={`${sentence(error)} Retry to read the declaration.`}
           action={
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setAttempt((n) => n + 1)}
-            >
+            <Button variant="ghost" onClick={() => setAttempt((n) => n + 1)}>
               Retry
             </Button>
           }
@@ -202,7 +198,7 @@ export function SettingsTab(props: SettingsProps) {
 }
 
 export type SaveNotice = {
-  variant: StatusVariant
+  variant: NoticeVariant
   headline: string
   detail: string
   retry?: 'restart' | 'reload'
@@ -574,8 +570,11 @@ function SettingsForm({
         also.length &&
         !(await actions.confirm({
           title: `Save ${name}?`,
-          description: `Compose rewrites the declaration and restarts ${name}. These stopped workers also start.`,
-          details: also,
+          description: withAlsoStarts(
+            `Compose rewrites the declaration and restarts ${name}.`,
+            actions.idle,
+            [name],
+          ),
           confirmLabel: 'Save and restart',
         }))
       ) {
@@ -766,7 +765,6 @@ function SettingsForm({
   const restoreAction = (
     <Button
       variant="ghost"
-      size="sm"
       disabled={!canRestore || busy}
       onClick={() => void restore()}
     >
@@ -816,7 +814,6 @@ function SettingsForm({
           <>
             <Button
               variant="ghost"
-              size="sm"
               disabled={!dirty || !validation.valid || busy}
               aria-label={previewVisible ? 'Hide preview' : 'Preview changes'}
               aria-expanded={previewVisible}
@@ -832,15 +829,14 @@ function SettingsForm({
             </Button>
             <Button
               variant="ghost"
-              size="sm"
+              className="wk-press font-inter"
               disabled={!dirty || busy}
               onClick={discard}
             >
               Discard
             </Button>
             <Button
-              variant="primary"
-              size="sm"
+              variant="default"
               disabled={!canSave}
               onClick={() => void save()}
               aria-label={saving ? 'Saving settings' : 'Save and restart'}
@@ -851,8 +847,8 @@ function SettingsForm({
                 <span className="wk-save-shortcut" aria-hidden>
                   <KeyCombo
                     binding="Mod+S"
-                    capClassName="bg-transparent text-bg"
-                    className="[&>span]:text-bg"
+                    capClassName="bg-transparent text-primary-foreground/80"
+                    className="[&>span]:text-primary-foreground/80"
                   />
                 </span>
               ) : null}
@@ -865,8 +861,7 @@ function SettingsForm({
             {errorCount ? (
               <Button
                 variant="ghost"
-                size="sm"
-                className="wk-validation-jump"
+                className="wk-validation-jump wk-press font-inter"
                 aria-describedby={validationSummaryId}
                 disabled={busy}
                 onClick={fixFirstError}
@@ -905,7 +900,7 @@ function SettingsForm({
           aria-label="Worker settings result"
           tabIndex={-1}
         >
-          <StatusPanel
+          <Notice
             className="wk-save-notice"
             role={
               notice.variant === 'alert' || notice.variant === 'warn'
@@ -921,7 +916,6 @@ function SettingsForm({
                   {discardedDraft ? (
                     <Button
                       variant="ghost"
-                      size="sm"
                       disabled={busy}
                       onClick={() => void undoDiscard()}
                     >
@@ -932,7 +926,7 @@ function SettingsForm({
                   {notice.retry === 'restart' ? (
                     <Button
                       variant="ghost"
-                      size="sm"
+                      className="wk-press font-inter"
                       disabled={busy}
                       onClick={onOpenLog}
                     >
@@ -943,7 +937,6 @@ function SettingsForm({
                   {notice.retry ? (
                     <Button
                       variant="ghost"
-                      size="sm"
                       disabled={busy}
                       onClick={() =>
                         void (notice.retry === 'restart'
@@ -1072,9 +1065,9 @@ function SettingsForm({
                     </IconButton>
                   }
                   renderControl={(control) => (
-                    <Input
+                    <TextInput
                       {...control}
-                      className="wk-mono"
+                      className="wk-machine"
                       value={draft.run}
                       onChange={(run) => set({ run })}
                       spellCheck={false}
@@ -1085,9 +1078,8 @@ function SettingsForm({
               </SettingsList>
               {PREBUILT.test(draft.run) ? (
                 <Button
-                  variant="pill"
-                  size="sm"
-                  className="wk-suggestion"
+                  variant="secondary"
+                  className="wk-suggestion wk-press font-inter"
                   onClick={() =>
                     set({ run: `cargo run --locked --bin ${name}` })
                   }
@@ -1147,7 +1139,7 @@ function SettingsForm({
                   control={
                     <Selector
                       aria-label="Add dependency"
-                      contentClassName="wk-dependency-picker"
+                      contentClassName="wk-popover wk-dependency-picker"
                       placeholder="Add dependency…"
                       searchPlaceholder="Search dependencies"
                       value={undefined}
@@ -1195,7 +1187,6 @@ function SettingsForm({
               action={
                 <Button
                   variant="ghost"
-                  size="sm"
                   onClick={() =>
                     set({
                       env: [
@@ -1291,9 +1282,8 @@ function SettingsForm({
               description="Removes this worker and references to it from the compose file. Only this worker stops; this does not delete its files."
               action={
                 <Button
-                  variant="ghost"
-                  size="sm"
-                  className="wk-danger"
+                  variant="destructive"
+                  className="wk-press font-inter"
                   disabled={busy}
                   onClick={onRemove}
                 >

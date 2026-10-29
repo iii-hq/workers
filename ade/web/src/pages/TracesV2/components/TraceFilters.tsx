@@ -2,14 +2,17 @@
 //
 // Layout: one toolbar row — the saved-views chip (and the session scope
 // chip), the search field, the group-by chip, a "Filters" popover trigger
-// with a count badge — and, pushed to the end, the page's stats (quiet, and
-// the first thing to wrap onto a second line in a narrow pane). Two things
-// are prominent: the search and the Filters trigger. Views and Group by are
-// quiet 28px chips (ghost until one is active, then a soft fill), so the
-// row reads as one search and one filter button with two small modifiers
-// beside them rather than four equal dropdowns. The active filters sit
-// below as removable chips. The advanced filters (status, time range, sort,
-// duration, worker, operation, display, attributes) live inside the popover.
+// with a count badge, the active filters as removable chips — and, pushed
+// to the end, the page's stats (quiet; their word labels fold into tooltips
+// in a narrow pane). Two things are prominent: the search and the Filters
+// trigger. Views and Group by are quiet 28px chips (ghost until one is
+// active, then a soft fill), so the row reads as one search and one filter
+// button with two small modifiers beside them rather than four equal
+// dropdowns. The first INLINE_CHIP_LIMIT active filters show as chips in
+// the row; the rest fold behind a "+N" menu, so the row stays a row instead
+// of growing a second line of chips. The advanced filters (status, time
+// range, sort, duration, worker, operation, display, attributes) live
+// inside the popover.
 //
 // Behaviors preserved:
 //   • 300ms-debounced text inputs (workerName, operationName) — wired
@@ -35,6 +38,14 @@ import {
 } from 'lucide-react'
 import { useEffect, useReducer, useState } from 'react'
 import { Button } from '@/components/shadcn/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/shadcn/dropdown-menu'
 import { Input } from '@/components/shadcn/input'
 import {
   Popover,
@@ -312,7 +323,7 @@ function Stat({
         'flex items-center gap-1 whitespace-nowrap text-[11px]',
         tone === 'alert' ? 'text-alert-strong' : 'text-muted-foreground',
       )}
-      title={title}
+      title={title ?? label}
     >
       {icon}
       <span
@@ -323,7 +334,9 @@ function Stat({
       >
         {value}
       </span>
-      <span>{label}</span>
+      {/* a narrow toolbar keeps the glyph and number; the word stays for
+          screen readers and in the tooltip */}
+      <span className="sr-only @[44rem]:not-sr-only">{label}</span>
     </div>
   )
 }
@@ -338,7 +351,7 @@ export function StatsBlock({
   if (!stats) return null
   const held = heldNew && heldNew.count > 0 ? heldNew : null
   return (
-    <div className="flex h-8 items-center gap-3 font-inter">
+    <div className="flex h-8 items-center gap-2.5 font-inter @[44rem]:gap-3">
       {held ? (
         <Button
           type="button"
@@ -408,7 +421,7 @@ function FilterChip({
 }) {
   return (
     <span
-      className="inline-flex h-6 max-w-full items-center gap-1 rounded-md border border-border bg-background pl-2 text-xs"
+      className="inline-flex h-6 max-w-[14rem] min-w-0 items-center gap-1 rounded-md border border-border bg-background pl-2 text-xs"
       data-active-filter={filter.key}
     >
       <span className="shrink-0 text-muted-foreground">{filter.name}</span>
@@ -427,6 +440,68 @@ function FilterChip({
         <X className="size-4" aria-hidden />
       </button>
     </span>
+  )
+}
+
+/** Active filters shown as chips in the toolbar row before the rest fold. */
+const INLINE_CHIP_LIMIT = 2
+
+/**
+ * The active filters past INLINE_CHIP_LIMIT, behind a quiet "+N" — each
+ * row removes its filter, and "Clear all" closes the list.
+ */
+function FilterOverflowMenu({
+  filters,
+  onRemove,
+  onClear,
+}: {
+  filters: ActiveFilter[]
+  onRemove: (filter: ActiveFilter) => void
+  onClear: () => void
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            className="rounded-md font-mono text-muted-foreground tabular-nums"
+            aria-label={`${filters.length} more active ${filters.length === 1 ? 'filter' : 'filters'}`}
+            data-active-filter-overflow={filters.length}
+          />
+        }
+      >
+        +{filters.length}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-64">
+        <DropdownMenuGroup>
+          {filters.map((filter) => (
+            <DropdownMenuItem
+              key={filter.key}
+              closeOnClick={false}
+              onClick={() => onRemove(filter)}
+              aria-label={`remove ${filter.name}: ${filter.value}`}
+              data-active-filter={filter.key}
+            >
+              <span className="shrink-0 text-muted-foreground">
+                {filter.name}
+              </span>
+              <span className="min-w-0 flex-1 truncate" title={filter.value}>
+                {filter.value}
+              </span>
+              <X
+                className="size-4 shrink-0 text-muted-foreground"
+                aria-hidden
+              />
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuGroup>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={onClear}>Clear all</DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -677,6 +752,10 @@ export function TraceFilters({
   const groupByValue = (filters.groupBy ?? 'none') as GroupByOption
   const sortOrderValue = filters.sortOrder ?? 'desc'
   const advancedFilterCount = activeFilters.length
+  const inlineFilters = activeFilters.slice(0, INLINE_CHIP_LIMIT)
+  const overflowFilters = activeFilters.slice(INLINE_CHIP_LIMIT)
+  const removeActive = (filter: ActiveFilter) =>
+    filter.onRemove ? filter.onRemove() : removeFilter(filter.key)
 
   const [popoverOpen, setPopoverOpen] = useState(false)
 
@@ -701,7 +780,7 @@ export function TraceFilters({
         validationWarnings?.timeRangeSwapped) && (
         <div
           role="status"
-          className="flex items-center gap-2 rounded-lg border border-warn/30 bg-warn-muted px-3 py-1.5 text-xs text-warn-strong"
+          className="flex items-center gap-2 rounded-xl border border-warn/30 bg-warn-muted px-3 py-1.5 text-xs text-warn-strong"
         >
           <AlertTriangle className="size-4 shrink-0" aria-hidden />
           <span className="flex-1">
@@ -725,14 +804,16 @@ export function TraceFilters({
         </div>
       )}
 
-      {/* The toolbar: views, search, group-by, filters, then the stats. */}
-      <div className="flex flex-wrap items-center gap-2">
+      {/* The toolbar: views, search, group-by, filters and their active
+          chips, then the stats. It wraps only as a last resort, in a pane
+          too narrow for the row. */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
         {leading}
 
         <SearchInput
           searchQuery={searchQuery}
           onSearchChange={onSearchChange}
-          className="min-w-[12rem] flex-1 @3xl:max-w-[30rem]"
+          className="min-w-[9rem] flex-1 @3xl:max-w-[30rem]"
         />
 
         <GroupByPicker
@@ -746,7 +827,7 @@ export function TraceFilters({
             render={
               <Button
                 type="button"
-                variant={advancedFilterCount > 0 ? 'secondary' : 'outline'}
+                variant="secondary"
                 className="rounded-lg"
                 aria-label="more filters"
                 data-trace-filters-trigger
@@ -1042,42 +1123,48 @@ export function TraceFilters({
           </PopoverContent>
         </Popover>
 
+        {/* Active filter chips, inline; the rest fold behind "+N". */}
+        {activeFilters.length > 0 && (
+          <div className="flex min-w-0 items-center gap-1.5">
+            {isLoading && (
+              <span
+                aria-hidden
+                className="mr-0.5 size-1.5 shrink-0 rounded-full bg-ok live-dot"
+              />
+            )}
+            {inlineFilters.map((filter) => (
+              <FilterChip
+                key={filter.key}
+                filter={filter}
+                onRemove={() => removeActive(filter)}
+              />
+            ))}
+            {overflowFilters.length > 0 ? (
+              <FilterOverflowMenu
+                filters={overflowFilters}
+                onRemove={removeActive}
+                onClear={onClear}
+              />
+            ) : (
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                onClick={onClear}
+                className="rounded-md text-muted-foreground"
+              >
+                Clear all
+              </Button>
+            )}
+          </div>
+        )}
+
         {stats ? (
           <div className="ml-auto">
             <StatsBlock stats={stats} heldNew={heldNew} />
           </div>
         ) : null}
       </div>
-
-      {/* Active filter chips */}
-      {activeFilters.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5">
-          {isLoading && (
-            <span
-              aria-hidden
-              className="mr-0.5 size-1.5 rounded-full bg-ok live-dot"
-            />
-          )}
-          {activeFilters.map((filter) => (
-            <FilterChip
-              key={filter.key}
-              filter={filter}
-              onRemove={() =>
-                filter.onRemove ? filter.onRemove() : removeFilter(filter.key)
-              }
-            />
-          ))}
-          <Button
-            type="button"
-            variant="ghost"
-            size="xs"
-            onClick={onClear}
-            className="rounded-md text-muted-foreground"
-          >
-            Clear all
-          </Button>
-        </div>
-      )}
     </div>
   )
 }

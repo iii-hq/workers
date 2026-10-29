@@ -243,10 +243,6 @@
   flex-shrink: 0;
 }
 
-[data-iii-ui='voice'] .voice-model-use {
-  border: 1px solid var(--color-edge);
-}
-
 [data-iii-ui='voice'] .voice-model-remove:hover:not(:disabled) {
   color: var(--color-alert);
 }
@@ -308,7 +304,7 @@
   gap: 0.5rem;
   margin: 0;
   padding: 0.75rem;
-  border-radius: 6px;
+  border-radius: var(--radius-xl);
   background: var(--color-panel);
   color: var(--color-ink);
   font-size: 0.9375rem;
@@ -929,4 +925,50 @@
 
 [data-iii-ui='voice'] .voice-link:hover {
   color: var(--ui-fg, inherit);
+}
+
+/* ── key dictation pill ────────────────────────────────────────────── */
+/* Holding fn or right Option where no composer shows the recording (the
+   IDE, a settings page): a small pill at the bottom of the window, as a
+   dictation app shows it, listening and then writing. */
+
+[data-iii-ui='voice'].voice-pill-host {
+  position: fixed;
+  inset-inline: 0;
+  bottom: 1.5rem;
+  z-index: 60;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+[data-iii-ui='voice'] .voice-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.625rem;
+  height: 2.25rem;
+  padding-inline: 0.875rem 1rem;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-full);
+  background: var(--color-panel-raised);
+  box-shadow: var(--shadow-floating);
+  color: var(--color-ink);
+  font: 500 13px / 1 var(--font-sans);
+  animation: voice-bar-in var(--motion-duration-control) var(--motion-ease-enter);
+}
+
+[data-iii-ui='voice'] .voice-pill-wave {
+  width: 4.5rem;
+  height: 1.25rem;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='voice'] .voice-pill-wave > canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+[data-iii-ui='voice'] .voice-pill[data-status='stopping'] .voice-pill-label {
+  color: var(--color-ink-faint);
 }

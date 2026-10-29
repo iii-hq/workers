@@ -27,7 +27,7 @@ describe('AssistantMessage', () => {
     )
 
     expect(html).toContain('>Researcher</span>')
-    expect(html).toContain('· codex/gpt-5.6-sol')
+    expect(html).toContain('codex/gpt-5.6-sol')
   })
 
   it('marks only a live assistant surface for its first content reveal', () => {
@@ -95,7 +95,8 @@ describe('SpawnTaskMessage', () => {
     )
 
     expect(html).toContain('data-message-role="spawn-task"')
-    expect(html).toContain('class="iii-ui-card"')
+    expect(html).toContain('data-slot="card"')
+    expect(html).toMatch(/class="[^"]*\biii-ui-card\b[^"]*"/)
     expect(html).toContain('iii-ui-card__header')
     expect(html).toContain('iii-ui-card__body')
     expect(html).toContain('Researcher')
@@ -161,8 +162,10 @@ describe('Message in a chat with a side panel', () => {
       </AskInSideChatContext.Provider>,
     )
 
-  it('offers "Ask in side chat" on an agent reply', () => {
-    expect(render([])).toContain('aria-label="Ask in side chat"')
+  it('offers the reply menu, where "Ask in side chat" lives, on an agent reply', () => {
+    const html = render([])
+    expect(html).toContain('aria-label="More reply actions"')
+    expect(html).toContain('data-reply-footer=""')
   })
 
   it('marks a reply the side chat holds a quote of', () => {

@@ -154,6 +154,9 @@ interface CodeHighlightProps {
   language: string
   className?: string
   wrap?: boolean
+  /** Lines that should carry a `data-prompt` marker (a shell `$`, drawn by
+      the caller's CSS as a pseudo-element so it is never selected). */
+  linePrompt?: (lineText: string, index: number) => boolean
 }
 
 /**
@@ -168,6 +171,7 @@ export function CodeHighlight({
   language,
   className,
   wrap,
+  linePrompt,
 }: CodeHighlightProps) {
   return (
     <Highlight
@@ -190,14 +194,25 @@ export function CodeHighlight({
             {tokens.map((line, lineIdx) => {
               const lineProps = getLineProps({ line })
               const lineKey = `${lineIdx}:${line.length}`
+              const prompt =
+                linePrompt?.(
+                  line.map((token) => token.content).join(''),
+                  lineIdx,
+                ) === true
+              // An empty line's single token already carries its newline.
+              const blank = line.length === 1 && line[0].empty === true
               return (
-                <span key={lineKey} {...lineProps}>
+                <span
+                  key={lineKey}
+                  {...lineProps}
+                  data-prompt={prompt ? '' : undefined}
+                >
                   {line.map((token, tokenIdx) => {
                     const tokenProps = getTokenProps({ token })
                     const tokenKey = `${tokenIdx}:${token.types.join('.')}:${token.content}`
                     return <span key={tokenKey} {...tokenProps} />
                   })}
-                  {lineIdx < tokens.length - 1 ? '\n' : ''}
+                  {lineIdx < tokens.length - 1 && !blank ? '\n' : ''}
                 </span>
               )
             })}
@@ -228,6 +243,7 @@ export function JsonHighlight({ code, className, wrap }: JsonHighlightProps) {
                  and token order maps 1:1 to source position, so positional
                  keys are stable between renders of the same input. */
               const lineKey = `${lineIdx}:${line.length}`
+              const blank = line.length === 1 && line[0].empty === true
               return (
                 <span key={lineKey} {...lineProps}>
                   {line.map((token, tokenIdx) => {
@@ -235,7 +251,7 @@ export function JsonHighlight({ code, className, wrap }: JsonHighlightProps) {
                     const tokenKey = `${tokenIdx}:${token.types.join('.')}:${token.content}`
                     return <span key={tokenKey} {...tokenProps} />
                   })}
-                  {lineIdx < tokens.length - 1 ? '\n' : ''}
+                  {lineIdx < tokens.length - 1 && !blank ? '\n' : ''}
                 </span>
               )
             })}

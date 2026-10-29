@@ -7,6 +7,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/DropdownMenu'
+import { Hint } from '@/components/ui/Hint'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import { EDITORS, type EditorId, editorById } from '@/lib/editor-links'
 
@@ -43,16 +44,17 @@ export function OpenInEditorButton({
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          className="inline-flex items-center shrink-0 cursor-pointer text-ink-ghost hover:text-ink transition-colors"
-          aria-label="open in editor"
-          title="open in editor"
-        >
-          <SquareArrowOutUpRight size={16} aria-hidden />
-        </button>
-      </DropdownMenuTrigger>
+      <Hint label="Open in editor">
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            className="inline-flex items-center shrink-0 cursor-pointer text-ink-ghost hover:text-ink transition-colors"
+            aria-label="open in editor"
+          >
+            <SquareArrowOutUpRight size={16} aria-hidden />
+          </button>
+        </DropdownMenuTrigger>
+      </Hint>
       <DropdownMenuContent align="start">
         {EDITORS.map((e) => (
           <DropdownMenuItem key={e.id} onSelect={() => openWith(e.id)}>

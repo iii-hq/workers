@@ -16,6 +16,7 @@ import {
   useState,
 } from 'react'
 import { BottomSheet, BottomSheetContent } from '@/components/ui/BottomSheet'
+import { Hint } from '@/components/ui/Hint'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import {
@@ -29,6 +30,7 @@ import {
   usePinnedModels,
   withPinnedEffort,
 } from '@/lib/pinned-models'
+import { playUiSound } from '@/lib/ui-sounds'
 import { cn } from '@/lib/utils'
 import { useUnsavedGuard } from '@/pages/Configuration/tabs/WorkersTab/useUnsavedGuard'
 import {
@@ -210,6 +212,7 @@ function commitModelSelection(args: {
   onThinkingLevelChange: (next: ThinkingLevel) => void
 }): void {
   const { next, effort, thinkingLevel, onChange, onThinkingLevelChange } = args
+  playUiSound('switch')
   const result = onChange(next, effort)
   const applyEffort = () => {
     if (effort !== thinkingLevel) onThinkingLevelChange(effort)
@@ -258,11 +261,11 @@ export function ModelPicker({
   const [renderedConfigurationProvider, setRenderedConfigurationProvider] =
     useState<string | null>(null)
   const [addProviderOpen, setAddProviderOpen] = useState(false)
-  // The library dialog behind All models: every model, the five slots.
+  // The library dialog behind Manage models: every model, the five slots.
   const [libraryOpen, setLibraryOpen] = useState(false)
   const configurationGuard = useUnsavedGuard()
   // The favorites: up to five, remembered per model with the effort they
-  // were last used at; starred and unstarred from the menu's catalog view.
+  // were last used at; pinned and arranged in the library dialog.
   const storedPinned = usePinnedModels()
   const effortByModel = useRef(new Map<ModelId, ThinkingLevel>())
   const providerBackRef = useRef<HTMLButtonElement | null>(null)
@@ -379,6 +382,7 @@ export function ModelPicker({
 
   function handleOpenChange(nextOpen: boolean) {
     if (nextOpen) {
+      playUiSound('tick')
       setOpen(true)
       return
     }
@@ -423,11 +427,7 @@ export function ModelPicker({
       data-state={open ? 'open' : 'closed'}
       disabled={pickerDisabled}
       onClick={mobileSheet ? () => handleOpenChange(!open) : undefined}
-      title={
-        selected
-          ? `${selected.label}${provider.label ? ` · ${provider.label}` : ''}`
-          : undefined
-      }
+      title={selected ? selected.label : undefined}
       className={cn(
         subtle
           ? // Quiet text that reads as part of the composer surface; the
@@ -458,12 +458,8 @@ export function ModelPicker({
         >
           {triggerLabel}
         </span>
-        {selected && (provider.label || showEffort) ? (
-          <span className="min-w-0 truncate text-ink-faint">
-            {provider.label}
-            {provider.label && showEffort ? ' · ' : ''}
-            {showEffort ? effortLabel : ''}
-          </span>
+        {selected && showEffort ? (
+          <span className="min-w-0 truncate text-ink-faint">{effortLabel}</span>
         ) : null}
       </span>
       <ChevronDown
@@ -477,13 +473,14 @@ export function ModelPicker({
   )
 
   // The models page: the sheet lists the whole catalog on one page; the
-  // desktop menu is the favorites, with the catalog behind All models.
+  // desktop menu is the favorites, with the catalog folded under All models.
   const modelsPage = mobileSheet ? (
     <ModelPickerPanel
       value={value}
       options={options}
       thinkingLevel={thinkingLevel}
       onChange={(next, effort) => {
+        playUiSound('switch')
         const result = onChange(next, effort)
         if (result instanceof Promise) setOpen(false)
         return result
@@ -523,6 +520,7 @@ export function ModelPicker({
         setOpen(false)
       }}
       onThinkingLevelChange={(next) => {
+        playUiSound('tick')
         onThinkingLevelChange(next)
         if (safeValue) {
           effortByModel.current.set(safeValue, next)
@@ -651,11 +649,13 @@ export function ModelPicker({
               className={cn(
                 NEUTRAL_SURFACE,
                 'iii-ui-motion-dropdown z-50 flex w-[min(360px,calc(100vw-24px))] flex-col overflow-hidden rounded-xl bg-popover font-inter text-ink shadow-md ring-1 ring-foreground/10',
-                // Sized to its rows around the favorites; the provider
-                // pages take the full height so their lists scroll inside.
+                // Sized to its rows around the favorites (an open All
+                // models fills it and scrolls inside); the provider pages
+                // take the full height so their lists scroll inside. Never
+                // taller than the room Radix measured beside the trigger.
                 activePage !== 'models'
-                  ? 'h-[min(70vh,560px)]'
-                  : 'max-h-[min(70vh,560px)]',
+                  ? 'h-[min(70vh,560px,var(--radix-dropdown-menu-content-available-height))]'
+                  : 'max-h-[min(70vh,560px,var(--radix-dropdown-menu-content-available-height))]',
               )}
             >
               {pickerPages}
@@ -677,24 +677,25 @@ export function ModelPicker({
       />
 
       {ctx && showRefresh ? (
-        <button
-          type="button"
-          aria-label="refresh model list"
-          title="refresh model list from providers"
-          disabled={ctx.refreshingModels || disabled}
-          onClick={() => {
-            void ctx.refreshModels()
-          }}
-          className="inline-flex size-12 shrink-0 items-center justify-center text-ink-ghost hover:text-ink focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 sm:size-9"
-        >
-          <RefreshCw
-            className={cn(
-              'size-4 shrink-0',
-              ctx.refreshingModels && 'animate-spin',
-            )}
-            aria-hidden
-          />
-        </button>
+        <Hint label="Refresh model list from providers">
+          <button
+            type="button"
+            aria-label="refresh model list"
+            disabled={ctx.refreshingModels || disabled}
+            onClick={() => {
+              void ctx.refreshModels()
+            }}
+            className="inline-flex size-12 shrink-0 items-center justify-center text-ink-ghost hover:text-ink focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 sm:size-9"
+          >
+            <RefreshCw
+              className={cn(
+                'size-4 shrink-0',
+                ctx.refreshingModels && 'animate-spin',
+              )}
+              aria-hidden
+            />
+          </button>
+        </Hint>
       ) : null}
     </span>
   )

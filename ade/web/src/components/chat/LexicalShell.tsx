@@ -95,6 +95,9 @@ interface LexicalShellProps {
    * or a file reference lands in the main chat only.
    */
   externalInput?: boolean
+  /** The composer's address on the insert bus: only inserts and focus
+      requests sent to it land here. */
+  composerId?: string
 }
 
 /**
@@ -460,7 +463,7 @@ function ClearOnDemandPlugin({ token }: { token: number }) {
  * by one, so it reads as part of the sentence being written; the text node
  * transforms then turn a `#file(…)` token into its pill.
  */
-function ExternalInsertPlugin() {
+function ExternalInsertPlugin({ composerId }: { composerId?: string }) {
   const [editor] = useLexicalComposerContext()
   useEffect(() => {
     return onComposerInsert(({ text, inline }) => {
@@ -491,8 +494,8 @@ function ExternalInsertPlugin() {
         paragraph.selectEnd()
       })
       editor.focus()
-    })
-  }, [editor])
+    }, composerId)
+  }, [editor, composerId])
   return null
 }
 
@@ -500,12 +503,18 @@ function ExternalInsertPlugin() {
  * Take the caret when a surface asks for it, e.g. a "new chat" that reused
  * the untouched one already open, where nothing remounts to focus itself.
  */
-function FocusOnRequestPlugin({ enabled }: { enabled: boolean }) {
+function FocusOnRequestPlugin({
+  enabled,
+  composerId,
+}: {
+  enabled: boolean
+  composerId?: string
+}) {
   const [editor] = useLexicalComposerContext()
   useEffect(() => {
     if (!enabled) return
-    return onComposerFocusRequest(() => editor.focus())
-  }, [editor, enabled])
+    return onComposerFocusRequest(() => editor.focus(), composerId)
+  }, [editor, enabled, composerId])
   return null
 }
 
@@ -715,6 +724,7 @@ export function LexicalShell({
   disabled,
   autoFocus,
   externalInput = true,
+  composerId,
   clearToken,
   initialContent,
   functionEntries,
@@ -783,13 +793,18 @@ export function LexicalShell({
         <HistoryNavPlugin onNav={onHistoryNav} menuOpenRef={menuOpenRef} />
         {/* After HistoryNavPlugin on purpose: same priority, later registration. */}
         <ArrowOutOfCodePlugin menuOpenRef={menuOpenRef} />
-        {externalInput ? <ExternalInsertPlugin /> : null}
+        {externalInput ? (
+          <ExternalInsertPlugin composerId={composerId} />
+        ) : null}
         {/* Opening a session is a request to write in it, so the first
           keystroke should land in the message rather than be spent aiming.
           Lexical's own plugin waits for the editable node, which a bare
           focus() call on mount does not. */}
         {autoFocus === true && disabled !== true ? <AutoFocusPlugin /> : null}
-        <FocusOnRequestPlugin enabled={disabled !== true && externalInput} />
+        <FocusOnRequestPlugin
+          enabled={disabled !== true && externalInput}
+          composerId={composerId}
+        />
         <EditablePlugin disabled={disabled} />
         <MentionsPlugin
           menuOpenRef={menuOpenRef}

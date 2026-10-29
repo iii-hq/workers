@@ -133,7 +133,7 @@ export function BrowserStep({
     <StepLayout
       footer={
         <>
-          <Button variant="ghost" onClick={onBack} disabled={busy}>
+          <Button variant="secondary" onClick={onBack} disabled={busy}>
             Back
           </Button>
           <span className="flex items-center gap-2">
@@ -161,7 +161,7 @@ export function BrowserStep({
         <div
           role="status"
           aria-label="Looking for Chromium"
-          className="flex flex-col gap-2 rounded-md bg-surface px-4 py-4"
+          className="flex flex-col gap-2 rounded-xl bg-surface px-4 py-4"
         >
           <Skeleton className="h-4 w-1/2" />
           <Skeleton className="h-3 w-5/6" />
@@ -169,13 +169,13 @@ export function BrowserStep({
       ) : readFailed ? (
         <p
           role="alert"
-          className="rounded-md bg-surface px-4 py-3 font-sans text-[14px] text-ink"
+          className="rounded-xl bg-surface px-4 py-3 font-sans text-[14px] text-ink"
         >
           The browser worker did not say whether it has Chromium:{' '}
           {snapshot.browserError}
         </p>
       ) : workerAbsent ? (
-        <p className="rounded-md bg-surface px-4 py-3 font-sans text-[14px] text-ink">
+        <p className="rounded-xl bg-surface px-4 py-3 font-sans text-[14px] text-ink">
           This project doesn't run the browser worker, so there is nothing to
           set up here.
         </p>
@@ -191,7 +191,7 @@ export function BrowserStep({
       ) : canInstall && state ? (
         <DownloadPanel state={state} />
       ) : state ? (
-        <p className="rounded-md bg-surface px-4 py-3 text-pretty font-sans text-[14px] leading-relaxed text-ink">
+        <p className="rounded-xl bg-surface px-4 py-3 text-pretty font-sans text-[14px] leading-relaxed text-ink">
           {state.installReason ??
             'Setup cannot download Chromium on this system.'}{' '}
           Install it with the command below, then check again.
@@ -224,7 +224,7 @@ function DownloadPanel({ state }: { state: ChromiumState }) {
   return (
     <section
       aria-label="Download Chromium"
-      className="flex gap-3 rounded-md bg-card-highlight px-4 py-4"
+      className="flex gap-3 rounded-xl bg-card-highlight px-4 py-4"
     >
       <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-surface text-ink">
         <AppWindow className="size-4" aria-hidden />
@@ -256,7 +256,7 @@ function ProgressPanel({
   return (
     <section
       aria-label="Chromium download"
-      className="flex flex-col gap-3 rounded-md bg-surface px-4 py-4"
+      className="flex flex-col gap-3 rounded-xl bg-surface px-4 py-4"
     >
       <div className="flex items-baseline justify-between gap-3">
         <span
@@ -307,7 +307,7 @@ function FailurePanel({
     <section
       role="alert"
       aria-label="Download failed"
-      className="flex gap-3 rounded-md bg-surface px-4 py-4"
+      className="flex gap-3 rounded-xl bg-surface px-4 py-4"
     >
       <CircleAlert className="mt-0.5 size-4 shrink-0 text-alert" aria-hidden />
       <span className="flex min-w-0 flex-col gap-1">
@@ -340,7 +340,7 @@ function ReadyPanel({
   const name = 'Chromium'
   if (state.engine === 'lightpanda' && !state.found) {
     return (
-      <p className="rounded-md bg-ok-muted px-4 py-3 font-sans text-[14px] text-ink">
+      <p className="rounded-xl bg-ok-muted px-4 py-3 font-sans text-[14px] text-ink">
         The browser worker runs Lightpanda, which needs no Chromium.
       </p>
     )
@@ -348,7 +348,7 @@ function ReadyPanel({
   return (
     <section
       aria-label="Chromium ready"
-      className="flex gap-3 rounded-md bg-ok-muted px-4 py-4"
+      className="flex gap-3 rounded-xl bg-ok-muted px-4 py-4"
     >
       <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-ok-muted text-ok">
         <Check className="size-4" aria-hidden />
@@ -385,7 +385,7 @@ function ManualInstall({
   const manual = manualInstall(state.platform)
   return (
     <details
-      className="group rounded-md bg-surface px-4 py-3"
+      className="group rounded-xl bg-surface px-4 py-3"
       open={open || undefined}
     >
       <summary className="cursor-pointer font-sans text-[14px] font-medium text-ink">

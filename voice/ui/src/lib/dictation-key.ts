@@ -39,13 +39,19 @@ export function isDictationKey(event: KeyLike): boolean {
   return event.code === 'AltRight' && event.key === 'Alt' && !event.metaKey && !event.ctrlKey && !event.shiftKey
 }
 
-export function createDictationKeyGesture(
-  actions: DictationKeyActions,
-  timers: { set: (fn: () => void, ms: number) => number; clear: (id: number) => void } = {
-    set: (fn, ms) => window.setTimeout(fn, ms),
-    clear: (id) => window.clearTimeout(id),
-  },
-) {
+type Timers = { set: (fn: () => void, ms: number) => number; clear: (id: number) => void }
+
+const windowTimers: Timers = {
+  set: (fn, ms) => window.setTimeout(fn, ms),
+  clear: (id) => window.clearTimeout(id),
+}
+
+/**
+ * Tap-or-hold on one key, whatever reports it: a press held alone past
+ * `holdMs` talks until release; a quick clean press toggles; anything
+ * pressed with it (`interrupt`) before the hold makes it a shortcut.
+ */
+export function createHoldGesture(actions: DictationKeyActions, holdMs: number, timers: Timers = windowTimers) {
   /** The key is down and nothing else has been pressed with it. */
   let clean = false
   let holding = false
@@ -56,41 +62,56 @@ export function createDictationKeyGesture(
     timer = null
   }
 
-  const reset = () => {
-    clearTimer()
-    if (holding) actions.holdEnd()
-    clean = false
-    holding = false
-  }
-
   return {
-    keydown(event: KeyLike) {
-      if (isDictationKey(event)) {
-        if (event.repeat || clean || holding) return
-        clean = true
-        timer = timers.set(() => {
-          timer = null
-          if (!clean) return
-          holding = true
-          actions.holdStart()
-        }, DICTATION_KEY_HOLD_MS)
-        return
-      }
-      // Another key with Option down is a shortcut or a ⌥ character, not dictation.
-      if (clean && !holding) {
-        clean = false
-        clearTimer()
-      }
+    press() {
+      if (clean || holding) return
+      clean = true
+      timer = timers.set(() => {
+        timer = null
+        if (!clean) return
+        holding = true
+        actions.holdStart()
+      }, holdMs)
     },
-    keyup(event: KeyLike) {
-      if (event.code !== 'AltRight') return
+    release() {
       clearTimer()
       if (holding) actions.holdEnd()
       else if (clean) actions.toggle()
       clean = false
       holding = false
     },
+    /** Another key went down with it: a shortcut, unless already talking. */
+    interrupt() {
+      if (clean && !holding) {
+        clean = false
+        clearTimer()
+      }
+    },
+    /** The release will never come (the window lost focus): finish. */
+    reset() {
+      clearTimer()
+      if (holding) actions.holdEnd()
+      clean = false
+      holding = false
+    },
+  }
+}
+
+export function createDictationKeyGesture(actions: DictationKeyActions, timers: Timers = windowTimers) {
+  const gesture = createHoldGesture(actions, DICTATION_KEY_HOLD_MS, timers)
+  return {
+    keydown(event: KeyLike) {
+      if (isDictationKey(event)) {
+        if (!event.repeat) gesture.press()
+        return
+      }
+      // Another key with Option down is a shortcut or a ⌥ character, not dictation.
+      gesture.interrupt()
+    },
+    keyup(event: KeyLike) {
+      if (event.code === 'AltRight') gesture.release()
+    },
     /** The window lost focus mid-press: the key-up will never come. */
-    blur: reset,
+    blur: gesture.reset,
   }
 }

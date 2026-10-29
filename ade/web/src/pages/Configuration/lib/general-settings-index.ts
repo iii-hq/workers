@@ -11,6 +11,7 @@ export const GENERAL_ANCHOR = {
   theme: 'settings-general-theme',
   notifications: 'settings-general-notifications',
   completionBell: 'settings-general-completion-bell',
+  uiSounds: 'settings-general-ui-sounds',
   soundCheck: 'settings-general-sound-check',
   permissions: 'settings-general-permissions',
   defaultMode: 'settings-general-default-mode',
@@ -53,6 +54,15 @@ const BASE_FIELDS: SettingsSearchField[] = [
     description: 'Play a gentle bell when a top-level conversation finishes.',
     keywords: ['sound', 'audio', 'chime', 'tone', 'finished'],
     anchor: A.completionBell,
+  },
+  {
+    key: 'ui-sounds',
+    label: 'Interface sounds',
+    trail: ['Notifications'],
+    description:
+      'A soft tick when you open the model picker and a short tone when you switch models.',
+    keywords: ['sound', 'audio', 'click', 'effects', 'model switch'],
+    anchor: A.uiSounds,
   },
   {
     key: 'sound-check',

@@ -8,6 +8,11 @@ import type {
   SetupFn,
   UiAssetsPush,
 } from '../types/injectable-ui'
+import {
+  markComposerUsed,
+  onComposerInsert,
+  registerComposer,
+} from './composer-insert'
 import type { IiiClient } from './iii-client'
 import {
   getPanelContext,
@@ -431,6 +436,129 @@ describe('host.panels.openScreen', () => {
   })
 })
 
+describe('host.chat.compose', () => {
+  async function loadHost(hash: string) {
+    vi.stubGlobal('window', { location: { hash }, open: vi.fn() })
+    let captured: Parameters<SetupFn>[0] | undefined
+    const harness = createHarness({
+      importModule: vi.fn(async () => ({
+        default(host: Parameters<SetupFn>[0]) {
+          captured = host
+        },
+      })),
+    })
+    harness.emit({
+      event: 'sync',
+      assets: [{ path: 'ide/page.js', kind: 'script', hash: 'one' }],
+    })
+    await vi.waitFor(() => expect(captured).toBeDefined())
+    return { host: captured as Parameters<SetupFn>[0], harness }
+  }
+
+  it('hands a reference to the one chat open, and only to it', async () => {
+    resetPanelContextForTests()
+    const opened = vi.fn()
+    subscribeScreenOpen(opened)
+    const { host, harness } = await loadHost('#/')
+    const off = registerComposer('only')
+    const seen: string[] = []
+    const offInsert = onComposerInsert(
+      (insert) => seen.push(insert.text),
+      'only',
+    )
+
+    const result = host.chat.compose({
+      text: '#file(/repo/a.ts:1-2)',
+      inline: true,
+      beside: 'ext:ide',
+      ifUnambiguous: true,
+    })
+    expect(result).toBe('composed')
+    expect(seen).toEqual(['#file(/repo/a.ts:1-2)'])
+    // A chat is already open: nothing new is placed.
+    expect(opened).not.toHaveBeenCalled()
+
+    offInsert()
+    off()
+    harness.stop()
+    vi.unstubAllGlobals()
+  })
+
+  it('leaves the draft alone when several chats are open and the caller must not guess', async () => {
+    const { host, harness } = await loadHost('#/')
+    const offA = registerComposer('a')
+    const offB = registerComposer('b')
+    const seen: string[] = []
+    const offInsertA = onComposerInsert(
+      (insert) => seen.push(`a:${insert.text}`),
+      'a',
+    )
+    const offInsertB = onComposerInsert(
+      (insert) => seen.push(`b:${insert.text}`),
+      'b',
+    )
+
+    expect(
+      host.chat.compose({ text: 'ref', inline: true, ifUnambiguous: true }),
+    ).toBe('ambiguous')
+    expect(seen).toEqual([])
+
+    // A caller that lets the console choose: one chat, the one used last.
+    markComposerUsed('b')
+    expect(host.chat.compose({ text: 'pick' })).toBe('composed')
+    expect(seen).toEqual(['b:pick'])
+
+    offInsertA()
+    offInsertB()
+    offA()
+    offB()
+    harness.stop()
+    vi.unstubAllGlobals()
+  })
+
+  it('opens the chat beside the caller when the workspace shows none', async () => {
+    resetPanelContextForTests()
+    const opened = vi.fn()
+    subscribeScreenOpen(opened)
+    const { host, harness } = await loadHost('#/')
+
+    expect(
+      host.chat.compose({
+        text: 'ref',
+        beside: 'ext:ide',
+        ifUnambiguous: true,
+      }),
+    ).toBe('composed')
+    expect(opened).toHaveBeenCalledWith({
+      screen: 'chat',
+      relativeTo: 'ext:ide',
+      direction: 'right',
+      sizes: [2, 1],
+    })
+    // Held for the chat that is opening.
+    const seen: string[] = []
+    onComposerInsert((insert) => seen.push(insert.text))()
+    expect(seen).toEqual(['ref'])
+
+    harness.stop()
+    vi.unstubAllGlobals()
+  })
+
+  it('places no chat in the isolated #/worker shell', async () => {
+    resetPanelContextForTests()
+    const opened = vi.fn()
+    subscribeScreenOpen(opened)
+    const { host, harness } = await loadHost('#/worker/ide')
+
+    host.chat.compose({ text: 'ref', beside: 'ext:ide' })
+    expect(opened).not.toHaveBeenCalled()
+    onComposerInsert(() => {})()
+
+    harness.stop()
+    vi.unstubAllGlobals()
+  })
+})
+
 describe('injectable page configuration metadata', () => {
   it('provides the page configuration id to console-owned header chrome', async () => {
     const harness = createHarness({
@@ -451,7 +579,7 @@ describe('injectable page configuration metadata', () => {
         <RegisteredPage panelSide="left" tabId="tab-1" paneId="tab-1:pane:0" />
       </TooltipProvider>,
     )
-    expect(markup).toContain('aria-label="Configure worker"')
+    expect(markup).toContain('aria-label="Settings"')
 
     harness.stop()
   })

@@ -84,7 +84,7 @@ export function SpanErrorsTab({ span, redact }: SpanErrorsTabProps) {
       {/* The error itself */}
       <div
         role="alert"
-        className="rounded-lg border border-alert/30 bg-alert-muted px-3 py-2.5"
+        className="rounded-xl border border-alert/30 bg-alert-muted px-3 py-2.5"
       >
         <div className="flex items-start gap-2.5">
           <AlertCircle
@@ -135,7 +135,7 @@ export function SpanErrorsTab({ span, redact }: SpanErrorsTabProps) {
               )}
             </button>
           </div>
-          <pre className="max-h-[400px] overflow-auto overscroll-contain rounded-lg border border-border bg-background px-3 py-2 font-mono text-[12px] leading-[1.55] break-words whitespace-pre-wrap text-foreground">
+          <pre className="max-h-[400px] overflow-auto overscroll-contain rounded-xl border border-border bg-background px-3 py-2 font-mono text-[12px] leading-[1.55] break-words whitespace-pre-wrap text-foreground">
             {stackLines.map(({ line, id }) => {
               const isFrameLine =
                 /^\s+at\s/.test(line) ||
@@ -161,7 +161,7 @@ export function SpanErrorsTab({ span, redact }: SpanErrorsTabProps) {
       )}
 
       {!displayMessage && !displayType && !displayStack && (
-        <div className="rounded-lg border border-border p-4 text-center">
+        <div className="rounded-xl bg-card ring-1 ring-foreground/10 p-4 text-center">
           <p className="text-[13px] text-foreground">
             No additional error details
           </p>

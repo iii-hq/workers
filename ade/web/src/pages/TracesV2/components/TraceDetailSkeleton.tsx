@@ -1,11 +1,12 @@
 import { ChevronRight, LocateFixed, X } from 'lucide-react'
 import { Button } from '@/components/shadcn/button'
+import { Hint } from '@/components/ui/Hint'
 import { Skeleton } from '@/components/ui/Skeleton'
 import type { TraceChatLink } from '../lib/traceChatLink'
 
 /**
  * Loading placeholder for the trace detail — mirrors the real composition
- * (TraceHeader → stats strip → view toolbar → lane timeline → collapsed
+ * (TraceHeader with its stats line → view toolbar → lane timeline → collapsed
  * WorkerBreakdown) block-for-block with the same paddings, borders, and
  * row heights, so the loaded detail resolves in place without a layout
  * jump. Static chrome (icons, section labels) renders for real; only the
@@ -47,44 +48,42 @@ export function TraceDetailSkeleton({
       aria-label="loading trace"
       className="@container flex flex-col overflow-hidden font-inter"
     >
-      {/* ── TraceHeader: title row ── */}
-      <div className="flex h-11 items-center gap-2 pr-2 pl-3">
+      {/* ── TraceHeader: title row, stats inline from @5xl, else wrapped
+          onto their own line under the title ── */}
+      <div className="flex min-h-10 flex-wrap items-center gap-x-2 py-1.5 pr-2 pl-3">
         <Skeleton className="size-2 rounded-full" />
         <Skeleton className="h-3.5 w-44 max-w-full" />
         <span className="flex-1" />
+        <div className="order-last flex h-[22px] basis-full flex-wrap items-center gap-x-4 pl-4 @5xl:order-none @5xl:basis-auto @5xl:flex-nowrap @5xl:pr-2 @5xl:pl-0">
+          {STAT_CELLS.map((k) => (
+            <Skeleton key={k} className="h-3 w-20" />
+          ))}
+        </div>
         <Skeleton className="h-6 w-20 rounded-md" />
         {chatLink?.turnId && onOpenMessage ? (
+          <Hint label="Open the chat at this trace's message">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => onOpenMessage(chatLink)}
+              aria-label="go to message"
+            >
+              <LocateFixed />
+            </Button>
+          </Hint>
+        ) : null}
+        <Hint label="Close (Esc)">
           <Button
             type="button"
             variant="ghost"
             size="icon-sm"
-            onClick={() => onOpenMessage(chatLink)}
-            aria-label="go to message"
-            title="Open the chat at this trace's message"
+            onClick={onClose}
+            aria-label="close trace detail"
           >
-            <LocateFixed />
+            <X />
           </Button>
-        ) : null}
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          onClick={onClose}
-          aria-label="close trace detail"
-          title="Close (Esc)"
-        >
-          <X />
-        </Button>
-      </div>
-
-      {/* ── stats strip ── */}
-      <div className="mx-3 mb-2 grid grid-cols-3 divide-x divide-border overflow-hidden rounded-lg border border-border bg-muted/30 @2xl:grid-cols-6">
-        {STAT_CELLS.map((k) => (
-          <div key={k} className="flex flex-col gap-1.5 px-3 py-2">
-            <Skeleton className="h-2.5 w-12" />
-            <Skeleton className="h-4 w-14" />
-          </div>
-        ))}
+        </Hint>
       </div>
 
       {/* ── view toolbar ── */}

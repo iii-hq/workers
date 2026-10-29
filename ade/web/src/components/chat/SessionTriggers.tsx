@@ -9,6 +9,7 @@ import {
   DialogTitle,
 } from '@/components/ui/Dialog'
 import { Fact, FactList } from '@/components/ui/FactCard'
+import { Hint } from '@/components/ui/Hint'
 import { TriggerIcon } from '@/components/ui/TriggerIcon'
 import type { SessionTriggerInfo } from '@/lib/backend/triggers'
 import { copyTextToClipboard } from '@/lib/clipboard'
@@ -185,27 +186,28 @@ function CopyableId({ value }: { value: string }) {
   return (
     <span className="inline-flex min-w-0 items-baseline gap-1.5">
       <span className="break-all">{value}</span>
-      <button
-        type="button"
-        onClick={() => {
-          // Helper, not navigator.clipboard: the API is undefined over
-          // `http://<LAN-IP>` (insecure context) and the raw call no-ops.
-          void copyTextToClipboard(value).then((ok) => {
-            if (!ok) return
-            setCopied(true)
-            window.setTimeout(() => setCopied(false), 1200)
-          })
-        }}
-        className="shrink-0 self-center text-ink-ghost hover:text-ink transition-colors"
-        aria-label={copied ? 'copied' : 'copy id'}
-        title={copied ? 'copied' : 'copy'}
-      >
-        {copied ? (
-          <Check size={16} aria-hidden />
-        ) : (
-          <Copy size={16} aria-hidden />
-        )}
-      </button>
+      <Hint label={copied ? 'Copied' : 'Copy'}>
+        <button
+          type="button"
+          onClick={() => {
+            // Helper, not navigator.clipboard: the API is undefined over
+            // `http://<LAN-IP>` (insecure context) and the raw call no-ops.
+            void copyTextToClipboard(value).then((ok) => {
+              if (!ok) return
+              setCopied(true)
+              window.setTimeout(() => setCopied(false), 1200)
+            })
+          }}
+          className="shrink-0 self-center text-ink-ghost hover:text-ink transition-colors"
+          aria-label={copied ? 'copied' : 'copy id'}
+        >
+          {copied ? (
+            <Check size={16} aria-hidden />
+          ) : (
+            <Copy size={16} aria-hidden />
+          )}
+        </button>
+      </Hint>
     </span>
   )
 }
@@ -265,20 +267,21 @@ function TriggerRow({
           </span>
         </span>
       </button>
-      <button
-        type="button"
-        disabled={busy}
-        onClick={onUnregister}
-        className={toolbarIconButtonClass}
-        aria-label={`${inactive ? 'dismiss' : 'unregister'} ${title}`}
-        title={inactive ? 'dismiss' : 'unregister'}
-      >
-        {busy ? (
-          <Loader2 aria-hidden className="size-4 shrink-0 animate-spin" />
-        ) : (
-          <X aria-hidden className="size-4 shrink-0" />
-        )}
-      </button>
+      <Hint label={inactive ? 'Dismiss' : 'Unregister'}>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={onUnregister}
+          className={toolbarIconButtonClass}
+          aria-label={`${inactive ? 'dismiss' : 'unregister'} ${title}`}
+        >
+          {busy ? (
+            <Loader2 aria-hidden className="size-4 shrink-0 animate-spin" />
+          ) : (
+            <X aria-hidden className="size-4 shrink-0" />
+          )}
+        </button>
+      </Hint>
     </li>
   )
 }
@@ -540,20 +543,24 @@ export function SessionTriggers({
             />
           </button>
           {onClearAll ? (
-            <button
-              type="button"
-              onClick={() => setConfirmingClear(true)}
-              disabled={clearing}
-              aria-label="clear all triggers"
-              title="clear all triggers"
-              className={toolbarIconButtonClass}
-            >
-              {clearing ? (
-                <Loader2 aria-hidden className="size-4 shrink-0 animate-spin" />
-              ) : (
-                <Trash2 aria-hidden className="size-4 shrink-0" />
-              )}
-            </button>
+            <Hint label="Clear all triggers">
+              <button
+                type="button"
+                onClick={() => setConfirmingClear(true)}
+                disabled={clearing}
+                aria-label="clear all triggers"
+                className={toolbarIconButtonClass}
+              >
+                {clearing ? (
+                  <Loader2
+                    aria-hidden
+                    className="size-4 shrink-0 animate-spin"
+                  />
+                ) : (
+                  <Trash2 aria-hidden className="size-4 shrink-0" />
+                )}
+              </button>
+            </Hint>
           ) : null}
         </div>
 

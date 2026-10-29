@@ -322,7 +322,7 @@ export function LlmCallView({
   return (
     <div className="flex flex-col gap-4" data-llm-call-view>
       {/* facts */}
-      <div className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-lg border border-border bg-muted/30 px-3 py-2.5 @md:grid-cols-3 @xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-xl bg-card ring-1 ring-foreground/10 px-3 py-2.5 @md:grid-cols-3 @xl:grid-cols-4">
         <div className="col-span-2 flex min-w-0 flex-col gap-0.5 @md:col-span-3 @xl:col-span-4">
           <span className="text-[11px] text-muted-foreground">Model</span>
           <span className="flex min-w-0 items-center gap-2">
@@ -379,7 +379,7 @@ export function LlmCallView({
       {errorText ? (
         <div
           role="alert"
-          className="flex items-start gap-2 rounded-lg border border-alert/30 bg-alert-muted px-3 py-2 text-[13px] text-foreground"
+          className="flex items-start gap-2 rounded-xl border border-alert/30 bg-alert-muted px-3 py-2 text-[13px] text-foreground"
         >
           <AlertCircle
             className="mt-0.5 size-4 shrink-0 text-alert"
@@ -430,7 +430,7 @@ export function LlmCallView({
 
           {call.messages.length > 0 ? (
             <Section title="Messages" count={call.messages.length}>
-              <div className="divide-y divide-border rounded-lg border border-border px-3">
+              <div className="divide-y divide-border rounded-xl bg-card ring-1 ring-foreground/10 px-3">
                 {call.messages.map((message, i) => (
                   <Message key={messageKeys[i]} message={message} index={i} />
                 ))}
@@ -447,7 +447,7 @@ export function LlmCallView({
             }
           >
             {call.responseBlocks.length > 0 ? (
-              <div className="rounded-lg border border-border px-3">
+              <div className="rounded-xl bg-card ring-1 ring-foreground/10 px-3">
                 <Message
                   message={{ role: 'assistant', blocks: call.responseBlocks }}
                   index={-1}
@@ -474,7 +474,7 @@ export function LlmCallView({
               count={call.tools.length}
               defaultOpen={false}
             >
-              <div className="divide-y divide-border rounded-lg border border-border">
+              <div className="divide-y divide-border rounded-xl bg-card ring-1 ring-foreground/10">
                 {call.tools.map((tool) => (
                   <ToolRow key={tool.name} tool={tool} />
                 ))}

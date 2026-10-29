@@ -1,7 +1,9 @@
 /**
  * The trace card's top: who ran it and what it was, then the numbers that
- * describe the run at a glance — a stats strip of label-over-value cells,
- * the way an observability card reads before its waterfall.
+ * describe the run at a glance — one quiet line of label·value pairs. On a
+ * wide card the numbers ride the title row itself; on a narrower one they
+ * drop to a single line under the title (wrapping, never truncating), so
+ * the header gives the timeline below as much of the pane as it can.
  *
  * Everything shown is derived from the spans already loaded: duration,
  * span and worker counts, the longest span, how many are still running
@@ -11,6 +13,7 @@
 import { Check, Copy, LocateFixed, X } from 'lucide-react'
 import { useMemo } from 'react'
 import { Button } from '@/components/shadcn/button'
+import { Hint } from '@/components/ui/Hint'
 import { cn } from '@/lib/utils'
 import { formatSpanLabel } from '../lib/spanLabel'
 import type { TraceChatLink } from '../lib/traceChatLink'
@@ -48,18 +51,19 @@ interface Stat {
 function StatCell({ label, value, tone, title }: Stat) {
   const hot = tone === 'alert' && value !== '0'
   return (
-    <div className="flex min-w-0 flex-col gap-0.5 px-3 py-2" title={title}>
-      <span className="truncate text-[11px] text-muted-foreground">
-        {label}
-      </span>
-      <span
+    <div
+      className="flex items-baseline gap-1.5 whitespace-nowrap"
+      title={title}
+    >
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd
         className={cn(
-          'truncate font-mono text-[15px] font-semibold leading-5 tabular-nums',
+          'font-mono text-[13px] font-medium tabular-nums',
           hot ? 'text-alert-strong' : 'text-foreground',
         )}
       >
         {value}
-      </span>
+      </dd>
     </div>
   )
 }
@@ -113,8 +117,10 @@ export function TraceHeader({
   return (
     <div className="@container shrink-0 font-inter">
       {/* Title row: the worker's colour as the mark, the root span as the
-          name, the trace id to copy, and the run's state on the right. */}
-      <div className="flex h-11 items-center gap-2 pr-2 pl-3">
+          name, the stats, the trace id to copy, and the run's state on the
+          right. Below @5xl the stats wrap onto their own line under the
+          title (order-last + full basis), indented to the title's text. */}
+      <div className="flex min-h-10 flex-wrap items-center gap-x-2 py-1.5 pr-2 pl-3">
         <span
           aria-hidden
           className="size-2 shrink-0 rounded-full"
@@ -129,53 +135,57 @@ export function TraceHeader({
             {rootWorker}
           </span>
         </h2>
-        <button
-          type="button"
-          onClick={() => copy('traceId', traceId)}
-          title="copy trace id"
-          aria-label="copy trace id"
-          className="group hidden h-6 shrink-0 items-center gap-1 rounded-md px-1.5 font-mono text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 @lg:flex"
+        <dl
+          aria-label="trace stats"
+          className="order-last flex basis-full flex-wrap items-baseline gap-x-4 gap-y-0.5 pt-0.5 pl-4 @5xl:order-none @5xl:shrink-0 @5xl:basis-auto @5xl:flex-nowrap @5xl:pt-0 @5xl:pr-2 @5xl:pl-0"
         >
-          <span className="tabular-nums">{traceId.substring(0, 12)}</span>
-          {copied ? (
-            <Check className="size-4 text-ok" aria-hidden />
-          ) : (
-            <Copy
-              className="size-4 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
-              aria-hidden
-            />
-          )}
-        </button>
+          {cells.map((cell) => (
+            <StatCell key={cell.label} {...cell} />
+          ))}
+        </dl>
+        <Hint label="Copy trace id">
+          <button
+            type="button"
+            onClick={() => copy('traceId', traceId)}
+            aria-label="copy trace id"
+            className="group hidden h-6 shrink-0 items-center gap-1 rounded-md px-1.5 font-mono text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 @lg:flex"
+          >
+            <span className="tabular-nums">{traceId.substring(0, 12)}</span>
+            {copied ? (
+              <Check className="size-4 text-ok" aria-hidden />
+            ) : (
+              <Copy
+                className="size-4 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+                aria-hidden
+              />
+            )}
+          </button>
+        </Hint>
         <LiveBadge live={live} />
         {chatLink?.turnId && onOpenMessage ? (
+          <Hint label="Open the chat at this trace's message">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => onOpenMessage(chatLink)}
+              aria-label="go to message"
+            >
+              <LocateFixed />
+            </Button>
+          </Hint>
+        ) : null}
+        <Hint label="Close (Esc)">
           <Button
             type="button"
             variant="ghost"
             size="icon-sm"
-            onClick={() => onOpenMessage(chatLink)}
-            aria-label="go to message"
-            title="Open the chat at this trace's message"
+            onClick={onClose}
+            aria-label="close trace detail"
           >
-            <LocateFixed />
+            <X />
           </Button>
-        ) : null}
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          onClick={onClose}
-          aria-label="close trace detail"
-          title="Close (Esc)"
-        >
-          <X />
-        </Button>
-      </div>
-
-      {/* The stats strip: one quiet band, cells divided by hairlines. */}
-      <div className="mx-3 mb-2 grid grid-cols-3 divide-x divide-border overflow-hidden rounded-lg border border-border bg-muted/30 @2xl:grid-cols-6">
-        {cells.map((cell) => (
-          <StatCell key={cell.label} {...cell} />
-        ))}
+        </Hint>
       </div>
     </div>
   )

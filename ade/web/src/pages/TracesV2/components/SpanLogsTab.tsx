@@ -52,7 +52,7 @@ export function SpanLogsTab({ span, redact }: SpanLogsTabProps) {
             key={`${event.name}-${event.timestamp_unix_nano}`}
             data-span-event-name={event.name}
             className={cn(
-              'overflow-hidden rounded-lg border',
+              'overflow-hidden rounded-xl border',
               isException
                 ? 'border-alert/30 bg-alert-muted'
                 : 'border-border bg-card',

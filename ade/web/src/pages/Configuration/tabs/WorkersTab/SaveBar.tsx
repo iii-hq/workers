@@ -65,7 +65,7 @@ export function SaveBar({
           <div className="flex shrink-0 items-center gap-2">
             <Button
               type="button"
-              variant="ghost"
+              variant="secondary"
               onClick={onReset}
               disabled={inFlight}
             >

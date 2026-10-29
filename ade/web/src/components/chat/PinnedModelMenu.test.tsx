@@ -7,7 +7,7 @@ import { TooltipProvider } from '@/components/ui/Tooltip'
 import type { ProviderListEntry } from '@/lib/models-catalog'
 import type { PinnedModel } from '@/lib/pinned-models'
 import type { ModelOption } from '@/types/chat'
-import { favoritesFullNotice, PinnedModelMenu } from './PinnedModelMenu'
+import { PinnedModelMenu } from './PinnedModelMenu'
 
 ;(
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -105,14 +105,16 @@ function typeFilter(container: HTMLElement, text: string) {
 }
 
 describe('PinnedModelMenu', () => {
-  it('opens on the favorites, every one starred, with the effort slider and its stops', () => {
+  it('opens on the favorites, no stars, All models folded, with the effort slider and its stops', () => {
     const html = renderToStaticMarkup(menu())
     expect(html).toContain('data-model-menu-view="favorites"')
     const rows = html.match(/<button[^>]*data-model-option=[^>]*>/g) ?? []
     expect(rows).toHaveLength(2)
-    expect(html.match(/data-model-star="on"/g)).toHaveLength(2)
-    expect(html).not.toContain('data-model-star="off"')
-    // No provider groups until a filter is typed.
+    expect(html).not.toContain('data-model-star')
+    // All models sits folded under the favorites, counting the catalog;
+    // no provider groups until it is opened or a filter is typed.
+    expect(html).toContain('data-all-models="closed"')
+    expect(html).toMatch(/aria-expanded="false"[^>]*>.*?All models.*?>6</)
     expect(html).not.toContain('data-provider-group=')
     // The effort is a slider, stacked, naming the model's own levels.
     expect(html).toContain('type="range"')
@@ -125,15 +127,15 @@ describe('PinnedModelMenu', () => {
       'aria-label="Medium reasoning effort"',
       'aria-label="High reasoning effort"',
     ])
-    // The footer: All models (the library dialog) and Add provider.
+    // The footer: Manage models (the library dialog) and Add provider.
     expect(html).toMatch(
-      /<button[^>]*>[^<]*<svg[^>]*>.*?<\/svg>All models<\/button>/,
+      /<button[^>]*>[^<]*<svg[^>]*>.*?<\/svg>Manage models<\/button>/,
     )
     expect(html).toContain('aria-label="Add a provider"')
     expect(html).not.toContain('Cycle effort')
   })
 
-  it('a typed filter lists every matching model grouped by provider, with a star per row', () => {
+  it('a typed filter lists every matching model grouped by provider', () => {
     const container = document.body.appendChild(document.createElement('div'))
     const root = createRoot(container)
     try {
@@ -149,18 +151,10 @@ describe('PinnedModelMenu', () => {
       expect(container.querySelectorAll('[data-model-option]')).toHaveLength(
         OPTIONS.length,
       )
-      expect(container.querySelectorAll('[data-model-star="on"]')).toHaveLength(
-        2,
-      )
-      expect(
-        container.querySelectorAll('[data-model-star="off"]'),
-      ).toHaveLength(4)
+      expect(container.querySelector('[data-model-star]')).toBeNull()
+      // The folded section gives way to the results while searching.
+      expect(container.querySelector('[data-all-models]')).toBeNull()
       expect((html.match(/>Configure</g) ?? []).length).toBe(2)
-      // Selection and starring are separate buttons: the star never sits
-      // inside the row's select button.
-      for (const row of container.querySelectorAll('[data-model-option]')) {
-        expect(row.querySelector('[data-model-star]')).toBeNull()
-      }
     } finally {
       act(() => root.unmount())
       container.remove()
@@ -175,79 +169,125 @@ describe('PinnedModelMenu', () => {
     expect(html).toContain('Fixed for this model')
   })
 
-  it('refuses a sixth star with a notice instead of swapping one out', async () => {
-    const onPinnedChange = vi.fn()
+  it('All models expands to the whole catalog, grouped, and a row there selects', async () => {
+    const onSelect = vi.fn()
     const container = document.body.appendChild(document.createElement('div'))
     const root = createRoot(container)
     try {
-      await act(async () => root.render(menu({ pinned: FIVE, onPinnedChange })))
-      // Every id carries the provider separator, so ':' matches the whole catalog.
-      typeFilter(container, ':')
-      const star = container.querySelector<HTMLButtonElement>(
-        'button[aria-label="Star GPT-4.1 Mini"]',
+      await act(async () => root.render(menu({ onSelect })))
+      const toggle = container.querySelector<HTMLButtonElement>(
+        '[data-all-models] > button[aria-expanded]',
       )
-      if (!star) throw new Error('hollow star missing')
-      expect(star.title).toContain('Favorites are full')
-      await act(async () => star.click())
-      expect(onPinnedChange).not.toHaveBeenCalled()
-      const notice = container.querySelector('[data-favorites-limit-notice]')
-      expect(notice?.getAttribute('role')).toBe('status')
-      expect(notice?.textContent).toBe(favoritesFullNotice('GPT-4.1 Mini'))
-
-      // Unstarring is always allowed, and clears the notice.
-      const starred = container.querySelector<HTMLButtonElement>(
-        'button[aria-label="Unstar Opus 4.7"]',
-      )
-      if (!starred) throw new Error('filled star missing')
-      await act(async () => starred.click())
-      expect(onPinnedChange).toHaveBeenCalledWith(
-        FIVE.filter((entry) => entry.id !== 'anthropic::claude-opus-4-7'),
-      )
+      if (!toggle) throw new Error('All models toggle missing')
+      await act(async () => toggle.click())
+      expect(toggle.getAttribute('aria-expanded')).toBe('true')
+      const section = container.querySelector('[data-all-models="open"]')
+      expect(section).not.toBeNull()
       expect(
-        container.querySelector('[data-favorites-limit-notice]'),
-      ).toBeNull()
+        section?.querySelector('[data-provider-group="anthropic"]'),
+      ).not.toBeNull()
+      expect(
+        section?.querySelector('[data-provider-group="openai"]'),
+      ).not.toBeNull()
+      expect(section?.querySelectorAll('[data-model-option]')).toHaveLength(
+        OPTIONS.length,
+      )
+      // A favorite also listed under All models is two rows with two ids.
+      const ids = [...container.querySelectorAll('[data-model-option]')].map(
+        (row) => row.id,
+      )
+      expect(new Set(ids).size).toBe(ids.length)
+      expect(container.querySelector('[data-model-star]')).toBeNull()
+
+      const haiku = section?.querySelector<HTMLButtonElement>(
+        '[data-model-option="anthropic::claude-haiku-4-5"]',
+      )
+      if (!haiku) throw new Error('catalog row missing')
+      await act(async () => haiku.click())
+      expect(onSelect).toHaveBeenCalledWith(
+        'anthropic::claude-haiku-4-5',
+        undefined,
+      )
+
+      // Collapsing folds the catalog away again.
+      await act(async () => toggle.click())
+      expect(
+        container.querySelector('[data-all-models="closed"]'),
+      ).not.toBeNull()
+      expect(container.querySelectorAll('[data-model-option]')).toHaveLength(2)
     } finally {
       act(() => root.unmount())
       container.remove()
     }
   })
 
-  it('stars a model at its live effort when it is the current one, else at the default', async () => {
-    const onPinnedChange = vi.fn()
+  it('arrows walk from the favorites into an open All models, and Enter picks', async () => {
+    const onSelect = vi.fn()
     const container = document.body.appendChild(document.createElement('div'))
     const root = createRoot(container)
     try {
-      await act(async () =>
-        root.render(
-          menu({
-            pinned: [],
-            thinkingLevel: 'high',
-            onPinnedChange,
-          }),
-        ),
+      await act(async () => root.render(menu({ onSelect })))
+      const toggle = container.querySelector<HTMLButtonElement>(
+        '[data-all-models] > button[aria-expanded]',
       )
-      // Every id carries the provider separator, so ':' matches the whole catalog.
-      typeFilter(container, ':')
-      const current = container.querySelector<HTMLButtonElement>(
-        'button[aria-label="Star GPT-5"]',
+      await act(async () => toggle?.click())
+      const input = container.querySelector<HTMLInputElement>(
+        'input[role="combobox"]',
       )
-      if (!current) throw new Error('star missing')
-      await act(async () => current.click())
-      expect(onPinnedChange).toHaveBeenLastCalledWith([
-        { id: 'openai::gpt-5', effort: 'high' },
-      ])
-      const other = container.querySelector<HTMLButtonElement>(
-        'button[aria-label="Star Haiku 4.5"]',
+      if (!input) throw new Error('search missing')
+      const press = (key: string) =>
+        act(async () => {
+          input.dispatchEvent(
+            new KeyboardEvent('keydown', { key, bubbles: true }),
+          )
+        })
+      // Starts on the current model (GPT-5, the first favorite); two steps
+      // pass the second favorite and land on All models' first row.
+      await press('ArrowDown')
+      await press('ArrowDown')
+      expect(input.getAttribute('aria-activedescendant')).toBe(
+        'model-option-all:anthropic::claude-opus-4-7',
       )
-      if (!other) throw new Error('star missing')
-      await act(async () => other.click())
-      expect(onPinnedChange).toHaveBeenLastCalledWith([
-        { id: 'anthropic::claude-haiku-4-5', effort: 'default' },
-      ])
+      await press('Enter')
+      expect(onSelect).toHaveBeenCalledWith(
+        'anthropic::claude-opus-4-7',
+        undefined,
+      )
     } finally {
       act(() => root.unmount())
       container.remove()
     }
+  })
+
+  it('a favorite selects at the effort it was pinned with', async () => {
+    const onSelect = vi.fn()
+    const container = document.body.appendChild(document.createElement('div'))
+    const root = createRoot(container)
+    try {
+      await act(async () =>
+        root.render(menu({ onSelect, pinned: FIVE.slice(0, 2) })),
+      )
+      const opus = container.querySelector<HTMLButtonElement>(
+        '[data-model-row="fav:anthropic::claude-opus-4-7"]',
+      )
+      if (!opus) throw new Error('favorite row missing')
+      await act(async () => opus.click())
+      expect(onSelect).toHaveBeenCalledWith(
+        'anthropic::claude-opus-4-7',
+        'default',
+      )
+    } finally {
+      act(() => root.unmount())
+      container.remove()
+    }
+  })
+
+  it('opens All models from the start when there are no favorites', () => {
+    const html = renderToStaticMarkup(menu({ value: null, pinned: [] }))
+    expect(html).toContain('No favorites yet. Pin up to five in Manage models.')
+    expect(html).toContain('data-all-models="open"')
+    const rows = html.match(/<button[^>]*data-model-option=[^>]*>/g) ?? []
+    expect(rows).toHaveLength(OPTIONS.length)
   })
 
   it('a typed filter searches the whole catalog, grouped', () => {

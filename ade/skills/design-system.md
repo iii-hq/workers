@@ -50,8 +50,8 @@ gives way to a one-row header stepper whose labels collapse to the current step.
 The console's sans (Geist, Inter fallback): 16px step titles, 14px leads, 13px
 rows and labels, 12px captions and 11px chips. One 24px gutter (16px below
 `@md`); `rounded-lg` cards with `divide-y` hairlines, 4px checkboxes, and pill
-(`rounded-full`) buttons and chips — solid ink primary, soft neutral fill
-secondary, ghost tertiary, all with semibold 13px labels. Small controls (rail steps,
+(`rounded-full`) chips; buttons are the shared shadcn `Button` (`default`
+primary, `secondary` back, `ghost` skip) on the 36px `lg` step. Small controls (rail steps,
 ghost buttons, disclosures) hover with `surface-hover`. Large fills — cards,
 rows, strips, the code surface, the soft secondary button — use the neutral
 palette one step per theme (`neutral-50`/`100` on white, `neutral-900`/`800`
@@ -244,7 +244,7 @@ The single source of truth — other skills link here and never restate these.
 | Icon | 16px (`size-4`, `.iii-ui-icon`) | `ui-recipes.css`, lint rule `icon-size` |
 | Radius | 6px | `--radius-*` |
 | Desktop rows | tree row 28, status bar 28, toolbar 36, page header 44 | `ui-recipes.css`, `PageChrome.tsx` |
-| Desktop controls | icon button 30, button sm/md/lg 32/36/44, input 36 | `Button.tsx`, `Input.tsx` |
+| Desktop controls | icon button 30, button sm/default/lg 28/32/36, input 36 | `shadcn/button.tsx`, `Input.tsx` |
 | Narrow pane | tree rows 44, tree caret/action 40 (`data-narrow`) | `.iii-ui-tree[data-narrow]` |
 | Narrow container | settings controls and actions 48 under 30rem | `@container (max-width: 30rem)` |
 | Phone (< 640px) rows | list rows 48, segmented items 44, settings rows 56 | `ui-recipes.css` |
@@ -327,7 +327,7 @@ ones in `index.d.ts`. State is expressed with `data-*` attributes (`data-selecte
 
 | Component | Anatomy / props | Do / Don't |
 | --- | --- | --- |
-| `Button` | `variant` primary/ghost/pill/icon/terminal/wiggle; `size` sm 32 / md 36 / lg 44 / icon 30 | One `primary` per view |
+| `Button` | One button: shadcn `components/shadcn/button.tsx`. Three action looks — `default` (solid `primary` ink), `secondary` (hairline `border` on `card`, `muted` hover; `outline` is an alias), `destructive` (solid `destructive`/alert, white label) — all `rounded-xl`, Inter `text-sm` medium, `sm`/`default`/`lg` = 28/32/36. `ghost`, `link` and `icon*` sizes are icon-only/toolbar chrome. The console-ui `Button` (`ui/Button.tsx`) is a thin wrapper: primary/wiggle→default, secondary/pill/terminal→secondary, destructive→destructive, ghost/icon→ghost; sm/md/lg→default/lg/lg | One `default` per view; never hand-roll a `bg-primary`/`bg-ink` `<button>` |
 | `IconButton` | `Button` size icon + required `label`, `tooltip` (false hides), `tooltipSide` | Never icon-only without a label |
 | `Tooltip` | `label` shorthand, or `TooltipTrigger` + `TooltipContent` (`side`, default bottom); ink pill with page-colour text, and inside it the `ink*`, `surface*`, `edge`, panel and shadcn `foreground` tokens are inverted (`INVERSE_INK` in `lib/neutral-surface`), so content written for the page — a worker's `color: var(--color-ink)` help copy — reads on the pill in both themes | Don't tooltip a bare ✕; don't set colours on tooltip content to fight the pill |
 | `DropdownMenu` + `Trigger`/`Content`/`Group`/`Item`/`Label`/`Separator`, `CheckboxItem` (toggle, `onSelect` + `preventDefault` keeps it open), `RadioGroup`/`RadioItem` (one choice), `Sub`/`SubTrigger`/`SubContent` (a setting row that pushes into a submenu) | Radix menu on `panel-raised`, `shadow-floating`; check in the left gutter, tree caret on a sub-trigger | Destructive last; no Menubar — one trigger per menu |

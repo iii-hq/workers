@@ -84,3 +84,17 @@ export function formatFileMention(ref: FileMentionRef): string {
 export function sameFileMention(a: FileMentionRef, b: FileMentionRef): boolean {
   return formatFileMentionInner(a) === formatFileMentionInner(b)
 }
+
+/**
+ * How a mention's path reads in its pill. A relative path is already short;
+ * an absolute one (a reference copied from the IDE, which has to resolve in
+ * any chat) keeps its last two segments, so the file name stays in view:
+ * `/Users/me/repo/src/a.ts` reads `…/src/a.ts`. The token keeps the path.
+ */
+export function mentionDisplayPath(path: string): string {
+  if (!path.startsWith('/')) return path
+  const folder = path.endsWith('/')
+  const segments = path.split('/').filter(Boolean)
+  if (segments.length <= 2) return path
+  return `…/${segments.slice(-2).join('/')}${folder ? '/' : ''}`
+}

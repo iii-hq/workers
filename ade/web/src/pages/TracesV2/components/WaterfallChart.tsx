@@ -58,6 +58,7 @@ import { buildSpanTree, type FlatSpanRow, flattenTree } from '../lib/spanTree'
 import { borderOnFill, getWorkerColor, inkOnFill } from '../lib/traceColors'
 import type { VisualizationSpan, WaterfallData } from '../lib/traceTransform'
 import { formatDuration, getWorkerName } from '../lib/traceUtils'
+import { MiddleTruncate } from './MiddleTruncate'
 import type { TimelineSpan } from './timeline/layout'
 import { SpanFilterMenu } from './timeline/SpanFilterMenu'
 import { SpanHoverCard } from './timeline/SpanHoverCard'
@@ -250,17 +251,18 @@ const WaterfallRow = memo(function WaterfallRow({
           <Icon className="size-4" />
         </span>
 
-        <span
+        <MiddleTruncate
+          text={name}
+          title={span.name}
           className={cn(
-            'relative z-10 min-w-0 truncate text-xs leading-5',
+            'relative z-10 text-xs leading-5',
             hasChildren ? 'font-semibold' : 'font-medium',
             isError ? 'text-alert-strong' : 'text-foreground',
           )}
-          title={span.name}
-        >
-          {name}
-        </span>
-        <span className="relative z-10 min-w-0 shrink truncate text-xs text-muted-foreground">
+        />
+        {/* the worker is the secondary label: it gives way faster than the
+            span name when the column is tight */}
+        <span className="relative z-10 min-w-0 shrink-[4] truncate text-xs text-muted-foreground">
           {worker}
         </span>
         {span.pending ? (

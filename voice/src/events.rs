@@ -23,6 +23,7 @@ pub const SESSION_STARTED: &str = "voice::session-started";
 pub const SESSION_STOPPED: &str = "voice::session-stopped";
 pub const MODEL_PROGRESS: &str = "voice::model-progress";
 pub const SPEECH_ENDED: &str = "voice::speech-ended";
+pub const HOTKEY: &str = "voice::hotkey";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventKind {
@@ -31,6 +32,7 @@ pub enum EventKind {
     SessionStopped,
     ModelProgress,
     SpeechEnded,
+    Hotkey,
 }
 
 impl EventKind {
@@ -41,16 +43,18 @@ impl EventKind {
             EventKind::SessionStopped => SESSION_STOPPED,
             EventKind::ModelProgress => MODEL_PROGRESS,
             EventKind::SpeechEnded => SPEECH_ENDED,
+            EventKind::Hotkey => HOTKEY,
         }
     }
 
-    pub fn all() -> [EventKind; 5] {
+    pub fn all() -> [EventKind; 6] {
         [
             EventKind::Transcript,
             EventKind::SessionStarted,
             EventKind::SessionStopped,
             EventKind::ModelProgress,
             EventKind::SpeechEnded,
+            EventKind::Hotkey,
         ]
     }
 }
@@ -278,7 +282,7 @@ impl TriggerHandler for VoiceTriggerHandler {
 /// `functions::register_all` so handlers can capture the subscriber sets.
 pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
     let sets = TriggerSets::new();
-    let descriptions: [(EventKind, &str); 5] = [
+    let descriptions: [(EventKind, &str); 6] = [
         (
             EventKind::Transcript,
             "A dictation session produced text: a partial replaces the in-progress text, a \
@@ -301,6 +305,12 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
             EventKind::SpeechEnded,
             "A host read-aloud started by voice::speak finished: reason ended, stopped or \
              failed. Filter with speech_id.",
+        ),
+        (
+            EventKind::Hotkey,
+            "The fn (globe) key on macOS, which browsers never see: action down, up, or chord \
+             when another key was pressed while it was held. The console dictates while it \
+             is held. Needs Input Monitoring for the app running iii; see voice::doctor.",
         ),
     ];
     for (kind, description) in descriptions {

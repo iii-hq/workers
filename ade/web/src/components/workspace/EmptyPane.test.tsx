@@ -36,15 +36,48 @@ describe('filterScreenOptions', () => {
 })
 
 describe('EmptyPane', () => {
-  it('renders a scrollable option for every available page', () => {
+  it('renders an option for every available page in a scrolling pane', () => {
     const markup = renderToStaticMarkup(
       <EmptyPane screenOptions={pages} onAttach={vi.fn()} onRemove={vi.fn()} />,
     )
 
     expect(markup.match(/role="option"/g)).toHaveLength(50)
-    expect(markup).toContain('>50</div>')
     expect(markup).toContain('aria-label="remove this panel"')
-    expect(markup).toContain('max-h-72 overflow-y-auto')
+    expect(markup).toContain('overflow-y-auto')
+    expect(markup).not.toContain('max-h-72')
     expect(markup).not.toContain('autofocus')
+  })
+
+  it('groups console pages ahead of worker pages, each with its count', () => {
+    const markup = renderToStaticMarkup(
+      <EmptyPane
+        screenOptions={[
+          {
+            value: 'chat',
+            label: 'chat',
+            description: 'Conversations and tools.',
+            icon: Blocks,
+          },
+          ...pages,
+        ]}
+        onAttach={vi.fn()}
+      />,
+    )
+
+    const consoleAt = markup.indexOf('Console<')
+    const workersAt = markup.indexOf('From workers<')
+    expect(consoleAt).toBeGreaterThan(-1)
+    expect(workersAt).toBeGreaterThan(consoleAt)
+    expect(markup).toContain('>1</span>')
+    expect(markup).toContain('>50</span>')
+  })
+
+  it('draws no highlight until the launcher is searched or navigated', () => {
+    const markup = renderToStaticMarkup(
+      <EmptyPane screenOptions={pages} onAttach={vi.fn()} />,
+    )
+
+    expect(markup).not.toContain('aria-selected="true"')
+    expect(markup).not.toContain('aria-activedescendant')
   })
 })

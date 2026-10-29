@@ -10,11 +10,7 @@
 import { TriangleAlert } from 'lucide-react'
 import { formatBytes } from '@/components/chat/sandbox/format'
 import { Chip } from '@/components/chat/sandbox/terminal/Terminal'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/Tooltip'
+import { Hint } from '@/components/ui/Hint'
 import { CoderNewFilePreview, CoderOverwritePreview } from './CoderDiff'
 import { OpenInEditorButton } from './OpenInEditorButton'
 import {
@@ -76,15 +72,12 @@ export function CreateFileView({
                 <span className="text-ink-ghost text-[11px]">· unresolved</span>
               ) : null}
               {result.error ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span className="inline-flex items-center gap-1 text-warn cursor-help">
-                      <TriangleAlert aria-hidden className="size-4" />
-                      {result.error.code}
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent>{result.error.message}</TooltipContent>
-                </Tooltip>
+                <Hint label={result.error.message}>
+                  <span className="inline-flex items-center gap-1 text-warn cursor-help">
+                    <TriangleAlert aria-hidden className="size-4" />
+                    {result.error.code}
+                  </span>
+                </Hint>
               ) : (
                 <span className="text-warn">Error</span>
               )}

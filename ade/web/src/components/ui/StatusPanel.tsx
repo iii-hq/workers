@@ -8,7 +8,7 @@ const variantTone: Record<
   { fill: string; icon: string; headline: string }
 > = {
   info: {
-    fill: 'bg-surface',
+    fill: 'bg-card',
     icon: 'text-ink',
     headline: 'text-ink',
   },
@@ -39,10 +39,11 @@ interface StatusPanelProps extends React.HTMLAttributes<HTMLDivElement> {
 }
 
 /**
- * The one way to show a status with copy: a tinted block, headline in the
- * status colour, detail in faint ink, an optional action at the end. `role`
- * passes through — `alert` for an error the user must see now, `status`
- * for the rest.
+ * The one way to show a status with copy: a card (the shadcn Card's 12px
+ * radius and 10% ink ring; the card fill for `info`, a tint for the other
+ * tones), headline in the status colour, detail in faint ink, an optional
+ * action at the end. `role` passes through — `alert` for an error the user
+ * must see now, `status` for the rest.
  */
 export function StatusPanel({
   variant = 'info',
@@ -57,7 +58,7 @@ export function StatusPanel({
   return (
     <div
       className={cn(
-        'flex items-start gap-x-3 rounded-md px-3.5 py-3',
+        'flex items-start gap-x-3 rounded-xl px-3.5 py-3 font-inter text-sm ring-1 ring-foreground/10',
         tone.fill,
         className,
       )}

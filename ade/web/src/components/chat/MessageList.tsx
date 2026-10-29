@@ -1,5 +1,5 @@
-import { ArrowDown } from 'lucide-react'
-import { motion } from 'motion/react'
+import { ArrowDown, ChevronDown } from 'lucide-react'
+import { AnimatePresence, motion } from 'motion/react'
 import {
   type CSSProperties,
   forwardRef,
@@ -15,7 +15,10 @@ import {
   useState,
   type WheelEvent,
 } from 'react'
-import { resultEnvelope } from '@/components/function-trigger/FunctionTriggerCard'
+import {
+  isErrorOutput,
+  resultEnvelope,
+} from '@/components/function-trigger/FunctionTriggerCard'
 import {
   firstRendered,
   rawRedactor,
@@ -36,6 +39,7 @@ import {
 } from '@/components/trigger-activity/model'
 import { Button } from '@/components/ui/Button'
 import { ImageViewer } from '@/components/ui/ImageViewer'
+import { TriggerIcon } from '@/components/ui/TriggerIcon'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import type { SessionTriggerInfo } from '@/lib/backend/triggers'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
@@ -48,6 +52,7 @@ import {
   notificationBindingId,
   triggerFiredName,
 } from '@/lib/sessions/entry-mapper'
+import { changedFilesFromCalls, turnDurationMs } from '@/lib/turn-summary'
 import { cn } from '@/lib/utils'
 import type {
   Conversation,
@@ -73,6 +78,7 @@ import {
 } from './tail-scroll'
 import type { TurnVisualPhase } from './turn-visual-state'
 import './chat-motion.css'
+import './tool-group.css'
 
 // viewport: phone chrome — the sm and md utilities here are the console's
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
@@ -1307,6 +1313,11 @@ export function MessageList({
                     message={summary}
                     copyText={copyText}
                     agentName={agentName}
+                    turnDurationMs={turnDurationMs(messages, summary.id)}
+                    changedFiles={changedFilesFromCalls(calls ?? [])}
+                    revealOnMount={
+                      !reducedMotion && livePresentationKeys.has(summary.id)
+                    }
                   />
                 </LiveTimelineRow>,
               ]
@@ -1356,6 +1367,21 @@ export function MessageList({
                   agentName={agentName}
                   sessionId={sessionId}
                   copyText={copyText}
+                  turnDurationMs={
+                    m.role === 'assistant'
+                      ? turnDurationMs(messages, m.id)
+                      : null
+                  }
+                  changedFiles={
+                    m.role === 'assistant'
+                      ? changedFilesFromCalls(calls ?? [])
+                      : undefined
+                  }
+                  revealOnMount={
+                    !reducedMotion &&
+                    m.role === 'assistant' &&
+                    livePresentationKeys.has(m.id)
+                  }
                   defaultOpenCalls={defaultOpenCalls}
                   onResolveApproval={onResolveApproval}
                   onAlwaysAllow={onAlwaysAllow}
@@ -1579,10 +1605,12 @@ function useDwelledActivityKeys(
 }
 
 /**
- * A sequence of agent calls reads as one phase. Collapsed groups keep the
- * latest call plus any rich-display, approval, or live call visible; expanding
- * restores every call in chronological order. The assistant's intermediate
- * prose stays normal prose after the stack and doubles as the batch summary.
+ * A sequence of agent calls reads as one phase: one card whose header counts
+ * the tools and whose rows are the calls. A batch seen live opens in full;
+ * a settled batch keeps the latest call plus any rich-display, approval, or
+ * live call visible, and the header chevron restores every call in
+ * chronological order. The assistant's intermediate prose stays normal prose
+ * after the card and doubles as the batch summary.
  */
 function FunctionTriggerGroup({
   row,
@@ -1600,7 +1628,23 @@ function FunctionTriggerGroup({
   focusMessageId,
   onLoadActivityEntries,
 }: FunctionTriggerGroupProps) {
-  const [expanded, setExpanded] = useState(!!defaultOpenCalls)
+  // A batch observed live opens in full: its rows arrive one by one and the
+  // reader watches them settle. A settled batch from the transcript folds to
+  // its latest call (plus anything a renderer keeps on display) behind the
+  // header, where "Used 11 tools" and a chevron say what is there.
+  const live = row.items.some(
+    (item) =>
+      item.kind === 'function-trigger' &&
+      (item.message.running === true || item.message.pendingApproval === true),
+  )
+  const failedCount = row.items.filter(
+    (item) =>
+      item.kind === 'function-trigger' &&
+      !item.message.running &&
+      !item.message.pendingApproval &&
+      isErrorOutput(item.message.output),
+  ).length
+  const [expanded, setExpanded] = useState(!!defaultOpenCalls || live)
   const contentId = useId()
   // A renderer that keeps its calls visible while the phase is collapsed
   // (`metadata.display`) is decided by function id alone for a placeholder:
@@ -1718,130 +1762,197 @@ function FunctionTriggerGroup({
 
   return (
     <section
-      className="flex flex-col gap-y-8"
+      className="chat-tool-group"
       data-function-trigger-group=""
       data-function-trigger-count={row.items.length}
+      data-expanded={expanded}
+      data-can-collapse={canCollapse}
+      data-live={live}
     >
-      <div className="flex flex-col">
-        <div
-          className="chat-trigger-disclosure"
-          data-visible={canCollapse}
-          aria-hidden={!canCollapse}
-          inert={!canCollapse ? true : undefined}
-        >
-          <div className="chat-trigger-disclosure-inner">
-            <button
-              type="button"
-              aria-expanded={expanded}
-              aria-label={`Agent triggered ${row.items.length} functions · ${expanded ? 'show latest' : 'show all'}`}
-              aria-controls={contentId}
-              onClick={toggleExpanded}
-              tabIndex={canCollapse ? undefined : -1}
-              className="chat-activity-toggle group relative flex w-fit cursor-pointer items-center gap-2 text-ink-faint hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-            >
-              <span
-                className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-                aria-hidden="true"
-              />
-              <motion.svg
-                aria-hidden="true"
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                initial={false}
-                animate={{ rotate: expanded ? 90 : 0 }}
-                transition={{
-                  duration: reducedMotion ? 0 : 0.18,
-                  ease: [0.2, 0.8, 0.3, 1],
-                }}
-                className="shrink-0"
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-disabled={!canCollapse || undefined}
+        aria-label={`Agent triggered ${row.items.length} functions · ${expanded ? 'show latest' : 'show all'}`}
+        aria-controls={contentId}
+        onClick={canCollapse ? toggleExpanded : undefined}
+        tabIndex={canCollapse ? undefined : -1}
+        className="chat-tool-group__head"
+      >
+        <ToolGroupIconStack items={row.items} />
+        <span className="chat-tool-group__label">
+          <span className="chat-trigger-disclosure-label">
+            <span data-active={live} aria-hidden={!live}>
+              Using
+            </span>
+            <span data-active={!live} aria-hidden={live}>
+              Used
+            </span>
+          </span>
+          <AnimatedCount
+            value={row.items.length}
+            reducedMotion={reducedMotion}
+          />
+          <span>{row.items.length === 1 ? 'tool' : 'tools'}</span>
+        </span>
+        {failedCount > 0 ? (
+          <span
+            className="chat-tool-group__failed"
+            data-failed-count={failedCount}
+          >
+            {failedCount} failed
+          </span>
+        ) : null}
+        <ChevronDown
+          aria-hidden="true"
+          className="chat-tool-group__chevron size-4"
+        />
+      </button>
+      <div
+        id={contentId}
+        className="chat-tool-group__list"
+        data-function-trigger-group-calls=""
+      >
+        {presentedItems.map(
+          ({ item, index, key, semanticVisible, mounted, ordinal }) => {
+            const message = item.message
+            const notification =
+              item.kind === 'trigger-activity' ? item.notification : undefined
+            return (
+              <div
+                key={key}
+                className="chat-activity-item"
+                data-visible={semanticVisible}
+                data-mounted={mounted}
+                data-stacked={ordinal > 0}
+                data-archiving={mounted && !semanticVisible}
+                aria-hidden={!semanticVisible}
+                inert={!semanticVisible ? true : undefined}
               >
-                <path d="m9 5 7 7-7 7" />
-              </motion.svg>
-              <span className="tabular-nums">{row.items.length} actions</span>
-              <span className="text-ink-ghost">·</span>
-              <span className="chat-trigger-disclosure-label">
-                <span data-active={!expanded} aria-hidden={expanded}>
-                  show all
-                </span>
-                <span data-active={expanded} aria-hidden={!expanded}>
-                  show latest
-                </span>
-              </span>
-            </button>
-          </div>
-        </div>
-        <div
-          id={contentId}
-          className="flex flex-col"
-          data-function-trigger-group-calls=""
-        >
-          {presentedItems.map(
-            ({ item, index, key, semanticVisible, mounted, ordinal }) => {
-              const message = item.message
-              const notification =
-                item.kind === 'trigger-activity' ? item.notification : undefined
-              return (
-                <div
-                  key={key}
-                  className="chat-activity-item"
-                  data-visible={semanticVisible}
-                  data-mounted={mounted}
-                  data-stacked={ordinal > 0}
-                  data-archiving={mounted && !semanticVisible}
-                  aria-hidden={!semanticVisible}
-                  inert={!semanticVisible ? true : undefined}
-                >
-                  <div className="chat-activity-item-inner">
-                    {mounted ? (
-                      <LiveTimelineRow
-                        // An item that absorbed its wake notification represents
-                        // two transcript entries; the row carries both ids.
-                        messageRow={
-                          notification
-                            ? `${message.id} ${notification.id}`
-                            : message.id
+                <div className="chat-activity-item-inner">
+                  {mounted ? (
+                    <LiveTimelineRow
+                      // An item that absorbed its wake notification represents
+                      // two transcript entries; the row carries both ids.
+                      messageRow={
+                        notification
+                          ? `${message.id} ${notification.id}`
+                          : message.id
+                      }
+                      animate={!reducedMotion && livePhaseChildKeys.has(key)}
+                      staggerIndex={index}
+                    >
+                      <Message
+                        message={message}
+                        agentName={agentName}
+                        triggerNotification={notification}
+                        registration={
+                          registrations.get(message.id) ??
+                          (notification
+                            ? registrations.get(notification.id)
+                            : undefined)
                         }
-                        animate={!reducedMotion && livePhaseChildKeys.has(key)}
-                        staggerIndex={index}
-                      >
-                        <Message
-                          message={message}
-                          agentName={agentName}
-                          triggerNotification={notification}
-                          registration={
-                            registrations.get(message.id) ??
-                            (notification
-                              ? registrations.get(notification.id)
-                              : undefined)
-                          }
-                          defaultOpenCalls={defaultOpenCalls}
-                          onLoadDetails={
-                            item.kind === 'function-trigger'
-                              ? () => requestEntries([item.message], true)
-                              : undefined
-                          }
-                          onResolveApproval={onResolveApproval}
-                          onAlwaysAllow={onAlwaysAllow}
-                          onResolveFilesystemAccess={onResolveFilesystemAccess}
-                          onManageFilesystemAccess={onManageFilesystemAccess}
-                          workingDir={workingDir}
-                        />
-                      </LiveTimelineRow>
-                    ) : null}
-                  </div>
+                        defaultOpenCalls={defaultOpenCalls}
+                        onLoadDetails={
+                          item.kind === 'function-trigger'
+                            ? () => requestEntries([item.message], true)
+                            : undefined
+                        }
+                        onResolveApproval={onResolveApproval}
+                        onAlwaysAllow={onAlwaysAllow}
+                        onResolveFilesystemAccess={onResolveFilesystemAccess}
+                        onManageFilesystemAccess={onManageFilesystemAccess}
+                        workingDir={workingDir}
+                      />
+                    </LiveTimelineRow>
+                  ) : null}
                 </div>
-              )
-            },
-          )}
-        </div>
+              </div>
+            )
+          },
+        )}
       </div>
     </section>
+  )
+}
+
+/** The worker marks that open the header: one per worker, newest trailing. */
+function ToolGroupIconStack({
+  items,
+}: {
+  items: TimelineActivityGroupRow['items']
+}) {
+  const marks: Array<{
+    key: string
+    kind: 'worker' | 'trigger'
+    label: string
+  }> = []
+  for (const item of items) {
+    const mark =
+      item.kind === 'function-trigger'
+        ? {
+            key: `worker:${workerOf(item.message.functionId)}`,
+            kind: 'worker' as const,
+            label: workerOf(item.message.functionId),
+          }
+        : { key: 'trigger', kind: 'trigger' as const, label: 'trigger' }
+    if (!marks.some((m) => m.key === mark.key)) marks.push(mark)
+  }
+  const shown = marks.slice(-3)
+  return (
+    <span className="chat-tool-group__icons" aria-hidden="true">
+      {shown.map((mark) => (
+        <span
+          key={mark.key}
+          className="chat-tool-group__icon"
+          data-kind={mark.kind}
+          title={mark.label}
+        >
+          {mark.kind === 'trigger' ? (
+            <TriggerIcon className="size-4 fill-warn" />
+          ) : (
+            mark.label.slice(0, 1).toUpperCase()
+          )}
+        </span>
+      ))}
+    </span>
+  )
+}
+
+/** `shell::exec` → `shell`; a bare `agent_trigger` placeholder stays itself. */
+function workerOf(functionId: string): string {
+  const split = functionId.indexOf('::')
+  return split > 0 ? functionId.slice(0, split) : functionId
+}
+
+/** The tool count rolls to its next value instead of being replaced. */
+function AnimatedCount({
+  value,
+  reducedMotion,
+}: {
+  value: number
+  reducedMotion: boolean
+}) {
+  return (
+    <span className="chat-tool-group__count">
+      <AnimatePresence initial={false} mode="popLayout">
+        <motion.span
+          key={value}
+          initial={
+            reducedMotion ? false : { y: 8, opacity: 0, filter: 'blur(2px)' }
+          }
+          animate={{ y: 0, opacity: 1, filter: 'blur(0px)' }}
+          exit={
+            reducedMotion
+              ? undefined
+              : { y: -8, opacity: 0, filter: 'blur(2px)' }
+          }
+          transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+        >
+          {value}
+        </motion.span>
+      </AnimatePresence>
+    </span>
   )
 }
 

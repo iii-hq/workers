@@ -1,36 +1,111 @@
 import { errorMessage } from '@iii-dev/console-ui/format'
-import { Play, RotateCw, ShieldCheck, Square } from 'lucide-react'
-import { useState } from 'react'
-import { Badge } from '@/components/ui/Badge'
-import { Button } from '@/components/ui/Button'
-import { Eyebrow } from '@/components/ui/Eyebrow'
-import { StatusDot } from '@/components/ui/StatusDot'
-import { StatusPanel } from '@/components/ui/StatusPanel'
-import { Card, CardBody, CardHeader } from '@/components/ui/Surface'
+import {
+  ArrowUpCircle,
+  Play,
+  RotateCw,
+  ShieldCheck,
+  Square,
+} from 'lucide-react'
+import { type ReactNode, useState } from 'react'
+import { Badge } from '@/components/shadcn/badge'
+import { Button } from '@/components/shadcn/button'
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/shadcn/card'
 import {
   Table,
   TableBody,
   TableCell,
-  TableFrame,
   TableHead,
   TableHeader,
   TableRow,
-  TableViewport,
-} from '@/components/ui/Table'
+} from '@/components/shadcn/table'
+import { cn } from '@/lib/utils'
+import { Notice } from './components/kit'
 import type { ComposeApi, Snapshot } from './compose-api'
 import type { Actions, Latest } from './index'
 import {
-  alsoStarts,
   inPlaceVersion,
   shortPath,
   startWaves,
   toneFor,
   waveLabel,
+  withAlsoStarts,
 } from './model'
 
 type Validation =
   | { ok: true; order: string[]; deferred: string[] }
   | { ok: false; error: string }
+
+/** A worker's status dot, in the pills and the table. */
+const DOT: Record<string, string> = {
+  accent: 'bg-ok',
+  alert: 'bg-alert',
+  warn: 'bg-warn',
+  ink: 'bg-neutral-400 dark:bg-neutral-600',
+  ok: 'bg-ok',
+  ghost: 'bg-neutral-300 dark:bg-neutral-700',
+}
+
+export function WorkerPill({
+  name,
+  state,
+  onClick,
+}: {
+  name: string
+  state: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="wk-press inline-flex h-7 items-center gap-2 rounded-lg border border-neutral-200 bg-neutral-50 px-3 font-inter text-[13px] font-medium text-neutral-800 transition-[background-color,color,border-color] duration-150 ease-out outline-none hover:border-neutral-300 hover:bg-neutral-100 hover:text-neutral-950 focus-visible:ring-2 focus-visible:ring-neutral-500 dark:border-neutral-800 dark:bg-neutral-900/60 dark:text-neutral-200 dark:hover:border-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-50 dark:focus-visible:ring-neutral-400"
+    >
+      <span
+        aria-hidden
+        className={cn('size-2 rounded-full', DOT[toneFor(state).dot])}
+      />
+      {name}
+      <span className="sr-only">{state}</span>
+    </button>
+  )
+}
+
+/** A key/value row in the facts cards: label, then a machine value. */
+function Fact({
+  label,
+  children,
+  title,
+  mono = true,
+}: {
+  label: string
+  children: ReactNode
+  title?: string
+  mono?: boolean
+}) {
+  return (
+    <>
+      <dt className="font-inter text-[12px] font-medium leading-5 text-neutral-500 dark:text-neutral-400">
+        {label}
+      </dt>
+      <dd
+        className={cn(
+          'min-w-0 truncate text-[13px] leading-5 text-neutral-900 dark:text-neutral-100',
+          mono ? 'wk-machine' : 'font-inter',
+        )}
+        title={title}
+      >
+        {children}
+      </dd>
+    </>
+  )
+}
 
 export function ProjectView({
   api,
@@ -59,6 +134,7 @@ export function ProjectView({
     (c) => c.source === 'package',
   )
   const outdated = packages.filter((c) => latest.outdated(c.name))
+  const known = packages.filter((c) => latest.of(c.name)).length
   const { busy, confirm } = actions
 
   const lifecycle = async (verb: 'up' | 'down' | 'restart') => {
@@ -109,10 +185,15 @@ export function ProjectView({
       title: one
         ? `Update ${names[0]} to ${latest.of(names[0])}?`
         : `Update ${names.length} packages?`,
-      description: inPlace
-        ? `Compose installs ${one ? 'it' : 'them'} and restarts only ${one ? names[0] : `these ${names.length} containers`}; the rest keep running.`
-        : `Compose resolves ${one ? 'it and its' : 'them and their'} dependencies again, and restarts the whole project when what runs changes.`,
-      details: [...(one ? [] : targets), ...alsoStarts(actions.idle, names)],
+      description: withAlsoStarts(
+        `${one ? '' : `${targets.join(', ')}. `}${
+          inPlace
+            ? `Compose installs ${one ? 'it' : 'them'} and restarts only ${one ? names[0] : `these ${names.length} containers`}; the rest keep running.`
+            : `Compose resolves ${one ? 'it and its' : 'them and their'} dependencies again, and restarts the whole project when what runs changes.`
+        }`,
+        actions.idle,
+        names,
+      ),
       confirmLabel: inPlace ? 'Update' : 'Update and restart all',
     })
     if (!ok) return
@@ -153,53 +234,61 @@ export function ProjectView({
       <div className="wk-masthead">
         <div className="wk-identity">
           <div className="wk-title-row">
-            <h2 className="wk-title wk-mono">
-              {status.namespace ?? 'Project'}
-            </h2>
-            {failed ? <Badge variant="alert">{failed} failed</Badge> : null}
-            <Badge>
+            <h2 className="wk-title">{status.namespace ?? 'Project'}</h2>
+            {failed ? (
+              <Badge variant="destructive" className="font-inter">
+                {failed} failed
+              </Badge>
+            ) : null}
+            <Badge variant="secondary" className="wk-badge font-inter">
               {ready} of {containers.length} ready
             </Badge>
           </div>
-          <div className="wk-meta wk-mono">
+          <div className="wk-meta">
             {status.file ? (
-              <span title={status.file}>{shortPath(status.file)}</span>
+              <span className="wk-machine" title={status.file}>
+                {shortPath(status.file)}
+              </span>
             ) : null}
             {status.daemon_pid ? (
-              <span>daemon pid {status.daemon_pid}</span>
+              <span className="wk-machine">daemon pid {status.daemon_pid}</span>
             ) : null}
           </div>
         </div>
         <div className="wk-actions">
           <Button
             variant="ghost"
-            size="sm"
+            className="wk-press font-inter"
             disabled={busy}
             onClick={() => void lifecycle('up')}
           >
-            <Play />
+            <Play data-icon="inline-start" />
             Start all
           </Button>
           <Button
             variant="ghost"
-            size="sm"
+            className="wk-press font-inter"
             disabled={busy}
             onClick={() => void lifecycle('restart')}
           >
-            <RotateCw />
+            <RotateCw data-icon="inline-start" />
             Restart all
           </Button>
           <Button
             variant="ghost"
-            size="sm"
+            className="wk-press font-inter"
             disabled={busy}
             onClick={() => void lifecycle('down')}
           >
-            <Square />
+            <Square data-icon="inline-start" />
             Stop all
           </Button>
-          <Button variant="pill" size="sm" onClick={() => void validate()}>
-            <ShieldCheck />
+          <Button
+            variant="outline"
+            className="wk-press font-inter"
+            onClick={() => void validate()}
+          >
+            <ShieldCheck data-icon="inline-start" />
             Validate file
           </Button>
         </div>
@@ -207,7 +296,7 @@ export function ProjectView({
 
       {validation ? (
         validation.ok ? (
-          <StatusPanel
+          <Notice
             variant="success"
             headline="The compose file is valid"
             detail={
@@ -217,7 +306,7 @@ export function ProjectView({
             }
           />
         ) : (
-          <StatusPanel
+          <Notice
             variant="alert"
             headline="The compose file does not validate"
             detail={validation.error}
@@ -225,186 +314,209 @@ export function ProjectView({
         )
       ) : null}
 
-      <Card>
-        <CardHeader className="wk-card-header">
-          Start order
-          <span className="wk-card-note">
-            from <span className="wk-mono">start_after</span>; each step waits
-            for the one above
-          </span>
+      <Card size="sm" className="wk-card">
+        <CardHeader>
+          <CardTitle className="wk-card-title">Start order</CardTitle>
+          <CardDescription className="wk-card-note">
+            From <span className="wk-machine">start_after</span>; each step
+            waits for the one above.
+          </CardDescription>
         </CardHeader>
-        <CardBody className="wk-waves">
+        <CardContent className="wk-waves">
           {waves.map((wave, index) => (
             <div key={wave.join()} className="wk-wave">
               <span className="wk-wave-label">
-                <span className="wk-mono wk-faint">{index + 1}</span>
+                <span className="wk-step" aria-hidden>
+                  {index + 1}
+                </span>
+                <span className="sr-only">Step {index + 1}:</span>
                 {index === 0
                   ? 'With the engine'
                   : waveLabel(wave, project?.containers ?? [])}
               </span>
               <div className="wk-pills">
                 {wave.map((name) => (
-                  <Button
+                  <WorkerPill
                     key={name}
-                    variant="pill"
-                    size="sm"
-                    className="h-7 px-[11px] text-[12px]"
+                    name={name}
+                    state={state.get(name) ?? 'stopped'}
                     onClick={() => onSelect(name)}
-                  >
-                    <StatusDot
-                      tone={toneFor(state.get(name) ?? 'stopped').dot}
-                      aria-label={state.get(name) ?? 'stopped'}
-                    />
-                    <span className="wk-mono">{name}</span>
-                  </Button>
+                  />
                 ))}
               </div>
             </div>
           ))}
-        </CardBody>
+        </CardContent>
       </Card>
 
       <div className="wk-columns">
-        <Card>
-          <CardHeader className="wk-card-header">
-            Registry packages
+        <Card size="sm" className="wk-card">
+          <CardHeader>
+            <CardTitle className="wk-card-title">Registry packages</CardTitle>
+            <CardDescription className="wk-card-note">
+              {packages.length === 0
+                ? 'Every container runs from a local path.'
+                : outdated.length
+                  ? `${outdated.length} of ${packages.length} ${outdated.length === 1 ? 'has' : 'have'} a newer release.`
+                  : known === 0
+                    ? 'Looking up the registry…'
+                    : `All ${packages.length} up to date.`}
+            </CardDescription>
             {outdated.length ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={busy}
-                onClick={() => void update(outdated.map((c) => c.name))}
-              >
-                Update {outdated.length} package
-                {outdated.length === 1 ? '' : 's'}
-              </Button>
+              <CardAction>
+                <Button
+                  variant="outline"
+                  className="wk-press font-inter"
+                  disabled={busy}
+                  onClick={() => void update(outdated.map((c) => c.name))}
+                >
+                  <ArrowUpCircle data-icon="inline-start" />
+                  Update {outdated.length} package
+                  {outdated.length === 1 ? '' : 's'}
+                </Button>
+              </CardAction>
             ) : null}
           </CardHeader>
-          <CardBody>
-            {packages.length === 0 ? (
-              <p className="wk-note">Every container runs from a local path.</p>
-            ) : (
-              <TableViewport>
-                <TableFrame>
-                  <Table density="compact" inset>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Package</TableHead>
-                        <TableHead>Declared</TableHead>
-                        <TableHead>Latest</TableHead>
-                        <TableHead aria-label="Action" />
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {packages.map((c) => {
-                        const newer = latest.outdated(c.name)
-                        return (
-                          <TableRow
-                            key={c.name}
-                            interactive
-                            onClick={() => onSelect(c.name)}
-                          >
-                            <TableCell className="wk-mono">{c.name}</TableCell>
-                            <TableCell className="wk-mono wk-faint">
-                              {c.version ?? 'unpinned'}
-                            </TableCell>
-                            <TableCell>
-                              {newer ? (
-                                <Badge variant="accent">{newer}</Badge>
-                              ) : (
-                                <span className="wk-faint">
-                                  {latest.of(c.name) ? 'up to date' : '–'}
-                                </span>
+          {packages.length === 0 ? null : (
+            <CardContent className="px-0!">
+              <Table className="wk-table">
+                <TableHeader>
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead className="pl-4">Package</TableHead>
+                    <TableHead>Declared</TableHead>
+                    <TableHead>Latest</TableHead>
+                    <TableHead className="pr-4 text-right">
+                      <span className="sr-only">Action</span>
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {packages.map((c) => {
+                    const newer = latest.outdated(c.name)
+                    return (
+                      <TableRow
+                        key={c.name}
+                        className="cursor-pointer"
+                        onClick={() => onSelect(c.name)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault()
+                            onSelect(c.name)
+                          }
+                        }}
+                        tabIndex={0}
+                      >
+                        <TableCell className="pl-4">
+                          <span className="inline-flex items-center gap-2.5">
+                            <span
+                              aria-hidden
+                              className={cn(
+                                'size-2 shrink-0 rounded-full',
+                                DOT[
+                                  toneFor(state.get(c.name) ?? 'stopped').dot
+                                ],
                               )}
-                            </TableCell>
-                            <TableCell className="wk-cell-action">
-                              {newer ? (
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  disabled={busy}
-                                  onClick={(event) => {
-                                    event.stopPropagation()
-                                    void update([c.name])
-                                  }}
-                                >
-                                  Update
-                                </Button>
-                              ) : null}
-                            </TableCell>
-                          </TableRow>
-                        )
-                      })}
-                    </TableBody>
-                  </Table>
-                </TableFrame>
-              </TableViewport>
-            )}
-            {locals ? (
-              <p className="wk-note wk-card-foot">
-                {locals === 1
-                  ? 'The local-path worker follows its checkout.'
-                  : `The ${locals} local-path workers follow their checkout.`}{' '}
-                Point one elsewhere from its Source tab.
-              </p>
-            ) : null}
-          </CardBody>
+                            />
+                            <span className="font-inter text-[13px] font-medium text-neutral-900 dark:text-neutral-100">
+                              {c.name}
+                            </span>
+                          </span>
+                        </TableCell>
+                        <TableCell className="wk-machine text-neutral-500 dark:text-neutral-400">
+                          {c.version ?? 'unpinned'}
+                        </TableCell>
+                        <TableCell>
+                          {newer ? (
+                            <Badge className="wk-machine">{newer}</Badge>
+                          ) : (
+                            <span className="font-inter text-[12px] text-neutral-500 dark:text-neutral-400">
+                              {latest.of(c.name) ? 'up to date' : '–'}
+                            </span>
+                          )}
+                        </TableCell>
+                        <TableCell className="pr-3 text-right">
+                          {newer ? (
+                            <Button
+                              variant="ghost"
+                              className="wk-press font-inter"
+                              disabled={busy}
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                void update([c.name])
+                              }}
+                            >
+                              Update
+                            </Button>
+                          ) : null}
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
+                </TableBody>
+              </Table>
+              {locals ? (
+                <p className="wk-note px-4 pt-3">
+                  {locals === 1
+                    ? 'The local-path worker follows its checkout.'
+                    : `The ${locals} local-path workers follow their checkout.`}{' '}
+                  Point one elsewhere from its Source tab.
+                </p>
+              ) : null}
+            </CardContent>
+          )}
         </Card>
 
         <div className="wk-stack">
-          <Card>
-            <CardHeader className="wk-card-header">Compose file</CardHeader>
-            <CardBody>
+          <Card size="sm" className="wk-card">
+            <CardHeader>
+              <CardTitle className="wk-card-title">Compose file</CardTitle>
+            </CardHeader>
+            <CardContent>
               <dl className="wk-facts">
-                <Eyebrow as="dt">File</Eyebrow>
-                <dd className="wk-mono" title={status.file}>
+                <Fact label="File" title={status.file}>
                   {status.file ? shortPath(status.file) : '–'}
-                </dd>
-                <Eyebrow as="dt">Namespace</Eyebrow>
-                <dd className="wk-mono">{status.namespace ?? '–'}</dd>
-                <Eyebrow as="dt">Engine</Eyebrow>
-                <dd className="wk-mono">
+                </Fact>
+                <Fact label="Namespace">{status.namespace ?? '–'}</Fact>
+                <Fact label="Engine">
                   {project?.engine_url ?? 'compose default'}
-                </dd>
-                <Eyebrow as="dt">Timeouts</Eyebrow>
-                <dd className="wk-mono">
+                </Fact>
+                <Fact label="Timeouts">
                   start {project?.startup_timeout ?? '–'} · stop{' '}
                   {project?.stop_timeout ?? '–'}
-                </dd>
-                <Eyebrow as="dt">State</Eyebrow>
-                <dd className="wk-mono" title={status.state_dir}>
+                </Fact>
+                <Fact label="State" title={status.state_dir}>
                   {status.state_dir ? shortPath(status.state_dir) : '–'}
-                </dd>
+                </Fact>
               </dl>
-            </CardBody>
+            </CardContent>
           </Card>
-          <Card>
-            <CardHeader className="wk-card-header">
-              Daemon
-              <span className="wk-card-note wk-mono">
-                {(list?.daemon_pid ?? status.daemon_pid)
-                  ? `pid ${list?.daemon_pid ?? status.daemon_pid}`
-                  : ''}
-              </span>
+          <Card size="sm" className="wk-card">
+            <CardHeader>
+              <CardTitle className="wk-card-title">Daemon</CardTitle>
+              {(list?.daemon_pid ?? status.daemon_pid) ? (
+                <CardDescription className="wk-card-note wk-machine">
+                  pid {list?.daemon_pid ?? status.daemon_pid}
+                </CardDescription>
+              ) : null}
             </CardHeader>
-            <CardBody>
+            <CardContent className="flex flex-col gap-3">
               <dl className="wk-facts">
                 {(list?.projects ?? []).map((p) => (
-                  <div key={`${p.namespace}:${p.file}`} className="wk-fact-row">
-                    <Eyebrow as="dt">Supervises</Eyebrow>
-                    <dd>
-                      <span className="wk-mono">{p.namespace ?? '–'}</span>{' '}
-                      <span className="wk-faint">
-                        {
-                          (p.containers ?? []).filter(
-                            (c) => c.state === 'ready',
-                          ).length
-                        }{' '}
-                        of {p.containers?.length ?? 0} ready
-                        {p.file === status.file ? ' (this page)' : ''}
-                      </span>
-                    </dd>
-                  </div>
+                  <Fact
+                    key={`${p.namespace}:${p.file}`}
+                    label="Supervises"
+                    mono={false}
+                  >
+                    <span className="font-medium">{p.namespace ?? '–'}</span>{' '}
+                    <span className="text-neutral-500 dark:text-neutral-400">
+                      {
+                        (p.containers ?? []).filter((c) => c.state === 'ready')
+                          .length
+                      }{' '}
+                      of {p.containers?.length ?? 0} ready
+                      {p.file === status.file ? ' · this page' : ''}
+                    </span>
+                  </Fact>
                 ))}
               </dl>
               <div className="wk-danger-row">
@@ -412,16 +524,15 @@ export function ProjectView({
                   Stopping the daemon takes down every project it supervises.
                 </p>
                 <Button
-                  variant="ghost"
-                  size="sm"
-                  className="wk-danger"
+                  variant="destructive"
+                  className="wk-press shrink-0 font-inter"
                   disabled={busy}
                   onClick={() => void stopDaemon()}
                 >
                   Stop daemon…
                 </Button>
               </div>
-            </CardBody>
+            </CardContent>
           </Card>
         </div>
       </div>

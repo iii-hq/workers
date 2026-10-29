@@ -11,28 +11,18 @@ import {
   TriangleAlert,
 } from 'lucide-react'
 import { Eyebrow } from '@/components/ui/Eyebrow'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/Tooltip'
+import { Hint } from '@/components/ui/Hint'
 import type { EntryKind } from './parsers'
 
 /** "Visible but locked" marker for non_accessible entries (C211 on use). */
 export function LockedBadge() {
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Eyebrow className="inline-flex items-center gap-1 text-warn cursor-help">
-          <TriangleAlert aria-hidden className="size-4" />
-          locked
-        </Eyebrow>
-      </TooltipTrigger>
-      <TooltipContent>
-        matches non_accessible_globs — listed, but coder::* ops on it return
-        C211
-      </TooltipContent>
-    </Tooltip>
+    <Hint label="matches non_accessible_globs — listed, but coder::* ops on it return C211">
+      <Eyebrow className="inline-flex items-center gap-1 text-warn cursor-help">
+        <TriangleAlert aria-hidden className="size-4" />
+        locked
+      </Eyebrow>
+    </Hint>
   )
 }
 

@@ -5,6 +5,7 @@ pub mod configuration;
 pub mod engine;
 pub mod events;
 pub mod functions;
+pub mod hotkey;
 pub mod manifest;
 pub mod models;
 mod piper_catalog;

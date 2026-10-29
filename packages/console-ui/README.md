@@ -133,10 +133,28 @@ host.panels?.open({
 page opens the file and selects those lines.) The reverse direction goes
 through `host.chat?.compose({ text, inline: true })`: an inline compose
 appends to the end of the draft's last line instead of starting a paragraph,
-which is how the shell's "Reference in chat" selection action hands a
+which is how the IDE's "Add to Chat" selection action hands a
 `#file(path:from-to)` token to the composer. `CodeEditor` offers that bar
 through its `selectionActions` prop and lands on a referenced window through
 `revealLines(from, to)` on its handle.
+
+Several chats can be open side by side, so `compose` hands the draft to ONE
+composer: the only chat open, else the one the operator typed in last. Two
+options shape that for a page that sits beside the chat:
+
+```tsx
+const result = host.chat?.compose({
+  text: '#file(/repo/src/app.ts:12-40)',
+  inline: true,
+  // No chat on screen: open the console's chat to the right of this page.
+  beside: 'ext:ide',
+  // Several chats open: insert nothing and say so, instead of guessing.
+  ifUnambiguous: true,
+})
+if (result === 'ambiguous') await copyText(reference) // let the operator paste it
+```
+
+Older consoles return nothing; treat that as composed.
 
 The host reuses an existing page or places it beside chat, and delivers a
 `panelContext` event to the page's `PageRenderProps`. Use the event `id` to

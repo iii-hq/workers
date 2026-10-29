@@ -22,10 +22,9 @@ import {
 } from 'react'
 import { Popover, PopoverContent } from '@/components/shadcn/popover'
 import { BottomSheet, BottomSheetContent } from '@/components/ui/BottomSheet'
-import { Dialog, DialogContent, DialogTitle } from '@/components/ui/Dialog'
 import { Hint } from '@/components/ui/Hint'
 import { StatusDot } from '@/components/ui/StatusDot'
-import { DESKTOP_POINTER_QUERY, useMediaQuery } from '@/hooks/use-media-query'
+import { useMediaQuery } from '@/hooks/use-media-query'
 import {
   deleteHarnessProject,
   type HarnessProject,
@@ -50,6 +49,7 @@ import {
   worktreeIndicators,
 } from '@/lib/worktrees'
 import { basename, FolderBrowser, isAbsPath, parentOf } from './FolderBrowser'
+import { OpenProjectPicker } from './OpenProjectPicker'
 
 // viewport: phone chrome — the sm and md utilities here are the console's
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
@@ -314,7 +314,6 @@ export function DirectoryPicker({
   const [wtError, setWtError] = useState<string | null>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const mobileSheet = useMediaQuery('(max-width: 767px)')
-  const pointerFine = useMediaQuery(DESKTOP_POINTER_QUERY)
   const browseInDialog = !embedded && !mobileSheet
 
   const refreshProjects = useCallback(async () => {
@@ -920,30 +919,18 @@ export function DirectoryPicker({
       </DirectoryPickerSurface>
 
       {browseInDialog ? (
-        <Dialog open={browseOpen} onOpenChange={setBrowseOpen}>
-          <DialogContent
-            aria-describedby={undefined}
-            className="flex h-[min(40rem,85vh)] w-[min(60rem,calc(100vw-2rem))] max-w-none flex-col overflow-hidden p-0"
-            onOpenAutoFocus={(event) => {
-              // No keyboard to type with: don't raise the on-screen one.
-              if (!pointerFine) event.preventDefault()
-            }}
-            onCloseAutoFocus={(event) => {
-              // "Add project" lived in the popover, which is gone.
-              event.preventDefault()
-              triggerRef.current?.focus()
-            }}
-          >
-            <DialogTitle className="px-4 pt-4 pb-3">Add project</DialogTitle>
-            <FolderBrowser
-              wide
-              keyboard={pointerFine}
-              busy={validating !== null}
-              error={error}
-              onUse={(dir) => void validateAndSelect(dir)}
-            />
-          </DialogContent>
-        </Dialog>
+        <OpenProjectPicker
+          open={browseOpen}
+          onOpenChange={(next) => {
+            setBrowseOpen(next)
+            // "Add project" lived in the popover, which is gone.
+            if (!next) triggerRef.current?.focus()
+          }}
+          onAdded={(path) => {
+            void refreshProjects()
+            select(path)
+          }}
+        />
       ) : null}
     </div>
   )

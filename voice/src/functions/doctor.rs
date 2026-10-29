@@ -83,6 +83,8 @@ pub struct Response {
     pub cleanup: CleanupReport,
     /// Whether the Read aloud / Voice chat controls show above the composer.
     pub chat_controls: bool,
+    /// The fn key as the dictation key (macOS, Input Monitoring).
+    pub fn_key: crate::hotkey::HotkeyStatus,
     pub sessions: usize,
     pub version: String,
 }
@@ -238,6 +240,7 @@ pub async fn handle(state: &AppState, _req: Request) -> Result<Response, String>
         tts,
         cleanup,
         chat_controls: cfg.tts.chat_controls,
+        fn_key: crate::hotkey::status(),
         sessions: state.sessions.count().await,
         version: env!("CARGO_PKG_VERSION").to_string(),
     })

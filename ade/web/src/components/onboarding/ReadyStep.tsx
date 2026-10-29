@@ -267,7 +267,7 @@ export function ReadyStep({
                       aria-label={`Start a chat: ${prompt.title}`}
                       aria-describedby={described}
                       onClick={() => onPrompt(prompt)}
-                      className="flex w-full min-w-0 flex-col gap-1.5 rounded-lg border border-neutral-200 bg-transparent px-3 py-2.5 text-left transition-[background-color,border-color] duration-150 ease-[var(--motion-ease-standard)] hover:bg-neutral-50 focus-visible:outline-none dark:hover:bg-neutral-900 focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:ring-offset-2 focus-visible:ring-offset-white active:scale-[0.99] dark:border-neutral-800 dark:focus-visible:ring-offset-neutral-950"
+                      className="flex w-full min-w-0 flex-col gap-1.5 rounded-xl border border-neutral-200 bg-transparent px-3 py-2.5 text-left transition-[background-color,border-color] duration-150 ease-[var(--motion-ease-standard)] hover:bg-neutral-50 focus-visible:outline-none dark:hover:bg-neutral-900 focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:ring-offset-2 focus-visible:ring-offset-white active:scale-[0.99] dark:border-neutral-800 dark:focus-visible:ring-offset-neutral-950"
                     >
                       <span className="flex items-start gap-2">
                         <MessageSquareText
@@ -302,7 +302,7 @@ export function ReadyStep({
 
       {added.length > 0 ? (
         <Disclosure label="Workers added" summary={`${added.length} installed`}>
-          <ul className="grid gap-x-4 gap-y-1 rounded-lg border border-neutral-200 bg-neutral-50 px-3.5 py-2.5 font-mono text-xs leading-5 dark:border-neutral-800 dark:bg-neutral-900 @md:grid-cols-2">
+          <ul className="grid gap-x-4 gap-y-1 rounded-xl border border-neutral-200 bg-neutral-50 px-3.5 py-2.5 font-mono text-xs leading-5 dark:border-neutral-800 dark:bg-neutral-900 @md:grid-cols-2">
             {added.map((worker) => (
               <li key={worker} className="flex min-w-0 items-center gap-2">
                 <span
@@ -321,7 +321,7 @@ export function ReadyStep({
       {offerTour ? (
         <section
           aria-label="Guided tour"
-          className="flex gap-3 rounded-lg border border-neutral-200 bg-neutral-50 px-3.5 py-3 dark:border-neutral-800 dark:bg-neutral-900"
+          className="flex gap-3 rounded-xl border border-neutral-200 bg-neutral-50 px-3.5 py-3 dark:border-neutral-800 dark:bg-neutral-900"
         >
           <Compass
             className="mt-0.5 size-4 shrink-0 text-ink"

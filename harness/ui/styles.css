@@ -243,7 +243,7 @@
   gap: 12px;
   padding: 14px 16px 16px;
   border: 1px solid var(--color-edge);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-xl);
   background: var(--color-surface);
 }
 [data-iii-ui="harness"] .harness-ui-empty .harness-ui-hero {
@@ -895,7 +895,7 @@
   gap: 14px;
   min-width: 0;
   padding: 12px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-xl);
   background: var(--color-bg);
   font-family: var(--font-sans);
   color: var(--color-ink);

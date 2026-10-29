@@ -127,7 +127,7 @@ export function XaiDiscoveryStatus({
                 {onRetry ? (
                   <Button
                     type="button"
-                    variant="ghost"
+                    variant="secondary"
                     size="lg"
                     disabled={pending || unavailable}
                     aria-busy={pending}
@@ -136,7 +136,7 @@ export function XaiDiscoveryStatus({
                     {pending ? 'Checking…' : 'Check again'}
                   </Button>
                 ) : null}
-                <Button asChild variant="ghost" size="lg">
+                <Button asChild variant="secondary" size="lg">
                   <a
                     href="https://console.x.ai"
                     target="_blank"

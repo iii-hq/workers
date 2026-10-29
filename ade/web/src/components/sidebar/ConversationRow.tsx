@@ -1,8 +1,24 @@
 import uiClasses from '@iii-dev/console-ui/ui-classes'
-import { Bot, ChevronRight, Pencil, X } from 'lucide-react'
+import {
+  Bot,
+  ChevronRight,
+  Ellipsis,
+  Pencil,
+  Pin,
+  PinOff,
+  Trash2,
+} from 'lucide-react'
 import type { CSSProperties } from 'react'
 import { useRef, useState } from 'react'
 import { SUBAGENT_ICON_COMPONENTS } from '@/components/chat/ActiveSubagentChips'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/shadcn/dropdown-menu'
+import { Hint } from '@/components/ui/Hint'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { TriggerIcon } from '@/components/ui/TriggerIcon'
 import { CONVERSATION_KIND_TAGS } from '@/lib/conversation-view'
@@ -15,15 +31,17 @@ import type {
 import { MarqueeLabel } from './MarqueeLabel'
 import { RenameConversationDialog } from './RenameConversationDialog'
 
-const rowActionClassName = `${uiClasses.treeItemAction} pointer-coarse:min-h-12 pointer-coarse:min-w-12`
+/* The menu trigger is the one action that survives on touch, so it carries
+   the 48px coarse-pointer target the tree recipe is built around. */
+const menuActionClassName = `${uiClasses.treeItemAction} pointer-coarse:min-h-12 pointer-coarse:min-w-12`
 
-/**
- * Renaming is a desktop affordance — it pairs with double-click and F2.
- * `data-pointer="fine"` drops the pencil on coarse pointers, which also
- * returns touch rows to the single trailing action the tree recipe is built
- * around. No coarse hit area here on purpose: it is never shown to one.
- */
-const renameActionClassName = uiClasses.treeItemAction
+/* The pin shortcut is a hover affordance for a pointer; touch reaches Pin
+   through the menu, so the shortcut drops off coarse pointers. */
+const pinActionClassName = uiClasses.treeItemAction
+
+/* Menu rows on the console's popover canon: Inter 14px, 36px tall, an
+   icon then its label, generous inset so the list breathes. */
+const MENU_ITEM_CLASS = 'gap-2.5 rounded-lg px-2.5 py-2 text-sm'
 
 interface ConversationRowProps {
   conversation: Conversation
@@ -31,6 +49,9 @@ interface ConversationRowProps {
   onSelect: () => void
   onRename: (title: string) => void
   onRemove: () => void
+  /** Whether the reader pinned this chat to the top of the list. */
+  pinned?: boolean
+  onTogglePin?: () => void
   /** Tree nesting level; 0 = root. Drives the shared tree indent. */
   depth?: number
   /** True when this row has nested sub-agent rows (renders a toggle caret). */
@@ -57,7 +78,7 @@ function formatRelative(ts: number): string {
 }
 
 interface RowGlyph {
-  /** The mark; absent, the row opens with a status dot instead. */
+  /** The mark; absent, the row has no leading slot and the title sits flush. */
   Icon?: typeof Bot
   /** Glyph tone; `neutral`/absent keeps the ghost ink. */
   color?: SubagentColor
@@ -71,8 +92,8 @@ interface RowGlyph {
  * back to the profile's icon when the spawn named none); otherwise a
  * selected agent profile owns the glyph at every depth; a spawned child
  * shows its origin (trigger bolt or the spawning agent's appearance); a
- * plain chat opens with a dot that carries its status (see `RowDot`), so
- * every label starts on the same column without a column of chat marks.
+ * plain chat has no mark at all, so its title starts at the row's edge and
+ * the list reads as a list of names.
  */
 function resolveGlyph(conversation: Conversation, depth: number): RowGlyph {
   const profile = conversation.agentProfile
@@ -112,48 +133,15 @@ function resolveGlyph(conversation: Conversation, depth: number): RowGlyph {
   return {}
 }
 
-/**
- * A plain chat's bullet. Ghost while idle, ink on the open conversation,
- * the accent pulsing while the session works and the alert tone on an
- * error, so the list shows at a glance which chats need a look.
- */
-function RowDot({
-  conversation,
-  active,
-  title,
-}: {
-  conversation: Conversation
-  active: boolean
-  title?: string
-}) {
-  if (conversation.status === 'working') {
-    return <StatusDot tone="accent" pulse className="size-2" title="working" />
-  }
-  if (conversation.status === 'error') {
-    return (
-      <StatusDot
-        tone="alert"
-        className="size-2"
-        title={conversation.statusReason ?? 'error'}
-      />
-    )
-  }
-  return (
-    <StatusDot
-      tone={active ? 'ink' : 'ghost'}
-      className="size-2"
-      title={title}
-    />
-  )
-}
-
-/** Conversation tree row with touch rename actions and explicit-exit focus recovery. */
+/** Conversation tree row: title, quiet metadata, and a row menu on hover. */
 export function ConversationRow({
   conversation,
   active,
   onSelect,
   onRename,
   onRemove,
+  pinned = false,
+  onTogglePin,
   depth = 0,
   hasChildren = false,
   treeCollapsed = false,
@@ -164,13 +152,15 @@ export function ConversationRow({
   // Renaming opens a centred dialog (the row is too narrow to show a whole
   // title while it is edited); the dialog hands focus back to the row.
   const [renaming, setRenaming] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
   const rowRef = useRef<HTMLDivElement>(null)
 
   const glyph = resolveGlyph(conversation, depth)
   const kindTag = kind ? CONVERSATION_KIND_TAGS[kind] : undefined
+  const PinIcon = pinned ? PinOff : Pin
 
   return (
-    // biome-ignore lint/a11y/useSemanticElements: row hosts nested editing/caret/delete <button>s; using a real <button> here would nest interactive elements.
+    // biome-ignore lint/a11y/useSemanticElements: row hosts nested menu/caret/pin <button>s; using a real <button> here would nest interactive elements.
     <div
       ref={rowRef}
       role="button"
@@ -179,6 +169,8 @@ export function ConversationRow({
       aria-label={`open ${conversation.title}`}
       className={uiClasses.treeItem}
       style={{ '--iii-ui-tree-depth': depth } as CSSProperties}
+      data-menu-open={menuOpen || undefined}
+      data-pinned={pinned || undefined}
       onClick={() => !renaming && onSelect()}
       onDoubleClick={(e) => {
         if (!(e.target as HTMLElement).closest('button')) setRenaming(true)
@@ -194,21 +186,15 @@ export function ConversationRow({
         }
       }}
     >
-      <span
-        className={uiClasses.treeItemIcon}
-        data-color={glyph.color}
-        title={glyph.title}
-      >
-        {glyph.Icon ? (
+      {glyph.Icon ? (
+        <span
+          className={uiClasses.treeItemIcon}
+          data-color={glyph.color}
+          title={glyph.title}
+        >
           <glyph.Icon aria-hidden />
-        ) : (
-          <RowDot
-            conversation={conversation}
-            active={active}
-            title={glyph.title}
-          />
-        )}
-      </span>
+        </span>
+      ) : null}
       {/* A long title fades at its right edge and slides into view while the
           row is hovered (MarqueeLabel), so the whole name is readable
           without widening the sidebar. */}
@@ -216,8 +202,7 @@ export function ConversationRow({
         {conversation.title}
       </MarqueeLabel>
       <span className={uiClasses.treeItemTrailing}>
-        {/* A row that opens with a dot already shows its status there. */}
-        {!glyph.Icon ? null : conversation.status === 'working' ? (
+        {conversation.status === 'working' ? (
           <StatusDot tone="accent" pulse title="working" />
         ) : conversation.status === 'error' ? (
           <StatusDot
@@ -236,35 +221,78 @@ export function ConversationRow({
             {kindTag.label}
           </span>
         ) : null}
+        {pinned ? (
+          <Pin
+            aria-hidden
+            className="conversation-row__pinned size-4 shrink-0"
+            data-pinned-mark=""
+          />
+        ) : null}
         <span className={uiClasses.treeItemMeta}>
           {formatRelative(conversation.updatedAt)}
         </span>
-        <span className={uiClasses.treeItemActions}>
-          <button
-            type="button"
-            className={renameActionClassName}
-            data-pointer="fine"
-            aria-label={`rename ${conversation.title}`}
-            title="Rename conversation"
-            onClick={(e) => {
-              e.stopPropagation()
-              setRenaming(true)
-            }}
-          >
-            <Pencil aria-hidden />
-          </button>
-          <button
-            type="button"
-            className={rowActionClassName}
-            data-tone="alert"
-            aria-label={`delete ${conversation.title}`}
-            onClick={(e) => {
-              e.stopPropagation()
-              onRemove()
-            }}
-          >
-            <X aria-hidden />
-          </button>
+        {/* The cluster is a sibling of the row's own click target: every
+            control inside stops its click so the row does not also open. */}
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: a propagation boundary around nested buttons, not a control. */}
+        <span
+          className={uiClasses.treeItemActions}
+          onClick={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => e.stopPropagation()}
+        >
+          <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+            <Hint label="More">
+              <DropdownMenuTrigger
+                className={menuActionClassName}
+                aria-label={`more actions for ${conversation.title}`}
+              >
+                <Ellipsis aria-hidden />
+              </DropdownMenuTrigger>
+            </Hint>
+            <DropdownMenuContent
+              align="end"
+              sideOffset={6}
+              className="conversation-row-menu min-w-44 p-1.5"
+            >
+              <DropdownMenuItem
+                className={MENU_ITEM_CLASS}
+                onClick={() => setRenaming(true)}
+              >
+                <Pencil aria-hidden />
+                Rename
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                className={MENU_ITEM_CLASS}
+                disabled={!onTogglePin}
+                onClick={() => onTogglePin?.()}
+              >
+                <PinIcon aria-hidden />
+                {pinned ? 'Unpin' : 'Pin'}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator className="my-1.5" />
+              <DropdownMenuItem
+                variant="destructive"
+                className={MENU_ITEM_CLASS}
+                onClick={onRemove}
+              >
+                <Trash2 aria-hidden />
+                Delete
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          {onTogglePin ? (
+            <Hint label={pinned ? 'Unpin' : 'Pin'}>
+              <button
+                type="button"
+                className={pinActionClassName}
+                data-pointer="fine"
+                aria-label={`${pinned ? 'unpin' : 'pin'} ${conversation.title}`}
+                onClick={onTogglePin}
+              >
+                <PinIcon aria-hidden />
+              </button>
+            </Hint>
+          ) : null}
         </span>
       </span>
       {/* Last in the row: the hover actions widen the trailing cluster, and a

@@ -54,8 +54,10 @@ import {
   type WorkspaceTab,
   withActiveTabId,
   withColumnAdded,
+  withOnlyPane,
   withPaneMoved,
   withPaneRemoved,
+  withPaneSplit,
   withScreenDetached,
   withTabClosed,
   withTabSizes,
@@ -232,10 +234,14 @@ export interface UseWorkspaceTabsReturn {
   attachScreen: (id: string, column: number, screen: TabScreen) => void
   /** Blank a column's screen (column stays, shows the attach affordance). */
   detachScreen: (id: string, column: number) => void
-  /** Grow the tab by one empty column on that side (up to the safety ceiling). */
-  addColumn: (id: string, side: 'left' | 'right') => void
+  /** Grow the tab by one column on that side (up to the safety ceiling):
+      at the tab's edge, or right beside `beside.paneId` (taking half its
+      width), empty or showing `beside.screen`. */
+  addColumn: (id: string, side: 'left' | 'right', beside?: SplitTarget) => void
   /** Drop one pane by stable identity (the last one never goes). */
   removeColumn: (id: string, paneId: string) => void
+  /** Drop every pane of the tab but `paneId`, which then fills it. */
+  keepOnlyPane: (id: string, paneId: string) => void
   /** Move one pane to another pane's position inside a tab. */
   reorderPanel: (id: string, paneId: string, targetPaneId: string) => void
   /** Persist drag-to-resize column fractions (index-aligned). */
@@ -248,6 +254,13 @@ export interface UseWorkspaceTabsReturn {
     screen: TabScreen,
     placement?: ScreenPlacement,
   ) => void
+}
+
+/** The pane a split starts from, and what the new column shows. */
+export interface SplitTarget {
+  paneId: string
+  /** Absent or null: an empty column with the attach affordance. */
+  screen?: TabScreen | null
 }
 
 export interface UseWorkspaceTabsOptions {
@@ -549,12 +562,19 @@ export function useWorkspaceTabs({
   )
 
   const addColumn = useCallback(
-    (id: string, side: 'left' | 'right') => {
+    (id: string, side: 'left' | 'right', beside?: SplitTarget) => {
       const stablePaneId = { current: null as string | null }
       persist((state) => ({
         ...state,
         tabs: state.tabs.map((tab) => {
           if (tab.id !== id) return tab
+          if (beside) {
+            return stabilizeAddedPane(
+              [tab],
+              [withPaneSplit(tab, beside.paneId, side, beside.screen ?? null)],
+              stablePaneId,
+            )[0]
+          }
           const next = withColumnAdded(tab, side)
           if (next === tab) return tab
           const paneIds = tabPaneIds(next)
@@ -563,6 +583,18 @@ export function useWorkspaceTabs({
           paneIds[addedIndex] = stablePaneId.current
           return { ...next, paneIds }
         }),
+      }))
+    },
+    [persist],
+  )
+
+  const keepOnlyPane = useCallback(
+    (id: string, paneId: string) => {
+      persist((state) => ({
+        ...state,
+        tabs: state.tabs.map((tab) =>
+          tab.id === id ? withOnlyPane(tab, paneId) : tab,
+        ),
       }))
     },
     [persist],
@@ -687,6 +719,7 @@ export function useWorkspaceTabs({
     detachScreen,
     addColumn,
     removeColumn,
+    keepOnlyPane,
     reorderPanel,
     resizeColumns,
     openScreen,

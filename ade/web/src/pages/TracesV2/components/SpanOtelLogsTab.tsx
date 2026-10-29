@@ -217,7 +217,7 @@ function LogCard({ log, index, firstLogMs }: LogCardProps) {
   return (
     <div
       className={cn(
-        'overflow-hidden rounded-lg border',
+        'overflow-hidden rounded-xl border',
         severity.rail,
         severity.cardBg,
       )}

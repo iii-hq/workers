@@ -47,12 +47,13 @@
  * A toolbar row sits above the canvas: the caller's view switcher on the
  * left (`toolbarStart`), the span filter and the visible-span count on the
  * right — the same row the waterfall draws, so switching views never moves
- * the controls. Under it, the worker legend (`WorkerLegend`): one chip per
- * worker, swatch and name, each toggling that worker's spans.
+ * the controls. Between them, the worker legend (`WorkerLegend`): one chip
+ * per worker, swatch and name, each toggling that worker's spans — a single
+ * line that folds the overflow behind "+N", dropping to its own row under
+ * the toolbar on a narrow card.
  */
 
 import {
-  Fragment,
   memo,
   type ReactNode,
   useCallback,
@@ -151,9 +152,20 @@ const LABEL_CHAR_PX = 7.25
 const BAR_LABEL_OVERHEAD_PX = 16
 /** a kind glyph (16px) and the gap before the label, when a bar shows one */
 const BAR_GLYPH_PX = 22
-const MIN_SPILL_LABEL_PX = 40
-/** below this a truncated in-bar label is pure noise — leave the bar blank */
-const MIN_INBAR_LABEL_CHARS = 4
+/** cap on how wide a bar grows to hold its label; longer names truncate
+ *  (Finder-style, the middle gives way) inside the bar instead of
+ *  stretching the canvas */
+const MAX_LABEL_BAR_PX = 240
+
+/** The width a bar needs to show its kind glyph and full label, capped. */
+function labelFitWidth(span: TimelineSpan): number {
+  const glyph = showsKindGlyph(span.kind ?? 'zap') ? BAR_GLYPH_PX : 0
+  const label = span.label ?? span.id
+  return Math.min(
+    Math.ceil(label.length * LABEL_CHAR_PX) + BAR_LABEL_OVERHEAD_PX + glyph,
+    MAX_LABEL_BAR_PX,
+  )
+}
 
 interface PlacedSpan {
   span: TimelineSpan
@@ -220,7 +232,6 @@ interface BarProps {
   kind: TimelineSpanKind
   selected: boolean
   hovered: boolean
-  inBarLabel: boolean
   /** still running: the right edge fades out and an amber sweep crosses it */
   running: boolean
   /** play the entrance animation (first appearance only) */
@@ -250,7 +261,6 @@ const TimelineBar = memo(function TimelineBar({
   kind,
   selected,
   hovered,
-  inBarLabel,
   running,
   enter,
   clickable,
@@ -301,7 +311,7 @@ const TimelineBar = memo(function TimelineBar({
           strokeWidth={2.25}
         />
       ) : null}
-      {inBarLabel && <BarLabel text={label} />}
+      <BarLabel text={label} />
     </button>
   )
 })
@@ -719,7 +729,9 @@ export function TraceTimeline({
   // time-positioned but never closer than DEPTH_INDENT to its parent's —
   // the small hierarchy padding that keeps the cascade readable when
   // starts (nearly) coincide. Bars sharing a line additionally never
-  // overlap the previous bar (MIN_BAR_WIDTH can inflate tiny spans).
+  // overlap the previous bar. A bar is never narrower than its label
+  // (capped at MAX_LABEL_BAR_PX), so the name always sits inside it —
+  // short spans in a long trace would otherwise be blank glyph stubs.
   // Bars are NEVER clamped to the viewport: a dense line simply runs past
   // the time axis and the canvas widens to `maxRight` (the horizontal
   // scroll), instead of piling the tail into the right edge.
@@ -735,7 +747,11 @@ export function TraceTimeline({
       }
       const prevRight = lineRight.get(p.line)
       if (prevRight != null) left = Math.max(left, prevRight + SIBLING_GAP)
-      const width = Math.max(PADDING_X + end * pxPerMs - left, MIN_BAR_WIDTH)
+      const width = Math.max(
+        PADDING_X + end * pxPerMs - left,
+        MIN_BAR_WIDTH,
+        labelFitWidth(p.span),
+      )
       out.push({ left, width })
       lineRight.set(p.line, left + width)
       if (left + width > maxRight) maxRight = left + width
@@ -784,19 +800,6 @@ export function TraceTimeline({
     })
     return { rails, stubs }
   }, [layout, rects])
-
-  // The next bar on the same line (emission order is left-to-right within
-  // a line) — bounds how far a spilled label may run.
-  const nextOnLine = useMemo(() => {
-    const next: Array<number | null> = Array(layout.placed.length).fill(null)
-    const lastByLine = new Map<number, number>()
-    layout.placed.forEach((p, i) => {
-      const prev = lastByLine.get(p.line)
-      if (prev != null) next[prev] = i
-      lastByLine.set(p.line, i)
-    })
-    return next
-  }, [layout])
 
   const contentHeight = layout.lineCount * ROW_PITCH + CONTENT_PAD_Y * 2
   /** the packed bars' real extent — wider than the stage on dense traces */
@@ -905,32 +908,16 @@ export function TraceTimeline({
   // again every time a pan scrolls it back into the viewport.
   const enteredRef = useRef(new Set<string>())
 
-  // Everything a bar needs that follows from the layout alone — label fit,
-  // spill geometry, colour, aria text — computed once per re-pack, so a
-  // hover re-render only maps the visible indices onto ready-made props.
+  // Everything a bar needs that follows from the layout alone — colour,
+  // aria text — computed once per re-pack, so a hover re-render only maps
+  // the visible indices onto ready-made props.
   const barModels = useMemo(() => {
     return layout.placed.map((p, i) => {
       const span = p.span
       const rect = rects[i]
       const color = resolveColor(span)
       const kind = span.kind ?? 'zap'
-      const overhead =
-        BAR_LABEL_OVERHEAD_PX + (showsKindGlyph(kind) ? BAR_GLYPH_PX : 0)
       const label = span.label ?? span.id
-      const fitsInBar = rect.width >= label.length * LABEL_CHAR_PX + overhead
-      const spillLeft = rect.left + rect.width + 6
-      const nextIdx = nextOnLine[i]
-      const spillBound =
-        nextIdx != null ? rects[nextIdx].left - 4 : contentWidth - PADDING_X
-      const spillWidth = spillBound - spillLeft
-      const spillLabel = !fitsInBar && spillWidth >= MIN_SPILL_LABEL_PX
-      // Tight bar and no room to spill: keep the truncated in-bar label
-      // only while it can show a few glyphs — else the bar stays blank
-      // (the hover card has the name).
-      const inBarLabel =
-        !spillLabel &&
-        (fitsInBar ||
-          rect.width >= overhead + MIN_INBAR_LABEL_CHARS * LABEL_CHAR_PX)
       return {
         id: span.id,
         kind,
@@ -944,13 +931,9 @@ export function TraceTimeline({
         left: rect.left,
         width: rect.width,
         color,
-        inBarLabel,
-        spillLabel,
-        spillLeft,
-        spillWidth,
       }
     })
-  }, [layout, rects, nextOnLine, contentWidth, detail.byId, total])
+  }, [layout, rects, detail.byId, total])
 
   // Drag-to-pan: a press only becomes a pan after DRAG_THRESHOLD_PX of
   // movement on either axis (so bar clicks stay clicks); from then on
@@ -1012,6 +995,8 @@ export function TraceTimeline({
   const hoveredSpan = hoverId ? (spanById.get(hoverId) ?? null) : null
 
   const hiddenCount = data.spans.length - visibleData.spans.length
+  const hasToolbar = !!(toolbarStart || spanFilter)
+  const hasLegend = legendWorkers.length > 0
 
   return (
     <div
@@ -1021,45 +1006,60 @@ export function TraceTimeline({
         className,
       )}
     >
-      {/* toolbar: the view switcher, then the span filter and the count */}
-      {(toolbarStart || spanFilter) && (
-        <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3">
-          {toolbarStart}
-          <span className="ml-auto flex items-center gap-2">
-            {spanFilter && (
-              <SpanFilterMenu
-                groups={spanGroups}
-                workerGroups={workerGroups}
-                internalGroups={internalGroups}
-                hiddenKeys={spanFilter.hiddenGroups}
-                hiddenWorkerKeys={spanFilter.hiddenWorkers}
-                shownInternalKeys={spanFilter.shownInternal}
-                hiddenSpanCount={hiddenCount}
-                onToggle={spanFilter.toggleGroup}
-                onToggleWorker={spanFilter.toggleWorker}
-                onToggleInternal={spanFilter.toggleInternal}
-                onClear={() =>
-                  spanFilter.clear(internalGroups.map((g) => g.key))
-                }
+      {/* toolbar: the view switcher, the worker legend, then the span
+          filter and the count — one row on a wide card. Below @4xl the
+          legend drops to a second row of its own; either way it is a
+          single line that folds what doesn't fit behind "+N". */}
+      {(hasToolbar || hasLegend) && (
+        <div className="@container shrink-0 border-b border-border">
+          <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 px-3 @4xl:grid-cols-[auto_minmax(0,1fr)_auto]">
+            {hasToolbar && (
+              <>
+                <div className="col-start-1 row-start-1 flex h-9 items-center">
+                  {toolbarStart}
+                </div>
+                <span className="col-start-2 row-start-1 flex h-9 items-center gap-2 justify-self-end @4xl:col-start-3">
+                  {spanFilter && (
+                    <SpanFilterMenu
+                      groups={spanGroups}
+                      workerGroups={workerGroups}
+                      internalGroups={internalGroups}
+                      hiddenKeys={spanFilter.hiddenGroups}
+                      hiddenWorkerKeys={spanFilter.hiddenWorkers}
+                      shownInternalKeys={spanFilter.shownInternal}
+                      hiddenSpanCount={hiddenCount}
+                      onToggle={spanFilter.toggleGroup}
+                      onToggleWorker={spanFilter.toggleWorker}
+                      onToggleInternal={spanFilter.toggleInternal}
+                      onClear={() =>
+                        spanFilter.clear(internalGroups.map((g) => g.key))
+                      }
+                    />
+                  )}
+                  <span className="whitespace-nowrap text-[11px] text-muted-foreground tabular-nums">
+                    {hiddenCount > 0
+                      ? `${visibleData.spans.length} of ${data.spans.length} spans`
+                      : `${data.spans.length} spans`}
+                  </span>
+                </span>
+              </>
+            )}
+            {/* the legend: which hue is which worker, and a toggle per worker */}
+            {hasLegend && (
+              <WorkerLegend
+                workers={legendWorkers}
+                hidden={spanFilter?.hiddenWorkers}
+                onToggle={spanFilter?.toggleWorker}
+                className={cn(
+                  'col-span-full',
+                  hasToolbar
+                    ? 'row-start-2 pb-1 @4xl:col-span-1 @4xl:col-start-2 @4xl:row-start-1 @4xl:pb-0'
+                    : 'py-1',
+                )}
               />
             )}
-            <span className="text-[11px] text-muted-foreground tabular-nums">
-              {hiddenCount > 0
-                ? `${visibleData.spans.length} of ${data.spans.length} spans`
-                : `${data.spans.length} spans`}
-            </span>
-          </span>
+          </div>
         </div>
-      )}
-
-      {/* the legend: which hue is which worker, and a toggle per worker */}
-      {legendWorkers.length > 0 && (
-        <WorkerLegend
-          workers={legendWorkers}
-          hidden={spanFilter?.hiddenWorkers}
-          onToggle={spanFilter?.toggleWorker}
-          className="shrink-0 border-b border-border"
-        />
       )}
 
       {/* fitContent: the stage takes exactly the ruler + packed lines
@@ -1154,43 +1154,28 @@ export function TraceTimeline({
                   const enter = !enteredRef.current.has(m.id)
                   if (enter) enteredRef.current.add(m.id)
                   return (
-                    <Fragment key={m.id}>
-                      <TimelineBar
-                        id={m.id}
-                        label={m.label}
-                        sourceName={m.sourceName}
-                        ariaLabel={m.ariaLabel}
-                        top={m.top}
-                        left={m.left}
-                        width={m.width}
-                        color={m.color}
-                        ink={m.ink}
-                        border={m.border}
-                        kind={m.kind}
-                        selected={selectedSpanId === m.id}
-                        hovered={hoverId === m.id}
-                        inBarLabel={m.inBarLabel}
-                        running={m.running}
-                        enter={enter}
-                        clickable={!!onSpanClick}
-                        onEnter={hoverEnter}
-                        onLeave={hoverLeave}
-                        onClick={clickSpan}
-                      />
-                      {m.spillLabel && (
-                        <span
-                          aria-hidden
-                          className="timeline-glide pointer-events-none absolute overflow-hidden font-mono text-xs leading-none whitespace-nowrap text-ellipsis text-foreground/80"
-                          style={{
-                            left: m.spillLeft,
-                            top: m.top + BAR_HEIGHT / 2 - 6,
-                            maxWidth: m.spillWidth,
-                          }}
-                        >
-                          {m.label}
-                        </span>
-                      )}
-                    </Fragment>
+                    <TimelineBar
+                      key={m.id}
+                      id={m.id}
+                      label={m.label}
+                      sourceName={m.sourceName}
+                      ariaLabel={m.ariaLabel}
+                      top={m.top}
+                      left={m.left}
+                      width={m.width}
+                      color={m.color}
+                      ink={m.ink}
+                      border={m.border}
+                      kind={m.kind}
+                      selected={selectedSpanId === m.id}
+                      hovered={hoverId === m.id}
+                      running={m.running}
+                      enter={enter}
+                      clickable={!!onSpanClick}
+                      onEnter={hoverEnter}
+                      onLeave={hoverLeave}
+                      onClick={clickSpan}
+                    />
                   )
                 })}
               </>

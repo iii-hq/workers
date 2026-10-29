@@ -49,10 +49,11 @@ self.MonacoEnvironment = {
   },
 }
 
-export function codeFontFamily(): string {
-  const raw = getComputedStyle(document.documentElement)
-    .getPropertyValue('--font-code')
-    .trim()
+/** `--font-code` as the editor's host sees it: a surface may scope its own
+    (the IDE sets Geist Mono under its wrapper), so read it off the host
+    rather than the root. */
+export function codeFontFamily(host: Element = document.documentElement): string {
+  const raw = getComputedStyle(host).getPropertyValue('--font-code').trim()
   return raw || FALLBACK_CODE
 }
 
@@ -270,6 +271,13 @@ function syncTheme(): void {
       'scrollbarSlider.hoverBackground': p.scrollbarHover,
       'scrollbarSlider.activeBackground': p.scrollbarHover,
       'editor.placeholder.foreground': p.comment,
+      // The right-click menu (Format, Refactor, Go to Definition, …).
+      'menu.background': p.widget,
+      'menu.foreground': p.fg,
+      'menu.border': p.widgetBorder,
+      'menu.selectionBackground': p.listSelected,
+      'menu.selectionForeground': p.fg,
+      'menu.separatorBackground': p.widgetBorder,
       focusBorder: '#00000000',
     },
   })

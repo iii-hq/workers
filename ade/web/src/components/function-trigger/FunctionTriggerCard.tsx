@@ -1,7 +1,8 @@
-import { Check, Copy, Loader2, X } from 'lucide-react'
+import { Check, ChevronDown, CircleAlert, Copy, Loader2 } from 'lucide-react'
 import {
   type ReactNode,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -9,16 +10,18 @@ import {
 } from 'react'
 import { DrawnCheck } from '@/components/chat/ChatGlyphs'
 import { CopyMessageButton } from '@/components/chat/CopyMessageButton'
-import {
-  TimelineActivityDisclosure,
-  TimelineActivityTrail,
-} from '@/components/chat/TimelineActivityTrail'
+import { TimelineActivityTrail } from '@/components/chat/TimelineActivityTrail'
 import {
   firstNonNull,
   firstRendered,
   rawRedactor,
   useFunctionTriggerRenderers,
 } from '@/components/function-trigger/renderer-registry'
+import {
+  errorSubtitle,
+  formatRowDuration,
+  resultSummary,
+} from '@/components/function-trigger/row-summary'
 import {
   ChromiumMissingAction,
   isChromiumMissingCall,
@@ -28,19 +31,17 @@ import {
   type FilesystemAccessAction,
   FilesystemAccessPrompt,
 } from '@/components/permissions/FilesystemAccessPrompt'
-import { TriggerJsonPane } from '@/components/trigger-activity/TriggerDetails'
 import { Button } from '@/components/ui/Button'
 import {
   CollapsibleCard,
   CollapsibleCardContent,
   CollapsibleCardTrigger,
 } from '@/components/ui/CollapsibleCard'
+import { Hint } from '@/components/ui/Hint'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { copyTextToClipboard } from '@/lib/clipboard'
-import { formatCallDuration } from '@/lib/format-call-duration'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 import type { FunctionTriggerMessage as FunctionTriggerMessageType } from '@/types/chat'
@@ -51,8 +52,9 @@ import type { FunctionTriggerMessage as FunctionTriggerMessageType } from '@/typ
 
 /**
  * FunctionTriggerCard — the canonical rendering of one iii function trigger:
- * collapsible header (status dot, ƒ id, duration), request/response panes,
- * per-family tool views, and the optional approval bar.
+ * one row of a tool group (ƒ marker, title, settled facts, status glyph,
+ * chevron) that opens to the per-family tool view or the request/response
+ * panes, the function identity strip, and the optional approval bar.
  *
  * Location-agnostic by design: it is props-only (no chat store, no session
  * context). Chat renders it from live session messages; TracesV2 renders it
@@ -240,31 +242,7 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
   return <span className="text-ink">{functionId}</span>
 }
 
-function FunctionIdentityRow({ functionId }: { functionId: string }) {
-  return (
-    <div className="flex min-w-0 items-center gap-3 border-b border-edge px-4 py-2.5 sm:px-3">
-      <span className={cn('shrink-0', PANE_LABEL_CLS)}>Function</span>
-      <span className="min-w-0 flex-1 truncate font-geist-mono text-[12px] text-ink">
-        <span className="text-accent italic font-semibold">ƒ</span>{' '}
-        <FunctionIdLabel functionId={functionId} />
-      </span>
-      <CopyMessageButton
-        text={functionId}
-        label="copy function id"
-        className="shrink-0"
-      />
-    </div>
-  )
-}
-
 type FunctionTriggerStatus = 'pending' | 'running' | 'error' | 'done'
-
-const FUNCTION_TRIGGER_STATUSES: readonly FunctionTriggerStatus[] = [
-  'pending',
-  'running',
-  'error',
-  'done',
-]
 
 interface RendererLayer {
   key: string
@@ -369,16 +347,14 @@ function FunctionRendererPresence({
  * for the spinner -> check/error handoff without delaying the real state.
  */
 function FunctionTriggerStatusIcon({
-  expanded,
   status,
 }: {
-  expanded: boolean
   status: FunctionTriggerStatus
 }) {
   return (
     <span
       aria-hidden="true"
-      className="activity-status-icon"
+      className="activity-status-icon chat-tool-row__status"
       data-status={status}
     >
       <span data-activity-status-layer="pending">
@@ -388,147 +364,160 @@ function FunctionTriggerStatusIcon({
         <Loader2
           strokeWidth={2}
           className={cn(
-            'size-4 stroke-trigger-running motion-reduce:animate-none',
+            'size-4 stroke-ink-faint motion-reduce:animate-none',
             status === 'running' && 'animate-spin',
           )}
         />
       </span>
       <span data-activity-status-layer="error">
-        <X strokeWidth={2.5} className="size-4 stroke-alert" />
+        <CircleAlert strokeWidth={2} className="size-4 stroke-alert" />
       </span>
       <span data-activity-status-layer="done">
-        <DrawnCheck
-          active={status === 'done'}
-          className={cn('size-4', expanded ? 'text-ok' : 'text-ink-faint')}
-        />
+        <DrawnCheck active={status === 'done'} className="size-4 text-ok" />
       </span>
     </span>
   )
 }
 
-interface FunctionTriggerStatusCopyProps {
-  denied: boolean
+interface FunctionTriggerRowTextProps {
   description?: string
-  durationMs?: number
-  expanded: boolean
-  filesystemAccess: boolean
   functionId: string
-  hideGenericVerb: boolean
   preview: string | null
-  ran: boolean
   status: FunctionTriggerStatus
+  /** Why the row needs attention or failed; wins over the args digest. */
+  subtitle: string | null
   unresolvedTarget: boolean
 }
 
 /**
- * Status copy uses the same layered-state pattern as the icon. Keeping every
- * state in one grid slot avoids replacing the text node at the exact moment
- * a call settles; inactive layers are hidden from both interaction and AT.
+ * The row's title and its optional second line. The title is the agent's
+ * short description when it gave one, else the function id; it never
+ * changes as the call settles, so only the line under it and the status at
+ * the trailing edge move. The second line opens its own height track, so a
+ * failure reason can arrive under a title already on screen.
  */
-function FunctionTriggerStatusCopy({
-  denied,
+function FunctionTriggerRowText({
   description,
-  durationMs,
-  expanded,
-  filesystemAccess,
   functionId,
-  hideGenericVerb,
   preview,
-  ran,
   status,
+  subtitle,
   unresolvedTarget,
-}: FunctionTriggerStatusCopyProps) {
-  const copyFor = (layer: FunctionTriggerStatus) => {
-    const settled = layer === 'error' || layer === 'done'
-
-    if (description) {
-      return (
-        <>
-          <span
-            className={cn(
-              layer === 'running' &&
-                layer === status &&
-                'function-trigger-shimmer',
-            )}
-          >
-            {description}
-          </span>
-          {settled && expanded && typeof durationMs === 'number' ? (
-            <span className="text-ink-faint">
-              {' '}
-              for{' '}
-              <span className="tabular-nums">
-                {formatCallDuration(durationMs)}
-              </span>
-            </span>
-          ) : null}
-        </>
-      )
-    }
-
-    return (
-      <>
-        {layer === 'pending' ? (
-          <>
-            <span>
-              {filesystemAccess
-                ? 'needs filesystem access to run'
-                : 'waiting for your approval to run'}
-            </span>{' '}
-          </>
-        ) : layer === 'running' ? (
-          hideGenericVerb ? null : (
-            <>Triggering </>
-          )
-        ) : layer === 'error' ? (
-          denied ? null : (
-            <>Failed </>
-          )
-        ) : ran ? (
-          <>Triggered </>
-        ) : null}
-        {layer === 'running' && unresolvedTarget ? (
-          <span className="text-ink-faint">…</span>
-        ) : layer === status ? (
-          <FunctionIdLabel functionId={functionId} />
-        ) : (
-          <span className="text-ink">{functionId}</span>
-        )}
-        {settled && preview ? (
-          <span className="text-ink-ghost"> ({preview})</span>
-        ) : null}
-        {settled && typeof durationMs === 'number' ? (
-          <span className="text-ink-faint">
-            {' '}
-            for{' '}
-            <span className="tabular-nums">
-              {formatCallDuration(durationMs)}
-            </span>
-          </span>
-        ) : null}
-      </>
-    )
-  }
-
+}: FunctionTriggerRowTextProps) {
+  const settled = status === 'done' || status === 'error'
+  const line = subtitle ?? (!description && settled ? preview : null)
+  const mono = subtitle === null && line !== null
   return (
-    <span className="function-trigger-status-copy" data-status={status}>
-      {FUNCTION_TRIGGER_STATUSES.map((layer) => (
+    <div className="chat-tool-row__text">
+      <div className="chat-tool-row__title">
         <span
-          key={layer}
-          aria-hidden={layer === status ? undefined : true}
-          data-function-status-text={layer}
+          className={cn(status === 'running' && 'function-trigger-shimmer')}
         >
-          {copyFor(layer)}
+          {description ? (
+            description
+          ) : status === 'running' && unresolvedTarget ? (
+            <span className="text-ink-faint">…</span>
+          ) : (
+            <FunctionIdLabel functionId={functionId} />
+          )}
         </span>
-      ))}
-    </span>
+      </div>
+      <div
+        className="chat-tool-row__subtitle"
+        data-visible={line !== null}
+        aria-hidden={line === null}
+      >
+        <span data-mono={mono || undefined} title={line ?? undefined}>
+          {line}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+/** `4 results · 1.2s` once a call has settled; nothing while it runs. */
+function FunctionTriggerRowMeta({
+  durationMs,
+  output,
+  status,
+}: {
+  durationMs?: number
+  output: unknown
+  status: FunctionTriggerStatus
+}) {
+  if (status !== 'done' && status !== 'error') return null
+  const parts = [
+    status === 'done' ? resultSummary(output) : null,
+    typeof durationMs === 'number' ? formatRowDuration(durationMs) : null,
+  ].filter((part): part is string => part !== null)
+  if (parts.length === 0) return null
+  return <span className="chat-tool-row__meta">{parts.join(' · ')}</span>
+}
+
+/**
+ * The strip under an opened call: the concrete function identity (the row
+ * title is usually the agent's description) with a copy affordance, and,
+ * when a worker's own view stands in for the payload, a toggle that opens
+ * the raw request and response. The raw panes stay mounted behind a
+ * zero-height track so the toggle animates and nothing re-renders.
+ */
+function FunctionTriggerRowFooter({
+  functionId,
+  raw,
+}: {
+  functionId: string
+  raw?: { input: unknown; output: unknown }
+}) {
+  const [showRaw, setShowRaw] = useState(false)
+  const rawId = useId()
+  return (
+    <div className="chat-tool-row__foot" data-function-trigger-footer="">
+      <div className="chat-tool-row__foot-bar">
+        <span className="chat-tool-row__fn">
+          <span className="text-accent italic font-semibold">ƒ</span>{' '}
+          <FunctionIdLabel functionId={functionId} />
+        </span>
+        <CopyMessageButton
+          text={functionId}
+          label="copy function id"
+          className="chat-tool-row__fn-copy shrink-0"
+        />
+        {raw ? (
+          <button
+            type="button"
+            aria-expanded={showRaw}
+            aria-controls={rawId}
+            onClick={() => setShowRaw((value) => !value)}
+            className="chat-tool-row__raw-toggle"
+            data-message-action="toggle-raw"
+          >
+            {showRaw ? 'Hide raw' : 'Show raw'}
+          </button>
+        ) : null}
+      </div>
+      {raw ? (
+        <div
+          id={rawId}
+          className="chat-tool-row__raw"
+          data-visible={showRaw}
+          aria-hidden={!showRaw}
+          inert={showRaw ? undefined : true}
+        >
+          <div className="chat-tool-row__raw-inner">
+            <ValuePane label="request" value={raw.input} />
+            <ValuePane label="response" value={raw.output} stacked />
+          </div>
+        </div>
+      ) : null}
+    </div>
   )
 }
 
 /**
- * One-line `key: value` digest of the request args for the collapsed header —
- * what separates three settled calls to the same function without expanding
- * them. Long strings truncate, nested values collapse to `[N]` / `{…}`.
+ * One-line `key: value` digest of the request args for a settled row with
+ * no description — what separates three calls to the same function without
+ * expanding them. Long strings truncate, nested values collapse to `[N]` /
+ * `{…}`.
  */
 function argsPreview(input: unknown): string | null {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null
@@ -626,12 +615,10 @@ export function FunctionTriggerCard({
     if (requestedDetailsRef.current) return
     loadDetails()
   }, [open, unloaded, onLoadDetails])
-  // Closed calls read as a lightweight activity list. Opening one restores
-  // the full raised function-call surface with the existing panes and
-  // controls. Pending approvals remain surfaces because they require action.
+  // Closed calls read as one line of the group. Opening one reveals the
+  // payload underneath; pending approvals open themselves because they
+  // require action.
   const expandedSurface = open || pending
-  const [showRawDetails, setShowRawDetails] = useState(false)
-  const [tab, setTab] = useState<'terminal' | 'json'>('terminal')
   const [submitting, setSubmitting] = useState<
     'approve' | 'deny' | 'always_allow' | null
   >(null)
@@ -697,26 +684,10 @@ export function FunctionTriggerCard({
   }, [pending])
 
   const errored = !pending && !running && isErrorOutput(message.output)
-  // A gate denial is an error envelope, but the function never ran —
-  // "failed" would misreport a rejection as a failed execution.
-  const denied = errored && isDeniedOutput(message.output)
   // A browser call that failed for want of Chromium offers the fix inline.
   const chromiumMissing =
     errored && isChromiumMissingCall(message.functionId, message.output)
-  // "triggered" is an execution claim, so a settled card only makes it when
-  // the call actually ran. Denials are recognized by the gate's envelope in
-  // the error details (see isDeniedOutput) — a plain run error keeps the
-  // verb. A card with neither output nor duration (deny/abort cleared the
-  // approval but no result paired in yet) stays verb-less too.
-  const ran =
-    !isDeniedOutput(message.output) &&
-    (message.output !== undefined || typeof message.durationMs === 'number')
-  // While arguments are forming, the incrementally parsed function id or
-  // description is already the activity label; do not replace it with the
-  // generic "triggering" fallback.
-  const hideGenericVerb =
-    message.identityInherited || (running && streamingTail !== undefined)
-  // `rawInput`, not `message.input`: the collapsed header digests the request
+  // `rawInput`, not `message.input`: the collapsed row digests the request
   // args inline, so it is a display exit like the raw pane and the clipboard —
   // a claimed card's `redactRaw` has to cover it or a secret shows up in the
   // one line that renders without anyone expanding the card.
@@ -729,17 +700,46 @@ export function FunctionTriggerCard({
       : errored
         ? 'error'
         : 'done'
+  // The line under the title: what the row needs from the reader, or why
+  // it failed. A gate denial reads as a denial, not as a failed execution.
+  const subtitle = pending
+    ? filesystemAccess
+      ? 'Needs filesystem access to run'
+      : 'Waiting for your approval'
+    : errored
+      ? errorSubtitle(rawOutput)
+      : null
   const collapsedActivityKind =
     !expandedSurface && message.functionId === 'engine::register_trigger'
       ? 'trigger-registration'
       : 'function'
+  // The identity strip names the concrete function. While an agent_trigger
+  // wrapper's target is still streaming there is nothing concrete to name.
+  const showFooter = !pending && !(running && message.unresolvedTarget)
+  const rowText = (
+    <FunctionTriggerRowText
+      description={description}
+      functionId={message.functionId}
+      preview={preview}
+      status={status}
+      subtitle={subtitle}
+      unresolvedTarget={!!message.unresolvedTarget}
+    />
+  )
+  const rowMeta = (
+    <FunctionTriggerRowMeta
+      durationMs={message.durationMs}
+      output={rawOutput}
+      status={status}
+    />
+  )
 
   if (expandableCustomDisplay) {
     const detailsOpen = running || open
 
     return (
       <section
-        className="function-trigger-surface"
+        className="function-trigger-surface chat-tool-row"
         data-message-id={message.id}
         data-message-role="function-call"
         data-function-id={message.functionId}
@@ -750,62 +750,35 @@ export function FunctionTriggerCard({
           open={detailsOpen}
           onOpenChange={setOpen}
           disabled={running}
-          className="@container function-trigger-active-collapsible"
+          className="@container function-trigger-active-collapsible chat-tool-row__collapsible"
         >
           <CollapsibleCardTrigger
-            className="p-4 select-none sm:p-3"
+            className="p-3 select-none"
             aria-label={`${detailsOpen ? 'Hide' : 'Show'} details for ${message.functionId}`}
           >
             <FunctionRendererPresence
               presentation={customDisplay != null ? 'display' : 'terminal'}
             >
               {customDisplay ?? (
-                <div className="flex min-w-0 items-center gap-2">
-                  <FunctionTriggerStatusIcon expanded status={status} />
+                <div className="flex min-w-0 items-center gap-2.5">
                   <TimelineActivityTrail kind="function" />
-                  <div className="min-w-0 flex-1 font-mono text-[0.8125rem] text-ink">
-                    <FunctionTriggerStatusCopy
-                      denied={denied}
-                      description={description}
-                      durationMs={message.durationMs}
-                      expanded
-                      filesystemAccess={!!filesystemAccess}
-                      functionId={message.functionId}
-                      hideGenericVerb={!!hideGenericVerb}
-                      preview={preview}
-                      ran={ran}
-                      status={status}
-                      unresolvedTarget={!!message.unresolvedTarget}
-                    />
-                  </div>
+                  {rowText}
+                  {rowMeta}
+                  <FunctionTriggerStatusIcon status={status} />
                 </div>
               )}
             </FunctionRendererPresence>
           </CollapsibleCardTrigger>
           <CollapsibleCardContent>
-            <Tabs
-              value={tab}
-              onValueChange={(value) => setTab(value as 'terminal' | 'json')}
-              className="border-t border-edge"
-            >
-              <div className="overflow-x-auto px-4 sm:px-3">
-                <TabsList>
-                  <TabsTrigger value="terminal">Terminal</TabsTrigger>
-                  <TabsTrigger value="json">Raw JSON</TabsTrigger>
-                </TabsList>
+            <div className="chat-tool-row__body">
+              <div data-function-renderer-details-slot="" className="p-3">
+                {customTerminal}
               </div>
-              <TabsContent value="terminal" className="p-4 sm:p-3">
-                <div data-function-renderer-details-slot="">
-                  {customTerminal}
-                </div>
-              </TabsContent>
-              <TabsContent value="json" className="p-4 sm:p-3">
-                <div className="flex min-w-0 flex-col gap-3">
-                  <TriggerJsonPane label="Request" value={rawInput} />
-                  <TriggerJsonPane label="Response" value={rawOutput} />
-                </div>
-              </TabsContent>
-            </Tabs>
+              <FunctionTriggerRowFooter
+                functionId={message.functionId}
+                raw={{ input: rawInput, output: rawOutput }}
+              />
+            </div>
           </CollapsibleCardContent>
         </CollapsibleCard>
         {chromiumMissing ? <ChromiumMissingAction /> : null}
@@ -815,12 +788,7 @@ export function FunctionTriggerCard({
 
   return (
     <section
-      className={cn(
-        'function-trigger-surface',
-        expandedSurface
-          ? 'fcall-chrome overflow-hidden rounded-md'
-          : 'overflow-visible bg-transparent',
-      )}
+      className="function-trigger-surface chat-tool-row"
       data-message-id={message.id}
       data-message-role="function-call"
       data-function-id={message.functionId}
@@ -832,116 +800,50 @@ export function FunctionTriggerCard({
       tabIndex={pending ? -1 : undefined}
       data-function-status={status}
     >
-      {/* The copy affordance must be a sibling of the collapse toggle
-          (nested buttons are invalid HTML): the labeled toggle carries the
-          title with the copy icon in flow right after it, and the trailing
-          activity disclosure/caret is a pointer-only duplicate target so
-          clicking anywhere on the row still collapses. */}
-      <div
-        className={cn(
-          'group/fchdr flex items-center gap-2',
-          expandedSurface && 'hover:bg-surface-hover/50',
-        )}
-      >
+      {/* The row is one labeled toggle carrying the title, the settled
+          facts and the status glyph; the trailing chevron is a pointer-only
+          duplicate target so clicking anywhere on the line still toggles. */}
+      <div className="chat-tool-row__head group/fchdr">
         <button
           type="button"
           data-message-action="toggle"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
-          className={cn(
-            'min-w-0 cursor-pointer items-center gap-2 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
-            expandedSurface ? 'flex py-2 pl-3' : 'flex flex-1 py-1.5 sm:py-1',
-          )}
+          className="chat-tool-row__main"
         >
-          <div className="flex min-w-0 flex-1 items-center gap-2">
-            <FunctionTriggerStatusIcon
-              expanded={expandedSurface}
-              status={status}
-            />
-            <TimelineActivityTrail kind={collapsedActivityKind} />
-            <div
-              className={cn(
-                'min-w-0 flex-1',
-                expandedSurface
-                  ? 'font-mono text-[0.8125rem] text-ink'
-                  : cn(
-                      'font-sans text-sm sm:text-[0.8125rem]',
-                      running
-                        ? 'text-trigger-running'
-                        : 'text-muted-foreground',
-                    ),
-              )}
-            >
-              <FunctionTriggerStatusCopy
-                denied={denied}
-                description={description}
-                durationMs={message.durationMs}
-                expanded={expandedSurface}
-                filesystemAccess={!!filesystemAccess}
-                functionId={message.functionId}
-                hideGenericVerb={!!hideGenericVerb}
-                preview={preview}
-                ran={ran}
-                status={status}
-                unresolvedTarget={!!message.unresolvedTarget}
-              />
-            </div>
-          </div>
+          <TimelineActivityTrail kind={collapsedActivityKind} />
+          {rowText}
+          {rowMeta}
+          <FunctionTriggerStatusIcon status={status} />
         </button>
-        {!description && !(running && message.unresolvedTarget) ? (
-          <CopyMessageButton
-            text={message.functionId}
-            label="copy function id"
-            className="opacity-0 group-hover/fchdr:opacity-100 group-focus-within/fchdr:opacity-100 transition-[opacity,color]"
-          />
-        ) : null}
         <button
           type="button"
           data-message-action="toggle-caret"
           aria-hidden="true"
           tabIndex={-1}
           onClick={() => setOpen((v) => !v)}
-          className={cn(
-            'flex cursor-pointer items-center self-stretch overflow-visible',
-            expandedSurface
-              ? 'flex-1 justify-end pr-3'
-              : 'w-8 shrink-0 justify-center',
-          )}
+          className="chat-tool-row__caret"
         >
-          {expandedSurface ? (
-            <span
-              className={cn(
-                'inline-block shrink-0 text-ink-ghost transition-transform duration-[var(--motion-duration-control)]',
-                open && 'rotate-90',
-              )}
-            >
-              ▸
-            </span>
-          ) : (
-            <TimelineActivityDisclosure />
-          )}
+          <ChevronDown className="chat-tool-row__chevron size-4" />
         </button>
       </div>
 
       {open && unloaded ? (
-        <div className="border-t border-rule-2">
-          {description ? (
-            <FunctionIdentityRow functionId={message.functionId} />
-          ) : null}
+        <div className="chat-tool-row__body">
           {loadFailed ? (
             <div
               role="alert"
-              className="flex items-center gap-2 px-3 py-3 font-mono text-[12px] text-warn"
+              className="flex items-center gap-2 px-3 py-3 font-inter text-[13px] text-warn"
               data-function-trigger-load-failed=""
             >
-              <span>could not load call details</span>
+              <span>Could not load call details.</span>
               <button
                 type="button"
                 data-message-action="retry-load"
                 onClick={loadDetails}
                 className="cursor-pointer underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
-                retry
+                Retry
               </button>
             </div>
           ) : (
@@ -957,79 +859,45 @@ export function FunctionTriggerCard({
               <Skeleton className="h-3 w-5/6" />
             </div>
           )}
-        </div>
-      ) : open ? (
-        <div className="border-t border-rule-2">
-          {description && !(running && message.unresolvedTarget) ? (
-            <FunctionIdentityRow functionId={message.functionId} />
+          {description ? (
+            <FunctionTriggerRowFooter functionId={message.functionId} />
           ) : null}
+        </div>
+      ) : open && !displayCustomTerminal ? (
+        <div className="chat-tool-row__body">
           {pending && customPreview ? (
-            <div className="border-b border-rule-2">{customPreview}</div>
+            <div className="border-b border-edge">{customPreview}</div>
           ) : showRequestPaneAbove ? (
             <ValuePane label="request" value={rawInput} />
           ) : null}
-          {!pending && displayCustomTerminal ? (
-            <div className="border-t border-edge bg-paper-2">
-              <button
-                type="button"
-                aria-expanded={showRawDetails}
-                onClick={() => setShowRawDetails((value) => !value)}
-                className={cn(
-                  PANE_LABEL_CLS,
-                  'flex w-full cursor-pointer items-center gap-2 px-4 py-2.5 text-left text-ink-faint transition-[background-color,color] duration-[var(--motion-duration-fast)] hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent sm:px-3',
-                )}
-              >
-                <span
-                  aria-hidden="true"
-                  className={cn(
-                    'inline-block text-ink-ghost transition-transform duration-[var(--motion-duration-control)]',
-                    showRawDetails && 'rotate-90',
-                  )}
-                >
-                  ▸
-                </span>
-                {showRawDetails ? 'Hide' : 'Show'} raw request and response
-              </button>
-              {showRawDetails ? (
-                <>
-                  <ValuePane label="request" value={rawInput} />
-                  <ValuePane label="response" value={rawOutput} stacked />
-                </>
-              ) : null}
-            </div>
-          ) : null}
-          {running && !pending && !displayCustomTerminal ? (
+          {running && !pending ? (
             streamingTail !== undefined ? (
               <StreamingArgsPane text={streamingTail} />
             ) : hasCustomTerminal ? (
-              <div className="border-t border-rule-2">{customTerminal}</div>
+              <div data-function-terminal="">{customTerminal}</div>
             ) : (
               <ValuePane label="response" value={rawOutput} stacked />
             )
           ) : null}
-          {!pending && !running && !displayCustomTerminal ? (
+          {!pending && !running ? (
             hasCustomTerminal ? (
-              <Tabs
-                value={tab}
-                onValueChange={(v) => setTab(v as 'terminal' | 'json')}
-                className="border-t border-rule-2"
-              >
-                <TabsList className="px-3">
-                  <TabsTrigger value="terminal">Terminal</TabsTrigger>
-                  <TabsTrigger value="json">Raw JSON</TabsTrigger>
-                </TabsList>
-                <TabsContent value="terminal">{customTerminal}</TabsContent>
-                <TabsContent value="json">
-                  <ValuePane label="request" value={rawInput} />
-                  <ValuePane label="response" value={rawOutput} stacked />
-                </TabsContent>
-              </Tabs>
+              <div data-function-terminal="">{customTerminal}</div>
             ) : (
               <>
                 <ValuePane label="request" value={rawInput} />
                 <ValuePane label="response" value={rawOutput} stacked />
               </>
             )
+          ) : null}
+          {showFooter ? (
+            <FunctionTriggerRowFooter
+              functionId={message.functionId}
+              raw={
+                !running && hasCustomTerminal
+                  ? { input: rawInput, output: rawOutput }
+                  : undefined
+              }
+            />
           ) : null}
         </div>
       ) : null}
@@ -1047,6 +915,17 @@ export function FunctionTriggerCard({
           </FunctionRendererPresence>
         </div>
       ) : null}
+      {/* A worker's display card is the row's content; the identity strip
+          and raw payload follow it rather than sitting between the header
+          and the card. */}
+      {open && displayCustomTerminal && showFooter ? (
+        <div className="chat-tool-row__body">
+          <FunctionTriggerRowFooter
+            functionId={message.functionId}
+            raw={{ input: rawInput, output: rawOutput }}
+          />
+        </div>
+      ) : null}
 
       {pending && filesystemAccess ? (
         <FilesystemAccessPrompt
@@ -1061,9 +940,9 @@ export function FunctionTriggerCard({
           disabled={!onResolveFilesystemAccess}
         />
       ) : pending ? (
-        <div className="border-t border-rule-2 px-3 py-2 flex flex-col gap-2">
-          <p className="font-mono text-[12px] text-ink-faint">
-            execution is paused until you approve or deny this call.
+        <div className="flex flex-col gap-2 border-t border-edge px-3 py-2.5">
+          <p className="font-inter text-[13px] text-ink-faint">
+            Execution is paused until you approve or deny this call.
           </p>
           <div className="flex items-center gap-2" data-approval-actions="">
             <Button
@@ -1093,13 +972,15 @@ export function FunctionTriggerCard({
               />
             ) : null}
             {submitting ? (
-              <span className="font-mono text-[12px] text-ink-faint">
+              <span className="font-inter text-[13px] text-ink-faint">
                 waiting for the agent to resume…
               </span>
             ) : null}
           </div>
           {submitError ? (
-            <div className="font-mono text-[12px] text-warn">{submitError}</div>
+            <div className="font-inter text-[13px] text-warn">
+              {submitError}
+            </div>
           ) : null}
         </div>
       ) : null}
@@ -1124,8 +1005,8 @@ interface ValuePaneProps {
 const PANE_LABEL_CLS = 'font-inter text-xs font-medium text-ink'
 const PANE_HINT_CLS = 'font-inter text-[11px] font-normal text-ink-faint'
 const PANE_FRAME_CLS =
-  'code-theme-editor min-w-0 overflow-hidden rounded-lg border border-edge bg-(--code-surface) mx-4 mb-4 sm:mx-3 sm:mb-3'
-const PANE_FRAME_TOP_CLS = 'mt-4 sm:mt-3'
+  'code-theme-editor min-w-0 overflow-hidden rounded-lg border border-edge bg-(--code-surface) mx-2.5 mb-2.5'
+const PANE_FRAME_TOP_CLS = 'mt-2.5'
 const PANE_HEADER_CLS =
   'flex h-8 items-center gap-2 border-b border-edge bg-paper-2 pr-1 pl-3'
 const PANE_BODY_PAD_CLS = 'px-4 py-3'
@@ -1153,32 +1034,33 @@ function PaneCopyButton({ label, text }: { label: string; text: string }) {
     })
   }
   return (
-    <button
-      type="button"
-      onClick={copy}
-      className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-ink-ghost transition-[background-color,color] duration-[var(--motion-duration-fast)] hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-      aria-label={copied ? 'copied' : `copy ${label}`}
-      title={copied ? 'Copied' : 'Copy'}
-    >
-      <span className="grid place-items-center">
-        <span
-          className={cn(
-            COPY_ICON_LAYER_CLS,
-            copied ? COPY_ICON_SHOWN_CLS : COPY_ICON_HIDDEN_CLS,
-          )}
-        >
-          <Check className="size-4 text-ok" aria-hidden />
+    <Hint label={copied ? 'Copied' : 'Copy'}>
+      <button
+        type="button"
+        onClick={copy}
+        className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-ink-ghost transition-[background-color,color] duration-[var(--motion-duration-fast)] hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        aria-label={copied ? 'copied' : `copy ${label}`}
+      >
+        <span className="grid place-items-center">
+          <span
+            className={cn(
+              COPY_ICON_LAYER_CLS,
+              copied ? COPY_ICON_SHOWN_CLS : COPY_ICON_HIDDEN_CLS,
+            )}
+          >
+            <Check className="size-4 text-ok" aria-hidden />
+          </span>
+          <span
+            className={cn(
+              COPY_ICON_LAYER_CLS,
+              copied ? COPY_ICON_HIDDEN_CLS : COPY_ICON_SHOWN_CLS,
+            )}
+          >
+            <Copy className="size-4" aria-hidden />
+          </span>
         </span>
-        <span
-          className={cn(
-            COPY_ICON_LAYER_CLS,
-            copied ? COPY_ICON_HIDDEN_CLS : COPY_ICON_SHOWN_CLS,
-          )}
-        >
-          <Copy className="size-4" aria-hidden />
-        </span>
-      </span>
-    </button>
+      </button>
+    </Hint>
   )
 }
 

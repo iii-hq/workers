@@ -42,6 +42,7 @@ import { Button } from '@/components/shadcn/button'
 import { Cell } from '@/components/ui/Cell'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
+import { Hint } from '@/components/ui/Hint'
 import { PageHeader } from '@/components/ui/PageChrome'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusPanel } from '@/components/ui/StatusPanel'
@@ -854,7 +855,7 @@ export function TracesV2({
   )
   const traceDetail =
     selectedTraceId !== null ? (
-      <div className="mx-2 my-1.5 overflow-hidden rounded-lg border border-border bg-card">
+      <div className="mx-2 my-1.5 overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
         {isLoadingSpans && (
           <TraceDetailSkeleton
             onClose={() => selectTrace(null)}
@@ -955,15 +956,16 @@ export function TracesV2({
       <span className="truncate">
         {activeConversation?.title ?? sessionScope}
       </span>
-      <button
-        type="button"
-        onClick={() => setScopeDismissedFor(sessionScope)}
-        aria-label="show all sessions"
-        title="Show all sessions"
-        className="mr-1 flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-      >
-        <X className="size-4" aria-hidden />
-      </button>
+      <Hint label="Show all sessions">
+        <button
+          type="button"
+          onClick={() => setScopeDismissedFor(sessionScope)}
+          aria-label="show all sessions"
+          className="mr-1 flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+        >
+          <X className="size-4" aria-hidden />
+        </button>
+      </Hint>
     </span>
   ) : null
 

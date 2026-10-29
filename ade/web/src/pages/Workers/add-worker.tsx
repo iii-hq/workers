@@ -2,22 +2,24 @@ import { errorMessage } from '@iii-dev/console-ui/format'
 import { useDebounce } from '@iii-dev/console-ui/hooks'
 import { Folder, Package } from 'lucide-react'
 import { Fragment, useEffect, useMemo, useState } from 'react'
-import { Button } from '@/components/ui/Button'
+import { Button } from '@/components/shadcn/button'
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogTitle,
-} from '@/components/ui/Dialog'
-import { Eyebrow, eyebrowClassName } from '@/components/ui/Eyebrow'
-import { Input } from '@/components/ui/Input'
+} from '@/components/shadcn/dialog'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/shadcn/select'
 import { List, ListItem } from '@/components/ui/List'
 import { SegmentedControl } from '@/components/ui/ModeToggle'
-import { SearchField } from '@/components/ui/SearchField'
-import { Select } from '@/components/ui/Select'
 import { Skeleton } from '@/components/ui/Skeleton'
-import { StatusPanel } from '@/components/ui/StatusPanel'
-import { CardHighlight } from '@/components/ui/Surface'
+import { FieldLabel, Notice, SearchBox, TextInput } from './components/kit'
 import type {
   ComposeApi,
   Inspection,
@@ -85,12 +87,16 @@ export function AddWorkerDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="wk-dialog">
-        <DialogTitle className="pr-8 text-[14px]">Add worker</DialogTitle>
-        <DialogDescription className="mt-2 text-[13px] leading-relaxed">
-          Declare a worker in the compose file, from the registry or from a
-          directory on the daemon host.
-        </DialogDescription>
+      <DialogContent className="wk-surface wk-dialog wk-dialog-box gap-0 p-0 [--dialog-max-width:38rem]">
+        <div className="flex flex-col gap-1.5 px-6 pt-6 pb-4">
+          <DialogTitle className="pr-8 font-inter text-[16px] font-semibold leading-6 text-neutral-900 dark:text-neutral-50">
+            Add worker
+          </DialogTitle>
+          <DialogDescription className="font-inter text-[13px] leading-5 text-neutral-600 dark:text-neutral-400">
+            Declare a worker in the compose file, from the registry or from a
+            directory on the daemon host.
+          </DialogDescription>
+        </div>
         <div className="wk-dialog-body">
           <SegmentedControl
             variant="radio"
@@ -124,7 +130,7 @@ export function AddWorkerDialog({
             />
           ) : null}
           {plan && actions.idle.length ? (
-            <StatusPanel
+            <Notice
               variant="info"
               headline="Stopped workers start too"
               detail={`${alsoStarts(actions.idle)[0]}: Compose brings every declared container up after an add.`}
@@ -133,12 +139,18 @@ export function AddWorkerDialog({
         </div>
         <div className="wk-dialog-footer">
           <span className="wk-note">{plan?.summary}</span>
-          <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
+          <Button
+            variant="outline"
+            size="lg"
+            className="wk-press font-inter"
+            onClick={() => onOpenChange(false)}
+          >
             Cancel
           </Button>
           <Button
-            variant="primary"
-            size="sm"
+            variant="default"
+            size="lg"
+            className="wk-press font-inter"
             disabled={!plan || actions.busy}
             onClick={add}
           >
@@ -175,16 +187,16 @@ function Dependencies({
   ]
   if (!deps.length) return null
   return (
-    <CardHighlight className="wk-deps">
+    <div className="wk-deps">
       {rows.map(([label, names]) =>
         names.length ? (
           <Fragment key={label}>
-            <Eyebrow as="span">{label}</Eyebrow>
-            <span className="wk-mono">{names.join(', ')}</span>
+            <FieldLabel>{label}</FieldLabel>
+            <span className="wk-machine">{names.join(', ')}</span>
           </Fragment>
         ) : null,
       )}
-    </CardHighlight>
+    </div>
   )
 }
 
@@ -256,7 +268,7 @@ function RegistryPick({
 
   return (
     <>
-      <SearchField
+      <SearchBox
         aria-label="Search the registry"
         placeholder="Search the registry"
         value={query}
@@ -264,7 +276,7 @@ function RegistryPick({
         autoFocus
       />
       {error ? (
-        <StatusPanel
+        <Notice
           variant="alert"
           headline="The registry did not answer"
           detail={error}
@@ -285,14 +297,14 @@ function RegistryPick({
               key={worker.name}
               selected={pick?.name === worker.name}
               disabled={declared.has(worker.name)}
-              label={<span className="wk-mono">{worker.name}</span>}
+              label={worker.name}
               description={
                 declared.has(worker.name)
                   ? 'Already in this project'
                   : worker.description
               }
               trailing={
-                <span className="wk-mono wk-faint">{worker.version}</span>
+                <span className="wk-machine wk-faint">{worker.version}</span>
               }
               onClick={() => setPick(worker)}
             />
@@ -302,18 +314,25 @@ function RegistryPick({
       {pick ? (
         <>
           <div className="wk-inline-field">
-            <Eyebrow as="span">Version</Eyebrow>
+            <FieldLabel>Version</FieldLabel>
             <Select
-              aria-label="Version"
-              value={version}
-              onChange={setVersion}
-              options={(versions.length ? versions : [pick.version]).map(
-                (v, i) => ({
-                  value: v,
-                  label: i === 0 ? `${v} (latest)` : v,
-                }),
-              )}
-            />
+              value={version ?? null}
+              onValueChange={(next) => setVersion(next ?? undefined)}
+            >
+              <SelectTrigger
+                aria-label="Version"
+                className="wk-select wk-machine w-full max-w-[20rem]"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="wk-surface wk-popover">
+                {(versions.length ? versions : [pick.version]).map((v, i) => (
+                  <SelectItem key={v} value={v} className="wk-machine">
+                    {i === 0 ? `${v} (latest)` : v}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <Dependencies
             deps={pick.dependencies}
@@ -395,12 +414,12 @@ function PathPick({
   return (
     <>
       <div className="wk-inline-field">
-        <label htmlFor="wk-add-path" className={eyebrowClassName}>
+        <FieldLabel as="label" htmlFor="wk-add-path">
           Directory
-        </label>
-        <Input
+        </FieldLabel>
+        <TextInput
           id="wk-add-path"
-          className="wk-mono"
+          className="wk-machine"
           value={path}
           onChange={setPath}
           placeholder="/path/to/worker"
@@ -410,14 +429,14 @@ function PathPick({
       </div>
       {!found && settled ? <Skeleton className="wk-skeleton-field" /> : null}
       {found && !found.exists ? (
-        <StatusPanel
+        <Notice
           variant="alert"
           headline="No such directory"
           detail={shortPath(found.path)}
         />
       ) : null}
       {found?.exists && !found.manifest && !available.length ? (
-        <StatusPanel
+        <Notice
           variant="warn"
           headline="No worker here"
           detail={`There is no iii.worker.yaml in ${shortPath(found.path)}, nor in the folders inside it.`}
@@ -425,14 +444,12 @@ function PathPick({
       ) : null}
       {available.length ? (
         <>
-          <Eyebrow as="span">
-            Not in this project yet · {available.length}
-          </Eyebrow>
+          <FieldLabel>Not in this project yet · {available.length}</FieldLabel>
           <List aria-label="Workers in this folder" className="wk-results">
             {available.map((worker) => (
               <ListItem
                 key={worker.path}
-                label={<span className="wk-mono">{basename(worker.path)}</span>}
+                label={basename(worker.path)}
                 description={worker.description ?? worker.language ?? undefined}
                 onClick={() => setPath(worker.path)}
               />
@@ -442,14 +459,14 @@ function PathPick({
       ) : null}
       {found?.manifest && name ? (
         taken ? (
-          <StatusPanel
+          <Notice
             variant="alert"
             headline={`${name} is already declared`}
             detail="Point the existing container at this directory from its Source tab."
           />
         ) : (
           <>
-            <StatusPanel
+            <Notice
               variant="success"
               headline={`iii.worker.yaml found: ${found.manifest.name}${found.manifest.language ? `, ${found.manifest.language}` : ''}`}
               detail={`The container is named ${name}, after the directory.`}
@@ -461,7 +478,7 @@ function PathPick({
               keptLabel="Starts after"
             />
             {missing.length ? (
-              <StatusPanel
+              <Notice
                 variant="warn"
                 headline="Compose does not resolve a local worker's dependencies"
                 detail={`Not in this project: ${missing.join(', ')}. Add them first.`}
@@ -470,12 +487,12 @@ function PathPick({
             {needsRun ? (
               <>
                 <div className="wk-inline-field">
-                  <label htmlFor="wk-add-run" className={eyebrowClassName}>
+                  <FieldLabel as="label" htmlFor="wk-add-run">
                     Start command
-                  </label>
-                  <Input
+                  </FieldLabel>
+                  <TextInput
                     id="wk-add-run"
-                    className="wk-mono"
+                    className="wk-machine"
                     value={run}
                     onChange={setRun}
                     placeholder="./target/release/worker"
@@ -483,7 +500,7 @@ function PathPick({
                   />
                 </div>
                 {run.trim() ? null : (
-                  <StatusPanel
+                  <Notice
                     variant="warn"
                     headline="No start command"
                     detail="Its iii.worker.yaml has no scripts.start, so compose needs one here to start it."

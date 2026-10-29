@@ -24,7 +24,7 @@ interface MentionPreviewCardProps {
 }
 
 const cardShell =
-  'mention-card min-w-0 rounded-lg bg-panel-raised px-3 py-2.5 font-inter text-sm shadow-raised ring-1 ring-foreground/10'
+  'mention-card min-w-0 rounded-xl bg-panel-raised px-3 py-2.5 font-inter text-sm shadow-raised ring-1 ring-foreground/10'
 
 /**
  * The preview of one mention, shown when its pill is hovered: the worker's

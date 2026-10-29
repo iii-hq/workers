@@ -148,8 +148,8 @@ async function openModelPicker(page: import('@playwright/test').Page) {
   } else {
     await page.locator('button[aria-label^="model"]:visible').first().click()
     // The desktop menu shows the favorites; the provider catalog (and its
-    // Configure links) lives in the library dialog behind All models.
-    await page.getByRole('button', { name: 'All models' }).click()
+    // Configure links) lives in the library dialog behind Manage models.
+    await page.getByRole('button', { name: 'Manage models' }).click()
   }
 }
 

@@ -151,6 +151,8 @@ export interface ModelsRemoveResponse {
 }
 
 export interface DoctorResponse {
+  /** The fn key as the dictation key (macOS; needs Input Monitoring). Absent on older workers. */
+  fn_key?: { available: boolean; problem?: string }
   stt: {
     backend: 'local' | 'whisper_cpp' | 'openai' | 'router'
     model: string

@@ -11,6 +11,7 @@
 import { Check, Copy, WrapText } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Button } from '@/components/shadcn/button'
+import { Hint } from '@/components/ui/Hint'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import { CodeHighlight, JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
@@ -80,7 +81,7 @@ export function PayloadPane({
   return (
     <div
       className={cn(
-        'code-theme-editor min-w-0 overflow-hidden rounded-lg border border-border bg-background',
+        'code-theme-editor min-w-0 overflow-hidden rounded-xl border border-border bg-background',
         className,
       )}
       data-payload-pane={label.toLowerCase().replaceAll(' ', '-')}
@@ -114,28 +115,30 @@ export function PayloadPane({
           {lineCount.toLocaleString('en-US')}{' '}
           {lineCount === 1 ? 'line' : 'lines'}
         </span>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-xs"
-          aria-pressed={wrap}
-          aria-label={wrap ? 'disable line wrapping' : 'wrap long lines'}
-          title={wrap ? 'Scroll long lines' : 'Wrap long lines'}
-          onClick={() => setWrap((v) => !v)}
-          className={cn(wrap && 'bg-muted text-foreground')}
-        >
-          <WrapText />
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-xs"
-          aria-label={copied ? 'copied' : `copy ${label}`}
-          title={copied ? 'Copied' : 'Copy'}
-          onClick={copy}
-        >
-          {copied ? <Check className="text-ok" /> : <Copy />}
-        </Button>
+        <Hint label={wrap ? 'Scroll long lines' : 'Wrap long lines'}>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            aria-pressed={wrap}
+            aria-label={wrap ? 'disable line wrapping' : 'wrap long lines'}
+            onClick={() => setWrap((v) => !v)}
+            className={cn(wrap && 'bg-muted text-foreground')}
+          >
+            <WrapText />
+          </Button>
+        </Hint>
+        <Hint label={copied ? 'Copied' : 'Copy'}>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            aria-label={copied ? 'copied' : `copy ${label}`}
+            onClick={copy}
+          >
+            {copied ? <Check className="text-ok" /> : <Copy />}
+          </Button>
+        </Hint>
       </div>
       {collapsed ? null : (
         <>

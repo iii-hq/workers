@@ -9,6 +9,7 @@ import {
   TabsList,
   TabsTrigger,
 } from '@/components/shadcn/tabs'
+import { Hint } from '@/components/ui/Hint'
 import { cn } from '@/lib/utils'
 import { fetchOtelLogs } from '../api/otel-logs'
 import { spanRawRedactor } from '../lib/functionTriggerFromSpan'
@@ -174,36 +175,38 @@ export function SpanPanel({
             <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
               <span className="truncate">{worker}</span>
               <span aria-hidden>·</span>
-              <button
-                type="button"
-                onClick={() => copyToClipboard('spanId', span.span_id)}
-                className="group/id inline-flex shrink-0 items-center gap-1 rounded-sm font-mono tabular-nums transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                title="copy span id"
-                aria-label="copy span id"
-              >
-                {span.span_id.slice(0, 12)}
-                {copiedField === 'spanId' ? (
-                  <Check className="size-4 text-ok" aria-hidden />
-                ) : (
-                  <Copy
-                    className="size-4 opacity-0 transition-opacity group-hover/id:opacity-100 group-focus-visible/id:opacity-100"
-                    aria-hidden
-                  />
-                )}
-              </button>
+              <Hint label="Copy span id">
+                <button
+                  type="button"
+                  onClick={() => copyToClipboard('spanId', span.span_id)}
+                  className="group/id inline-flex shrink-0 items-center gap-1 rounded-sm font-mono tabular-nums transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                  aria-label="copy span id"
+                >
+                  {span.span_id.slice(0, 12)}
+                  {copiedField === 'spanId' ? (
+                    <Check className="size-4 text-ok" aria-hidden />
+                  ) : (
+                    <Copy
+                      className="size-4 opacity-0 transition-opacity group-hover/id:opacity-100 group-focus-visible/id:opacity-100"
+                      aria-hidden
+                    />
+                  )}
+                </button>
+              </Hint>
             </div>
           </div>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            onClick={onClose}
-            aria-label="close panel (esc)"
-            title="Close (Esc)"
-            className="-mt-0.5 -mr-1.5"
-          >
-            <X />
-          </Button>
+          <Hint label="Close (Esc)">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              onClick={onClose}
+              aria-label="close panel (esc)"
+              className="-mt-0.5 -mr-1.5"
+            >
+              <X />
+            </Button>
+          </Hint>
         </div>
 
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">

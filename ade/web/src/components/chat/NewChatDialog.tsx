@@ -1,9 +1,9 @@
 import { CornerDownLeft } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import { Button } from '@/components/shadcn/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/shadcn/dialog'
 import { recentHarnessProjectPaths } from '@/lib/backend/projects'
 import { loadLastModel, loadLastThinkingLevel } from '@/lib/storage'
-import { cn } from '@/lib/utils'
 import {
   DEFAULT_THINKING_LEVEL,
   type ModelId,
@@ -142,30 +142,21 @@ export function NewChatDialog({
             triggerAppearance="subtle"
             className="min-w-0 max-w-[18rem]"
           />
-          <button
+          <Button
             type="button"
             onClick={create}
             disabled={!ready}
-            className={cn(
-              'inline-flex h-8 shrink-0 items-center gap-2 rounded-xl pr-2 pl-3 text-[13px] font-medium transition-colors duration-[var(--motion-duration-control)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 disabled:cursor-not-allowed dark:focus-visible:ring-neutral-400',
-              ready
-                ? 'bg-neutral-900 text-neutral-50 hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200'
-                : 'bg-neutral-100 text-neutral-400 dark:bg-neutral-800 dark:text-neutral-500',
-            )}
+            className="pr-1.5"
           >
             Create
+            {/* The Enter cap rides on the primary fill in its own ink. */}
             <span
               aria-hidden
-              className={cn(
-                'inline-flex size-5 items-center justify-center rounded-md',
-                ready
-                  ? 'bg-neutral-800 text-neutral-300 dark:bg-neutral-200 dark:text-neutral-600'
-                  : 'bg-neutral-200/70 text-neutral-400 dark:bg-neutral-700 dark:text-neutral-500',
-              )}
+              className="inline-flex size-5 items-center justify-center rounded-md bg-primary-foreground/15 text-primary-foreground/80"
             >
               <CornerDownLeft className="size-4" />
             </span>
-          </button>
+          </Button>
         </div>
       </DialogContent>
     </Dialog>

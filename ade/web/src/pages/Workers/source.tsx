@@ -8,18 +8,22 @@ import {
   Package,
 } from 'lucide-react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
-import { Badge } from '@/components/ui/Badge'
-import { Button } from '@/components/ui/Button'
+import { Badge } from '@/components/shadcn/badge'
+import { Button } from '@/components/shadcn/button'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/shadcn/card'
 import { FileDiff } from '@/components/ui/FileDiff'
-import { Input } from '@/components/ui/Input'
 import { List, ListItem } from '@/components/ui/List'
 import { SegmentedControl } from '@/components/ui/ModeToggle'
-import { SearchField } from '@/components/ui/SearchField'
 import { Selector } from '@/components/ui/Selector'
 import { SettingsSection } from '@/components/ui/Settings'
 import { Skeleton } from '@/components/ui/Skeleton'
-import { StatusPanel } from '@/components/ui/StatusPanel'
-import { Card, CardBody, CardHeader } from '@/components/ui/Surface'
+import { Notice, SearchBox, TextInput } from './components/kit'
 import type {
   Checkout,
   ComposeApi,
@@ -29,7 +33,6 @@ import type {
 } from './compose-api'
 import type { Actions } from './index'
 import {
-  alsoStarts,
   arrangeCheckouts,
   basename,
   branchLabel,
@@ -38,6 +41,7 @@ import {
   inPlaceVersion,
   matchParts,
   shortPath,
+  withAlsoStarts,
 } from './model'
 
 type Props = {
@@ -77,7 +81,7 @@ export function SourceTab(props: Props) {
     return (
       <Split
         form={
-          <StatusPanel
+          <Notice
             variant="info"
             headline="This source is not editable here"
             detail={`${props.declared.name} is declared as ${props.declared.ref}, which is neither a registry package nor a local path. Edit it in the compose file.`}
@@ -91,7 +95,7 @@ export function SourceTab(props: Props) {
         form={
           <>
             {source}
-            <StatusPanel
+            <Notice
               variant="info"
               headline="That replaces the container"
               detail={`A registry package and a local checkout are not versions of each other. To switch, remove ${props.declared.name} and add the other kind from Add worker; its environment and scripts do not carry over.`}
@@ -127,20 +131,24 @@ function Preview({
   children: ReactNode
 }) {
   return (
-    <Card className="wk-preview">
-      <CardHeader className="wk-card-header">
-        Change preview
-        <span className="wk-card-note wk-mono">{FILE}</span>
+    <Card size="sm" className="wk-card wk-preview">
+      <CardHeader>
+        <CardTitle className="wk-card-title">Change preview</CardTitle>
+        <CardDescription className="wk-card-note wk-machine">
+          {FILE}
+        </CardDescription>
       </CardHeader>
-      <CardBody className="wk-preview-body">
-        <FileDiff
-          oldFile={{ name: FILE, contents: before }}
-          newFile={{ name: FILE, contents: after }}
-          disableFileHeader
-          expandUnchanged
-        />
+      <CardContent className="wk-preview-body flex flex-col gap-3">
+        <div className="wk-diff">
+          <FileDiff
+            oldFile={{ name: FILE, contents: before }}
+            newFile={{ name: FILE, contents: after }}
+            disableFileHeader
+            expandUnchanged
+          />
+        </div>
         {children}
-      </CardBody>
+      </CardContent>
     </Card>
   )
 }
@@ -185,10 +193,13 @@ function PackageSource({
     if (!selector) return
     const ok = await actions.confirm({
       title: `Update ${declared.name} to ${selector}?`,
-      description: inPlace
-        ? `Compose installs it and restarts only ${declared.name}; workers that depend on it see it reconnect.`
-        : `${declared.name} is not named after its package, so Compose updates it through the whole project and restarts every container.`,
-      details: alsoStarts(actions.idle, [declared.name]),
+      description: withAlsoStarts(
+        inPlace
+          ? `Compose installs it and restarts only ${declared.name}; workers that depend on it see it reconnect.`
+          : `${declared.name} is not named after its package, so Compose updates it through the whole project and restarts every container.`,
+        actions.idle,
+        [declared.name],
+      ),
       confirmLabel: inPlace
         ? `Update ${declared.name}`
         : 'Update and restart all',
@@ -238,7 +249,7 @@ function PackageSource({
             />
             {policy === 'pin' ? (
               error ? (
-                <StatusPanel
+                <Notice
                   variant="alert"
                   headline="The registry did not answer"
                   detail={error}
@@ -249,7 +260,7 @@ function PackageSource({
                 <Selector
                   aria-label="Version"
                   className="wk-version"
-                  contentClassName="max-h-[min(22rem,var(--radix-popover-content-available-height))]"
+                  contentClassName="wk-popover max-h-[min(22rem,var(--radix-popover-content-available-height))]"
                   value={pick}
                   onChange={setPick}
                   searchPlaceholder={`Search ${versions.versions.length} versions`}
@@ -289,7 +300,7 @@ function PackageSource({
               version: selector,
             })}
           >
-            <StatusPanel
+            <Notice
               variant="warn"
               headline={
                 inPlace
@@ -305,7 +316,7 @@ function PackageSource({
             <div className="wk-buttons">
               <Button
                 variant="ghost"
-                size="sm"
+                className="wk-press font-inter"
                 onClick={() => {
                   setPolicy(
                     current === 'latest' || current === 'next'
@@ -318,8 +329,8 @@ function PackageSource({
                 Cancel
               </Button>
               <Button
-                variant="primary"
-                size="sm"
+                variant="default"
+                className="wk-press font-inter"
                 disabled={actions.busy}
                 onClick={() => void update()}
               >
@@ -376,8 +387,11 @@ function PathSource({
   const pointTo = async (path: string) => {
     const ok = await actions.confirm({
       title: `Point ${declared.name} to ${shortPath(path)}?`,
-      description: `${declared.name} restarts from that directory. If it does not build or start there, it stays down until you point it back.`,
-      details: alsoStarts(actions.idle, [declared.name]),
+      description: withAlsoStarts(
+        `${declared.name} restarts from that directory. If it does not build or start there, it stays down until you point it back.`,
+        actions.idle,
+        [declared.name],
+      ),
       confirmLabel: 'Point and restart',
     })
     if (ok)
@@ -401,9 +415,9 @@ function PathSource({
             title="Directory"
             description="The worker's directory on the daemon host."
           >
-            <Input
+            <TextInput
               aria-label="Worker directory"
-              className="wk-mono"
+              className="wk-machine"
               value={path}
               onChange={setPath}
               spellCheck={false}
@@ -426,7 +440,7 @@ function PathSource({
           {moved ? (
             <div className="wk-checks">
               {renamed ? (
-                <StatusPanel
+                <Notice
                   variant="alert"
                   headline={`That would add a container named ${basename(settled)}`}
                   detail={`Compose names a local worker after its directory. Pick a directory called ${declared.name}.`}
@@ -434,33 +448,33 @@ function PathSource({
               ) : !target ? (
                 <Skeleton className="wk-skeleton-field" />
               ) : !target.exists ? (
-                <StatusPanel
+                <Notice
                   variant="alert"
                   headline="No such directory"
                   detail={shortTarget}
                 />
               ) : !target.manifest ? (
-                <StatusPanel
+                <Notice
                   variant="alert"
                   headline="No worker in this directory"
                   detail={`There is no iii.worker.yaml in ${shortTarget}.`}
                 />
               ) : (
                 <>
-                  <StatusPanel
+                  <Notice
                     variant="success"
                     headline={`iii.worker.yaml found: ${target.manifest.name}${target.manifest.language ? `, ${target.manifest.language}` : ''}`}
                     detail="Same container name, so its environment and scripts stay."
                   />
                   {target.run_found === false ? (
-                    <StatusPanel
+                    <Notice
                       variant="warn"
                       headline="The run command is not built here"
                       detail={`${declared.run} does not exist in this checkout, so ${declared.name} will not start until it is.`}
                       action={
                         <Button
-                          variant="ghost"
-                          size="sm"
+                          variant="outline"
+                          className="wk-press font-inter"
                           onClick={onOpenSettings}
                         >
                           Change it
@@ -495,14 +509,14 @@ function PathSource({
               <div className="wk-buttons">
                 <Button
                   variant="ghost"
-                  size="sm"
+                  className="wk-press font-inter"
                   onClick={() => setPath(declared.ref)}
                 >
                   Cancel
                 </Button>
                 <Button
-                  variant="primary"
-                  size="sm"
+                  variant="default"
+                  className="wk-press font-inter"
                   disabled={actions.busy}
                   onClick={() => void pointTo(target.path)}
                 >
@@ -573,7 +587,11 @@ function CheckoutPicker({
               title="Uncommitted changes"
             />
           ) : null}
-          {checkout.path === current ? <Badge>current</Badge> : null}
+          {checkout.path === current ? (
+            <Badge variant="secondary" className="wk-badge font-inter">
+              current
+            </Badge>
+          ) : null}
           {checkout.committed_at ? (
             <span className="wk-mono wk-faint" title="Last commit">
               {formatRelative(checkout.committed_at * 1000)}
@@ -591,7 +609,7 @@ function CheckoutPicker({
       description="From git worktree list: the one it runs from first, then the newest commit."
     >
       <div className="wk-picker">
-        <SearchField
+        <SearchBox
           aria-label="Find a checkout by branch or folder"
           placeholder={`Find by branch or folder · ${checkouts.length} checkouts`}
           value={query}
@@ -619,8 +637,7 @@ function CheckoutPicker({
             <>
               <Button
                 variant="ghost"
-                size="sm"
-                className="wk-picker-group"
+                className="wk-picker-group wk-press font-inter"
                 aria-expanded={otherOpen}
                 onClick={() => setShowOther((open) => !open)}
               >

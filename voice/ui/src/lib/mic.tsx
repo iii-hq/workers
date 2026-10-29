@@ -14,6 +14,7 @@ import type React from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DictationController } from './dictation'
 import { useDictation } from './dictation'
+import { deepActiveElement, editableTarget, isChatComposer, typeInto } from './focus-target'
 
 const HOLD_THRESHOLD_MS = 400
 const MESSAGE_DISPLAY_MS = 4000
@@ -38,9 +39,11 @@ export async function toggleDictation(
   }
 }
 
-/** The one key that toggles dictation, for tooltips (see `lib/dictation-key`). */
-export function dictationShortcutLabel(): string {
+/** The one key that dictates, for tooltips: fn on a Mac whose worker hears
+    it (see `voice::hotkey`), else the right Option/Alt key. */
+export function dictationShortcutLabel(fnKey = false): string {
   const mac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.userAgent)
+  if (mac && fnKey) return 'Hold fn'
   return mac ? 'Right ⌥' : 'Right Alt'
 }
 
@@ -169,10 +172,20 @@ export function MicButton({
 }
 
 /** Hand dictated text to the composer, or the clipboard when no composer slot exists. */
+/**
+ * Hand finished dictation over. Like Wispr Flow it is typed into the field
+ * you were in (`target`, captured when dictation began, else whatever has
+ * focus now): the IDE's editor or terminal, a search box. The chat composer,
+ * or no field at all, goes through `host.chat.compose`; the clipboard is the
+ * last resort.
+ */
 export async function deliverTranscript(
   host: { chat?: { compose?: (draft: { text?: string }) => void } },
   text: string,
-): Promise<'composer' | 'clipboard' | 'failed'> {
+  target?: HTMLElement | null,
+): Promise<'field' | 'composer' | 'clipboard' | 'failed'> {
+  const field = target?.isConnected ? target : editableTarget(deepActiveElement())
+  if (field && !isChatComposer(field) && typeInto(field, text)) return 'field'
   if (host.chat?.compose) {
     host.chat.compose({ text: `${text} ` })
     return 'composer'

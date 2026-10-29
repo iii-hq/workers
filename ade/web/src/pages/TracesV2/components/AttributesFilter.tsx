@@ -8,6 +8,7 @@ import { Check, Plus, X } from 'lucide-react'
 import { useState } from 'react'
 import { Button } from '@/components/shadcn/button'
 import { Input } from '@/components/shadcn/input'
+import { Hint } from '@/components/ui/Hint'
 
 interface AttributesFilterProps {
   value: [string, string][]
@@ -104,17 +105,18 @@ export function AttributesFilter({ value, onChange }: AttributesFilterProps) {
                 onKeyDown={handleKeyDown}
                 className="h-7 flex-1 rounded-md px-2 font-mono text-sm"
               />
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-xs"
-                onClick={() => handleRemove(id)}
-                title="Remove"
-                aria-label="remove attribute"
-                className="text-muted-foreground"
-              >
-                <X />
-              </Button>
+              <Hint label="Remove">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  onClick={() => handleRemove(id)}
+                  aria-label="remove attribute"
+                  className="text-muted-foreground"
+                >
+                  <X />
+                </Button>
+              </Hint>
             </div>
           ))}
         </div>

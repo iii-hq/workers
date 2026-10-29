@@ -14,8 +14,10 @@ import {
   Library,
   type LucideIcon,
   MessageSquareText,
+  Mic,
   Monitor,
   Puzzle,
+  SquareCode,
   SquareFunction,
   SquareTerminal,
 } from 'lucide-react'
@@ -73,6 +75,11 @@ const EXT_PAGE_PRESENTATION: Readonly<Record<string, PagePresentation>> = {
     icon: Gauge,
     description: 'Evaluation runs and benchmarks.',
   },
+  ide: {
+    icon: SquareCode,
+    description: 'Files, editor, git and terminal.',
+    keywords: ['editor', 'code', 'files', 'git'],
+  },
   functions: {
     icon: SquareFunction,
     description: 'Registered runtime functions.',
@@ -104,6 +111,11 @@ const EXT_PAGE_PRESENTATION: Readonly<Record<string, PagePresentation>> = {
   triggers: {
     icon: TriggerIcon,
     description: 'Event and schedule triggers.',
+  },
+  voice: {
+    icon: Mic,
+    description: 'Dictation and voice input.',
+    keywords: ['microphone', 'speech', 'dictation'],
   },
   worktree: {
     icon: GitBranch,
@@ -149,7 +161,7 @@ export function useScreenOptions(): {
     ...extPages.map((page) => {
       const presentation = EXT_PAGE_PRESENTATION[page.id] ?? {
         icon: Puzzle,
-        description: 'Worker-provided page.',
+        description: `From the ${page.scope} worker.`,
       }
       return {
         value: screenForExtPage(page.id),

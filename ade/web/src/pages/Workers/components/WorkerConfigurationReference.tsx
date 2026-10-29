@@ -1,14 +1,14 @@
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useEffect, useState } from 'react'
-import { Button } from '@/components/ui/Button'
+import { Button } from '@/components/shadcn/button'
 import { Selector } from '@/components/ui/Selector'
 import { SettingsList, SettingsRow } from '@/components/ui/Settings'
-import { StatusPanel } from '@/components/ui/StatusPanel'
 import {
   resolveSchema,
   schemaTypes,
 } from '@/pages/Configuration/lib/schema/ref-resolver'
 import type { ConfigurationSchemaView } from '@/pages/Configuration/tabs/WorkersTab/api'
+import { Notice } from './kit'
 import {
   loadWorkerConfigurationReference,
   type ReferenceCatalogReason,
@@ -81,7 +81,7 @@ export function WorkerConfigurationReference({ name }: { name: string }) {
               Loading configuration reference…
             </p>
           ) : state.kind === 'error' ? (
-            <StatusPanel
+            <Notice
               className="wk-save-notice"
               role="alert"
               variant="alert"
@@ -89,8 +89,8 @@ export function WorkerConfigurationReference({ name }: { name: string }) {
               detail={state.detail}
               action={
                 <Button
-                  variant="ghost"
-                  size="sm"
+                  variant="outline"
+                  className="wk-press font-inter"
                   onClick={() => setAttempt((next) => next + 1)}
                 >
                   Retry
@@ -106,7 +106,7 @@ export function WorkerConfigurationReference({ name }: { name: string }) {
               {state.entries.length ? (
                 <Selector
                   aria-label="Configuration reference entry"
-                  contentClassName="wk-reference-picker"
+                  contentClassName="wk-popover wk-reference-picker"
                   placeholder="Choose a registered entry…"
                   searchPlaceholder="Search configuration references"
                   value={picked}

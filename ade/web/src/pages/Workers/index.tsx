@@ -14,12 +14,8 @@ import {
   X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Badge } from '@/components/ui/Badge'
-import { Button } from '@/components/ui/Button'
-import { useConfirm } from '@/components/ui/ConfirmDialog'
-import { EmptyState } from '@/components/ui/EmptyState'
+import { Button } from '@/components/shadcn/button'
 import { IconButton } from '@/components/ui/IconButton'
-import { List, ListGroup, ListGroupLabel, ListItem } from '@/components/ui/List'
 import { LiveRegion } from '@/components/ui/LiveRegion'
 import {
   PageBody,
@@ -28,19 +24,19 @@ import {
   PageShell,
 } from '@/components/ui/PageChrome'
 import { PageSidebar } from '@/components/ui/PageSidebar'
-import { SearchField } from '@/components/ui/SearchField'
 import { Skeleton } from '@/components/ui/Skeleton'
-import { StatusDot } from '@/components/ui/StatusDot'
-import { StatusPanel } from '@/components/ui/StatusPanel'
 import type { LiveAnnouncement } from '@/hooks/use-live-announcer'
 import { getDefaultBackend } from '@/lib/backend'
 import { getIiiClient, type IiiClient } from '@/lib/iii-client'
+import { cn } from '@/lib/utils'
 import type {
   ExtensionIii,
   PageCommandsApi,
   PanelSide,
 } from '@/types/injectable-ui'
 import { AddWorkerDialog } from './add-worker'
+import { Empty, Notice, useConfirm } from './components/kit'
+import { PROJECT, WorkerSidebar } from './components/WorkerSidebar'
 import {
   type Accepted,
   composeApi,
@@ -54,7 +50,7 @@ import {
   WorkerView,
 } from './container'
 import { followOperation } from './follow-operation'
-import { groupContainers, hasSettingsChanges, toneFor } from './model'
+import { groupContainers, hasSettingsChanges } from './model'
 import { takePendingWorkerSearch } from './pending-selection'
 import { ProjectView } from './project'
 import './workers.css'
@@ -71,8 +67,7 @@ interface WorkersProps {
   setDirty?: (dirty: boolean | string) => void
 }
 
-const PROJECT = 'project'
-const SKELETON_ROWS = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
+const SURFACE = 'wk-surface font-inter'
 
 export type Activity = {
   label: string
@@ -145,13 +140,14 @@ export function Workers(props: WorkersProps) {
   }, [real])
   if (!real) {
     return (
-      <PageShell aria-label="workers">
+      <PageShell className={SURFACE} aria-label="workers">
         <PageHeader
+          className="wk-header"
           icon={<Layers />}
           title="Workers"
           onClose={props.onRequestClose}
         />
-        <EmptyState
+        <Empty
           icon={Boxes}
           title="No live workers here"
           description="Workers are listed when the console is connected to an engine."
@@ -161,8 +157,9 @@ export function Workers(props: WorkersProps) {
   }
   if (!client) {
     return (
-      <PageShell aria-label="workers">
+      <PageShell className={SURFACE} aria-label="workers">
         <PageHeader
+          className="wk-header"
           icon={<Layers />}
           title="Workers"
           onClose={props.onRequestClose}
@@ -219,7 +216,7 @@ function WorkersPage({
   const { confirm, dialog } = useConfirm()
   const { ref: bodyRef, narrow } = useContainerNarrow({ below: 840 })
   const filterRef = useRef<HTMLInputElement>(null)
-  const listRef = useRef<HTMLDivElement>(null)
+  const listRef = useRef<HTMLElement>(null)
   const alive = useRef(true)
   const dirtyWorkers = [...settingsByWorker]
     .filter(([, settings]) => {
@@ -397,8 +394,8 @@ function WorkersPage({
   const containers = data?.status.containers ?? []
   const workers = data?.workers ?? []
   const groups = useMemo(
-    () => groupContainers(containers, declared, query, workers),
-    [containers, declared, query, workers],
+    () => groupContainers(containers, declared, '', workers),
+    [containers, declared, workers],
   )
   const selected =
     selection === PROJECT
@@ -412,6 +409,9 @@ function WorkersPage({
         ) ?? null)
   const ready = containers.filter((c) => c.state === 'ready').length
   const failing = containers.filter((c) => c.state === 'failed').length
+  const outsideCount = workers.filter(
+    (w) => w.managementKind !== 'compose',
+  ).length
 
   // A worker that went away (removed, disconnected, another file) falls back
   // to the project. One this page has not seen yet (just added, the snapshot
@@ -520,139 +520,75 @@ function WorkersPage({
       collapsible
       resizable
       storageKey="workers:list"
-      defaultWidth={300}
+      defaultWidth={288}
       minWidth={220}
       maxWidth={420}
+      className="wk-sidebar"
+      header={
+        <span className="flex min-w-0 flex-1 items-center gap-2">
+          <span className="truncate font-inter text-[13px] font-medium text-neutral-900 dark:text-neutral-50">
+            Workers
+          </span>
+          {data ? (
+            <span className="font-inter text-[12px] tabular-nums text-neutral-500 dark:text-neutral-400">
+              {containers.length + outsideCount}
+            </span>
+          ) : null}
+        </span>
+      }
     >
-      <div className="wk-side">
-        <SearchField
-          ref={filterRef}
-          aria-label="Filter workers"
-          placeholder="Filter workers"
-          value={query}
-          onChange={setQuery}
-        />
-        {!data ? (
-          <div
-            className="wk-skeletons"
-            role="status"
-            aria-busy="true"
-            aria-label="Loading workers"
-          >
-            {SKELETON_ROWS.map((id) => (
-              <Skeleton key={id} className="wk-skeleton-row" />
-            ))}
-          </div>
-        ) : (
-          <List ref={listRef} aria-label="Project and workers">
-            {data.composed ? (
-              <ListItem
-                selected={selection === PROJECT}
-                aria-current={selection === PROJECT ? 'page' : undefined}
-                leading={<Layers />}
-                label="Project"
-                description={[
-                  `${ready} of ${containers.length} ready`,
-                  updates
-                    ? `${updates} update${updates === 1 ? '' : 's'}`
-                    : null,
-                ]
-                  .filter(Boolean)
-                  .join(' · ')}
-                trailing={
-                  failing ? (
-                    <Badge variant="alert">{failing} failed</Badge>
-                  ) : undefined
-                }
-                onClick={() => select(PROJECT)}
-              />
-            ) : null}
-            {groups.map((group) => (
-              <ListGroup key={group.id}>
-                <ListGroupLabel>{group.label}</ListGroupLabel>
-                {group.items.map((item) => {
-                  const tone = toneFor(item.state)
-                  const update = latest.outdated(item.name)
-                  return (
-                    <ListItem
-                      key={item.name}
-                      selected={selection === item.name}
-                      aria-current={
-                        selection === item.name ? 'page' : undefined
-                      }
-                      leading={
-                        <StatusDot
-                          tone={tone.dot}
-                          pulse={item.state === 'starting'}
-                        />
-                      }
-                      label={<span className="wk-mono">{item.name}</span>}
-                      description={
-                        <span
-                          className={item.failed ? 'wk-alert-text' : undefined}
-                        >
-                          {item.detail === item.state
-                            ? item.state
-                            : `${item.state} · ${item.detail}`}
-                        </span>
-                      }
-                      trailing={
-                        <span className="wk-row-meta">
-                          {dirtyWorkers.includes(item.name) ? (
-                            <Badge>unsaved</Badge>
-                          ) : null}
-                          {awaitingVerificationWorkers.includes(item.name) ? (
-                            <Badge>awaiting verification</Badge>
-                          ) : null}
-                          {update ? (
-                            <Badge
-                              variant="accent"
-                              aria-label={`Update available: ${update}`}
-                            >
-                              {update}
-                            </Badge>
-                          ) : null}
-                        </span>
-                      }
-                      onClick={() => select(item.name)}
-                    />
-                  )
-                })}
-              </ListGroup>
-            ))}
-            {query && groups.length === 0 ? (
-              <EmptyState
-                compact
-                icon={Boxes}
-                title="No containers match"
-                description={`Nothing is called “${query}”.`}
-                action={{ label: 'Clear filter', onClick: () => setQuery('') }}
-              />
-            ) : null}
-          </List>
-        )}
-      </div>
+      <WorkerSidebar
+        loaded={!!data}
+        composed={!!data?.composed}
+        groups={groups}
+        query={query}
+        onQueryChange={setQuery}
+        selection={selection}
+        onSelect={select}
+        project={{
+          ready,
+          total: containers.length,
+          updates,
+          failing,
+        }}
+        flags={(name) => ({
+          update: latest.outdated(name),
+          dirty: dirtyWorkers.includes(name),
+          awaiting: awaitingVerificationWorkers.includes(name),
+        })}
+        filterRef={filterRef}
+        listRef={listRef}
+      />
     </PageSidebar>
   )
 
   return (
-    <PageShell className="wk-shell" aria-label="workers">
+    <PageShell className={cn('wk-shell', SURFACE)} aria-label="workers">
       <PageHeader
         className="wk-header"
         icon={<Layers />}
         title="Workers"
         description={
           data?.status.namespace ? (
-            <span className="wk-mono">{data.status.namespace}</span>
+            <span className="wk-chip">{data.status.namespace}</span>
           ) : undefined
         }
         actions={
           <>
-            <span className="wk-live" role="status">
-              <StatusDot
-                tone={live.error ? 'warn' : 'accent'}
-                pulse={live.live}
+            <span
+              className="wk-live mr-1 inline-flex h-7 items-center gap-1.5 rounded-md px-2 font-inter text-[12px] text-neutral-500 dark:text-neutral-400"
+              role="status"
+            >
+              <span
                 aria-hidden
+                className={cn(
+                  'size-2 rounded-full',
+                  live.error
+                    ? 'bg-warn'
+                    : live.live
+                      ? 'bg-ok pulse-dot'
+                      : 'bg-neutral-400 dark:bg-neutral-600',
+                )}
               />
               {live.error
                 ? 'daemon unreachable'
@@ -661,12 +597,12 @@ function WorkersPage({
                   : 'polling'}
             </span>
             <Button
-              variant="ghost"
-              size="sm"
-              className="wk-add-worker"
+              variant="outline"
+              size="default"
+              className="wk-add-worker wk-press font-inter"
               onClick={() => setAdding(true)}
             >
-              <Plus />
+              <Plus data-icon="inline-start" />
               Add worker
             </Button>
           </>
@@ -681,28 +617,31 @@ function WorkersPage({
               {narrow ? (
                 <Button
                   variant="ghost"
-                  size="sm"
-                  className="wk-back"
+                  className="wk-back wk-press font-inter"
                   onClick={() => setDrilled(false)}
                 >
-                  <ChevronLeft />
+                  <ChevronLeft data-icon="inline-start" />
                   Workers
                 </Button>
               ) : null}
               {data && !data.composed ? (
-                <StatusPanel
+                <Notice
                   variant="info"
                   headline="No compose daemon answered"
                   detail="Only the workers connected to the engine are listed. Start one with iii compose in the project directory."
                 />
               ) : null}
               {live.error ? (
-                <StatusPanel
+                <Notice
                   variant="warn"
                   headline="Workers are unavailable"
                   detail={live.error}
                   action={
-                    <Button variant="pill" size="sm" onClick={live.refresh}>
+                    <Button
+                      variant="outline"
+                      className="wk-press font-inter"
+                      onClick={live.refresh}
+                    >
                       Retry
                     </Button>
                   }
@@ -734,7 +673,7 @@ function WorkersPage({
                   </IconButton>
                 </div>
               ) : activity ? (
-                <StatusPanel
+                <Notice
                   variant={
                     activity.state === 'running'
                       ? 'info'
@@ -759,7 +698,7 @@ function WorkersPage({
                       activity.operationId ? (
                         <Button
                           variant="ghost"
-                          size="sm"
+                          className="wk-press font-inter"
                           onClick={() =>
                             void api.cancel(activity.operationId as string)
                           }
@@ -844,7 +783,7 @@ function WorkersPage({
                   onSelect={select}
                 />
               ) : (
-                <EmptyState
+                <Empty
                   icon={Boxes}
                   title="Pick a worker"
                   description="Its functions and trigger types show here."

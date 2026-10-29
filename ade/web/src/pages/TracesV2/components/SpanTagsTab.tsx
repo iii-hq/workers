@@ -168,7 +168,7 @@ export function SpanTagsTab({ span, redact }: SpanTagsTabProps) {
           return (
             <div
               key={group.namespace}
-              className="overflow-hidden rounded-lg border border-border"
+              className="overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10"
             >
               <button
                 type="button"
@@ -208,7 +208,7 @@ export function SpanTagsTab({ span, redact }: SpanTagsTabProps) {
           )
         })
       ) : (
-        <div className="divide-y divide-border overflow-hidden rounded-lg border border-border">
+        <div className="divide-y divide-border overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
           {filteredEntries.map(([key, value]) => (
             <AttributeRow
               key={key}

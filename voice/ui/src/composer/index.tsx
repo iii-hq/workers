@@ -3,13 +3,13 @@
  * Click toggles listening and holding past 400 ms is push-to-talk; the
  * console's Dictate command (Ctrl+Shift+D on a Mac, Alt+Shift+D elsewhere)
  * does the same from the keyboard: tap to start and tap to stop, or hold
- * the chord and talk, and the text lands when you let go. The right
- * Option key on its own is the one-key version of the same gesture (see
- * `lib/dictation-key`): tap it to start and stop, or hold it and talk.
- * While it listens the toolbar becomes the `RecordingBar`: a live
- * waveform, the time, cancel and done. The transcript, cleaned up, goes to
- * the composer through `host.chat.compose` when listening ends. Consoles without the toolbar slot never call this;
- * the chip and the live row carry the mic there.
+ * the chord and talk, and the text lands when you let go. Holding fn or the
+ * right Option key works anywhere, not just here (see `../keys`). While it
+ * listens the toolbar becomes the `RecordingBar`: a live waveform, the time,
+ * cancel and done. The transcript, cleaned up, goes where the person was
+ * typing, else to the composer through `host.chat.compose`. Consoles
+ * without the toolbar slot never call this; the chip and the live row carry
+ * the mic there.
  */
 
 import type { Host } from '@iii-dev/console-ui'
@@ -17,8 +17,8 @@ import { useEffect, useState } from 'react'
 import { doctor } from '../lib/client'
 import type { DictationController } from '../lib/dictation'
 import { useDictation, useDictationLevel } from '../lib/dictation'
-import { createDictationKeyGesture } from '../lib/dictation-key'
-import { deliverTranscript, dictationShortcutLabel, MicButton, toggleDictation, useMicPointer } from '../lib/mic'
+import { dictationShortcutLabel, MicButton, toggleDictation, useMicPointer } from '../lib/mic'
+import { type DictationKeys, useFnAvailable } from '../keys'
 import type { ComposerActionProps, ComposerActionRegistration } from '../lib/types'
 import { RecordingBar } from './RecordingBar'
 
@@ -29,10 +29,12 @@ const KEY_REPEAT_MS = 700
 /** The keys whose release ends a held chord. */
 const CHORD_KEYS = new Set(['d', 'D', 'Shift', 'Control', 'Alt', 'Meta'])
 
-export function createVoiceComposerAction(host: Host, controller: DictationController): ComposerActionRegistration {
-  const finish = (text: string) => {
-    void deliverTranscript(host, text)
-  }
+export function createVoiceComposerAction(
+  host: Host,
+  controller: DictationController,
+  keys: DictationKeys,
+): ComposerActionRegistration {
+  const finish = keys.finish
   let lastRunAt = 0
   /** When the running dictation was started from the keyboard, else null. */
   let keyStartedAt: number | null = null
@@ -45,30 +47,12 @@ export function createVoiceComposerAction(host: Host, controller: DictationContr
     const status = controller.getState().status
     if (status === 'idle' || status === 'error') keyStartedAt = now
     else keyStartedAt = null
+    keys.captureTarget()
     void toggleDictation(controller, finish)
   }
 
-  const isListening = () => {
-    const status = controller.getState().status
-    return status === 'listening' || status === 'starting'
-  }
-
-  /** Right Option alone: a tap toggles, a hold talks until release. */
-  const optionKey = createDictationKeyGesture({
-    toggle: () => void toggleDictation(controller, finish),
-    holdStart: () => {
-      if (!isListening()) void toggleDictation(controller, finish)
-    },
-    holdEnd: () => {
-      if (isListening()) void toggleDictation(controller, finish)
-    },
-  })
-
-  const onKeyDown = (event: KeyboardEvent) => optionKey.keydown(event)
-
   /** Releasing a chord held past the threshold stops and delivers, like lifting a finger off the mic. */
   const onKeyUp = (event: KeyboardEvent) => {
-    optionKey.keyup(event)
     if (keyStartedAt === null || !CHORD_KEYS.has(event.key)) return
     const held = Date.now() - keyStartedAt >= KEY_HOLD_MS
     const status = controller.getState().status
@@ -83,6 +67,8 @@ export function createVoiceComposerAction(host: Host, controller: DictationContr
     const pointer = useMicPointer(controller, finish)
     const { state } = useDictation(controller)
     const level = useDictationLevel(controller)
+
+    const fnReady = useFnAvailable(keys)
 
     useEffect(() => {
       let cancelled = false
@@ -99,14 +85,8 @@ export function createVoiceComposerAction(host: Host, controller: DictationContr
     }, [])
 
     useEffect(() => {
-      window.addEventListener('keydown', onKeyDown, true)
       window.addEventListener('keyup', onKeyUp, true)
-      window.addEventListener('blur', optionKey.blur)
-      return () => {
-        window.removeEventListener('keydown', onKeyDown, true)
-        window.removeEventListener('keyup', onKeyUp, true)
-        window.removeEventListener('blur', optionKey.blur)
-      }
+      return () => window.removeEventListener('keyup', onKeyUp, true)
     }, [])
 
     if (!available) return null
@@ -124,7 +104,7 @@ export function createVoiceComposerAction(host: Host, controller: DictationContr
             onCancel={() => void controller.cancel()}
           />
         ) : null}
-        <MicButton pointer={pointer} className="voice-composer-btn" phase={state.status} level={level} shortcut={dictationShortcutLabel()} />
+        <MicButton pointer={pointer} className="voice-composer-btn" phase={state.status} level={level} shortcut={dictationShortcutLabel(fnReady)} />
       </span>
     )
   }
@@ -134,7 +114,8 @@ export function createVoiceComposerAction(host: Host, controller: DictationContr
     render: VoiceComposerAction,
     command: {
       title: 'Dictate',
-      detail: 'Tap to start and stop, or hold to talk; the right Option key on its own does the same. The text lands in the message box',
+      detail:
+        'Hold fn (or the right Option key) and talk; let go and the text is typed where your cursor is, or into the message box. A tap starts and stops',
       keywords: ['voice', 'mic', 'microphone', 'speech', 'record', 'talk'],
       shortcut: { mac: ['Ctrl+Shift+D'], other: ['Alt+Shift+D'] },
       firesWhileTyping: true,
