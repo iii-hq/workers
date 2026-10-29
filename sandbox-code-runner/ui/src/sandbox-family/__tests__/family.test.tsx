@@ -11,7 +11,7 @@
  * map, see packages/console-ui).
  */
 
-import type { FunctionTriggerMessage, FunctionTriggerRenderer, Host } from '@iii-dev/console-ui'
+import type { FunctionCallMessage, FunctionCallRenderer, Host } from '@iii-dev/console-ui'
 import type { ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
@@ -80,7 +80,7 @@ vi.mock('@iii-dev/console-ui', () => {
 
 const SB = '00000000-0000-0000-0000-000000000000'
 
-const renderer: FunctionTriggerRenderer = createSandboxFamilyRenderer({} as Host)
+const renderer: FunctionCallRenderer = createSandboxFamilyRenderer({} as Host)
 
 const ALL_IDS = [
   'sandbox::exec',
@@ -100,10 +100,10 @@ const ALL_IDS = [
   'sandbox::fs::sed',
 ]
 
-function msg(extra: Partial<FunctionTriggerMessage>): FunctionTriggerMessage {
+function msg(extra: Partial<FunctionCallMessage>): FunctionCallMessage {
   return {
     id: 'm1',
-    role: 'function-trigger',
+    role: 'function-call',
     functionId: 'sandbox::exec',
     input: {},
     createdAt: 0,
@@ -189,7 +189,7 @@ describe('the settled exec card', () => {
 
   it('renders the running shimmer through tryRenderRunning', () => {
     const out = html(renderer.tryRenderRunning?.(msg({ input: EXEC_INPUT, running: true })))
-    expect(out).toContain('triggering…')
+    expect(out).toContain('calling…')
     expect(out).toContain('cargo test')
   })
 })

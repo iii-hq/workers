@@ -151,12 +151,12 @@ export function parseJobStatus(value: unknown): JobStatusPatch | null {
   }
 }
 
-/** `iii trigger sandbox::exec '{"sandbox_id":"…"}'` — paste-able as-is. */
-export function formatTriggerCommand(
+/** `iii call sandbox::exec '{"sandbox_id":"…"}'` — paste-able as-is. */
+export function formatCallCommand(
   functionId: string,
   payload: Record<string, unknown>,
 ): string {
-  return `iii trigger ${functionId} ${quoteShellArg(JSON.stringify(payload))}`
+  return `iii call ${functionId} ${quoteShellArg(JSON.stringify(payload))}`
 }
 
 export interface ExecResult {

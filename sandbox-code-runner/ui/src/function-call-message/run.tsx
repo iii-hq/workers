@@ -1,5 +1,5 @@
 /**
- * Injected function-trigger renderer for `sandbox-code-runner::run`.
+ * Injected function-call renderer for `sandbox-code-runner::run`.
  *
  * The default card prints the request as JSON, which turns `code` into one
  * escaped single-line string and `stdout`/`stderr` into two more — unreadable,
@@ -45,8 +45,8 @@
 import {
   Chip,
   CodeHighlight,
-  type FunctionTriggerMessage,
-  type FunctionTriggerRenderer,
+  type FunctionCallMessage,
+  type FunctionCallRenderer,
   type Host,
   TerminalStream,
 } from '@iii-dev/console-ui'
@@ -272,7 +272,7 @@ function StreamOrNote({
   )
 }
 
-function SettledView({ message }: { message: FunctionTriggerMessage }) {
+function SettledView({ message }: { message: FunctionCallMessage }) {
   const req = parseRequest(message.input)
   const res = asRecord(unwrapEnvelope(message.output)) ?? {}
   const runtimeId =
@@ -307,7 +307,7 @@ function SettledView({ message }: { message: FunctionTriggerMessage }) {
 }
 
 /** In-flight: what is being run, and where. No verdict to show yet. */
-function RunningView({ message }: { message: FunctionTriggerMessage }) {
+function RunningView({ message }: { message: FunctionCallMessage }) {
   const req = parseRequest(message.input)
   return (
     <CardShell
@@ -337,7 +337,7 @@ function PreviewView({
   message,
   code,
 }: {
-  message: FunctionTriggerMessage
+  message: FunctionCallMessage
   code: string
 }) {
   const req = parseRequest(message.input)
@@ -359,11 +359,11 @@ function PreviewView({
   )
 }
 
-export function createRunRenderer(host: Host): FunctionTriggerRenderer {
+export function createRunRenderer(host: Host): FunctionCallRenderer {
   void host // the run card reads nothing off the host
 
   const render = (
-    message: FunctionTriggerMessage,
+    message: FunctionCallMessage,
     running: boolean,
   ): React.ReactNode | null => {
     if (message.functionId !== FUNCTION_ID) return null

@@ -62,7 +62,7 @@ const r = createTeardownRenderer({} as any)
 // biome-ignore lint/suspicious/noExplicitAny: test doubles
 const msg = (over: any) => ({
   id: 'm',
-  role: 'function-trigger',
+  role: 'function-call',
   functionId: 'sandbox-code-runner::teardown',
   input: { runtime_id: ID },
   createdAt: 0,

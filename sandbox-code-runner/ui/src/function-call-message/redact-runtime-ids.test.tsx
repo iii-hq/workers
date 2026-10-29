@@ -28,8 +28,8 @@
  */
 
 import type {
-  FunctionTriggerMessage,
-  FunctionTriggerRenderer,
+  FunctionCallMessage,
+  FunctionCallRenderer,
   Host,
 } from '@iii-dev/console-ui'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -114,11 +114,11 @@ const HOST = {} as unknown as Host
 
 function baseMsg(
   input: unknown,
-  extra: Partial<FunctionTriggerMessage> = {},
-): FunctionTriggerMessage {
+  extra: Partial<FunctionCallMessage> = {},
+): FunctionCallMessage {
   return {
     id: 'm1',
-    role: 'function-trigger',
+    role: 'function-call',
     functionId: extra.functionId ?? '',
     input,
     createdAt: 0,
@@ -128,9 +128,9 @@ function baseMsg(
 
 /** Every HTML string the renderer produces for one payload, across the
  * settled / running / preview states — mirroring how the console actually
- * calls a `FunctionTriggerRenderer` (see FunctionTriggerCard.tsx). */
+ * calls a `FunctionCallRenderer` (see the ADE's function-call card). */
 function renderAllStates(
-  renderer: FunctionTriggerRenderer,
+  renderer: FunctionCallRenderer,
   functionId: string,
   input: unknown,
   output: unknown,
@@ -154,7 +154,7 @@ function renderAllStates(
  * one of `error.rs`'s two real id-quoting messages. */
 const CARDS: {
   name: string
-  renderer: FunctionTriggerRenderer
+  renderer: FunctionCallRenderer
   functionId: string
   input: unknown
   output: unknown

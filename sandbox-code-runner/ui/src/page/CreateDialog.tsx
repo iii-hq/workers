@@ -32,14 +32,14 @@ function createStageNote(elapsedSecs: number): string {
 }
 
 const CREATE_EVENTS_FN = 'iii::sandbox-code-runner-ui::create-events'
-const CREATE_EVENT_TRIGGER_TYPE = 'sandbox-code-runner::event'
+const ON_EVENT_FN = 'sandbox-code-runner::on-event'
 
 /**
- * Create-phase stream — DORMANT today: the daemon does not emit
- * `{ kind: 'create_phase' }` yet (engine ask). The subscription is wired
- * so the steps list lights up the day it streams `pulling_image` /
- * `unpacking` / `booting_vm` / `ready`; bound only while a create is
- * actually pending.
+ * Create-phase stream — DORMANT today: nothing calls
+ * `sandbox-code-runner::on-event` with `{ kind: 'create_phase' }` yet
+ * (engine ask). The observer is wired so the steps list lights up the day
+ * it streams `pulling_image` / `unpacking` / `booting_vm` / `ready`; it
+ * exists only while a create is actually pending.
  */
 function useCreatePhases(host: Host, active: boolean): string[] {
   const [phases, setPhases] = useState<string[]>([])
@@ -49,7 +49,7 @@ function useCreatePhases(host: Host, active: boolean): string[] {
       return
     }
     let offHandler: (() => void) | null = null
-    let offTrigger: (() => void) | null = null
+    let offObserver: (() => void) | null = null
     try {
       offHandler = host.iii.on(CREATE_EVENTS_FN, (payload: unknown) => {
         const rec = asRecord(payload)
@@ -59,16 +59,15 @@ function useCreatePhases(host: Host, active: boolean): string[] {
         if (!phase) return
         setPhases((prev) => (prev.includes(phase) ? prev : [...prev, phase]))
       })
-      offTrigger = host.iii.registerTrigger({
-        type: CREATE_EVENT_TRIGGER_TYPE,
-        function_id: `${CREATE_EVENTS_FN}::${host.iii.browserId}`,
-        config: {},
-      })
+      offObserver = host.iii.observe(
+        { function_id: ON_EVENT_FN, filters: { 'input.kind': { $eq: 'create_phase' } } },
+        `${CREATE_EVENTS_FN}::${host.iii.browserId}`,
+      )
     } catch {
       /* stream unavailable — the elapsed stages still tell the story */
     }
     return () => {
-      offTrigger?.()
+      offObserver?.()
       offHandler?.()
     }
   }, [host, active])
@@ -144,7 +143,7 @@ export function CreateDialog({
     setElapsed(0)
     host.iii
       // Cold image pulls run long — give the call room to succeed.
-      .trigger('sandbox::create', payload, { timeoutMs: 120_000 })
+      .call('sandbox::create', payload, { timeoutMs: 120_000 })
       .then((value) => {
         const id = asRecord(value)?.sandbox_id
         onCreated(typeof id === 'string' ? id : null)

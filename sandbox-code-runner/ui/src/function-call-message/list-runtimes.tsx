@@ -9,8 +9,8 @@
 
 import {
   Chip,
-  type FunctionTriggerMessage,
-  type FunctionTriggerRenderer,
+  type FunctionCallMessage,
+  type FunctionCallRenderer,
   type Host,
 } from '@iii-dev/console-ui'
 import { formatRelative } from '@iii-dev/console-ui/format'
@@ -98,7 +98,7 @@ function RuntimeRowView({ row }: { row: RuntimeRow }) {
   )
 }
 
-function SettledView({ message }: { message: FunctionTriggerMessage }) {
+function SettledView({ message }: { message: FunctionCallMessage }) {
   const output = unwrapEnvelope(message.output)
   const denied = deniedInfo(output)
   if (denied) {
@@ -128,7 +128,7 @@ function SettledView({ message }: { message: FunctionTriggerMessage }) {
   )
 }
 
-export function createListRuntimesRenderer(_host: Host): FunctionTriggerRenderer {
+export function createListRuntimesRenderer(_host: Host): FunctionCallRenderer {
   return {
     id: 'sandbox-code-runner/page.js#list-runtimes',
     isMatch: (functionId) => functionId === FUNCTION_ID,

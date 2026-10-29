@@ -4,7 +4,7 @@
  * `react-dom/server`.
  *
  * The per-card redaction suite lives beside the renderers
- * (`../function-trigger-message/`), the way node-engine's does; this file
+ * (`../function-call-message/`), the way node-engine's does; this file
  * covers what those cards build on.
  *
  * Renders against a stubbed `@iii-dev/console-ui` — the real package's JS

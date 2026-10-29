@@ -1,5 +1,5 @@
 /**
- * Injected function-trigger renderer for
+ * Injected function-call renderer for
  * `sandbox-code-runner::register_function`.
  *
  * The default card prints the request as JSON, which turns `source` — the
@@ -40,8 +40,8 @@ import {
   Badge,
   Chip,
   CodeHighlight,
-  type FunctionTriggerMessage,
-  type FunctionTriggerRenderer,
+  type FunctionCallMessage,
+  type FunctionCallRenderer,
   type Host,
 } from '@iii-dev/console-ui'
 import { uiClasses } from '@iii-dev/console-ui/ui-classes'
@@ -341,7 +341,7 @@ function SourceBlock({
 
 /* --- cards --------------------------------------------------------------- */
 
-function SettledView({ message }: { message: FunctionTriggerMessage }) {
+function SettledView({ message }: { message: FunctionCallMessage }) {
   const req = parseRequest(message.input)
   const res = asRecord(unwrapEnvelope(message.output)) ?? {}
   const registered =
@@ -398,7 +398,7 @@ function PendingView({
   message,
   running,
 }: {
-  message: FunctionTriggerMessage
+  message: FunctionCallMessage
   running: boolean
 }) {
   const req = parseRequest(message.input)
@@ -430,12 +430,12 @@ function PendingView({
 
 export function createRegisterFunctionRenderer(
   host: Host,
-): FunctionTriggerRenderer {
+): FunctionCallRenderer {
   void host // this card reads nothing off the host
   const isMatch = (functionId: string) => functionId === FUNCTION_ID
 
   const render = (
-    message: FunctionTriggerMessage,
+    message: FunctionCallMessage,
     running: boolean,
   ): React.ReactNode | null => {
     if (!isMatch(message.functionId)) return null
