@@ -182,11 +182,14 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
             .metadata(json!({ "internal": true })),
         );
     }
-    if let Err(e) = iii.register_trigger(RegisterTriggerInput::new(
+    // Deprecated in iii 0.25, still served by 0.24 and 0.25 engines.
+    #[allow(deprecated)]
+    let ready_binding = iii.register_trigger(RegisterTriggerInput::new(
         "router::ready",
         surface::ON_ROUTER_READY_ID,
         json!({}),
-    )) {
+    ));
+    if let Err(e) = ready_binding {
         tracing::warn!(
             error = %e,
             "failed to bind the router::ready trigger; the provider will not re-declare on router restarts"

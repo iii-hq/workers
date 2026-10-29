@@ -6,7 +6,7 @@ manifest: Cargo.toml
 license: Apache-2.0
 bin: llm-router
 tags: [llm, router, models, providers]
-description: One front door + provider protocol in front of every LLM provider.
+description: One front door + provider protocol in front of every LLM provider. Registers the `router::ready`, `router::models::changed` and `router::provider::changed` trigger types and, next to them, the observable functions `router::on-ready`, `router::on-models-changed` and `router::on-provider-changed` (iii 0.25).
 
 dependencies:
   state: "latest"

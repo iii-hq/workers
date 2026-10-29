@@ -400,6 +400,8 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
             }
         }),
     );
+    // register_trigger is deprecated in iii 0.25; the trigger type stays.
+    #[allow(deprecated)]
     let _ = iii.register_trigger(RegisterTriggerInput::new(
         "router::ready",
         "provider::real::on_router_ready",
@@ -1195,6 +1197,8 @@ async fn models_changed_event_reaches_a_trigger_subscriber() {
             }
         }),
     );
+    // register_trigger is deprecated in iii 0.25; the trigger type stays.
+    #[allow(deprecated)]
     probe
         .register_trigger(RegisterTriggerInput::new(
             "router::models::changed",
@@ -2614,6 +2618,8 @@ async fn start_fake_secrets(url: &str) -> FakeSecretsWorker {
             }
         }),
     );
+    // register_trigger_type is deprecated in iii 0.25; the fake keeps the trigger type.
+    #[allow(deprecated)]
     iii.register_trigger_type(iii_sdk::RegisterTriggerType::new(
         "secrets::changed",
         "fake secrets worker: a secret changed",

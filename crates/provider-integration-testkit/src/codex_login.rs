@@ -490,6 +490,7 @@ async fn observe_state(
             async { Ok::<_, Error>(json!({ "ok": true })) }
         }),
     );
+    #[allow(deprecated)]
     let trigger = client.register_trigger(RegisterTriggerInput::new(
         "state",
         "contract::codex-state-event",
