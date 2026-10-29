@@ -60,10 +60,10 @@ type Disposition =
 const TAB_DISPOSITIONS: Record<string, Disposition> = {
   SpanInfoTab: {
     kind: 'self-redacted',
-    // The info tab's FunctionTriggerCard resolves its own redactor via
+    // The info tab's FunctionCallCard resolves its own redactor via
     // rawRedactor — covered by redact-raw.test.tsx, not this file.
     file: 'SpanInfoTab.tsx',
-    mustMention: 'FunctionTriggerCard',
+    mustMention: 'FunctionCallCard',
   },
   SpanTagsTab: { kind: 'redact-prop' },
   SpanLogsTab: { kind: 'redact-prop' },

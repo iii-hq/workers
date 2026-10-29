@@ -1,22 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { z } from 'zod'
 import { getIiiClient, type IiiClient } from '@/lib/iii-client'
-import { useWorkerLifecycle } from './use-worker-lifecycle'
+import { useWorkersChanged } from './use-workers-changed'
 
 /**
  * Generic presence probe for an OPTIONAL standalone engine worker. Answers a
  * single question — "is worker `workerName` connected right now?" — so callers
- * can gate worker-specific UI + RPC on it and never trigger "function not
- * found".
+ * can gate worker-specific UI + RPC on it and never call a function that is
+ * not registered.
  *
- * Presence is fed by two signals, mirroring the harness probe:
- *   1. An initial `engine::workers::list` read on mount.
- *   2. A real-time `worker` add/remove lifecycle trigger, so the UI reacts the
- *      instant the worker is added or removed — whether from the CLI
- *      (`iii trigger compose::add worker=<name>`) or another surface.
+ * Presence is read from `engine::workers::list`: once on mount, and again on
+ * every join or leave `engine::on-workers-changed` announces, so the UI
+ * reacts the instant the worker is added or removed — whether from the CLI
+ * (`iii call compose::add`) or another surface.
  *
- * Each consumer MUST pass a unique `watchFnId` so its browser-local handler for
- * the `worker` trigger does not collide with another presence probe's.
+ * Each consumer MUST pass a unique `watchFnId` so its browser-local handler
+ * does not collide with another presence probe's.
  */
 
 export interface WorkerPresence {
@@ -26,58 +24,28 @@ export interface WorkerPresence {
   loading: boolean
 }
 
-const workerEventSchema = z.object({
-  operation: z.string().optional(),
-  stage: z.string().optional(),
-  worker: z.string().nullable().optional(),
-  source: z.unknown().optional(),
-})
-type WorkerEvent = z.infer<typeof workerEventSchema>
-
-function parseWorkerEvent(payload: unknown): WorkerEvent | null {
-  const parsed = workerEventSchema.safeParse(payload)
-  return parsed.success ? parsed.data : null
-}
-
-/**
- * Is this lifecycle event about the named worker? `worker` / `source` may
- * carry a label around the name (`workers/ide`, `ide@0.3`), so the name is
- * matched as a whole token, never as a substring: `ide` must not match
- * `provider-openai`, nor `memory` match `memory-consolidate`.
- */
-export function eventMatchesWorker(
-  evt: Pick<WorkerEvent, 'worker' | 'source'>,
-  workerName: string,
-): boolean {
-  const escaped = workerName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const token = new RegExp(`(^|[^a-z0-9_-])${escaped}(?=$|[^a-z0-9_-])`, 'i')
-  if (typeof evt.worker === 'string' && token.test(evt.worker)) return true
-  if (evt.source != null) {
-    try {
-      return token.test(JSON.stringify(evt.source))
-    } catch {
-      // non-serialisable source; fall through
-    }
-  }
-  return false
+/** Whether an `engine::workers::list` answer lists a worker named `name`. */
+export function workerListed(response: unknown, name: string): boolean {
+  const workers = (response as { workers?: unknown } | null)?.workers
+  return (
+    Array.isArray(workers) &&
+    workers.some(
+      (worker) => (worker as { name?: unknown } | null)?.name === name,
+    )
+  )
 }
 
 async function checkWorkerPresent(
   client: IiiClient,
   name: string,
 ): Promise<boolean> {
-  const res = await client.trigger<{ workers?: Array<{ name?: unknown }> }>(
-    'engine::workers::list',
-    {},
-  )
-  const workers = Array.isArray(res?.workers) ? res.workers : []
-  return workers.some((w) => w?.name === name)
+  return workerListed(await client.call('engine::workers::list', {}), name)
 }
 
 export interface UseWorkerPresenceOptions {
   /** Engine worker name to probe, e.g. `shell` or `approval-gate`. */
   workerName: string
-  /** Unique base id for this probe's browser-local `worker` trigger handler. */
+  /** Unique base id for this probe's browser-local workers-changed handler. */
   watchFnId: string
   /**
    * Only run against the real backend; pass `false` for the mock/Storybook
@@ -94,34 +62,29 @@ export function useWorkerPresence({
   const [present, setPresent] = useState<boolean>(!enabled)
   const [loading, setLoading] = useState<boolean>(enabled)
 
-  // Live add/remove so installing or dropping the worker mid-session flips the
-  // UI without a reload. `workerName` is a stable literal per consumer, so this
-  // callback's identity does not churn the lifecycle subscription.
-  const handleEvent = useCallback(
-    (payload: unknown) => {
-      const evt = parseWorkerEvent(payload)
-      if (
-        !evt ||
-        !eventMatchesWorker(evt, workerName) ||
-        evt.stage !== 'done'
-      ) {
-        return
+  // Live joins and leaves, so installing or dropping the worker mid-session
+  // flips the UI without a reload: each one re-reads the list. `workerName`
+  // is a stable literal per consumer, so this callback's identity does not
+  // churn the observer.
+  const handleChange = useCallback(() => {
+    void (async () => {
+      try {
+        const client = await getIiiClient()
+        setPresent(await checkWorkerPresent(client, workerName))
+      } catch {
+        // Keep the last answer; the next event reads again.
       }
-      if (evt.operation === 'add') setPresent(true)
-      else if (evt.operation === 'remove') setPresent(false)
-    },
-    [workerName],
-  )
+    })()
+  }, [workerName])
 
-  useWorkerLifecycle({
+  useWorkersChanged({
     enabled,
     fnId: watchFnId,
-    operations: ['add', 'remove'],
-    onEvent: handleEvent,
+    onChange: handleChange,
   })
 
-  // One-time presence probe on mount. Live changes arrive through the `worker`
-  // trigger above; no polling.
+  // One-time presence probe on mount. Live changes arrive through the
+  // workers-changed observer above; no polling.
   useEffect(() => {
     if (!enabled) {
       setLoading(false)
@@ -149,7 +112,7 @@ export function useWorkerPresence({
 }
 
 /**
- * Whether the probed worker is connected and its functions safe to trigger.
+ * Whether the probed worker is connected and its functions safe to call.
  * False during the initial presence probe and while the worker is absent.
  */
 export function isWorkerPresent(status: WorkerPresence): boolean {

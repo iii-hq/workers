@@ -21,7 +21,7 @@ describe('shared table adoption', () => {
     expect(rawTableFiles).toEqual([])
   })
 
-  it('keeps the function and trigger schema table on the public primitive', () => {
+  it('keeps the function and observer schema table on the public primitive', () => {
     const source = readFileSync(
       new URL('../../../ui/src/catalog/SchemaTable.tsx', import.meta.url),
       'utf8',

@@ -39,12 +39,12 @@ async function readReady(): Promise<ReadyManifest> {
   return JSON.parse(await readFile(readyFile, 'utf8')) as ReadyManifest
 }
 
-async function triggerFromEngine(
+async function callFromEngine(
   sdk: ISdk,
   functionId: string,
   payload: Record<string, unknown>,
 ): Promise<unknown> {
-  return sdk.trigger({ function_id: functionId, payload })
+  return sdk.call({ function_id: functionId, payload })
 }
 
 async function runtime() {
@@ -71,11 +71,9 @@ async function runtime() {
 }
 
 async function listConfigurations(sdk: ISdk): Promise<ConfigurationEntry[]> {
-  const response = (await triggerFromEngine(
-    sdk,
-    'configuration::list',
-    {},
-  )) as { configurations?: ConfigurationEntry[] }
+  const response = (await callFromEngine(sdk, 'configuration::list', {})) as {
+    configurations?: ConfigurationEntry[]
+  }
   return response.configurations ?? []
 }
 
@@ -116,7 +114,7 @@ async function resolveConfiguration(
 }
 
 async function readRaw(sdk: ISdk, id: string): Promise<RawConfiguration> {
-  return (await triggerFromEngine(sdk, 'configuration::get', {
+  return (await callFromEngine(sdk, 'configuration::get', {
     id,
     raw: true,
   })) as RawConfiguration
@@ -127,9 +125,9 @@ async function expectNotFound(
   functionId: string,
   payload: Record<string, unknown>,
 ): Promise<void> {
-  await expect(
-    triggerFromEngine(sdk, functionId, payload),
-  ).rejects.toMatchObject({ code: 'NOT_FOUND' })
+  await expect(callFromEngine(sdk, functionId, payload)).rejects.toMatchObject({
+    code: 'NOT_FOUND',
+  })
 }
 
 function uniqueSaveUrl(): string {
@@ -224,7 +222,7 @@ test.describe('Provider configuration', () => {
     } finally {
       if (snapshot) {
         try {
-          await triggerFromEngine(sdk, 'configuration::set', {
+          await callFromEngine(sdk, 'configuration::set', {
             id: snapshot.id,
             value: snapshot.value,
           })

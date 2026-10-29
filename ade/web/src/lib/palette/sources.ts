@@ -143,8 +143,8 @@ export async function readEngine(): Promise<EngineSnapshot> {
     // Settled, not all: the two reads are independent, and a worker list that
     // times out should not also cost you the function list.
     const [workerResult, functionResult] = await Promise.allSettled([
-      client.trigger<{ workers?: unknown }>('engine::workers::list', {}),
-      client.trigger<{ functions?: unknown }>('engine::functions::list', {}),
+      client.call<{ workers?: unknown }>('engine::workers::list', {}),
+      client.call<{ functions?: unknown }>('engine::functions::list', {}),
     ])
     const failures = [
       workerResult.status === 'rejected'

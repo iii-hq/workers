@@ -25,7 +25,7 @@ import {
   type AttachmentFailure,
   describeWorkerFailure,
   fileToBase64,
-  type TriggerFn,
+  type CallFn,
 } from './shared'
 
 export const PUT_ATTACHMENT_FUNCTION_ID = 'session::put-attachment'
@@ -156,7 +156,7 @@ export function linkStoredAttachments(
 export async function uploadAttachments(
   sessionId: string,
   attachments: Attachment[],
-  trigger?: TriggerFn,
+  invoke?: CallFn,
 ): Promise<UploadedAttachments> {
   const storable = attachments.filter((a) => a.file || a.attachmentId)
   if (storable.length === 0) return EMPTY_UPLOAD
@@ -189,8 +189,8 @@ export async function uploadAttachments(
         mime: attachment.type || 'application/octet-stream',
         data,
       }
-      const response = trigger
-        ? ((await trigger(PUT_ATTACHMENT_FUNCTION_ID, request)) as
+      const response = invoke
+        ? ((await invoke(PUT_ATTACHMENT_FUNCTION_ID, request)) as
             | PutAttachmentResponse
             | null
             | undefined)

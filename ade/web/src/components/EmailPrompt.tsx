@@ -44,7 +44,7 @@ export function EmailPrompt() {
     void (async () => {
       try {
         const client = await getIiiClient()
-        await client.trigger(
+        await client.call(
           SUBSCRIBE_FN,
           { email: email.trim(), source: 'console_prompt' },
           { timeoutMs: SUBSCRIBE_TIMEOUT_MS },

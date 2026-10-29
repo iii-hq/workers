@@ -2,42 +2,41 @@ import { describe, expect, it, vi } from 'vitest'
 import type { IiiClient } from '@/lib/iii-client'
 import type {
   MessageQueuedEvent,
-  TriggersChangedEvent,
+  ObserversChangedEvent,
   TurnCompletedEvent,
   TurnStartedEvent,
 } from '@/types/iii-agent-event'
 import {
   startQueuedEventsSubscription,
-  startTriggersChangedSubscription,
+  startObserversChangedSubscription,
   startTurnEventsSubscription,
 } from './turn-events-live'
 
 function fakeClient() {
-  const triggers: Array<{
-    type: string
-    function_id: string
-    config?: unknown
+  const observers: Array<{
+    source: { function_id: string; filters?: unknown }
+    target: string
   }> = []
   const handlers = new Map<string, (p: unknown) => void>()
   const offHandler = vi.fn()
-  const triggerUnregister = vi.fn()
+  const disposeObserver = vi.fn()
 
   const on = vi.fn((fn: string, h: (p: unknown) => void) => {
     handlers.set(fn, h)
     return offHandler
   })
-  const registerTrigger = vi.fn(
-    (input: { type: string; function_id: string; config?: unknown }) => {
-      triggers.push(input)
-      return triggerUnregister
+  const observe = vi.fn(
+    (source: { function_id: string; filters?: unknown }, target: string) => {
+      observers.push({ source, target })
+      return disposeObserver
     },
   )
 
   const client = {
     browserId: 'console-test',
     on,
-    registerTrigger,
-    trigger: vi.fn(),
+    observe,
+    call: vi.fn(),
     addConnectionStateListener: vi.fn(),
     dispose: vi.fn(async () => {}),
   } as unknown as IiiClient
@@ -45,27 +44,31 @@ function fakeClient() {
   return {
     client,
     on,
-    triggers,
+    observers,
     offHandler,
-    triggerUnregister,
+    disposeObserver,
     fire: (fn: string, payload: unknown) => handlers.get(fn)?.(payload),
   }
 }
 
+const sessionFilter = (id: string) => ({ 'input.session_id': { $eq: id } })
+
 describe('startTurnEventsSubscription', () => {
-  it('binds harness::turn-completed scoped to the session', () => {
-    const { client, on, triggers } = fakeClient()
+  it('observes harness::on-turn-completed scoped to the session', () => {
+    const { client, on, observers } = fakeClient()
     startTurnEventsSubscription(client, 'sess-1', { onCompleted: () => {} })
 
     expect(on).toHaveBeenCalledWith(
       'iii::console::turn_completed',
       expect.any(Function),
     )
-    expect(triggers).toEqual([
+    expect(observers).toEqual([
       {
-        type: 'harness::turn-completed',
-        function_id: 'iii::console::turn_completed::console-test',
-        config: { session_id: 'sess-1' },
+        source: {
+          function_id: 'harness::on-turn-completed',
+          filters: sessionFilter('sess-1'),
+        },
+        target: 'iii::console::turn_completed::console-test',
       },
     ])
   })
@@ -86,16 +89,16 @@ describe('startTurnEventsSubscription', () => {
   })
 
   it('also binds turn-started when an onStarted handler is given', () => {
-    const { client, triggers, fire } = fakeClient()
+    const { client, observers, fire } = fakeClient()
     const onStarted = vi.fn()
     startTurnEventsSubscription(client, 'sess-1', {
       onCompleted: () => {},
       onStarted,
     })
 
-    expect(triggers.map((t) => t.type)).toEqual([
-      'harness::turn-completed',
-      'harness::turn-started',
+    expect(observers.map((o) => o.source.function_id)).toEqual([
+      'harness::on-turn-completed',
+      'harness::on-turn-started',
     ])
     const event: TurnStartedEvent = {
       session_id: 'sess-1',
@@ -107,33 +110,35 @@ describe('startTurnEventsSubscription', () => {
   })
 
   it('does not bind turn-started without an onStarted handler', () => {
-    const { client, triggers } = fakeClient()
+    const { client, observers } = fakeClient()
     startTurnEventsSubscription(client, 'sess-1', { onCompleted: () => {} })
-    expect(triggers).toHaveLength(1)
+    expect(observers).toHaveLength(1)
   })
 
-  it('unregisters handler and trigger on cleanup', () => {
-    const { client, offHandler, triggerUnregister } = fakeClient()
+  it('drops the handler and disposes the observer on cleanup', () => {
+    const { client, offHandler, disposeObserver } = fakeClient()
     const stop = startTurnEventsSubscription(client, 'sess-1', {
       onCompleted: () => {},
     })
     stop()
     expect(offHandler).toHaveBeenCalledTimes(1)
-    expect(triggerUnregister).toHaveBeenCalledTimes(1)
+    expect(disposeObserver).toHaveBeenCalledTimes(1)
   })
 })
 
 describe('startQueuedEventsSubscription', () => {
-  it('binds harness::message-queued scoped to the session and delivers', () => {
-    const { client, triggers, fire } = fakeClient()
+  it('observes harness::on-message-queued scoped to the session and delivers', () => {
+    const { client, observers, fire } = fakeClient()
     const onQueued = vi.fn()
     startQueuedEventsSubscription(client, 'sess-1', onQueued)
 
-    expect(triggers).toEqual([
+    expect(observers).toEqual([
       {
-        type: 'harness::message-queued',
-        function_id: 'iii::console::message_queued::console-test',
-        config: { session_id: 'sess-1' },
+        source: {
+          function_id: 'harness::on-message-queued',
+          filters: sessionFilter('sess-1'),
+        },
+        target: 'iii::console::message_queued::console-test',
       },
     ])
     const event: MessageQueuedEvent = {
@@ -146,50 +151,52 @@ describe('startQueuedEventsSubscription', () => {
     expect(onQueued).toHaveBeenCalledWith(event)
   })
 
-  it('unregisters handler and trigger on cleanup', () => {
-    const { client, offHandler, triggerUnregister } = fakeClient()
+  it('drops the handler and disposes the observer on cleanup', () => {
+    const { client, offHandler, disposeObserver } = fakeClient()
     const stop = startQueuedEventsSubscription(client, 'sess-1', () => {})
     stop()
     expect(offHandler).toHaveBeenCalledTimes(1)
-    expect(triggerUnregister).toHaveBeenCalledTimes(1)
+    expect(disposeObserver).toHaveBeenCalledTimes(1)
   })
 })
 
-describe('startTriggersChangedSubscription', () => {
-  it('binds harness::triggers-changed scoped to the session and delivers', () => {
-    const { client, triggers, fire } = fakeClient()
+describe('startObserversChangedSubscription', () => {
+  it('observes harness::on-observers-changed scoped to the session and delivers', () => {
+    const { client, observers, fire } = fakeClient()
     const onChanged = vi.fn()
-    startTriggersChangedSubscription(client, 'sess-1', onChanged)
+    startObserversChangedSubscription(client, 'sess-1', onChanged)
 
-    expect(triggers).toEqual([
+    expect(observers).toEqual([
       {
-        type: 'harness::triggers-changed',
-        function_id: 'iii::console::triggers_changed::console-test',
-        config: { session_id: 'sess-1' },
+        source: {
+          function_id: 'harness::on-observers-changed',
+          filters: sessionFilter('sess-1'),
+        },
+        target: 'iii::console::observers_changed::console-test',
       },
     ])
-    const event: TriggersChangedEvent = { session_id: 'sess-1', timestamp: 1 }
-    fire('iii::console::triggers_changed', event)
+    const event: ObserversChangedEvent = { session_id: 'sess-1', timestamp: 1 }
+    fire('iii::console::observers_changed', event)
     expect(onChanged).toHaveBeenCalledWith(event)
   })
 
   it("drops another session's doorbell (shared handler id)", () => {
     const { client, fire } = fakeClient()
     const onChanged = vi.fn()
-    startTriggersChangedSubscription(client, 'sess-1', onChanged)
+    startObserversChangedSubscription(client, 'sess-1', onChanged)
 
-    fire('iii::console::triggers_changed', {
+    fire('iii::console::observers_changed', {
       session_id: 'sess-2',
       timestamp: 1,
     })
     expect(onChanged).not.toHaveBeenCalled()
   })
 
-  it('unregisters handler and trigger on cleanup', () => {
-    const { client, offHandler, triggerUnregister } = fakeClient()
-    const stop = startTriggersChangedSubscription(client, 'sess-1', () => {})
+  it('drops the handler and disposes the observer on cleanup', () => {
+    const { client, offHandler, disposeObserver } = fakeClient()
+    const stop = startObserversChangedSubscription(client, 'sess-1', () => {})
     stop()
     expect(offHandler).toHaveBeenCalledTimes(1)
-    expect(triggerUnregister).toHaveBeenCalledTimes(1)
+    expect(disposeObserver).toHaveBeenCalledTimes(1)
   })
 })

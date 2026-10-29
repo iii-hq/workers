@@ -7,8 +7,8 @@
  * download it (`browser::chromium::install`, a Chrome for Testing build kept
  * in the worker's cache directory).
  *
- * Progress arrives as `browser::chromium-install-progress` events — no
- * polling. A follower subscribes before it starts the download, and reads
+ * Progress arrives as `browser::on-chromium-install-progress` events — no
+ * polling. A follower observes them before it starts the download, and reads
  * `browser::chromium::status` exactly once if the events go quiet for a while
  * (a missed terminal event, a worker that restarted mid-download).
  *
@@ -18,16 +18,16 @@
  */
 
 import { useSyncExternalStore } from 'react'
-import { subscribeEngineTrigger } from '@/lib/engine-trigger'
 import { functionRegistered } from '@/lib/function-presence'
 import { getIiiClient, type IiiClient } from '@/lib/iii-client'
+import { subscribeObserved } from '@/lib/observe-events'
 import { isMissingFunction } from '@/lib/secrets'
 
 export const BROWSER_WORKER = 'browser'
 export const CHROMIUM_STATUS_FN = 'browser::chromium::status'
 export const CHROMIUM_INSTALL_FN = 'browser::chromium::install'
 export const BROWSER_DOCTOR_FN = 'browser::doctor'
-export const CHROMIUM_PROGRESS_TRIGGER = 'browser::chromium-install-progress'
+export const CHROMIUM_PROGRESS_FN = 'browser::on-chromium-install-progress'
 /** The marker the browser worker puts in every "no Chromium" error. */
 export const CHROMIUM_MISSING_MARKER = 'chromium_missing'
 /** How long the events may go quiet before the follower reads status once. */
@@ -203,18 +203,18 @@ export function chromiumMissing(state: ChromiumState | null): boolean {
   return state !== null && state.engine === 'chromium' && !state.found
 }
 
-type TriggerOnly = Pick<IiiClient, 'trigger'>
+type CallOnly = Pick<IiiClient, 'call'>
 
 /**
  * Ask the browser worker. `null` when no browser worker answers either
  * function; other failures reject.
  */
 export async function readChromiumState(
-  client?: TriggerOnly,
+  client?: CallOnly,
 ): Promise<ChromiumState | null> {
   const iii = client ?? (await getIiiClient())
   try {
-    const status = await iii.trigger<ChromiumStatusResponse>(
+    const status = await iii.call<ChromiumStatusResponse>(
       CHROMIUM_STATUS_FN,
       {},
       { timeoutMs: 15_000 },
@@ -224,7 +224,7 @@ export async function readChromiumState(
     if (!isMissingFunction(error)) throw error
   }
   try {
-    const doctor = await iii.trigger<BrowserDoctorResponse>(
+    const doctor = await iii.call<BrowserDoctorResponse>(
       BROWSER_DOCTOR_FN,
       {},
       { timeoutMs: 15_000 },
@@ -256,8 +256,8 @@ export interface FollowInstallOptions {
   signal?: AbortSignal
   silenceMs?: number
   /** Test seams. */
-  client?: TriggerOnly
-  subscribe?: typeof subscribeEngineTrigger
+  client?: CallOnly
+  subscribe?: typeof subscribeObserved
 }
 
 function errorText(error: unknown): string {
@@ -274,8 +274,8 @@ function withoutMarker(message: string): string {
 }
 
 /**
- * Start a download and follow it to its end. Subscribes to the progress
- * trigger first, then calls `browser::chromium::install`, and resolves on
+ * Start a download and follow it to its end. Observes the progress
+ * function first, then calls `browser::chromium::install`, and resolves on
  * the job's `done` or `failed` event. If no event arrives for `silenceMs`,
  * it reads `browser::chromium::status` once; the silence timer re-arms only
  * when a new event arrives, never after that read.
@@ -288,7 +288,7 @@ export function followChromiumInstall(
     force,
     signal,
     silenceMs = CHROMIUM_SILENCE_MS,
-    subscribe = subscribeEngineTrigger,
+    subscribe = subscribeObserved,
   } = options
   return new Promise<ChromiumInstallOutcome>((resolve) => {
     let settled = false
@@ -299,7 +299,7 @@ export function followChromiumInstall(
     let seen = 0
     // Events that land before `install` answered with the job id.
     const early: ChromiumInstallProgress[] = []
-    let client: TriggerOnly | undefined = options.client
+    let client: CallOnly | undefined = options.client
 
     const finish = (outcome: ChromiumInstallOutcome) => {
       if (settled) return
@@ -403,7 +403,7 @@ export function followChromiumInstall(
       }
       try {
         const off = await subscribe(
-          CHROMIUM_PROGRESS_TRIGGER,
+          CHROMIUM_PROGRESS_FN,
           {},
           (payload) => {
             const progress = parseProgress(payload)
@@ -423,7 +423,7 @@ export function followChromiumInstall(
       }
       let started: InstallResponse | null
       try {
-        started = await client.trigger<InstallResponse>(
+        started = await client.call<InstallResponse>(
           CHROMIUM_INSTALL_FN,
           force ? { force: true } : {},
           { timeoutMs: 30_000 },

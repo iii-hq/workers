@@ -9,9 +9,9 @@ import { ChatView } from './ChatView'
 import type { ComposerSubmitPayload } from './Composer'
 import { DEFAULT_SYSTEM_PROMPT_STATE } from './system-prompt-selection'
 
-const statusTrigger = vi.hoisted(() => vi.fn())
+const statusCall = vi.hoisted(() => vi.fn())
 vi.mock('@/lib/iii-client', () => ({
-  getIiiClient: async () => ({ trigger: statusTrigger }),
+  getIiiClient: async () => ({ call: statusCall }),
 }))
 // No conversations provider unless a test installs one.
 const ctx = vi.hoisted(() => ({ value: null as unknown }))
@@ -86,7 +86,7 @@ function render(
 beforeEach(() => {
   ctx.value = null
   composer.mounts = 0
-  statusTrigger.mockReset().mockResolvedValue(null)
+  statusCall.mockReset().mockResolvedValue(null)
   stream.mockClear()
   composer.props = null
 })
@@ -140,7 +140,7 @@ it('sends selected prompt and skills on the first native turn despite imported a
     skills: ['ade-skill'],
   })
   await props.onSubmit({ text: 'Continue', attachments: [] })
-  expect(statusTrigger).toHaveBeenCalledWith('harness::status', {
+  expect(statusCall).toHaveBeenCalledWith('harness::status', {
     session_id: 'new-native-copy',
     verbose: true,
   })
@@ -171,7 +171,7 @@ it('sends an explicitly selected agent only when no native turn exists', async (
     }),
   )
   stream.mockClear()
-  statusTrigger.mockResolvedValue({ turn_id: 'native-turn' })
+  statusCall.mockResolvedValue({ turn_id: 'native-turn' })
   await render(configured).onSubmit({ text: 'Continue', attachments: [] })
   expect(stream).toHaveBeenCalledWith(
     'Continue',
@@ -180,7 +180,7 @@ it('sends an explicitly selected agent only when no native turn exists', async (
   )
 })
 it('inherits established native turn configuration after reopening without requiring a new project selection', async () => {
-  statusTrigger.mockResolvedValue({ turn_id: 'native-turn' })
+  statusCall.mockResolvedValue({ turn_id: 'native-turn' })
   const props = render({
     ...session,
     model: 'ade::chosen',
@@ -206,16 +206,16 @@ it('inherits established native turn configuration after reopening without requi
 
 it('checks turn state again on every send when a previous native turn disappears', async () => {
   const props = render({ ...session, model: 'ade::chosen', workingDir: null })
-  statusTrigger.mockResolvedValueOnce({ turn_id: 'native-turn' })
+  statusCall.mockResolvedValueOnce({ turn_id: 'native-turn' })
   await props.onSubmit({ text: 'Continue', attachments: [] })
   expect(stream).toHaveBeenCalledTimes(1)
   await props.onSubmit({ text: 'Continue after reset', attachments: [] })
-  expect(statusTrigger).toHaveBeenCalledTimes(2)
+  expect(statusCall).toHaveBeenCalledTimes(2)
   expect(stream).toHaveBeenCalledTimes(1)
 })
 it('allows only one first submission while its native turn lookup is pending', async () => {
   let resolveStatus!: (status: null) => void
-  statusTrigger.mockReturnValueOnce(
+  statusCall.mockReturnValueOnce(
     new Promise((resolve) => {
       resolveStatus = resolve
     }),
@@ -228,7 +228,7 @@ it('allows only one first submission while its native turn lookup is pending', a
   const first = props.onSubmit({ text: 'First', attachments: [] })
   const second = props.onSubmit({ text: 'Duplicate', attachments: [] })
   await second
-  expect(statusTrigger).toHaveBeenCalledTimes(1)
+  expect(statusCall).toHaveBeenCalledTimes(1)
   expect(stream).not.toHaveBeenCalled()
   resolveStatus(null)
   await first
@@ -277,7 +277,7 @@ it('puts a send the imported-session check turns away back into the draft', asyn
     size: 3,
   }
   // The composer has already cleared itself when the lookup fails.
-  statusTrigger.mockRejectedValueOnce({
+  statusCall.mockRejectedValueOnce({
     code: 'invocation_failed',
     message: 'state is down',
   })
@@ -345,7 +345,7 @@ describe('a side chat quote', () => {
       quote,
       onQuoteSent,
     })
-    statusTrigger.mockRejectedValueOnce({
+    statusCall.mockRejectedValueOnce({
       code: 'invocation_failed',
       message: 'state is down',
     })

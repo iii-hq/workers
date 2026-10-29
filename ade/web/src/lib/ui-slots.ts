@@ -13,14 +13,14 @@ import type {
   ConfigFormLayout,
   ConfigFormProps,
   ContextSectionRegistration,
-  FunctionTriggerRenderer,
+  FunctionCallRenderer,
   MentionRendererRegistration,
   OverlayRegistration,
   PageRegistration,
   ProviderConfigFormProps,
   SessionChipRegistration,
   SessionTurnSummaryRegistration,
-  TriggerActivityRenderer,
+  ObserverActivityRenderer,
 } from '@/types/injectable-ui'
 
 export interface RegisteredPage extends PageRegistration {
@@ -31,13 +31,13 @@ export interface RegisteredPage extends PageRegistration {
 }
 
 export interface RegisteredRenderer {
-  renderer: FunctionTriggerRenderer
+  renderer: FunctionCallRenderer
   scope: string
   path: string
 }
 
-export interface RegisteredTriggerActivityRenderer {
-  renderer: TriggerActivityRenderer
+export interface RegisteredObserverActivityRenderer {
+  renderer: ObserverActivityRenderer
   scope: string
   path: string
 }
@@ -87,7 +87,7 @@ export const CONTEXT_PANEL_GROUPS = [
   'prs',
   'assets',
   'subagents',
-  'triggers',
+  'observers',
   'links',
   'tracking',
 ] as const
@@ -177,8 +177,8 @@ export type UiAssetsStatus = 'loading' | 'ready' | 'unavailable'
 
 const pagesStore = createStore<RegisteredPage>()
 const renderersStore = createStore<RegisteredRenderer>()
-const triggerActivityRenderersStore =
-  createStore<RegisteredTriggerActivityRenderer>()
+const observerActivityRenderersStore =
+  createStore<RegisteredObserverActivityRenderer>()
 const configFormsStore = createStore<RegisteredConfigForm>()
 const providerConfigFormsStore = createStore<RegisteredProviderConfigForm>()
 const sessionChipsStore = createStore<RegisteredSessionChip>()
@@ -211,10 +211,10 @@ export function registerExtRenderer(entry: RegisteredRenderer): () => void {
   return renderersStore.add(entry)
 }
 
-export function registerExtTriggerActivityRenderer(
-  entry: RegisteredTriggerActivityRenderer,
+export function registerExtObserverActivityRenderer(
+  entry: RegisteredObserverActivityRenderer,
 ): () => void {
-  return triggerActivityRenderersStore.add(entry)
+  return observerActivityRenderersStore.add(entry)
 }
 
 /** Duplicate configuration id: last registration wins in lookups. */
@@ -341,8 +341,8 @@ export function getExtPages(): readonly RegisteredPage[] {
   return pagesStore.get()
 }
 
-export function getExtTriggerActivityRenderers(): readonly RegisteredTriggerActivityRenderer[] {
-  return triggerActivityRenderersStore.get()
+export function getExtObserverActivityRenderers(): readonly RegisteredObserverActivityRenderer[] {
+  return observerActivityRenderersStore.get()
 }
 
 /**
@@ -468,10 +468,10 @@ export function useExtRenderers(): readonly RegisteredRenderer[] {
   )
 }
 
-export function useExtTriggerActivityRenderers(): readonly RegisteredTriggerActivityRenderer[] {
+export function useExtObserverActivityRenderers(): readonly RegisteredObserverActivityRenderer[] {
   return useSyncExternalStore(
-    triggerActivityRenderersStore.subscribe,
-    triggerActivityRenderersStore.get,
+    observerActivityRenderersStore.subscribe,
+    observerActivityRenderersStore.get,
     () => EMPTY,
   )
 }

@@ -3,13 +3,13 @@
  * model). Tabs live in the console worker's layout store
  * (`<data_dir>/workspace.json`, read and written through
  * `console::workspace::get` / `set` — `lib/workspace-layout.ts`), so the
- * layout follows the engine. The console rings `console::workspace::changed`
+ * layout follows the engine. The console calls `console::workspace::on-changed`
  * after every write and the query re-reads on the ring, so a tab created in
  * another browser (or opened by an agent or an injected page through
  * `console::workspace::open`) shows up here at once, without a reload. The
- * console also rings every binding once when it registers, which catches this
- * tab up after its first read and after each reconnect. The strip polls only
- * until that first ring proves the binding live, and returning to the tab
+ * console also rings each new observer once when it is accepted, which
+ * catches this tab up after its first read and after each reconnect. The strip polls only
+ * until that first ring proves the observer active, and returning to the tab
  * re-reads a stale copy.
  *
  * Every mutation applies OPTIMISTICALLY to the `['workspaceLayout']` cache
@@ -66,11 +66,11 @@ import {
 const LOCAL_KEY = 'iii-workspace-tabs'
 const SESSION_ACTIVE_KEY = 'iii-workspace-active'
 const POINTER_WRITE_DELAY_MS = 150
-/** Per-tab handler for `console::workspace::changed`; `client.on` appends
+/** Per-tab handler observing `console::workspace::on-changed`; `client.on` appends
  *  `::<browserId>`. The `iii::` prefix keeps the rings out of user-function
  *  telemetry. */
 const WORKSPACE_CHANGED_FN = 'iii::console::workspace_changed'
-/** Backoff cap for re-binding the ring after a failed client bootstrap. */
+/** Backoff cap for observing the ring again after a failed client bootstrap. */
 const RING_RETRY_MAX_MS = 30_000
 
 type LocalState = WorkspaceState
@@ -266,7 +266,7 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
     let cancelled = false
     let retry: number | undefined
     let offHandler: (() => void) | undefined
-    let offTrigger: (() => void) | undefined
+    let offObserver: (() => void) | undefined
     const ring = () => {
       void writer
         .whenIdle()
@@ -279,18 +279,17 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
         const client = await getIiiClient()
         if (cancelled) return
         offHandler = client.on(WORKSPACE_CHANGED_FN, ring)
-        offTrigger = client.registerTrigger({
-          type: 'console::workspace::changed',
-          function_id: `${WORKSPACE_CHANGED_FN}::${client.browserId}`,
-          config: {},
-        })
+        offObserver = client.observe(
+          'console::workspace::on-changed',
+          `${WORKSPACE_CHANGED_FN}::${client.browserId}`,
+        )
       } catch {
-        offTrigger?.()
+        offObserver?.()
         offHandler?.()
-        offTrigger = undefined
+        offObserver = undefined
         offHandler = undefined
         // The client bootstrap can fail and later succeed (the layout query
-        // retries on its own); keep binding, re-reading on focus meanwhile.
+        // retries on its own); keep trying, re-reading on focus meanwhile.
         if (cancelled) return
         retry = window.setTimeout(
           () => void bind(attempt + 1),
@@ -302,7 +301,7 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
     return () => {
       cancelled = true
       window.clearTimeout(retry)
-      offTrigger?.()
+      offObserver?.()
       offHandler?.()
     }
   }, [qc, writer])

@@ -112,6 +112,13 @@ describe('parseWorkspaceTabs', () => {
     expect(tabs[1].screens).toEqual(['ext:browser', 'ext:github'])
   })
 
+  it('reads a stored Triggers screen as the Observers page', () => {
+    const tabs = parseWorkspaceTabs({
+      tabs: [{ id: 'obs', columns: 2, screens: ['chat', 'ext:triggers'] }],
+    })
+    expect(tabs[0].screens).toEqual(['chat', 'ext:observers'])
+  })
+
   it('round-trips valid pane ids and strips only malformed identity metadata', () => {
     const tabs = parseWorkspaceTabs({
       tabs: [

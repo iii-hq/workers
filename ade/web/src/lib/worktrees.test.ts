@@ -9,9 +9,9 @@ import {
   shortWorktreeId,
   WORKTREE_CLAIM_FUNCTION_ID,
   WORKTREE_GET_FUNCTION_ID,
-  WORKTREE_LAND_BLOCKED_TRIGGER,
-  WORKTREE_LANDED_TRIGGER,
-  WORKTREE_LIFECYCLE_TRIGGERS,
+  WORKTREE_LIFECYCLE_FUNCTIONS,
+  WORKTREE_ON_LAND_BLOCKED_FN,
+  WORKTREE_ON_LANDED_FN,
   WORKTREE_LIFECYCLES,
   WORKTREE_LIST_FUNCTION_ID,
   WORKTREE_RELEASE_FUNCTION_ID,
@@ -28,21 +28,21 @@ describe('worktree control-plane wiring', () => {
     expect(WORKTREE_RELEASE_FUNCTION_ID).toBe('worktree::release')
   })
 
-  it('binds the worktree trigger types', () => {
-    expect(WORKTREE_LANDED_TRIGGER).toBe('worktree::landed')
-    expect(WORKTREE_LAND_BLOCKED_TRIGGER).toBe('worktree::land-blocked')
+  it('observes the worktree event functions', () => {
+    expect(WORKTREE_ON_LANDED_FN).toBe('worktree::on-landed')
+    expect(WORKTREE_ON_LAND_BLOCKED_FN).toBe('worktree::on-land-blocked')
   })
 
-  it('the lifecycle feed covers all six trigger types the worker emits', () => {
+  it('the lifecycle feed covers all six event functions the worker calls', () => {
     // The graph page refreshes on ANY of these; a missing one means a stale
     // graph for that mutation.
-    expect([...WORKTREE_LIFECYCLE_TRIGGERS]).toEqual([
-      'worktree::created',
-      'worktree::claimed',
-      'worktree::released',
-      'worktree::removed',
-      'worktree::landed',
-      'worktree::land-blocked',
+    expect([...WORKTREE_LIFECYCLE_FUNCTIONS]).toEqual([
+      'worktree::on-created',
+      'worktree::on-claimed',
+      'worktree::on-released',
+      'worktree::on-removed',
+      'worktree::on-landed',
+      'worktree::on-land-blocked',
     ])
   })
 

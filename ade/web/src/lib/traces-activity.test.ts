@@ -6,14 +6,10 @@ import {
 } from './traces-activity'
 
 function fakeClient() {
-  const triggers: Array<{
-    type: string
-    function_id: string
-    config?: unknown
-  }> = []
+  const observers: Array<{ source: unknown; target: string }> = []
   const handlers = new Map<string, (p: unknown) => void>()
   const offHandlers = new Map<string, ReturnType<typeof vi.fn>>()
-  const triggerUnregister = vi.fn()
+  const disposeObserver = vi.fn()
 
   const on = vi.fn((fn: string, handler: (p: unknown) => void) => {
     handlers.set(fn, handler)
@@ -21,35 +17,33 @@ function fakeClient() {
     offHandlers.set(fn, off)
     return off
   })
-  const registerTrigger = vi.fn(
-    (input: { type: string; function_id: string; config?: unknown }) => {
-      triggers.push(input)
-      return triggerUnregister
-    },
-  )
+  const observe = vi.fn((source: unknown, target: string) => {
+    observers.push({ source, target })
+    return disposeObserver
+  })
 
   const client = {
     browserId: 'console-test',
     on,
-    registerTrigger,
+    observe,
     addConnectionStateListener: vi.fn(() => vi.fn()),
-    trigger: vi.fn(),
+    call: vi.fn(),
     dispose: vi.fn(async () => {}),
   } as unknown as IiiClient
 
   return {
     client,
     on,
-    registerTrigger,
-    triggers,
-    triggerUnregister,
+    observe,
+    observers,
+    disposeObserver,
     offHandlers,
     fire: (fn: string, frame: unknown) => handlers.get(fn)?.(frame),
   }
 }
 
 describe('extractTraceActivityIds', () => {
-  it('reads trace_ids out of the trigger payload, keeping strings only', () => {
+  it('reads trace_ids out of the span event, keeping strings only', () => {
     expect(
       extractTraceActivityIds({ trace_ids: ['a', 'b', 7, null, 'c'] }),
     ).toEqual(['a', 'b', 'c'])
@@ -64,19 +58,18 @@ describe('extractTraceActivityIds', () => {
 })
 
 describe('startTraceActivityFeed', () => {
-  it("registers the handler and a `type:'trace'` trigger", () => {
-    const { client, on, triggers } = fakeClient()
+  it('registers the handler and observes observability::on-span', () => {
+    const { client, on, observers } = fakeClient()
     startTraceActivityFeed(client, () => {})
 
     expect(on).toHaveBeenCalledWith(
       'iii::console::trace_activity',
       expect.any(Function),
     )
-    expect(triggers).toEqual([
+    expect(observers).toEqual([
       {
-        type: 'trace',
-        function_id: 'iii::console::trace_activity::console-test',
-        config: {},
+        source: 'observability::on-span',
+        target: 'iii::console::trace_activity::console-test',
       },
     ])
   })
@@ -94,13 +87,13 @@ describe('startTraceActivityFeed', () => {
     expect(onTraceIds).toHaveBeenCalledWith(['t-1', 't-2'])
   })
 
-  it('unregisters the handler and trigger on cleanup', () => {
-    const { client, offHandlers, triggerUnregister } = fakeClient()
+  it('drops the handler and disposes the observer on cleanup', () => {
+    const { client, offHandlers, disposeObserver } = fakeClient()
     const stop = startTraceActivityFeed(client, () => {})
     stop()
     expect(
       offHandlers.get('iii::console::trace_activity'),
     ).toHaveBeenCalledTimes(1)
-    expect(triggerUnregister).toHaveBeenCalledTimes(1)
+    expect(disposeObserver).toHaveBeenCalledTimes(1)
   })
 })

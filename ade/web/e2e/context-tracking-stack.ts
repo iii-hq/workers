@@ -133,7 +133,7 @@ export const test = base.extend<{ stack: Stack }>({
         id: K,
         payload: Record<string, unknown> = {},
       ): Promise<Results[K]> =>
-        client.trigger({
+        client.call({
           function_id: id,
           payload,
           timeoutMs: 5000,

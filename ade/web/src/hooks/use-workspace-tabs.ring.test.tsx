@@ -28,7 +28,7 @@ let root: Root
 let host: HTMLDivElement
 let server: WorkspaceLayoutValue
 let handlers: Map<string, () => void>
-let bindings: { type: string }[]
+let observers: { source: string; target: string }[]
 
 const home = (screens: string[], name?: string): WorkspaceLayoutValue => ({
   tabs: [
@@ -43,8 +43,8 @@ const client = () => ({
     handlers.set(id, handler)
     return () => handlers.delete(id)
   },
-  registerTrigger: (input: { type: string }) => {
-    bindings.push(input)
+  observe: (source: string, target: string) => {
+    observers.push({ source, target })
     return () => {}
   },
 })
@@ -81,7 +81,7 @@ beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
   vi.clearAllMocks()
   handlers = new Map()
-  bindings = []
+  observers = []
   server = home(['chat'])
   host = document.createElement('div')
   document.body.append(host)
@@ -128,16 +128,16 @@ describe('workspace layout ring', () => {
     expect(api.tabs[0].name).toBe('Main')
   })
 
-  it('binds again after the client bootstrap fails', async () => {
+  it('observes again after the client bootstrap fails', async () => {
     vi.useFakeTimers()
     vi.mocked(getIiiClient).mockRejectedValueOnce(new Error('runtime failed'))
     await mount()
     await settle()
-    expect(bindings).toHaveLength(0)
+    expect(observers).toHaveLength(0)
 
     await settle(1_000)
-    expect(bindings).toEqual([
-      expect.objectContaining({ type: 'console::workspace::changed' }),
+    expect(observers).toEqual([
+      expect.objectContaining({ source: 'console::workspace::on-changed' }),
     ])
   })
 
@@ -151,7 +151,7 @@ describe('workspace layout ring', () => {
     await settle(15_000)
     expect(fetchWorkspaceLayout).toHaveBeenCalledTimes(1)
 
-    // The console rings every binding once when it lands: a catch-up read.
+    // The console rings each observer once when it is accepted: a catch-up read.
     server = home(['chat', 'traces'])
     await ring()
     await settle()

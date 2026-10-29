@@ -116,7 +116,7 @@ pub fn router(state: AppState) -> Router {
         .route("/runtime", get(runtime_handler))
         .route("/ws", get(proxy::ws_proxy));
 
-    // `/probe` runs the trigger-catalog test request server-side so the panel
+    // `/probe` runs the observers page's test request server-side so the panel
     // can read a redirect's real status (302 etc.) — a browser `fetch` cannot.
     // Only mounted when an engine client is present; the target host is derived
     // server-side, never taken from the request, so it cannot be an SSRF lever.

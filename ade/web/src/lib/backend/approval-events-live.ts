@@ -1,13 +1,14 @@
 /**
- * Live subscription to approval-gate's pending-inbox triggers, scoped to one
+ * Live observers of approval-gate's pending-inbox events, scoped to one
  * session, plus the catch-up read. Replaces the `agent::events`
- * `turn_state_changed` / `awaiting_approval[]` mirror: the gate now emits
- * discrete `approval::pending-created` / `approval::pending-resolved` events,
- * and `approval::list-pending` rebuilds the inbox after a reconnect.
+ * `turn_state_changed` / `awaiting_approval[]` mirror: the gate calls
+ * `approval::on-pending-created` / `approval::on-pending-resolved` for each
+ * held call, and `approval::list-pending` rebuilds the inbox after a
+ * reconnect.
  *
- * Same two-step binding + `iii::` handler-prefix convention as
- * `lib/sessions/events.ts` and `turn-events-live.ts`; the engine evaluates the
- * `{ session_id }` config filter.
+ * Same two-step observer + `iii::` handler-prefix convention as
+ * `lib/sessions/events.ts` and `turn-events-live.ts`; iii applies the
+ * `input.session_id` filter before delivery.
  */
 
 import type { IiiClient } from '@/lib/iii-client'
@@ -19,10 +20,10 @@ import type {
 
 const CREATED_FN = 'iii::console::approval_pending_created'
 const RESOLVED_FN = 'iii::console::approval_pending_resolved'
-const CREATED_TRIGGER = 'approval::pending-created'
-const RESOLVED_TRIGGER = 'approval::pending-resolved'
+const ON_PENDING_CREATED_FN = 'approval::on-pending-created'
+const ON_PENDING_RESOLVED_FN = 'approval::on-pending-resolved'
 
-type ClientSubset = Pick<IiiClient, 'browserId' | 'on' | 'registerTrigger'>
+type ClientSubset = Pick<IiiClient, 'browserId' | 'on' | 'observe'>
 
 export interface ApprovalEventHandlers {
   onCreated: (record: PendingApprovalRecord) => void
@@ -34,14 +35,14 @@ type PendingApprovalIdentity = Pick<
   'session_id' | 'function_call_id'
 >
 
-/** Stable inbox slot shared by each approval stage for one function trigger. */
+/** Stable inbox slot shared by each approval stage for one function call. */
 export function pendingApprovalKey(record: PendingApprovalIdentity): string {
   return `${record.session_id}:${record.function_call_id}`
 }
 
 /**
  * Revision within an inbox slot. A generic approval can transition into a
- * filesystem approval without changing its function-trigger id, so deduping by
+ * filesystem approval without changing its function-call id, so deduping by
  * slot alone hides the follow-up prompt until refresh.
  */
 export function pendingApprovalRevision(record: PendingApprovalRecord): string {
@@ -70,29 +71,33 @@ export function acceptPendingApprovalRevision(
 function bind<P>(
   client: ClientSubset,
   handlerFn: string,
-  triggerType: string,
+  functionId: string,
   sessionId: string | undefined,
   onEvent: (payload: P) => void,
 ): () => void {
   const off = client.on(handlerFn, (payload: unknown) => {
     if (!payload || typeof payload !== 'object') return
     // The handler id is shared by every live stream (client.on fans out);
-    // the engine-side trigger filter is per-binding, so another session's
+    // each observer's filter names one session, so another session's
     // events also land here — drop them.
     const sid = (payload as { session_id?: unknown }).session_id
     if (sessionId !== undefined && typeof sid === 'string' && sid !== sessionId)
       return
     onEvent(payload as P)
   })
-  const offTrigger = client.registerTrigger({
-    type: triggerType,
-    function_id: `${handlerFn}::${client.browserId}`,
-    config: sessionId ? { session_id: sessionId } : {},
-  })
+  const offObserver = client.observe(
+    {
+      function_id: functionId,
+      ...(sessionId
+        ? { filters: { 'input.session_id': { $eq: sessionId } } }
+        : {}),
+    },
+    `${handlerFn}::${client.browserId}`,
+  )
   return () => {
     off()
     try {
-      offTrigger()
+      offObserver()
     } catch {
       // SDK already disposed; nothing to do.
     }
@@ -100,8 +105,9 @@ function bind<P>(
 }
 
 /**
- * Bind `approval::pending-created` + `approval::pending-resolved` for one
- * session. Returns a cleanup that unregisters both handlers and triggers.
+ * Observe `approval::on-pending-created` + `approval::on-pending-resolved`
+ * for one session. Returns a cleanup that drops both handlers and disposes
+ * both observers.
  */
 export function startApprovalEventsSubscription(
   client: ClientSubset,
@@ -112,14 +118,14 @@ export function startApprovalEventsSubscription(
     bind<PendingApprovalRecord>(
       client,
       CREATED_FN,
-      CREATED_TRIGGER,
+      ON_PENDING_CREATED_FN,
       sessionId,
       handlers.onCreated,
     ),
     bind<PendingResolvedEvent>(
       client,
       RESOLVED_FN,
-      RESOLVED_TRIGGER,
+      ON_PENDING_RESOLVED_FN,
       sessionId,
       handlers.onResolved,
     ),
@@ -135,10 +141,10 @@ export function startApprovalEventsSubscription(
  * gate is absent or unreachable (best-effort).
  */
 export async function listPendingApprovals(
-  client: Pick<IiiClient, 'trigger'>,
+  client: Pick<IiiClient, 'call'>,
   sessionId?: string,
 ): Promise<PendingApprovalRecord[]> {
-  const res = await client.trigger<{ pending?: PendingApprovalRecord[] }>(
+  const res = await client.call<{ pending?: PendingApprovalRecord[] }>(
     'approval::list-pending',
     sessionId ? { session_id: sessionId } : { limit: 500 },
   )

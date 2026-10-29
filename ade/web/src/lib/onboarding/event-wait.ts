@@ -1,13 +1,13 @@
 /**
  * Waiting without polling. A setup step that waits for something — a compose
  * operation to finish, a worker to connect, a configuration entry to appear —
- * subscribes to the trigger types that announce the change, reads the state
+ * observes the functions that announce the change, reads the state
  * once, and reads it again only when one of those events arrives:
  *
- *   1. arm the subscriptions (before the work they follow is started, so
+ *   1. arm the observers (before the work they follow is started, so
  *      nothing is missed),
  *   2. run `start` (kick off the work), then one `check` that covers the
- *      instant before the subscriptions were live,
+ *      instant before the observers were active,
  *   3. one `check` per relevant event (serialized; a burst coalesces),
  *   4. at most one `check` after `silenceMs` without a relevant event — the
  *      safety net for a missed delivery, re-armed only by the next event,
@@ -16,17 +16,19 @@
  * Nothing here re-reads on a timer: a quiet system costs no requests.
  */
 
-import { subscribeEngineTrigger } from '@/lib/engine-trigger'
+import { subscribeObserved } from '@/lib/observe-events'
 
-export interface WakeTrigger {
-  /** Trigger type, e.g. `compose-operation` or `engine::workers-available`. */
-  type: string
-  config?: Record<string, unknown>
+/** A function whose calls wake the wait, with the observer's args and filters. */
+export interface WakeSource {
+  /** e.g. `compose::on-operation-progress` or `engine::on-workers-changed`. */
+  function_id: string
+  args?: Record<string, unknown>
+  filters?: Record<string, unknown>
 }
 
 export type WaitCause =
   | { kind: 'start' }
-  | { kind: 'event'; type: string; payload: unknown }
+  | { kind: 'event'; functionId: string; payload: unknown }
   | { kind: 'silence' }
 
 /** A finished wait. Wrapped so `undefined` can be a result. */
@@ -44,15 +46,15 @@ export type EventVerdict = 'check' | 'progress' | 'ignore'
 export interface WaitOptions<T> {
   /** Base for the browser-local handler ids (`iii::console::<what>`). */
   handler: string
-  /** Subscriptions armed before `start` and the first check. */
-  triggers: readonly WakeTrigger[]
+  /** Observers armed before `start` and the first check. */
+  sources: readonly WakeSource[]
   /**
-   * Runs once the triggers are armed: start the work being followed. `arm`
-   * adds a subscription (an operation id known only once started).
+   * Runs once the observers are armed: start the work being followed. `arm`
+   * adds an observer (an operation id known only once started).
    */
-  start?: (arm: (trigger: WakeTrigger) => Promise<void>) => Promise<void>
+  start?: (arm: (source: WakeSource) => Promise<void>) => Promise<void>
   /** Classify one event; synchronous. Defaults to `check`. A throw fails the wait. */
-  onEvent?: (payload: unknown, type: string) => EventVerdict
+  onEvent?: (payload: unknown, functionId: string) => EventVerdict
   /** Read the state once: `{ value }` finishes, `null` keeps waiting, a throw fails. */
   check: (cause: WaitCause) => Promise<Done<T> | null>
   timeoutMs: number
@@ -122,18 +124,22 @@ export function waitForEvents<T>(options: WaitOptions<T>): Promise<T> {
       }, options.silenceMs)
     }
 
-    const arm = async (trigger: WakeTrigger): Promise<void> => {
+    const arm = async (source: WakeSource): Promise<void> => {
       if (settled) return
       try {
-        const off = await subscribeEngineTrigger(
-          trigger.type,
-          trigger.config ?? {},
+        const off = await subscribeObserved(
+          source.function_id,
+          {
+            ...(source.args ? { args: source.args } : {}),
+            ...(source.filters ? { filters: source.filters } : {}),
+          },
           (payload) => {
             if (settled) return
             if (options.signal?.cancelled) return cancelled()
             let verdict: EventVerdict
             try {
-              verdict = options.onEvent?.(payload, trigger.type) ?? 'check'
+              verdict =
+                options.onEvent?.(payload, source.function_id) ?? 'check'
             } catch (error) {
               finish({ error })
               return
@@ -141,7 +147,11 @@ export function waitForEvents<T>(options: WaitOptions<T>): Promise<T> {
             if (verdict === 'ignore') return
             armSilence()
             if (verdict === 'check') {
-              void runCheck({ kind: 'event', type: trigger.type, payload })
+              void runCheck({
+                kind: 'event',
+                functionId: source.function_id,
+                payload,
+              })
             }
           },
           { handler: options.handler },
@@ -149,8 +159,8 @@ export function waitForEvents<T>(options: WaitOptions<T>): Promise<T> {
         if (settled) off()
         else disposers.push(off)
       } catch {
-        // No live subscription (an engine without this trigger type): the
-        // start check and the silence check still run.
+        // No live observer (the client refused it): the start check and the
+        // silence check still run.
       }
     }
 
@@ -166,7 +176,7 @@ export function waitForEvents<T>(options: WaitOptions<T>): Promise<T> {
     disposers.push(onCancel(options.signal, cancelled))
 
     void (async () => {
-      await Promise.all(options.triggers.map(arm))
+      await Promise.all(options.sources.map(arm))
       try {
         await options.start?.(arm)
       } catch (error) {

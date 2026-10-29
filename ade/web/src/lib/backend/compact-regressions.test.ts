@@ -15,7 +15,7 @@ vi.mock('@/lib/iii-client', () => ({ getIiiClient: vi.fn() }))
 
 type Handler = (payload: Record<string, unknown>) => unknown
 
-const trigger = vi.fn()
+const call = vi.fn()
 let handlers: Record<string, Handler> = {}
 
 const user = (id: string, text: string): TranscriptItem =>
@@ -77,17 +77,17 @@ beforeEach(() => {
       entry_ids: ['e_cmp_1_started', 'e_cmp_1_outcome'],
     }),
   }
-  trigger.mockReset()
-  trigger.mockImplementation(async (id: string, payload: never) => {
+  call.mockReset()
+  call.mockImplementation(async (id: string, payload: never) => {
     const handler = handlers[id]
     if (!handler) throw new Error(`unexpected ${id}`)
     return handler(payload)
   })
-  vi.mocked(getIiiClient).mockResolvedValue({ trigger } as never)
+  vi.mocked(getIiiClient).mockResolvedValue({ call } as never)
 })
 
 const payloadOf = (functionId: string) =>
-  trigger.mock.calls.find(([id]) => id === functionId)?.[1] as
+  call.mock.calls.find(([id]) => id === functionId)?.[1] as
     | Record<string, unknown>
     | undefined
 
@@ -160,7 +160,7 @@ describe('/compact persistence', () => {
 
 describe('the model-switch preview window', () => {
   // The investigated session's anchor: the summary's verbatim tail opens
-  // mid-turn at an assistant call, `trigger_fired` bookkeeping sits between
+  // mid-turn at an assistant call, `observer_fired` bookkeeping sits between
   // notifications, and a `model_notice` replays as a user message. The
   // preview's window must match what the harness assembles.
   it('a mid-turn anchor opens the next window at its assistant boundary', () => {
@@ -170,7 +170,7 @@ describe('the model-switch preview window', () => {
       spawnResult('r1', 'c1'),
       assistant('a2', 'Executor running.'),
       user('n1', '[notification] obs04-kan6-review-a9d3-r2: done'),
-      custom('tf1', 'trigger_fired', { key: 'obs04-kan6-review-a9d3' }),
+      custom('tf1', 'observer_fired', { key: 'obs04-kan6-review-a9d3' }),
       spawnCall('a3', 'c2'),
       spawnResult('r3', 'c2'),
       assistant('a4', 'Round 3 queued.'),
@@ -181,7 +181,7 @@ describe('the model-switch preview window', () => {
         timestamp: 5,
       }),
       user('n2', '[notification] obs04-kan6-exec-e5b1-r3: done'),
-      custom('tf2', 'trigger_fired', { key: 'obs04-kan6-exec-e5b1' }),
+      custom('tf2', 'observer_fired', { key: 'obs04-kan6-exec-e5b1' }),
       custom('mn', 'model_notice', { text: 'runtime context changed' }),
       assistant('a5', 'Reviewing round 3.'),
     ]

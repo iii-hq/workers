@@ -359,6 +359,8 @@ const MIGRATED_SCREENS: Record<string, string> = {
   github: 'github',
   // The ide worker's page was `shell` until its UI/configuration rename.
   'ext:shell': 'ide',
+  // The catalog's Observers page was `triggers` before 0.26.
+  'ext:triggers': 'observers',
 }
 
 /** Configuration is deliberately NOT here: console settings open as an

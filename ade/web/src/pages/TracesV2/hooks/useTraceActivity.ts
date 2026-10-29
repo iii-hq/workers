@@ -1,6 +1,6 @@
 /**
- * Per-trace liveness for the timeline strip, fed by the engine's `trace`
- * trigger (`startTraceActivityFeed`).
+ * Per-trace liveness for the timeline strip, fed by the engine's
+ * `observability::on-span` source (`startTraceActivityFeed`).
  *
  * The trace LIST only ever carries ROOT spans, so for a queue-triggered
  * trace the row is the instant "publish" moment and says nothing about the

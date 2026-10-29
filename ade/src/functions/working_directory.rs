@@ -9,8 +9,7 @@
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, IIIClient, RegisterFunction, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -19,6 +18,10 @@ pub const PROPOSE_ID: &str = "console::working-directory::propose";
 pub const STAMP_SESSION_ID: &str = "console::working-directory::stamp-session";
 pub const GUIDANCE_ID: &str = "console::working-directory::inject-guidance";
 const ADOPT_ROOT_ID: &str = "shell::turns::adopt-root";
+/// The Harness hook point before each function call an agent makes.
+pub const PRE_CALL_HOOK_FN: &str = "harness::hook::on-pre-call";
+/// The Harness hook point before each generation.
+pub const PRE_GENERATE_HOOK_FN: &str = "harness::hook::on-pre-generate";
 
 const WORKING_DIRECTORY_GUIDANCE: &str = "Working-directory handoff (pre-verified Console capability): when the user explicitly asks you to create or clone a project in another directory and continue there, set it as the working directory, or open it as the chat workspace, call `console::working-directory::propose` after the directory exists with `{ \"path\": \"/absolute/path\", \"reason\": \"...\" }`. This exact function and payload are pre-verified while Console is connected, so call it directly without another discovery search. The function validates and canonicalizes the path; it does not silently move the chat. Console asks the user to confirm, then the chat and paired Shell follow together. Do not call it merely because you inspected or edited a file outside the current workspace.";
 
@@ -143,7 +146,7 @@ async fn propose(
         return Err(handler_error("working-directory path must not be empty"));
     }
     let validated = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "shell::workspace::validate".into(),
             payload: json!({ "path": requested_path }),
             action: None,
@@ -164,7 +167,7 @@ async fn propose(
         (request.session_id.as_deref(), request.turn_id.as_deref())
     {
         if let Err(error) = iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: ADOPT_ROOT_ID.into(),
                 payload: json!({
                     "session_id": session_id,
@@ -251,25 +254,26 @@ pub fn register(iii: &Arc<IIIClient>) {
     );
 }
 
-pub fn bind(iii: &IIIClient) -> Result<(), Error> {
-    iii.register_trigger(RegisterTriggerInput::new(
-        "harness::hook::pre-trigger",
-        STAMP_SESSION_ID,
-        json!({
+/// Observe the Harness hooks: stamp the session onto every call of
+/// `console::working-directory::propose`, and add the handoff guidance to
+/// every generation. The observers stay `pending` while the Harness is
+/// absent.
+pub fn observe_hooks(iii: &IIIClient) {
+    iii.observe(
+        Source::function(PRE_CALL_HOOK_FN).args(json!({
             "functions": [PROPOSE_ID],
             "timeout_ms": 5_000,
             "on_error": "fail_closed"
-        }),
-    ))?;
-    iii.register_trigger(RegisterTriggerInput::new(
-        "harness::hook::pre-generate",
-        GUIDANCE_ID,
-        json!({
+        })),
+        STAMP_SESSION_ID,
+    );
+    iii.observe(
+        Source::function(PRE_GENERATE_HOOK_FN).args(json!({
             "timeout_ms": 5_000,
             "on_error": "fail_open"
-        }),
-    ))?;
-    Ok(())
+        })),
+        GUIDANCE_ID,
+    );
 }
 
 #[cfg(test)]

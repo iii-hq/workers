@@ -1,12 +1,12 @@
 import { makeBackend, streamAssistant, streamFcall } from './helpers'
 
-const BODY = `## triggered
+const BODY = `## deployed
 
-approval was granted, the trigger fired, the downstream function returned
+approval was granted, the call ran, the downstream function returned
 the expected ack. nothing else to do here.`
 
 /**
- * Function trigger gated on user approval. The renderer shows approve/deny
+ * Function call gated on user approval. The renderer shows approve/deny
  * affordances; this scenario auto-resolves after a short wait so we can
  * see the lifecycle pending → running → done in motion.
  */
@@ -15,9 +15,9 @@ export const pendingApproval = makeBackend(
   async function* (_prompt, _model, opts) {
     const signal = opts?.signal
     yield* streamFcall({
-      functionId: 'trigger::run',
+      functionId: 'deploy::run',
       input: {
-        triggerId: 'deploy::staging',
+        target: 'staging',
         actor: 'you',
         confirm: 'this will redeploy staging — proceed?',
       },

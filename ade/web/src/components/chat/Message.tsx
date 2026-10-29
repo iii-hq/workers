@@ -1,9 +1,9 @@
 import { Bot, MessageSquareQuote, Sparkles } from 'lucide-react'
 import { useContext, useEffect, useRef } from 'react'
-import { FunctionTriggerCard } from '@/components/function-trigger/FunctionTriggerCard'
+import { FunctionCallCard } from '@/components/function-call/FunctionCallCard'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
-import type { TriggerRegistration } from '@/components/trigger-activity/model'
-import { TriggerActivityCard } from '@/components/trigger-activity/TriggerActivityCard'
+import type { ObserverRegistration } from '@/components/observer-activity/model'
+import { ObserverActivityCard } from '@/components/observer-activity/ObserverActivityCard'
 import { Caret } from '@/components/ui/Caret'
 import { Chip } from '@/components/ui/Chip'
 import { Prompt } from '@/components/ui/Prompt'
@@ -42,17 +42,17 @@ interface MessageProps {
   message: MessageType
   onResolveApproval?: (
     sessionId: string,
-    functionTriggerId: string,
+    functionCallId: string,
     decision: 'allow' | 'deny',
   ) => Promise<void>
   onAlwaysAllow?: (
     sessionId: string,
-    functionTriggerId: string,
+    functionCallId: string,
     functionId: string,
   ) => Promise<void>
   onResolveFilesystemAccess?: (
     sessionId: string,
-    functionTriggerId: string,
+    functionCallId: string,
     action: FilesystemAccessAction,
   ) => Promise<void>
   onManageFilesystemAccess?: () => void
@@ -65,11 +65,11 @@ interface MessageProps {
   /** Hydrate an unloaded function-call card when it opens; other roles
       ignore it. May resolve to whether the read succeeded. */
   onLoadDetails?: () => Promise<boolean> | undefined
-  /** Registration detail for a trigger-fired or notification message
+  /** Registration detail for an observer-fired or notification message
       (resolved in MessageList). */
-  registration?: TriggerRegistration
-  /** The machine-authored wake entry paired with a durable trigger record. */
-  triggerNotification?: UserMessageType
+  registration?: ObserverRegistration
+  /** The machine-authored wake entry paired with a durable observer record. */
+  observerNotification?: UserMessageType
   /** Current child-session identity for a direct spawn seed message. */
   spawnContext?: SpawnTaskContext
   /** Session agent profile name shown on assistant message headers. */
@@ -109,7 +109,7 @@ function MessageBody({
   defaultOpenCalls,
   onLoadDetails,
   registration,
-  triggerNotification,
+  observerNotification,
   sessionId,
   spawnContext,
   agentName,
@@ -117,7 +117,7 @@ function MessageBody({
   switch (message.role) {
     case 'user':
       return message.notification ? (
-        <TriggerActivityCard
+        <ObserverActivityCard
           notification={message}
           registration={registration}
           defaultOpen={defaultOpenCalls}
@@ -141,30 +141,29 @@ function MessageBody({
       )
     case 'thought':
       return <ThoughtMessage message={message} />
-    case 'function-trigger': {
+    case 'function-call': {
       const sessionId = message.sessionId
-      const functionTriggerId = message.functionTriggerId
+      const functionCallId = message.functionCallId
       let onApprove: (() => Promise<void>) | undefined
       let onDeny: (() => Promise<void>) | undefined
       let onAlwaysAllowHandler: (() => Promise<void>) | undefined
       let onResolveFilesystemAccessHandler:
         | ((action: FilesystemAccessAction) => Promise<void>)
         | undefined
-      if (onResolveApproval && sessionId && functionTriggerId) {
-        onApprove = () =>
-          onResolveApproval(sessionId, functionTriggerId, 'allow')
-        onDeny = () => onResolveApproval(sessionId, functionTriggerId, 'deny')
+      if (onResolveApproval && sessionId && functionCallId) {
+        onApprove = () => onResolveApproval(sessionId, functionCallId, 'allow')
+        onDeny = () => onResolveApproval(sessionId, functionCallId, 'deny')
       }
-      if (onAlwaysAllow && sessionId && functionTriggerId) {
+      if (onAlwaysAllow && sessionId && functionCallId) {
         onAlwaysAllowHandler = () =>
-          onAlwaysAllow(sessionId, functionTriggerId, message.functionId)
+          onAlwaysAllow(sessionId, functionCallId, message.functionId)
       }
-      if (onResolveFilesystemAccess && sessionId && functionTriggerId) {
+      if (onResolveFilesystemAccess && sessionId && functionCallId) {
         onResolveFilesystemAccessHandler = (action) =>
-          onResolveFilesystemAccess(sessionId, functionTriggerId, action)
+          onResolveFilesystemAccess(sessionId, functionCallId, action)
       }
       return (
-        <FunctionTriggerCard
+        <FunctionCallCard
           message={message}
           defaultOpen={defaultOpenCalls}
           onLoadDetails={onLoadDetails}
@@ -180,11 +179,11 @@ function MessageBody({
     case 'system':
       return message.kind === 'compaction' ? (
         <CompactionMarker message={message} />
-      ) : message.kind === 'trigger-fired' ? (
-        <TriggerActivityCard
+      ) : message.kind === 'observer-fired' ? (
+        <ObserverActivityCard
           record={message}
           registration={registration}
-          notification={triggerNotification}
+          notification={observerNotification}
           defaultOpen={defaultOpenCalls}
         />
       ) : (
@@ -230,7 +229,7 @@ function CompactionMarker({ message }: { message: SystemMessageType }) {
   )
 }
 
-export { parseNotification } from '@/components/trigger-activity/model'
+export { parseNotification } from '@/components/observer-activity/model'
 
 /**
  * The one-line hint for a reaction's collapsed payload: the firing session
@@ -257,9 +256,9 @@ function reactionEventHint(event: {
 }
 
 /**
- * HISTORICAL transcripts only: a trigger-fired task delivered into a session
- * back when bindings could target `harness::spawn`. New runs never produce
- * these — trigger delivery no longer creates agents — but old conversations
+ * HISTORICAL transcripts only: a reaction task delivered into a session by a
+ * binding that targeted `harness::spawn`. An observer's delivery never
+ * creates an agent, so new runs never produce these, but old conversations
  * must keep rendering faithfully.
  */
 function ReactionTaskMessage({ message }: { message: UserMessageType }) {
@@ -268,7 +267,7 @@ function ReactionTaskMessage({ message }: { message: UserMessageType }) {
   return (
     <article className="flex flex-col items-start gap-2">
       <Eyebrow as="header" className="text-ink-ghost">
-        <Prompt symbol="⚡">Trigger · reaction task</Prompt>
+        <Prompt symbol="⚡">Observer · reaction task</Prompt>
       </Eyebrow>
       <div className="max-w-[80%] border-l border-rule pl-4 pr-1 py-1 break-words text-ink-faint">
         <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">

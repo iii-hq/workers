@@ -60,7 +60,7 @@ export async function fetchTraceHiddenFunctionIds(): Promise<
 > {
   try {
     const client = await getIiiClient()
-    const res = await client.trigger<unknown>(FUNCTIONS_LIST_RPC, {
+    const res = await client.call<unknown>(FUNCTIONS_LIST_RPC, {
       include_internal: true,
     })
     return parseTraceHiddenIds(res)

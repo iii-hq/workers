@@ -6,11 +6,10 @@
  * instead of taking the SDK as a parameter. The transport remains shared,
  * while list summaries and full-span detail use separate RPC contracts.
  *
- * Timeout note: motia passes per-RPC timeouts to `sdk.trigger`. Our
- * `IiiClient.trigger` wrapper does not yet expose `timeoutMs`, so calls
- * here use the SDK's default invocation timeout (30s). If this becomes
- * a latency problem (long list requests, slow tree requests), extend
- * the wrapper rather than reaching past it. The list and detail contracts
+ * Timeout note: `IiiClient.call` takes a per-call `timeoutMs`; calls here
+ * use the client's default. If this becomes a latency problem (long list
+ * requests, slow tree requests), pass a timeout rather than reaching past
+ * the wrapper. The list and detail contracts
  * intentionally differ: list returns compact trace summaries, while spans
  * returns complete stored records.
  */
@@ -365,7 +364,7 @@ export async function fetchTraces(
 
   try {
     const client = await getIiiClient()
-    const response = await client.trigger<TracesWireResponse>(
+    const response = await client.call<TracesWireResponse>(
       TRACES_RPC_FUNCTIONS.list,
       payload,
     )
@@ -394,14 +393,14 @@ export async function fetchTraceSpans(
   try {
     const client = await getIiiClient()
     try {
-      const response = await client.trigger<TracesWireResponse>(
+      const response = await client.call<TracesWireResponse>(
         TRACES_RPC_FUNCTIONS.spans,
         payload,
       )
       return normalizeTraceSpansResponse(response, offset, limit)
     } catch (err) {
       if (!isFunctionUnavailable(err)) throw err
-      const response = await client.trigger<TracesWireResponse>(
+      const response = await client.call<TracesWireResponse>(
         TRACES_RPC_FUNCTIONS.list,
         payload,
       )
@@ -426,7 +425,7 @@ export async function fetchTraceTree(
 ): Promise<TraceTreeResponse> {
   try {
     const client = await getIiiClient()
-    return await client.trigger<TraceTreeResponse>(TRACES_RPC_FUNCTIONS.tree, {
+    return await client.call<TraceTreeResponse>(TRACES_RPC_FUNCTIONS.tree, {
       trace_id: traceId,
     })
   } catch (err) {
@@ -440,7 +439,7 @@ export async function fetchTraceTree(
 export async function clearTraces(): Promise<{ success: boolean }> {
   try {
     const client = await getIiiClient()
-    await client.trigger(TRACES_RPC_FUNCTIONS.clear, {})
+    await client.call(TRACES_RPC_FUNCTIONS.clear, {})
     return { success: true }
   } catch (err) {
     throw asError(err, 'Failed to clear traces')
@@ -453,7 +452,7 @@ export async function fetchTracesGroupBy(
   const payload = stripUndefined({ ...params })
   try {
     const client = await getIiiClient()
-    return await client.trigger<TracesGroupByResponse>(
+    return await client.call<TracesGroupByResponse>(
       TRACES_RPC_FUNCTIONS.groupBy,
       payload,
     )

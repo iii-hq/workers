@@ -1,9 +1,8 @@
 import { Check, Plus, RefreshCw } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { z } from 'zod'
 import { Button } from '@/components/ui/Button'
 import { Skeleton } from '@/components/ui/Skeleton'
-import { useWorkerLifecycle } from '@/hooks/use-worker-lifecycle'
+import { useWorkersChanged } from '@/hooks/use-workers-changed'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { getIiiClient } from '@/lib/iii-client'
 import type { ProviderListEntry } from '@/lib/models-catalog'
@@ -23,24 +22,13 @@ import { ProviderIcon } from './ProviderIcon'
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
 // not pane layout; see viewport-breakpoint-conformance.test.ts.
 
-/** Base id for the browser-local handler bound to the `worker` add trigger. */
+/** Base id for the browser-local handler observing worker joins. */
 const PROVIDER_ADD_WATCH_FN = 'console::provider-add-watch'
 
 type AddStatus =
   | { kind: 'adding'; progress?: number }
   | { kind: 'done' }
   | { kind: 'failed'; error: string }
-
-const workerEventSchema = z.object({
-  operation: z.string().optional(),
-  stage: z.string().optional(),
-  worker: z.string().nullable().optional(),
-  progress: z.number().nullable().optional(),
-  error: z
-    .object({ code: z.string().optional(), message: z.string().optional() })
-    .nullable()
-    .optional(),
-})
 
 export interface AddProviderPanelProps {
   /** Providers already declared to the router; defaults to the chat context. */
@@ -57,10 +45,10 @@ export interface AddProviderPanelProps {
 
 /**
  * Every provider worker the public registry publishes, with a one-tap add.
- * Adding runs `compose::add` — exactly what `iii trigger compose::add
- * worker=<name>` does in a terminal — and the row follows the worker
- * lifecycle (downloading → done) so the operator sees the same progress the
- * harness install shows. Once the worker registers with the router the
+ * Adding runs `compose::add` — exactly what `iii call compose::add` does in
+ * a terminal — and the row turns done the moment the worker connects, even
+ * when the add was started from a terminal. Once the worker registers with
+ * the router the
  * picker's provider list updates on its own; this panel only has to offer
  * the configuration shortcut.
  */
@@ -128,41 +116,32 @@ export function AddProviderPanel({
     }
   }, [installedWorkerNames, live])
 
-  const handleLifecycleEvent = useCallback((payload: unknown) => {
-    const parsed = workerEventSchema.safeParse(payload)
-    if (!parsed.success || parsed.data.operation !== 'add') return
-    const evt = parsed.data
-    const worker = typeof evt.worker === 'string' ? evt.worker : ''
-    if (!worker) return
-    setAdds((current) => {
-      const next = new Map(current)
-      if (evt.stage === 'done') {
-        next.set(worker, { kind: 'done' })
-      } else if (evt.stage === 'failed') {
-        next.set(worker, {
-          kind: 'failed',
-          error: evt.error?.message
-            ? normalizeErrorMessage(evt.error)
-            : 'failed to add the worker',
+  // A worker joined: read the list again, and finish every add it settles.
+  const handleWorkerJoined = useCallback(() => {
+    void fetchEngineWorkersList()
+      .then((list) => {
+        const names = list.workers
+          .map((worker) => worker.name)
+          .filter((name): name is string => typeof name === 'string')
+        setInstalled((current) => new Set([...current, ...names]))
+        setAdds((current) => {
+          const joined = names.filter(
+            (name) => current.get(name)?.kind === 'adding',
+          )
+          if (joined.length === 0) return current
+          const next = new Map(current)
+          for (const name of joined) next.set(name, { kind: 'done' })
+          return next
         })
-      } else {
-        next.set(worker, {
-          kind: 'adding',
-          progress: typeof evt.progress === 'number' ? evt.progress : undefined,
-        })
-      }
-      return next
-    })
-    if (evt.stage === 'done') {
-      setInstalled((current) => new Set([...current, worker]))
-    }
+      })
+      .catch(() => undefined)
   }, [])
 
-  useWorkerLifecycle({
+  useWorkersChanged({
     enabled: live && installedWorkerNames === undefined,
     fnId: PROVIDER_ADD_WATCH_FN,
-    operations: ['add'],
-    onEvent: handleLifecycleEvent,
+    events: ['worker_connected'],
+    onChange: handleWorkerJoined,
   })
 
   const addWorker = useCallback(
@@ -172,7 +151,7 @@ export function AddProviderPanel({
       void (async () => {
         const client = await getIiiClient()
         try {
-          await client.trigger(
+          await client.call(
             'compose::add',
             { workers: [name] },
             { timeoutMs: 600_000 },
@@ -372,7 +351,7 @@ export function AddProviderPanel({
       <p className="shrink-0 px-4 pb-3 font-sans text-[12px] leading-relaxed text-ink-ghost">
         Adding a provider runs <span className="font-mono">compose::add</span> —
         the same as{' '}
-        <span className="font-mono">iii trigger compose::add worker=…</span> in
+        <span className="font-mono">iii call compose::add worker=…</span> in
         your terminal. New providers still need credentials: configure them once
         they appear in the list.
       </p>

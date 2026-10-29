@@ -442,10 +442,7 @@ export const serviceCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = 
               'A function is exposed when any wildcard or metadata filter matches.',
             ),
             text('on_function_registration_function_id', 'Function registration hook', undefined, { optional: true }),
-            text('on_trigger_registration_function_id', 'Trigger registration hook', undefined, { optional: true }),
-            text('on_trigger_type_registration_function_id', 'Trigger type registration hook', undefined, {
-              optional: true,
-            }),
+            text('on_observer_registration_function_id', 'Observer registration hook', undefined, { optional: true }),
           ]),
         ],
       },
@@ -460,8 +457,7 @@ export const serviceCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = 
       'rbac.expose_functions[].match',
       'rbac.expose_functions[].metadata.*',
       'rbac.on_function_registration_function_id',
-      'rbac.on_trigger_registration_function_id',
-      'rbac.on_trigger_type_registration_function_id',
+      'rbac.on_observer_registration_function_id',
     ],
   },
   {

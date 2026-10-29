@@ -33,7 +33,7 @@ import {
   autoFixState,
   ghViewer,
 } from '@/lib/auto-fix'
-import type { SessionTriggerInfo } from '@/lib/backend/triggers'
+import type { SessionObserverInfo } from '@/lib/backend/observers'
 import {
   DISMISSED_PRS_KEY,
   dismissedPullRequests,
@@ -114,8 +114,8 @@ interface ChatAsideProps {
   sheetOpen: boolean
   onSheetOpenChange: (open: boolean) => void
   request: AsideRequest | null
-  triggers: readonly SessionTriggerInfo[]
-  onUnregisterTrigger: (subscriptionId: string) => Promise<void> | void
+  observers: readonly SessionObserverInfo[]
+  onDisposeObserver: (observerId: string) => Promise<void> | void
   landBlocked?: boolean
   /** The quote waiting in the side chat's composer (owned by the main chat). */
   pendingQuote: SideChatQuote | null
@@ -139,8 +139,8 @@ export function ChatAside({
   sheetOpen,
   onSheetOpenChange,
   request,
-  triggers,
-  onUnregisterTrigger,
+  observers,
+  onDisposeObserver,
   landBlocked,
   pendingQuote,
   onPendingQuoteChange,
@@ -226,7 +226,7 @@ export function ChatAside({
       try {
         const client = await getIiiClient()
         const tail = (sessionId: string, limit: number) =>
-          client.trigger<{ messages?: TranscriptItem[] }>(
+          client.call<{ messages?: TranscriptItem[] }>(
             'session::messages-tail',
             {
               session_id: sessionId,
@@ -240,7 +240,7 @@ export function ChatAside({
           (await tail(conversation.id, 20))?.messages ?? [],
         )
         if (!point) return null
-        const forked = await client.trigger<{
+        const forked = await client.call<{
           session_id: string
           meta: SessionMeta
         }>('session::fork', {
@@ -301,11 +301,11 @@ export function ChatAside({
       if (!askRef.current || current.status === 'working') return
       if (Object.keys(state).length === 0) return
       const client = await getIiiClient()
-      const trigger = client.trigger.bind(client)
+      const call = client.call.bind(client)
       const gh =
         ghReach === 'folder' && workingDir
-          ? folderGh(trigger, workingDir)
-          : githubWorkerGh(trigger)
+          ? folderGh(call, workingDir)
+          : githubWorkerGh(call)
       viewer ??= await ghViewer(gh)
       const { next, message } = await autoFixRound(gh, state, viewer)
       if (!alive) return
@@ -511,8 +511,8 @@ export function ChatAside({
         conversation={conversation}
         conversations={ctx.conversations}
         connectionState={ctx.connectionState}
-        triggers={triggers}
-        onUnregisterTrigger={onUnregisterTrigger}
+        observers={observers}
+        onDisposeObserver={onDisposeObserver}
         onOpenConversation={ctx.openConversationInPanel}
         shellAvailable={ctx.shellAvailable}
         githubAvailable={ctx.githubAvailable}

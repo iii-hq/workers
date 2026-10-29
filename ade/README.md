@@ -5,7 +5,7 @@
 **A single binary. A chat. A trace explorer. The whole [iii](https://github.com/iii-hq) engine in your browser.**
 
 <p>
-  <a href="#install"><img alt="Install: iii trigger compose::add worker=ade" src="https://img.shields.io/badge/install-iii%20trigger%20compose%3A%3Aadd%20worker%3Dade-0a84ff?style=flat-square"></a>
+  <a href="#install"><img alt="Install: iii call compose::add worker=ade" src="https://img.shields.io/badge/install-iii%20call%20compose%3A%3Aadd%20worker%3Dade-0a84ff?style=flat-square"></a>
   <a href="../LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg?style=flat-square"></a>
   <a href="https://www.rust-lang.org"><img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-rust-orange?style=flat-square&logo=rust&logoColor=white"></a>
   <a href="https://react.dev"><img alt="React 19" src="https://img.shields.io/badge/react-19-149eca?style=flat-square&logo=react&logoColor=white"></a>
@@ -24,14 +24,14 @@
 
 This worker used to be called `console`. Only its identity changed, so nothing that talks to it needs to be rewritten:
 
-- worker name, binary, Cargo package and registry entry: `console` → `ade` (`iii trigger compose::add worker=ade`, `npx skills add iii-hq/workers --skill ade`)
+- worker name, binary, Cargo package and registry entry: `console` → `ade` (`iii call compose::add worker=ade`, `npx skills add iii-hq/workers --skill ade`)
 - source directory: `console/` → `ade/`; dependents pin `ade` in their `iii.worker.yaml`
-- unchanged on purpose: the `console::*` function ids (`console::status`, `console::ui-manifest`, `console::workspace::*`, …), the `iii::console::*` stream topics, the `console` configuration entry, and the `console:script` / `console:style` trigger types shared through `iii-console-ui` / `@iii-dev/console-ui`
+- unchanged on purpose: the `console::*` function ids (`console::status`, `console::ui-manifest`, `console::workspace::*`, `console::ui::asset`, …), the `iii::console::*` stream topics, and the `console` configuration entry, shared through `iii-console-ui` / `@iii-dev/console-ui`
 
 ## Install
 
 ```bash
-iii trigger compose::add worker=ade
+iii call compose::add worker=ade
 ```
 
 This resolves the worker, writes its declaration to `worker-compose.yaml`, and reconciles the Compose project.
@@ -46,7 +46,7 @@ iii compose --up                 # engine on ws://127.0.0.1:49134
 
 ```bash
 # New terminal, same folder
-iii trigger compose::add worker=ade # UI + /ws proxy on :3113
+iii call compose::add worker=ade # UI + /ws proxy on :3113
 open http://127.0.0.1:3113
 ```
 
@@ -57,7 +57,7 @@ The browser hits `/` for the SPA shell and upgrades `/ws` to the engine WebSocke
 Chat runs on the [`harness`](https://github.com/iii-hq/workers/tree/main/harness) durable turn loop. Its manifest declares the whole stack as dependencies — [`session-manager`](https://github.com/iii-hq/workers/tree/main/session-manager) (the conversation store the sidebar, transcripts, and live token rendering are backed by), [`llm-router`](https://github.com/iii-hq/workers/tree/main/llm-router) (generation + the model catalog), [`context-manager`](https://github.com/iii-hq/workers/tree/main/context-manager) (the `/compact` summariser), [`approval-gate`](https://github.com/iii-hq/workers/tree/main/approval-gate) (human-in-the-loop approvals), and the provider workers — so a single command resolves and installs all of it:
 
 ```bash
-iii trigger compose::add worker=harness
+iii call compose::add worker=harness
 ```
 
 ### Connect a model: the setup wizard
@@ -77,7 +77,7 @@ The wizard opens by itself only where it can help: never once a model is connect
 
 After setup, every place that takes a provider key uses the same field: **Configure** in the model picker (applied at once, then checked — a key the provider refuses lists no models and is flagged as such), **Settings → Workers → llm-router**, and **Settings → Workers → judge-typesafe** (both apply on Save). It shows the reference and the masked key with **Replace** and **Remove**, offers a key found on the machine, and moves a plain-text or `${VAR}` value into the secrets worker. Where the consumer resolves `env://` references (the `environment` prop; `llm-router` does, `judge-typesafe` does not yet), it also offers keeping the key as an environment variable in the project's `.env`. Injected worker forms get it as `host.components.SecretKeyField`. A configured provider that lists no models stays in the picker, so its key can be fixed from there.
 
-Keys can come from the environment two ways. An `env://ANTHROPIC_API_KEY` reference is read by the secrets worker from the project's env file each time it is resolved, so an edit applies without a restart; the file is `.env` unless the secrets worker's `env_file` names another (one per environment or namespace, e.g. `.env.staging`), and the key field and the wizard name the configured file. Without any reference, `llm-router` falls back to a provider's credential env var (e.g. `ANTHROPIC_API_KEY`), read in the router's own process — in the harness template that means the project's `.env` plus `iii trigger compose::restart worker=llm-router`. See [`llm-router`](https://github.com/iii-hq/workers/tree/main/llm-router#configuration) for the credential model.
+Keys can come from the environment two ways. An `env://ANTHROPIC_API_KEY` reference is read by the secrets worker from the project's env file each time it is resolved, so an edit applies without a restart; the file is `.env` unless the secrets worker's `env_file` names another (one per environment or namespace, e.g. `.env.staging`), and the key field and the wizard name the configured file. Without any reference, `llm-router` falls back to a provider's credential env var (e.g. `ANTHROPIC_API_KEY`), read in the router's own process — in the harness template that means the project's `.env` plus `iii call compose::restart worker=llm-router`. See [`llm-router`](https://github.com/iii-hq/workers/tree/main/llm-router#configuration) for the credential model.
 
 Pick a model in the composer and send — the turn streams back through the harness loop.
 
@@ -85,14 +85,14 @@ Pick a model in the composer and send — the turn streams back through the harn
 <summary><strong>Programmatic check from the SDK</strong></summary>
 
 ```rust
-use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use iii_sdk::{register_worker, CallRequest, InitOptions};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
-    let result = iii.trigger(TriggerRequest {
+    let result = iii.call(CallRequest {
         function_id: "console::status".into(),
         payload: json!({}),
         action: None,
@@ -172,16 +172,16 @@ Full-fledged OpenTelemetry explorer over `engine::traces::*` and `engine::logs::
 - **Rich filtering** — status, time presets, min/max duration, arbitrary attribute key/value pairs, debounced free-text search, saved views
 - **Group by** — server-side aggregation with lazy per-group member expansion
 - **Span detail tabs** — info, attributes, events, errors, OTel logs, context (baggage), links
-- **Live updates** — the engine's coalesced `trace` trigger (trace ids only) drives a re-read of the touched traces; one seed read, then notify-then-query, no polling and no stream worker
+- **Live updates** — the engine's coalesced `observability::on-span` source (trace ids only) drives a re-read of the touched traces; one seed read, then notify-then-query, no polling and no stream worker
 
 ### Worktrees
 
 The human window into the [`worktree`](https://github.com/iii-hq/workers/tree/main/worktree) worker: parallel agent checkouts, ownership, and land outcomes. Lives in `web/src/pages/Worktrees/` and [`web/src/components/chat/`](web/src/components/chat). The whole surface is presence-gated: it appears only while the worktree worker is connected to the engine (the nav entry and picker tab hide; a direct `#/worktrees` hit lands on an install notice).
 
-- **Graph page** (`#/worktrees`) — repo, worktree, and owning-session nodes from `worktree::list { include_status: true }`, refreshed live off all six `worktree::*` lifecycle trigger types (poll fallback while bindings are unavailable), with a per-worktree detail panel: branch, base, advisory dev port, clean / ahead / behind, diffstat, and the integrated marker for squash- or rebase-landed branches
+- **Graph page** (`#/worktrees`) — repo, worktree, and owning-session nodes from `worktree::list { include_status: true }`, refreshed live off all six `worktree::on-*` lifecycle functions (poll fallback while observers are unavailable), with a per-worktree detail panel: branch, base, advisory dev port, clean / ahead / behind, diffstat, and the integrated marker for squash- or rebase-landed branches
 - **Picker tab** — the chat working-directory picker grows a **worktrees** tab next to directory browsing: picking a managed worktree validates the path and claims it for the conversation's session; the console-made claim auto-releases when the conversation points elsewhere (best-effort; the worker's prune sweep is the durable backstop). Worktrees with a land in progress are listed but not retargetable
 - **Working-dir badge** — a conversation rooted in a managed worktree shows branch, short id, dirty `*` / ahead `+n` indicators, and a lifecycle dot instead of the plain path chip; the raw path stays reachable as the tooltip
-- **Live land notices** — `worktree::landed` / `worktree::land-blocked` events surface in the chat as notices (target branch and merged sha, or the block reason and conflicted files) and refresh the badge
+- **Live land notices** — `worktree::on-landed` / `worktree::on-land-blocked` events surface in the chat as notices (target branch and merged sha, or the block reason and conflicted files) and refresh the badge
 
 ### Memory
 
@@ -192,7 +192,7 @@ The human window into the [`memory`](https://github.com/iii-hq/workers/tree/main
 - **Memories tab** — server-paged newest-first list with pin / edit-in-place / tombstone delete, a show-history toggle, and search that runs `memory::recall` (the ranked scorer, not a client filter)
 - **Graph tab** — entity hubs with memories as spokes: level-of-detail for large banks, draggable nodes, wheel zoom/pan, click a node for an inspect card
 - **Preview tab** — the whole turn before it happens: `memory::preview` composes the exact system-prompt rules section and the appended memories (relevance cut + budgets applied) for a hypothetical question, with clickable example questions from the bank's own content
-- **Live** — the page re-reads off `memory::item-changed` / `memory::bank-changed` (poll fallback), so memories appear the moment they're learned
+- **Live** — the page re-reads off `memory::on-item-changed` / `memory::on-bank-changed` (poll fallback), so memories appear the moment they're learned
 - **In chat** — a bank picker in the composer (session metadata `memory_bank`) and a memory chip on each assistant reply naming the bank, how many rules and memories fed the turn, and whether recall ran semantic; click it to expand the exact records
 
 ### Live catalogs
@@ -201,7 +201,7 @@ The composer's `@`-mentions and the model picker pull from the engine in real ti
 
 - `coder::search` (shell worker, path-only, fuzzy, `respect_gitignore`, no dot-entries) — the files half of the `@` menu, one call per settled keystroke → [`web/src/lib/file-search.ts`](web/src/lib/file-search.ts)
 - `engine::functions::list` — TTL-cached function list (`VITE_FUNCTIONS_LIST_CACHE_MS`, default 10s) → [`web/src/lib/functions-catalog.ts`](web/src/lib/functions-catalog.ts)
-- `router::models::list` — provider-grouped model catalog, refreshed live off the `router::models::changed` trigger type → [`web/src/lib/models-catalog.ts`](web/src/lib/models-catalog.ts)
+- `router::models::list` — provider-grouped model catalog, refreshed live by observing `router::models::on-changed` → [`web/src/lib/models-catalog.ts`](web/src/lib/models-catalog.ts)
 
 ### Theming
 
@@ -220,9 +220,39 @@ Light and dark themes via `data-theme` + CSS custom properties. Persisted to `lo
 | `console::workspace::get` (internal) | `{}` | `{ value, path }` — the raw layout document and the file it lives in |
 | `console::workspace::set` (internal) | `{ value, expected_revision? }` | `{ ok }` — replaces the document wholesale (the SPA's read-modify-write path). Every write stamps the document's `revision`; with `expected_revision` older than the stored one, nothing is written and the call fails `WORKSPACE_CONFLICT` |
 
-A screen is `chat`, `chat:<session-id>`, `traces`, `workers`, or `ext:<page-id>` for a worker page (`ext:ide`, `ext:browser`, `ext:editor`, ...). Call `open` with `{ screen: "chat", session_id: "<id>" }` to open a panel pinned to one conversation; the structured input is persisted as `chat:<session-id>`, and opening that exact session again reuses its existing panel. The workspace layout is stored by the console worker in `<data_dir>/workspace.json` (`data_dir` is a `console` configuration setting, default `data/ade`) and every write rings the `console::workspace::changed` trigger type (empty config, empty event: re-read with `list`), which each browser pointed at this engine binds to pick the change up at once (every binding is also rung once as it registers, which catches a browser up after its first read and after each reconnect; a tab polls only until that first ring arrives, and re-reads when it regains focus); it is ephemeral per-instance state and is deliberately kept out of the committed configuration YAML. `open` stays on the active tab when it already shows the screen, else switches to the tab that does, else places the screen beside an anchor column (adjacent empty column, any empty column, new column), else opens a fresh tab; `placement` reports which (`existing`, `empty_column`, `new_column`, `new_tab`). The anchor is `relative_to` — a screen in the same vocabulary, defaulting to `chat`, which matches whichever chat panel the active tab shows — and `direction` (`right`, the default, or `left`) picks the side of it. A named anchor (anything but `chat`) is looked for in every tab, the active one first, because the active pointer is whichever browser clicked last; an anchor mounted nowhere puts the column at the end of the active tab. `activate` (default `true`) stamps a function activation every time, pointer moved or not, so every open console switches to the tab holding the screen. `sizes` sets the tab's column widths — one positive number per column of the tab AFTER the call, normalized by their sum — in the same write that places the screen, so no other writer can land between placement and sizing; `list` reports the current widths to compute them from, and a list that does not match the column count fails with `WORKSPACE_INVALID_SIZES` rather than being ignored. It never replaces a mounted screen. `close` detaches the screen everywhere it is mounted and is idempotent; pass the same `screen: "chat"` and `session_id` to close one pinned conversation panel. Unknown screens fail with `WORKSPACE_INVALID_SCREEN`; an unreadable or unwritable `data_dir` with `WORKSPACE_UNAVAILABLE`.
+A screen is `chat`, `chat:<session-id>`, `traces`, `workers`, or `ext:<page-id>` for a worker page (`ext:ide`, `ext:browser`, `ext:editor`, ...). Call `open` with `{ screen: "chat", session_id: "<id>" }` to open a panel pinned to one conversation; the structured input is persisted as `chat:<session-id>`, and opening that exact session again reuses its existing panel. The workspace layout is stored by the console worker in `<data_dir>/workspace.json` (`data_dir` is a `console` configuration setting, default `data/ade`) and every write calls `console::workspace::on-changed` (no args, empty event: re-read with `list`), which each browser pointed at this engine observes to pick the change up at once (every observer is also rung once through itself when it is accepted, which catches a browser up after its first read and after each reconnect; a tab polls only until that first ring arrives, and re-reads when it regains focus); it is ephemeral per-instance state and is deliberately kept out of the committed configuration YAML. `open` stays on the active tab when it already shows the screen, else switches to the tab that does, else places the screen beside an anchor column (adjacent empty column, any empty column, new column), else opens a fresh tab; `placement` reports which (`existing`, `empty_column`, `new_column`, `new_tab`). The anchor is `relative_to` — a screen in the same vocabulary, defaulting to `chat`, which matches whichever chat panel the active tab shows — and `direction` (`right`, the default, or `left`) picks the side of it. A named anchor (anything but `chat`) is looked for in every tab, the active one first, because the active pointer is whichever browser clicked last; an anchor mounted nowhere puts the column at the end of the active tab. `activate` (default `true`) stamps a function activation every time, pointer moved or not, so every open console switches to the tab holding the screen. `sizes` sets the tab's column widths — one positive number per column of the tab AFTER the call, normalized by their sum — in the same write that places the screen, so no other writer can land between placement and sizing; `list` reports the current widths to compute them from, and a list that does not match the column count fails with `WORKSPACE_INVALID_SIZES` rather than being ignored. It never replaces a mounted screen. `close` detaches the screen everywhere it is mounted and is idempotent; pass the same `screen: "chat"` and `session_id` to close one pinned conversation panel. Unknown screens fail with `WORKSPACE_INVALID_SCREEN`; an unreadable or unwritable `data_dir` with `WORKSPACE_UNAVAILABLE`.
 
 Defined in [`src/functions/status.rs`](src/functions/status.rs) and [`src/functions/workspace.rs`](src/functions/workspace.rs); the file store is [`src/workspace_store.rs`](src/workspace_store.rs).
+
+### Observable functions
+
+The console hosts four private functions other workers and its own tabs observe. Each handler returns the event it is called with; none can be called from outside the console.
+
+| Function | Args | Delivery | Event |
+|---|---|---|---|
+| `console::ui::asset` | `{ kind: 'script' \| 'style' \| 'module', path }` | none: the function is never called. When the observer is accepted, the console calls its target (the worker's content function) through it with `{ path }` and serves the bytes. A later observer of the same path supersedes it (`UI_ASSET_SUPERSEDED`); a failed fetch rejects it (`UI_ASSET_FETCH_FAILED`, `UI_ASSET_TOO_LARGE`); an invalid `kind` or `path` is `INVALID_ARGS` | — |
+| `console::ui::on-assets-changed` | none | each new observer first receives `{ op: 'sync', assets }` through itself; then iii delivers every call | `{ op: 'set', asset: { path, kind, hash } }` or `{ op: 'delete', path }` |
+| `console::workspace::on-changed` | none | each new observer is rung once through itself; then iii delivers every call (store writes, throttled) | `{}` — re-read `console::workspace::list` |
+| `console::compose::on-changed` | none; filter on `input.kind`, `input.file`, `input.namespace` | iii delivers every call; the first observer starts the state watch, the last one closes it | `{ kind, file, namespace, state_dir, path, captured_at }` |
+
+```ts
+// ship a script asset (iii-console-ui does this for Rust workers)
+iii.observe(
+  { function_id: 'console::ui::asset', args: { kind: 'script', path: 'mywork/page.js' } },
+  'mywork::ui-content',
+)
+
+// follow the workspace layout from a page
+iii.observe('console::workspace::on-changed', 'mywork::layout-changed')
+
+// follow one compose file
+iii.observe(
+  { function_id: 'console::compose::on-changed', filters: { 'input.file': { $eq: '/srv/worker-compose.yaml' } } },
+  'mywork::compose-changed',
+)
+```
+
+The console itself observes `configuration::on-updated` (its own entry, with `console::on-config-change` as the target), `harness::hook::on-pre-call` (args `{ functions: ['console::working-directory::propose'] }` and the context-tracking functions) and `harness::hook::on-pre-generate` (working-directory and context-tracking guidance).
 
 ### Workers screen and the compose project
 
@@ -239,7 +269,7 @@ The console adds what the daemon does not expose, read from the compose file and
 | `console::compose::container` | `{ container, file? }` | One declaration; literal values whose names look like credentials are masked |
 | `console::compose::edit` | `{ container, worker?, run?, start_after?, environment?: { set, unset }, config_override?, file? }` | The accepted `compose::add` operation. The change merges with the declared entry, so masked values keep their file values; a new path must keep the container's name |
 
-`console::compose::changed` fires when the daemon writes `state.json` or the compose file changes (bind with an empty config; the event carries `kind`, `file`, `namespace`, `state_dir`, `path`, `captured_at`). Defined in [`src/compose/`](src/compose/).
+`console::compose::on-changed` is called when the daemon writes `state.json` or the compose file changes (no args; filter on `input.kind`, `input.file` or `input.namespace`; the event carries `kind`, `file`, `namespace`, `state_dir`, `path`, `captured_at`). The first observer starts the watch and the last one closes it. Defined in [`src/compose/`](src/compose/).
 
 ## Architecture
 
@@ -279,7 +309,7 @@ data_dir: data/ade    # ephemeral per-instance state: the workspace layout (defa
 |---|---|---|
 | `http_host` | `0.0.0.0` | HTTP bind address; set `127.0.0.1` for local access only. Applied at startup |
 | `http_port` | `3113` | Initial TCP port seed for `/`, `/assets/*`, and `/ws`; the stored `console.http_port` wins thereafter |
-| `injectable_ui` | `true` | When `false`, skips the `console:script` / `console:style` / `console:module` / `console:assets` trigger types, the `/ui` + `/vendor` routes, and the SPA loader (`console::ui-manifest` answers `disabled: true`) |
+| `injectable_ui` | `true` | When `false`, skips the `console::ui::asset` and `console::ui::on-assets-changed` functions, the `/ui` + `/vendor` routes, and the SPA loader (`console::ui-manifest` answers `disabled: true`) |
 | `data_dir` | `data/ade` | Initial seed for the directory holding ephemeral per-instance state — the workspace tabs/panes layout (`workspace.json`). Relative paths resolve against `III_COMPOSE_DIR` (or the process directory outside Compose); absolute and `~/` paths keep their meaning. The stored `console.data_dir` wins thereafter |
 
 The configuration entry also stores UI preferences and
@@ -315,7 +345,7 @@ removes it from the entry.
 | `GET /ui` | Injected-asset manifest JSON (same shape as `console::ui-manifest`). `no-cache` |
 | `GET /ui/*` | Current bytes for a registered injected UI asset. `no-cache` + `ETag: "<hash>"` (304 on `If-None-Match`) |
 | `GET /vendor/*` | Shared-dep ESM shims for injected scripts (react, `@iii-dev/console-ui`), generated at web build time. `no-cache` |
-| `GET /ws` (Upgrade) | WebSocket upgrade; transparent proxy to `engine_url` (drops browser-originated `registertriggertype` frames; stamps `metadata.internal` on `registerfunction`) |
+| `GET /ws` (Upgrade) | WebSocket upgrade; transparent proxy to `engine_url` (drops a browser `registerfunction` of the console's own observable functions — `console::ui::*`, `console::workspace::on-changed`, `console::compose::on-changed` — strips `private`, `args_format` and `observable` from browser registrations, and stamps `metadata.internal` on `registerfunction`) |
 | anything else | `404 Not Found` |
 
 The SPA bundle is embedded into the binary at compile time via [`rust-embed`](https://docs.rs/rust-embed) — the released `console` has no separate `dist/` directory, no side-car asset server, and no runtime filesystem dependency for the UI.
@@ -368,32 +398,32 @@ host.
 
 ## Injectable UI
 
-Workers extend the console at **runtime** — whole pages, function-trigger
-renderers, and layered trigger-activity renderers as plain React
+Workers extend the console at **runtime** — whole pages, function-call
+renderers, and layered observer-activity renderers as plain React
 components sharing the console's React instance
-(spec: `iii/tech-specs/2026-07-17-injectable-ui`). The console owns four
-injectable-UI trigger types:
+(spec: `iii/tech-specs/2026-07-17-injectable-ui`). A worker ships one asset
+by observing `console::ui::asset` with args `{ kind, path }`:
 
-| Type id | Registered by | Carries |
-|---|---|---|
-| `console:script` | workers | an ESM script asset; `config.path` (e.g. `state/page.js`) is its identity — re-registering a path overrides it (hot reload) |
-| `console:module` | workers | an ESM module served at `/ui/<path>` like a script (`.js`, same cap and per-worker toggle) but never imported at mount: a script loads it with `host.importModule(path)` (the ide's xterm terminal). Manifest and pushes carry it as kind `module` |
-| `console:style` | workers | a CSS asset, applied as a `<link>` swap |
-| `console:assets` | console tabs | the live-update subscription the console pushes `sync`/`set`/`delete` events to |
+| `kind` | Carries |
+|---|---|
+| `script` | an ESM script asset; `path` (e.g. `state/page.js`) is its identity — a later observer of the same path overrides it (hot reload) |
+| `module` | an ESM module served at `/ui/<path>` like a script (`.js`, same cap and per-worker toggle) but never imported at mount: a script loads it with `host.importModule(path)` (the ide's xterm terminal). Manifest and pushes carry it as kind `module` |
+| `style` | a CSS asset, applied as a `<link>` swap |
 
-The trigger's `function_id` is the worker's *content function*
-(`{path} → {content, content_type?}`); the console fetches over the bus,
-hashes, serves from `/ui/*`, and pushes invalidations so every open tab
-disposes the old module and re-imports the new one. Injected scripts default-
+The observer's target is the worker's *content function*
+(`{path} → {content, content_type?}`); once the observer is active the console
+calls it through the observer, hashes the bytes, serves them from `/ui/*`, and
+calls `console::ui::on-assets-changed`, which every open tab observes, so each
+tab disposes the old module and re-imports the new one. Injected scripts default-
 export `setup(host)` and register through `host.pages` (whole pages, opened
 through `host.panels.open` or `console::workspace::open`; built-in screens open through `host.panels.openScreen` (below); `#/worker/<scope>/<id>`
-renders one alone), `host.functionTriggers` (function-trigger message renderers —
+renders one alone), `host.functionCalls` (function-call message renderers —
 injected renderers dispatch before the built-in families, so matching a
 built-in id overrides it; `metadata.display` promotes the winning renderer's
-rich result into the collapsed chat flow), `host.triggerRenderers` (override
+rich result into the collapsed chat flow), `host.observerRenderers` (override
 the compact timeline display, expanded details, source section, and raw-data
-redaction for normalized registration/fired/retirement activities, with host
-fallbacks for every slot), and
+redaction for the normalized activities of a function's observers — observed,
+fired, retired — with host fallbacks for every slot), and
 `host.configForms` (provide the deliberate form body for one configuration id
 inside global Settings; dirty/save/reset and schema validation stay
 host-owned), and `host.mentions` (draw the hover preview of the worker's own
@@ -404,7 +434,7 @@ available editor width and height; contained layout remains the default.
 Renders are fenced by an ErrorBoundary and scoped under
 `data-iii-ui="<worker>"`. `console::ui-manifest` (internal) lists the
 loadable assets. The `state` worker's `ui/` directory is the broad delivery
-reference; `cron/ui/` is the trigger-activity renderer reference.
+reference; `cron/ui/` is the observer-activity renderer reference.
 
 ## Tech stack
 
@@ -412,14 +442,14 @@ reference; `cron/ui/` is the trigger-activity renderer reference.
 |---|---|
 | Web server | [axum 0.7](https://github.com/tokio-rs/axum), [tokio](https://tokio.rs), [tokio-tungstenite](https://github.com/snapview/tokio-tungstenite) |
 | Asset embedding | [`rust-embed` 8](https://docs.rs/rust-embed), [`mime_guess`](https://docs.rs/mime_guess) |
-| Worker SDK | [`iii-sdk` 0.19.4](https://docs.rs/iii-sdk) |
+| Worker SDK | [`iii-sdk` 0.26.0](https://docs.rs/iii-sdk) |
 | UI framework | [React 19](https://react.dev), [Vite 8](https://vitejs.dev), [TypeScript 6](https://www.typescriptlang.org) |
 | Styling | [Tailwind CSS v4](https://tailwindcss.com), [Radix UI](https://www.radix-ui.com), [`class-variance-authority`](https://cva.style), [lucide-react](https://lucide.dev) |
 | Editor | [Lexical 0.44](https://lexical.dev) |
 | Data fetching | [TanStack Query 5](https://tanstack.com/query) |
 | Trace graphs | [`@xyflow/react` 12](https://reactflow.dev) + [dagre](https://github.com/dagrejs/dagre), [TanStack Virtual](https://tanstack.com/virtual) |
 | Markdown | [react-markdown](https://github.com/remarkjs/react-markdown) + [remark-gfm](https://github.com/remarkjs/remark-gfm), [prism-react-renderer](https://github.com/FormidableLabs/prism-react-renderer) |
-| Browser SDK | [`iii-browser-sdk` 0.21.6](https://www.npmjs.com/package/iii-browser-sdk) |
+| Browser SDK | [`iii-browser-sdk` 0.26.0](https://www.npmjs.com/package/iii-browser-sdk) |
 
 <details>
 <summary><strong>Build from source (contributors only)</strong></summary>

@@ -1,6 +1,6 @@
 import { SandboxErrorView } from '@/components/chat/sandbox/ErrorView'
 import { parseSandboxErrorDisplay } from '@/components/chat/sandbox/parsers'
-import type { FunctionTriggerMessage } from '@/types/chat'
+import type { FunctionCallMessage } from '@/types/chat'
 import { isHarnessFunction, unwrapEnvelope } from './parsers'
 import { SpawnActivityDisplay, SpawnPreview, SpawnView } from './SpawnView'
 import { SubmitResultView } from './SubmitResultView'
@@ -10,7 +10,7 @@ import { SubmitResultView } from './SubmitResultView'
  * (`submit_result`, the output-contract fallback) and harness-owned ids
  * (`harness::spawn`, the fire-and-forget sub-agent call: it seeds a child
  * session and answers with its ids; the child's outcome reaches the parent
- * only through triggers). The spawn card is the live surface for that child.
+ * only through observers). The spawn card is the live surface for that child.
  */
 export { HARNESS_FUNCTION_IDS, isHarnessFunction } from './parsers'
 
@@ -28,7 +28,7 @@ export function HarnessFunctionIdLabel({ functionId }: { functionId: string }) {
   )
 }
 
-function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
+function tryRender(message: FunctionCallMessage): React.ReactNode | null {
   if (!isHarnessFunction(message.functionId)) return null
   if (message.pendingApproval) return null
 
@@ -44,9 +44,7 @@ function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
   }
 }
 
-function tryRenderSpawn(
-  message: FunctionTriggerMessage,
-): React.ReactNode | null {
+function tryRenderSpawn(message: FunctionCallMessage): React.ReactNode | null {
   if (message.functionId !== 'harness::spawn' || message.pendingApproval)
     return null
   const running = !!message.running
@@ -68,7 +66,7 @@ function tryRenderSpawn(
 }
 
 function tryRenderSpawnDisplay(
-  message: FunctionTriggerMessage,
+  message: FunctionCallMessage,
 ): React.ReactNode | null {
   if (
     message.functionId !== 'harness::spawn' ||
@@ -85,7 +83,7 @@ function tryRenderSpawnDisplay(
         message.output != null ? unwrapEnvelope(message.output) : undefined
       }
       parentSessionId={message.sessionId}
-      functionTriggerId={message.functionTriggerId}
+      functionCallId={message.functionCallId}
       createdAt={message.createdAt}
     />
   )
@@ -93,7 +91,7 @@ function tryRenderSpawnDisplay(
 
 /** `submit_result` is never gated on approval; spawn is. */
 function tryRenderPreview(
-  message: FunctionTriggerMessage,
+  message: FunctionCallMessage,
 ): React.ReactNode | null {
   if (message.functionId !== 'harness::spawn') return null
   return <SpawnPreview input={unwrapEnvelope(message.input)} />

@@ -41,7 +41,6 @@ describe('filterAllowlistCandidates', () => {
       entry('engine::echo'),
       entry('functions::list'),
       entry('directory::index'),
-      entry('trigger::run'),
       entry('auth::status'),
       entry('provider-anthropic::stream'),
       entry('provider-openai::config'),
@@ -49,16 +48,16 @@ describe('filterAllowlistCandidates', () => {
     expect(filterAllowlistCandidates(input)).toEqual([])
   })
 
-  it('hides agent lifecycle events but keeps agent::trigger visible', () => {
+  it('hides agent lifecycle events but keeps agent::call visible', () => {
     const input = [
-      entry('agent::trigger'),
+      entry('agent::call'),
       entry('agent::before_function_call'),
       entry('agent::after_function_call'),
       entry('agent::turn_end'),
       entry('agent::run_start'),
     ]
     const out = filterAllowlistCandidates(input).map((e) => e.id)
-    expect(out).toEqual(['agent::trigger'])
+    expect(out).toEqual(['agent::call'])
   })
 
   it('does not partial-match a prefix (e.g. authorize-* is NOT auth::)', () => {

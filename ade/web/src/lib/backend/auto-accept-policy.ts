@@ -4,13 +4,13 @@
  * chain regardless; this policy is a client-side guard that refuses to
  * silently click "allow" on calls whose function id matches an obvious
  * high-risk pattern (state mutation, deletion, process spawning,
- * external egress, recursive trigger).
+ * external egress, recursive dispatch, standing observers).
  *
  * Auto-accept exists because tight agent loops are painful when every
  * read needs a click. The threat model the policy addresses: a
  * prompt-injection payload smuggled through tool output, web content,
  * or a malicious local model server flips the model into emitting a
- * destructive `agent_trigger` that auto-accept would otherwise resolve
+ * destructive `agent_call` that auto-accept would otherwise resolve
  * without a human in the loop.
  *
  * The default deny list is conservative — when in doubt, surface the
@@ -57,7 +57,7 @@ const DENY_KEYWORDS: ReadonlyArray<string> = [
   'rm',
   // process / system-level invocation. Matched as boundary tokens
   // (last segment, or a `::`-delimited segment), so `shell::fs::read`
-  // does NOT trigger on the `shell::` worker namespace prefix while
+  // does NOT match on the `shell::` worker namespace prefix while
   // `shell::exec` / `proc::run` / `vm::eval` correctly deny.
   'exec',
   'run',
@@ -79,8 +79,10 @@ const DENY_KEYWORDS: ReadonlyArray<string> = [
   'push',
   'pull_request',
   // recursive dispatch — would let auto-accept escalate transitively
-  'trigger',
+  'call',
   'dispatch',
+  // standing work — an observer keeps acting after the turn ends
+  'observe',
   // credentials / secrets
   'credential',
   'secret',
@@ -100,7 +102,7 @@ export const DEFAULT_DENY_PATTERNS: ReadonlyArray<RegExp> = [
 ]
 
 export const DEFAULT_DENY_EXACT: ReadonlySet<string> = new Set([
-  'agent::trigger',
+  'agent::call',
   'iii::durable::publish',
 ])
 

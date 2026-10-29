@@ -94,7 +94,7 @@ export function parseExamplePrompts(value: unknown): ExamplePrompt[] {
 export async function fetchExamplePrompts(): Promise<ExamplePrompt[]> {
   const client = await getIiiClient()
   try {
-    const result = await client.trigger<unknown>(
+    const result = await client.call<unknown>(
       PROMPTS_FUNCTION,
       {},
       { timeoutMs: 5_000 },

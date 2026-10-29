@@ -2,7 +2,8 @@
  * Injectable console UI — the contract between the console SPA and
  * worker-shipped UI scripts (iii/tech-specs/2026-07-17-injectable-ui).
  *
- * A `console:script` asset is an ESM module whose default export is
+ * A `script` asset (an observer of `console::ui::asset` with
+ * `{ kind: 'script', path }`) is an ESM module whose default export is
  * `setup(host)`. Everything the script registers goes through `host` so the
  * loader can dispose exactly what the script contributed on hot reload,
  * delete, or worker disconnect. These types are mirrored by the workspace
@@ -12,8 +13,14 @@
 
 import type { UiClasses } from '@iii-dev/console-ui/ui-classes'
 import type { useConfirm } from '@/components/ui/ConfirmDialog'
-import type { IIIConnectionState, RegisterTriggerInput } from '@/lib/iii-client'
-import type { FunctionTriggerMessage } from '@/types/chat'
+import type {
+  IIIConnectionState,
+  ObserverOptions,
+  ObserveSource,
+} from '@/lib/iii-client'
+import type { FunctionCallMessage } from '@/types/chat'
+
+export type { ObserverOptions, ObserveSource }
 
 /**
  * The SPA's live engine client, narrowed: the client is shared by the whole
@@ -23,11 +30,14 @@ import type { FunctionTriggerMessage } from '@/types/chat'
 export interface ExtensionIii {
   /** `console-<uuid>`, per tab. */
   browserId: string
-  trigger<T = unknown>(
+  /** Calls a function and resolves to its result. */
+  call<T = unknown>(
     functionId: string,
     payload?: Record<string, unknown>,
     options?: { timeoutMs?: number },
   ): Promise<T>
+  /** @deprecated the same function as `call` */
+  trigger: ExtensionIii['call']
   /**
    * Subscribe a browser-local handler. Handlers are namespaced per tab
    * (`<functionId>::<browserId>`) and default `metadata.internal = true` —
@@ -37,7 +47,17 @@ export interface ExtensionIii {
     functionId: string,
     handler: (payload: P) => void | Promise<void>,
   ): () => void
-  registerTrigger(input: RegisterTriggerInput): () => void
+  /**
+   * Observes `source` with `target` (a function registered with `on`, by its
+   * full id `<functionId>::<browserId>`). `deliver` defaults to `'output'`,
+   * so the handler receives the event the observed function returned.
+   * Returns its disposer.
+   */
+  observe(
+    source: string | ObserveSource,
+    target: string,
+    options?: ObserverOptions,
+  ): () => void
   addConnectionStateListener(
     handler: (state: IIIConnectionState) => void,
   ): () => void
@@ -254,23 +274,23 @@ export interface PageRegistration {
 }
 
 /**
- * A function-trigger renderer — the runtime version of the first-party
+ * A function-call renderer — the runtime version of the first-party
  * ToolView families. Dispatch order: injected renderers first (registration
  * order), then the first-party families, then the JSON fallback; first
  * non-null wins, `null` always means "fall through". Host semantics stay
  * host-owned: errors parse before success, the approval bar is never
  * renderer-rendered.
  */
-export interface FunctionTriggerRenderer {
+export interface FunctionCallRenderer {
   /** e.g. `state/page.js#renderer` */
   id: string
   /** The host calls `tryRender*` only for function ids claimed here. */
   isMatch(functionId: string): boolean
-  tryRender(message: FunctionTriggerMessage): React.ReactNode | null
-  tryRenderRunning?(message: FunctionTriggerMessage): React.ReactNode | null
-  tryRenderPreview?(message: FunctionTriggerMessage): React.ReactNode | null
+  tryRender(message: FunctionCallMessage): React.ReactNode | null
+  tryRenderRunning?(message: FunctionCallMessage): React.ReactNode | null
+  tryRenderPreview?(message: FunctionCallMessage): React.ReactNode | null
   /** Compact settled-state surface shown directly in the chat feed. */
-  tryRenderDisplay?(message: FunctionTriggerMessage): React.ReactNode | null
+  tryRenderDisplay?(message: FunctionCallMessage): React.ReactNode | null
   FunctionIdLabel?: React.ComponentType<{ functionId: string }>
   primaryTabLabel?: string
   /**
@@ -288,7 +308,7 @@ export interface FunctionTriggerRenderer {
    * the `raw json` tab renders `message.input` / `message.output` verbatim
    * and its copy button copies the same value, which a renderer's own card
    * cannot contain. The console applies this to both exits (see
-   * `rawRedactor` in components/function-trigger/renderer-registry.tsx);
+   * `rawRedactor` in components/function-call/renderer-registry.tsx);
    * what counts as secret stays the worker's to declare, never the host's.
    *
    * Consulted only for messages this renderer's `isMatch` claims (first
@@ -304,32 +324,35 @@ export interface FunctionTriggerRenderer {
 }
 
 /**
- * A host-normalized trigger activity. The host owns the surrounding message
- * chrome, raw details, and lifecycle controls; trigger renderers receive this
- * common shape only to render the source-specific section.
+ * A host-normalized observer activity: an observer registered, fired, or
+ * retired. The host owns the surrounding message chrome, raw details, and
+ * lifecycle controls; observer renderers receive this common shape only to
+ * render the source-specific section.
  */
-export interface TriggerActivityMessage {
+export interface ObserverActivityMessage {
   /** Stable activity/message id. */
   id: string
   kind: 'registration' | 'fired' | 'retirement'
-  /** e.g. `cron`, `state`, or a worker-defined trigger source. */
-  triggerType: string
-  config?: unknown
+  /** The observed function, e.g. `cron::on-tick`, `state::on-changed`, or a worker's own event source. */
+  functionId: string
+  /** The observer's args (`{ expression }` for `cron::on-tick`). */
+  args?: Record<string, unknown>
+  /** The observer's filters (`{ 'input.scope': { $eq: 'orders' } }`). */
+  filters?: Record<string, unknown>
   label?: string
   /** What this event means in user-facing prose (`metadata.action`). */
   action?: string
   conditions?: readonly unknown[]
   delivery: { kind: 'notify' } | { kind: 'call'; functionId: string }
   lifecycle: {
-    /** Whether the binding remains usable after this activity. */
+    /** Whether the observer remains usable after this activity. */
     state: 'active' | 'retired'
     once: boolean
     maxFires?: number
     expiresAt?: number
     fires: number
   }
-  subscriptionId?: string
-  triggerId?: string
+  observerId?: string
   payload?: unknown
   firedAt?: number
   note?: string
@@ -349,21 +372,22 @@ export interface TriggerActivityMessage {
     | 'exhausted'
 }
 
-/** Worker-owned presentation hooks for one trigger type. The base `tryRender`
- * remains the source-section hook for compatibility. The optional detail and
+/** Worker-owned presentation hooks for the observers of one function. The
+ * base `tryRender` is the source-section hook. The optional detail and
  * display hooks can replace the expanded Terminal surface and compact
- * timeline row, matching the freedom function-trigger renderers have while
+ * timeline row, matching the freedom function-call renderers have while
  * the host retains disclosure behavior and a raw-data escape hatch. */
-export interface TriggerActivityRenderer {
-  /** e.g. `cron/page.js#trigger-activity` */
+export interface ObserverActivityRenderer {
+  /** e.g. `cron/page.js#observer-activity` */
   id: string
-  isMatch(triggerType: string): boolean
+  /** The observed function id (`cron::on-tick`). */
+  isMatch(functionId: string): boolean
   /** Source-specific content used by the host's generic detail view. */
-  tryRender(activity: TriggerActivityMessage): React.ReactNode | null
+  tryRender(activity: ObserverActivityMessage): React.ReactNode | null
   /** Complete expanded Terminal tab. `null` keeps the generic detail view. */
-  tryRenderDetails?(activity: TriggerActivityMessage): React.ReactNode | null
+  tryRenderDetails?(activity: ObserverActivityMessage): React.ReactNode | null
   /** Compact clickable timeline content. Do not return interactive children. */
-  tryRenderDisplay?(activity: TriggerActivityMessage): React.ReactNode | null
+  tryRenderDisplay?(activity: ObserverActivityMessage): React.ReactNode | null
   /** Redact registration/fire raw values before display or copy. */
   redactRaw?(value: unknown): unknown
 }
@@ -706,11 +730,11 @@ export interface Host {
     /** Open the palette, optionally on a query or a prefix such as `#`. */
     open(options?: PaletteOpenOptions): void
   }
-  functionTriggers: {
-    register(renderer: FunctionTriggerRenderer): () => void
+  functionCalls: {
+    register(renderer: FunctionCallRenderer): () => void
   }
-  triggerRenderers: {
-    register(renderer: TriggerActivityRenderer): () => void
+  observerRenderers: {
+    register(renderer: ObserverActivityRenderer): () => void
   }
   panels: {
     /** Place/reuse a registered page and deliver its worker-defined context. */
@@ -826,11 +850,15 @@ export interface UiAssetRef {
   hash: string
 }
 
-/** Push payloads delivered to the tab's `iii::console::ui-assets` handler. */
-export type UiAssetsPush =
-  | { event: 'sync'; assets: UiAssetRef[] }
-  | { event: 'set'; path: string; kind: UiAssetKind; hash: string }
-  | { event: 'delete'; path: string; kind: UiAssetKind; hash: string }
+/**
+ * The events of `console::ui::on-assets-changed`, delivered to the tab's
+ * `iii::console::ui-assets` handler: `sync` once through the tab's own
+ * observer when it is accepted, then `set` and `delete` for every change.
+ */
+export type UiAssetsEvent =
+  | { op: 'sync'; assets: UiAssetRef[] }
+  | { op: 'set'; asset: UiAssetRef }
+  | { op: 'delete'; path: string }
 
 declare global {
   interface Window {

@@ -140,14 +140,14 @@ describe('child session correlation', () => {
       resolveChildSessionId({
         responseSessionId: 'child-response',
         requestSessionId: 'child-request',
-        functionTriggerId: 'call-1',
+        functionCallId: 'call-1',
         conversations,
       }),
     ).toBe('child-response')
     expect(
       resolveChildSessionId({
         requestSessionId: 'child-request',
-        functionTriggerId: 'call-1',
+        functionCallId: 'call-1',
         conversations,
       }),
     ).toBe('child-request')
@@ -157,14 +157,14 @@ describe('child session correlation', () => {
     expect(
       resolveChildSessionId({
         parentSessionId: 'parent-1',
-        functionTriggerId: 'call-1',
+        functionCallId: 'call-1',
         conversations,
       }),
     ).toBe('child-linked')
     expect(
       resolveChildSessionId({
         parentSessionId: 'another-parent',
-        functionTriggerId: 'call-1',
+        functionCallId: 'call-1',
         conversations,
       }),
     ).toBeNull()

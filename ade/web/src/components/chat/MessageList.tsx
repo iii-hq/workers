@@ -14,48 +14,48 @@ import {
   useState,
   type WheelEvent,
 } from 'react'
-import { resultEnvelope } from '@/components/function-trigger/FunctionTriggerCard'
+import { resultEnvelope } from '@/components/function-call/FunctionCallCard'
 import {
   firstRendered,
   rawRedactor,
-  useFunctionTriggerRenderers,
-} from '@/components/function-trigger/renderer-registry'
+  useFunctionCallRenderers,
+} from '@/components/function-call/renderer-registry'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import {
   collapsedTimelineActivities,
   groupTimelineActivities,
   type TimelineActivityGroupRow,
   timelineActivityPresentationKey,
-  triggerActivityRows,
-} from '@/components/trigger-activity/grouping'
+  observerActivityRows,
+} from '@/components/observer-activity/grouping'
 import {
   registrationFromCall,
   registrationFromRow,
-  type TriggerRegistration,
-} from '@/components/trigger-activity/model'
+  type ObserverRegistration,
+} from '@/components/observer-activity/model'
 import { Button } from '@/components/ui/Button'
 import { ImageViewer } from '@/components/ui/ImageViewer'
 import { useMediaQuery } from '@/hooks/use-media-query'
-import type { SessionTriggerInfo } from '@/lib/backend/triggers'
+import type { SessionObserverInfo } from '@/lib/backend/observers'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import {
   assistantCopyText,
-  functionTriggersByAssistant,
-} from '@/lib/function-trigger-copy'
+  functionCallsByAssistant,
+} from '@/lib/function-call-copy'
 import {
   entryIdOfMessage,
   notificationBindingId,
-  triggerFiredName,
+  observerFiredName,
 } from '@/lib/sessions/entry-mapper'
 import { cn } from '@/lib/utils'
 import type {
   Conversation,
-  FunctionTriggerMessage,
+  FunctionCallMessage,
   Message as MessageType,
 } from '@/types/chat'
 import type { WorktreePickerOptions } from './DirectoryPicker'
 import { EmptyState, type EmptyStateProps } from './EmptyState'
-import { functionTriggerGroups } from './function-trigger-groups'
+import { functionCallGroups } from './function-call-groups'
 import { imageZoomTarget } from './image-zoom-target'
 import { Message, type SpawnTaskContext } from './Message'
 import { ModelWaitingIndicator } from './ModelWaitingIndicator'
@@ -108,17 +108,17 @@ interface MessageListProps {
   header?: ReactNode
   onResolveApproval?: (
     sessionId: string,
-    functionTriggerId: string,
+    functionCallId: string,
     decision: 'allow' | 'deny',
   ) => Promise<void>
   onAlwaysAllow?: (
     sessionId: string,
-    functionTriggerId: string,
+    functionCallId: string,
     functionId: string,
   ) => Promise<void>
   onResolveFilesystemAccess?: (
     sessionId: string,
-    functionTriggerId: string,
+    functionCallId: string,
     action: FilesystemAccessAction,
   ) => Promise<void>
   onManageFilesystemAccess?: () => void
@@ -145,8 +145,8 @@ interface MessageListProps {
    * surfaces whose whole point is the result renderers.
    */
   defaultOpenCalls?: boolean
-  /** Registration rows by subscription id, for trigger-fired card detail. */
-  triggersById?: ReadonlyMap<string, SessionTriggerInfo>
+  /** Observer rows by observer id, for observer-fired card detail. */
+  observersById?: ReadonlyMap<string, SessionObserverInfo>
   /**
    * External landing request (trace → "go to message"): once this row's node
    * exists, the list centers it, flashes it, and calls
@@ -173,7 +173,7 @@ interface MessageListProps {
   onLoadActivityEntries?: (entryIds: string[]) => Promise<boolean> | undefined
 }
 
-const TRIGGER_RESULT_DWELL_MS = 250
+const ACTIVITY_RESULT_DWELL_MS = 250
 
 /**
  * How far above the viewport the top sentinel counts as "reached". A page is
@@ -196,7 +196,7 @@ const HISTORY_EDGE_BUTTON_CLASS =
  * result entry asks for that one entry.
  */
 export function unloadedEntryIds(
-  rows: readonly FunctionTriggerMessage[],
+  rows: readonly FunctionCallMessage[],
 ): string[] {
   const ids = new Set<string>()
   for (const row of rows) {
@@ -381,39 +381,26 @@ function LiveTimelineRow({
 }
 
 /**
- * Pull `subscription_id` out of a register-call output. Outputs arrive as the
- * `{ content: [{text}], details }` result envelope (see functionResultOutput);
- * the id lives in a JSON text block — bare objects/strings are handled too.
+ * Pull `observer_id` out of a `harness::observe` output. Outputs arrive as
+ * the `{ content: [{text}], details }` result envelope (see
+ * functionResultOutput); the id lives in a JSON text block — bare
+ * objects/strings are handled too.
  */
-export function subscriptionIdOf(output: unknown): string | null {
-  return registrationResultOf(output).subscriptionId ?? null
+export function observerIdOf(output: unknown): string | null {
+  return observeResultOf(output).observerId ?? null
 }
 
-function registrationResultOf(output: unknown): {
-  subscriptionId?: string
+function observeResultOf(output: unknown): {
+  observerId?: string
   once?: boolean
   note?: string
 } {
-  const idOf = (v: unknown): string | null => {
-    if (typeof v === 'string') {
-      try {
-        return idOf(JSON.parse(v))
-      } catch {
-        return null
-      }
-    }
-    if (v && typeof v === 'object' && !Array.isArray(v)) {
-      const id = (v as Record<string, unknown>).subscription_id
-      if (typeof id === 'string') return id
-    }
-    return null
-  }
-  const parseRegistrationResult = (
+  const parseObserveResult = (
     v: unknown,
-  ): { subscriptionId?: string; once?: boolean; note?: string } => {
+  ): { observerId?: string; once?: boolean; note?: string } => {
     if (typeof v === 'string') {
       try {
-        return parseRegistrationResult(JSON.parse(v))
+        return parseObserveResult(JSON.parse(v))
       } catch {
         return {}
       }
@@ -421,8 +408,8 @@ function registrationResultOf(output: unknown): {
     if (!v || typeof v !== 'object' || Array.isArray(v)) return {}
     const record = v as Record<string, unknown>
     return {
-      ...(typeof record.subscription_id === 'string'
-        ? { subscriptionId: record.subscription_id }
+      ...(typeof record.observer_id === 'string'
+        ? { observerId: record.observer_id }
         : {}),
       ...(typeof record.once === 'boolean' ? { once: record.once } : {}),
       ...(typeof record.note === 'string' ? { note: record.note } : {}),
@@ -431,105 +418,105 @@ function registrationResultOf(output: unknown): {
   const envelope = resultEnvelope(output)
   if (envelope) {
     for (const text of envelope.texts) {
-      const result = parseRegistrationResult(text)
-      if (result.subscriptionId) return result
+      const result = parseObserveResult(text)
+      if (result.observerId) return result
     }
-    return parseRegistrationResult(envelope.details)
+    return parseObserveResult(envelope.details)
   }
-  const result = parseRegistrationResult(output)
-  return result.subscriptionId
-    ? result
-    : { subscriptionId: idOf(output) ?? undefined }
+  return parseObserveResult(output)
 }
 
 /**
- * Registration detail per message id, for trigger-fired notices AND the
+ * Registration detail per message id, for observer-fired notices AND the
  * notification deliveries their notify-wakes produce. Two-tier per
- * subscription: the harness's live/seen binding row when available, else
- * recovered from the transcript — the `engine::register_trigger` call whose
- * result carries the same subscription id (its input IS the registration).
- * Notifications correlate by the binding id carried by their trusted origin
+ * observer: the harness's live/seen observer row when available, else
+ * recovered from the transcript — the `harness::observe` call whose result
+ * carries the same observer id (its input IS the registration).
+ * Notifications correlate by the observer id carried by their trusted origin
  * or recovered from the current/legacy deterministic entry id, with a
  * name-match fallback only for older records. Resolution is order-independent:
  * an idle-session wake appends the notification before its fire record.
  */
 export function resolveRegistrations(
   messages: MessageType[],
-  triggersById?: ReadonlyMap<string, SessionTriggerInfo>,
-): Map<string, TriggerRegistration> {
-  const fromCalls = new Map<string, TriggerRegistration>()
+  observersById?: ReadonlyMap<string, SessionObserverInfo>,
+): Map<string, ObserverRegistration> {
+  const fromCalls = new Map<string, ObserverRegistration>()
   const notifyFireByName = new Map<string, string>()
   for (const m of messages) {
-    if (
-      m.role === 'function-trigger' &&
-      m.functionId === 'engine::register_trigger'
-    ) {
-      const result = registrationResultOf(m.output)
-      const subId = result.subscriptionId
-      if (subId && m.input !== undefined) {
+    if (m.role === 'function-call' && m.functionId === 'harness::observe') {
+      const result = observeResultOf(m.output)
+      const observerId = result.observerId
+      if (observerId && m.input !== undefined) {
         fromCalls.set(
-          subId,
+          observerId,
           registrationFromCall({
             id: m.id,
             input: m.input,
-            subscriptionId: subId,
+            observerId,
             effectiveOnce: result.once,
             note: result.note,
           }),
         )
       }
-    } else if (m.role === 'system' && m.kind === 'trigger-fired' && m.trigger) {
-      const t = m.trigger
+    } else if (
+      m.role === 'system' &&
+      m.kind === 'observer-fired' &&
+      m.observer
+    ) {
+      const t = m.observer
       if (!t.target || t.target === 'notify' || t.target === 'harness::send')
-        notifyFireByName.set(triggerFiredName(t), t.subscription_id)
+        notifyFireByName.set(observerFiredName(t), t.observer_id)
     }
   }
-  const regFor = (subscriptionId: string): TriggerRegistration | undefined => {
-    const row = triggersById?.get(subscriptionId)
-    const fromCall = fromCalls.get(subscriptionId)
+  const regFor = (observerId: string): ObserverRegistration | undefined => {
+    const row = observersById?.get(observerId)
+    const fromCall = fromCalls.get(observerId)
     // A post-reload ghost row is reconstructed from the activity record. Even
-    // when that record carries config, it does not retain registration-only
-    // conditions or lifecycle limits; the transcript call is richer. The
-    // activity record still overlays its current source/state in the card.
+    // when that record carries args and filters, it does not retain
+    // registration-only conditions or lifecycle limits; the transcript call
+    // is richer. The activity record still overlays its current source/state
+    // in the card.
     if (row?.fired && fromCall) return fromCall
-    if (row && row.config !== undefined) {
+    if (row && (row.args !== undefined || row.filters !== undefined)) {
       return registrationFromRow(row)
     }
     return fromCall ?? (row ? registrationFromRow(row) : undefined)
   }
-  const out = new Map<string, TriggerRegistration>()
+  const out = new Map<string, ObserverRegistration>()
   for (const m of messages) {
-    if (m.role === 'system' && m.kind === 'trigger-fired' && m.trigger) {
-      const t = m.trigger
+    if (m.role === 'system' && m.kind === 'observer-fired' && m.observer) {
+      const t = m.observer
       const reg =
-        regFor(t.subscription_id) ??
-        (t.trigger_type
+        regFor(t.observer_id) ??
+        (t.function_id
           ? registrationFromCall({
-              id: `trigger-registration:${t.subscription_id}`,
-              subscriptionId: t.subscription_id,
+              id: `observer-registration:${t.observer_id}`,
+              observerId: t.observer_id,
               effectiveOnce: t.once,
               input: {
-                trigger_type: t.trigger_type,
-                config: t.config,
+                function_id: t.function_id,
+                args: t.args,
+                filters: t.filters,
                 label: t.label,
-                metadata: t.action ? { action: t.action } : undefined,
-                function_id:
+                action: t.action,
+                target:
                   t.target &&
                   t.target !== 'notify' &&
                   t.target !== 'harness::send'
-                    ? t.target
+                    ? { function_id: t.target }
                     : undefined,
               },
             })
           : undefined)
       if (reg) out.set(m.id, reg)
     } else if (m.role === 'user' && m.notification) {
-      const fromId = m.triggerBindingId ?? notificationBindingId(m.id)
+      const fromId = m.observerId ?? notificationBindingId(m.id)
       const name = /^\[notification\]\s*([^:]+):/.exec(m.content)?.[1]?.trim()
       const fromName = name ? notifyFireByName.get(name) : undefined
       // Some legacy `e_notify_*` ids append an ordinal that is impossible to
-      // distinguish from an underscore inside the subscription id. Trust an
-      // id only when it resolves; otherwise retain the historical name match.
+      // distinguish from an underscore inside the observer id. Trust an id
+      // only when it resolves; otherwise retain the historical name match.
       const reg =
         (fromId ? regFor(fromId) : undefined) ??
         (fromName ? regFor(fromName) : undefined)
@@ -562,7 +549,7 @@ export function MessageList({
   defaultWorkingDir,
   worktreePicker,
   defaultOpenCalls,
-  triggersById,
+  observersById,
   focusMessageId,
   onFocusMessageHandled,
   history,
@@ -597,15 +584,13 @@ export function MessageList({
   const settlingThoughtIds = useSettlingThoughtIds(messages, reducedMotion)
 
   const fcallsByAssistant = useMemo(
-    () => functionTriggersByAssistant(messages),
+    () => functionCallsByAssistant(messages),
     [messages],
   )
   const rows = useMemo(
     () =>
       groupTimelineActivities(
-        triggerActivityRows(
-          functionTriggerGroups(messages, settlingThoughtIds),
-        ),
+        observerActivityRows(functionCallGroups(messages, settlingThoughtIds)),
       ),
     [messages, settlingThoughtIds],
   )
@@ -626,7 +611,7 @@ export function MessageList({
     return [row.message.id]
   })
   // One identity ledger spans top-level prose, grouped summaries, calls, and
-  // trigger activities. Reclassification never makes an existing surface look
+  // observer activities. Reclassification never makes an existing surface look
   // newly inserted.
   const livePresentationKeys = useLiveEntryKeys(
     presentationKeys,
@@ -635,14 +620,14 @@ export function MessageList({
   const [waitingMounted, setWaitingMounted] = useState(Boolean(isThinking))
   if (isThinking && !waitingMounted) setWaitingMounted(true)
   const registrations = useMemo(
-    () => resolveRegistrations(messages, triggersById),
-    [messages, triggersById],
+    () => resolveRegistrations(messages, observersById),
+    [messages, observersById],
   )
   const newestPendingApprovalId = useMemo(() => {
     for (let index = messages.length - 1; index >= 0; index--) {
       const message = messages[index]
       if (
-        message.role === 'function-trigger' &&
+        message.role === 'function-call' &&
         message.pendingApproval === true
       ) {
         return message.id
@@ -651,12 +636,12 @@ export function MessageList({
     return null
   }, [messages])
   const hasPendingApproval = newestPendingApprovalId !== null
-  // Same registry `FunctionTriggerCard` uses for its own raw pane: an
+  // Same registry `FunctionCallCard` uses for its own raw pane: an
   // assistant-turn copy serializes each call's arguments the same way the
   // call's own card does, so a worker's `redactRaw` (e.g.
   // sandbox-code-runner's runtime_id) has to cover this exit too — see
-  // function-trigger-copy.ts.
-  const renderers = useFunctionTriggerRenderers()
+  // function-call-copy.ts.
+  const renderers = useFunctionCallRenderers()
   const redactFor = (functionId: string) => rawRedactor(renderers, functionId)
 
   // Read optionally so isolated renders (Storybook) still work without the
@@ -1266,7 +1251,7 @@ export function MessageList({
                   animate={false}
                   staggerIndex={rowIndex}
                 >
-                  <FunctionTriggerGroup
+                  <FunctionCallGroup
                     row={row}
                     renderers={renderers}
                     registrations={registrations}
@@ -1491,10 +1476,10 @@ const HistoryEdgeRow = forwardRef<
   )
 })
 
-interface FunctionTriggerGroupProps {
+interface FunctionCallGroupProps {
   row: TimelineActivityGroupRow
-  renderers: ReturnType<typeof useFunctionTriggerRenderers>
-  registrations: ReadonlyMap<string, TriggerRegistration>
+  renderers: ReturnType<typeof useFunctionCallRenderers>
+  registrations: ReadonlyMap<string, ObserverRegistration>
   reducedMotion: boolean
   livePhaseChildKeys: ReadonlySet<string>
   defaultOpenCalls?: boolean
@@ -1565,7 +1550,7 @@ function useDwelledActivityKeys(
           next.delete(key)
           return { ...current, retainedKeys: next }
         })
-      }, TRIGGER_RESULT_DWELL_MS)
+      }, ACTIVITY_RESULT_DWELL_MS)
       timersRef.current.set(key, timer)
     }
   }, [reducedMotion, renderedPresenceState])
@@ -1587,7 +1572,7 @@ function useDwelledActivityKeys(
  * restores every call in chronological order. The assistant's intermediate
  * prose stays normal prose after the stack and doubles as the batch summary.
  */
-function FunctionTriggerGroup({
+function FunctionCallGroup({
   row,
   renderers,
   registrations,
@@ -1602,7 +1587,7 @@ function FunctionTriggerGroup({
   agentName,
   focusMessageId,
   onLoadActivityEntries,
-}: FunctionTriggerGroupProps) {
+}: FunctionCallGroupProps) {
   const [expanded, setExpanded] = useState(!!defaultOpenCalls)
   const contentId = useId()
   // A renderer that keeps its calls visible while the phase is collapsed
@@ -1615,9 +1600,9 @@ function FunctionTriggerGroup({
         renderer.isMatch(functionId) && renderer.metadata?.display === true,
     )
   const collapsedItems = collapsedTimelineActivities(row.items, (call) => {
-    // Trigger registrations stay visible as durable activity receipts without
+    // Observe receipts stay visible as durable activity receipts without
     // opting the engine renderer into the richer `display` presentation.
-    if (call.functionId === 'engine::register_trigger') return true
+    if (call.functionId === 'harness::observe') return true
     if (call.unloaded) return hasDisplayRenderer(call.functionId)
 
     const rendered = firstRendered(renderers, (renderer) => {
@@ -1644,7 +1629,7 @@ function FunctionTriggerGroup({
   // row's transcript entry too, so it counts as a match.
   const ownsFocusTarget = (item: (typeof row.items)[number]) =>
     item.message.id === focusMessageId ||
-    (item.kind === 'trigger-activity' &&
+    (item.kind === 'observer-activity' &&
       item.notification?.id === focusMessageId)
   if (
     !expanded &&
@@ -1661,7 +1646,7 @@ function FunctionTriggerGroup({
   // rest wait for their card to open or "show all". Automatic requests run
   // once per id in this group; the store dedupes across groups and in flight.
   const unloadedCalls = row.items.flatMap((item) =>
-    item.kind === 'function-trigger' && item.message.unloaded
+    item.kind === 'function-call' && item.message.unloaded
       ? [item.message]
       : [],
   )
@@ -1671,7 +1656,7 @@ function FunctionTriggerGroup({
   // earlier request means that fetch failed, so asking again is the retry.
   // The store dedupes ids still in flight, so a double click costs nothing.
   const requestEntries = (
-    calls: readonly FunctionTriggerMessage[],
+    calls: readonly FunctionCallMessage[],
     retry = false,
   ) => {
     if (!onLoadActivityEntries) return
@@ -1722,17 +1707,17 @@ function FunctionTriggerGroup({
   return (
     <section
       className="flex flex-col gap-y-8"
-      data-function-trigger-group=""
-      data-function-trigger-count={row.items.length}
+      data-function-call-group=""
+      data-function-call-count={row.items.length}
     >
       <div className="flex flex-col">
         <div
-          className="chat-trigger-disclosure"
+          className="chat-call-disclosure"
           data-visible={canCollapse}
           aria-hidden={!canCollapse}
           inert={!canCollapse ? true : undefined}
         >
-          <div className="chat-trigger-disclosure-inner">
+          <div className="chat-call-disclosure-inner">
             <button
               type="button"
               aria-expanded={expanded}
@@ -1748,15 +1733,15 @@ function FunctionTriggerGroup({
               <ChevronRight
                 aria-hidden="true"
                 className={cn(
-                  'chat-trigger-disclosure-chevron size-5 shrink-0 sm:size-4',
+                  'chat-call-disclosure-chevron size-5 shrink-0 sm:size-4',
                   expanded && 'rotate-90',
                 )}
               />
               <span className="tabular-nums">
-                Agent triggered {row.items.length} functions
+                Agent called {row.items.length} functions
               </span>
               <span className="text-ink-ghost">·</span>
-              <span className="chat-trigger-disclosure-label">
+              <span className="chat-call-disclosure-label">
                 <span data-active={!expanded} aria-hidden={expanded}>
                   show all
                 </span>
@@ -1770,13 +1755,15 @@ function FunctionTriggerGroup({
         <div
           id={contentId}
           className="flex flex-col"
-          data-function-trigger-group-calls=""
+          data-function-call-group-calls=""
         >
           {presentedItems.map(
             ({ item, index, key, semanticVisible, mounted, ordinal }) => {
               const message = item.message
               const notification =
-                item.kind === 'trigger-activity' ? item.notification : undefined
+                item.kind === 'observer-activity'
+                  ? item.notification
+                  : undefined
               return (
                 <div
                   key={key}
@@ -1804,7 +1791,7 @@ function FunctionTriggerGroup({
                         <Message
                           message={message}
                           agentName={agentName}
-                          triggerNotification={notification}
+                          observerNotification={notification}
                           registration={
                             registrations.get(message.id) ??
                             (notification
@@ -1813,7 +1800,7 @@ function FunctionTriggerGroup({
                           }
                           defaultOpenCalls={defaultOpenCalls}
                           onLoadDetails={
-                            item.kind === 'function-trigger'
+                            item.kind === 'function-call'
                               ? () => requestEntries([item.message], true)
                               : undefined
                           }

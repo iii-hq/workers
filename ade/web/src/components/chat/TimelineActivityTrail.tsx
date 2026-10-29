@@ -1,10 +1,10 @@
 import { BookOpen, ChevronRight, Folder, RadioTower } from 'lucide-react'
-import { TriggerIcon } from '@/components/ui/TriggerIcon'
+import { ObserverIcon } from '@/components/ui/ObserverIcon'
 
 export type TimelineActivityKind =
   | 'function'
-  | 'trigger-registration'
-  | 'trigger'
+  | 'observer-registration'
+  | 'observer-fired'
   | 'working-dir'
   | 'skills'
 
@@ -15,7 +15,7 @@ interface TimelineActivityTrailProps {
 /**
  * Persistent activity-kind marker shown beside the row's status icon. One
  * glyph and one color per kind — ƒ in accent for a function call, the bolt in
- * warn for a trigger fire, the tower in ok for a registration, the folder in
+ * warn for an observer fire, the tower in ok for an observe, the folder in
  * workdir (sky) for a session scope change, the open book in quiet ink for a
  * skill-index refresh — so a reader can tell the rows apart from the left
  * edge alone.
@@ -31,7 +31,7 @@ export function TimelineActivityTrail({ kind }: TimelineActivityTrailProps) {
         <div className="font-mono text-sm font-semibold text-accent italic">
           ƒ
         </div>
-      ) : kind === 'trigger-registration' ? (
+      ) : kind === 'observer-registration' ? (
         <RadioTower aria-hidden="true" className="size-4 shrink-0 stroke-ok" />
       ) : kind === 'working-dir' ? (
         <Folder aria-hidden="true" className="size-4 shrink-0 stroke-workdir" />
@@ -41,7 +41,7 @@ export function TimelineActivityTrail({ kind }: TimelineActivityTrailProps) {
           className="size-4 shrink-0 stroke-ink-faint"
         />
       ) : (
-        <TriggerIcon className="size-4 shrink-0 fill-warn" />
+        <ObserverIcon className="size-4 shrink-0 fill-warn" />
       )}
     </div>
   )

@@ -24,8 +24,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, Deliver, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
@@ -282,7 +281,7 @@ pub async fn register_console_config(
 /// Initialize atomically when supported, otherwise use the warned legacy path.
 async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
     initialization::ensure_with(payload, |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload)
+        call_configuration_with_retry(iii, function, payload)
     })
     .await
 }
@@ -294,6 +293,8 @@ async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Re
 mod initialization;
 
 const CONFIG_CHANGE_FN_ID: &str = "console::on-config-change";
+/// The configuration worker's change event, observed for this entry.
+const ON_UPDATED_FN: &str = "configuration::on-updated";
 
 /// Fetch the runtime-owned fields from the authoritative entry. A missing
 /// `http_port` or `data_dir` (including entries created by older Console
@@ -393,10 +394,12 @@ pub async fn apply_runtime_ui(config: &RuntimeConfig, control: Option<&UiControl
     }
 }
 
-/// Register the configuration update handler and subscription. Every delivery
+/// Register the configuration update handler and observe
+/// `configuration::on-updated` for this entry with it. Every delivery
 /// re-fetches the authoritative value under `apply_lock`; the discoverable
-/// handler never trusts caller-supplied payload data.
-pub fn register_config_trigger(
+/// handler never trusts caller-supplied payload data. The observer stays
+/// `pending` while the configuration worker is absent.
+pub fn register_config_observer(
     iii: &Arc<IIIClient>,
     port: PortCell,
     state: AppState,
@@ -404,7 +407,7 @@ pub fn register_config_trigger(
     ui_control: Option<UiControl>,
     workspace: Arc<WorkspaceStore>,
     apply_lock: ApplyLock,
-) -> Result<(), Error> {
+) {
     let iii_for_fn = iii.clone();
     iii.register_function(
         CONFIG_CHANGE_FN_ID,
@@ -437,18 +440,27 @@ pub fn register_config_trigger(
         .metadata(json!({ "internal": true })),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration".to_string(),
-        CONFIG_CHANGE_FN_ID.to_string(),
-        json!({
-            "configuration_id": config_id(),
-            "event_types": ["configuration:updated"],
-        }),
-    ))?;
-    Ok(())
+    // The observer lives as long as the worker's connection; dropping the
+    // handle does not dispose it.
+    iii.observe(
+        Source::function(ON_UPDATED_FN)
+            .namespace("default")
+            .filters(update_filters())
+            .deliver(Deliver::Output),
+        CONFIG_CHANGE_FN_ID,
+    );
 }
 
-/// Catch up after trigger registration, and serve as the trigger handler body.
+/// Selects the `configuration:updated` events of the console entry.
+fn update_filters() -> Value {
+    json!({
+        "input.id": { "$eq": config_id() },
+        "input.event_type": { "$eq": "configuration:updated" },
+    })
+}
+
+/// Catch up once the observer is in place, and serve as the observer
+/// target's body.
 /// Errors are logged and keep the previous listener/runtime state intact.
 pub async fn apply_current_config(
     iii: &IIIClient,
@@ -556,7 +568,7 @@ pub struct ConfigChangeRequest {}
 /// `Ok(None)` when the entry does not exist or holds `null`.
 pub(crate) async fn existing_value(iii: &IIIClient) -> Result<Option<Value>, String> {
     let stored = initialization::get_value_with(config_id(), |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload)
+        call_configuration_with_retry(iii, function, payload)
     })
     .await?;
     Ok(stored.filter(|value| !value.is_null()))
@@ -564,7 +576,7 @@ pub(crate) async fn existing_value(iii: &IIIClient) -> Result<Option<Value>, Str
 
 /// Replace the stored `console` entry wholesale (`configuration::set`).
 pub(crate) async fn set_value(iii: &IIIClient, value: Value) -> Result<(), String> {
-    trigger_configuration_with_retry(
+    call_configuration_with_retry(
         iii,
         "configuration::set",
         json!({ "id": config_id(), "value": value }),
@@ -573,7 +585,7 @@ pub(crate) async fn set_value(iii: &IIIClient, value: Value) -> Result<(), Strin
     .map(|_| ())
 }
 
-pub(crate) async fn trigger_configuration_with_retry(
+pub(crate) async fn call_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -581,8 +593,8 @@ pub(crate) async fn trigger_configuration_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: function_id.to_string(),
                     payload: payload.clone(),
                     action: None,

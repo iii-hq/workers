@@ -9,7 +9,7 @@ test('shows two traces and exposes function arguments in trace events', async ({
   stack,
 }) => {
   const firstCompleted = stack.waitForTurnCompleted()
-  await stack.trigger()
+  await stack.send()
   expect(await firstCompleted).toMatchObject({ status: 'completed' })
 
   await openSession(page, stack)

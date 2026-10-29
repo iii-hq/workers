@@ -16,7 +16,7 @@ import {
 
 /** Engine worker name (`engine::workers::list` → `name`) of the ide worker. */
 const SHELL_WORKER_NAME = 'ide'
-/** Base id for the browser-local handler bound to the `worker` trigger. */
+/** Base id for the browser-local handler observing worker joins and leaves. */
 const SHELL_WATCH_FN = 'console::shell-watch'
 
 export type ShellStatus = WorkerPresence
@@ -36,7 +36,7 @@ export function useShellStatus(enabled: boolean): ShellStatus {
 
 /**
  * Whether the shell worker's working-directory functions are registered and
- * safe to trigger. False during the initial presence probe and while shell is
+ * safe to call. False during the initial presence probe and while shell is
  * absent.
  */
 export function isShellAvailable(status: ShellStatus): boolean {

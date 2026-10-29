@@ -1,35 +1,36 @@
 /**
- * Live subscription to the harness's async turn-boundary triggers, scoped to
- * one session. Replaces the `agent::events` `agent_end` signal: the Rust
- * harness emits `harness::turn-completed` when a turn reaches a terminal
- * status (and `harness::turn-started` at the first loop step).
+ * Live observers of the harness's turn-boundary events, scoped to one
+ * session. Replaces the `agent::events` `agent_end` signal: the Rust harness
+ * calls `harness::on-turn-completed` when a turn reaches a terminal status
+ * (and `harness::on-turn-started` at the first loop step).
  *
- * Binding follows the standard two-step pattern (register a browser-local
- * handler, then bind a trigger of that type to it), with the `iii::` handler
- * prefix so delivery spans are tagged internal and stay out of the Traces
- * view — the same convention as `lib/sessions/events.ts`. The engine evaluates
- * the `{ session_id }` config filter, so a browser only sees its own turn's
- * boundaries; delivery is fire-and-forget and at-least-once.
+ * Each observer follows the standard two-step pattern (register a
+ * browser-local handler, then observe the function with that handler as the
+ * target), with the `iii::` handler prefix so delivery spans are tagged
+ * internal and stay out of the Traces view — the same convention as
+ * `lib/sessions/events.ts`. iii applies the `input.session_id` filter before
+ * delivery, so a browser only sees its own turn's boundaries; delivery is
+ * fire-and-forget and at-least-once.
  */
 
 import type { IiiClient } from '@/lib/iii-client'
 import type {
   MessageQueuedEvent,
-  TriggersChangedEvent,
+  ObserversChangedEvent,
   TurnCompletedEvent,
   TurnStartedEvent,
 } from '@/types/iii-agent-event'
 
-const TURN_COMPLETED_FN = 'iii::console::turn_completed'
-const TURN_STARTED_FN = 'iii::console::turn_started'
-const MESSAGE_QUEUED_FN = 'iii::console::message_queued'
-const TRIGGERS_CHANGED_FN = 'iii::console::triggers_changed'
-const TURN_COMPLETED_TRIGGER = 'harness::turn-completed'
-const TURN_STARTED_TRIGGER = 'harness::turn-started'
-const MESSAGE_QUEUED_TRIGGER = 'harness::message-queued'
-const TRIGGERS_CHANGED_TRIGGER = 'harness::triggers-changed'
+const TURN_COMPLETED_HANDLER = 'iii::console::turn_completed'
+const TURN_STARTED_HANDLER = 'iii::console::turn_started'
+const MESSAGE_QUEUED_HANDLER = 'iii::console::message_queued'
+const OBSERVERS_CHANGED_HANDLER = 'iii::console::observers_changed'
+const ON_TURN_COMPLETED_FN = 'harness::on-turn-completed'
+const ON_TURN_STARTED_FN = 'harness::on-turn-started'
+const ON_MESSAGE_QUEUED_FN = 'harness::on-message-queued'
+const ON_OBSERVERS_CHANGED_FN = 'harness::on-observers-changed'
 
-type ClientSubset = Pick<IiiClient, 'browserId' | 'on' | 'registerTrigger'>
+type ClientSubset = Pick<IiiClient, 'browserId' | 'on' | 'observe'>
 
 export interface TurnEventHandlers {
   onCompleted: (event: TurnCompletedEvent) => void
@@ -40,29 +41,31 @@ export interface TurnEventHandlers {
 function bind<P>(
   client: ClientSubset,
   handlerFn: string,
-  triggerType: string,
+  functionId: string,
   sessionId: string,
   onEvent: (payload: P) => void,
 ): () => void {
   const off = client.on(handlerFn, (payload: unknown) => {
     if (!payload || typeof payload !== 'object') return
     // The handler id is shared by every live stream (client.on fans out);
-    // the engine-side trigger filter is per-binding, so another session's
+    // each observer's filter names one session, so another session's
     // events also land here — drop them.
     const sid = (payload as { session_id?: unknown }).session_id
     if (typeof sid === 'string' && sid !== sessionId) return
     onEvent(payload as P)
   })
-  // `on()` registers under `<fn>::<browserId>`; the trigger targets that id.
-  const offTrigger = client.registerTrigger({
-    type: triggerType,
-    function_id: `${handlerFn}::${client.browserId}`,
-    config: { session_id: sessionId },
-  })
+  // `on()` registers under `<fn>::<browserId>`; the observer targets that id.
+  const offObserver = client.observe(
+    {
+      function_id: functionId,
+      filters: { 'input.session_id': { $eq: sessionId } },
+    },
+    `${handlerFn}::${client.browserId}`,
+  )
   return () => {
     off()
     try {
-      offTrigger()
+      offObserver()
     } catch {
       // SDK already disposed; nothing to do.
     }
@@ -70,8 +73,9 @@ function bind<P>(
 }
 
 /**
- * Bind `harness::turn-completed` (and optionally `harness::turn-started`) for
- * one session. Returns a cleanup that unregisters both handler and trigger.
+ * Observe `harness::on-turn-completed` (and optionally
+ * `harness::on-turn-started`) for one session. Returns a cleanup that drops
+ * the handler and disposes the observers.
  */
 export function startTurnEventsSubscription(
   client: ClientSubset,
@@ -82,8 +86,8 @@ export function startTurnEventsSubscription(
   offs.push(
     bind<TurnCompletedEvent>(
       client,
-      TURN_COMPLETED_FN,
-      TURN_COMPLETED_TRIGGER,
+      TURN_COMPLETED_HANDLER,
+      ON_TURN_COMPLETED_FN,
       sessionId,
       handlers.onCompleted,
     ),
@@ -92,8 +96,8 @@ export function startTurnEventsSubscription(
     offs.push(
       bind<TurnStartedEvent>(
         client,
-        TURN_STARTED_FN,
-        TURN_STARTED_TRIGGER,
+        TURN_STARTED_HANDLER,
+        ON_TURN_STARTED_FN,
         sessionId,
         handlers.onStarted,
       ),
@@ -105,10 +109,10 @@ export function startTurnEventsSubscription(
 }
 
 /**
- * Bind `harness::message-queued` for one session: fires when a message parks
- * in the server-side queue mid-stream (another tab's send, a subagent or
- * subscription notification). A refresh signal — consumers refetch
- * `harness::status` → `queued`, which stays idempotent under the trigger's
+ * Observe `harness::on-message-queued` for one session: called when a
+ * message parks in the server-side queue mid-stream (another tab's send, a
+ * subagent or an observer's notification). A refresh signal — consumers
+ * refetch `harness::status` → `queued`, which stays idempotent under
  * at-least-once delivery. Returns a cleanup.
  */
 export function startQueuedEventsSubscription(
@@ -118,29 +122,29 @@ export function startQueuedEventsSubscription(
 ): () => void {
   return bind<MessageQueuedEvent>(
     client,
-    MESSAGE_QUEUED_FN,
-    MESSAGE_QUEUED_TRIGGER,
+    MESSAGE_QUEUED_HANDLER,
+    ON_MESSAGE_QUEUED_FN,
     sessionId,
     onQueued,
   )
 }
 
 /**
- * Bind `harness::triggers-changed` for one session: fires when the session's
- * trigger-binding set or a fire count changes (registration, unregistration
- * from any tab, a fire, expiry, GC). A doorbell — consumers refetch
- * `harness::triggers::list`, which stays idempotent under the trigger's
- * at-least-once delivery. Returns a cleanup.
+ * Observe `harness::on-observers-changed` for one session: called when the
+ * session's observer set or a fire count changes (an agent observing, a
+ * dispose from any tab, a fire, expiry, GC). A doorbell — consumers refetch
+ * `harness::observers::list`, which stays idempotent under at-least-once
+ * delivery. Returns a cleanup.
  */
-export function startTriggersChangedSubscription(
+export function startObserversChangedSubscription(
   client: ClientSubset,
   sessionId: string,
-  onChanged: (event: TriggersChangedEvent) => void,
+  onChanged: (event: ObserversChangedEvent) => void,
 ): () => void {
-  return bind<TriggersChangedEvent>(
+  return bind<ObserversChangedEvent>(
     client,
-    TRIGGERS_CHANGED_FN,
-    TRIGGERS_CHANGED_TRIGGER,
+    OBSERVERS_CHANGED_HANDLER,
+    ON_OBSERVERS_CHANGED_FN,
     sessionId,
     onChanged,
   )

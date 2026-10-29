@@ -11,8 +11,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{CallRequest, Deliver, Error, RegisterFunction, Source};
 use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
 use tokio_tungstenite::tungstenite::Message;
@@ -204,8 +204,8 @@ async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let current = loop {
         match client
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: "configuration::get".to_string(),
                     payload: serde_json::json!({ "id": harness.config_id }),
                     action: None,
@@ -228,8 +228,8 @@ async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
     let mut value = current["value"].clone();
     value["http_port"] = serde_json::json!(REBOUND_HTTP_PORT);
     client
-        .trigger(
-            TriggerRequest {
+        .call(
+            CallRequest {
                 function_id: "configuration::set".to_string(),
                 payload: serde_json::json!({
                     "id": harness.config_id,
@@ -253,7 +253,7 @@ async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
     assert!(rebound.status().is_success());
 
     let status = client
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "console::status".to_string(),
             payload: serde_json::json!({}),
             action: None,
@@ -279,7 +279,102 @@ async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
         sleep(Duration::from_millis(100)).await;
     }
 
+    // 6. Observe console::workspace::on-changed: the console rings a new
+    //    observer once it is active.
+    let (rung_tx, mut rung_rx) = tokio::sync::mpsc::unbounded_channel();
+    client.register_function(
+        "integration::workspace-rung",
+        RegisterFunction::new(move |event: serde_json::Value| {
+            let _ = rung_tx.send(event);
+            Ok::<_, Error>(serde_json::json!({}))
+        }),
+    );
+    let observer = client.observe(
+        Source::function("console::workspace::on-changed").deliver(Deliver::Output),
+        "integration::workspace-rung",
+    );
+    timeout(Duration::from_secs(5), observer.ready())
+        .await
+        .expect("observer never became active")
+        .expect("console::workspace::on-changed refused the observer");
+    let first = timeout(Duration::from_secs(5), rung_rx.recv())
+        .await
+        .expect("a new observer was not rung")
+        .expect("ring channel closed");
+    assert_eq!(first, serde_json::json!({}));
+    observer.dispose().await.expect("dispose failed");
+
     client.shutdown_async().await;
+}
+
+/// A page cannot register a function the console hosts through `/ws`, and
+/// what it registers reaches the engine stripped of event-source settings.
+/// Self-contained: uses a fake engine, no `iii` binary needed.
+#[tokio::test]
+async fn ws_proxy_drops_console_provider_registrations() {
+    use std::sync::Arc;
+
+    // Fake engine: accept one WS connection and hand back the first frame
+    // it receives.
+    let engine_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind fake engine listener");
+    let engine_addr = engine_listener.local_addr().expect("fake engine addr");
+    let (frame_tx, frame_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let (stream, _) = engine_listener.accept().await.expect("accept proxy dial");
+        let mut ws = tokio_tungstenite::accept_async(stream)
+            .await
+            .expect("ws handshake from proxy");
+        if let Some(Ok(Message::Text(text))) = ws.next().await {
+            let _ = frame_tx.send(text.to_string());
+        }
+        while let Some(Ok(_)) = ws.next().await {}
+    });
+
+    let engine_url = Arc::new(format!("ws://{engine_addr}"));
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (bound_tx, bound_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(ade::server::serve(
+        0,
+        ade::server::AppState::new(engine_url, None, None, None),
+        shutdown_rx,
+        Some(bound_tx),
+    ));
+    let addr = bound_rx.await.expect("server bound");
+    let (mut ws, _) =
+        tokio_tungstenite::connect_async(&format!("ws://127.0.0.1:{}/ws", addr.port()))
+            .await
+            .expect("connect to /ws proxy");
+
+    let hijack = serde_json::json!({
+        "type": "registerfunction",
+        "id": "console::ui::asset",
+        "private": true,
+    });
+    let page = serde_json::json!({
+        "type": "registerfunction",
+        "id": "iii::console::ui-assets::console-1",
+        "private": true,
+        "args_format": { "type": "object" },
+    });
+    ws.send(Message::Text(hijack.to_string()))
+        .await
+        .expect("send hijack");
+    ws.send(Message::Text(page.to_string()))
+        .await
+        .expect("send page registration");
+
+    let first = timeout(Duration::from_secs(5), frame_rx)
+        .await
+        .expect("the fake engine received nothing")
+        .expect("fake engine closed");
+    let first: serde_json::Value = serde_json::from_str(&first).expect("forwarded frame is JSON");
+    assert_eq!(first["id"], "iii::console::ui-assets::console-1");
+    assert!(first.get("private").is_none());
+    assert!(first.get("args_format").is_none());
+    assert_eq!(first["metadata"]["internal"], serde_json::json!(true));
+    let _ = ws.close(None).await;
 }
 
 fn parse_first_asset(html: &str) -> Option<String> {

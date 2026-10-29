@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { Attachment, FunctionTriggerMessage, Message } from '@/types/chat'
+import type { Attachment, FunctionCallMessage, Message } from '@/types/chat'
 import {
   applyEntryUpsert,
   applyFcallPatch,
@@ -9,7 +9,7 @@ import {
   prependTranscript,
   splitReactionTask,
   transcriptToMessages,
-  triggerFiredSummary,
+  observerFiredSummary,
 } from './entry-mapper'
 import type { AgentMessage, TranscriptItem } from './types'
 
@@ -48,7 +48,7 @@ function assistantItem(
 
 function resultItem(
   entryId: string,
-  functionTriggerId: string,
+  functionCallId: string,
   text: string,
   isError = false,
 ): TranscriptItem {
@@ -56,7 +56,7 @@ function resultItem(
     entry_id: entryId,
     message: {
       role: 'function_result',
-      function_call_id: functionTriggerId,
+      function_call_id: functionCallId,
       function_id: 'shell::run',
       content: [{ type: 'text', text }],
       details: {},
@@ -558,15 +558,15 @@ describe('entrySegments', () => {
     ).toMatchObject({ notification: true })
     expect(entrySegments(userItem('e_notify_sub_1', 'wake'))[0]).toMatchObject({
       notification: true,
-      triggerBindingId: 'sub_1',
+      observerId: 'sub_1',
     })
     expect(entrySegments(userItem('e_fire_sub_2_4', 'wake'))[0]).toMatchObject({
       notification: true,
-      triggerBindingId: 'sub_2',
+      observerId: 'sub_2',
     })
     expect(
       entrySegments(userItem('e_condfail_sub_3', 'delivery failed'))[0],
-    ).toMatchObject({ notification: true, triggerBindingId: 'sub_3' })
+    ).toMatchObject({ notification: true, observerId: 'sub_3' })
     expect(
       entrySegments(
         userItem('opaque-id', 'wake', {
@@ -574,7 +574,7 @@ describe('entrySegments', () => {
           binding: 'sub_live',
         }),
       )[0],
-    ).toMatchObject({ notification: true, triggerBindingId: 'sub_live' })
+    ).toMatchObject({ notification: true, observerId: 'sub_live' })
   })
 
   it('splits a reaction task from its appended event block', () => {
@@ -728,7 +728,7 @@ describe('entrySegments', () => {
     ).toEqual([])
   })
 
-  it('splits an assistant entry into thought/text/function-trigger segments by block', () => {
+  it('splits an assistant entry into thought/text/function-call segments by block', () => {
     const segments = entrySegments(
       assistantItem('e-a', [
         { type: 'thinking', text: 'pondering' },
@@ -736,7 +736,7 @@ describe('entrySegments', () => {
         {
           type: 'function_call',
           id: 'fc-1',
-          function_id: 'agent_trigger',
+          function_id: 'agent_call',
           arguments: {
             function: 'shell::run',
             description: 'Listing project files',
@@ -749,14 +749,35 @@ describe('entrySegments', () => {
     expect(segments.map((s) => [s.id, s.role])).toEqual([
       ['e-a:0', 'thought'],
       ['e-a:1', 'assistant'],
-      ['e-a:2', 'function-trigger'],
+      ['e-a:2', 'function-call'],
     ])
     expect(segments[2]).toMatchObject({
       functionId: 'shell::run',
       description: 'Listing project files',
       input: { command: 'ls' },
-      functionTriggerId: 'fc-1',
+      functionCallId: 'fc-1',
       sessionId: 'sess-1',
+    })
+  })
+
+  it('unwraps an agent_trigger call recorded before 0.26', () => {
+    const [call] = entrySegments(
+      assistantItem('e-a', [
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'agent_trigger',
+          arguments: {
+            function: 'shell::run',
+            payload: { command: 'ls' },
+          },
+        },
+      ]),
+      'sess-1',
+    )
+    expect(call).toMatchObject({
+      functionId: 'shell::run',
+      input: { command: 'ls' },
     })
   })
 
@@ -797,7 +818,7 @@ describe('entrySegments', () => {
         {
           type: 'function_call',
           id: 'fc-1',
-          function_id: 'agent_trigger',
+          function_id: 'agent_call',
           arguments: {
             function: 'state::se',
             description: 'Updating arti',
@@ -819,7 +840,7 @@ describe('entrySegments', () => {
         {
           type: 'function_call',
           id: 'fc-2',
-          function_id: 'agent_trigger',
+          function_id: 'agent_call',
           arguments: { _streaming: '{"fun' },
         },
       ]),
@@ -891,13 +912,13 @@ describe('entrySegments', () => {
       createdAt: 9,
     })
     const [fired] = entrySegments({
-      entry_id: 'e_trigfired_sub_9',
+      entry_id: 'e_obsfired_obs_9',
       message: {
         role: 'custom',
-        custom_type: 'trigger_fired',
+        custom_type: 'observer_fired',
         content: [],
         details: {
-          subscription_id: 'sub_9',
+          observer_id: 'obs_9',
           target: 'spawn',
           once: true,
           retired: true,
@@ -906,7 +927,7 @@ describe('entrySegments', () => {
         timestamp: 4,
       },
     })
-    expect(fired).toMatchObject({ role: 'system', kind: 'trigger-fired' })
+    expect(fired).toMatchObject({ role: 'system', kind: 'observer-fired' })
     // Unknown custom types still fall back to their display text.
     const [note] = entrySegments({
       entry_id: 'e-x',
@@ -1133,14 +1154,13 @@ describe('entrySegments', () => {
     expect(odd).toMatchObject({ tone: 'info' })
   })
 
-  it('maps a trigger_fired custom entry to a turn-less notice carrying its record', () => {
+  it('maps an observer_fired custom entry to a turn-less notice carrying its record', () => {
     const [notice] = entrySegments({
-      entry_id: 'e_trigfired_sub_1',
+      entry_id: 'e_obsfired_obs_1',
       custom: {
-        custom_type: 'trigger_fired',
+        custom_type: 'observer_fired',
         data: {
-          subscription_id: 'sub_1',
-          trigger_id: 't-1',
+          observer_id: 'obs_1',
           target: 'spawn',
           model: 'claude-sonnet-4-6',
           once: true,
@@ -1153,12 +1173,12 @@ describe('entrySegments', () => {
       },
     })
     expect(notice).toMatchObject({
-      id: 'e_trigfired_sub_1',
+      id: 'e_obsfired_obs_1',
       role: 'system',
-      kind: 'trigger-fired',
+      kind: 'observer-fired',
       createdAt: 42,
-      trigger: {
-        subscription_id: 'sub_1',
+      observer: {
+        observer_id: 'obs_1',
         target: 'spawn',
         retired: true,
         payload: { event: { db: 'primary', op: 'update' } },
@@ -1169,20 +1189,50 @@ describe('entrySegments', () => {
     )
   })
 
-  it('triggerFiredSummary reads spawn and notify targets', () => {
+  it('reads a trigger_fired entry written before 0.26 as an observer record', () => {
+    const [notice] = entrySegments({
+      entry_id: 'e_trigfired_sub_1_1',
+      custom: {
+        custom_type: 'trigger_fired',
+        data: {
+          subscription_id: 'sub_1',
+          trigger_id: 't-1',
+          trigger_type: 'cron',
+          config: { expression: '0 0 9 * * * *' },
+          target: 'harness::send',
+          once: false,
+          retired: false,
+          fired_at: 42,
+        },
+      },
+    })
+    expect(notice).toMatchObject({
+      kind: 'observer-fired',
+      observer: {
+        observer_id: 'sub_1',
+        function_id: 'cron::on-tick',
+        args: { expression: '0 0 9 * * * *' },
+      },
+    })
+    expect((notice as { content: string }).content).toBe(
+      'cron::on-tick · notified this chat',
+    )
+  })
+
+  it('observerFiredSummary reads spawn and notify targets', () => {
     expect(
-      triggerFiredSummary({
-        subscription_id: 's',
+      observerFiredSummary({
+        observer_id: 's',
         target: 'spawn',
         model: 'claude-sonnet-5',
         once: false,
         retired: false,
         fired_at: 0,
       }),
-    ).toBe('trigger · spawned claude-sonnet-5')
+    ).toBe('observer · spawned claude-sonnet-5')
     expect(
-      triggerFiredSummary({
-        subscription_id: 's',
+      observerFiredSummary({
+        observer_id: 's',
         target: 'notify',
         label: 'ping',
         once: true,
@@ -1194,8 +1244,8 @@ describe('entrySegments', () => {
 
   it('does not invent delivery for lifecycle-only or skipped records', () => {
     expect(
-      triggerFiredSummary({
-        subscription_id: 's',
+      observerFiredSummary({
+        observer_id: 's',
         target: 'state::set',
         label: 'cleanup',
         once: false,
@@ -1204,10 +1254,10 @@ describe('entrySegments', () => {
         retirement_reason: 'unregistered',
         fired_at: 0,
       }),
-    ).toBe('cleanup · binding manually removed')
+    ).toBe('cleanup · observer manually removed')
     expect(
-      triggerFiredSummary({
-        subscription_id: 's',
+      observerFiredSummary({
+        observer_id: 's',
         target: 'state::set',
         label: 'guarded',
         once: false,
@@ -1218,25 +1268,25 @@ describe('entrySegments', () => {
     ).toBe('guarded · delivery skipped')
   })
 
-  it('uses an enriched trigger type when no label or state key exists', () => {
+  it('uses the observed function when no label or state key exists', () => {
     expect(
-      triggerFiredSummary({
-        subscription_id: 's',
-        trigger_type: 'cron',
+      observerFiredSummary({
+        observer_id: 's',
+        function_id: 'cron::on-tick',
         target: 'harness::send',
         once: false,
         retired: false,
         outcome: 'delivered',
         fired_at: 0,
       }),
-    ).toBe('cron · notified this chat')
+    ).toBe('cron::on-tick · notified this chat')
   })
 
   it('prefers registration action as the fired event summary', () => {
     expect(
-      triggerFiredSummary({
-        subscription_id: 's',
-        trigger_type: 'on-message',
+      observerFiredSummary({
+        observer_id: 's',
+        function_id: 'session::on-message-added',
         target: 'harness::send',
         label: 'explorer-messages',
         action: 'new Explorer message received',
@@ -1352,7 +1402,7 @@ describe('entrySegments', () => {
     })
   })
 
-  it('flags an agent_trigger whose target is not resolvable yet', () => {
+  it('flags an agent_call whose target is not resolvable yet', () => {
     // Providers degrade partial/streaming JSON arguments to `{}`, so the
     // wrapped target function is unknown until the stream finishes.
     const [seg] = entrySegments(
@@ -1360,14 +1410,14 @@ describe('entrySegments', () => {
         {
           type: 'function_call',
           id: 'fc-1',
-          function_id: 'agent_trigger',
+          function_id: 'agent_call',
           arguments: {},
         },
       ]),
     )
     expect(seg).toMatchObject({
-      role: 'function-trigger',
-      functionId: 'agent_trigger',
+      role: 'function-call',
+      functionId: 'agent_call',
       unresolvedTarget: true,
     })
     // A resolvable wrapper carries no flag.
@@ -1376,7 +1426,7 @@ describe('entrySegments', () => {
         {
           type: 'function_call',
           id: 'fc-2',
-          function_id: 'agent_trigger',
+          function_id: 'agent_call',
           arguments: { function: 'shell::run', payload: {} },
         },
       ]),
@@ -1463,13 +1513,13 @@ describe('applyEntryUpsert', () => {
     expect(messages[1]).toMatchObject({ content: 'two' })
   })
 
-  it('pairs a function_result entry into the matching function-trigger row', () => {
+  it('pairs a function_result entry into the matching function-call row', () => {
     let messages = transcriptToMessages([
       assistantItem('e-a', [
         {
           type: 'function_call',
           id: 'fc-1',
-          function_id: 'agent_trigger',
+          function_id: 'agent_call',
           arguments: { function: 'shell::run', payload: {} },
         },
       ]),
@@ -1477,7 +1527,7 @@ describe('applyEntryUpsert', () => {
     messages = applyEntryUpsert(messages, resultItem('fr-fc-1', 'fc-1', 'ok'))
     expect(messages).toHaveLength(1)
     expect(messages[0]).toMatchObject({
-      role: 'function-trigger',
+      role: 'function-call',
       running: false,
       output: { content: [{ type: 'text', text: 'ok' }], details: {} },
     })
@@ -1505,12 +1555,12 @@ describe('applyEntryUpsert', () => {
   it('absorbs a locally-created fcall row (pending approval) into the entry segment', () => {
     const local: Message = {
       id: 'local-1',
-      role: 'function-trigger',
+      role: 'function-call',
       functionId: 'shell::run',
       input: {},
       running: true,
       pendingApproval: true,
-      functionTriggerId: 'fc-1',
+      functionCallId: 'fc-1',
       createdAt: 0,
     }
     const next = applyEntryUpsert(
@@ -1529,19 +1579,19 @@ describe('applyEntryUpsert', () => {
       id: 'e-a:0',
       running: true,
       pendingApproval: true,
-      functionTriggerId: 'fc-1',
+      functionCallId: 'fc-1',
     })
   })
 
   it('carries filesystemAccess through a snapshot re-derivation while pending', () => {
     const local: Message = {
       id: 'local-1',
-      role: 'function-trigger',
+      role: 'function-call',
       functionId: 'shell::fs::read',
       input: {},
       running: false,
       pendingApproval: true,
-      functionTriggerId: 'fc-1',
+      functionCallId: 'fc-1',
       sessionId: 'sess-a',
       filesystemAccess: {
         requestedRoot: '/abs/existing/dir',
@@ -1564,7 +1614,7 @@ describe('applyEntryUpsert', () => {
     expect(next[0]).toMatchObject({
       id: 'e-a:0',
       pendingApproval: true,
-      functionTriggerId: 'fc-1',
+      functionCallId: 'fc-1',
       filesystemAccess: {
         requestedRoot: '/abs/existing/dir',
         errorCode: 'S215',
@@ -1586,7 +1636,7 @@ describe('applyEntryUpsert', () => {
       { working: true },
     )
     expect(messages[0]).toMatchObject({
-      role: 'function-trigger',
+      role: 'function-call',
       running: true,
     })
   })
@@ -1643,11 +1693,11 @@ describe('applyEntryUpsert', () => {
   it('never marks a pending-approval call as running', () => {
     const local: Message = {
       id: 'local-1',
-      role: 'function-trigger',
+      role: 'function-call',
       functionId: 'shell::run',
       input: {},
       pendingApproval: true,
-      functionTriggerId: 'fc-1',
+      functionCallId: 'fc-1',
       createdAt: 0,
     }
     const next = applyEntryUpsert(
@@ -1687,9 +1737,9 @@ describe('transcriptToMessages — running inference on hydration', () => {
       'sess-1',
       { working: true },
     )
-    const rows = messages.filter((m) => m.role === 'function-trigger')
-    expect(rows[0]).toMatchObject({ functionTriggerId: 'fc-1', running: false })
-    expect(rows[1]).toMatchObject({ functionTriggerId: 'fc-2', running: true })
+    const rows = messages.filter((m) => m.role === 'function-call')
+    expect(rows[0]).toMatchObject({ functionCallId: 'fc-1', running: false })
+    expect(rows[1]).toMatchObject({ functionCallId: 'fc-2', running: true })
   })
 
   it('does not pulse historical unpaired calls (earlier entries or idle sessions)', () => {
@@ -1703,7 +1753,7 @@ describe('transcriptToMessages — running inference on hydration', () => {
       'sess-1',
       { working: true },
     )
-    const row = working.find((m) => m.role === 'function-trigger')
+    const row = working.find((m) => m.role === 'function-call')
     expect((row as { running?: boolean }).running).toBeFalsy()
 
     // Idle session: nothing pulses.
@@ -1716,14 +1766,12 @@ describe('transcriptToMessages — running inference on hydration', () => {
 })
 
 describe('isCallSettled', () => {
-  const row = (
-    extra: Partial<FunctionTriggerMessage>,
-  ): FunctionTriggerMessage => ({
+  const row = (extra: Partial<FunctionCallMessage>): FunctionCallMessage => ({
     id: 'e_a:1',
-    role: 'function-trigger',
+    role: 'function-call',
     functionId: 'shell::exec',
     input: {},
-    functionTriggerId: 'fc-1',
+    functionCallId: 'fc-1',
     createdAt: 1,
     ...extra,
   })
@@ -1738,7 +1786,7 @@ describe('isCallSettled', () => {
 })
 
 describe('applyFcallPatch / clearTransientFlags', () => {
-  it('patches the row matching functionTriggerId and reports found', () => {
+  it('patches the row matching functionCallId and reports found', () => {
     const messages = transcriptToMessages([
       assistantItem('e-a', [
         {
@@ -1778,7 +1826,7 @@ describe('applyFcallPatch / clearTransientFlags', () => {
       },
       {
         id: 'f',
-        role: 'function-trigger',
+        role: 'function-call',
         functionId: 'shell::run',
         input: {},
         running: true,
@@ -1827,7 +1875,7 @@ describe('elided placeholders', () => {
 
   function elidedResult(
     entryId: string,
-    functionTriggerId: string,
+    functionCallId: string,
     functionId = 'shell::run',
   ): TranscriptItem {
     return {
@@ -1835,7 +1883,7 @@ describe('elided placeholders', () => {
       elided: true,
       message: {
         role: 'function_result',
-        function_call_id: functionTriggerId,
+        function_call_id: functionCallId,
         function_id: functionId,
         content: [],
         details: null,
@@ -1861,24 +1909,24 @@ describe('elided placeholders', () => {
     })
     expect(segments[1]).toMatchObject({
       id: 'e_a1:1',
-      role: 'function-trigger',
+      role: 'function-call',
       functionId: 'shell::run',
-      functionTriggerId: 'fc_1',
+      functionCallId: 'fc_1',
       unloaded: true,
     })
-    expect((segments[1] as FunctionTriggerMessage).input).toBeUndefined()
+    expect((segments[1] as FunctionCallMessage).input).toBeUndefined()
   })
 
   /* The wrapper's target lives in the arguments the page dropped; the result
      entry names the resolved function, so the row learns its label there. */
-  it('lets an elided result name an agent_trigger placeholder', () => {
+  it('lets an elided result name an agent_call placeholder', () => {
     const messages = transcriptToMessages([
-      elidedCall('e_a1', [{ id: 'fc_1', functionId: 'agent_trigger' }]),
+      elidedCall('e_a1', [{ id: 'fc_1', functionId: 'agent_call' }]),
       elidedResult('e_r1', 'fc_1', 'coder::read-file'),
     ])
     expect(messages).toHaveLength(1)
     expect(messages[0]).toMatchObject({
-      role: 'function-trigger',
+      role: 'function-call',
       functionId: 'coder::read-file',
       unresolvedTarget: false,
       unloaded: true,
@@ -1889,15 +1937,15 @@ describe('elided placeholders', () => {
     expect(messages[0]).not.toHaveProperty('output')
   })
 
-  /* The page keeps an `agent_trigger` call's label (`function` +
+  /* The page keeps an `agent_call` call's label (`function` +
      `description`) and drops its payload: a reloaded collapsed run reads
      the same as the live one did, instead of falling back to bare ids. */
-  it('labels a paged-out agent_trigger row from its kept fields', () => {
+  it('labels a paged-out agent_call row from its kept fields', () => {
     const segments = entrySegments(
       elidedCall('e_a1', [
         {
           id: 'fc_1',
-          functionId: 'agent_trigger',
+          functionId: 'agent_call',
           arguments: {
             function: 'compose::status',
             description: '  Check existing containers ',
@@ -1907,21 +1955,21 @@ describe('elided placeholders', () => {
     )
     expect(segments).toHaveLength(1)
     expect(segments[0]).toMatchObject({
-      role: 'function-trigger',
+      role: 'function-call',
       functionId: 'compose::status',
       description: 'Check existing containers',
-      functionTriggerId: 'fc_1',
+      functionCallId: 'fc_1',
       unloaded: true,
     })
     expect(segments[0]).not.toHaveProperty('unresolvedTarget')
-    expect((segments[0] as FunctionTriggerMessage).input).toBeUndefined()
+    expect((segments[0] as FunctionCallMessage).input).toBeUndefined()
 
     // Its elided result settles the row without touching the label.
     const messages = transcriptToMessages([
       elidedCall('e_a1', [
         {
           id: 'fc_1',
-          functionId: 'agent_trigger',
+          functionId: 'agent_call',
           arguments: {
             function: 'compose::status',
             description: 'Check existing containers',
@@ -1939,18 +1987,18 @@ describe('elided placeholders', () => {
     })
   })
 
-  it('keeps a paged-out agent_trigger row unresolved without a target', () => {
+  it('keeps a paged-out agent_call row unresolved without a target', () => {
     const segments = entrySegments(
       elidedCall('e_a1', [
         {
           id: 'fc_1',
-          functionId: 'agent_trigger',
+          functionId: 'agent_call',
           arguments: { description: 'Read the config' },
         },
       ]),
     )
     expect(segments[0]).toMatchObject({
-      functionId: 'agent_trigger',
+      functionId: 'agent_call',
       description: 'Read the config',
       unresolvedTarget: true,
       unloaded: true,
@@ -1964,7 +2012,7 @@ describe('elided placeholders', () => {
       elidedCall('e_a1', [
         {
           id: 'fc_1',
-          functionId: 'agent_trigger',
+          functionId: 'agent_call',
           arguments: { function: 'fs::read', description: 'Read the config' },
         },
       ]),
@@ -1977,7 +2025,7 @@ describe('elided placeholders', () => {
           {
             type: 'function_call',
             id: 'fc_1',
-            function_id: 'agent_trigger',
+            function_id: 'agent_call',
             arguments: { function: 'fs::read', payload: { path: 'a.yaml' } },
           },
         ],
@@ -1998,7 +2046,7 @@ describe('elided placeholders', () => {
           {
             type: 'function_call',
             id: 'fc_1',
-            function_id: 'agent_trigger',
+            function_id: 'agent_call',
             arguments: {
               function: 'fs::read',
               description: 'Read the YAML config',
@@ -2028,7 +2076,7 @@ describe('elided placeholders', () => {
       { working: true },
     )
     expect(bare[0]).toMatchObject({ unloaded: true })
-    expect((bare[0] as FunctionTriggerMessage).running).toBeUndefined()
+    expect((bare[0] as FunctionCallMessage).running).toBeUndefined()
   })
 
   it('records the result entry on a whole row too', () => {
@@ -2059,8 +2107,8 @@ describe('elided placeholders', () => {
     expect(messages).toHaveLength(1)
     expect(messages[0]).toMatchObject({
       id: 'e_r1',
-      role: 'function-trigger',
-      functionTriggerId: 'fc_1',
+      role: 'function-call',
+      functionCallId: 'fc_1',
       unloaded: true,
       resultEntryId: 'e_r1',
     })
@@ -2096,7 +2144,7 @@ describe('elided placeholders', () => {
     )
     expect(withCall.map((m) => m.id)).toEqual(['e_u1', 'e_a1:0', 'e_u2'])
     expect(withCall[1]).toMatchObject({
-      functionTriggerId: 'fc_1',
+      functionCallId: 'fc_1',
       input: { command: 'ls' },
       // The result is still on its way: the row stays a placeholder.
       unloaded: true,
@@ -2106,7 +2154,7 @@ describe('elided placeholders', () => {
     const whole = applyEntryUpsert(withCall, resultItem('e_r1', 'fc_1', 'ok'))
     expect(whole.map((m) => m.id)).toEqual(['e_u1', 'e_a1:0', 'e_u2'])
     expect(whole[1]).toMatchObject({
-      functionTriggerId: 'fc_1',
+      functionCallId: 'fc_1',
       input: { command: 'ls' },
       unloaded: false,
       output: { content: [{ type: 'text', text: 'ok' }], details: {} },
@@ -2126,7 +2174,7 @@ describe('elided placeholders', () => {
       unloaded: true,
       output: { content: [{ type: 'text', text: 'ok' }], details: {} },
     })
-    expect((resultOnly[0] as FunctionTriggerMessage).input).toBeUndefined()
+    expect((resultOnly[0] as FunctionCallMessage).input).toBeUndefined()
 
     const whole = applyEntryUpsert(
       resultOnly,
@@ -2147,7 +2195,7 @@ describe('elided placeholders', () => {
       input: { command: 'ls' },
       output: { content: [{ type: 'text', text: 'ok' }], details: {} },
     })
-    expect((whole[0] as FunctionTriggerMessage).unloaded).toBeFalsy()
+    expect((whole[0] as FunctionCallMessage).unloaded).toBeFalsy()
   })
 
   /* A reconnect re-reads the tail, which elides a run the window already
@@ -2179,7 +2227,7 @@ describe('elided placeholders', () => {
       input: { command: 'ls' },
       output: { content: [{ type: 'text', text: 'ok' }], details: {} },
     })
-    expect((next[0] as FunctionTriggerMessage).unloaded).not.toBe(true)
+    expect((next[0] as FunctionCallMessage).unloaded).not.toBe(true)
   })
 })
 
