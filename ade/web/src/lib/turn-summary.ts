@@ -202,3 +202,29 @@ export function formatReplyClock(ts: number, now = Date.now()): string {
   })
   return `${day}, ${time}`
 }
+
+/**
+ * The assistant replies that open with the agent / model header: the first
+ * reply after each user message, and any later reply in the same turn whose
+ * agent or model differs from the one before it. A turn that streams prose,
+ * calls tools, then writes more names its author once instead of above
+ * every segment.
+ */
+export function assistantHeaderIds(
+  messages: readonly Message[],
+  agentName?: string,
+): Set<string> {
+  const ids = new Set<string>()
+  let author: string | null = null
+  for (const message of messages) {
+    if (message.role === 'user') {
+      author = null
+      continue
+    }
+    if (message.role !== 'assistant') continue
+    const next = `${message.agent || agentName || ''}\u0000${message.model ?? ''}`
+    if (next !== author) ids.add(message.id)
+    author = next
+  }
+  return ids
+}

@@ -100,6 +100,12 @@ interface MessageProps {
   /** Session agent profile name shown on assistant message headers. */
   agentName?: string
   /**
+   * Whether an assistant reply opens with the agent / model header. The list
+   * shows it on a turn's first reply (and when the author changes), not on
+   * every segment of one turn. Defaults to true.
+   */
+  showHeader?: boolean
+  /**
    * The reply appeared while this list was open, streamed or whole (a
    * mirrored session, a worker that does not stream): write it out at
    * reading pace instead of dropping it in.
@@ -148,6 +154,7 @@ function MessageBody({
   sessionId,
   spawnContext,
   agentName,
+  showHeader,
   revealOnMount,
   turnDurationMs,
   changedFiles,
@@ -175,6 +182,7 @@ function MessageBody({
           message={message}
           copyText={copyText}
           agentName={agentName}
+          showHeader={showHeader}
           revealOnMount={revealOnMount}
           turnDurationMs={turnDurationMs}
           changedFiles={changedFiles}
@@ -520,6 +528,7 @@ function AssistantMessage({
   message,
   copyText,
   agentName,
+  showHeader = true,
   revealOnMount = false,
   turnDurationMs = null,
   changedFiles,
@@ -527,6 +536,7 @@ function AssistantMessage({
   message: AssistantMessageType
   copyText?: string | (() => string)
   agentName?: string
+  showHeader?: boolean
   revealOnMount?: boolean
   turnDurationMs?: number | null
   changedFiles?: ChangedFile[]
@@ -546,45 +556,53 @@ function AssistantMessage({
   // function calls) via copyText; direct renders without a list-provided
   // payload fall back to the prose gate.
   const copySource = copyText ?? (message.content || undefined)
+  const quoted = sideChat?.quotedIds.has(message.id) === true
   return (
     <article
       className="chat-message group flex flex-col gap-2"
       data-message-role="assistant"
+      data-continuation={showHeader ? undefined : ''}
     >
-      <header className="chat-agent-header flex flex-wrap items-center font-sans">
-        {/* The model's mark leads the line so a reader can tell replies from
-            different models apart at a glance. */}
-        <span className="chat-agent-mark" aria-hidden="true">
-          <ModelMark
-            modelId={message.model ?? null}
-            modelLabel={message.model ?? null}
-            providerLabel={message.model ?? 'model'}
-            className="size-4"
-          />
-        </span>
-        {/* An agent worker names itself on the message; the harness's own
-            turns do not. Fall back to the session's configured profile name,
-            then to the literal "Agent" — a model id is not a name, since two
-            agents can run the same model. */}
-        <span className="chat-agent-name">
-          {message.agent || agentName || 'Agent'}
-        </span>
-        {message.model ? (
-          <span className="chat-agent-model" title={message.model}>
-            {message.model}
-          </span>
-        ) : null}
-        {message.memory ? <MemoryChip memory={message.memory} /> : null}
-        {sideChat?.quotedIds.has(message.id) ? (
-          <span
-            className="inline-flex items-center gap-1 text-[11px] text-ink-faint"
-            data-quoted-in-side-chat=""
-          >
-            <MessageSquareQuote aria-hidden className="size-4 shrink-0" />
-            In side chat
-          </span>
-        ) : null}
-      </header>
+      {showHeader || message.memory || quoted ? (
+        <header className="chat-agent-header flex flex-wrap items-center font-sans">
+          {showHeader ? (
+            <>
+              {/* The model's mark leads the line so a reader can tell replies
+                from different models apart at a glance. */}
+              <span className="chat-agent-mark" aria-hidden="true">
+                <ModelMark
+                  modelId={message.model ?? null}
+                  modelLabel={message.model ?? null}
+                  providerLabel={message.model ?? 'model'}
+                  className="size-4"
+                />
+              </span>
+              {/* An agent worker names itself on the message; the harness's own
+                turns do not. Fall back to the session's configured profile
+                name, then to the literal "Agent" — a model id is not a name,
+                since two agents can run the same model. */}
+              <span className="chat-agent-name">
+                {message.agent || agentName || 'Agent'}
+              </span>
+              {message.model ? (
+                <span className="chat-agent-model" title={message.model}>
+                  {message.model}
+                </span>
+              ) : null}
+            </>
+          ) : null}
+          {message.memory ? <MemoryChip memory={message.memory} /> : null}
+          {quoted ? (
+            <span
+              className="inline-flex items-center gap-1 text-[11px] text-ink-faint"
+              data-quoted-in-side-chat=""
+            >
+              <MessageSquareQuote aria-hidden className="size-4 shrink-0" />
+              In side chat
+            </span>
+          ) : null}
+        </header>
+      ) : null}
       <div className="chat-prose min-w-0 pr-1">
         {message.content ? (
           <StreamingMarkdown

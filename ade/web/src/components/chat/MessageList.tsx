@@ -52,7 +52,11 @@ import {
   notificationBindingId,
   triggerFiredName,
 } from '@/lib/sessions/entry-mapper'
-import { changedFilesFromCalls, turnDurationMs } from '@/lib/turn-summary'
+import {
+  assistantHeaderIds,
+  changedFilesFromCalls,
+  turnDurationMs,
+} from '@/lib/turn-summary'
 import { cn } from '@/lib/utils'
 import type {
   Conversation,
@@ -602,6 +606,11 @@ export function MessageList({
   const fcallsByAssistant = useMemo(
     () => functionTriggersByAssistant(messages),
     [messages],
+  )
+  // A turn names its agent and model once, on its first reply.
+  const headerIds = useMemo(
+    () => assistantHeaderIds(messages, agentName),
+    [messages, agentName],
   )
   const rows = useMemo(
     () =>
@@ -1313,6 +1322,7 @@ export function MessageList({
                     message={summary}
                     copyText={copyText}
                     agentName={agentName}
+                    showHeader={headerIds.has(summary.id)}
                     turnDurationMs={turnDurationMs(messages, summary.id)}
                     changedFiles={changedFilesFromCalls(calls ?? [])}
                     revealOnMount={
@@ -1365,6 +1375,9 @@ export function MessageList({
                   message={m}
                   spawnContext={spawnContext}
                   agentName={agentName}
+                  showHeader={
+                    m.role === 'assistant' ? headerIds.has(m.id) : undefined
+                  }
                   sessionId={sessionId}
                   copyText={copyText}
                   turnDurationMs={

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { FunctionTriggerMessage, Message } from '@/types/chat'
 import {
+  assistantHeaderIds,
   changedFilesFromCalls,
   formatReplyClock,
   formatTurnDuration,
@@ -118,5 +119,35 @@ describe('formatting', () => {
     const now = new Date(2026, 9, 28, 18, 45).getTime()
     expect(formatReplyClock(now, now)).toMatch(/6:45/)
     expect(formatReplyClock(now - 2 * 86_400_000, now)).toMatch(/Oct 26/)
+  })
+})
+
+describe('assistantHeaderIds', () => {
+  const reply = (
+    id: string,
+    model = 'claude-sonnet-5-5',
+    agent?: string,
+  ): Message => ({
+    id,
+    role: 'assistant',
+    content: id,
+    model,
+    agent,
+    createdAt: 0,
+  })
+
+  it('names the author once per turn, again when it changes', () => {
+    const ids = assistantHeaderIds([
+      { id: 'u1', role: 'user', content: 'go', createdAt: 0 },
+      reply('a1'),
+      call('browser::click', {}),
+      reply('a2'),
+      reply('a3', 'claude-opus-5-5'),
+      reply('a4', 'claude-opus-5-5'),
+      { id: 'u2', role: 'user', content: 'again', createdAt: 0 },
+      reply('a5', 'claude-opus-5-5'),
+      reply('a6', 'claude-opus-5-5', 'pi'),
+    ])
+    expect([...ids]).toEqual(['a1', 'a3', 'a5', 'a6'])
   })
 })

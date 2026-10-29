@@ -1,6 +1,6 @@
 import { PreviewCard } from '@base-ui/react/preview-card'
 import type { Element, Root, RootContent, Text } from 'hast'
-import { ImageIcon, ImageOff } from 'lucide-react'
+import { ArrowUpRight, ImageIcon, ImageOff } from 'lucide-react'
 import {
   type ComponentPropsWithoutRef,
   type ReactNode,
@@ -38,6 +38,7 @@ import {
   parseFileMentionInner,
 } from '@/lib/file-mention-token'
 import { useOpenMessageFile } from '@/lib/file-navigation'
+import { inlineCodeKind, inlineFileIconSvg } from '@/lib/inline-code-kind'
 import {
   markdownFileLinkError,
   parseMarkdownFileLink,
@@ -297,7 +298,92 @@ function MarkdownLink({
       rel="noopener noreferrer"
     >
       {children}
+      <ArrowUpRight aria-hidden className="chat-link-arrow size-4" />
     </a>
+  )
+}
+
+const INLINE_CODE_CLASS =
+  'font-code text-[12.5px] border border-rule-2 bg-paper-2 text-ink px-1 py-0.5'
+
+/** A file's language mark (Material, as the IDE tree draws it), 16px. */
+function InlineFileMark({ icon }: { icon: string }) {
+  const svg = inlineFileIconSvg(icon)
+  if (!svg) return null
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox={svg.viewBox}
+      className="chat-inline-file-mark"
+      // Generated from the bundled Material set, never from message content.
+      // biome-ignore lint/security/noDangerouslySetInnerHtml: static, generated icon markup
+      dangerouslySetInnerHTML={{ __html: svg.body }}
+    />
+  )
+}
+
+/**
+ * Inline code that is more than code: a bare web address becomes a link
+ * that opens in a new tab; a file name gets its language mark, and opens in
+ * the IDE when the chat has one (like a markdown file link).
+ */
+function InlineCode({
+  text,
+  className,
+  children,
+  rest,
+}: {
+  text: string | null
+  className?: string
+  children: ReactNode
+  rest: ComponentPropsWithoutRef<'code'>
+}) {
+  const openFile = useOpenMessageFile()
+  const kind = text === null ? { kind: 'code' as const } : inlineCodeKind(text)
+  if (kind.kind === 'url') {
+    return (
+      <a
+        href={kind.href}
+        target="_blank"
+        rel="noopener noreferrer"
+        title={`open ${kind.href}`}
+        className="chat-inline-code-link"
+      >
+        <code className={cn(INLINE_CODE_CLASS, className)} {...rest}>
+          {children}
+        </code>
+        <ArrowUpRight aria-hidden className="chat-link-arrow size-4" />
+      </a>
+    )
+  }
+  if (kind.kind === 'file') {
+    const code = (
+      <code
+        className={cn(INLINE_CODE_CLASS, 'chat-inline-file', className)}
+        {...rest}
+      >
+        <InlineFileMark icon={kind.icon} />
+        {children}
+      </code>
+    )
+    const ref = text ? parseMarkdownFileLink(text) : null
+    if (openFile && ref) {
+      return (
+        <FileReferenceButton
+          reference={ref}
+          className="chat-inline-file-button"
+          title={`open ${ref.path} in the IDE (current file on disk)`}
+        >
+          {code}
+        </FileReferenceButton>
+      )
+    }
+    return code
+  }
+  return (
+    <code className={cn(INLINE_CODE_CLASS, className)} {...rest}>
+      {children}
+    </code>
   )
 }
 
@@ -526,16 +612,17 @@ const components: Components = {
         </code>
       )
     }
+    const text =
+      typeof children === 'string'
+        ? children
+        : Array.isArray(children) &&
+            children.every((c) => typeof c === 'string')
+          ? children.join('')
+          : null
     return (
-      <code
-        className={cn(
-          'font-code text-[12.5px] border border-rule-2 bg-paper-2 text-ink px-1 py-0.5',
-          className,
-        )}
-        {...rest}
-      >
+      <InlineCode text={text} className={className} rest={rest}>
         {children}
-      </code>
+      </InlineCode>
     )
   },
   pre: ({ node, className, children, ...rest }) => {

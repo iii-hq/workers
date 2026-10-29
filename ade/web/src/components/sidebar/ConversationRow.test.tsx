@@ -39,6 +39,14 @@ describe('ConversationRow row actions', () => {
     expect(html.indexOf('Mobile chat')).toBeGreaterThan(0)
   })
 
+  it('leads the title with the working dot while the agent generates', () => {
+    const html = renderRow('Hotel queue', { status: 'working' })
+    const dot = html.indexOf('conversation-row__status')
+    expect(dot).toBeGreaterThan(0)
+    expect(dot).toBeLessThan(html.indexOf('Hotel queue</'))
+    expect(html).toContain('title="working"')
+  })
+
   it('exposes a named menu trigger and a pin shortcut', () => {
     const html = renderRow('Mobile chat')
     expect(html).toContain('aria-label="more actions for Mobile chat"')

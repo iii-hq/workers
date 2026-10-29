@@ -195,6 +195,20 @@ export function ConversationRow({
           <glyph.Icon aria-hidden />
         </span>
       ) : null}
+      {/* The live state leads the title, where the eye starts reading the
+          row: a pulsing dot while the agent works, a still one on error. */}
+      {conversation.status === 'working' ? (
+        <span className="conversation-row__status">
+          <StatusDot tone="accent" pulse title="working" />
+        </span>
+      ) : conversation.status === 'error' ? (
+        <span className="conversation-row__status">
+          <StatusDot
+            tone="alert"
+            title={conversation.statusReason ?? 'error'}
+          />
+        </span>
+      ) : null}
       {/* A long title fades at its right edge and slides into view while the
           row is hovered (MarqueeLabel), so the whole name is readable
           without widening the sidebar. */}
@@ -202,14 +216,6 @@ export function ConversationRow({
         {conversation.title}
       </MarqueeLabel>
       <span className={uiClasses.treeItemTrailing}>
-        {conversation.status === 'working' ? (
-          <StatusDot tone="accent" pulse title="working" />
-        ) : conversation.status === 'error' ? (
-          <StatusDot
-            tone="alert"
-            title={conversation.statusReason ?? 'error'}
-          />
-        ) : null}
         {kindTag ? (
           <span
             className={cn(

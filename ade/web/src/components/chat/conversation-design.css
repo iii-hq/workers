@@ -266,6 +266,79 @@
   }
 }
 
+/* Inline code that is a web address: a link opening in a new tab. The pill
+   stays a pill (no underline); the ↗ after it says it is a link. */
+.chat-prose .chat-inline-code-link {
+  color: inherit;
+  text-decoration: none;
+}
+.chat-prose .chat-inline-code-link:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 2px;
+}
+@media (hover: hover) {
+  .chat-prose .chat-inline-code-link:hover {
+    text-decoration-color: var(--color-ink);
+  }
+  .chat-prose .chat-inline-code-link:hover code,
+  .chat-prose .chat-inline-file-button:hover code {
+    background: var(--color-surface-hover);
+  }
+}
+
+/* The ↗ after a web link: it leaves the app (a new tab). Quiet until the
+   link is hovered, and never underlined with the text. */
+.chat-prose .chat-link-arrow {
+  display: inline-block;
+  margin-left: 2px;
+  vertical-align: -3px;
+  color: var(--color-ink-faint);
+  transition:
+    color 160ms ease-out,
+    translate 160ms ease-out;
+}
+@media (hover: hover) {
+  .chat-prose a:hover > .chat-link-arrow {
+    color: var(--color-ink);
+    translate: 1px -1px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-prose .chat-link-arrow {
+    transition: none;
+  }
+}
+
+/* Inline code that is a file name: its language mark leads it, the way the
+   IDE tree shows it; it opens the file when the chat has an IDE. */
+.chat-prose .chat-inline-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  vertical-align: -3px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.chat-prose .chat-inline-file-mark {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.chat-prose .chat-inline-file-button {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.chat-prose .chat-inline-file-button:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 2px;
+}
+
 .chat-prose .chat-prose-quote {
   margin: 14px 0;
   padding: 2px 0 2px 14px;

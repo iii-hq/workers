@@ -4,6 +4,7 @@ import {
   Folder,
   FolderGit2,
   FolderOpen,
+  FolderPlus,
   History,
   Loader2,
 } from 'lucide-react'
@@ -30,6 +31,8 @@ import {
   listHarnessProjects,
   upsertHarnessProject,
 } from '@/lib/backend/projects'
+import { getIiiClient } from '@/lib/iii-client'
+import { bindingMatchesEvent } from '@/lib/keybindings/bindings'
 import {
   cachedProjectIndex,
   expandHome,
@@ -68,6 +71,9 @@ interface Section {
 }
 
 const RECENT_CHIPS = 4
+/** New folder in the listed folder. Finder's ⇧⌘N opens Chrome's incognito
+    window and can't be caught, so it is ⌥⌘N here. */
+const NEW_FOLDER_BINDING = 'Mod+Alt+N'
 const HOME_REPOS = 6
 const ELSEWHERE = 6
 const SEARCH_LIMIT = 30
@@ -113,6 +119,10 @@ export function OpenProjectPicker({
   const [error, setError] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  // New folder: the name being typed in the listing's inline row (null when
+  // the row is closed), and whether the mkdir is in flight.
+  const [newFolder, setNewFolder] = useState<string | null>(null)
+  const [creating, setCreating] = useState(false)
 
   const home = index?.home ?? null
   const known = useMemo(
@@ -129,6 +139,7 @@ export function OpenProjectPicker({
     setActive(0)
     setError(null)
     setListings({})
+    setNewFolder(null)
     let live = true
     listHarnessProjects().then(
       (projects) => live && setRecent(projects),
@@ -343,6 +354,45 @@ export function OpenProjectPicker({
     if (pointerFine) inputRef.current?.focus()
   }
 
+  /**
+   * Make a folder inside the one being listed (the shell worker's
+   * `shell::fs::mkdir`, held to the same workspace roots as the listing),
+   * then step into it so "Add project" points at it.
+   */
+  const createFolder = async (raw: string) => {
+    const name = raw.trim()
+    if (!dir || !name || creating) return
+    if (name === '.' || name === '..' || /[/\\]/.test(name)) {
+      setError('A folder name can’t contain / or be . or ..')
+      return
+    }
+    const path = dir === '/' ? `/${name}` : `${dir}/${name}`
+    setError(null)
+    setCreating(true)
+    try {
+      const client = await getIiiClient()
+      const res = await client.trigger<{ code?: string; message?: string }>(
+        'shell::fs::mkdir',
+        { path },
+      )
+      if (res?.code) throw new Error(res.message ?? res.code)
+    } catch (err) {
+      setError(`Can't create ${tildify(path, home)}: ${errMsg(err)}`)
+      setCreating(false)
+      return
+    }
+    setCreating(false)
+    setNewFolder(null)
+    // Re-read the parent so the new folder is listed when you come back up.
+    setListings(({ [dir]: _stale, ...rest }) => rest)
+    go(path)
+  }
+  const startNewFolder = (name = '') => {
+    if (!pathMode || !dir) return
+    setError(null)
+    setNewFolder(name)
+  }
+
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.nativeEvent.isComposing) return
     const atEnd = event.currentTarget.selectionStart === text.length
@@ -399,6 +449,21 @@ export function OpenProjectPicker({
         Start with <Mono>~/</Mono> or <Mono>/</Mono> to browse, or type a folder
         name to search.
       </>
+    ) : segment && pathMode && dir ? (
+      <span className="flex flex-col items-center gap-3">
+        <span>No folder matches “{segment}”.</span>
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          className="gap-1.5"
+          disabled={creating}
+          onClick={() => void createFolder(segment)}
+        >
+          <FolderPlus className="size-4" aria-hidden />
+          Create “{segment}” here
+        </Button>
+      </span>
     ) : segment ? (
       <>No folder matches “{segment}”.</>
     ) : (
@@ -417,6 +482,12 @@ export function OpenProjectPicker({
       <DialogContent
         className="flex h-[min(34rem,calc(100dvh-2rem))] w-[min(38rem,calc(100vw-2rem))] max-w-none flex-col gap-0 overflow-hidden p-0 [--dialog-max-width:none]"
         initialFocus={pointerFine ? inputRef : () => false}
+        onKeyDown={(event) => {
+          if (bindingMatchesEvent(NEW_FOLDER_BINDING, event)) {
+            event.preventDefault()
+            startNewFolder()
+          }
+        }}
       >
         <div className="flex shrink-0 flex-col gap-1 px-5 pt-5 pr-12">
           <DialogTitle className="text-base font-medium">
@@ -572,6 +643,27 @@ export function OpenProjectPicker({
                 ? `${rows.length} found`
                 : null}
           </span>
+          {pathMode && dir ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="-mr-2 h-7 shrink-0 gap-1.5 px-2 text-muted-foreground hover:text-foreground"
+              disabled={busyPath !== null || creating}
+              onClick={() => startNewFolder()}
+              title={`New folder in ${tildify(dir, home)}`}
+            >
+              <FolderPlus className="size-4" aria-hidden />
+              New folder
+              {pointerFine ? (
+                <KeyCombo
+                  binding={NEW_FOLDER_BINDING}
+                  className="gap-0.5"
+                  capClassName="h-5 min-w-5 rounded-[5px] border border-border bg-transparent px-1 font-inter text-[11px] font-medium text-muted-foreground shadow-none"
+                />
+              ) : null}
+            </Button>
+          ) : null}
         </div>
 
         <div
@@ -581,6 +673,53 @@ export function OpenProjectPicker({
           aria-label="Folders"
           className="mx-3 mb-3 min-h-0 flex-1 overflow-y-auto overscroll-contain rounded-xl border border-border bg-background/40 p-1"
         >
+          {newFolder !== null && dir ? (
+            <form
+              className="flex h-9 items-center gap-2.5 rounded-lg bg-muted px-2.5"
+              onSubmit={(event) => {
+                event.preventDefault()
+                void createFolder(newFolder)
+              }}
+            >
+              {creating ? (
+                <Loader2
+                  className="size-4 shrink-0 animate-spin text-muted-foreground"
+                  aria-hidden
+                />
+              ) : (
+                <FolderPlus
+                  className="size-4 shrink-0 text-muted-foreground"
+                  aria-hidden
+                />
+              )}
+              <input
+                autoFocus
+                value={newFolder}
+                onChange={(event) => setNewFolder(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    setNewFolder(null)
+                    if (pointerFine) inputRef.current?.focus()
+                  }
+                }}
+                onBlur={() => {
+                  if (!creating && !newFolder.trim()) setNewFolder(null)
+                }}
+                disabled={creating}
+                placeholder="Folder name"
+                aria-label={`New folder in ${tildify(dir, home)}`}
+                spellCheck={false}
+                autoCapitalize="off"
+                autoComplete="off"
+                className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+              />
+              <span className="shrink-0 text-xs text-muted-foreground">
+                {creating ? 'Creating…' : '↵ create · esc cancel'}
+              </span>
+            </form>
+          ) : null}
           {loading ? (
             <div
               className="space-y-1 p-1"
