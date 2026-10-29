@@ -5,9 +5,10 @@
 //! runs this worker alongside it, so the judge hosts the piece that makes
 //! agents understand them:
 //!
-//! - `judge::mentions::pre-generate`, bound to `harness::hook::pre-generate`,
-//!   appends a `<mention_providers>` index once per session (which names an
-//!   agent may write) and, for mentions it has not resolved yet, a
+//! - `judge::mentions::pre-generate`, the target of an observer of
+//!   `harness::hook::on-pre-generate`, appends a `<mention_providers>` index
+//!   once per session (which names an agent may write) and, for mentions it
+//!   has not resolved yet, a
 //!   `<mentions>` block: each item's one-line summary from its provider's
 //!   get function plus the pre-verified call for its full details (offered
 //!   only when the session's policy allows that function). Both blocks are
@@ -24,8 +25,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, IIIClient, ObserverHandle, RegisterFunction, Source};
 use mention_contract::{format_mention, MentionRef, MentionView};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -36,12 +36,14 @@ use registry::{Provider, ProviderRegistry};
 use render::{DetailsCall, MentionStatus, ResolvedMention};
 
 pub const PRE_GENERATE_FN: &str = "judge::mentions::pre-generate";
+/// The harness hook point the pre-generate function observes.
+pub const PRE_GENERATE_HOOK_FN: &str = "harness::hook::on-pre-generate";
 pub const RESOLVE_FN: &str = "judge::mentions::resolve";
 /// Mentions resolved per generation; older unresolved ones wait.
 pub const MAX_MENTIONS: usize = 10;
 /// Size cap of one `<mentions>` block (about 600 tokens).
 pub const BLOCK_BUDGET_CHARS: usize = 2_400;
-/// One get call's budget. The binding's own timeout is 3 s.
+/// One get call's budget. The observer's own timeout is 3 s.
 const GET_TIMEOUT: Duration = Duration::from_millis(1_500);
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -65,7 +67,7 @@ pub struct ResolveResponse {
     pub mentions: Vec<ResolvedMention>,
 }
 
-/// Register both functions; the hook binding is separate (`bind`).
+/// Register both functions; the hook observer is separate (`observe`).
 pub fn register(iii: &Arc<IIIClient>) {
     let registry = ProviderRegistry::default();
 
@@ -113,20 +115,22 @@ pub fn register(iii: &Arc<IIIClient>) {
     );
 }
 
-/// Bind the hook. Best effort: without a harness (standalone judge) the
-/// engine parks the binding until `harness::hook::pre-generate` exists.
-/// `fail_open` is mandatory — pre-generate hooks fail closed by default,
-/// and a mention that could not be resolved must never block a turn.
-pub fn bind(iii: &IIIClient) {
-    let binding = RegisterTriggerInput::new(
-        "harness::hook::pre-generate".to_string(),
-        PRE_GENERATE_FN.to_string(),
-        json!({ "priority": 100, "timeout_ms": 3_000, "on_error": "fail_open" }),
+/// Observe the harness's pre-generate hook point with
+/// `judge::mentions::pre-generate`. Without a harness (standalone judge) the
+/// observer stays `pending` until `harness::hook::on-pre-generate`
+/// registers. `fail_open` is mandatory: pre-generate hooks fail closed by
+/// default, and a mention that could not be resolved must never block a turn.
+pub fn observe(iii: &IIIClient) -> ObserverHandle {
+    let handle = iii.observe(
+        Source::function(PRE_GENERATE_HOOK_FN)
+            .args(json!({ "priority": 100, "timeout_ms": 3_000, "on_error": "fail_open" })),
+        PRE_GENERATE_FN,
     );
-    match iii.register_trigger(binding) {
-        Ok(_) => tracing::info!("mention resolution joins agent generations"),
-        Err(error) => tracing::warn!(%error, "mention hook binding failed (harness absent?)"),
-    }
+    tracing::info!(
+        observer_id = handle.id(),
+        "mention resolution observes agent generations"
+    );
+    handle
 }
 
 /// Resolve each mention through its provider's get function, concurrently,
@@ -150,7 +154,7 @@ pub async fn resolve(
         let (client, id) = (iii.clone(), mention.id.clone());
         tasks.spawn(async move {
             let reply = client
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: provider.get_function_id.clone(),
                     payload: json!({ "id": id }),
                     action: None,

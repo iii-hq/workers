@@ -1,4 +1,4 @@
-//! The `harness::hook::pre-generate` handler.
+//! The handler the harness calls through the `harness::hook::on-pre-generate` observer.
 
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;

@@ -125,13 +125,13 @@ const catalog = {
     { name: 'jev-preview', description: 'Preview', release_date: '2026-09-10T18:39:06Z' },
   ],
 }
-type Engine = Pick<ExtensionIii, 'trigger'>
+type Engine = Pick<ExtensionIii, 'call'>
 const engine = (reply: unknown = catalog) => {
-  const trigger = vi.fn(async (_id: string, _payload?: Record<string, unknown>, _options?: { timeoutMs?: number }) => {
+  const call = vi.fn(async (_id: string, _payload?: Record<string, unknown>, _options?: { timeoutMs?: number }) => {
     if (reply instanceof Error) throw reply
     return reply
   })
-  return { trigger } as unknown as Engine & { trigger: typeof trigger }
+  return { call } as unknown as Engine & { call: typeof call }
 }
 
 // Effects never run here, so the catalog stays in its "checking" state.
@@ -312,7 +312,7 @@ describe('JevConfigForm', () => {
 describe('JevConfigForm catalog', () => {
   it('lists the catalog the worker answers, keeps the stored model selectable, and reports the key as accepted', async () => {
     const { container, iii } = await mount({ model: 'jev-1.13.0' })
-    expect(iii.trigger).toHaveBeenCalledWith(
+    expect(iii.call).toHaveBeenCalledWith(
       'judge-typesafe::models::list',
       { timeout_ms: 15_000 },
       { timeoutMs: 20_000 },
@@ -363,37 +363,40 @@ describe('JevConfigForm catalog', () => {
     expect(alert.textContent).toContain('Could not list models')
     expect(container.querySelector<HTMLSelectElement>('select[name="model"]')!.value).toBe('jev-1.13.0')
     await act(async () => alert.querySelector('button')!.click())
-    expect(iii.trigger).toHaveBeenCalledTimes(2)
+    expect(iii.call).toHaveBeenCalledTimes(2)
   })
 
   it('checks the worker again once its own entry is saved', async () => {
     vi.useFakeTimers()
     try {
       const handlers = new Map<string, (event: { id?: unknown }) => void>()
-      const registerTrigger = vi.fn(() => vi.fn())
+      const observe = vi.fn(() => vi.fn())
       const iii = Object.assign(engine({ status: 'error', code: 'missing_key' }), {
         browserId: 'b1',
-        registerTrigger,
+        observe,
         on: (id: string, handler: (event: { id?: unknown }) => void) => {
           handlers.set(id, handler)
           return () => handlers.delete(id)
         },
       })
       const { container } = await mount({}, iii)
-      expect(registerTrigger).toHaveBeenCalledWith(expect.objectContaining({ type: 'configuration', config: {} }))
+      expect(observe).toHaveBeenCalledWith(
+        { function_id: 'configuration::on-updated', filters: { 'input.id': { $eq: 'judge-typesafe' } } },
+        expect.stringMatching(/^iii::judge-typesafe-ui::configuration-\d+::b1$/),
+      )
       const [notify] = handlers.values()
       let answer = (_reply: unknown) => {}
-      iii.trigger.mockReturnValue(new Promise((resolve) => (answer = resolve)))
+      iii.call.mockReturnValue(new Promise((resolve) => (answer = resolve)))
       await act(async () => {
         notify({ id: 'other-entry' })
         await vi.runAllTimersAsync()
       })
-      expect(iii.trigger).toHaveBeenCalledTimes(1)
+      expect(iii.call).toHaveBeenCalledTimes(1)
       await act(async () => {
         notify({ id: 'judge-typesafe' })
         await vi.runAllTimersAsync()
       })
-      expect(iii.trigger).toHaveBeenCalledTimes(2)
+      expect(iii.call).toHaveBeenCalledTimes(2)
       // Still listing: the old missing_key answer must not read as accepted.
       expect(container.querySelector('[data-chip="neutral"]')?.textContent).toBe('Checking the worker…')
       expect(container.querySelector('[data-chip="success"]')).toBeNull()

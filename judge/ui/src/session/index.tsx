@@ -157,7 +157,7 @@ export function JudgeSessionPicker({
   const [leaving, setLeaving] = useState<{ run(): void } | null>(null)
   // Consoles without the inline editor open the worker in Settings.
   const [settingsDialog, setSettingsDialog] = useState<string | null>(null)
-  // null = not listed yet; both load on mount, for the trigger's warning.
+  // null = not listed yet; both load on mount, for the menu button's warning.
   const [providers, setProviders] = useState<JudgeProvider[] | null>(null)
   const [listError, setListError] = useState<string | null>(null)
   const [settings, setSettings] = useState<JudgeSettings | null>(null)
@@ -211,12 +211,13 @@ export function JudgeSessionPicker({
   )
 
   // The list follows the engine, never a timer, while the picker is on
-  // screen: the trigger warns about a choice that would not be used. A judge
-  // registering or going away (an add landing, late or not) fires
-  // `engine::functions-available`, a settings change the `configuration`
-  // trigger, a key stored as a secret `secrets::changed`. The configuration
-  // binding names no id: an id-scoped binding holds the entry, and dropping
-  // it can start the entry's expiry.
+  // screen: the menu button warns about a choice that would not be used. A
+  // judge registering or going away (an add landing, late or not) is a call
+  // of `engine::on-functions-changed`, a settings change one of
+  // `configuration::on-updated`, a key stored as a secret one of
+  // `secrets::on-changed`. The configuration observer has no filters: the
+  // entries this picker reads change while it is mounted, so the handler
+  // checks each event's id.
   useEffect(() => {
     refresh()
     const seq = ++liveSeq
@@ -239,21 +240,21 @@ export function JudgeSessionPicker({
       }),
       iii.on(secretsHandler, schedule),
     ]
-    const offTriggers = [
-      { type: 'engine::functions-available', handler: functionsHandler },
-      { type: 'configuration', handler: configurationHandler },
-      { type: 'secrets::changed', handler: secretsHandler },
-    ].flatMap(({ type, handler }) => {
+    const offObservers = [
+      { source: 'engine::on-functions-changed', handler: functionsHandler },
+      { source: 'configuration::on-updated', handler: configurationHandler },
+      { source: 'secrets::on-changed', handler: secretsHandler },
+    ].flatMap(({ source, handler }) => {
       try {
-        return [iii.registerTrigger({ type, function_id: `${handler}::${iii.browserId}`, config: {} })]
+        return [iii.observe(source, `${handler}::${iii.browserId}`)]
       } catch {
-        // A trigger type missing on this engine: the menu reads on open.
+        // No engine to observe through: the menu reads on open.
         return []
       }
     })
     return () => {
       if (timer !== null) clearTimeout(timer)
-      for (const off of [...offTriggers, ...offHandlers]) {
+      for (const off of [...offObservers, ...offHandlers]) {
         try {
           off()
         } catch {
@@ -345,7 +346,7 @@ export function JudgeSessionPicker({
     // A local provider loads its model on first use: start that now, not on
     // the session's next turn, whose short judge calls would time out on it.
     if (value) {
-      iii.trigger('judge::models::list', { provider: value, timeout_ms: 1_000 }, { timeoutMs: 10_000 }).catch(() => {})
+      iii.call('judge::models::list', { provider: value, timeout_ms: 1_000 }, { timeoutMs: 10_000 }).catch(() => {})
     }
   }
 

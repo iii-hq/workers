@@ -13,8 +13,8 @@ use std::sync::Arc;
 /// handlers snapshot config once and share this client's transport/permits.
 /// A missing key is an ordinary typed error,
 /// so schema capture and worker readiness never require provider credentials.
-/// Returns the cache `secret://` keys resolve through; bind it to
-/// `secrets::changed` with [`judge_provider::secrets::register_secret_trigger`].
+/// Returns the cache `secret://` keys resolve through; evict from it on
+/// `secrets::on-changed` with [`judge_provider::secrets::observe_secret_changes`].
 pub fn register(
     iii: &IIIClient,
     config: SharedConfig,

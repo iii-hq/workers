@@ -209,10 +209,11 @@ export function signalFooter(diagnostic: Diagnostic, shortFingerprint: string): 
 }
 
 const PROBE_NOTE: Record<string, string> = {
+  // The 0.25 engine's type lookup, which transcripts recorded against it probe.
   'engine::triggers::info': 'in the default namespace',
 }
 
-/** `engine::triggers::info → NOT_FOUND` (mono) and where it was expected. */
+/** `<target> → <code>` (mono) and where it was expected. */
 export function probeParts(probe: ExcludedProbe): { call: string; note?: string } {
   return { call: `${probe.target} → ${probe.code}`, note: PROBE_NOTE[probe.target] }
 }

@@ -18,8 +18,7 @@ use harness::prompt::SystemPromptStrategy;
 use harness::types::model::ThinkingLevel;
 use harness::types::output::OutputContract;
 use harness::types::turn::{FunctionPolicy, TurnStatus, FS_SCOPE_KEY, FS_SCOPE_ROOT_KEY};
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient, ObserverHandle, ObserverState};
 use judge_contract::{
     Answer, Content, EvaluateRequest, EvaluateResponse, Evaluation, Question, Stats,
 };
@@ -121,29 +120,52 @@ impl InFlight {
     }
 }
 
-/// Whether the `harness::turn-completed` binding was accepted.
+/// The harness's finished turns, observed with `eval::on-turn-completed`.
+pub const TURN_COMPLETED_FN: &str = "harness::on-turn-completed";
+
+/// The `harness::on-turn-completed` observer: finished turns reach the
+/// monitor while it is active.
 #[derive(Clone, Default)]
-pub struct Observer(Arc<Mutex<Option<Result<(), String>>>>);
+pub struct Observer(Arc<Mutex<Option<ObserverHandle>>>);
 
 impl Observer {
-    pub fn set(&self, outcome: Result<(), String>) {
+    pub fn set(&self, handle: ObserverHandle) {
         *self
             .0
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(outcome);
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(handle);
     }
 
     fn get(&self) -> (bool, Option<String>) {
-        match &*self
+        let slot = self
             .0
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-        {
-            Some(Ok(())) => (true, None),
-            Some(Err(error)) => (false, Some(error.clone())),
-            None => (
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(handle) = slot.as_ref() else {
+            return (
                 false,
-                Some("the observation trigger is not bound yet".into()),
+                Some(format!(
+                    "the {TURN_COMPLETED_FN} observer is not created yet"
+                )),
+            );
+        };
+        match handle.state() {
+            ObserverState::Active => (true, None),
+            ObserverState::Pending => (
+                false,
+                Some(format!(
+                    "the {TURN_COMPLETED_FN} observer is pending: the harness has not registered it"
+                )),
+            ),
+            state => (
+                false,
+                Some(match handle.reason() {
+                    Some(reason) => format!(
+                        "the {TURN_COMPLETED_FN} observer is {state}: {} ({})",
+                        reason.message, reason.code
+                    ),
+                    None => format!("the {TURN_COMPLETED_FN} observer is {state}"),
+                }),
             ),
         }
     }
@@ -615,7 +637,7 @@ async fn harness_version(deps: &Deps) -> Option<String> {
         .map(str::to_string)
 }
 
-/// `harness::turn-completed`: validates eligibility and admits; never calls a
+/// `harness::on-turn-completed`: validates eligibility and admits; never calls a
 /// model.
 pub async fn wake(deps: &Deps, event: WakeEventV1) -> Result<WakeResponseV1, EvalError> {
     let outcome = |outcome, evaluation_id: Option<String>| WakeResponseV1 {
@@ -1264,7 +1286,7 @@ async fn resume_analyses(deps: &Deps) -> Result<SweepResponseV1, EvalError> {
     Ok(response)
 }
 
-/// Startup recovery, run before the observation trigger is bound: publish
+/// Startup recovery, run before the turn observer is created: publish
 /// indexes for records saved before a crash, then resume pending work. The
 /// validation runs wait for the first sweep: the boot never waits on the E2E.
 pub async fn recover(deps: &Deps) -> Result<SweepResponseV1, EvalError> {
@@ -3548,7 +3570,7 @@ where
     O: DeserializeOwned,
 {
     let timeout = std::time::Duration::from_millis(timeout_ms.max(1));
-    let request = TriggerRequest {
+    let request = CallRequest {
         function_id: function_id.into(),
         payload: serde_json::to_value(input)?,
         action: None,
@@ -3558,7 +3580,7 @@ where
         Some(namespace) => request.namespace(namespace),
         None => request.into(),
     };
-    let value = match tokio::time::timeout(timeout, deps.iii.trigger(request)).await {
+    let value = match tokio::time::timeout(timeout, deps.iii.call(request)).await {
         Ok(Ok(value)) => value,
         Ok(Err(error)) => {
             let message = format!("{function_id} failed: {error}");

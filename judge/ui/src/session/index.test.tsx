@@ -76,7 +76,7 @@ function engine(registered = ['typesafe', 'semif']) {
     addReply: { status: 'accepted' } as unknown,
     operation: { status: 'running' } as unknown,
   }
-  const trigger = vi.fn(async (id: string, payload?: Record<string, unknown>) => {
+  const call = vi.fn(async (id: string, payload?: Record<string, unknown>) => {
     if (id === 'engine::functions::list') {
       return {
         functions: state.registered.flatMap((p) => [
@@ -105,44 +105,62 @@ function engine(registered = ['typesafe', 'semif']) {
     if (id === 'compose::operation') return state.operation
     return {}
   })
-  // The bus: handlers the page registers and the bindings that route to them.
+  // The bus: handlers the page registers and the observers that route to them.
   const handlers = new Map<string, (payload: unknown) => void>()
-  const bindings: { type: string; function_id: string; config: Record<string, unknown> }[] = []
+  const observers: Observer[] = []
   const on = vi.fn((id: string, handler: (payload: unknown) => void) => {
     handlers.set(id, handler)
     return () => handlers.delete(id)
   })
-  const registerTrigger = vi.fn((input: { type: string; function_id: string; config: Record<string, unknown> }) => {
-    bindings.push(input)
+  const observe = vi.fn((source: string | { function_id: string; filters?: Filters }, target: string) => {
+    const observer =
+      typeof source === 'string'
+        ? { function_id: source, filters: {}, target }
+        : { function_id: source.function_id, filters: source.filters ?? {}, target }
+    observers.push(observer)
     return () => {
-      const at = bindings.indexOf(input)
-      if (at >= 0) bindings.splice(at, 1)
+      const at = observers.indexOf(observer)
+      if (at >= 0) observers.splice(at, 1)
     }
   })
-  /** Deliver `payload` to every binding of `type` whose config `match` accepts. */
-  const emit = (type: string, payload: unknown, match: (config: Record<string, unknown>) => boolean = () => true) => {
-    for (const binding of [...bindings]) {
-      if (binding.type !== type || !match(binding.config)) continue
-      handlers.get(binding.function_id.replace(/::console-test$/, ''))?.(payload)
+  /** A call of `functionId` with `event`: it reaches every observer whose filters match it. */
+  const emit = (functionId: string, event: Record<string, unknown>) => {
+    for (const observer of [...observers]) {
+      if (observer.function_id !== functionId || !matches(observer.filters, event)) continue
+      handlers.get(observer.target.replace(/::console-test$/, ''))?.(event)
     }
   }
-  return Object.assign({ trigger, on, registerTrigger, browserId: 'console-test' }, { state, bindings, handlers, emit })
+  return Object.assign({ call, on, observe, browserId: 'console-test' }, { state, observers, handlers, emit })
 }
 
-/** The operation id the page bound its `compose-operation` progress to. */
-function boundOperation(iii: ReturnType<typeof engine>): string {
-  const binding = iii.bindings.find((entry) => entry.type === 'compose-operation')
-  if (!binding) throw new Error('no compose-operation binding')
-  return String(binding.config.operation_id)
+type Filters = Record<string, { $eq?: unknown }>
+interface Observer {
+  function_id: string
+  filters: Filters
+  target: string
+}
+
+/** The `{ 'input.<field>': { $eq: value } }` filters the page uses, applied to an event source's input. */
+function matches(filters: Filters, input: Record<string, unknown>): boolean {
+  return Object.entries(filters).every(([path, condition]) => input[path.replace(/^input\./, '')] === condition.$eq)
+}
+
+/** The operation id the page observes `compose::on-operation-progress` for. */
+function observedOperation(iii: ReturnType<typeof engine>): string {
+  const observer = iii.observers.find((entry) => entry.function_id === 'compose::on-operation-progress')
+  if (!observer) throw new Error('no compose::on-operation-progress observer')
+  return String(observer.filters['input.operation_id']?.$eq)
 }
 
 /** Compose ends the operation: its terminal event reaches the page. */
 function endOperation(iii: ReturnType<typeof engine>, operationId: string) {
-  iii.emit(
-    'compose-operation',
-    { operation_id: operationId, sequence: 9, phase: 'complete', detail: '', terminal: true },
-    (config) => config.operation_id === operationId,
-  )
+  iii.emit('compose::on-operation-progress', {
+    operation_id: operationId,
+    sequence: 9,
+    phase: 'complete',
+    detail: '',
+    terminal: true,
+  })
 }
 
 /** Past the live list's debounce. */
@@ -254,33 +272,33 @@ describe('per-session judge provider', () => {
     expect(option('default')?.textContent).toContain('typesafe · jev-latest')
     expect(option('typesafe')?.getAttribute('aria-pressed')).toBe('true')
     // A judge's model comes from its settings, read raw: no `${VAR}` expands into the page.
-    expect(iii.trigger).toHaveBeenCalledWith(
+    expect(iii.call).toHaveBeenCalledWith(
       'configuration::get',
       { id: 'judge-semif', raw: true },
       { timeoutMs: 5_000 },
     )
-    expect(iii.trigger.mock.calls.some(([id]) => id === 'judge::models::list')).toBe(false)
+    expect(iii.call.mock.calls.some(([id]) => id === 'judge::models::list')).toBe(false)
     await act(async () => option('semif')!.click())
     expect(setMetadata).toHaveBeenLastCalledWith({ [SESSION_PROVIDER_KEY]: 'semif' })
     // Picking a provider starts its model load before the session's next turn.
-    expect(iii.trigger).toHaveBeenCalledWith(
+    expect(iii.call).toHaveBeenCalledWith(
       'judge::models::list',
       { provider: 'semif', timeout_ms: 1_000 },
       { timeoutMs: 10_000 },
     )
-    const calls = iii.trigger.mock.calls.length
+    const calls = iii.call.mock.calls.length
     await act(async () => option('default')!.click())
     expect(setMetadata).toHaveBeenLastCalledWith({ [SESSION_PROVIDER_KEY]: undefined })
-    expect(iii.trigger.mock.calls.length).toBe(calls)
+    expect(iii.call.mock.calls.length).toBe(calls)
   })
 
   it('keeps a stored provider that is not running selectable', async () => {
     const { option, view } = await mount({ [SESSION_PROVIDER_KEY]: 'laya' })
     expect(option('laya')?.textContent).toContain('Not running')
     expect(option('laya')?.hasAttribute('data-warning')).toBe(true)
-    const trigger = view.querySelector('.judge-ui-session-trigger')
-    expect(trigger?.hasAttribute('data-warning')).toBe(true)
-    expect(trigger?.getAttribute('title')).toBe('judge-laya is not running')
+    const menuButton = view.querySelector('.judge-ui-session-trigger')
+    expect(menuButton?.hasAttribute('data-warning')).toBe(true)
+    expect(menuButton?.getAttribute('title')).toBe('judge-laya is not running')
     expect(option('laya')?.getAttribute('aria-pressed')).toBe('true')
     // Nothing answers for its settings, so there is nothing to configure.
     expect(view.querySelector('button[aria-label="Configure laya"]')).toBeNull()
@@ -369,18 +387,20 @@ describe('per-session judge provider', () => {
     const rows = () => [...view.querySelectorAll('.judge-ui-session-add-title [data-label]')].map((row) => row.textContent)
     expect(rows()).toEqual(['decider'])
     await act(async () => button('Add decider').click())
-    const operationId = boundOperation(iii)
+    const operationId = observedOperation(iii)
     expect(operationId).toMatch(/^compose:[0-9a-f-]{36}$/)
-    // Bound terminal-only, before the add, under the id the add then names.
-    expect(iii.registerTrigger).toHaveBeenCalledWith({
-      type: 'compose-operation',
-      function_id: expect.stringMatching(/^iii::judge-ui::compose-operation::\d+::console-test$/),
-      config: { operation_id: operationId, terminal_only: true },
-    })
-    const bound = iii.registerTrigger.mock.invocationCallOrder.at(-1)!
-    const added = iii.trigger.mock.calls.findIndex(([id]) => id === 'compose::add')
-    expect(iii.trigger.mock.invocationCallOrder[added]).toBeGreaterThan(bound)
-    expect(iii.trigger).toHaveBeenCalledWith(
+    // Observed terminal-only, before the add, under the id the add then names.
+    expect(iii.observe).toHaveBeenLastCalledWith(
+      {
+        function_id: 'compose::on-operation-progress',
+        filters: { 'input.operation_id': { $eq: operationId }, 'input.terminal': { $eq: true } },
+      },
+      expect.stringMatching(/^iii::judge-ui::operation-progress::\d+::console-test$/),
+    )
+    const observed = iii.observe.mock.invocationCallOrder.at(-1)!
+    const added = iii.call.mock.calls.findIndex(([id]) => id === 'compose::add')
+    expect(iii.call.mock.invocationCallOrder[added]).toBeGreaterThan(observed)
+    expect(iii.call).toHaveBeenCalledWith(
       'compose::add',
       { workers: ['judge-decider'], operation_id: operationId },
       { timeoutMs: 600_000 },
@@ -388,7 +408,7 @@ describe('per-session judge provider', () => {
     expect(view.textContent).toContain('Adding…')
     // The judge registering is an engine event, not something polled for.
     iii.state.registered.push('decider')
-    await act(async () => iii.emit('engine::functions-available', { event: 'functions_changed', functions: [] }))
+    await act(async () => iii.emit('engine::on-functions-changed', { event: 'functions_changed', functions: [] }))
     await settle()
     await act(async () => button('Configure').click())
     expect(activePage()).toBe('configure')
@@ -423,11 +443,11 @@ describe('per-session judge provider', () => {
     await act(async () => {})
     await act(async () => button('Add decider').click())
     await act(async () => {})
-    const operationId = boundOperation(iii)
+    const operationId = observedOperation(iii)
     // The one catch-up read finds it still running: nothing more is read
     // until compose says it ended.
-    expect(iii.trigger).toHaveBeenCalledWith('compose::operation', { operation_id: operationId }, { timeoutMs: 5_000 })
-    const reads = () => iii.trigger.mock.calls.filter(([id]) => id === 'compose::operation').length
+    expect(iii.call).toHaveBeenCalledWith('compose::operation', { operation_id: operationId }, { timeoutMs: 5_000 })
+    const reads = () => iii.call.mock.calls.filter(([id]) => id === 'compose::operation').length
     expect(reads()).toBe(1)
     expect(view.textContent).toContain('Adding…')
     iii.state.operation = { status: 'failed', last_event: { terminal: true, detail } }
@@ -436,11 +456,11 @@ describe('per-session judge provider', () => {
     expect(reads()).toBe(2)
     expect(view.querySelector('[role="alert"]')?.textContent).toBe(reason)
     expect(view.querySelector('button[aria-label="Retry adding decider"]')).not.toBeNull()
-    // Settled: the binding is gone.
-    expect(iii.bindings.some((entry) => entry.type === 'compose-operation')).toBe(false)
+    // Settled: the observer is gone.
+    expect(iii.observers.some((entry) => entry.function_id === 'compose::on-operation-progress')).toBe(false)
   })
 
-  it('settles from the catch-up read an operation that ended before its binding landed', async () => {
+  it('settles from the catch-up read an operation that ended before its observer was active', async () => {
     vi.stubGlobal('fetch', registry())
     const iii = engine()
     iii.state.addReply = { status: 'accepted', requested: 1 }
@@ -451,7 +471,7 @@ describe('per-session judge provider', () => {
     await act(async () => button('Add decider').click())
     await act(async () => {})
     expect(view.querySelector('[role="alert"]')?.textContent).toBe('The add was cancelled.')
-    expect(iii.bindings.some((entry) => entry.type === 'compose-operation')).toBe(false)
+    expect(iii.observers.some((entry) => entry.function_id === 'compose::on-operation-progress')).toBe(false)
   })
 
   it('reports an add that compose calls done but whose judge never starts', async () => {
@@ -468,7 +488,7 @@ describe('per-session judge provider', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0)
     })
-    const operationId = boundOperation(iii)
+    const operationId = observedOperation(iii)
     iii.state.operation = {
       status: 'succeeded',
       last_event: { terminal: true, detail: 'all requested workers are ready' },
@@ -486,7 +506,7 @@ describe('per-session judge provider', () => {
     )
     // It starts late: the engine says so, and the open picker settles it.
     iii.state.registered.push('decider')
-    await act(async () => iii.emit('engine::functions-available', { event: 'functions_changed', functions: [] }))
+    await act(async () => iii.emit('engine::on-functions-changed', { event: 'functions_changed', functions: [] }))
     await act(async () => {
       await vi.advanceTimersByTimeAsync(400)
     })
@@ -497,15 +517,21 @@ describe('per-session judge provider', () => {
     const iii = engine()
     const { view, labels } = await mount({}, { iii })
     vi.useFakeTimers()
-    const lists = () => iii.trigger.mock.calls.filter(([id]) => id === 'engine::functions::list').length
+    const lists = () => iii.call.mock.calls.filter(([id]) => id === 'engine::functions::list').length
     const before = lists()
     await act(async () => {
       await vi.advanceTimersByTimeAsync(60_000)
     })
     expect(lists()).toBe(before)
-    // The configuration binding names no id; another worker's entry is not news.
-    expect(iii.bindings.find((entry) => entry.type === 'configuration')?.config).toEqual({})
-    await act(async () => iii.emit('configuration', { type: 'configuration', event_type: 'updated', id: 'llm-router' }))
+    // The configuration observer has no filters; another worker's entry is not news.
+    expect(iii.observers.find((entry) => entry.function_id === 'configuration::on-updated')?.filters).toEqual({})
+    await act(async () =>
+      iii.emit('configuration::on-updated', {
+        type: 'configuration',
+        event_type: 'configuration:updated',
+        id: 'llm-router',
+      }),
+    )
     await act(async () => {
       await vi.advanceTimersByTimeAsync(400)
     })
@@ -513,36 +539,44 @@ describe('per-session judge provider', () => {
     // A judge's settings changing is: a burst reads once.
     iii.state.models['judge-semif'] = 'qwen3.5-9b'
     await act(async () => {
-      iii.emit('configuration', { type: 'configuration', event_type: 'updated', id: 'judge-semif' })
-      iii.emit('configuration', { type: 'configuration', event_type: 'updated', id: 'judge-semif' })
+      iii.emit('configuration::on-updated', {
+        type: 'configuration',
+        event_type: 'configuration:updated',
+        id: 'judge-semif',
+      })
+      iii.emit('configuration::on-updated', {
+        type: 'configuration',
+        event_type: 'configuration:updated',
+        id: 'judge-semif',
+      })
     })
     await act(async () => {
       await vi.advanceTimersByTimeAsync(400)
     })
     expect(lists()).toBe(before + 1)
     expect(labels()).toContain('qwen3.5-9b')
-    // Closing the menu keeps them: the trigger's warning follows the engine.
+    // Closing the menu keeps them: the menu button's warning follows the engine.
     await act(async () => view.querySelector<HTMLElement>('[data-close-menu]')!.click())
-    expect(iii.bindings.map((entry) => entry.type).sort()).toEqual([
-      'configuration',
-      'engine::functions-available',
-      'secrets::changed',
+    expect(iii.observers.map((entry) => entry.function_id).sort()).toEqual([
+      'configuration::on-updated',
+      'engine::on-functions-changed',
+      'secrets::on-changed',
     ])
     // Unmounting drops them.
     act(() => root?.unmount())
     root = null
-    expect(iii.bindings).toEqual([])
+    expect(iii.observers).toEqual([])
   })
 
-  it('warns on the trigger and in the list when the chosen judge has no usable key, until it has one', async () => {
+  it('warns on the menu button and in the list when the chosen judge has no usable key, until it has one', async () => {
     const iii = engine()
     const reason = 'no API key: save one in the judge-typesafe settings, or export TYPESAFE_API_KEY in its process and restart it'
     iii.state.status.typesafe = { configured: false, reason }
     const { view, option } = await mount({ [SESSION_PROVIDER_KEY]: 'typesafe' }, { iii })
-    const trigger = () => view.querySelector('.judge-ui-session-trigger')
-    expect(trigger()?.textContent).toBe('judge · typesafe')
-    expect(trigger()?.hasAttribute('data-warning')).toBe(true)
-    expect(trigger()?.getAttribute('aria-label')).toBe(
+    const menuButton = () => view.querySelector('.judge-ui-session-trigger')
+    expect(menuButton()?.textContent).toBe('judge · typesafe')
+    expect(menuButton()?.hasAttribute('data-warning')).toBe(true)
+    expect(menuButton()?.getAttribute('aria-label')).toBe(
       `Judge provider for this session: typesafe. typesafe is not configured: ${reason}`,
     )
     expect(option('typesafe')?.textContent).toContain(`Not configured: ${reason}`)
@@ -552,14 +586,14 @@ describe('per-session judge provider', () => {
     expect(option('default')?.hasAttribute('data-warning')).toBe(true)
     // A local judge registers no status and is never asked for one.
     expect(option('semif')?.hasAttribute('data-warning')).toBe(false)
-    expect(iii.trigger.mock.calls.some(([id]) => id === 'judge-semif::status')).toBe(false)
-    // The key lands as a secret while the menu is closed: the trigger clears.
+    expect(iii.call.mock.calls.some(([id]) => id === 'judge-semif::status')).toBe(false)
+    // The key lands as a secret while the menu is closed: the menu button clears.
     await act(async () => view.querySelector<HTMLElement>('[data-close-menu]')!.click())
     iii.state.status.typesafe = { configured: true }
-    await act(async () => iii.emit('secrets::changed', { name: 'TYPESAFE_API_KEY' }))
+    await act(async () => iii.emit('secrets::on-changed', { name: 'TYPESAFE_API_KEY' }))
     await settle()
-    expect(trigger()?.hasAttribute('data-warning')).toBe(false)
-    expect(trigger()?.getAttribute('title')).toBe('Judge provider for this session')
+    expect(menuButton()?.hasAttribute('data-warning')).toBe(false)
+    expect(menuButton()?.getAttribute('title')).toBe('Judge provider for this session')
   })
 
   it('warns when Default resolves to a judge without a usable key', async () => {

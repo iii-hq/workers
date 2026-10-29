@@ -70,7 +70,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
         })
         .description(
             "Read the monitor configuration (null until configured), whether the \
-             harness::turn-completed observation trigger was requested, the latest rejection \
+             harness::on-turn-completed observer is active, the latest rejection \
              (capacity or daily cost cap), the day's known investigation cost against the cap with \
              what one analysis has cost, and, with check_providers, whether the Jev triage \
              provider answers.",
@@ -326,7 +326,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
                     .map_err(Error::from)
             }
         })
-        .description("Internal harness turn-completed admission and wake-up.")
+        .description("Internal: admission and wake-up for harness::on-turn-completed.")
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
 

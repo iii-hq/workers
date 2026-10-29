@@ -5,7 +5,7 @@
 //!
 //! The request is rebuilt the way the Harness builds it: the model-facing
 //! window from the durable log (`harness::window::build`), the frozen runtime
-//! context, the turn's system prompt and skills baseline, the `agent_trigger`
+//! context, the turn's system prompt and skills baseline, the `agent_call`
 //! tool, and `context::assemble` with the Harness's own parameters.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -13,8 +13,9 @@ use std::time::Instant;
 
 use harness::clients::context::CountTokensParams;
 use harness::clients::{AssembleParams, ContextClient, LoadedEntry};
+use harness::policy::{is_agent_call_name, AGENT_CALL_NAME};
 use harness::types::model::{AgentFunction, ThinkingLevel};
-use harness::types::turn::ResponseLanguage;
+use harness::types::turn::{ExposeMode, ResponseLanguage};
 use judge_contract::{Answer, Content, EvaluateRequest, EvaluateResponse, Evaluation, Question};
 use serde_json::{json, Value};
 use tokio::task::JoinSet;
@@ -41,7 +42,6 @@ const PREVIEW_CHARS: usize = 400;
 const PAYLOAD_CHARS: usize = 600;
 const MAX_QUESTION_CHARS: usize = 500;
 const INFO: &str = "engine::functions::info";
-const AGENT_TRIGGER: &str = "agent_trigger";
 const SIGNAL_QUESTION: &str = "signal";
 /// Below this many tokens of unexplained difference (or 0.2% of the request),
 /// the rebuilt request counts as the original.
@@ -427,10 +427,9 @@ async fn rebuild(
             "turns with a `{kind}` output contract cannot be reproduced yet"
         )));
     }
-    if let Some(expose) = options["functions"]["expose"]
-        .as_str()
-        .filter(|expose| *expose != AGENT_TRIGGER)
-    {
+    if let Some(expose) = options["functions"]["expose"].as_str().filter(|expose| {
+        serde_json::from_value::<ExposeMode>(json!(expose)).ok() != Some(ExposeMode::AgentCall)
+    }) {
         return Err(EvalError::Conflict(format!(
             "turns with `{expose}` function exposure cannot be reproduced yet"
         )));
@@ -512,7 +511,7 @@ async fn rebuild(
         aid,
         skills_baseline,
         messages,
-        tools: vec![harness::policy::agent_trigger_schema(
+        tools: vec![harness::policy::agent_call_schema(
             response_language.as_ref(),
         )],
         thinking_level: options
@@ -1236,7 +1235,7 @@ fn cut(text: &str, max: usize) -> String {
 }
 
 /// `(target, description, payload)` of every call in a reply; a call through
-/// `agent_trigger` is read as a call to the function it names.
+/// `agent_call` is read as a call to the function it names.
 fn calls_of(message: &Value) -> Vec<(String, Option<String>, Value)> {
     message["content"]
         .as_array()
@@ -1245,11 +1244,14 @@ fn calls_of(message: &Value) -> Vec<(String, Option<String>, Value)> {
         .filter(|block| block["type"] == "function_call")
         .map(|block| {
             let arguments = &block["arguments"];
-            if block["function_id"] == AGENT_TRIGGER {
+            if block["function_id"]
+                .as_str()
+                .is_some_and(is_agent_call_name)
+            {
                 (
                     arguments["function"]
                         .as_str()
-                        .unwrap_or(AGENT_TRIGGER)
+                        .unwrap_or(AGENT_CALL_NAME)
                         .to_string(),
                     arguments["description"].as_str().map(str::to_string),
                     arguments["payload"].clone(),
@@ -1520,8 +1522,8 @@ mod tests {
         json!({ "role": "assistant", "content": calls })
     }
 
-    fn trigger(function: &str, payload: Value) -> Value {
-        json!({ "type": "function_call", "id": "c9", "function_id": AGENT_TRIGGER,
+    fn agent_call(function: &str, payload: Value) -> Value {
+        json!({ "type": "function_call", "id": "c9", "function_id": AGENT_CALL_NAME,
             "arguments": { "function": function, "description": "d", "payload": payload } })
     }
 
@@ -1602,15 +1604,15 @@ mod tests {
             rule: Some(SignalRuleV1::ContractRediscovery),
             question: None,
         };
-        let again = reply_with(vec![trigger(
+        let again = reply_with(vec![agent_call(
             INFO,
             json!({ "function_ids": "[\"harness::spawn\"]" }),
         )]);
-        let new = reply_with(vec![trigger(
+        let new = reply_with(vec![agent_call(
             INFO,
             json!({ "function_ids": ["harness::spawn", "x::y"] }),
         )]);
-        let other = reply_with(vec![trigger("harness::spawn", json!({}))]);
+        let other = reply_with(vec![agent_call("harness::spawn", json!({}))]);
         assert_eq!(rule_signal(&signal, &context, &again), Some(true));
         assert_eq!(rule_signal(&signal, &context, &new), Some(false));
         assert_eq!(rule_signal(&signal, &context, &other), Some(false));
@@ -1624,7 +1626,7 @@ mod tests {
     #[test]
     fn repeated_error_call_matches_the_last_failed_call_only_with_an_equal_payload() {
         let call = json!({ "role": "assistant", "content": [
-            { "type": "function_call", "id": "c1", "function_id": AGENT_TRIGGER,
+            { "type": "function_call", "id": "c1", "function_id": AGENT_CALL_NAME,
               "arguments": { "function": "crm::schedule", "description": "d", "payload": { "at": 1 } } } ] });
         let failed = json!({ "role": "function_result", "function_id": "crm::schedule",
             "function_call_id": "c1", "is_error": true,
@@ -1634,18 +1636,18 @@ mod tests {
             rule: Some(SignalRuleV1::RepeatedErrorCall),
             question: None,
         };
-        let same = reply_with(vec![trigger("crm::schedule", json!({ "at": 1 }))]);
-        let fixed = reply_with(vec![trigger("crm::schedule", json!({ "at": 2 }))]);
+        let same = reply_with(vec![agent_call("crm::schedule", json!({ "at": 1 }))]);
+        let fixed = reply_with(vec![agent_call("crm::schedule", json!({ "at": 2 }))]);
         assert_eq!(rule_signal(&signal, &context, &same), Some(true));
         assert_eq!(rule_signal(&signal, &context, &fixed), Some(false));
     }
 
     #[test]
-    fn a_reply_is_read_through_agent_trigger_with_bounded_previews() {
+    fn a_reply_is_read_through_agent_call_with_bounded_previews() {
         let message = json!({ "role": "assistant", "content": [
             { "type": "thinking", "text": "x".repeat(1000) },
             { "type": "text", "text": "done" },
-            trigger("coder::search", json!({ "path": "ade", "include_globs": ["README.md"] })),
+            agent_call("coder::search", json!({ "path": "ade", "include_globs": ["README.md"] })),
         ], "usage": { "input": 2, "cache_read": 10, "cost_usd": 0.01 } });
         let reply = read_reply(&message, &Value::Null, 3, 40);
         assert_eq!(reply.calls[0].target, "coder::search");

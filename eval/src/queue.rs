@@ -1,7 +1,6 @@
 use std::time::Duration;
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{IIIClient, TriggerAction};
+use iii_sdk::{CallAction, CallRequest, IIIClient};
 use serde_json::{json, Value};
 
 use crate::contract::StepRequestV1;
@@ -19,7 +18,7 @@ pub async fn ensure_run_queue(iii: &IIIClient) -> Result<(), EvalError> {
     let mut last_error = String::new();
     for attempt in 1..=DEFINE_ATTEMPTS {
         match iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "queue::define".into(),
                 payload: payload.clone(),
                 action: None,
@@ -50,10 +49,10 @@ pub async fn enqueue_step(
         evaluation_id: evaluation_id.into(),
         step,
     })?;
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "eval::step".into(),
         payload,
-        action: Some(TriggerAction::Enqueue {
+        action: Some(CallAction::Enqueue {
             queue: RUN_QUEUE.into(),
         }),
         timeout_ms: None,

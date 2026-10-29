@@ -193,33 +193,43 @@ async fn check_boot(shutdown_signal: Option<&str>) {
                     }
                     functions.insert(id.to_owned());
                 }
-                "registertrigger" if value["trigger_type"] == "configuration" => {
-                    assert_eq!(value["function_id"], "judge::on-config-change");
+                "observe" if value["source"]["function_id"] == "configuration::on-updated" => {
+                    assert_eq!(value["target"]["function_id"], "judge::on-config-change");
                     assert_eq!(
-                        value["config"],
+                        value["source"]["filters"],
                         json!({
-                            "configuration_id": "judge-boot-test",
-                            "event_types": ["configuration:updated"]
+                            "input.id": { "$eq": "judge-boot-test" },
+                            "input.event_type": { "$eq": "configuration:updated" }
                         })
                     );
+                    assert_eq!(value["source"]["deliver"], "output");
                     reload = true;
                 }
-                "registertrigger" if value["trigger_type"] == "harness::hook::pre-generate" => {
+                "observe" if value["source"]["function_id"] == "harness::hook::on-pre-generate" => {
                     // Mentions must never block a turn: the hook fails open.
-                    assert_eq!(value["function_id"], "judge::mentions::pre-generate");
-                    assert_eq!(value["config"]["on_error"], "fail_open");
+                    assert_eq!(
+                        value["target"]["function_id"],
+                        "judge::mentions::pre-generate"
+                    );
+                    assert_eq!(value["source"]["args"]["on_error"], "fail_open");
                     mention_hook = true;
                 }
-                "registertrigger" if value["trigger_type"] == "console:script" => {
+                "observe"
+                    if value["source"]["function_id"] == "console::ui::asset"
+                        && value["source"]["args"]["kind"] == "script" =>
+                {
                     assert!(console_ui_enabled);
-                    assert_eq!(value["function_id"], "judge::ui-content");
-                    assert_eq!(value["config"]["path"], "judge/page.js");
+                    assert_eq!(value["target"]["function_id"], "judge::ui-content");
+                    assert_eq!(value["source"]["args"]["path"], "judge/page.js");
                     script = true;
                 }
-                "registertrigger" if value["trigger_type"] == "console:style" => {
+                "observe"
+                    if value["source"]["function_id"] == "console::ui::asset"
+                        && value["source"]["args"]["kind"] == "style" =>
+                {
                     assert!(console_ui_enabled);
-                    assert_eq!(value["function_id"], "judge::ui-content");
-                    assert_eq!(value["config"]["path"], "judge/styles.css");
+                    assert_eq!(value["target"]["function_id"], "judge::ui-content");
+                    assert_eq!(value["source"]["args"]["path"], "judge/styles.css");
                     style = true;
                 }
                 "invocationresult" if value["function_id"] == "judge::evaluate" => {
