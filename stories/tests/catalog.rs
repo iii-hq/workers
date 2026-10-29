@@ -3,9 +3,11 @@
 
 use iii_stories::config::{StoriesConfig, normalize, schema};
 use iii_stories::events::{
-    BUILD_TRIGGER, CHANGED_TRIGGER, ON_BUILD_FN, ON_CHANGED_FN, refuse_build, refuse_changed,
+    BUILD_TRIGGER, BuildEvent, CHANGED_TRIGGER, ChangedEvent, ON_BUILD_FN, ON_CHANGED_FN,
+    refuse_build, refuse_changed,
 };
 use iii_stories::functions::FUNCTION_IDS;
+use iii_stories::model::{ChangeSummary, LineInfo, LineKind};
 
 #[test]
 fn permissions_file_names_every_public_function() {
@@ -54,14 +56,41 @@ fn observable_functions_sit_next_to_their_trigger_types_and_are_not_invocable() 
     }
 }
 
+fn changed_event() -> ChangedEvent {
+    let line = LineInfo {
+        key: "worktree".into(),
+        kind: LineKind::Worktree,
+        label: "working tree".into(),
+        sha: None,
+        dirty: None,
+        built_at: "t".into(),
+    };
+    ChangedEvent {
+        workspace: "ws".into(),
+        line: line.clone(),
+        base: line,
+        summary: ChangeSummary::default(),
+        changes: vec![],
+        at: "t".into(),
+    }
+}
+
+fn build_event() -> BuildEvent {
+    BuildEvent {
+        workspace: "ws".into(),
+        build_id: "b_1".into(),
+        status: "done".into(),
+        line: "worktree".into(),
+        message: None,
+        at: "t".into(),
+    }
+}
+
 #[test]
 fn each_on_function_refuses_direct_invocation() {
     for (id, refusal) in [
-        (ON_CHANGED_FN, refuse_changed(serde_json::json!({}))),
-        (
-            ON_BUILD_FN,
-            refuse_build(serde_json::json!({ "workspace": "ws" })),
-        ),
+        (ON_CHANGED_FN, refuse_changed(changed_event())),
+        (ON_BUILD_FN, refuse_build(build_event())),
     ] {
         match refusal {
             Err(iii_sdk::errors::Error::Remote { code, message, .. }) => {
@@ -69,6 +98,67 @@ fn each_on_function_refuses_direct_invocation() {
                 assert!(message.contains(id), "{message}");
             }
             other => panic!("{id}: expected FORBIDDEN, got {other:?}"),
+        }
+    }
+}
+
+/// The schemas the SDK publishes for a typed sync handler `fn(T) -> Result<R, Error>`
+/// (same generator settings as `iii_sdk::RegisterFunction::new`).
+fn handler_schemas<T: schemars::JsonSchema, R: schemars::JsonSchema>(
+    _handler: fn(T) -> Result<R, iii_sdk::errors::Error>,
+) -> (serde_json::Value, serde_json::Value) {
+    let schema_for = |root| serde_json::to_value(root).unwrap();
+    let generator = || schemars::r#gen::SchemaSettings::draft07().into_generator();
+    (
+        schema_for(generator().into_root_schema_for::<T>()),
+        schema_for(generator().into_root_schema_for::<R>()),
+    )
+}
+
+/// Mirrors `.github/scripts/collect_worker_interface.py`: an AnyValue or
+/// empty schema carries none of these keywords.
+fn assert_typed_schema(function_id: &str, which: &str, schema: &serde_json::Value) {
+    const KEYS: [&str; 7] = [
+        "type",
+        "properties",
+        "$ref",
+        "allOf",
+        "anyOf",
+        "oneOf",
+        "enum",
+    ];
+    assert!(
+        schema
+            .as_object()
+            .is_some_and(|o| KEYS.iter().any(|k| o.contains_key(*k))),
+        "{function_id} {which} schema is untyped (AnyValue/empty): {schema}"
+    );
+}
+
+#[test]
+fn observable_functions_have_typed_request_and_response_schemas() {
+    for (function_id, (request, response), required) in [
+        (
+            ON_CHANGED_FN,
+            handler_schemas(refuse_changed),
+            &["workspace", "line", "base", "summary", "changes", "at"][..],
+        ),
+        (
+            ON_BUILD_FN,
+            handler_schemas(refuse_build),
+            &["workspace", "build_id", "status", "line", "at"][..],
+        ),
+    ] {
+        assert_typed_schema(function_id, "request", &request);
+        assert_typed_schema(function_id, "response", &response);
+        assert_eq!(request["type"], "object", "{function_id}: {request}");
+        for field in required {
+            assert!(
+                request["required"]
+                    .as_array()
+                    .is_some_and(|r| r.contains(&(*field).into())),
+                "{function_id} request must document the delivered event ({field}): {request}"
+            );
         }
     }
 }

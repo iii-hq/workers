@@ -202,18 +202,16 @@ fn forbidden(function_id: &str) -> Error {
 }
 
 /// The handler of [`ON_CHANGED_FN`]: events only come from this worker's own
-/// fan-out, so every invocation is refused, whatever its input.
-pub fn refuse_changed(_input: Value) -> Result<(), Error> {
+/// fan-out, so every invocation is refused, whatever its input. Typed on the
+/// delivered [`ChangedEvent`] so the function publishes the event's schema.
+pub fn refuse_changed(_event: ChangedEvent) -> Result<(), Error> {
     Err(forbidden(ON_CHANGED_FN))
 }
 
-/// The handler of [`ON_BUILD_FN`]: every invocation is refused.
-pub fn refuse_build(_input: Value) -> Result<(), Error> {
+/// The handler of [`ON_BUILD_FN`]: every invocation is refused. Typed on the
+/// delivered [`BuildEvent`] so the function publishes the event's schema.
+pub fn refuse_build(_event: BuildEvent) -> Result<(), Error> {
     Err(forbidden(ON_BUILD_FN))
-}
-
-fn schema_of<T: JsonSchema>() -> Value {
-    serde_json::to_value(schemars::schema_for!(T)).unwrap_or(Value::Null)
 }
 
 /// Registers both trigger types and, next to each, its owner-delivered
@@ -245,7 +243,6 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>, subscribers: &Subscribers) {
         ON_CHANGED_FN,
         RegisterFunction::new(refuse_changed)
             .description(ON_CHANGED_DESCRIPTION)
-            .request_format(schema_of::<ChangedEvent>())
             .observe(
                 Observe::owner()
                     .args_format::<ChangedConfig>()
@@ -259,7 +256,6 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>, subscribers: &Subscribers) {
         ON_BUILD_FN,
         RegisterFunction::new(refuse_build)
             .description(ON_BUILD_DESCRIPTION)
-            .request_format(schema_of::<BuildEvent>())
             .observe(
                 Observe::owner()
                     .args_format::<BuildConfig>()
@@ -572,19 +568,33 @@ mod tests {
         }
     }
 
+    /// The structs the on-* functions are typed on are exactly what the
+    /// fan-out delivers to observers.
+    #[test]
+    fn delivered_payloads_are_the_typed_events() {
+        let subscribers = Subscribers::default();
+        add_observer(
+            &subscribers.changed_observers,
+            Recorder::new("o1", json!({})),
+        );
+        add_observer(&subscribers.build_observers, Recorder::new("o2", json!({})));
+        let (_, changed) = changed_deliveries(&subscribers, &event());
+        let (_, build) = build_deliveries(&subscribers, &build_event("ws"));
+        for (_, payload) in changed {
+            let typed: ChangedEvent = serde_json::from_value(payload.clone()).unwrap();
+            assert_eq!(serde_json::to_value(typed).unwrap(), payload);
+        }
+        for (_, payload) in build {
+            let typed: BuildEvent = serde_json::from_value(payload.clone()).unwrap();
+            assert_eq!(serde_json::to_value(typed).unwrap(), payload);
+        }
+    }
+
     #[test]
     fn each_on_function_refuses_direct_invocation() {
         for (id, refusal) in [
-            (ON_CHANGED_FN, refuse_changed(Value::Null)),
-            (
-                ON_CHANGED_FN,
-                refuse_changed(serde_json::to_value(event()).unwrap()),
-            ),
-            (ON_BUILD_FN, refuse_build(json!({}))),
-            (
-                ON_BUILD_FN,
-                refuse_build(serde_json::to_value(build_event("ws")).unwrap()),
-            ),
+            (ON_CHANGED_FN, refuse_changed(event())),
+            (ON_BUILD_FN, refuse_build(build_event("ws"))),
         ] {
             match refusal {
                 Err(Error::Remote { code, message, .. }) => {
