@@ -3,15 +3,17 @@
 //! protocol client, registration-token persistence, the event pump into the
 //! router-owned channel, SSE transport buffering, the tool-name codec,
 //! tiktoken-based local prompt token counting, and the published chat
-//! templates a local count renders (`python_json`, `deepseek_v41`). These
-//! were verbatim copies across the provider crates (the pump literally carried a "shared
-//! extraction into llm-router is a listed follow-up" comment); this module is
-//! that extraction. Providers keep only what is genuinely theirs: request
-//! building, SSE event decoding, and error classification.
+//! templates a local count renders (`python_json`, `deepseek_v41`,
+//! `deepseek_prompt`). These were verbatim copies across the provider crates
+//! (the pump literally carried a "shared extraction into llm-router is a
+//! listed follow-up" comment); this module is that extraction. Providers
+//! keep only what is genuinely theirs: request building, SSE event decoding,
+//! and error classification.
 
 pub mod aborts;
 pub mod cache;
 pub mod chat_framing;
+pub mod deepseek_prompt;
 pub mod deepseek_v41;
 pub mod endpoint_count;
 pub mod names;
