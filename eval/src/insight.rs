@@ -126,6 +126,9 @@ struct Part {
 struct RunSpend {
     parts: BTreeMap<String, Part>,
     steps: usize,
+    /// What the first step read from the provider's cache: a prefix earlier
+    /// sessions sent too.
+    first_cached: f64,
     input: f64,
     output: f64,
     cached: f64,
@@ -240,6 +243,7 @@ fn run_spend(run: &Value) -> Option<RunSpend> {
         );
     }
     spent.steps = at.len();
+    spent.first_cached = usage(first, "cache_read");
     Some(spent)
 }
 
@@ -271,7 +275,7 @@ pub fn spend(bundle: &Value, scenarios: &[String]) -> (Vec<ImprovementPointV1>, 
     // What a proposal must know before cutting what is sent: the model, how
     // much the provider already serves from its cache, and whether the
     // window ever shrank (a prune or a compaction).
-    let (mut cached, mut shrank) = (0.0, 0u32);
+    let (mut cached, mut shrank, mut first_cached) = (0.0, 0u32, 0.0);
     let mut models = std::collections::BTreeSet::new();
     for (scenario, run) in evidence::runs(bundle) {
         if !scenarios
@@ -292,6 +296,7 @@ pub fn spend(bundle: &Value, scenarios: &[String]) -> (Vec<ImprovementPointV1>, 
         input += spent.input;
         output += spent.output;
         cached += spent.cached;
+        first_cached += spent.first_cached;
         shrank += spent.shrank;
         models.extend(spent.models);
         runs += 1;
@@ -323,8 +328,15 @@ pub fn spend(bundle: &Value, scenarios: &[String]) -> (Vec<ImprovementPointV1>, 
                 100.0 * share(part)
             );
             let what = match key.as_str() {
-                SYSTEM => "paid uncached at the first step, read from the provider's cache after"
-                    .to_string(),
+                // A prefix every session sends alike is read from the cache
+                // even at the first step: what is paid is where sessions
+                // start to differ.
+                SYSTEM => format!(
+                    "paid uncached at the first step, read from the provider's cache after; that \
+                     first step read ~{:.0} tokens from the cache (a prefix earlier sessions sent \
+                     too), so sessions differ from that point of the system prompt on",
+                    per_run(first_cached)
+                ),
                 MISSED => format!(
                     "at {:.1} step(s) a run the provider's cache missed and earlier context was \
                      paid again",
@@ -927,6 +939,24 @@ mod tests {
         let bundle = json!({"detail": {"reports": [{"report": {"scenarios": [
             {"scenario_id": "s", "runs": [uncached.clone()]}]}}]}});
         assert_eq!(spend(&bundle, &["s".into()]).0[0].function_id, MISSED);
+        // A first step that reads a shared prefix from the cache says where
+        // sessions start to differ.
+        let mut shared = spending_run();
+        shared["transcript"]["messages"][1]["message"]["usage"]["cache_read"] = json!(6016);
+        let bundle = json!({"detail": {"reports": [{"report": {"scenarios": [
+            {"scenario_id": "s", "runs": [shared]}]}}]}});
+        let (points, _) = spend(&bundle, &["s".into()]);
+        let system = points
+            .iter()
+            .find(|point| point.function_id == SYSTEM)
+            .unwrap();
+        assert!(
+            system
+                .summary
+                .contains("first step read ~6016 tokens from the cache"),
+            "{}",
+            system.summary
+        );
         // What the Harness writes: the system prompt and tools, not the
         // model's calls or their results; a missed cache is its too.
         let written = harness_tokens(&spending_run()).unwrap();
