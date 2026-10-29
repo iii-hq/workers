@@ -1,7 +1,7 @@
 /**
  * Vendor bundle entry: the excalidraw whiteboard plus the mermaid→excalidraw
  * converter, built by build.mjs into dist/freeform.js and served as the
- * `canvas/freeform.js` console:script asset.
+ * `canvas/freeform.js` `script` asset.
  *
  * Only the react family stays external — excalidraw must render inside the
  * console's React tree (a second React copy breaks hooks). The excalidraw
@@ -13,7 +13,7 @@
  * from) before the excalidraw module body evaluates — ES module bodies run
  * depth-first in import order.
  *
- * The console eagerly import()s every console:script asset and calls its
+ * The console eagerly import()s every `script` asset and calls its
  * default export as setup(host), so the default export here is a no-op setup;
  * the real payload is the named exports, reached lazily through
  * src/lib/loaders.ts (loadFreeform).

@@ -10,7 +10,7 @@
  * worker renderer should try to.
  */
 
-import { Badge, type FunctionTriggerMessage, type FunctionTriggerRenderer, type Host } from '@iii-dev/console-ui'
+import { Badge, type FunctionCallMessage, type FunctionCallRenderer, type Host } from '@iii-dev/console-ui'
 import { unwrapEnvelope } from '@iii-dev/console-ui/format'
 
 import {
@@ -28,7 +28,7 @@ const HANDLED = new Set([
   'pdf::extract-regions',
 ])
 
-export function createPdfTriggerRenderer(_host: Host): FunctionTriggerRenderer {
+export function createPdfCallRenderer(_host: Host): FunctionCallRenderer {
   return {
     id: 'pdf/page.js#renderer',
     isMatch: (functionId) => HANDLED.has(functionId),
@@ -37,7 +37,7 @@ export function createPdfTriggerRenderer(_host: Host): FunctionTriggerRenderer {
   }
 }
 
-function render(message: FunctionTriggerMessage) {
+function render(message: FunctionCallMessage) {
   const output = unwrapEnvelope(message.output)
   if (!output || typeof output !== 'object') return null
 
@@ -83,18 +83,18 @@ function ClassifyCard({ result }: { result: ClassifyResponse }) {
     (result.ocr_reasons ?? []).flatMap((r) => r.reasons).map(ocrReasonLabel),
   )
   return (
-    <div className="pdf-trigger">
-      <div className="pdf-trigger__row">
+    <div className="pdf-call">
+      <div className="pdf-call__row">
         <Badge variant={needing === 0 ? 'accent' : needing >= result.page_count ? 'alert' : 'warn'}>
           {documentTypeLabel(result.document_type)}
         </Badge>
-        <span className="pdf-trigger__file">{result.source}</span>
-        <span className="pdf-trigger__meta">
+        <span className="pdf-call__file">{result.source}</span>
+        <span className="pdf-call__meta">
           {result.page_count} pages · {Math.round((result.confidence ?? 0) * 100)}% confident ·{' '}
           {result.elapsed_ms} ms
         </span>
       </div>
-      <p className="pdf-trigger__line">
+      <p className="pdf-call__line">
         {needing === 0
           ? 'Every page is readable without OCR.'
           : `${needing} of ${result.page_count} pages need OCR${
@@ -109,17 +109,17 @@ function MarkdownCard({ result }: { result: MarkdownResponse }) {
   const body = result.body
   if (!body) return null
   return (
-    <div className="pdf-trigger">
-      <div className="pdf-trigger__row">
+    <div className="pdf-call">
+      <div className="pdf-call__row">
         <Badge variant={body.truncated ? 'warn' : 'accent'}>
           {body.truncated ? 'truncated' : 'complete'}
         </Badge>
-        <span className="pdf-trigger__file">{result.source}</span>
-        <span className="pdf-trigger__meta">
+        <span className="pdf-call__file">{result.source}</span>
+        <span className="pdf-call__meta">
           {result.pages_converted} of {result.page_count} pages · {result.elapsed_ms} ms
         </span>
       </div>
-      <p className="pdf-trigger__line">
+      <p className="pdf-call__line">
         {body.truncated
           ? `Returned ${format(body.chars)} of ${format(body.total_chars)} characters. The rest was not read.`
           : `${format(body.chars)} characters of markdown.`}
@@ -139,14 +139,14 @@ function BodyCard({
   const body = result.body
   if (!body) return null
   return (
-    <div className="pdf-trigger">
-      <div className="pdf-trigger__row">
+    <div className="pdf-call">
+      <div className="pdf-call__row">
         <Badge variant={body.truncated ? 'warn' : 'accent'}>
           {body.truncated ? 'truncated' : 'complete'}
         </Badge>
-        <span className="pdf-trigger__file">{result.source}</span>
+        <span className="pdf-call__file">{result.source}</span>
       </div>
-      <p className="pdf-trigger__line">
+      <p className="pdf-call__line">
         {body.truncated
           ? `Returned ${format(body.chars)} of ${format(body.total_chars)} characters of ${label}.`
           : `${format(body.chars)} characters of ${label}.`}
@@ -158,15 +158,15 @@ function BodyCard({
 function ItemsCard({ result }: { result: ItemsLike }) {
   if (typeof result.count !== 'number') return null
   return (
-    <div className="pdf-trigger">
-      <div className="pdf-trigger__row">
+    <div className="pdf-call">
+      <div className="pdf-call__row">
         <Badge variant={result.truncated ? 'warn' : 'accent'}>
           {result.count} items
         </Badge>
-        <span className="pdf-trigger__file">{result.source}</span>
+        <span className="pdf-call__file">{result.source}</span>
       </div>
       {result.truncated && (
-        <p className="pdf-trigger__line">
+        <p className="pdf-call__line">
           {format(result.total_count ?? 0)} items on those pages; the rest were not returned.
         </p>
       )}
@@ -178,15 +178,15 @@ function RegionsCard({ result }: { result: RegionsLike }) {
   if (typeof result.region_count !== 'number') return null
   const suspect = result.regions_needing_ocr ?? 0
   return (
-    <div className="pdf-trigger">
-      <div className="pdf-trigger__row">
+    <div className="pdf-call">
+      <div className="pdf-call__row">
         <Badge variant={suspect === 0 ? 'accent' : 'warn'}>
           {result.region_count} regions
         </Badge>
-        <span className="pdf-trigger__file">{result.source}</span>
+        <span className="pdf-call__file">{result.source}</span>
       </div>
       {suspect > 0 && (
-        <p className="pdf-trigger__line">
+        <p className="pdf-call__line">
           {suspect} of {result.region_count} regions came back unreliable and would need OCR.
         </p>
       )}

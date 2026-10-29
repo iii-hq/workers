@@ -8,12 +8,14 @@ const EVENTS_FN = 'iii::a2ui-ui::events'
 const BINDING_DEBOUNCE_MS = 120
 const SURFACE_REFRESH_DEBOUNCE_MS = 50
 const MAX_LIVE_VALUE_BYTES = 512 * 1024
-/** Deprecated legacy trigger type, kept working while iii-stream runs. */
-const LEGACY_STREAM_TRIGGER_TYPE = 'stream'
+/** The state worker's change events: one call per committed write. */
+const STATE_ON_CHANGED_FN = 'state::on-changed'
+/** Deprecated legacy source, kept working while iii-stream runs. */
+const LEGACY_STREAM_FN = 'stream::on-changed'
 
-/** True for bindings on the deprecated `stream` trigger type (iii-stream). */
+/** True for bindings on the deprecated `stream::on-changed` source (iii-stream). */
 export function isDeprecatedBinding(binding: LiveBinding): boolean {
-  return binding.trigger_type === LEGACY_STREAM_TRIGGER_TYPE
+  return binding.function_id === LEGACY_STREAM_FN
 }
 
 interface StateEvent {
@@ -28,7 +30,7 @@ type ValueListener = (path: string, value: JsonValue, revision: number) => void
 interface BindingEntry {
   listeners: Set<ValueListener>
   offHandler: () => void
-  offTrigger: () => void
+  disposeObserver: () => void
   timer: ReturnType<typeof setTimeout> | null
   pending: JsonValue | undefined
   hasPending: boolean
@@ -39,7 +41,7 @@ interface BindingEntry {
 interface SurfaceEventEntry {
   listeners: Set<() => void>
   offHandler: () => void
-  offTrigger: () => void
+  disposeObserver: () => void
   timer: ReturnType<typeof setTimeout> | null
 }
 
@@ -76,8 +78,9 @@ function bindingKey(surface: SurfaceRecord, binding: LiveBinding): string {
     surface.session_id,
     surface.surface_id,
     binding.id,
-    binding.trigger_type,
-    binding.config,
+    binding.function_id,
+    binding.args ?? null,
+    binding.filters ?? null,
     binding.target_path,
     binding.event_path ?? null,
     binding.query ?? null,
@@ -94,6 +97,12 @@ function withinLiveValueLimit(value: JsonValue): boolean {
   } catch {
     return false
   }
+}
+
+/** The current value of the state entry a `state::on-changed` event names. */
+function readState(host: Host, event: unknown): Promise<unknown> {
+  const { scope, key } = (event ?? {}) as Partial<StateEvent>
+  return host.iii.call('state::get', { scope, key })
 }
 
 export function subscribeLiveBinding(
@@ -114,7 +123,7 @@ export function subscribeLiveBinding(
   const entry: BindingEntry = {
     listeners: new Set([listener]),
     offHandler: () => {},
-    offTrigger: () => {},
+    disposeObserver: () => {},
     timer: null,
     pending: undefined,
     hasPending: false,
@@ -130,7 +139,7 @@ export function subscribeLiveBinding(
     }, BINDING_DEBOUNCE_MS)
   }
 
-  // Query mode (worker-owned trigger type with a provider query): events are
+  // Query mode (a worker's event function with a provider query): events are
   // notifications only; every flush re-reads through a2ui::binding::refresh.
   const queryMode = binding.query != null
 
@@ -143,8 +152,8 @@ export function subscribeLiveBinding(
       }
       void (async () => {
         try {
-          const payload = binding.trigger_type === 'state'
-            ? await host.iii.trigger('state::get', binding.config as Record<string, unknown>)
+          const payload = binding.function_id === STATE_ON_CHANGED_FN
+            ? await readState(host, event)
             : event
           const value = binding.event_path
             ? getPath(payload as JsonValue, binding.event_path)
@@ -158,11 +167,15 @@ export function subscribeLiveBinding(
         }
       })()
     })
-    entry.offTrigger = host.iii.registerTrigger({
-      type: binding.trigger_type,
-      function_id: `${localId}::${host.iii.browserId}`,
-      config: binding.config as Record<string, unknown>,
-    })
+    entry.disposeObserver = host.iii.observe(
+      {
+        function_id: binding.function_id,
+        ...(binding.args ? { args: binding.args as Record<string, unknown> } : {}),
+        ...(binding.filters ? { filters: binding.filters as Record<string, unknown> } : {}),
+        deliver: 'output',
+      },
+      `${localId}::${host.iii.browserId}`,
+    )
   } catch {
     entry.offHandler()
     return () => {}
@@ -231,7 +244,7 @@ function releaseBinding(
   if (entry.listeners.size > 0) return
   entry.closed = true
   if (entry.timer) clearTimeout(entry.timer)
-  entry.offTrigger()
+  entry.disposeObserver()
   entry.offHandler()
   registry.delete(key)
 }
@@ -250,7 +263,7 @@ export function subscribeSurfaceEvents(
   const entry: SurfaceEventEntry = {
     listeners: new Set([listener]),
     offHandler: () => {},
-    offTrigger: () => {},
+    disposeObserver: () => {},
     timer: null,
   }
   try {
@@ -262,11 +275,14 @@ export function subscribeSurfaceEvents(
         for (const current of entry.listeners) current()
       }, SURFACE_REFRESH_DEBOUNCE_MS)
     })
-    entry.offTrigger = host.iii.registerTrigger({
-      type: 'state',
-      function_id: `${EVENTS_FN}::${host.iii.browserId}`,
-      config: { scope: 'a2ui', key: sessionId },
-    })
+    entry.disposeObserver = host.iii.observe(
+      {
+        function_id: STATE_ON_CHANGED_FN,
+        filters: { 'input.scope': { $eq: 'a2ui' }, 'input.key': { $eq: sessionId } },
+        deliver: 'output',
+      },
+      `${EVENTS_FN}::${host.iii.browserId}`,
+    )
   } catch {
     entry.offHandler()
     return () => {}
@@ -284,7 +300,7 @@ function releaseSurfaceEvents(
   entry.listeners.delete(listener)
   if (entry.listeners.size > 0) return
   if (entry.timer) clearTimeout(entry.timer)
-  entry.offTrigger()
+  entry.disposeObserver()
   entry.offHandler()
   registry.delete(sessionId)
 }
@@ -297,7 +313,7 @@ export function useLiveBindings(
   const handler = useRef(onValue)
   handler.current = onValue
   // Keyed on binding content, not array identity: a re-fetched surface with the
-  // same bindings must not re-register triggers or re-run initial queries.
+  // same bindings must not observe again or re-run initial queries.
   const bindingsKey = JSON.stringify(surface.bindings ?? [])
   useEffect(() => {
     const offs = (surface.bindings ?? []).map((binding) =>

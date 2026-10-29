@@ -1,10 +1,10 @@
 /**
  * Build the worker's four console assets:
  *
- *   page.tsx          → dist/page.js     (injected over `console:script`)
- *   styles.css        → dist/styles.css  (injected over `console:style`)
- *   mermaid-entry.ts  → dist/mermaid.js  (`console:script`, vendor bundle)
- *   freeform-entry.ts → dist/freeform.js (`console:script`, vendor bundle)
+ *   page.tsx          → dist/page.js     (a `script` asset)
+ *   styles.css        → dist/styles.css  (a `style` asset)
+ *   mermaid-entry.ts  → dist/mermaid.js  (a `script` asset, vendor bundle)
+ *   freeform-entry.ts → dist/freeform.js (a `script` asset, vendor bundle)
  *
  * page.js + styles.css go through the shared driver (externals, scoping and
  * size checks). The vendor bundles are self-contained ES modules the page
@@ -16,7 +16,7 @@
  *     the console's React tree), plus the excalidraw stylesheet as a text
  *     export the runtime injects once.
  * Both default-export a no-op setup(): the console eagerly import()s every
- * console:script asset and calls its default export.
+ * `script` asset and calls its default export.
  *
  * Every dist file must stay under the console's 8 MiB per-asset cap — the
  * build prints sizes and fails past the cap. The vendor bundles change only

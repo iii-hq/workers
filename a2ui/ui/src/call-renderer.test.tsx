@@ -1,7 +1,7 @@
 import { isValidElement, type ReactNode } from 'react'
-import type { FunctionTriggerMessage, Host } from '@iii-dev/console-ui'
+import type { FunctionCallMessage, Host } from '@iii-dev/console-ui'
 import { describe, expect, it, vi } from 'vitest'
-import { createA2uiTriggerRenderer } from './trigger-renderer'
+import { createA2uiCallRenderer } from './call-renderer'
 
 vi.mock('@iii-dev/console-ui', () => {
   const Passthrough = (props: { children?: ReactNode }) => props.children ?? null
@@ -17,16 +17,16 @@ vi.mock('@iii-dev/console-ui', () => {
 
 const host = {} as Host
 
-describe('A2UI trigger renderer', () => {
+describe('A2UI call renderer', () => {
   it('uses the Console expandable display contract', () => {
-    const renderer = createA2uiTriggerRenderer(host)
+    const renderer = createA2uiCallRenderer(host)
 
     expect(renderer.metadata).toEqual({ display: true, displayAction: 'expand' })
     expect(renderer.tryRenderDisplay).toBeTypeOf('function')
   })
 
   it('renders a compact active surface receipt', () => {
-    const renderer = createA2uiTriggerRenderer(host)
+    const renderer = createA2uiCallRenderer(host)
     const display = renderer.tryRenderDisplay?.(message())
 
     expect(display).not.toBeNull()
@@ -36,7 +36,7 @@ describe('A2UI trigger renderer', () => {
   })
 
   it('renders deletion receipts but keeps actions out of the feed', () => {
-    const renderer = createA2uiTriggerRenderer(host)
+    const renderer = createA2uiCallRenderer(host)
     const deleted = renderer.tryRenderDisplay?.(
       message({ output: receipt({ status: 'deleted' }) }),
     )
@@ -47,10 +47,10 @@ describe('A2UI trigger renderer', () => {
   })
 })
 
-function message(overrides: Partial<FunctionTriggerMessage> = {}): FunctionTriggerMessage {
+function message(overrides: Partial<FunctionCallMessage> = {}): FunctionCallMessage {
   return {
     id: 'call-1',
-    role: 'function-trigger',
+    role: 'function-call',
     functionId: 'a2ui::generate',
     input: {},
     output: receipt(),

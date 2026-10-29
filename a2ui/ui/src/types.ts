@@ -46,11 +46,15 @@ export interface SurfaceRevision { revision: number; title: string; updated_at_m
 export interface BindingQuery { function_id: string; payload?: JsonValue; result_path?: string }
 export interface LiveBinding {
   id: string
-  trigger_type: string
-  config: JsonValue
+  /** The observed function: a worker's event source, `state::on-changed`, or `shell::on-changed`. */
+  function_id: string
+  /** Args for a function that takes them. */
+  args?: JsonValue
+  /** Filters selecting which calls are delivered (`{ 'input.status': { $eq: 'open' } }`). */
+  filters?: JsonValue
   target_path: string
   event_path?: string
-  /** Provider read query (worker-owned trigger types): initial read + notify-then-query. */
+  /** Provider read query (a worker's event source): initial read + notify-then-query. */
   query?: BindingQuery
 }
 export interface SurfaceTemplate { template_id: string; title: string; description: string; updated_at_ms: number }

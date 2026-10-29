@@ -1,6 +1,6 @@
 //! `web` binary entry: connect, register configuration + fetch the
-//! authoritative value, register `web::fetch`, bind the config-change
-//! trigger for hot-reload, then sleep until Ctrl+C.
+//! authoritative value, register `web::fetch`, observe
+//! `configuration::on-updated` for hot-reload, then sleep until Ctrl+C.
 
 use std::sync::Arc;
 
@@ -116,24 +116,21 @@ async fn main() -> Result<()> {
     // responses) through the console's injectable UI contract.
     web::ui::register(&iii);
 
-    // Reconcile the pre-generate guidance binding (web::inject-guidance) with
+    // Reconcile the pre-generate guidance observer (web::inject-guidance) with
     // the configured `inject_guidance` (on by default); config changes
-    // re-reconcile it live via the trigger below.
+    // re-reconcile it live via the configuration observer below.
     let state = configuration::SharedState {
         config: shared.clone(),
         guidance: configuration::GuidanceState::default(),
     };
     configuration::apply_guidance(&iii, &state.guidance, inject_guidance);
 
-    match configuration::register_config_trigger(&iii, state) {
-        // One serialized re-fetch to close the boot gap: an update landing
-        // between the fetch above and the binding just registered fired into
-        // nothing, and would otherwise stay invisible until the NEXT change.
-        Ok(reload) => reload.run().await,
-        Err(e) => {
-            tracing::warn!(error = %e, "registering configuration change trigger failed; config frozen until restart");
-        }
-    }
+    // One serialized re-fetch to close the boot gap: an update landing
+    // between the fetch above and the observer becoming active reached no
+    // one, and would otherwise stay invisible until the NEXT change.
+    configuration::register_config_observer(&iii, state)
+        .run()
+        .await;
 
     tracing::info!(
         inject_guidance,

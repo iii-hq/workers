@@ -8,20 +8,20 @@
 
 import { describe, expect, it } from 'vitest'
 
-import type { FunctionTriggerMessage, Host } from '@iii-dev/console-ui'
+import type { FunctionCallMessage, Host } from '@iii-dev/console-ui'
 
 import { CANVAS_FUNCTION_IDS } from '../lib/types'
-import { HANDLED, createCanvasTriggerRenderer } from './index'
+import { HANDLED, createCanvasCallRenderer } from './index'
 
 const host = undefined as unknown as Host
 
 function message(
   functionId: string,
-  overrides: Partial<FunctionTriggerMessage> = {},
-): FunctionTriggerMessage {
+  overrides: Partial<FunctionCallMessage> = {},
+): FunctionCallMessage {
   return {
     id: 'm1',
-    role: 'function-trigger',
+    role: 'function-call',
     functionId,
     input: {},
     output: {},
@@ -47,7 +47,7 @@ const createDone = message('canvas::create', {
 
 describe('HANDLED matching', () => {
   it('claims exactly the public canvas functions', () => {
-    const renderer = createCanvasTriggerRenderer(host)
+    const renderer = createCanvasCallRenderer(host)
     expect([...HANDLED].sort()).toEqual([...CANVAS_FUNCTION_IDS].sort())
     for (const id of CANVAS_FUNCTION_IDS) {
       expect(renderer.isMatch(id)).toBe(true)
@@ -59,7 +59,7 @@ describe('HANDLED matching', () => {
 })
 
 describe('dispatch', () => {
-  const renderer = createCanvasTriggerRenderer(host)
+  const renderer = createCanvasCallRenderer(host)
 
   it('renders a card per settled function id', () => {
     expect(renderer.tryRender(createDone)).not.toBeNull()

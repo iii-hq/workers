@@ -107,11 +107,9 @@ async fn main() -> anyhow::Result<()> {
 
     functions::register_all(&iii, deps);
     hook::register(&iii);
-    hook::bind(&iii)
-        .map_err(|error| anyhow::anyhow!("Harness pre-trigger binding failed: {error}"))?;
+    hook::observe(&iii);
     ui::register(&iii);
-    configuration::register_config_trigger(&iii, config)
-        .map_err(|error| anyhow::anyhow!("configuration trigger registration failed: {error}"))?;
+    configuration::register_config_observer(&iii, config);
 
     tracing::info!(url = %cli.url, protocol = %a2ui::protocol::PROTOCOL_VERSION, "A2UI worker ready");
     wait_for_shutdown().await?;

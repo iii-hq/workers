@@ -195,11 +195,11 @@ describe('errorDisplay', () => {
       errorDisplay({
         error: {
           kind: 'function_error',
-          message: 'trigger_failed: canvas::create',
+          message: 'call_failed: canvas::create',
           details: { reason: 'name already taken' },
         },
       }),
-    ).toBe('trigger_failed: canvas::create — name already taken')
+    ).toBe('call_failed: canvas::create — name already taken')
   })
 
   it('extracts string errors and enveloped errors', () => {

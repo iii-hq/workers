@@ -13,7 +13,7 @@
         "type": "object"
       }
     },
-    "description": "Trusted pre-trigger envelope supplied by the Harness hook runner.",
+    "description": "Trusted pre-call hook input supplied by the Harness hook runner.",
     "properties": {
       "call": {
         "anyOf": [

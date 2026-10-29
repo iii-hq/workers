@@ -23,8 +23,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
 import type {
-  FunctionTriggerMessage,
-  FunctionTriggerRenderer,
+  FunctionCallMessage,
+  FunctionCallRenderer,
   Host,
 } from '@iii-dev/console-ui'
 import { unwrapEnvelope } from '@iii-dev/console-ui/format'
@@ -61,11 +61,11 @@ function openCanvasPage(host: Host, canvasId?: string | null) {
 
 export const HANDLED: ReadonlySet<string> = new Set(CANVAS_FUNCTION_IDS)
 
-export function createCanvasTriggerRenderer(
+export function createCanvasCallRenderer(
   host: Host,
-): FunctionTriggerRenderer {
+): FunctionCallRenderer {
   const render = (
-    message: FunctionTriggerMessage,
+    message: FunctionCallMessage,
     running: boolean,
   ): ReactNode | null => {
     if (!HANDLED.has(message.functionId)) return null
@@ -90,13 +90,13 @@ export function createCanvasTriggerRenderer(
   }
 }
 
-function op(message: FunctionTriggerMessage): string {
+function op(message: FunctionCallMessage): string {
   return message.functionId.slice(CANVAS_PREFIX.length)
 }
 
 function renderDone(
   host: Host,
-  message: FunctionTriggerMessage,
+  message: FunctionCallMessage,
 ): ReactNode | null {
   const output = unwrapEnvelope(message.output)
   switch (message.functionId) {
@@ -128,7 +128,7 @@ function renderDone(
       if (result == null) return null
       return (
         <CardShell op="delete">
-          <div className="canvas-trigger__note">
+          <div className="canvas-call__note">
             {result.deleted
               ? `deleted ${result.id}`
               : `${result.id} not found — nothing deleted`}
@@ -216,15 +216,15 @@ function ElementCard({
 }) {
   return (
     <CardShell op={opLabel}>
-      <div className="canvas-trigger__note">
+      <div className="canvas-call__note">
         {note} ·{' '}
         <button
           type="button"
-          className="canvas-trigger__id-link"
+          className="canvas-call__id-link"
           title="open in canvas"
           onClick={() => openCanvasPage(host, canvasId)}
         >
-          <span className="canvas-trigger__id">{canvasId}</span>
+          <span className="canvas-call__id">{canvasId}</span>
         </button>
       </div>
     </CardShell>
@@ -233,7 +233,7 @@ function ElementCard({
 
 function renderRunning(
   host: Host,
-  message: FunctionTriggerMessage,
+  message: FunctionCallMessage,
 ): ReactNode | null {
   const view = parseRecordView(message.input)
   switch (message.functionId) {
@@ -258,8 +258,8 @@ function renderRunning(
       if (!view.id) return null
       return (
         <CardShell op={op(message)} running>
-          <div className="canvas-trigger__note">
-            <span className="canvas-trigger__id">{view.id}</span>
+          <div className="canvas-call__note">
+            <span className="canvas-call__id">{view.id}</span>
           </div>
           <RunningNote />
         </CardShell>
@@ -272,7 +272,7 @@ function renderRunning(
 }
 
 /** Pending-approval preview: the diagram a call is about to write. */
-function renderPreview(message: FunctionTriggerMessage): ReactNode | null {
+function renderPreview(message: FunctionCallMessage): ReactNode | null {
   if (!HANDLED.has(message.functionId)) return null
   const view = parseRecordView(message.input)
   switch (message.functionId) {
@@ -283,7 +283,7 @@ function renderPreview(message: FunctionTriggerMessage): ReactNode | null {
       return (
         <CardShell op={op(message)} head={<HeadMeta view={view} />}>
           {lines != null ? (
-            <div className="canvas-trigger__note">
+            <div className="canvas-call__note">
               {lines} line{lines === 1 ? '' : 's'} of{' '}
               {looksFreeform(view) ? 'freeform scene' : 'mermaid'} source
             </div>
@@ -295,9 +295,9 @@ function renderPreview(message: FunctionTriggerMessage): ReactNode | null {
       if (!view.id) return null
       return (
         <CardShell op="delete">
-          <div className="canvas-trigger__note">
+          <div className="canvas-call__note">
             about to delete{' '}
-            <span className="canvas-trigger__id">{view.id}</span>
+            <span className="canvas-call__id">{view.id}</span>
           </div>
         </CardShell>
       )
@@ -320,15 +320,15 @@ function CardShell({
   children?: ReactNode
 }) {
   return (
-    <div className="canvas-trigger">
-      <div className="canvas-trigger__head">
+    <div className="canvas-call">
+      <div className="canvas-call__head">
         <span
-          className={`${uiClasses.eyebrow} canvas-trigger__pill${running ? ' canvas-trigger__pill--quiet' : ''}`}
+          className={`${uiClasses.eyebrow} canvas-call__pill${running ? ' canvas-call__pill--quiet' : ''}`}
         >
           {opLabel}
         </span>
         {head}
-        <span className={`${uiClasses.eyebrow} canvas-trigger__tag`}>canvas ui</span>
+        <span className={`${uiClasses.eyebrow} canvas-call__tag`}>canvas ui</span>
       </div>
       {children}
     </div>
@@ -340,10 +340,10 @@ function HeadMeta({ view }: { view: CanvasRecordView }) {
   return (
     <>
       {view.name ? (
-        <span className="canvas-trigger__name">{view.name}</span>
+        <span className="canvas-call__name">{view.name}</span>
       ) : null}
-      {chip ? <span className="canvas-trigger__chip">{chip}</span> : null}
-      {view.id ? <span className="canvas-trigger__id">{view.id}</span> : null}
+      {chip ? <span className="canvas-call__chip">{chip}</span> : null}
+      {view.id ? <span className="canvas-call__id">{view.id}</span> : null}
     </>
   )
 }
@@ -352,7 +352,7 @@ function OpenLink({ host, canvasId }: { host: Host; canvasId?: string | null }) 
   return (
     <button
       type="button"
-      className="canvas-trigger__open"
+      className="canvas-call__open"
       onClick={() => openCanvasPage(host, canvasId)}
     >
       open in canvas
@@ -362,7 +362,7 @@ function OpenLink({ host, canvasId }: { host: Host; canvasId?: string | null }) 
 
 function RunningNote() {
   return (
-    <div className={`canvas-trigger__note ${uiClasses.pulse}`}>running…</div>
+    <div className={`canvas-call__note ${uiClasses.pulse}`}>running…</div>
   )
 }
 
@@ -392,7 +392,7 @@ function MermaidCard({
       {view.source ? (
         <MermaidDiagram host={host} source={view.source} canvasId={view.id} />
       ) : (
-        <div className="canvas-trigger__note">no source in this payload</div>
+        <div className="canvas-call__note">no source in this payload</div>
       )}
       {running ? <RunningNote /> : null}
     </CardShell>
@@ -430,7 +430,7 @@ function MermaidDiagram({
       .then(async ({ mermaid }) => {
         mermaid.initialize(mermaidInitConfig(theme))
         const { svg } = await mermaid.render(
-          `canvas-trigger-${++renderSeq}`,
+          `canvas-call-${++renderSeq}`,
           source,
         )
         if (alive) setState({ status: 'done', svg })
@@ -461,16 +461,16 @@ function MermaidDiagram({
 
   if (state.status === 'loading') {
     return (
-      <div className={`canvas-trigger__diagram canvas-trigger__diagram--loading ${uiClasses.pulse}`}>
+      <div className={`canvas-call__diagram canvas-call__diagram--loading ${uiClasses.pulse}`}>
         rendering…
       </div>
     )
   }
   if (state.status === 'error') {
     return (
-      <div className="canvas-trigger__fail">
-        <div className="canvas-trigger__error">{state.message}</div>
-        <pre className="canvas-trigger__source">{source}</pre>
+      <div className="canvas-call__fail">
+        <div className="canvas-call__error">{state.message}</div>
+        <pre className="canvas-call__source">{source}</pre>
       </div>
     )
   }
@@ -478,7 +478,7 @@ function MermaidDiagram({
     <button
       ref={diagramRef}
       type="button"
-      className="canvas-trigger__diagram"
+      className="canvas-call__diagram"
       title="open in canvas"
       onClick={() => openCanvasPage(host, canvasId)}
       // biome-ignore lint/security/noDangerouslySetInnerHtml: mermaid output under securityLevel 'strict'
@@ -511,7 +511,7 @@ function FreeformCard({
         </>
       }
     >
-      <div className="canvas-trigger__note">
+      <div className="canvas-call__note">
         freeform canvas
         {count != null ? ` · ${count} element${count === 1 ? '' : 's'}` : ''}
       </div>
@@ -532,7 +532,7 @@ function GetCard({ host, view }: { host: Host; view: CanvasRecordView }) {
         </>
       }
     >
-      <div className="canvas-trigger__note">
+      <div className="canvas-call__note">
         {view.format ?? 'canvas'}
         {view.family ? ` · ${view.family}` : ''}
         {day ? ` · updated ${day}` : ''}
@@ -545,15 +545,15 @@ function ListCard({ host, items }: { host: Host; items: CanvasRecordView[] }) {
   if (items.length === 0) {
     return (
       <CardShell op="list" head={<OpenLink host={host} />}>
-        <div className="canvas-trigger__note">no canvases yet</div>
+        <div className="canvas-call__note">no canvases yet</div>
       </CardShell>
     )
   }
   const { shown, hidden } = capList(items)
   return (
     <CardShell op="list" head={<OpenLink host={host} />}>
-      <div className="canvas-trigger__table-wrap">
-        <table className="canvas-trigger__table">
+      <div className="canvas-call__table-wrap">
+        <table className="canvas-call__table">
           <thead>
             <tr>
               <th>name</th>
@@ -566,13 +566,13 @@ function ListCard({ host, items }: { host: Host; items: CanvasRecordView[] }) {
               <tr key={item.id ?? index}>
                 <td>{item.name ?? '—'}</td>
                 <td>{item.family ?? item.format ?? '—'}</td>
-                <td className="canvas-trigger__id">{item.id ?? '—'}</td>
+                <td className="canvas-call__id">{item.id ?? '—'}</td>
               </tr>
             ))}
           </tbody>
         </table>
         {hidden > 0 ? (
-          <div className="canvas-trigger__note">+{hidden} more</div>
+          <div className="canvas-call__note">+{hidden} more</div>
         ) : null}
       </div>
     </CardShell>
@@ -583,11 +583,11 @@ function SyntaxCard({ families }: { families: string[] }) {
   return (
     <CardShell op="syntax">
       {families.length === 0 ? (
-        <div className="canvas-trigger__note">no families returned</div>
+        <div className="canvas-call__note">no families returned</div>
       ) : (
-        <div className="canvas-trigger__chips">
+        <div className="canvas-call__chips">
           {families.map((family) => (
-            <span key={family} className="canvas-trigger__chip">
+            <span key={family} className="canvas-call__chip">
               {family}
             </span>
           ))}
@@ -611,23 +611,23 @@ function ValidateCard({
       op="validate"
       head={
         result.family ? (
-          <span className="canvas-trigger__chip">{result.family}</span>
+          <span className="canvas-call__chip">{result.family}</span>
         ) : undefined
       }
     >
       {result.valid ? (
-        <div className="canvas-trigger__ok">✓ valid</div>
+        <div className="canvas-call__ok">✓ valid</div>
       ) : (
-        <div className="canvas-trigger__issues">
+        <div className="canvas-call__issues">
           {result.issues.length === 0 ? (
-            <div className="canvas-trigger__issue">
-              <span className="canvas-trigger__issue-line">—</span>
+            <div className="canvas-call__issue">
+              <span className="canvas-call__issue-line">—</span>
               <span>invalid source</span>
             </div>
           ) : (
             result.issues.map((issue, index) => (
-              <div key={index} className="canvas-trigger__issue">
-                <span className="canvas-trigger__issue-line">
+              <div key={index} className="canvas-call__issue">
+                <span className="canvas-call__issue-line">
                   {issue.line != null ? `line ${issue.line}` : '—'}
                 </span>
                 <span>{issue.message}</span>
@@ -644,15 +644,15 @@ function ErrorCard({
   message,
   error,
 }: {
-  message: FunctionTriggerMessage
+  message: FunctionCallMessage
   error: string
 }) {
   const source = parseRecordView(message.input).source
   return (
     <CardShell op={op(message)}>
-      <div className="canvas-trigger__error">{error}</div>
+      <div className="canvas-call__error">{error}</div>
       {source ? (
-        <pre className="canvas-trigger__source">{source}</pre>
+        <pre className="canvas-call__source">{source}</pre>
       ) : null}
     </CardShell>
   )

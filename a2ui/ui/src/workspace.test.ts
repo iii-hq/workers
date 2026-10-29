@@ -5,13 +5,13 @@ import { projectDirectory, writeCodeBundle } from './workspace'
 
 describe('A2UI workspace handoff', () => {
   it('writes every generated React file below a revisioned workspace directory', async () => {
-    const trigger = vi.fn(async (_functionId: string, payload: { files: Array<{ path: string; content: string }> }) => ({
+    const call = vi.fn(async (_functionId: string, payload: { files: Array<{ path: string; content: string }> }) => ({
       results: payload.files.map((file) => ({ path: file.path, success: true })),
     }))
     const bundle = fixtureBundle()
-    const result = await writeCodeBundle(mockHost(trigger), '/workspace/project', bundle, 4)
+    const result = await writeCodeBundle(mockHost(call), '/workspace/project', bundle, 4)
 
-    expect(trigger).toHaveBeenCalledWith('coder::create-file', {
+    expect(call).toHaveBeenCalledWith('coder::create-file', {
       files: [
         {
           path: '/workspace/project/generated/a2ui/incident-review-r4/package.json',
@@ -39,7 +39,7 @@ describe('A2UI workspace handoff', () => {
   })
 
   it('preserves previously materialized files rather than overwriting edits', async () => {
-    const trigger = vi.fn(async () => ({
+    const call = vi.fn(async () => ({
       results: [
         {
           path: '/workspace/generated/a2ui/incident-review-r4/package.json',
@@ -52,18 +52,18 @@ describe('A2UI workspace handoff', () => {
         },
       ],
     }))
-    const result = await writeCodeBundle(mockHost(trigger), '/workspace', fixtureBundle(), 4)
+    const result = await writeCodeBundle(mockHost(call), '/workspace', fixtureBundle(), 4)
     expect(result).toMatchObject({ written: 1, existing: 1 })
   })
 
   it('rejects unsafe generated paths before calling Shell', async () => {
-    const trigger = vi.fn()
+    const call = vi.fn()
     const bundle = fixtureBundle()
     bundle.files[1]!.path = '../outside.tsx'
-    await expect(writeCodeBundle(mockHost(trigger), '/workspace', bundle, 4)).rejects.toThrow(
+    await expect(writeCodeBundle(mockHost(call), '/workspace', bundle, 4)).rejects.toThrow(
       'unsafe path',
     )
-    expect(trigger).not.toHaveBeenCalled()
+    expect(call).not.toHaveBeenCalled()
   })
 
   it('constructs a visible project path for POSIX and Windows workspaces', () => {
@@ -87,6 +87,6 @@ function fixtureBundle(): CodeExport {
   }
 }
 
-function mockHost(trigger: ReturnType<typeof vi.fn>): Host {
-  return { iii: { trigger } } as unknown as Host
+function mockHost(call: ReturnType<typeof vi.fn>): Host {
+  return { iii: { call } } as unknown as Host
 }

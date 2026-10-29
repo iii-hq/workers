@@ -13,14 +13,14 @@ the answer.
 ## Install
 
 ```bash
-iii trigger compose::add worker=document
+iii call compose::add worker=document
 ```
 
 Reading a scanned document also needs something to turn its pages into pixels
 and something to read them, neither of which ships here:
 
 ```bash
-iii trigger compose::add worker=browser
+iii call compose::add worker=browser
 ```
 
 With [browser](https://github.com/iii-hq/workers/tree/main/browser) installed and a vision model configured through
@@ -30,15 +30,14 @@ function works without both.
 ## Quickstart
 
 ```rust
-use iii_sdk::{register_worker, InitOptions};
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{register_worker, CallRequest, InitOptions};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
-    let markdown = iii.trigger(TriggerRequest {
+    let markdown = iii.call(CallRequest {
         function_id: "document::to-markdown".into(),
         payload: json!({ "path": "/tmp/quarterly.docx" }),
         action: None,
@@ -210,7 +209,8 @@ storage rather than in a call whose result lands in a conversation.
 ## Configuration
 
 Configuration lives in the `configuration` worker under the id `document` and
-every field hot-reloads. Nothing here needs a restart.
+every field hot-reloads: the worker observes `configuration::on-updated` for
+its entry and re-reads it. Nothing here needs a restart.
 
 ```yaml
 max_input_bytes: 67108864   # largest document accepted, before parsing
