@@ -35,7 +35,7 @@ export async function linkChildSession(
   const metadata: Record<string, unknown> = { agent: 'claude-code' };
   if (options.parentSessionId) metadata.parent_session_id = options.parentSessionId;
   try {
-    await iii.trigger({
+    await iii.call({
       function_id: 'session::ensure',
       payload: {
         session_id: options.sessionId,
@@ -61,7 +61,7 @@ export async function setSessionStatus(
   reason?: string,
 ): Promise<void> {
   try {
-    await iii.trigger({
+    await iii.call({
       function_id: 'session::set-status',
       payload: { session_id: sessionId, status, ...(reason ? { reason } : {}) },
       timeoutMs: TIMEOUT_MS,
@@ -74,9 +74,9 @@ export async function setSessionStatus(
 }
 
 /**
- * The scope a delegated task's outcome lands in. An orchestrator binds a
- * `state` trigger on `{ scope: TASK_SCOPE, key: <child session id> }` and is
- * WOKEN when the task settles — no polling, no blocking call held open for the
+ * The scope a delegated task's outcome lands in. An orchestrator observes
+ * `state::on-changed` with filters on `input.scope` (TASK_SCOPE) and
+ * `input.key` (the child session id) and is WOKEN when the task settles — no polling, no blocking call held open for the
  * length of an agent run. It is the same shape a harness sub-agent uses: the
  * child writes where it was told to write, and the parent reacts to that write.
  */
@@ -98,11 +98,11 @@ export type TaskOutcome = {
 /**
  * Publish a delegated task's outcome. Best-effort: a missing `state` worker
  * costs the parent its wake-up, not the work — the run already happened, and
- * its events are on the claude::agent-event feed either way.
+ * its events are on the claude::on-agent-event feed either way.
  */
 export async function recordTaskOutcome(iii: IIIClient, outcome: TaskOutcome): Promise<void> {
   try {
-    await iii.trigger({
+    await iii.call({
       function_id: 'state::set',
       payload: { scope: TASK_SCOPE, key: outcome.session_id, value: outcome },
       timeoutMs: TIMEOUT_MS,
@@ -117,7 +117,7 @@ export async function recordTaskOutcome(iii: IIIClient, outcome: TaskOutcome): P
 /**
  * Persist one message into the child session's transcript.
  *
- * The `claude::agent-event` feed is a live tape: a console window opened after the run has
+ * The `claude::on-agent-event` feed is a live tape: a console window opened after the run has
  * nothing to replay from it, which is why a finished sub-agent used to render
  * blank with `message_count: 0`. The session manager is the durable side, and
  * the console reads it with `session::messages`. Best-effort, like the rest of
@@ -129,7 +129,7 @@ export async function appendMessage(
   message: unknown,
 ): Promise<boolean> {
   try {
-    await iii.trigger({
+    await iii.call({
       function_id: 'session::append',
       payload: { session_id: sessionId, message },
       timeoutMs: TIMEOUT_MS,
@@ -144,7 +144,7 @@ export async function appendMessage(
 /**
  * Write a finished turn into the child session: what was asked, then every
  * message the turn produced, in order. Called once, when the run ends — the
- * live view is the claude::agent-event feed, this is what a window opened later replays.
+ * live view is the claude::on-agent-event feed, this is what a window opened later replays.
  */
 export async function appendTranscript(
   iii: IIIClient,

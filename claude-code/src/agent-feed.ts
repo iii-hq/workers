@@ -1,43 +1,44 @@
 /**
- * The worker's two event feeds, as trigger types it owns (no iii-stream):
+ * The worker's two event feeds, as private functions it hosts (no iii-stream):
  *
- * - `claude::agent-event`: translated AgentEvent frames (what the console and
+ * - `claude::on-agent-event`: translated AgentEvent frames (what the console and
  *   the acp worker render).
- * - `claude::raw-event`: every Claude Code message, verbatim.
+ * - `claude::on-raw-event`: every Claude Code message, verbatim.
  *
- * A consumer binds a function with `{ session_id, metadata? }` and receives
- * `{ session_id, event_id, seq, epoch, source, event }` for that session only.
- * Delivery is fire-and-forget (`TriggerAction.Void`), sequential, and never
- * fails the turn. Frames are ephemeral: nothing is stored or replayed, so a
- * consumer bound late never sees earlier frames; the durable history is the
- * session record (`claude::status`) and the session-manager transcript.
+ * A consumer observes a feed with args `{ session_id }` and receives
+ * `{ session_id, event_id, seq, epoch, source, event }` for that session only:
+ *
+ *   iii.observe(
+ *     { function_id: 'claude::on-agent-event', args: { session_id }, deliver: 'output' },
+ *     'acp::on-event',
+ *   )
+ *
+ * Each frame is a fire-and-forget call of the feed (`CallAction.Void`); iii
+ * delivers it to the observers filed under its session id and never fails the
+ * turn. A frame for a session nobody observes is not sent. Frames are
+ * ephemeral: nothing is stored or replayed, so an observer added late never
+ * sees earlier frames; the durable history is the session record
+ * (`claude::status`) and the session-manager transcript.
  *
  * `seq` is contiguous per (feed, session_id, epoch) from 0, with a separate
- * counter per feed; `epoch` is a per-process uuid, so consumers order by
- * `(epoch, seq)` and dedup by `event_id`.
+ * counter per feed, and advances whether or not the frame is observed; `epoch`
+ * is a per-process uuid, so consumers order by `(epoch, seq)` and dedup by
+ * `event_id`.
  */
 
 import { randomUUID } from 'node:crypto';
-import { type IIIClient, TriggerAction } from 'iii-sdk';
+import { CallAction, type IIIClient, ObserveRejection } from 'iii-sdk';
 
 export const SOURCE = 'claude';
-export const AGENT_EVENT_TRIGGER = 'claude::agent-event';
-export const RAW_EVENT_TRIGGER = 'claude::raw-event';
+export const ON_AGENT_EVENT_FN = 'claude::on-agent-event';
+export const ON_RAW_EVENT_FN = 'claude::on-raw-event';
 
-/** Bindings per trigger type; a new binding beyond it is rejected, not queued. */
-export const MAX_BINDINGS = 256;
-const MAX_SESSION_ID_LEN = 512;
-const CONFIG_KEYS = new Set(['session_id', 'metadata']);
+/** Observers per feed; one more is rejected with `OBSERVER_LIMIT`, not queued. */
+export const MAX_OBSERVERS = 256;
+export const MAX_SESSION_ID_LEN = 512;
 
-export type FeedConfig = { session_id: string; metadata?: Record<string, unknown> };
-
-type Binding = {
-  id: string;
-  function_id: string;
-  namespace?: string;
-  metadata?: Record<string, unknown>;
-  config: FeedConfig;
-};
+/** What an observer of a feed passes: the session whose frames it receives. */
+export type FeedArgs = { session_id: string };
 
 export type FeedPayload = {
   session_id: string;
@@ -48,75 +49,84 @@ export type FeedPayload = {
   event: unknown;
 };
 
-/** Publish one frame for a session; resolves to the number of deliveries. */
+/** `args_format` of both feeds; the engine rejects other args with `INVALID_ARGS`. */
+export const FEED_ARGS_FORMAT = {
+  type: 'object' as const,
+  properties: {
+    session_id: {
+      type: 'string',
+      minLength: 1,
+      maxLength: MAX_SESSION_ID_LEN,
+      description: 'The session whose frames this observer receives.',
+    },
+  },
+  required: ['session_id'],
+  additionalProperties: false,
+};
+
+/** `request_format` and `response_format` of both feeds: the frame. */
+export const FEED_PAYLOAD_FORMAT = {
+  type: 'object' as const,
+  properties: {
+    session_id: { type: 'string' },
+    event_id: {
+      type: 'string',
+      description:
+        'Unique per frame; `<session_id>-<epoch>-<seq:08>` unless the frame has a stable id.',
+    },
+    seq: {
+      type: 'integer',
+      minimum: 0,
+      description: 'Contiguous per (feed, session_id, epoch) from 0.',
+    },
+    epoch: { type: 'string', description: 'Per-process uuid.' },
+    source: { type: 'string', description: 'The agent: `claude`.' },
+    event: { description: 'The AgentEvent frame, or the raw Claude Code message.' },
+  },
+  required: ['session_id', 'event_id', 'seq', 'epoch', 'source', 'event'],
+};
+
+/** Publish one frame for a session. */
 export type Emit = (session_id: string, event: unknown) => Promise<unknown>;
 
 export type Feed = {
-  emit: (session_id: string, event: unknown, stableEventId?: string) => Promise<number>;
-  bindingCount: () => number;
+  /** Resolves `true` when the frame was sent to the session's observers, `false` when nobody observes it. */
+  emit: (session_id: string, event: unknown, stableEventId?: string) => Promise<boolean>;
 };
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/** Validate a binding config; throwing rejects the binding. */
-export function validateFeedConfig(typeId: string, raw: unknown): FeedConfig {
-  if (!isPlainObject(raw)) {
-    throw new Error(`${typeId}: config must be an object with a session_id`);
-  }
-  for (const key of Object.keys(raw)) {
-    if (!CONFIG_KEYS.has(key)) {
-      throw new Error(`${typeId}: unknown config key \`${key}\` (allowed: session_id, metadata)`);
-    }
-  }
-  const { session_id, metadata } = raw;
-  if (typeof session_id !== 'string' || session_id.length === 0) {
-    throw new Error(`${typeId}: session_id must be a non-empty string`);
-  }
-  if (session_id.length > MAX_SESSION_ID_LEN) {
-    throw new Error(`${typeId}: session_id is longer than ${MAX_SESSION_ID_LEN} characters`);
-  }
-  if (metadata !== undefined && !isPlainObject(metadata)) {
-    throw new Error(`${typeId}: metadata must be an object`);
-  }
-  return metadata === undefined ? { session_id } : { session_id, metadata };
-}
-
-/** Register one owned trigger type and return its emitter. */
+/** Register one feed function and return its emitter. */
 export function createFeed(
   iii: IIIClient,
   opts: { id: string; source: string; description: string },
 ): Feed {
-  const bindings = new Map<string, Binding>();
   const seqBySession = new Map<string, number>();
   const epoch = randomUUID();
 
-  iii.registerTriggerType<unknown>(
-    { id: opts.id, description: opts.description },
-    {
-      async registerTrigger(b) {
-        const config = validateFeedConfig(opts.id, b.config);
-        if (!bindings.has(b.id) && bindings.size >= MAX_BINDINGS) {
-          throw new Error(`${opts.id}: binding limit (${MAX_BINDINGS}) reached`);
-        }
-        bindings.set(b.id, {
-          id: b.id,
-          function_id: b.function_id,
-          namespace: b.namespace,
-          metadata: b.metadata,
-          config,
-        });
-      },
-      async unregisterTrigger(b) {
-        bindings.delete(b.id);
-      },
-    },
-  );
+  const feed = iii
+    .registerFunction<FeedPayload, FeedPayload>(opts.id, (frame) => frame, {
+      description: opts.description,
+      request_format: FEED_PAYLOAD_FORMAT,
+      response_format: FEED_PAYLOAD_FORMAT,
+      args_format: FEED_ARGS_FORMAT,
+      private: true,
+    })
+    .onObserverAdded(() => {
+      if (feed.observers().length >= MAX_OBSERVERS) {
+        throw new ObserveRejection(
+          'OBSERVER_LIMIT',
+          `${opts.id}: observer limit (${MAX_OBSERVERS}) reached`,
+        );
+      }
+    })
+    .onObserverMatch({
+      observer: (obs) => String((obs.args as FeedArgs).session_id),
+      call: (call) => call.input.session_id,
+    });
 
   async function emit(session_id: string, event: unknown, stableEventId?: string) {
     const seq = seqBySession.get(session_id) ?? 0;
     seqBySession.set(session_id, seq + 1);
+    if (!iii.isObserved(opts.id, { input: { session_id } })) return false;
     const payload: FeedPayload = {
       session_id,
       event_id: stableEventId ?? `${session_id}-${epoch}-${String(seq).padStart(8, '0')}`,
@@ -125,42 +135,31 @@ export function createFeed(
       source: opts.source,
       event,
     };
-    let delivered = 0;
-    for (const b of Array.from(bindings.values())) {
-      if (b.config.session_id !== session_id) continue;
-      const metadata = b.config.metadata ?? b.metadata;
-      try {
-        await iii.trigger({
-          function_id: b.function_id,
-          ...(b.namespace === undefined ? {} : { namespace: b.namespace }),
-          payload,
-          ...(metadata === undefined ? {} : { metadata }),
-          action: TriggerAction.Void(),
-        });
-        delivered++;
-      } catch (err) {
-        console.warn(`${opts.id}: delivery to ${b.function_id} failed: ${String(err)}`);
-      }
+    try {
+      await iii.call({ function_id: opts.id, payload, action: CallAction.Void() });
+      return true;
+    } catch (err) {
+      console.warn(`${opts.id}: frame ${payload.event_id} was not sent: ${String(err)}`);
+      return false;
     }
-    return delivered;
   }
 
-  return { emit, bindingCount: () => bindings.size };
+  return { emit };
 }
 
-/** Both feeds, each with its own binding table and sequence counter. */
+/** Both feeds, each with its own observers and sequence counter. */
 export function registerAgentFeeds(iii: IIIClient): { agent: Feed; raw: Feed } {
   const agent = createFeed(iii, {
-    id: AGENT_EVENT_TRIGGER,
+    id: ON_AGENT_EVENT_FN,
     source: SOURCE,
     description:
-      'Translated AgentEvent frames of one Claude Code session (claude::run, claude::start, claude::task, run::start_and_wait and the console terminal). Config: { session_id, metadata? }. Payload: { session_id, event_id, seq, epoch, source, event }. Ephemeral: not stored or replayed.',
+      'Translated AgentEvent frames of one Claude Code session (claude::run, claude::start, claude::task, run::start_and_wait and the console terminal). Private: observe it with args { session_id }. Event: { session_id, event_id, seq, epoch, source, event }. Ephemeral: not stored or replayed.',
   });
   const raw = createFeed(iii, {
-    id: RAW_EVENT_TRIGGER,
+    id: ON_RAW_EVENT_FN,
     source: SOURCE,
     description:
-      'Raw Claude Code messages (system/init, assistant, user, result, stream_event) of one session, verbatim. Config: { session_id, metadata? }. Payload: { session_id, event_id, seq, epoch, source, event }. Ephemeral: not stored or replayed.',
+      'Raw Claude Code messages (system/init, assistant, user, result, stream_event) of one session, verbatim. Private: observe it with args { session_id }. Event: { session_id, event_id, seq, epoch, source, event }. Ephemeral: not stored or replayed.',
   });
   return { agent, raw };
 }

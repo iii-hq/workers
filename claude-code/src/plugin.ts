@@ -61,7 +61,7 @@ function quote(value: string): string {
 export function pluginFiles(options: PluginOptions): PluginFile[] {
   // `"$(cat)"` expands the hook payload exactly once, so a prompt containing
   // shell syntax stays data and never becomes a command.
-  const command = `${quote(options.cli)} trigger ${ACTIVITY_TARGET} --json "$(cat)" --timeout-ms 3000 >/dev/null 2>&1 || true`;
+  const command = `${quote(options.cli)} call ${ACTIVITY_TARGET} --json "$(cat)" --timeout-ms 3000 >/dev/null 2>&1 || true`;
   const hooks: Record<string, unknown[]> = {};
   for (const [event, shape] of HOOK_EVENTS) {
     const entry = { hooks: [{ type: 'command', command }] };
@@ -75,7 +75,7 @@ export function pluginFiles(options: PluginOptions): PluginFile[] {
         {
           name: 'iii',
           description:
-            'This engine, as Claude Code sees it: the iii runtime skill, and the hooks that report every turn onto claude::agent-event.',
+            'This engine, as Claude Code sees it: the iii runtime skill, and the hooks that report every turn onto claude::on-agent-event.',
           version: '0.1.0',
           // `claude plugin validate` asks for attribution; the worker that
           // wrote the directory is the honest answer.
