@@ -1,7 +1,7 @@
 /** The console, network and history cards (design §8.4): seed then live, dedupe by seq, the 500 cap, filters, visibility. */
 import type { TestHost } from '@iii-dev/native-ui/testing'
 import { describe, expect, it } from 'vitest'
-import { callsOf, FakeBrowser, start, subsOf, TABS } from './fake'
+import { callsOf, FakeBrowser, start, subsOf, TABS, tabObserver } from './fake'
 
 type Item = Record<string, unknown>
 
@@ -16,10 +16,10 @@ const entry = (seq: number, level = 'log', text = `message ${seq}`, source?: str
 const items = (host: TestHost, list: string) => (host.find(list).items ?? []) as Item[]
 const keys = (host: TestHost, list: string) => items(host, list).map((i) => i.key)
 
-/** Delivers `payloads` of `trigger` in one host message (one VM turn). */
-async function burst(host: TestHost, trigger: string, payloads: unknown[]) {
-  const sub = [...host.subscriptions].find(([, s]) => s.trigger === trigger)?.[0]
-  if (sub === undefined) throw new Error(`nothing bound to ${trigger}`)
+/** Delivers `payloads` as calls of `fn` in one host message (one VM turn). */
+async function burst(host: TestHost, fn: string, payloads: unknown[]) {
+  const sub = [...host.subscriptions].find(([, s]) => s.fn === fn)?.[0]
+  if (sub === undefined) throw new Error(`nothing observes ${fn}`)
   await host.deliver(payloads.map((p) => [9, sub, p]))
 }
 
@@ -30,7 +30,7 @@ async function consoleOf(fake: FakeBrowser, ui?: NonNullable<Parameters<typeof s
 }
 
 describe('the console', () => {
-  it('binds the tab’s events, then seeds the newest 200, one row per entry with its tone', async () => {
+  it('observes the tab’s events, then seeds the newest 200, one row per entry with its tone', async () => {
     const fake = new FakeBrowser(TABS)
     fake.consoleLog = [
       entry(1),
@@ -40,7 +40,7 @@ describe('the console', () => {
     ]
     const host = await consoleOf(fake)
     expect(host.tree()?.props).toMatchObject({ title: 'Console', subtitle: 'Example Domain' })
-    expect(subsOf(host, 'browser::console-event')).toEqual([{ session_id: 't1' }])
+    expect(subsOf(host, 'browser::on-console-event')).toEqual([tabObserver('t1')])
     expect(callsOf(host, 'browser::console::read')).toEqual([{ session_id: 't1', limit: 200 }])
     expect(items(host, 'console-list')).toEqual([
       { key: '1', kind: 0, time: '14:03:28', level: 'log', text: 'message 1', source: '', hasSource: false },
@@ -67,10 +67,10 @@ describe('the console', () => {
     const fake = new FakeBrowser(TABS)
     fake.consoleLog = [entry(1), entry(2)]
     const host = await consoleOf(fake)
-    await host.emitTrigger('browser::console-event', { session_id: 't1', entry: entry(3) })
-    await host.emitTrigger('browser::console-event', { session_id: 't1', entry: entry(3) })
-    await host.emitTrigger('browser::console-event', { session_id: 't1', entry: entry(2) })
-    await host.emitTrigger('browser::console-event', { session_id: 't2', entry: entry(9) })
+    await host.emitObserved('browser::on-console-event', { session_id: 't1', entry: entry(3) })
+    await host.emitObserved('browser::on-console-event', { session_id: 't1', entry: entry(3) })
+    await host.emitObserved('browser::on-console-event', { session_id: 't1', entry: entry(2) })
+    await host.emitObserved('browser::on-console-event', { session_id: 't2', entry: entry(9) })
     expect(keys(host, 'console-list')).toEqual(['1', '2', '3'])
   })
 
@@ -80,12 +80,12 @@ describe('the console', () => {
     fake.hold('browser::console::read')
     const { host } = await start({ fake })
     await host.mount('console', { session: 't1' })
-    await host.emitTrigger('browser::console-event', { session_id: 't1', entry: entry(3) })
-    await host.emitTrigger('browser::console-event', { session_id: 't1', entry: entry(4) })
+    await host.emitObserved('browser::on-console-event', { session_id: 't1', entry: entry(3) })
+    await host.emitObserved('browser::on-console-event', { session_id: 't1', entry: entry(4) })
     fake.release('browser::console::read')
     await host.settle()
     expect(keys(host, 'console-list')).toEqual(['1', '2', '3', '4'])
-    await host.emitTrigger('browser::console-event', { session_id: 't1', entry: entry(4) })
+    await host.emitObserved('browser::on-console-event', { session_id: 't1', entry: entry(4) })
     expect(keys(host, 'console-list')).toEqual(['1', '2', '3', '4'])
   })
 
@@ -97,7 +97,7 @@ describe('the console', () => {
     expect(keys(host, 'console-list')[0]).toBe('51')
     await burst(
       host,
-      'browser::console-event',
+      'browser::on-console-event',
       Array.from({ length: 400 }, (_, i) => ({ session_id: 't1', entry: entry(251 + i) })),
     )
     const all = keys(host, 'console-list')
@@ -113,8 +113,8 @@ describe('the console', () => {
     await host.select('console-level', 1)
     expect(callsOf(host, 'browser::console::read').at(-1)).toEqual({ session_id: 't1', level: 'error', limit: 200 })
     expect(keys(host, 'console-list')).toEqual(['2'])
-    await host.emitTrigger('browser::console-event', { session_id: 't1', entry: entry(4, 'warning') })
-    await host.emitTrigger('browser::console-event', { session_id: 't1', entry: entry(5, 'exception', 'Uncaught') })
+    await host.emitObserved('browser::on-console-event', { session_id: 't1', entry: entry(4, 'warning') })
+    await host.emitObserved('browser::on-console-event', { session_id: 't1', entry: entry(5, 'exception', 'Uncaught') })
     expect(keys(host, 'console-list')).toEqual(['2', '5'])
 
     await host.select('console-level', 0)
@@ -129,8 +129,8 @@ describe('the console', () => {
       limit: 200,
     })
     // The live filter is a case-insensitive substring, never a regex run in the VM.
-    await host.emitTrigger('browser::console-event', { session_id: 't1', entry: entry(6, 'log', 'big Boom') })
-    await host.emitTrigger('browser::console-event', { session_id: 't1', entry: entry(7, 'log', 'quiet') })
+    await host.emitObserved('browser::on-console-event', { session_id: 't1', entry: entry(6, 'log', 'big Boom') })
+    await host.emitObserved('browser::on-console-event', { session_id: 't1', entry: entry(7, 'log', 'quiet') })
     expect(keys(host, 'console-list').at(-1)).toBe('6')
 
     // Regex syntax is just text: escaped for the worker, matched literally live.
@@ -138,21 +138,21 @@ describe('the console', () => {
     await host.tick(300)
     expect(host.find('console-filter').props?.error).toBeUndefined()
     expect(callsOf(host, 'browser::console::read').at(-1)?.pattern).toBe('(?i)a\\.b \\(x\\)\\|y')
-    await host.emitTrigger('browser::console-event', { session_id: 't1', entry: entry(8, 'log', 'aXb (x)|y') })
-    await host.emitTrigger('browser::console-event', { session_id: 't1', entry: entry(9, 'log', 'see A.B (X)|Y here') })
+    await host.emitObserved('browser::on-console-event', { session_id: 't1', entry: entry(8, 'log', 'aXb (x)|y') })
+    await host.emitObserved('browser::on-console-event', { session_id: 't1', entry: entry(9, 'log', 'see A.B (X)|Y here') })
     expect(keys(host, 'console-list').at(-1)).toBe('9')
     expect(keys(host, 'console-list')).not.toContain('8')
   })
 
-  it('unbinds while hidden and catches up from the last seq when visible', async () => {
+  it('disposes its observer while hidden and catches up from the last seq when visible', async () => {
     const fake = new FakeBrowser(TABS)
     fake.consoleLog = [entry(1), entry(2)]
     const host = await consoleOf(fake)
     await host.env({ visible: false })
-    expect(subsOf(host, 'browser::console-event')).toEqual([])
+    expect(subsOf(host, 'browser::on-console-event')).toEqual([])
     fake.consoleLog.push(entry(3), entry(4))
     await host.env({ visible: true })
-    expect(subsOf(host, 'browser::console-event')).toEqual([{ session_id: 't1' }])
+    expect(subsOf(host, 'browser::on-console-event')).toEqual([tabObserver('t1')])
     expect(callsOf(host, 'browser::console::read').at(-1)).toEqual({ session_id: 't1', since_seq: 2, limit: 200 })
     expect(keys(host, 'console-list')).toEqual(['1', '2', '3', '4'])
   })
@@ -165,7 +165,7 @@ describe('the console', () => {
     expect(host.clipboard).toEqual(['copy me'])
     await host.press('console-clear')
     expect(keys(host, 'console-list')).toEqual([])
-    await host.emitTrigger('browser::console-event', { session_id: 't1', entry: entry(2) })
+    await host.emitObserved('browser::on-console-event', { session_id: 't1', entry: entry(2) })
     expect(keys(host, 'console-list')).toEqual([])
 
     fake.overrides['browser::console::read'] = () => {
@@ -204,7 +204,7 @@ describe('the network', () => {
     ]
     const { host } = await start({ fake })
     await host.mount('network', { session: 't1' })
-    expect(subsOf(host, 'browser::network-event')).toEqual([{ session_id: 't1' }])
+    expect(subsOf(host, 'browser::on-network-event')).toEqual([tabObserver('t1')])
     expect(items(host, 'network-list')).toEqual([
       { key: '1', kind: 0, method: 'GET', status: '200', url: 'https://example.com/r1', type: 'text/html' },
       {
@@ -221,8 +221,8 @@ describe('the network', () => {
     await host.toggle('failed-only')
     expect(callsOf(host, 'browser::network::read').at(-1)).toEqual({ session_id: 't1', limit: 200, failed_only: true })
     expect(keys(host, 'network-list')).toEqual(['2'])
-    await host.emitTrigger('browser::network-event', { session_id: 't1', entry: req(5) })
-    await host.emitTrigger('browser::network-event', { session_id: 't1', entry: req(6, { failed: true }) })
+    await host.emitObserved('browser::on-network-event', { session_id: 't1', entry: req(5) })
+    await host.emitObserved('browser::on-network-event', { session_id: 't1', entry: req(6, { failed: true }) })
     expect(keys(host, 'network-list')).toEqual(['2', '6'])
   })
 })
@@ -257,7 +257,7 @@ describe('the history', () => {
     expect(callsOf(host, 'browser::history::list').at(-1)).toEqual({ session_id: 't1', query: '/a' })
     expect(items(host, 'history-list')).toHaveLength(1)
     fake.visits.unshift({ url: 'https://example.com/a2', title: 'A2', timestamp: 3 })
-    await host.emitTrigger('browser::navigated', { session_id: 't1', url: 'https://example.com/a2' })
+    await host.emitObserved('browser::on-navigated', { session_id: 't1', url: 'https://example.com/a2' })
     expect(items(host, 'history-list').map((i) => i.title)).toEqual(['A2', 'example.com'])
   })
 

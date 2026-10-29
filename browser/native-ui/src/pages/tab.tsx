@@ -25,7 +25,7 @@ import {
   StatusPanel,
 } from '@iii-dev/native-ui'
 import { hostOf, isWebUrl, tabTitle } from '../address'
-import { browser, type HandoffRequested, type HandoffResolved, listen, TRIGGER, WIRE } from '../api'
+import { browser, EVENT, forSession, type HandoffRequested, type HandoffResolved, listen, WIRE } from '../api'
 import { readable, stamp } from '../format'
 import { closeTab, framed, type Handoff, history, navigate, type OpenTab, openTab, select, sessionOf } from '../state'
 import { Bars } from './bars'
@@ -47,12 +47,12 @@ export function TabPage(props: { id: string }) {
   const [viewError, setViewError] = createSignal<string | null>(null)
   let menuButton: NodeRef | undefined
 
-  // A handoff is for the person looking at the tab: bound while it is on screen.
+  // A handoff is for the person looking at the tab: observed while it is on screen.
   createEffect(() => {
     if (!iii.env.visible) return
-    const config = { session_id: tab.id }
+    const source = forSession(tab.id)
     const offs = [
-      listen<HandoffRequested>(TRIGGER.handoffRequested, config, (p) => {
+      listen<HandoffRequested>(EVENT.handoffRequested, source, (p) => {
         if (p.session_id !== tab.id || !p.handoff_id) return
         tab.setHandoffs((queue) =>
           queue.some((h) => h.id === p.handoff_id)
@@ -60,7 +60,7 @@ export function TabPage(props: { id: string }) {
             : [...queue, { id: p.handoff_id, instructions: p.instructions ?? '' }],
         )
       }),
-      listen<HandoffResolved>(TRIGGER.handoffResolved, config, (p) => {
+      listen<HandoffResolved>(EVENT.handoffResolved, source, (p) => {
         if (p.session_id === tab.id) tab.setHandoffs((queue) => queue.filter((h) => h.id !== p.handoff_id))
       }),
     ]

@@ -14,7 +14,7 @@ import {
   type SessionInfo,
   type SessionStopped,
   type SessionUpdated,
-  TRIGGER,
+  EVENT,
 } from './api'
 import { readable } from './format'
 
@@ -226,17 +226,17 @@ export async function closeTab(id: string): Promise<void> {
   }
 }
 
-/** A lifecycle event (bound without a filter): the open tab hears its own, the list re-reads. */
-export function lifecycle(type: string, payload: SessionStopped | SessionUpdated | Navigated): void {
+/** A lifecycle event (observed without a filter): the open tab hears its own, the list re-reads. */
+export function lifecycle(fn: string, payload: SessionStopped | SessionUpdated | Navigated): void {
   const id = payload.session_id
   if (typeof id !== 'string' || !id) return
   const tab = openTabs.get(id)
-  if (type === TRIGGER.sessionStopped) {
+  if (fn === EVENT.sessionStopped) {
     const reason = (payload as SessionStopped).reason
     stopped(id, typeof reason === 'string' && reason ? reason : 'closed')
   } else if (tab && !tab.closed()) {
-    if (type === TRIGGER.sessionUpdated) updated(tab, payload as SessionUpdated)
-    else if (type === TRIGGER.navigated) navigated(tab, (payload as Navigated).url)
+    if (fn === EVENT.sessionUpdated) updated(tab, payload as SessionUpdated)
+    else if (fn === EVENT.navigated) navigated(tab, (payload as Navigated).url)
   }
   refreshSoon()
 }

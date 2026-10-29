@@ -1,11 +1,11 @@
 /** The open tab (design §8.2-§8.4): the live view's props, the address bar, loading, history, menus, handoff. */
 import type { TestHost } from '@iii-dev/native-ui/testing'
 import { describe, expect, it } from 'vitest'
-import { callsOf, exists, FakeBrowser, shown, start, subsOf, TABS } from './fake'
+import { callsOf, exists, FakeBrowser, shown, start, subsOf, TABS, tabObserver } from './fake'
 
 /** The RemoteScreen wire of the browser, as design §6.7 writes it. */
 const WIRE = {
-  frames: { trigger: 'browser::frame-event', config: { session_id: '$session' } },
+  frames: { fn: 'browser::on-frame-event', args: { session_id: '$session' } },
   seed: { fn: 'browser::frame', args: { session_id: '$session', since_frame: '$seq' } },
   start: {
     fn: 'browser::screencast::start',
@@ -330,10 +330,10 @@ describe('loading without a loading event', () => {
   it('a navigation the page made shows the bar until the next title, or 3 s', async () => {
     const { host } = await opened('t1')
     expect(loading(host)).toBe(false)
-    await host.emitTrigger('browser::navigated', { session_id: 't1', url: 'https://example.com/clicked', timestamp: 1 })
+    await host.emitObserved('browser::on-navigated', { session_id: 't1', url: 'https://example.com/clicked', timestamp: 1 })
     expect(loading(host)).toBe(true)
     expect(host.find('address').props?.text).toBe('example.com/clicked')
-    await host.emitTrigger('browser::session-updated', {
+    await host.emitObserved('browser::on-session-updated', {
       session_id: 't1',
       active: true,
       url: 'https://example.com/clicked',
@@ -343,7 +343,7 @@ describe('loading without a loading event', () => {
     expect(loading(host)).toBe(false)
     expect(host.find('tab').props?.title).toBe('Clicked')
 
-    await host.emitTrigger('browser::navigated', { session_id: 't1', url: 'https://example.com/again', timestamp: 3 })
+    await host.emitObserved('browser::on-navigated', { session_id: 't1', url: 'https://example.com/again', timestamp: 3 })
     expect(loading(host)).toBe(true)
     await host.tick(2999)
     expect(loading(host)).toBe(true)
@@ -353,7 +353,7 @@ describe('loading without a loading event', () => {
 
   it('another tab navigating does not show the bar', async () => {
     const { host } = await opened('t1')
-    await host.emitTrigger('browser::navigated', { session_id: 't3', url: 'https://github.com/', timestamp: 1 })
+    await host.emitObserved('browser::on-navigated', { session_id: 't3', url: 'https://github.com/', timestamp: 1 })
     expect(loading(host)).toBe(false)
   })
 })
@@ -469,7 +469,7 @@ describe('a mode change during a navigation of the app', () => {
   it('drops it too when the tab is stopped elsewhere meanwhile', async () => {
     const { host, fake } = await navigating('t1', 'iii.dev')
     await host.emit('screen', 'frame', [412, 780, true])
-    await host.emitTrigger('browser::session-stopped', { session_id: 't1', reason: 'crashed', timestamp: 1 })
+    await host.emitObserved('browser::on-session-stopped', { session_id: 't1', reason: 'crashed', timestamp: 1 })
     fake.release('browser::navigate')
     await host.settle()
     expect(reloads(host, 't1')).toEqual([])
@@ -512,12 +512,12 @@ describe('the page menu', () => {
     await host.press('tab-menu')
     await host.press('tab-menu')
     expect((host.menus.at(-1) as { actions: { hint?: string }[] }).actions[3].hint).toBe('125%')
-    await host.emitTrigger('browser::navigated', { session_id: 't1', url: 'https://example.com/b', timestamp: 1 })
+    await host.emitObserved('browser::on-navigated', { session_id: 't1', url: 'https://example.com/b', timestamp: 1 })
     expect(callsOf(host, 'browser::zoom').at(-1)).toEqual({ session_id: 't1', action: 'set', level: 125 })
     await host.press('tab-menu')
     expect(callsOf(host, 'browser::zoom').at(-1)).toEqual({ session_id: 't1', action: 'reset' })
     const before = callsOf(host, 'browser::zoom').length
-    await host.emitTrigger('browser::navigated', { session_id: 't1', url: 'https://example.com/c', timestamp: 2 })
+    await host.emitObserved('browser::on-navigated', { session_id: 't1', url: 'https://example.com/c', timestamp: 2 })
     expect(callsOf(host, 'browser::zoom')).toHaveLength(before)
   })
 
@@ -621,9 +621,9 @@ describe('the page menu', () => {
 describe('handoff and closed tabs', () => {
   it('a handoff for the open tab shows the banner until I’m done or resolved', async () => {
     const { host } = await opened('t1')
-    expect(subsOf(host, 'browser::handoff-requested')).toEqual([{ session_id: 't1' }])
-    expect(subsOf(host, 'browser::handoff-resolved')).toEqual([{ session_id: 't1' }])
-    await host.emitTrigger('browser::handoff-requested', {
+    expect(subsOf(host, 'browser::on-handoff-requested')).toEqual([tabObserver('t1')])
+    expect(subsOf(host, 'browser::on-handoff-resolved')).toEqual([tabObserver('t1')])
+    await host.emitObserved('browser::on-handoff-requested', {
       session_id: 't1',
       handoff_id: 'h1',
       instructions: 'Sign in, then tap I’m done.',
@@ -638,27 +638,27 @@ describe('handoff and closed tabs', () => {
     expect(callsOf(host, 'browser::handoff::confirm')).toEqual([{ session_id: 't1', handoff_id: 'h1' }])
     expect(exists(host, 'handoff')).toBe(false)
 
-    await host.emitTrigger('browser::handoff-requested', {
+    await host.emitObserved('browser::on-handoff-requested', {
       session_id: 't1',
       handoff_id: 'h2',
       instructions: 'Solve it',
     })
     expect(exists(host, 'handoff')).toBe(true)
-    await host.emitTrigger('browser::handoff-resolved', { session_id: 't1', handoff_id: 'h2', via: 'page' })
+    await host.emitObserved('browser::on-handoff-resolved', { session_id: 't1', handoff_id: 'h2', via: 'page' })
     expect(exists(host, 'handoff')).toBe(false)
   })
 
   it('handoffs are heard only while visible', async () => {
     const { host } = await opened('t1')
     await host.env({ visible: false })
-    expect(subsOf(host, 'browser::handoff-requested')).toEqual([])
+    expect(subsOf(host, 'browser::on-handoff-requested')).toEqual([])
     await host.env({ visible: true })
-    expect(subsOf(host, 'browser::handoff-requested')).toEqual([{ session_id: 't1' }])
+    expect(subsOf(host, 'browser::on-handoff-requested')).toEqual([tabObserver('t1')])
   })
 
   it('a tab that stopped while open says so, with Back to tabs', async () => {
     const { host } = await opened('t1')
-    await host.emitTrigger('browser::session-stopped', { session_id: 't1', reason: 'crashed', timestamp: 1 })
+    await host.emitObserved('browser::on-session-stopped', { session_id: 't1', reason: 'crashed', timestamp: 1 })
     expect(host.find('tab-closed').props?.title).toBe('This tab was closed (it crashed)')
     expect(exists(host, 'screen')).toBe(false)
     expect(shown(host, 'bars')).toBe(false)
