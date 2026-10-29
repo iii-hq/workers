@@ -252,8 +252,8 @@ impl ConsoleUi {
     ///
     /// Each observer stays `pending` until the console registers the asset
     /// function, and the SDK replays it on reconnect. A rejection (an asset
-    /// the console refuses, a failed content fetch, a superseded path) is
-    /// warn-logged, not fatal — injected UI is an accessory.
+    /// the console refuses, a failed content fetch) is warn-logged, not
+    /// fatal — injected UI is an accessory.
     pub fn register(self, iii: &Arc<IIIClient>) {
         if self.assets.is_empty() {
             tracing::warn!(
