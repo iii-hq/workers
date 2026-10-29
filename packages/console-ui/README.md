@@ -114,11 +114,15 @@ Use the shared contracts for repeated Console interactions:
   recipes honor reduced motion; high-frequency streaming updates should be
   immediate.
 
-Function-trigger renderers receive the harness's optional user-facing
-`message.description`. A renderer can declare `metadata: { display: true }`
-to keep a successful rich artifact (for example a screenshot or file-change
-summary) visible in the chat flow; return `null` for unsupported/error shapes
-to fall through to the next renderer.
+Function-call renderers (`host.functionCalls.register`) receive the
+harness's optional user-facing `message.description`. A renderer can declare
+`metadata: { display: true }` to keep a successful rich artifact (for example
+a screenshot or file-change summary) visible in the chat flow; return `null`
+for unsupported/error shapes to fall through to the next renderer.
+Observer renderers (`host.observerRenderers?.register`) claim an observed
+function by id (`isMatch('cron::on-tick')`) and render its observers'
+registrations, fires and retirements from the observer's `args` and
+`filters`.
 
 Renderers can also open their worker's registered page with contextual JSON:
 
@@ -157,7 +161,7 @@ if (host.panels?.openScreen) {
   })
 } else {
   // Older console: the bus call places it too, a round trip later.
-  await host.iii.trigger('console::workspace::open', { screen: 'traces' })
+  await host.iii.call('console::workspace::open', { screen: 'traces' })
 }
 ```
 
@@ -169,8 +173,9 @@ Two subpaths DO bundle (React-free helpers and hooks the Console itself
 uses): `@iii-dev/console-ui/format` — `formatRelative`, `formatDuration`,
 `formatBytes`, `errorMessage`/`errorCode`, `copyText`, `unwrapEnvelope` —
 and `@iii-dev/console-ui/hooks` — `useContainerNarrow`, `usePaneState`,
-`useCopyFlash`, `useWorkerLive` (fetch + trigger bindings, re-read on tab
-focus when a binding is missing; no polling), `useDebounce`, `useSplitDrag` (pointer + arrow keys for a
+`useCopyFlash`, `useWorkerLive` (fetch, then re-fetch on every call of the
+observed sources; re-read on tab focus while the observers are missing; no
+polling), `useDebounce`, `useSplitDrag` (pointer + arrow keys for a
 `role="separator"`).
 Newer shared components: `Eyebrow` (the mono caps label; `uiClasses.eyebrow`
 is the class form), `SearchField`, `Toolbar`/`StatusBar` (36 px raised and
@@ -181,6 +186,38 @@ glyph string), `BottomSheet`, `Kbd`/`KeyCombo`, `LiveRegion`, and
 composition. `setup(host)` may return a disposer; the loader runs it first on
 hot reload and disconnect. Icons come from `lucide-react` (external, shared
 with the console) — never inline SVG copies.
+
+### The engine client
+
+`host.iii` is the tab's engine client (`ExtensionIii`): `call(functionId,
+payload?, { timeoutMs? })` resolves to the function's result; `on(id,
+handler)` registers a browser-local handler as `<id>::<browserId>`; and
+`observe(source, target, options?)` observes a function with such a handler
+as its target and returns the disposer. `observe` delivers the observed
+function's output (the event, for an event source) unless the source sets
+`deliver`. `trigger` is the same function as `call`.
+
+```tsx
+const handler = 'iii::state-ui::events'
+const off = host.iii.on(handler, (event: StateEvent) => apply(event))
+const dispose = host.iii.observe(
+  { function_id: 'state::on-changed', filters: { 'input.scope': { $eq: 'orders' } } },
+  `${handler}::${host.iii.browserId}`,
+)
+```
+
+`useWorkerLive` from `@iii-dev/console-ui/hooks` wraps that pattern: one
+handler, an observer per source, a fetch on mount and on every observed
+call.
+
+```tsx
+const live = useWorkerLive({
+  iii: host.iii,
+  handlerId: 'iii::state-ui::events',
+  sources: [{ function_id: 'state::on-changed', filters: { 'input.scope': { $eq: 'orders' } } }],
+  fetch: () => host.iii.call('state::list', { scope: 'orders' }),
+})
+```
 
 Full authoring guide: `workers/docs/sops/injectable-console-ui.md`.
 

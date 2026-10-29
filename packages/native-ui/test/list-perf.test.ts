@@ -15,7 +15,7 @@ describe('createList().set on 3,000 items', () => {
     const times: number[] = []
     for (let i = 0; i < 5; i++) {
       const from = h.messages.length
-      await h.emitTrigger('demo::one', {})
+      await h.emitObserved('demo::on-one', {})
       times.push(Number(h.prop('ms', 'text')))
       const ops = h.messages.slice(from).flatMap((m) => JSON.parse(m) as unknown[][])
       expect(ops.filter((o) => o[0] === 8).map((o) => o.slice(2, 4))).toEqual([[1500, 1]])
@@ -29,9 +29,9 @@ describe('createList().set on 3,000 items', () => {
     const fresh: number[] = []
     const json: number[] = []
     for (let i = 0; i < 5; i++) {
-      await h.emitTrigger('demo::fresh', {})
+      await h.emitObserved('demo::on-fresh', {})
       fresh.push(Number(h.prop('ms', 'text')))
-      await h.emitTrigger('demo::json', {})
+      await h.emitObserved('demo::on-json', {})
       json.push(Number(h.prop('ms', 'text')))
     }
     expect(h.keys('tickets')).toHaveLength(3000)

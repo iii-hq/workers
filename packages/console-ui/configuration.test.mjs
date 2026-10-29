@@ -5,7 +5,7 @@ import { resolveConfigurationId } from './configuration.mjs'
 test('uses the addressed worker and preserves explicit or generated IDs', async () => {
   for (const id of ['orders-voice-0123456789abcdef', 'custom-entry']) {
     const calls = []
-    assert.equal(await resolveConfigurationId({ trigger: async (...args) => {
+    assert.equal(await resolveConfigurationId({ call: async (...args) => {
       calls.push(args)
       return { id }
     } }, 'voice'), id)
@@ -15,15 +15,15 @@ test('uses the addressed worker and preserves explicit or generated IDs', async 
 
 test('never falls back to a global entry on errors or malformed identities', async () => {
   for (const response of [null, {}, { id: '' }, { id: '   ' }, { id: 123 }]) {
-    await assert.rejects(resolveConfigurationId({ trigger: async () => response }, 'ide'), /invalid configuration identity/)
+    await assert.rejects(resolveConfigurationId({ call: async () => response }, 'ide'), /invalid configuration identity/)
   }
   const error = new Error('function_not_found')
-  await assert.rejects(resolveConfigurationId({ trigger: async () => { throw error } }, 'ide'), (caught) => caught === error)
+  await assert.rejects(resolveConfigurationId({ call: async () => { throw error } }, 'ide'), (caught) => caught === error)
 })
 
 test('does not cache an identity across worker replacement', async () => {
   let id = 'first'
-  const iii = { trigger: async () => ({ id }) }
+  const iii = { call: async () => ({ id }) }
   assert.equal(await resolveConfigurationId(iii, 'voice'), 'first')
   id = 'second'
   assert.equal(await resolveConfigurationId(iii, 'voice'), 'second')

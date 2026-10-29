@@ -93,7 +93,7 @@ const HANDLER_PREFIX = /^handler error: /
 const str = (v) => (typeof v === 'string' && v.length > 0 ? v : undefined)
 
 /**
- * The wire error object a rejected `iii.trigger` throws, normalised: the
+ * The wire error object a rejected `iii.call` throws, normalised: the
  * human text lives under `message`, `error`, `reason` or `detail` (an
  * `error` object nests one level further).
  */
@@ -132,7 +132,7 @@ function unwrap(body) {
   return current
 }
 
-/** The innermost error code a rejected trigger carries (outer code as fallback). */
+/** The innermost error code a rejected call carries (outer code as fallback). */
 export function errorCode(err) {
   const body = bodyOf(err)
   if (!body) return undefined
@@ -140,7 +140,7 @@ export function errorCode(err) {
 }
 
 /**
- * One readable string out of whatever a rejected `iii.trigger` throws.
+ * One readable string out of whatever a rejected `iii.call` throws.
  * The browser SDK rejects with the wire error *object*, so a naive
  * `String(err)` renders `[object Object]`; this unwraps the envelope, keeps
  * the handler's own code (`D214: …`) and drops transport-only ones.
