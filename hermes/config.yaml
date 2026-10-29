@@ -9,14 +9,14 @@ defaults:
   # file, code_execution, and web. Set to "" for the full Hermes default.
   tools: "terminal,file,code_execution,web"
 
-# Turn frames are delivered on the owned trigger types hermes::agent-event
-# (normalized AgentEvent frames) and hermes::raw-event (raw Hermes frames);
-# consumers bind them with { session_id }. They have fixed ids, nothing to
-# configure here (legacy keys for the old feed names are ignored).
+# Turn frames are delivered on the functions hermes::on-agent-event
+# (normalized AgentEvent frames) and hermes::on-raw-event (raw Hermes frames);
+# consumers observe them with args { session_id }. They have fixed ids,
+# nothing to configure here (legacy keys for the old feed names are ignored).
 
 # Prepend the iii runtime context to the prompt on a fresh session: teaches the
 # agent live discovery against the engine catalog through the iii CLI
-# (engine::functions::list, `iii trigger <fn> --help`). Hermes reaches the CLI
+# (engine::functions::list, `iii call <fn> --help`). Hermes reaches the CLI
 # through its own shell / execute_code tool. Per-turn override via the
 # iii_context payload field.
 iii_context: true
@@ -25,10 +25,10 @@ iii_context: true
 hermes_executable: ""
 
 # api_path the gateway delivers inbound platform/webhook events to. The worker
-# exposes this over iii-http and republishes each delivery on the owned
-# hermes::raw-event trigger type (bind it with { session_id }; the delivery's
+# serves it as an http::on-request route (POST) and republishes each delivery
+# on hermes::on-raw-event (observe it with args { session_id }; the delivery's
 # session_id, else chat_id) for iii workers to react to. (A dedicated
-# hermes::message trigger type is still pending; see the README status.) Point a
+# hermes::on-message function is still pending; see the README status.) Point a
 # Hermes webhook route / delivery target at
 # http://<engine-http-host>/<inbound_api_path>.
 inbound_api_path: /hermes/inbound

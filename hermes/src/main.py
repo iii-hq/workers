@@ -28,8 +28,9 @@ DEFAULTS: dict[str, Any] = {
 }
 
 # Stream names of the removed iii-stream feeds. Configs written before the
-# owned trigger types (`hermes::agent-event` / `hermes::raw-event`) may still
-# carry them; they load fine and are dropped.
+# feeds were fixed functions (`hermes::on-agent-event` /
+# `hermes::on-raw-event`) may still carry them; they load fine and are
+# dropped.
 LEGACY_CONFIG_KEYS = ("events_stream", "raw_events_stream")
 
 RUN_REQUEST_FORMAT = {
@@ -139,7 +140,7 @@ def main() -> None:
     )
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger("hermes")
-    # Owned event feeds (replace the iii-stream `agent::events` / `hermes::events`).
+    # Owned event feeds: hermes::on-agent-event and hermes::on-raw-event.
     feeds = create_feeds(iii)
     handlers = create_handlers(iii, load_config, logger, feeds)
 
@@ -158,8 +159,8 @@ def main() -> None:
         "hermes::start",
         handlers["start"],
         description=(
-            "Start a Hermes turn and return immediately; bind hermes::agent-event with "
-            "{ session_id } for the turn_end / agent_end frames, or poll hermes::status. "
+            "Start a Hermes turn and return immediately; observe hermes::on-agent-event with "
+            "args { session_id } for the turn_end / agent_end frames, or poll hermes::status. "
             "Returns {session_id, started}."
         ),
         request_format=RUN_REQUEST_FORMAT,
@@ -205,7 +206,8 @@ def main() -> None:
     )
 
     # Inbound sink: the Hermes gateway delivers platform/webhook events here over
-    # iii-http; the worker republishes them for iii workers to react to.
+    # the http worker (an http::on-request route); the worker republishes them
+    # on hermes::on-raw-event for iii workers to react to.
     use_api(
         iii,
         {
