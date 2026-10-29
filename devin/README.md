@@ -94,7 +94,7 @@ The worker follows the same base surface as the grok, codex, claude-code, and op
 | Function | Surface | Purpose |
 | --- | --- | --- |
 | `devin::run` | CLI | Run one local CLI turn, wait, return the result |
-| `devin::start` | CLI | Start a turn and return immediately; progress on the streams |
+| `devin::start` | CLI | Start a turn and return immediately; progress on the event feeds |
 | `devin::stop` | CLI | Interrupt a live CLI run |
 | `devin::status` | CLI | A recorded run's state: live flag, status, linked Devin session id |
 | `devin::sessions::list` | CLI | Every run this worker has recorded (each linked to its Devin session) |
@@ -135,7 +135,7 @@ Or ask it to map the whole engine by capability area, and it groups what it find
 
 `devin::run` records every turn as a `session-manager` session under its `session_id`, writing the same records a harness turn does: `session::ensure` (title from the prompt and `{ agent: "devin" }` metadata; a run with `parent_session_id` carries it and nests under that parent, a run without one is created as an `automation` session rather than a human chat), the user prompt, an assistant entry streamed with the CLI output as it prints, a `custom` `error` entry when the run fails, and the session status (`working`, then `done`, `done` + `stopped` after `devin::stop`, or `error` with the cause). The run therefore appears in the console's session list and transcript like a harness session, and can be replayed after it ends with `session::messages`. The `--print` CLI output is plain text, so tool calls appear inside that text, not as separate function rows.
 
-It also delivers every stdout line verbatim on the `devin::raw-event` trigger type and the terminal AgentEvent frames on `devin::agent-event` (see Event feeds). Recording is on by default and switched off with `session_recording: false` (config, or per turn). Both are best-effort: when `session-manager` is not installed the worker logs that once, skips those writes, re-checks once a minute, and the run itself is unaffected; a feed with no binding delivers nothing, and a failing consumer never fails the run. The cloud functions return their JSON directly and do not stream; poll `devin::session::get` for progress, or bind a `cron` trigger to poll on a schedule instead of looping.
+It also delivers every stdout line verbatim on the `devin::raw-event` trigger type and the terminal AgentEvent frames on `devin::agent-event` (see Event feeds). Recording is on by default and switched off with `session_recording: false` (config, or per turn). Both are best-effort: when `session-manager` is not installed the worker logs that once, skips those writes, re-checks once a minute, and the run itself is unaffected; a feed with no binding or observer delivers nothing, and a failing consumer never fails the run. The cloud functions return their JSON directly and do not stream; poll `devin::session::get` for progress, or bind a `cron` trigger to poll on a schedule instead of looping.
 
 Every `devin::*` call is a traced invocation on the engine with no extra instrumentation: the input payload, output, duration, and ok/error land in the console's trace explorer, including the `iii trigger` calls a `devin::run` agent makes on its own.
 
@@ -166,6 +166,21 @@ Your function gets one fire-and-forget call per frame:
 ```
 
 `seq` counts from 0 per feed and session within one `epoch` (a uuid minted per worker process, so a restart starts a new epoch); the two feeds count independently. Deliveries may arrive out of order: order by `(epoch, seq)` and dedup by `event_id`. The feeds are ephemeral: nothing is stored or replayed, and a binding made mid-turn only sees later frames. History lives in the session-manager transcript (`session::messages` with the run's `session_id`), the session record (`devin::status`, `devin::sessions::list`) and the `devin::run` result. These trigger types replace the former `agent::events` / `devin::events` streams (see the guide "Migrate from iii-stream and pubsub").
+
+#### Observable functions (iii 0.25)
+
+On an iii 0.25 engine each feed also has an owner-delivered observable function. A new consumer observes it instead of binding the trigger type:
+
+| Function | Next to | Carries |
+| --- | --- | --- |
+| `devin::on-agent-event` | `devin::agent-event` | the terminal AgentEvent frames |
+| `devin::on-raw-event` | `devin::raw-event` | every CLI stdout line, verbatim |
+
+```js
+iii.observe({ function_id: 'devin::on-agent-event', args: { session_id: 'sess-1' } }, 'my-app::on-frame')
+```
+
+The args are the binding config, with the same rules (`session_id` required, non-empty, at most 512 characters; no other key but `metadata`, which is accepted and unused for observers). An observer is refused with `INVALID_ARGS` when they break them and with `OBSERVER_LIMIT` past 256 observers per function. Each observer of the session receives the payload above, the same `seq` a binding gets for that frame, through `obs.call` after the bindings; observer filters apply. A failing observer never fails the run. Frames are routed inside the worker: invoking either function directly is refused with `FORBIDDEN`, so nobody can forge a frame. Both trigger types stay registered and unchanged, so existing bindings keep working on 0.24 and 0.25 engines; on a 0.24 engine the functions are plain functions that only refuse calls.
 
 ## Configuration
 
@@ -205,8 +220,8 @@ session_recording: true                       # record each CLI turn as a consol
 | --- | --- |
 | one local `devin --print -- <prompt>` turn (SWE-1.6 agent) | `devin::run` invocation |
 | one `devin::run` session (prompt, output, status) | `session-manager` session, listed in the console |
-| every CLI stdout line, verbatim | `devin::raw-event` delivery |
-| turn end | `turn_end` + `agent_end` frames on `devin::agent-event`, function return value |
+| every CLI stdout line, verbatim | `devin::raw-event` delivery (`devin::on-raw-event` observers on iii 0.25) |
+| turn end | `turn_end` + `agent_end` frames on `devin::agent-event` (and `devin::on-agent-event` observers), function return value |
 | a Devin cloud session | `devin::session::create` / `::get` / `::message` |
 | a Devin PR review | `devin::pr-review::trigger` / `::status` |
 | any other v1/v3 endpoint | `devin::api` passthrough |

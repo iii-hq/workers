@@ -35,8 +35,10 @@ Devin itself, add another iii worker to the bus instead of bolting it on.
 
 - Delegate a coding task to the local agent in a chosen directory: `devin::run`
   with `prompt` and `cwd`; follow the session transcript (`session::messages`)
-  or bind `devin::agent-event` / `devin::raw-event` with `{ session_id }`;
-  interrupt with `devin::stop`.
+  or bind `devin::agent-event` / `devin::raw-event` with `{ session_id }`
+  (on iii 0.25 code can observe `devin::on-agent-event` /
+  `devin::on-raw-event` with the same args instead); interrupt with
+  `devin::stop`.
 - Have Devin operate your iii workers: with `iii_context` on (default), ask a plain
   question ("what workers are connected and what does each do?") and Devin
   discovers and calls engine functions itself through the iii CLI.
@@ -86,6 +88,10 @@ Devin itself, add another iii worker to the bus instead of bolting it on.
   linked Devin session id.
 - `devin::sessions::list` — every run this worker has recorded (each linked to
   its Devin session). For all cloud sessions org-wide, use `devin::api`.
+- `devin::on-agent-event` / `devin::on-raw-event` — observable functions
+  (iii 0.25) next to the two trigger types; observe one with args
+  `{ session_id }` to receive that session's frames (same payload as a
+  binding). Invoking them directly is refused with `FORBIDDEN`.
 - `devin::session::create` — start a Devin cloud session; accepts `prompt` (or a
   `messages` array) plus `title`, `tags`, `playbook_id`, `knowledge_ids`,
   `secret_ids`, `max_acu_limit`, and the v3 (`devin_mode`, `repos`, ...) or v1
