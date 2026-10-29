@@ -1,28 +1,34 @@
-//! Injectable console UI — the `console:*` trigger types and asset registry.
+//! Injectable console UI — the `console::ui::*` functions and asset registry.
 //!
 //! Implements the injection protocol from
-//! `iii/tech-specs/2026-07-17-injectable-ui/injection-protocol.md`:
+//! `iii/tech-specs/2026-07-17-injectable-ui/injection-protocol.md` with two
+//! private functions this worker hosts:
 //!
-//! - Workers register `console:script` / `console:style` /
-//!   `console:module` triggers whose `config.path` is the asset's identity;
-//!   the trigger's `function_id` names the *content function* the console
-//!   invokes to fetch source. Modules are served like scripts but the SPA
-//!   loader never imports them at mount — pages pull them on demand via
-//!   `host.importModule`.
-//! - Console tabs register `console:assets` triggers — subscriptions whose
-//!   `function_id` is the per-tab handler the console pushes
-//!   `sync`/`set`/`delete` events to.
-//! - "Same path ⇒ override" is console-worker policy: a path-keyed
-//!   last-writer-wins registry, with `engine::unregister_trigger` pruning
-//!   the superseded engine row so at most one live trigger per path exists
-//!   in steady state.
+//! - **`console::ui::asset`**: a worker ships one asset by observing it with
+//!   args `{ kind: "script" | "style" | "module", path }` and its *content
+//!   function* as the target. Once the observer is active, the console calls
+//!   the content function through it with `{ path }` and stores the source.
+//!   Modules are served like scripts but the SPA loader never imports them
+//!   at mount — pages pull them on demand via `host.importModule`. The
+//!   function itself is never called.
+//! - **`console::ui::on-assets-changed`**: console tabs observe it. Each new
+//!   observer receives `{ op: "sync", assets }` through itself once it is
+//!   active, and every later change is one call of the function with
+//!   `{ op: "set", asset }` or `{ op: "delete", path }`, which iii delivers
+//!   to every tab.
 //!
-//! The SDK delivers each incoming register/unregister callback on its own
-//! spawned task, so all `console:*` events — assets *and* subscriptions —
-//! drain through a single-consumer mpsc queue; the content fetch runs
-//! inside the serialized section. (Enqueue order can in principle diverge
-//! from WS-arrival order across the SDK's per-message tasks; the window is
-//! sub-millisecond and the hash dedupe + unknown-id no-ops absorb it.)
+//! "Same path ⇒ override" is console-worker policy: a path-keyed
+//! last-writer-wins registry. A later observer of a path supersedes the
+//! earlier one, which is late-rejected with `UI_ASSET_SUPERSEDED`, so at most
+//! one asset observer per path stays active in steady state.
+//!
+//! The SDK runs observer hooks one at a time per function, and these are two
+//! functions, so every added and removed observer of both — and the
+//! per-worker toggles — drains through one single-consumer queue in the
+//! order the hooks saw them: an asset commit and a tab's `sync` are
+//! mutually ordered. The hooks return at once; the queue waits for each
+//! observer to be accepted before it calls through it (a call through an
+//! observer that is not active yet fails with `OBSERVER_NOT_ACTIVE`).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -30,50 +36,52 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
+use iii_sdk::{CallAction, CallRequest, IIIClient, ObserveRejection, Observer, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot};
 
-pub const SCRIPT_TYPE: &str = "console:script";
-pub const STYLE_TYPE: &str = "console:style";
-pub const MODULE_TYPE: &str = "console:module";
-pub const ASSETS_TYPE: &str = "console:assets";
+/// The asset function: one observer per asset, never called.
+pub const ASSET_FN: &str = "console::ui::asset";
+/// The tabs' live feed of asset changes.
+pub const ON_ASSETS_CHANGED_FN: &str = "console::ui::on-assets-changed";
+
+/// Late rejection of an asset observer a later observer of its path replaced.
+pub const CODE_SUPERSEDED: &str = "UI_ASSET_SUPERSEDED";
+/// Late rejection of an asset observer whose content could not be fetched.
+pub const CODE_FETCH_FAILED: &str = "UI_ASSET_FETCH_FAILED";
+/// Late rejection of an asset observer whose content is over the size cap.
+pub const CODE_TOO_LARGE: &str = "UI_ASSET_TOO_LARGE";
+/// Rejection of an asset observer whose args name an invalid path.
+const CODE_INVALID_ARGS: &str = "INVALID_ARGS";
 
 /// Max bytes per fetched asset. Multi-MiB assets are a bundling smell; the
 /// cap keeps a misbehaving worker from ballooning console memory.
 const MAX_ASSET_BYTES: usize = 8 * 1024 * 1024;
 
-/// Content-fetch budget at registration time: 2 attempts × 3s + 250ms
-/// backoff ≈ 6.5s worst case — safely inside the engine's 10s registration
-/// ack window (`REGISTRATION_ACK_TIMEOUT`).
+/// Content-fetch budget per asset: 2 attempts × 3s + 250ms backoff ≈ 6.5s
+/// worst case. The fetch runs inside the serialized queue, so the budget
+/// bounds how long one slow worker holds up every later asset.
 const FETCH_ATTEMPTS: u32 = 2;
 const FETCH_TIMEOUT_MS: u64 = 3_000;
 const FETCH_BACKOFF_MS: u64 = 250;
 
-/// Trigger config schema for every asset type (`additionalProperties`
-/// enforced console-side; the engine treats trigger config schemas as
-/// advisory).
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+/// Args of a `console::ui::asset` observer (`additionalProperties` refused).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct AssetTriggerConfig {
-    /// Asset identity. Convention: `<worker>/<name>.<ext>`. Re-registering
-    /// a path overrides it.
+pub struct AssetArgs {
+    /// `script` (imported at mount), `style` (mounted as a `<link>`) or
+    /// `module` (served, imported on demand with `host.importModule`).
+    pub kind: AssetKind,
+    /// Asset identity. Convention: `<worker>/<name>.<ext>`. A later observer
+    /// of the same path supersedes this one.
     pub path: String,
 }
 
-/// `console:assets` subscriptions carry no config; every subscriber gets
-/// every event.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct SubscriptionTriggerConfig {}
-
-/// Short asset kind — trigger type ids are `console:*`, kinds stay
-/// `script`/`style`/`module` in push payloads and the manifest.
+/// Asset kind, as it travels in the observer's args, the events and the
+/// manifest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum AssetKind {
@@ -106,12 +114,35 @@ impl AssetKind {
     }
 }
 
+/// One served asset, as the events name it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AssetRef {
+    pub path: String,
+    pub kind: AssetKind,
+    /// First 16 hex chars of sha256(content).
+    pub hash: String,
+}
+
+/// The event `console::ui::on-assets-changed` is called with, and what its
+/// observers receive.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "op", rename_all = "lowercase")]
+pub enum UiAssetsEvent {
+    /// The whole served set, sent to one new observer through itself.
+    Sync { assets: Vec<AssetRef> },
+    /// An asset was added, or its content changed.
+    Set { asset: AssetRef },
+    /// An asset is no longer served.
+    Delete { path: String },
+}
+
 #[derive(Debug, Clone)]
 pub struct Asset {
-    pub trigger_id: String,
+    /// The `console::ui::asset` observer that ships it.
+    pub observer_id: String,
     pub kind: AssetKind,
     /// First 16 hex chars of sha256(content) — the version that travels in
-    /// pushes, the manifest, and `?v=` cache busting.
+    /// events, the manifest, and `?v=` cache busting.
     pub hash: String,
     pub content: String,
     pub content_type: String,
@@ -162,15 +193,13 @@ const UNDISABLEABLE_WORKER: &str = "console";
 struct RegistryInner {
     /// path → asset (content pinned to the advertised hash).
     by_path: HashMap<String, Asset>,
-    /// trigger id → path. The engine's `UnregisterTrigger` carries only the
-    /// id, hence the second key.
+    /// asset observer id → path. A removed observer carries only its id
+    /// here, hence the second key.
     by_id: HashMap<String, String>,
-    /// `console:assets` subscription id → per-tab handler function id.
-    subscribers: HashMap<String, String>,
     /// Workers whose assets are held but not served, announced, or listed
     /// (the per-worker injectable-UI toggle, from the console configuration
-    /// entry). Registrations are still accepted while disabled so a toggle
-    /// back on restores the UI without worker restarts.
+    /// entry). Observers are still accepted while disabled so a toggle back
+    /// on restores the UI without worker restarts.
     disabled_workers: HashSet<String>,
 }
 
@@ -178,10 +207,26 @@ impl RegistryInner {
     fn is_enabled(&self, path: &str) -> bool {
         !self.disabled_workers.contains(worker_of(path))
     }
+
+    /// The served set, as a `sync` names it.
+    fn served(&self) -> Vec<AssetRef> {
+        let mut assets: Vec<AssetRef> = self
+            .by_path
+            .iter()
+            .filter(|(path, _)| self.is_enabled(path))
+            .map(|(path, a)| AssetRef {
+                path: path.clone(),
+                kind: a.kind,
+                hash: a.hash.clone(),
+            })
+            .collect();
+        assets.sort_by(|a, b| a.path.cmp(&b.path));
+        assets
+    }
 }
 
-/// In-memory asset registry + subscriber set. Rebuilt from engine replay on
-/// console restart; deliberately not persisted.
+/// In-memory asset registry. Rebuilt from the observers the engine announces
+/// again on console restart; deliberately not persisted.
 #[derive(Default)]
 pub struct UiRegistry {
     inner: Mutex<RegistryInner>,
@@ -204,7 +249,7 @@ impl UiRegistry {
     }
 
     /// The loadable set — disabled workers' assets are excluded, exactly
-    /// like the `sync` pushed to subscribing tabs.
+    /// like the `sync` sent to observing tabs.
     pub fn manifest(&self) -> Vec<ManifestAsset> {
         let inner = self.lock();
         let mut assets: Vec<ManifestAsset> = inner
@@ -263,15 +308,24 @@ impl UiRegistry {
 
 /// What the queue consumer needs from the bus, abstracted so the override
 /// algorithm is unit-testable without an engine (the state worker's
-/// `Invoker` precedent).
+/// `Invoker` precedent). Observers are named by id: the bus holds them.
 #[async_trait]
 pub trait UiBus: Send + Sync + 'static {
-    /// Invoke the trigger's content function: `{path}` → `{content, content_type?}`.
-    async fn fetch_content(&self, function_id: &str, path: &str) -> Result<FetchedContent, String>;
-    /// Fire-and-forget push to one subscriber's per-tab handler.
-    async fn push(&self, function_id: &str, payload: Value);
-    /// Prune a superseded trigger row from the engine registry (idempotent).
-    async fn unregister_engine_trigger(&self, trigger_id: &str);
+    /// Resolves `true` once the observer is accepted (active), `false` when
+    /// it was rejected or removed first.
+    async fn accepted(&self, observer_id: &str) -> bool;
+    /// Call an asset observer's target (its worker's content function)
+    /// through the observer: `{path}` → `{content, content_type?}`.
+    async fn fetch_content(&self, observer_id: &str, path: &str) -> Result<FetchedContent, String>;
+    /// Send one `console::ui::on-assets-changed` observer an event through
+    /// itself.
+    async fn send(&self, observer_id: &str, event: UiAssetsEvent);
+    /// Call `console::ui::on-assets-changed` with an event, which iii
+    /// delivers to every tab observing it.
+    async fn publish(&self, event: UiAssetsEvent);
+    /// Late-reject an asset observer: it stops being active, and its
+    /// removed hook runs.
+    fn reject(&self, observer_id: &str, code: &str, message: &str);
 }
 
 #[derive(Debug, Clone)]
@@ -280,25 +334,44 @@ pub struct FetchedContent {
     pub content_type: Option<String>,
 }
 
+/// The observers of both functions the hooks handed over, by id.
+#[derive(Default)]
+struct Observers(Mutex<HashMap<String, Observer>>);
+
+impl Observers {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Observer>> {
+        self.0.lock().unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    fn get(&self, id: &str) -> Option<Observer> {
+        self.lock().get(id).cloned()
+    }
+}
+
 struct SdkBus {
     iii: Arc<IIIClient>,
+    observers: Arc<Observers>,
 }
 
 #[async_trait]
 impl UiBus for SdkBus {
-    async fn fetch_content(&self, function_id: &str, path: &str) -> Result<FetchedContent, String> {
+    async fn accepted(&self, observer_id: &str) -> bool {
+        match self.observers.get(observer_id) {
+            Some(obs) => obs.accepted().await.is_ok(),
+            None => false,
+        }
+    }
+
+    async fn fetch_content(&self, observer_id: &str, path: &str) -> Result<FetchedContent, String> {
+        let obs = self
+            .observers
+            .get(observer_id)
+            .ok_or_else(|| format!("observer {observer_id} was removed"))?;
         let mut last_err = String::new();
         for attempt in 1..=FETCH_ATTEMPTS {
-            match self
-                .iii
-                .trigger(TriggerRequest {
-                    function_id: function_id.to_string(),
-                    payload: json!({ "path": path }),
-                    action: None,
-                    timeout_ms: Some(FETCH_TIMEOUT_MS),
-                })
-                .await
-            {
+            let request = CallRequest::observer(&obs, json!({ "path": path }))
+                .timeout(Duration::from_millis(FETCH_TIMEOUT_MS));
+            match self.iii.call(request).await {
                 Ok(resp) => {
                     let content = resp
                         .get("content")
@@ -306,8 +379,9 @@ impl UiBus for SdkBus {
                         .map(str::to_string)
                         .ok_or_else(|| {
                             format!(
-                                "content function '{function_id}' returned no string `content` \
-                                 field for path '{path}'"
+                                "content function '{}' returned no string `content` field \
+                                 for path '{path}'",
+                                obs.target()
                             )
                         })?;
                     let content_type = resp
@@ -328,63 +402,64 @@ impl UiBus for SdkBus {
             }
         }
         Err(format!(
-            "content fetch via '{function_id}' failed after {FETCH_ATTEMPTS} attempts: {last_err}"
+            "content fetch via '{}' failed after {FETCH_ATTEMPTS} attempts: {last_err}",
+            obs.target()
         ))
     }
 
-    async fn push(&self, function_id: &str, payload: Value) {
-        let result = self
-            .iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload,
-                action: Some(TriggerAction::Void),
-                timeout_ms: None,
-            })
-            .await;
-        if let Err(e) = result {
-            // A dead tab's subscription is GC'd by the engine moments later.
-            tracing::debug!(function_id, error = %e, "ui-assets push failed");
+    async fn send(&self, observer_id: &str, event: UiAssetsEvent) {
+        let Some(obs) = self.observers.get(observer_id) else {
+            return;
+        };
+        let payload = serde_json::to_value(event).expect("UiAssetsEvent serializes");
+        let request = CallRequest::observer(&obs, payload).action(CallAction::Void);
+        if let Err(e) = self.iii.call(request).await {
+            // A closed tab's observer is removed by the engine moments later.
+            tracing::debug!(observer_id, error = %e, "ui-assets sync failed");
         }
     }
 
-    async fn unregister_engine_trigger(&self, trigger_id: &str) {
-        let result = self
-            .iii
-            .trigger(TriggerRequest {
-                function_id: "engine::unregister_trigger".to_string(),
-                payload: json!({ "id": trigger_id }),
-                action: None,
-                timeout_ms: Some(FETCH_TIMEOUT_MS),
-            })
-            .await;
-        if let Err(e) = result {
-            tracing::warn!(trigger_id, error = %e, "failed to prune superseded ui trigger");
+    async fn publish(&self, event: UiAssetsEvent) {
+        if !self.iii.is_observed(ON_ASSETS_CHANGED_FN) {
+            return;
+        }
+        let payload = serde_json::to_value(event).expect("UiAssetsEvent serializes");
+        let request = CallRequest {
+            function_id: ON_ASSETS_CHANGED_FN.to_string(),
+            payload,
+            action: Some(CallAction::Void),
+            timeout_ms: None,
+        };
+        if let Err(e) = self.iii.call(request).await {
+            tracing::debug!(error = %e, "ui-assets publish failed");
         }
     }
-}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EventSource {
-    Script,
-    Style,
-    Module,
-    Subscription,
+    fn reject(&self, observer_id: &str, code: &str, message: &str) {
+        if let Some(obs) = self.observers.get(observer_id) {
+            obs.reject(code, message);
+        }
+    }
 }
 
 enum QueueEvent {
-    Register {
-        source: EventSource,
-        config: TriggerConfig,
-        ack: oneshot::Sender<Result<(), String>>,
+    /// A `console::ui::asset` observer was added: once accepted, fetch its
+    /// content and publish it.
+    AssetAdded {
+        observer_id: String,
+        args: AssetArgs,
     },
-    Unregister {
-        config: TriggerConfig,
+    /// A `console::ui::asset` observer was removed.
+    AssetRemoved {
+        observer_id: String,
         ack: oneshot::Sender<()>,
     },
+    /// A `console::ui::on-assets-changed` observer was added: once accepted,
+    /// send it the served set.
+    TabAdded { observer_id: String },
     /// Replace the per-worker disable set (from the console configuration
-    /// entry). Queued so the resulting delete/set pushes are mutually
-    /// ordered with asset commits and subscription syncs.
+    /// entry). Queued so the resulting delete/set events are mutually
+    /// ordered with asset commits and tab syncs.
     SetDisabledWorkers {
         workers: HashSet<String>,
         ack: oneshot::Sender<()>,
@@ -400,7 +475,7 @@ pub struct UiControl {
 
 impl UiControl {
     /// Replace the disabled-worker set. Resolves after the change and its
-    /// catch-up pushes (deletes for newly disabled workers' assets, sets
+    /// catch-up events (deletes for newly disabled workers' assets, sets
     /// for newly enabled ones) are applied.
     pub async fn set_disabled_workers(&self, workers: HashSet<String>) {
         let (ack_tx, ack_rx) = oneshot::channel();
@@ -419,44 +494,19 @@ impl UiControl {
     }
 }
 
-/// One handler instance per trigger type; all four feed the same queue so
-/// asset commits and subscription syncs are mutually ordered.
-struct QueueingTriggerHandler {
-    source: EventSource,
-    tx: mpsc::UnboundedSender<QueueEvent>,
-}
-
-#[async_trait]
-impl TriggerHandler for QueueingTriggerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        let (ack_tx, ack_rx) = oneshot::channel();
-        self.tx
-            .send(QueueEvent::Register {
-                source: self.source,
-                config,
-                ack: ack_tx,
-            })
-            .map_err(|_| Error::Handler("ui asset queue is gone".to_string()))?;
-        match ack_rx.await {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(msg)) => Err(Error::Handler(msg)),
-            Err(_) => Err(Error::Handler(
-                "ui asset queue dropped the event".to_string(),
-            )),
-        }
+/// Validate a `console::ui::asset` observer's args: the path rules and an
+/// extension that fits the kind.
+fn validate_args(args: &AssetArgs) -> Result<(), String> {
+    validate_path(&args.path)?;
+    if !args.path.ends_with(args.kind.extension()) {
+        return Err(format!(
+            "path '{}' must end in '{}' for a {} asset",
+            args.path,
+            args.kind.extension(),
+            args.kind.as_str(),
+        ));
     }
-
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        let (ack_tx, ack_rx) = oneshot::channel();
-        self.tx
-            .send(QueueEvent::Unregister {
-                config,
-                ack: ack_tx,
-            })
-            .map_err(|_| Error::Handler("ui asset queue is gone".to_string()))?;
-        let _ = ack_rx.await;
-        Ok(())
-    }
+    Ok(())
 }
 
 pub struct Processor {
@@ -472,17 +522,19 @@ impl Processor {
     async fn run(self, mut rx: mpsc::UnboundedReceiver<QueueEvent>) {
         while let Some(event) = rx.recv().await {
             match event {
-                QueueEvent::Register {
-                    source,
-                    config,
-                    ack,
-                } => {
-                    let result = self.register(source, config).await;
-                    let _ = ack.send(result);
+                QueueEvent::AssetAdded { observer_id, args } => {
+                    if self.bus.accepted(&observer_id).await {
+                        self.commit_asset(&observer_id, args).await;
+                    }
                 }
-                QueueEvent::Unregister { config, ack } => {
-                    self.unregister(config).await;
+                QueueEvent::AssetRemoved { observer_id, ack } => {
+                    self.remove_asset(&observer_id).await;
                     let _ = ack.send(());
+                }
+                QueueEvent::TabAdded { observer_id } => {
+                    if self.bus.accepted(&observer_id).await {
+                        self.sync_tab(&observer_id).await;
+                    }
                 }
                 QueueEvent::SetDisabledWorkers { workers, ack } => {
                     self.apply_disabled_workers(workers).await;
@@ -492,10 +544,10 @@ impl Processor {
         }
     }
 
-    /// Apply the per-worker toggle set: newly disabled workers' assets get
-    /// `delete` pushed to every tab (they vanish live), newly enabled ones
-    /// get `set` (tabs load them without a worker restart). Serving and the
-    /// manifest follow the same set via [`RegistryInner::is_enabled`].
+    /// Apply the per-worker toggle set: newly disabled workers' assets get a
+    /// `delete` (they vanish live), newly enabled ones a `set` (tabs load
+    /// them without a worker restart). Serving and the manifest follow the
+    /// same set via [`RegistryInner::is_enabled`].
     async fn apply_disabled_workers(&self, mut next: HashSet<String>) {
         if next.remove(UNDISABLEABLE_WORKER) {
             tracing::warn!(
@@ -503,9 +555,8 @@ impl Processor {
                  (it ships the toggle form) — ignoring that entry"
             );
         }
-        let mut deletes: Vec<(String, AssetKind, String)> = Vec::new();
-        let mut sets: Vec<(String, AssetKind, String)> = Vec::new();
-        let subscribers: Vec<String>;
+        let mut deletes: Vec<String> = Vec::new();
+        let mut sets: Vec<AssetRef> = Vec::new();
         {
             let mut inner = self.registry.lock();
             let prev = std::mem::replace(&mut inner.disabled_workers, next);
@@ -514,106 +565,67 @@ impl Processor {
                 let was_disabled = prev.contains(worker);
                 let is_disabled = inner.disabled_workers.contains(worker);
                 if is_disabled && !was_disabled {
-                    deletes.push((path.clone(), asset.kind, asset.hash.clone()));
+                    deletes.push(path.clone());
                 } else if was_disabled && !is_disabled {
-                    sets.push((path.clone(), asset.kind, asset.hash.clone()));
+                    sets.push(AssetRef {
+                        path: path.clone(),
+                        kind: asset.kind,
+                        hash: asset.hash.clone(),
+                    });
                 }
             }
-            subscribers = inner.subscribers.values().cloned().collect();
             tracing::info!(
                 disabled = ?inner.disabled_workers,
                 "injectable-ui per-worker toggles applied"
             );
         }
-        deletes.sort_by(|a, b| a.0.cmp(&b.0));
-        sets.sort_by(|a, b| a.0.cmp(&b.0));
-        for (path, kind, hash) in deletes {
-            let payload =
-                json!({ "event": "delete", "path": path, "kind": kind.as_str(), "hash": hash });
-            for sub in &subscribers {
-                self.bus.push(sub, payload.clone()).await;
-            }
+        deletes.sort();
+        sets.sort_by(|a, b| a.path.cmp(&b.path));
+        for path in deletes {
+            self.bus.publish(UiAssetsEvent::Delete { path }).await;
         }
-        for (path, kind, hash) in sets {
-            let payload =
-                json!({ "event": "set", "path": path, "kind": kind.as_str(), "hash": hash });
-            for sub in &subscribers {
-                self.bus.push(sub, payload.clone()).await;
-            }
+        for asset in sets {
+            self.bus.publish(UiAssetsEvent::Set { asset }).await;
         }
     }
 
-    async fn register(&self, source: EventSource, config: TriggerConfig) -> Result<(), String> {
-        match source {
-            EventSource::Subscription => {
-                self.register_subscription(config).await;
-                Ok(())
-            }
-            EventSource::Script => self.register_asset(AssetKind::Script, config).await,
-            EventSource::Style => self.register_asset(AssetKind::Style, config).await,
-            EventSource::Module => self.register_asset(AssetKind::Module, config).await,
-        }
-    }
-
-    /// Record the subscriber, then immediately push `sync` — whatever
-    /// committed before the subscription is in the sync, whatever commits
-    /// after arrives incrementally (same queue), so there is no seed/frame
-    /// race.
-    async fn register_subscription(&self, config: TriggerConfig) {
-        let sync_assets: Vec<Value> = {
-            let mut inner = self.registry.lock();
-            inner
-                .subscribers
-                .insert(config.id.clone(), config.function_id.clone());
-            inner
-                .by_path
-                .iter()
-                .filter(|(path, _)| inner.is_enabled(path))
-                .map(|(path, a)| json!({ "path": path, "kind": a.kind.as_str(), "hash": a.hash }))
-                .collect()
-        };
+    /// Send a newly active tab the served set. Whatever committed before it
+    /// is in the sync; whatever commits after reaches the tab as a call of
+    /// the function (same queue), so there is no seed/event race to speak
+    /// of.
+    async fn sync_tab(&self, observer_id: &str) {
+        let assets = self.registry.lock().served();
         tracing::info!(
-            subscriber = %config.function_id,
-            assets = sync_assets.len(),
-            "console:assets subscription registered"
+            observer_id,
+            assets = assets.len(),
+            "{ON_ASSETS_CHANGED_FN} observer synced"
         );
         self.bus
-            .push(
-                &config.function_id,
-                json!({ "event": "sync", "assets": sync_assets }),
-            )
+            .send(observer_id, UiAssetsEvent::Sync { assets })
             .await;
     }
 
-    /// The override algorithm — must be idempotent (replay re-delivers
-    /// accepted bindings).
-    async fn register_asset(&self, kind: AssetKind, config: TriggerConfig) -> Result<(), String> {
-        let path = config
-            .config
-            .get("path")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "trigger config must carry a string `path`".to_string())?
-            .to_string();
-        validate_path(&path)?;
-        if !path.ends_with(kind.extension()) {
-            return Err(format!(
-                "path '{path}' must end in '{}' for a {} asset",
-                kind.extension(),
-                trigger_type_of(kind),
-            ));
-        }
-
-        // Replay fast-path: same trigger id and the registry already holds
-        // this path from that id — refetch, and if the hash is unchanged,
-        // publish nothing. (The fetch is unavoidable: the hash lives in the
-        // content.)
-        let fetched = self.bus.fetch_content(&config.function_id, &path).await?;
+    /// The override algorithm — idempotent, as an observer accepted again
+    /// with unchanged content publishes nothing.
+    async fn commit_asset(&self, observer_id: &str, args: AssetArgs) {
+        let AssetArgs { kind, path } = args;
+        let fetched = match self.bus.fetch_content(observer_id, &path).await {
+            Ok(fetched) => fetched,
+            Err(error) => {
+                tracing::warn!(path = %path, observer_id, %error, "ui asset fetch failed");
+                self.bus.reject(observer_id, CODE_FETCH_FAILED, &error);
+                return;
+            }
+        };
         if fetched.content.len() > MAX_ASSET_BYTES {
-            return Err(format!(
+            let message = format!(
                 "asset '{path}' is {} bytes — over the {MAX_ASSET_BYTES}-byte cap; \
                  check the worker's bundling",
                 fetched.content.len()
-            ));
+            );
+            tracing::warn!(path = %path, observer_id, "{message}");
+            self.bus.reject(observer_id, CODE_TOO_LARGE, &message);
+            return;
         }
         let hash = content_hash(&fetched.content);
         let warnings = match kind {
@@ -624,7 +636,7 @@ impl Processor {
             tracing::warn!(path = %path, "style lint: {w}");
         }
         let asset = Asset {
-            trigger_id: config.id.clone(),
+            observer_id: observer_id.to_string(),
             kind,
             hash: hash.clone(),
             content: fetched.content,
@@ -634,198 +646,197 @@ impl Processor {
             warnings,
         };
 
-        // Commit under one lock; bus calls (prune + pushes) happen after,
-        // still inside the serialized queue section.
-        let mut superseded_id: Option<String> = None;
-        let mut moved_from_path: Option<String> = None;
-        let subscribers: Vec<String>;
+        // Commit under one lock; bus calls (rejection + publish) happen
+        // after, still inside the serialized queue section.
+        let mut superseded: Option<String> = None;
         let enabled: bool;
         {
             let mut inner = self.registry.lock();
             enabled = inner.is_enabled(&path);
 
             if let Some(existing) = inner.by_path.get(&path) {
-                if existing.trigger_id == config.id && existing.hash == hash {
-                    // Replay dedupe: nothing changed, publish nothing.
-                    return Ok(());
+                if existing.observer_id == observer_id && existing.hash == hash {
+                    // Accepted again, nothing changed: publish nothing.
+                    return;
                 }
-                if existing.trigger_id != config.id {
+                if existing.observer_id != observer_id {
                     // Supersede: last writer wins, including across workers.
                     tracing::warn!(
                         path = %path,
-                        old_trigger = %existing.trigger_id,
-                        new_trigger = %config.id,
-                        "ui asset path re-registered; superseding previous trigger"
+                        old_observer = %existing.observer_id,
+                        new_observer = %observer_id,
+                        "ui asset path observed again; superseding the previous observer"
                     );
-                    let old_id = existing.trigger_id.clone();
+                    let old_id = existing.observer_id.clone();
                     inner.by_id.remove(&old_id);
-                    superseded_id = Some(old_id);
+                    superseded = Some(old_id);
                 }
             }
 
-            // Id reuse under a different path — an implicit move. The
-            // engine's row for this id already IS the new binding, so no
-            // engine-side prune.
-            if let Some(old_path) = inner.by_id.get(&config.id).cloned() {
-                if old_path != path {
-                    inner.by_path.remove(&old_path);
-                    moved_from_path = Some(old_path);
-                }
-            }
-
-            inner.by_id.insert(config.id.clone(), path.clone());
+            inner.by_id.insert(observer_id.to_string(), path.clone());
             inner.by_path.insert(path.clone(), asset);
-            subscribers = inner.subscribers.values().cloned().collect();
         }
 
-        if let Some(old_id) = superseded_id {
-            self.bus.unregister_engine_trigger(&old_id).await;
-        }
-        if let Some(old_path) = moved_from_path {
-            // A move within one worker shares the new path's enabled-ness;
-            // a cross-worker move is not a thing (one content function, one
-            // path prefix). Suppress the delete alongside the set.
-            if enabled {
-                let payload = json!({
-                    "event": "delete", "path": old_path, "kind": kind.as_str(), "hash": ""
-                });
-                for sub in &subscribers {
-                    self.bus.push(sub, payload.clone()).await;
-                }
-            }
+        if let Some(old_id) = superseded {
+            self.bus.reject(
+                &old_id,
+                CODE_SUPERSEDED,
+                &format!("a later observer of '{path}' replaced this asset"),
+            );
         }
         if !enabled {
-            // Held, not published: no push, no serve, no manifest row —
-            // toggling the worker back on pushes `set` for everything held.
+            // Held, not published: no event, no serve, no manifest row —
+            // toggling the worker back on publishes `set` for everything held.
             tracing::info!(
                 path = %path, hash = %hash, kind = kind.as_str(),
                 "ui asset stored (worker's injectable ui is disabled)"
             );
-            return Ok(());
+            return;
         }
         tracing::info!(path = %path, hash = %hash, kind = kind.as_str(), "ui asset published");
-        let payload = json!({ "event": "set", "path": path, "kind": kind.as_str(), "hash": hash });
-        for sub in &subscribers {
-            self.bus.push(sub, payload.clone()).await;
-        }
-        Ok(())
+        self.bus
+            .publish(UiAssetsEvent::Set {
+                asset: AssetRef { path, kind, hash },
+            })
+            .await;
     }
 
-    /// The engine sends only `{id, trigger_type}` on this leg, hence the
-    /// `by_id` lookup. Unknown ids are no-ops — that is exactly what a
-    /// superseded trigger's own unregister (or its engine echo) looks like.
-    async fn unregister(&self, config: TriggerConfig) {
-        let mut removed: Option<(String, AssetKind, String)> = None;
-        let subscribers: Vec<String>;
+    /// Unknown ids are no-ops — that is exactly what a superseded observer's
+    /// own removal looks like.
+    async fn remove_asset(&self, observer_id: &str) {
+        let mut removed: Option<String> = None;
         {
             let mut inner = self.registry.lock();
-            if inner.subscribers.remove(&config.id).is_some() {
-                return;
-            }
-            if let Some(path) = inner.by_id.remove(&config.id) {
+            if let Some(path) = inner.by_id.remove(observer_id) {
                 let matches = inner
                     .by_path
                     .get(&path)
-                    .is_some_and(|a| a.trigger_id == config.id);
+                    .is_some_and(|a| a.observer_id == observer_id);
                 if matches && inner.is_enabled(&path) {
-                    if let Some(asset) = inner.by_path.remove(&path) {
-                        removed = Some((path, asset.kind, asset.hash));
-                    }
+                    inner.by_path.remove(&path);
+                    removed = Some(path);
                 } else if matches {
                     // Disabled worker: tabs never saw the asset, so no
-                    // delete push — just drop the held bytes.
+                    // delete — just drop the held bytes.
                     inner.by_path.remove(&path);
                     tracing::info!(path = %path, "held ui asset removed (worker disabled)");
                 }
             }
-            subscribers = inner.subscribers.values().cloned().collect();
         }
-        if let Some((path, kind, hash)) = removed {
+        if let Some(path) = removed {
             tracing::info!(path = %path, "ui asset removed");
-            let payload = json!({
-                "event": "delete", "path": path, "kind": kind.as_str(), "hash": hash
-            });
-            for sub in &subscribers {
-                self.bus.push(sub, payload.clone()).await;
-            }
+            self.bus.publish(UiAssetsEvent::Delete { path }).await;
         }
     }
 }
 
-fn trigger_type_of(kind: AssetKind) -> &'static str {
-    match kind {
-        AssetKind::Script => SCRIPT_TYPE,
-        AssetKind::Style => STYLE_TYPE,
-        AssetKind::Module => MODULE_TYPE,
-    }
-}
-
-/// Register the four `console:*` trigger types and spawn the queue
-/// consumer. Must run **before** `functions::register_all` (the
-/// approval-gate/memory ordering convention). Returns the registry the
-/// HTTP routes and `console::ui-manifest` read from, plus the control
+/// Register `console::ui::asset` and `console::ui::on-assets-changed` with
+/// their observer hooks, and spawn the queue consumer. Returns the registry
+/// the HTTP routes and `console::ui-manifest` read from, plus the control
 /// handle the configuration module feeds the per-worker toggles through.
 pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
     let registry = Arc::new(UiRegistry::default());
-    let bus = Arc::new(SdkBus { iii: iii.clone() });
+    let observers = Arc::new(Observers::default());
+    let bus = Arc::new(SdkBus {
+        iii: iii.clone(),
+        observers: observers.clone(),
+    });
     let (tx, rx) = mpsc::unbounded_channel();
     let control = UiControl { tx: tx.clone() };
-    let processor = Processor::new(registry.clone(), bus);
-    tokio::spawn(processor.run(rx));
+    tokio::spawn(Processor::new(registry.clone(), bus).run(rx));
 
-    let _ = iii.register_trigger_type(
-        RegisterTriggerType::new(
-            SCRIPT_TYPE,
-            "An ESM JavaScript asset injected into the console UI. `config.path` is the \
-             asset identity (re-registering a path overrides it); the trigger's \
-             function_id is the content function the console fetches source from.",
-            QueueingTriggerHandler {
-                source: EventSource::Script,
-                tx: tx.clone(),
-            },
-        )
-        .trigger_request_format::<AssetTriggerConfig>(),
+    // Hooks by id before registering, so they see every observer.
+    {
+        let observers = observers.clone();
+        let tx = tx.clone();
+        iii.on_observer_added_for(ASSET_FN, move |obs: Observer| {
+            let observers = observers.clone();
+            let tx = tx.clone();
+            async move {
+                let args: AssetArgs = obs.args()?;
+                validate_args(&args).map_err(|e| ObserveRejection::new(CODE_INVALID_ARGS, e))?;
+                let observer_id = obs.id().to_string();
+                observers.lock().insert(observer_id.clone(), obs);
+                tx.send(QueueEvent::AssetAdded { observer_id, args })
+                    .map_err(|_| ObserveRejection::from("ui asset queue is gone".to_string()))
+            }
+        });
+    }
+    {
+        let observers = observers.clone();
+        let tx = tx.clone();
+        iii.on_observer_removed_for(ASSET_FN, move |obs: Observer| {
+            let observers = observers.clone();
+            let tx = tx.clone();
+            async move {
+                let (ack, done) = oneshot::channel();
+                let observer_id = obs.id().to_string();
+                if tx
+                    .send(QueueEvent::AssetRemoved {
+                        observer_id: observer_id.clone(),
+                        ack,
+                    })
+                    .is_ok()
+                {
+                    let _ = done.await;
+                }
+                observers.lock().remove(&observer_id);
+            }
+        });
+    }
+    {
+        let observers = observers.clone();
+        let tx = tx.clone();
+        iii.on_observer_added_for(ON_ASSETS_CHANGED_FN, move |obs: Observer| {
+            let observers = observers.clone();
+            let tx = tx.clone();
+            async move {
+                let observer_id = obs.id().to_string();
+                observers.lock().insert(observer_id.clone(), obs);
+                tx.send(QueueEvent::TabAdded { observer_id })
+                    .map_err(|_| ObserveRejection::from("ui asset queue is gone".to_string()))
+            }
+        });
+    }
+    {
+        let observers = observers.clone();
+        iii.on_observer_removed_for(ON_ASSETS_CHANGED_FN, move |obs: Observer| {
+            let observers = observers.clone();
+            async move {
+                observers.lock().remove(obs.id());
+            }
+        });
+    }
+
+    iii.register_function(
+        ASSET_FN,
+        RegisterFunction::new(|input: Value| Ok::<_, Error>(input))
+            .description(
+                "A worker's injected console UI asset. Observe it once per asset with args \
+                 { kind: 'script' | 'style' | 'module', path } and the worker's content \
+                 function as the target: once the observer is active, the console calls the \
+                 content function through it with { path } and serves what it returns as \
+                 { content, content_type? }. A later observer of the same path supersedes \
+                 the earlier one (UI_ASSET_SUPERSEDED); a failed fetch rejects the observer \
+                 (UI_ASSET_FETCH_FAILED). Never called.",
+            )
+            .args_format::<AssetArgs>()
+            .private(),
     );
-    let _ = iii.register_trigger_type(
-        RegisterTriggerType::new(
-            STYLE_TYPE,
-            "A CSS asset injected into the console UI. Same contract as console:script \
-             with a .css path.",
-            QueueingTriggerHandler {
-                source: EventSource::Style,
-                tx: tx.clone(),
-            },
-        )
-        .trigger_request_format::<AssetTriggerConfig>(),
-    );
-    let _ = iii.register_trigger_type(
-        RegisterTriggerType::new(
-            MODULE_TYPE,
-            "An ESM JavaScript module the console serves but never imports at mount; \
-             pages load it on demand with host.importModule(path). Same contract as \
-             console:script with a .js path.",
-            QueueingTriggerHandler {
-                source: EventSource::Module,
-                tx: tx.clone(),
-            },
-        )
-        .trigger_request_format::<AssetTriggerConfig>(),
-    );
-    let _ = iii.register_trigger_type(
-        RegisterTriggerType::new(
-            ASSETS_TYPE,
-            "A console tab's live-update subscription. The trigger's function_id is the \
-             per-tab handler the console pushes sync/set/delete asset events to.",
-            QueueingTriggerHandler {
-                source: EventSource::Subscription,
-                tx,
-            },
-        )
-        .trigger_request_format::<SubscriptionTriggerConfig>(),
+    iii.register_function(
+        ON_ASSETS_CHANGED_FN,
+        RegisterFunction::new(|event: UiAssetsEvent| Ok::<_, Error>(event))
+            .description(
+                "Called on every change to the console's injected UI assets: \
+                 { op: 'set', asset: { path, kind, hash } } or { op: 'delete', path }. \
+                 Each new observer first receives { op: 'sync', assets } through itself, \
+                 the whole served set.",
+            )
+            .private(),
     );
     tracing::info!(
-        trigger_types = ?[SCRIPT_TYPE, STYLE_TYPE, MODULE_TYPE, ASSETS_TYPE],
-        "registered injectable-ui trigger types"
+        functions = ?[ASSET_FN, ON_ASSETS_CHANGED_FN],
+        "registered injectable-ui functions"
     );
     (registry, control)
 }
@@ -1001,14 +1012,16 @@ pub(crate) mod test_support {
         registry: &Arc<UiRegistry>,
         path: &str,
         content: &str,
-        trigger_id: &str,
+        observer_id: &str,
     ) {
         let mut inner = registry.lock();
-        inner.by_id.insert(trigger_id.to_string(), path.to_string());
+        inner
+            .by_id
+            .insert(observer_id.to_string(), path.to_string());
         inner.by_path.insert(
             path.to_string(),
             Asset {
-                trigger_id: trigger_id.to_string(),
+                observer_id: observer_id.to_string(),
                 kind: AssetKind::Script,
                 hash: content_hash(content),
                 content: content.to_string(),
@@ -1024,20 +1037,24 @@ mod tests {
     use super::*;
     use std::sync::Mutex as StdMutex;
 
-    /// Scripted bus: canned content per (function_id, path); records pushes
-    /// and engine prunes.
+    /// Scripted bus: canned content per path; records what it sends,
+    /// publishes and rejects. Every observer is accepted unless refused.
     struct MockBus {
         content: StdMutex<HashMap<String, Result<String, String>>>,
-        pushes: StdMutex<Vec<(String, Value)>>,
-        pruned: StdMutex<Vec<String>>,
+        refused: StdMutex<HashSet<String>>,
+        sent: StdMutex<Vec<(String, UiAssetsEvent)>>,
+        published: StdMutex<Vec<UiAssetsEvent>>,
+        rejected: StdMutex<Vec<(String, String)>>,
     }
 
     impl MockBus {
         fn new() -> Arc<Self> {
             Arc::new(Self {
                 content: StdMutex::new(HashMap::new()),
-                pushes: StdMutex::new(Vec::new()),
-                pruned: StdMutex::new(Vec::new()),
+                refused: StdMutex::new(HashSet::new()),
+                sent: StdMutex::new(Vec::new()),
+                published: StdMutex::new(Vec::new()),
+                rejected: StdMutex::new(Vec::new()),
             })
         }
 
@@ -1055,20 +1072,32 @@ mod tests {
                 .insert(path.to_string(), Err(err.to_string()));
         }
 
-        fn pushes(&self) -> Vec<(String, Value)> {
-            self.pushes.lock().unwrap().clone()
+        fn refuse(&self, observer_id: &str) {
+            self.refused.lock().unwrap().insert(observer_id.to_string());
         }
 
-        fn pruned(&self) -> Vec<String> {
-            self.pruned.lock().unwrap().clone()
+        fn sent(&self) -> Vec<(String, UiAssetsEvent)> {
+            self.sent.lock().unwrap().clone()
+        }
+
+        fn published(&self) -> Vec<UiAssetsEvent> {
+            self.published.lock().unwrap().clone()
+        }
+
+        fn rejected(&self) -> Vec<(String, String)> {
+            self.rejected.lock().unwrap().clone()
         }
     }
 
     #[async_trait]
     impl UiBus for MockBus {
+        async fn accepted(&self, observer_id: &str) -> bool {
+            !self.refused.lock().unwrap().contains(observer_id)
+        }
+
         async fn fetch_content(
             &self,
-            _function_id: &str,
+            _observer_id: &str,
             path: &str,
         ) -> Result<FetchedContent, String> {
             match self.content.lock().unwrap().get(path) {
@@ -1081,41 +1110,61 @@ mod tests {
             }
         }
 
-        async fn push(&self, function_id: &str, payload: Value) {
-            self.pushes
+        async fn send(&self, observer_id: &str, event: UiAssetsEvent) {
+            self.sent
                 .lock()
                 .unwrap()
-                .push((function_id.to_string(), payload));
+                .push((observer_id.to_string(), event));
         }
 
-        async fn unregister_engine_trigger(&self, trigger_id: &str) {
-            self.pruned.lock().unwrap().push(trigger_id.to_string());
+        async fn publish(&self, event: UiAssetsEvent) {
+            self.published.lock().unwrap().push(event);
         }
-    }
 
-    fn trigger(id: &str, function_id: &str, path: &str) -> TriggerConfig {
-        TriggerConfig {
-            id: id.to_string(),
-            function_id: function_id.to_string(),
-            config: json!({ "path": path }),
-            metadata: None,
-            namespace: None,
+        fn reject(&self, observer_id: &str, code: &str, _message: &str) {
+            self.rejected
+                .lock()
+                .unwrap()
+                .push((observer_id.to_string(), code.to_string()));
         }
     }
 
-    fn subscription(id: &str, function_id: &str) -> TriggerConfig {
-        TriggerConfig {
-            id: id.to_string(),
-            function_id: function_id.to_string(),
-            config: json!({}),
-            metadata: None,
-            namespace: None,
+    fn script(path: &str) -> AssetArgs {
+        AssetArgs {
+            kind: AssetKind::Script,
+            path: path.to_string(),
         }
     }
 
     fn processor(bus: Arc<MockBus>) -> (Processor, Arc<UiRegistry>) {
         let registry = Arc::new(UiRegistry::default());
         (Processor::new(registry.clone(), bus), registry)
+    }
+
+    fn set_of(path: &str, kind: AssetKind, content: &str) -> UiAssetsEvent {
+        UiAssetsEvent::Set {
+            asset: AssetRef {
+                path: path.to_string(),
+                kind,
+                hash: content_hash(content),
+            },
+        }
+    }
+
+    fn delete_of(path: &str) -> UiAssetsEvent {
+        UiAssetsEvent::Delete {
+            path: path.to_string(),
+        }
+    }
+
+    /// Drive the queue consumer the way the hooks do.
+    async fn run_events(p: Processor, events: Vec<QueueEvent>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        for event in events {
+            tx.send(event).unwrap();
+        }
+        drop(tx);
+        p.run(rx).await;
     }
 
     #[test]
@@ -1132,38 +1181,81 @@ mod tests {
         assert!(validate_path("state\\page.js").is_err());
         assert!(validate_path("-state/page.js").is_err());
         assert!(validate_path("state/pa ge.js").is_err());
+        assert!(validate_path(&format!("state/{}.js", "a".repeat(512))).is_err());
+    }
+
+    #[test]
+    fn args_extension_must_match_kind() {
+        assert!(validate_args(&script("state/page.js")).is_ok());
+        let err = validate_args(&AssetArgs {
+            kind: AssetKind::Style,
+            path: "state/page.js".to_string(),
+        })
+        .unwrap_err();
+        assert!(err.contains(".css"), "unexpected error: {err}");
+        let err = validate_args(&AssetArgs {
+            kind: AssetKind::Module,
+            path: "ide/xterm.css".to_string(),
+        })
+        .unwrap_err();
+        assert!(
+            err.contains(".js") && err.contains("module"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn args_are_kind_and_path_and_nothing_else() {
+        let args: AssetArgs =
+            serde_json::from_value(json!({ "kind": "module", "path": "ide/xterm.js" })).unwrap();
+        assert_eq!(args.kind, AssetKind::Module);
+        assert!(serde_json::from_value::<AssetArgs>(
+            json!({ "kind": "script", "path": "a/b.js", "extra": 1 })
+        )
+        .is_err());
+        assert!(serde_json::from_value::<AssetArgs>(json!({ "path": "a/b.js" })).is_err());
+    }
+
+    #[test]
+    fn events_carry_the_op_tag() {
+        assert_eq!(
+            serde_json::to_value(UiAssetsEvent::Sync { assets: Vec::new() }).unwrap(),
+            json!({ "op": "sync", "assets": [] })
+        );
+        assert_eq!(
+            serde_json::to_value(set_of("state/page.js", AssetKind::Script, "x")).unwrap(),
+            json!({
+                "op": "set",
+                "asset": { "path": "state/page.js", "kind": "script", "hash": content_hash("x") }
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(delete_of("state/page.js")).unwrap(),
+            json!({ "op": "delete", "path": "state/page.js" })
+        );
     }
 
     #[tokio::test]
-    async fn register_publishes_and_serves() {
+    async fn an_accepted_asset_is_fetched_published_and_served() {
         let bus = MockBus::new();
         bus.set_content("state/page.js", "export default () => {}");
         let (p, registry) = processor(bus.clone());
 
-        p.register_asset(
-            AssetKind::Script,
-            trigger("t1", "state::ui-content", "state/page.js"),
-        )
-        .await
-        .unwrap();
+        p.commit_asset("o1", script("state/page.js")).await;
 
         let (content, ctype, hash) = registry.serve("state/page.js").unwrap();
         assert_eq!(content, "export default () => {}");
         assert!(ctype.starts_with("text/javascript"));
         assert_eq!(hash.len(), 16);
         assert_eq!(registry.manifest().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn extension_must_match_kind() {
-        let bus = MockBus::new();
-        bus.set_content("state/page.js", "x");
-        let (p, _) = processor(bus.clone());
-        let err = p
-            .register_asset(AssetKind::Style, trigger("t1", "f", "state/page.js"))
-            .await
-            .unwrap_err();
-        assert!(err.contains(".css"), "unexpected error: {err}");
+        assert_eq!(
+            bus.published(),
+            vec![set_of(
+                "state/page.js",
+                AssetKind::Script,
+                "export default () => {}"
+            )]
+        );
     }
 
     #[tokio::test]
@@ -1171,172 +1263,163 @@ mod tests {
         let bus = MockBus::new();
         bus.set_content("ide/xterm.js", "export const x = 1");
         let (p, registry) = processor(bus.clone());
-        p.register_asset(AssetKind::Module, trigger("t1", "f", "ide/xterm.js"))
-            .await
-            .unwrap();
-        p.register_subscription(subscription("sub1", "tab1")).await;
+        p.commit_asset(
+            "o1",
+            AssetArgs {
+                kind: AssetKind::Module,
+                path: "ide/xterm.js".to_string(),
+            },
+        )
+        .await;
+        p.sync_tab("tab1").await;
 
         let manifest = serde_json::to_value(registry.manifest()).unwrap();
         assert_eq!(manifest[0]["kind"], "module");
-        assert_eq!(bus.pushes()[0].1["assets"][0]["kind"], "module");
+        let UiAssetsEvent::Sync { assets } = &bus.sent()[0].1 else {
+            panic!("expected a sync");
+        };
+        assert_eq!(assets[0].kind, AssetKind::Module);
         let (_, ctype, _) = registry.serve("ide/xterm.js").unwrap();
         assert!(ctype.starts_with("text/javascript"));
-
-        let err = p
-            .register_asset(AssetKind::Module, trigger("t2", "f", "ide/xterm.css"))
-            .await
-            .unwrap_err();
-        assert!(
-            err.contains(".js") && err.contains(MODULE_TYPE),
-            "unexpected error: {err}"
-        );
     }
 
     #[tokio::test]
-    async fn fetch_failure_rejects_registration() {
+    async fn a_failed_fetch_rejects_the_observer() {
         let bus = MockBus::new();
         bus.set_error("state/page.js", "worker exploded");
         let (p, registry) = processor(bus.clone());
-        let err = p
-            .register_asset(AssetKind::Script, trigger("t1", "f", "state/page.js"))
-            .await
-            .unwrap_err();
-        assert!(err.contains("worker exploded"));
+        p.commit_asset("o1", script("state/page.js")).await;
+        assert_eq!(
+            bus.rejected(),
+            vec![("o1".to_string(), CODE_FETCH_FAILED.to_string())]
+        );
         assert!(registry.serve("state/page.js").is_none());
+        assert!(bus.published().is_empty());
     }
 
     #[tokio::test]
-    async fn supersede_prunes_old_id_and_pushes_set() {
-        let bus = MockBus::new();
-        bus.set_content("state/page.js", "v1");
-        let (p, registry) = processor(bus.clone());
-        p.register_subscription(subscription("sub1", "iii::console::ui-assets::tab1"))
-            .await;
-        p.register_asset(AssetKind::Script, trigger("t1", "f", "state/page.js"))
-            .await
-            .unwrap();
-
-        bus.set_content("state/page.js", "v2");
-        p.register_asset(AssetKind::Script, trigger("t2", "f", "state/page.js"))
-            .await
-            .unwrap();
-
-        assert_eq!(bus.pruned(), vec!["t1".to_string()]);
-        let (content, _, _) = registry.serve("state/page.js").unwrap();
-        assert_eq!(content, "v2");
-
-        // sync (subscription) + set (t1) + set (t2)
-        let pushes = bus.pushes();
-        assert_eq!(pushes.len(), 3);
-        assert_eq!(pushes[0].1["event"], "sync");
-        assert_eq!(pushes[1].1["event"], "set");
-        assert_eq!(pushes[2].1["event"], "set");
-        assert_eq!(pushes[2].1["hash"], json!(content_hash("v2")));
-
-        // The superseded trigger's engine echo arrives as an unknown-id
-        // no-op — nothing removed, no delete push.
-        p.unregister(trigger("t1", "f", "state/page.js")).await;
-        assert!(registry.serve("state/page.js").is_some());
-        assert_eq!(bus.pushes().len(), 3);
-    }
-
-    #[tokio::test]
-    async fn replay_same_id_same_hash_is_a_noop() {
-        let bus = MockBus::new();
-        bus.set_content("state/page.js", "v1");
-        let (p, _) = processor(bus.clone());
-        p.register_asset(AssetKind::Script, trigger("t1", "f", "state/page.js"))
-            .await
-            .unwrap();
-        p.register_subscription(subscription("sub1", "iii::console::ui-assets::tab1"))
-            .await;
-        let before = bus.pushes().len();
-        p.register_asset(AssetKind::Script, trigger("t1", "f", "state/page.js"))
-            .await
-            .unwrap();
-        assert_eq!(bus.pushes().len(), before, "replay must publish nothing");
-    }
-
-    #[tokio::test]
-    async fn id_reuse_under_new_path_is_a_move() {
-        let bus = MockBus::new();
-        bus.set_content("state/a.js", "a");
-        bus.set_content("state/b.js", "b");
-        let (p, registry) = processor(bus.clone());
-        p.register_subscription(subscription("sub1", "tab1")).await;
-        p.register_asset(AssetKind::Script, trigger("t1", "f", "state/a.js"))
-            .await
-            .unwrap();
-        p.register_asset(AssetKind::Script, trigger("t1", "f", "state/b.js"))
-            .await
-            .unwrap();
-
-        assert!(registry.serve("state/a.js").is_none());
-        assert!(registry.serve("state/b.js").is_some());
-        // No engine prune — the engine's row for t1 IS the new binding.
-        assert!(bus.pruned().is_empty());
-        let events: Vec<String> = bus
-            .pushes()
-            .iter()
-            .map(|(_, p)| p["event"].as_str().unwrap_or("").to_string())
-            .collect();
-        assert_eq!(events, vec!["sync", "set", "delete", "set"]);
-    }
-
-    #[tokio::test]
-    async fn unregister_removes_and_pushes_delete() {
-        let bus = MockBus::new();
-        bus.set_content("state/page.js", "v1");
-        let (p, registry) = processor(bus.clone());
-        p.register_subscription(subscription("sub1", "tab1")).await;
-        p.register_asset(AssetKind::Script, trigger("t1", "f", "state/page.js"))
-            .await
-            .unwrap();
-        p.unregister(trigger("t1", "f", "state/page.js")).await;
-        assert!(registry.serve("state/page.js").is_none());
-        let last = bus.pushes().pop().unwrap();
-        assert_eq!(last.1["event"], "delete");
-        assert_eq!(last.1["path"], "state/page.js");
-    }
-
-    #[tokio::test]
-    async fn subscription_gets_sync_then_later_commits() {
-        let bus = MockBus::new();
-        bus.set_content("state/page.js", "v1");
-        let (p, _) = processor(bus.clone());
-        p.register_asset(AssetKind::Script, trigger("t1", "f", "state/page.js"))
-            .await
-            .unwrap();
-        p.register_subscription(subscription("sub1", "iii::console::ui-assets::tab1"))
-            .await;
-
-        let pushes = bus.pushes();
-        assert_eq!(pushes.len(), 1);
-        assert_eq!(pushes[0].0, "iii::console::ui-assets::tab1");
-        assert_eq!(pushes[0].1["event"], "sync");
-        assert_eq!(pushes[0].1["assets"].as_array().unwrap().len(), 1);
-
-        // Subscriber dropped on unregister; later commits push nothing.
-        p.unregister(subscription("sub1", "iii::console::ui-assets::tab1"))
-            .await;
-        bus.set_content("state/page.js", "v2");
-        p.register_asset(AssetKind::Script, trigger("t2", "f", "state/page.js"))
-            .await
-            .unwrap();
-        assert_eq!(bus.pushes().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn oversized_asset_is_rejected() {
+    async fn an_oversized_asset_rejects_the_observer() {
         let bus = MockBus::new();
         let big = "x".repeat(MAX_ASSET_BYTES + 1);
         bus.set_content("state/page.js", &big);
+        let (p, registry) = processor(bus.clone());
+        p.commit_asset("o1", script("state/page.js")).await;
+        assert_eq!(
+            bus.rejected(),
+            vec![("o1".to_string(), CODE_TOO_LARGE.to_string())]
+        );
+        assert!(registry.serve("state/page.js").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_later_observer_supersedes_and_the_old_ones_removal_is_a_noop() {
+        let bus = MockBus::new();
+        bus.set_content("state/page.js", "v1");
+        let (p, registry) = processor(bus.clone());
+        p.commit_asset("o1", script("state/page.js")).await;
+
+        bus.set_content("state/page.js", "v2");
+        p.commit_asset("o2", script("state/page.js")).await;
+
+        assert_eq!(
+            bus.rejected(),
+            vec![("o1".to_string(), CODE_SUPERSEDED.to_string())]
+        );
+        let (content, _, _) = registry.serve("state/page.js").unwrap();
+        assert_eq!(content, "v2");
+        assert_eq!(
+            bus.published(),
+            vec![
+                set_of("state/page.js", AssetKind::Script, "v1"),
+                set_of("state/page.js", AssetKind::Script, "v2"),
+            ]
+        );
+
+        // The superseded observer's removal arrives as an unknown id —
+        // nothing removed, no delete.
+        p.remove_asset("o1").await;
+        assert!(registry.serve("state/page.js").is_some());
+        assert_eq!(bus.published().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn the_same_observer_with_the_same_content_publishes_nothing() {
+        let bus = MockBus::new();
+        bus.set_content("state/page.js", "v1");
         let (p, _) = processor(bus.clone());
-        let err = p
-            .register_asset(AssetKind::Script, trigger("t1", "f", "state/page.js"))
-            .await
-            .unwrap_err();
-        assert!(err.contains("cap"), "unexpected error: {err}");
+        p.commit_asset("o1", script("state/page.js")).await;
+        let before = bus.published().len();
+        p.commit_asset("o1", script("state/page.js")).await;
+        assert_eq!(bus.published().len(), before, "nothing changed");
+        assert!(bus.rejected().is_empty());
+    }
+
+    #[tokio::test]
+    async fn removal_drops_the_asset_and_publishes_delete() {
+        let bus = MockBus::new();
+        bus.set_content("state/page.js", "v1");
+        let (p, registry) = processor(bus.clone());
+        p.commit_asset("o1", script("state/page.js")).await;
+        p.remove_asset("o1").await;
+        assert!(registry.serve("state/page.js").is_none());
+        assert_eq!(bus.published().pop().unwrap(), delete_of("state/page.js"));
+    }
+
+    #[tokio::test]
+    async fn the_queue_commits_in_arrival_order_and_skips_refused_observers() {
+        let bus = MockBus::new();
+        bus.set_content("ide/xterm.js", "m");
+        bus.set_content("ide/page.js", "s");
+        bus.set_content("ide/late.js", "l");
+        bus.refuse("o3");
+        let (p, registry) = processor(bus.clone());
+        let (ack, _done) = oneshot::channel();
+        run_events(
+            p,
+            vec![
+                QueueEvent::AssetAdded {
+                    observer_id: "o1".to_string(),
+                    args: AssetArgs {
+                        kind: AssetKind::Module,
+                        path: "ide/xterm.js".to_string(),
+                    },
+                },
+                QueueEvent::AssetAdded {
+                    observer_id: "o2".to_string(),
+                    args: script("ide/page.js"),
+                },
+                QueueEvent::TabAdded {
+                    observer_id: "tab1".to_string(),
+                },
+                QueueEvent::AssetAdded {
+                    observer_id: "o3".to_string(),
+                    args: script("ide/late.js"),
+                },
+                QueueEvent::AssetRemoved {
+                    observer_id: "o2".to_string(),
+                    ack,
+                },
+            ],
+        )
+        .await;
+
+        assert_eq!(
+            bus.published(),
+            vec![
+                set_of("ide/xterm.js", AssetKind::Module, "m"),
+                set_of("ide/page.js", AssetKind::Script, "s"),
+                delete_of("ide/page.js"),
+            ]
+        );
+        let sent = bus.sent();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, "tab1");
+        let UiAssetsEvent::Sync { assets } = &sent[0].1 else {
+            panic!("expected a sync");
+        };
+        let paths: Vec<&str> = assets.iter().map(|a| a.path.as_str()).collect();
+        assert_eq!(paths, vec!["ide/page.js", "ide/xterm.js"]);
+        assert!(registry.serve("ide/late.js").is_none(), "o3 was refused");
     }
 
     #[test]
@@ -1373,13 +1456,8 @@ mod tests {
         bus.set_content("state/page.js", "v1");
         bus.set_content("other/page.js", "v1");
         let (p, registry) = processor(bus.clone());
-        p.register_subscription(subscription("sub1", "tab1")).await;
-        p.register_asset(AssetKind::Script, trigger("t1", "f", "state/page.js"))
-            .await
-            .unwrap();
-        p.register_asset(AssetKind::Script, trigger("t2", "f", "other/page.js"))
-            .await
-            .unwrap();
+        p.commit_asset("o1", script("state/page.js")).await;
+        p.commit_asset("o2", script("other/page.js")).await;
 
         p.apply_disabled_workers(disabled(&["state"])).await;
 
@@ -1394,75 +1472,72 @@ mod tests {
         assert_eq!(state.assets, 1);
 
         // Tabs got a delete for exactly the disabled worker's asset.
-        let last = bus.pushes().pop().unwrap();
-        assert_eq!(last.1["event"], "delete");
-        assert_eq!(last.1["path"], "state/page.js");
+        assert_eq!(bus.published().pop().unwrap(), delete_of("state/page.js"));
     }
 
     #[tokio::test]
-    async fn reenabling_pushes_set_and_serves_again() {
+    async fn reenabling_publishes_set_and_serves_again() {
         let bus = MockBus::new();
         bus.set_content("state/page.js", "v1");
         let (p, registry) = processor(bus.clone());
-        p.register_subscription(subscription("sub1", "tab1")).await;
-        p.register_asset(AssetKind::Script, trigger("t1", "f", "state/page.js"))
-            .await
-            .unwrap();
+        p.commit_asset("o1", script("state/page.js")).await;
         p.apply_disabled_workers(disabled(&["state"])).await;
         p.apply_disabled_workers(disabled(&[])).await;
 
         assert!(registry.serve("state/page.js").is_some());
-        let last = bus.pushes().pop().unwrap();
-        assert_eq!(last.1["event"], "set");
-        assert_eq!(last.1["path"], "state/page.js");
-        assert_eq!(last.1["hash"], json!(content_hash("v1")));
+        assert_eq!(
+            bus.published().pop().unwrap(),
+            set_of("state/page.js", AssetKind::Script, "v1")
+        );
     }
 
     #[tokio::test]
-    async fn registration_while_disabled_is_held_then_published_on_enable() {
+    async fn an_asset_observed_while_disabled_is_held_then_published_on_enable() {
         let bus = MockBus::new();
         bus.set_content("state/page.js", "v1");
         let (p, registry) = processor(bus.clone());
         p.apply_disabled_workers(disabled(&["state"])).await;
-        p.register_subscription(subscription("sub1", "tab1")).await;
+        p.sync_tab("tab1").await;
 
-        // Accepted (the worker's registration must not error) but invisible.
-        p.register_asset(AssetKind::Script, trigger("t1", "f", "state/page.js"))
-            .await
-            .unwrap();
+        // Accepted (the worker's observer must not fail) but invisible.
+        p.commit_asset("o1", script("state/page.js")).await;
+        assert!(bus.rejected().is_empty());
         assert!(registry.serve("state/page.js").is_none());
         assert!(registry.manifest().is_empty());
-        // Only the (empty) subscription sync was pushed.
-        assert_eq!(bus.pushes().len(), 1);
-        assert_eq!(bus.pushes()[0].1["assets"].as_array().unwrap().len(), 0);
+        assert!(bus.published().is_empty());
+        assert_eq!(
+            bus.sent(),
+            vec![(
+                "tab1".to_string(),
+                UiAssetsEvent::Sync { assets: Vec::new() }
+            )]
+        );
 
         p.apply_disabled_workers(disabled(&[])).await;
         assert!(registry.serve("state/page.js").is_some());
-        let last = bus.pushes().pop().unwrap();
-        assert_eq!(last.1["event"], "set");
-        assert_eq!(last.1["path"], "state/page.js");
+        assert_eq!(
+            bus.published().pop().unwrap(),
+            set_of("state/page.js", AssetKind::Script, "v1")
+        );
     }
 
     #[tokio::test]
-    async fn unregister_while_disabled_drops_silently() {
+    async fn removal_while_disabled_drops_silently() {
         let bus = MockBus::new();
         bus.set_content("state/page.js", "v1");
         let (p, registry) = processor(bus.clone());
-        p.register_subscription(subscription("sub1", "tab1")).await;
-        p.register_asset(AssetKind::Script, trigger("t1", "f", "state/page.js"))
-            .await
-            .unwrap();
+        p.commit_asset("o1", script("state/page.js")).await;
         p.apply_disabled_workers(disabled(&["state"])).await;
-        let before = bus.pushes().len();
+        let before = bus.published().len();
 
-        p.unregister(trigger("t1", "f", "state/page.js")).await;
+        p.remove_asset("o1").await;
 
-        // No delete push (tabs already dropped it at disable time), and
-        // nothing comes back on re-enable.
-        assert_eq!(bus.pushes().len(), before);
+        // No delete (tabs already dropped it at disable time), and nothing
+        // comes back on re-enable.
+        assert_eq!(bus.published().len(), before);
         p.apply_disabled_workers(disabled(&[])).await;
         assert!(registry.serve("state/page.js").is_none());
-        assert_eq!(bus.pushes().len(), before);
+        assert_eq!(bus.published().len(), before);
     }
 
     #[tokio::test]
@@ -1470,12 +1545,7 @@ mod tests {
         let bus = MockBus::new();
         bus.set_content("console/config-form.js", "v1");
         let (p, registry) = processor(bus.clone());
-        p.register_asset(
-            AssetKind::Script,
-            trigger("t1", "f", "console/config-form.js"),
-        )
-        .await
-        .unwrap();
+        p.commit_asset("o1", script("console/config-form.js")).await;
 
         p.apply_disabled_workers(disabled(&["console", "state"]))
             .await;

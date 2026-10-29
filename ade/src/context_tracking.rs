@@ -1,11 +1,8 @@
 //! User-requested Context snapshots, not domain records or background monitors.
 //! Stored beside workspace.json; serialize mutations and fail closed on corrupt data.
+use crate::functions::working_directory::{PRE_CALL_HOOK_FN, PRE_GENERATE_HOOK_FN};
 use crate::workspace_store::WorkspaceStore;
-use iii_sdk::{
-    errors::Error,
-    protocol::{RegisterTriggerInput, TriggerRequest},
-    IIIClient, RegisterFunction,
-};
+use iii_sdk::{errors::Error, CallRequest, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -247,7 +244,7 @@ async fn remove(store: &WorkspaceStore, target: &Target, id: &str) -> Result<Rem
 async fn target(iii: &IIIClient, session: &str) -> Result<Target, Error> {
     text(session, "session_id", 200)?;
     let response = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "session::get".into(),
             payload: json!({"session_id": session}),
             action: None,
@@ -361,21 +358,21 @@ pub fn register(iii: &Arc<IIIClient>, store: Arc<WorkspaceStore>) {
         )
         .metadata(json!({"internal":true})),
     );
-    for (kind, function, config) in [
+    // Pending while the Harness is absent; dropping a handle does not
+    // dispose its observer.
+    for (hook, target, args) in [
         (
-            "harness::hook::pre-trigger",
+            PRE_CALL_HOOK_FN,
             crate::functions::working_directory::STAMP_SESSION_ID,
             json!({"functions":["console::context::list","console::context::save","console::context::remove"],"on_error":"fail_closed"}),
         ),
         (
-            "harness::hook::pre-generate",
+            PRE_GENERATE_HOOK_FN,
             "console::context::inject-guidance",
             json!({"on_error":"fail_open"}),
         ),
     ] {
-        if let Err(e) = iii.register_trigger(RegisterTriggerInput::new(kind, function, config)) {
-            tracing::warn!(%e, "failed to bind Context tracking hook");
-        }
+        iii.observe(iii_sdk::Source::function(hook).args(args), target);
     }
 }
 
