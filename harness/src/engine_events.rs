@@ -125,6 +125,8 @@ pub struct EngineChangeAck {
 /// Register [`ENGINE_CHANGE_FN_ID`], bind it to `engine::workers-available`,
 /// and start the catalog refresher. A failed bind only warns: every pass
 /// still runs once at boot, it just will not re-run until restart.
+// register_trigger: deprecated in iii 0.25, still served by 0.24 and 0.25.
+#[allow(deprecated)]
 pub fn register(deps: &Arc<Deps>) {
     let kicks = deps.kicks.clone();
     deps.iii.register_function(

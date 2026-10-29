@@ -33,6 +33,10 @@ struct Store {
     /// whether it was still held while the delete RPC was in flight.
     topology_probe: Option<Arc<tokio::sync::Mutex<()>>>,
     topology_held_on_delete: Vec<bool>,
+    /// `registerfunction` messages the worker sent, by function id.
+    registered: BTreeMap<String, Value>,
+    /// `invocationresult` replies to invocations the engine sent the worker.
+    results: Vec<Value>,
 }
 impl Store {
     fn state(&self, scope: &str, key: &str) -> Value {
@@ -167,6 +171,8 @@ struct Stack {
     store: Arc<Mutex<Store>>,
     changed: Arc<Notify>,
     server: tokio::task::JoinHandle<()>,
+    /// Frames the fake engine sends the worker (an engine-side invocation).
+    inject: tokio::sync::mpsc::UnboundedSender<String>,
 }
 impl Drop for Stack {
     fn drop(&mut self) {
@@ -182,17 +188,45 @@ impl Stack {
         let changed = Arc::new(Notify::new());
         let (ready_tx, ready_rx) = oneshot::channel();
         let (state, notice) = (store.clone(), changed.clone());
+        let (inject, mut injected) = tokio::sync::mpsc::unbounded_channel::<String>();
         let server = tokio::spawn(async move {
             let (tcp, _) = listener.accept().await.unwrap();
             let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
             let _ = ready_tx.send(());
-            while let Some(Ok(frame)) = socket.next().await {
+            loop {
+                let frame = tokio::select! {
+                    frame = socket.next() => frame,
+                    Some(out) = injected.recv() => {
+                        if socket
+                            .send(tokio_tungstenite::tungstenite::Message::Text(out.into()))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                        continue;
+                    }
+                };
+                let Some(Ok(frame)) = frame else {
+                    break;
+                };
                 let Ok(text) = frame.to_text() else {
                     continue;
                 };
                 let Ok(message) = serde_json::from_str::<Value>(text) else {
                     continue;
                 };
+                if message["type"] == "registerfunction" {
+                    let id = message["id"].as_str().unwrap_or_default().to_string();
+                    state.lock().unwrap().registered.insert(id, message);
+                    notice.notify_waiters();
+                    continue;
+                }
+                if message["type"] == "invocationresult" {
+                    state.lock().unwrap().results.push(message);
+                    notice.notify_waiters();
+                    continue;
+                }
                 if message["type"] != "invokefunction" {
                     continue;
                 }
@@ -249,6 +283,7 @@ impl Stack {
             store,
             changed,
             server,
+            inject,
         };
         for (id, parent, status) in [
             ("parent", None, parent_status),
@@ -2415,4 +2450,122 @@ async fn status_reports_a_session_without_its_prompt_body() {
     .unwrap()
     .expect("a report");
     assert_eq!(report.turn_id.as_deref(), Some("t_parent"));
+}
+
+impl Stack {
+    /// The engine invokes `function_id` on the worker, as it would for a
+    /// caller; returns the worker's `invocationresult`.
+    async fn engine_invokes(&self, function_id: &str, data: Value) -> Value {
+        let invocation_id = uuid::Uuid::new_v4().to_string();
+        let frame = json!({
+            "type": "invokefunction",
+            "invocation_id": invocation_id,
+            "function_id": function_id,
+            "data": data,
+        });
+        self.inject.send(frame.to_string()).unwrap();
+        self.wait_for(|s| {
+            s.results
+                .iter()
+                .any(|r| r["invocation_id"] == invocation_id)
+        })
+        .await;
+        let store = self.store.lock().unwrap();
+        store
+            .results
+            .iter()
+            .find(|r| r["invocation_id"] == invocation_id)
+            .cloned()
+            .unwrap()
+    }
+}
+
+/// `harness::on-session-tree-deletion` (iii 0.25) is registered next to the
+/// trigger type, owner-delivered with the trigger config as args, and an
+/// engine invoking it with a well-formed (forged) snapshot gets FORBIDDEN
+/// instead of an event reaching anyone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn on_session_tree_deletion_is_owner_delivered_and_refuses_invocation() {
+    use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
+    const ON_DELETION: &str = harness::deletion_events::ON_SESSION_TREE_DELETION;
+    let stack = Stack::new("completed").await;
+    stack
+        .wait_for(|s| s.registered.contains_key(ON_DELETION))
+        .await;
+    let registered = stack.store.lock().unwrap().registered[ON_DELETION].clone();
+    assert_eq!(
+        registered["observe"]["delivery"],
+        json!("owner"),
+        "{registered}"
+    );
+    let args = &registered["observe"]["args_format"]["properties"];
+    assert!(args.get("session_id").is_some(), "{registered}");
+    assert!(args.get("operation_id").is_some(), "{registered}");
+
+    // A binding on the trigger type, so a forged event would have a target.
+    stack
+        .deps
+        .deletion_events
+        .register_trigger(TriggerConfig {
+            id: "review-subscription".into(),
+            function_id: "test::deletion-event".into(),
+            config: json!({"session_id":"child2"}),
+            metadata: None,
+            namespace: None,
+        })
+        .await
+        .unwrap();
+    let forged = json!({
+        "operation_id": "op",
+        "attempt": 1,
+        "session_id": "child2",
+        "status": "completed",
+        "deleted_session_ids": ["child2"],
+    });
+    let reply = stack.engine_invokes(ON_DELETION, forged).await;
+    assert_eq!(reply["error"]["code"], json!("FORBIDDEN"), "{reply}");
+    assert!(
+        reply["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains(ON_DELETION)),
+        "{reply}"
+    );
+    assert!(reply.get("result").is_none_or(Value::is_null), "{reply}");
+    assert!(
+        !stack
+            .store
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|(f, _)| f == "test::deletion-event"),
+        "a refused invocation reaches no binding"
+    );
+}
+
+/// `harness::on-timer` sits next to the `timer` trigger type and refuses an
+/// engine-side invocation the same way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn on_timer_is_owner_delivered_and_refuses_invocation() {
+    let stack = Stack::new("completed").await;
+    harness::timer::register(
+        &stack.deps.iii,
+        harness::timer::TimerBus::new(stack.deps.iii.clone(), 1_000),
+    );
+    stack
+        .wait_for(|s| s.registered.contains_key(harness::timer::ON_TIMER))
+        .await;
+    let registered = stack.store.lock().unwrap().registered[harness::timer::ON_TIMER].clone();
+    assert_eq!(
+        registered["observe"]["delivery"],
+        json!("owner"),
+        "{registered}"
+    );
+    let reply = stack
+        .engine_invokes(
+            harness::timer::ON_TIMER,
+            json!({"trigger":"timer","scheduled_at":1,"actual_at":1}),
+        )
+        .await;
+    assert_eq!(reply["error"]["code"], json!("FORBIDDEN"), "{reply}");
 }

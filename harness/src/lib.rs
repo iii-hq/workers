@@ -36,6 +36,7 @@ pub mod language;
 pub mod liveness;
 pub mod locks;
 pub mod manifest;
+pub mod observe;
 pub mod policy;
 pub mod projects;
 pub mod prompt;

@@ -6,7 +6,7 @@ manifest: Cargo.toml
 license: Apache-2.0
 bin: harness
 tags: [agent, harness, loop, autonomous]
-description: Thin durable turn loop that wires session-manager, context-manager, and llm-router into an agent loop; spawns sub-agents as child sessions.
+description: Thin durable turn loop that wires session-manager, context-manager, and llm-router into an agent loop; spawns sub-agents as child sessions. Registers the `harness::session-tree-deletion`, `harness::ready`, `harness::turn-started`, `harness::turn-completed`, `harness::message-queued`, `harness::triggers-changed`, `harness::compaction` and `timer` trigger types and, next to them, the observable functions `harness::on-session-tree-deletion`, `harness::on-ready`, `harness::on-turn-started`, `harness::on-turn-completed`, `harness::on-message-queued`, `harness::on-triggers-changed`, `harness::on-compaction` and `harness::on-timer` (iii 0.25).
 
 dependencies:
   state: "latest"
