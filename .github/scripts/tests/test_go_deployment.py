@@ -219,7 +219,7 @@ def test_go_archives_publish_as_registry_binaries():
             "tags": ["smoke"], "dependencies": [], "config": {}, "experimental": False, "readme": "",
         },
         published_version="0.4.2", repo_url="https://github.com/iii-hq/workers", interface_capture="required",
-        interface={"functions": [{"name": "smoke::run"}], "triggers": []}, artifacts=prepared,
+        interface={"functions": [{"name": "smoke::run"}]}, artifacts=prepared,
     )
     assert payload["type"] == "binary"
     assert payload["binaries"] == {"x86_64-unknown-linux-gnu": {"url": "https://example.test/smoke.tar.gz", "sha256": "c" * 64}}

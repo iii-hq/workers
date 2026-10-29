@@ -120,7 +120,7 @@ def test_fetches_snapshot_through_compose_operation(monkeypatch):
         (
             [
                 "/tmp/iii",
-                "trigger",
+                "call",
                 "compose::operation",
                 "--port",
                 "49134",

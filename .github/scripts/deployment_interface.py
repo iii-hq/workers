@@ -2,8 +2,7 @@
 """Capture and verify Registry interfaces from immutable prepared artifacts.
 
 This is publication evidence, not a deployment smoke test: the prepared worker
-is only allowed to register its functions and trigger types with an isolated
-engine. No worker function, external backend, or product behavior is exercised.
+is only allowed to register its functions with an isolated engine. No worker function, external backend, or product behavior is exercised.
 """
 
 from __future__ import annotations
@@ -247,15 +246,16 @@ def stage(args: argparse.Namespace) -> int:
 
 
 def _canonical_interface(value: object) -> dict[str, list[dict[str, Any]]]:
-    if not isinstance(value, dict) or set(value) != {"functions", "triggers"}:
-        raise SystemExit("worker interface must contain only functions and triggers")
-    result: dict[str, list[dict[str, Any]]] = {}
-    for key in ("functions", "triggers"):
-        rows = value[key]
-        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
-            raise SystemExit(f"worker interface {key} must be an array of objects")
-        result[key] = sorted(rows, key=lambda row: (str(row.get("name", "")), json.dumps(row, sort_keys=True)))
-    return result
+    if not isinstance(value, dict) or set(value) != {"functions"}:
+        raise SystemExit("worker interface must contain only functions")
+    rows = value["functions"]
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise SystemExit("worker interface functions must be an array of objects")
+    return {
+        "functions": sorted(
+            rows, key=lambda row: (str(row.get("name", "")), json.dumps(row, sort_keys=True))
+        )
+    }
 
 
 def snapshot(args: argparse.Namespace) -> int:
@@ -269,8 +269,8 @@ def snapshot(args: argparse.Namespace) -> int:
         interface: dict[str, Any] | None = _canonical_interface(
             json.loads(args.interface.read_text(encoding="utf-8"))
         )
-        if not interface["functions"] and not interface["triggers"]:
-            raise SystemExit("required interface capture must contain a function or trigger")
+        if not interface["functions"]:
+            raise SystemExit("required interface capture must contain a function")
     else:
         if args.interface is not None:
             raise SystemExit("skipped interface capture must not accept collected interface")
@@ -378,7 +378,7 @@ def verify_evidence(args: argparse.Namespace) -> int:
     captured = interface.get("interface")
     if expected["interface_capture"] == "required":
         canonical = _canonical_interface(captured)
-        if not canonical["functions"] and not canonical["triggers"]:
+        if not canonical["functions"]:
             raise SystemExit("required release interface is empty")
     elif captured is not None:
         raise SystemExit("skipped release interface must remain null")
@@ -394,12 +394,12 @@ def export_interface(args: argparse.Namespace) -> int:
     captured = snapshot_value.get("interface")
     if policy == "required":
         interface = _canonical_interface(captured)
-        if not interface["functions"] and not interface["triggers"]:
+        if not interface["functions"]:
             raise SystemExit("required release interface is empty")
     elif captured is not None:
         raise SystemExit("skipped release interface must remain null")
     else:
-        interface = {"functions": [], "triggers": []}
+        interface = {"functions": []}
     args.out.write_text(json.dumps(interface, sort_keys=True) + "\n", encoding="utf-8")
     return 0
 
