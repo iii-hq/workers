@@ -334,7 +334,7 @@ function LogRecord({ bundle, captured }: { bundle: EvidenceBundle; captured: str
           </div>
         ) : null}
         <p className="sentinel-ui-card-foot">
-          This group comes from the engine's log trigger. With no span to anchor it, the fingerprint is
+          This group comes from the engine's error logs. With no span to anchor it, the fingerprint is
           the worker, the target and the normalized message — and the agent gets the surrounding log
           window instead of a trace.
         </p>

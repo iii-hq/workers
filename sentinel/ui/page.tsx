@@ -16,5 +16,5 @@ export default function setup(host: Host) {
   ))
   // A diagnosis arrives in the transcript as a function call like any other.
   // Rendered, it reads as the finding it is instead of a JSON blob.
-  host.functionTriggers.register(diagnosisRecordRenderer(host))
+  host.functionCalls.register(diagnosisRecordRenderer(host))
 }

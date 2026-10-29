@@ -6,7 +6,7 @@
 //! decide which projects an investigation may read.
 //!
 //! Reloads are serialized by [`iii_config_client::Reload`] with the fetch
-//! inside the lock, so two overlapping `configuration:updated` deliveries
+//! inside the lock, so two overlapping `configuration::on-updated` deliveries
 //! converge on the newest stored value instead of racing. A value that fails
 //! to parse or validate is refused and the last good one stays live: a typo
 //! in the console must not take the monitor down.
@@ -15,7 +15,6 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use iii_config_client::{self as config_client, EntrySpec, Reload};
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
 use schemars::schema_for;
 use serde_json::{json, Value};
@@ -133,14 +132,15 @@ fn parse(stored: Option<Value>) -> Result<WorkerConfig, SentinelError> {
     Ok(config)
 }
 
-/// Register the reload handler and bind it to this entry's updates. Run the
-/// returned [`Reload`] once afterwards to close the boot gap: an update that
-/// landed between the boot fetch and this binding fired into nothing.
-pub fn bind_reload(
+/// Register the reload handler and observe this entry's updates with it
+/// (`configuration::on-updated`). Run the returned [`Reload`] once afterwards
+/// to close the boot gap: an update that landed between the boot fetch and
+/// the observer becoming active reached no one.
+pub fn observe_reload(
     iii: &Arc<IIIClient>,
     cell: ConfigCell,
     config_error: ConfigErrorCell,
-) -> Result<Reload, Error> {
+) -> Reload {
     let client = iii.clone();
     config_client::on_change(
         iii,

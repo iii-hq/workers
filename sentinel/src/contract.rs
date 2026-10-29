@@ -438,9 +438,10 @@ pub struct GroupStateResponseV1 {
     pub reason: Option<GroupChangeReasonV1>,
 }
 
-/// The event siblings and the console subscribe to.
+/// `sentinel::on-group-changed`: the event siblings and the console observe.
+/// Unknown fields are ignored on input, so a call routed through the engine
+/// (which stamps `_caller_worker_id`) still parses.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct GroupChangedEventV1 {
     pub op: GroupChangedOpV1,
     pub group_id: String,
@@ -459,17 +460,6 @@ pub enum GroupChangedOpV1 {
     /// A new occurrence on a group that is otherwise unchanged. Coalesced.
     Occurrence,
     Status,
-}
-
-/// What a subscriber may narrow `sentinel::group-changed` to.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-pub struct GroupChangedConfigV1 {
-    #[serde(default)]
-    pub group_id: Option<String>,
-    #[serde(default)]
-    pub ops: Option<Vec<GroupChangedOpV1>>,
-    #[serde(default)]
-    pub service_name: Option<String>,
 }
 
 /// State of the engine's in-memory telemetry stores, as the worker last
@@ -694,7 +684,7 @@ pub struct InvestigationSummaryV1 {
 // ── the diagnosis an agent records ───────────────────────────────────────
 //
 // Every struct below denies unknown fields on purpose. The harness does not
-// validate an `agent_trigger` payload against the function's schema — it only
+// validate an `agent_call` payload against the function's schema — it only
 // checks the policy globs — so *this* is the validation: a model that invents
 // a field gets a readable error back and corrects itself.
 
@@ -1024,9 +1014,10 @@ pub struct InvestigationCancelRequestV1 {
     pub _caller_worker_id: Option<String>,
 }
 
-/// What an investigation changed to, for the console and for siblings.
+/// `sentinel::on-investigation-changed`: what an investigation changed to,
+/// for the console and for siblings. Unknown fields are ignored on input, as
+/// for `sentinel::on-group-changed`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct InvestigationChangedEventV1 {
     pub op: InvestigationChangedOpV1,
     pub investigation_id: String,

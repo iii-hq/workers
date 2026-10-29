@@ -223,7 +223,7 @@ export interface GroupsListResponse {
 /** Typed calls into the worker. Nothing else in the page talks to `iii`. */
 export function client(iii: ExtensionIii) {
   const call = <T,>(functionId: string, payload: Record<string, unknown> = {}) =>
-    iii.trigger<T>(functionId, payload, { timeoutMs: RPC_TIMEOUT_MS })
+    iii.call<T>(functionId, payload, { timeoutMs: RPC_TIMEOUT_MS })
 
   return {
     status: () => call<StatusResponse>(FN.status),

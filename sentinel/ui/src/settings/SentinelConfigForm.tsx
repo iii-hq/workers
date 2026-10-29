@@ -83,7 +83,7 @@ function useJudgeProviders(host: Host) {
   useEffect(() => {
     let live = true
     host.iii
-      .trigger<{ functions?: { function_id: string }[] }>(
+      .call<{ functions?: { function_id: string }[] }>(
         'engine::functions::list',
         { include_internal: true },
         { timeoutMs: 10_000 },
@@ -408,7 +408,7 @@ export function SentinelConfigForm({
         <SettingsList>
           <SettingsRow
             label="Error spans"
-            description="Leaf spans with status error, via the trace trigger filtered to errors."
+            description="Leaf spans with status error, read from each trace observability::on-span reports."
             control={
               <Switch
                 aria-label="Error spans"
