@@ -107,6 +107,7 @@ describe('cursor agent feeds', () => {
     const iii = new MockIII();
     const feed = createFeed(iii.asClient(), {
       id: 'cap::feed',
+      observableId: 'cap::on-feed',
       source: 'cursor',
       description: 'd',
     });

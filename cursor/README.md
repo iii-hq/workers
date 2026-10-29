@@ -88,6 +88,36 @@ Payload your function receives:
 
 The two feeds number their frames independently, and each turn starts a new epoch. Frames the worker re-emits while recovering a run (Bridge `ObserveRun` replay, ACP updates) keep the same stable `cursor-...` `event_id`, so drop repeated `event_id`s. Deliveries are not guaranteed to arrive in order: order by `(epoch, seq)`. Frames are ephemeral: nothing is stored or replayed, and a consumer bound after a frame was emitted never sees it. Text and thinking deltas are only counted as streamed once a bound consumer accepted them, so when nobody received them the final `message_complete` carries the full body without `body_streamed`. The durable record is the session record behind `cursor::status` / `cursor::sessions::list` and the value `cursor::run` returns. These feeds replace the former `agent::events` / `cursor::events` iii-stream streams (see the guide "Migrate from iii-stream and pubsub").
 
+### How to observe (iii 0.25)
+
+`registerTrigger` is deprecated in iii 0.25 and keeps working: both trigger
+types stay registered, unchanged, for 0.24 engines and existing consumers. On
+a 0.25 engine each feed is also an owner-delivered observable function:
+
+| Observable function | Same frames as |
+| --- | --- |
+| `cursor::on-agent-event` | `cursor::agent-event` |
+| `cursor::on-raw-event` | `cursor::raw-event` |
+
+```ts
+const observer = iii.observe(
+  { function_id: 'cursor::on-agent-event', args: { session_id } },
+  'my::on-cursor-event',
+  { metadata: { tenant: 'a' } }, // the observer's own sidecar
+);
+await observer.ready();
+```
+
+The args are the trigger config, `{ session_id, metadata? }`, validated by
+the engine and the worker (`INVALID_ARGS`); `args.metadata` is accepted but
+not forwarded, so pass a sidecar with the observer's own `metadata` option.
+Your target receives the payload above, one call per frame, with the same
+`seq` a binding gets. Observers and bindings share each feed's table and
+256-entry limit (`BINDING_LIMIT` rejects an observer beyond it). Frames are
+routed by this worker only: invoking `cursor::on-agent-event` or
+`cursor::on-raw-event` directly is refused with `FORBIDDEN`. On an engine
+without observe (0.24), bind the trigger types.
+
 ## Configuration
 
 The built-in `cursor` configuration defaults local execution to login-backed ACP. The API key and Bridge binary are optional unless cloud mode or the explicit Bridge backend is used:
@@ -104,7 +134,7 @@ rpc_timeout_ms: 60000
 max_frame_bytes: 16777216
 ```
 
-The event feeds are fixed trigger types, not configuration. The former `events_stream` / `raw_events_stream` keys are accepted and ignored so stored configurations keep loading.
+The event feeds are fixed trigger types (also observable functions on iii 0.25), not configuration. The former `events_stream` / `raw_events_stream` keys are accepted and ignored so stored configurations keep loading.
 
 Login-backed local sessions run in Cursor's `ask` mode, and the worker cancels every permission request. Cursor ACP does not provide an enforceable per-request tool-list control, so explicit `tools` values, including `tools: []`, are rejected. Omit `tools` for CLI ACP. Start a new session when changing backend; legacy Bridge session IDs are never loaded as CLI ACP sessions.
 

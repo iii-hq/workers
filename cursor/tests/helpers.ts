@@ -35,6 +35,24 @@ export type TriggerTypeHandler = {
   unregisterTrigger: (binding: TriggerBinding) => Promise<void>;
 };
 
+/** The observe hooks a function registered with (iii 0.25 owner delivery). */
+export type ObserveHooks = {
+  delivery: string;
+  args_format?: unknown;
+  onObserverAdded?: (obs: unknown) => Promise<void> | void;
+  onObserverRemoved?: (obs: unknown) => Promise<void> | void;
+};
+
+/** A stand-in for the SDK's Observer: `call` records what it is handed. */
+export type FakeObserver = {
+  id: string;
+  function_id: string;
+  target: string;
+  args: unknown;
+  received: unknown[];
+  call: (payload: unknown) => Promise<unknown>;
+};
+
 export const AGENT = AGENT_EVENT_TRIGGER_TYPE;
 export const RAW = RAW_EVENT_TRIGGER_TYPE;
 export const consumerFor = (typeId: string) => `consumer::${typeId}`;
@@ -57,6 +75,44 @@ export class MockIII {
   ): void {
     this.functions.set(id, { handler, options });
   }
+
+  /** Observe hooks a registered function declared (`options.observe`), if any. */
+  observeHooks(id: string): ObserveHooks {
+    const hooks = this.functions.get(id)?.options.observe as ObserveHooks | undefined;
+    if (!hooks) throw new Error(`function ${id} is not observable`);
+    return hooks;
+  }
+
+  /** Add an observer of an observable function the way the engine would. */
+  async observe(
+    functionId: string,
+    args: unknown,
+    opts: { id?: string; target?: string; fail?: unknown } = {},
+  ): Promise<FakeObserver> {
+    this.observerCount += 1;
+    const received: unknown[] = [];
+    const observer: FakeObserver = {
+      id: opts.id ?? `observer-${this.observerCount}`,
+      function_id: functionId,
+      target: opts.target ?? `test::observer::${functionId}`,
+      args,
+      received,
+      call: async (payload: unknown) => {
+        if (opts.fail !== undefined) throw opts.fail;
+        received.push(clone(payload));
+        return null;
+      },
+    };
+    await this.observeHooks(functionId).onObserverAdded?.(observer);
+    return observer;
+  }
+
+  /** Remove an observer the way the engine would. */
+  async unobserve(functionId: string, observer: FakeObserver): Promise<void> {
+    await this.observeHooks(functionId).onObserverRemoved?.(observer);
+  }
+
+  private observerCount = 0;
 
   registerTrigger(trigger: unknown): void {
     this.triggers.push(trigger);

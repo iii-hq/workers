@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto';
 import { BridgeRpcError, BridgeTransportError } from '../src/bridge.js';
-import { TriggerAction } from 'iii-sdk';
-import { createAgentFeeds, releaseEmitterSequence } from '../src/agent-feed.js';
+import { InvocationError, TriggerAction } from 'iii-sdk';
+import {
+  AGENT_EVENT_OBSERVABLE,
+  createAgentFeeds,
+  RAW_EVENT_OBSERVABLE,
+  releaseEmitterSequence,
+} from '../src/agent-feed.js';
 import {
   CursorRunRequestSchema,
   CursorWorker,
@@ -1952,3 +1957,105 @@ function holdFirstStateReads(iii: MockIII, count: number): void {
     return originalTrigger(request);
   };
 }
+
+describe('cursor observable feed functions (iii 0.25)', () => {
+  const OBSERVABLES = [
+    [AGENT, AGENT_EVENT_OBSERVABLE],
+    [RAW, RAW_EVENT_OBSERVABLE],
+  ] as const;
+
+  it.each(OBSERVABLES)('%s: %s is registered owner-delivered', (_, fnId) => {
+    const iii = new MockIII();
+    createAgentFeeds(iii.asClient());
+    expect(iii.observeHooks(fnId)).toMatchObject({
+      delivery: 'owner',
+      args_format: { required: ['session_id'] },
+    });
+    expect(iii.triggerTypes.has(AGENT)).toBe(true);
+    expect(iii.triggerTypes.has(RAW)).toBe(true);
+  });
+
+  it.each(OBSERVABLES)('%s: direct invocation of %s is refused with FORBIDDEN', async (_, fnId) => {
+    const iii = new MockIII();
+    createAgentFeeds(iii.asClient());
+    const handler = iii.functions.get(fnId)?.handler;
+    expect(handler).toBeDefined();
+    for (const payload of [{}, { session_id: 's1' }, { session_id: 's1', event: { forged: 1 } }]) {
+      const err = await Promise.resolve(handler?.(payload)).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(InvocationError);
+      expect(err).toMatchObject({ code: 'FORBIDDEN' });
+    }
+    expect(iii.triggerCalls).toEqual([]);
+  });
+
+  it.each(
+    OBSERVABLES,
+  )('%s: an observer of %s receives the frame a binding receives', async (typeId, fnId) => {
+    const iii = new MockIII();
+    const feeds = createAgentFeeds(iii.asClient());
+    const emit = typeId === AGENT ? feeds.emit : feeds.emitRaw;
+    await iii.bind(typeId, 's1');
+    const observer = await iii.observe(fnId, { session_id: 's1' });
+    const elsewhere = await iii.observe(fnId, { session_id: 's2' });
+
+    await expect(emit('s1', { type: 'turn_end' })).resolves.toBe(true);
+
+    const bound = iii.feedPayloads(typeId);
+    expect(bound).toHaveLength(1);
+    expect(observer.received).toEqual(bound);
+    expect(bound[0]).toMatchObject({
+      session_id: 's1',
+      seq: 0,
+      source: 'cursor',
+      event: { type: 'turn_end' },
+    });
+    expect(elsewhere.received).toEqual([]);
+  });
+
+  it('an observer alone gets frames with the shared seq, and none after removal', async () => {
+    const iii = new MockIII();
+    const { emit, emitRaw } = createAgentFeeds(iii.asClient());
+    const observer = await iii.observe(RAW_EVENT_OBSERVABLE, { session_id: 's1' });
+    await expect(emitRaw('s1', { n: 0 })).resolves.toBe(true);
+    await emitRaw('s1', { n: 1 });
+    expect(observer.received.map((p) => (p as { seq: number }).seq)).toEqual([0, 1]);
+    // The agent feed is its own: the raw observer sees none of it.
+    await emit('s1', { n: 9 });
+    expect(observer.received).toHaveLength(2);
+    expect(iii.triggerCalls).toEqual([]);
+
+    await iii.unobserve(RAW_EVENT_OBSERVABLE, observer);
+    await expect(emitRaw('s1', { n: 2 })).resolves.toBe(false);
+    expect(observer.received).toHaveLength(2);
+  });
+
+  it('rejects observer args the trigger config would reject', async () => {
+    const iii = new MockIII();
+    createAgentFeeds(iii.asClient());
+    for (const args of [{}, { session_id: '' }, { session_id: 's1', extra: true }]) {
+      await expect(iii.observe(AGENT_EVENT_OBSERVABLE, args)).rejects.toMatchObject({
+        code: 'INVALID_ARGS',
+      });
+    }
+  });
+
+  it('swallows a skipped or failing observer and still reaches the others', async () => {
+    const iii = new MockIII();
+    const { emit } = createAgentFeeds(iii.asClient());
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await iii.observe(
+      AGENT_EVENT_OBSERVABLE,
+      { session_id: 's1' },
+      { fail: Object.assign(new Error('skip'), { code: 'FILTERS_NOT_MATCHED' }) },
+    );
+    await iii.observe(AGENT_EVENT_OBSERVABLE, { session_id: 's1' }, { fail: new Error('down') });
+    const ok = await iii.observe(AGENT_EVENT_OBSERVABLE, { session_id: 's1' });
+    await expect(emit('s1', { type: 'turn_end' })).resolves.toBe(true);
+    expect(ok.received).toHaveLength(1);
+    expect(warning).toHaveBeenCalledTimes(1);
+    warning.mockRestore();
+  });
+});

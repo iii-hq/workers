@@ -26,7 +26,8 @@ await registerCursorConfig(iii, defaultConfig());
 const holder: ConfigHolder = { current: await fetchRuntime(iii) };
 const factory = new ProductionBridgeClientFactory();
 const cliFactory = new ProductionCursorCliFactory();
-// Owned feeds: cursor::agent-event and cursor::raw-event (bind with { session_id }).
+// Owned feeds: cursor::agent-event and cursor::raw-event (bind with { session_id }),
+// each also observable on iii 0.25 as cursor::on-agent-event / cursor::on-raw-event.
 const { emit, emitRaw } = createAgentFeeds(iii);
 const worker = new CursorWorker(iii, () => holder.current, emit, emitRaw, factory, cliFactory);
 const provider = new CursorProvider(iii, () => holder.current, cliFactory);

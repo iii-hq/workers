@@ -18,15 +18,31 @@
  * Frames are ephemeral: not stored, not replayed. The durable record of a turn
  * is the session record behind `cursor::status` and the result `cursor::run`
  * returns.
+ *
+ * On an iii 0.25 engine each feed is also an owner-delivered observable
+ * function (`cursor::on-agent-event`, `cursor::on-raw-event`): an observer
+ * with args `{ session_id }` (the trigger config) gets the same payload through
+ * `obs.call`, filed in the same bindings table. The trigger types stay for 0.24
+ * engines and old consumers; invoking an `on-*` function directly is refused
+ * with FORBIDDEN.
  */
 
 import { randomUUID } from 'node:crypto';
-import { type IIIClient, TriggerAction } from 'iii-sdk';
+import {
+  type IIIClient,
+  InvocationError,
+  ObserveRejection,
+  type Observer,
+  TriggerAction,
+} from 'iii-sdk';
 
 export const MAX_BINDINGS = 256;
 export const MAX_SESSION_ID_LENGTH = 512;
 export const AGENT_EVENT_TRIGGER_TYPE = 'cursor::agent-event';
 export const RAW_EVENT_TRIGGER_TYPE = 'cursor::raw-event';
+/** The observable functions (iii 0.25) next to the two trigger types. */
+export const AGENT_EVENT_OBSERVABLE = 'cursor::on-agent-event';
+export const RAW_EVENT_OBSERVABLE = 'cursor::on-raw-event';
 export const FEED_SOURCE = 'cursor';
 
 const CONFIG_KEYS = new Set(['session_id', 'metadata']);
@@ -62,6 +78,31 @@ type Binding = {
   namespace?: string;
   metadata?: unknown;
   config: FeedConfig;
+  /** Set for an observer of the observable function (iii 0.25), absent for a trigger binding. */
+  observer?: Observer;
+};
+
+/** Observers share the bindings map under a key no trigger binding id uses. */
+const observerKey = (observerId: string) => `observer:${observerId}`;
+
+/** The observers' args (`FeedConfig`, the trigger config), validated by the engine (`INVALID_ARGS`). */
+const FEED_ARGS_FORMAT = {
+  type: 'object' as const,
+  properties: {
+    session_id: {
+      type: 'string',
+      minLength: 1,
+      maxLength: MAX_SESSION_ID_LENGTH,
+      description: 'The session whose frames this observer receives.',
+    },
+    metadata: {
+      type: 'object',
+      description:
+        'Accepted for parity with the trigger config; an observer gets its sidecar from its own `metadata` option.',
+    },
+  },
+  required: ['session_id'],
+  additionalProperties: false,
 };
 
 /**
@@ -107,10 +148,10 @@ export function validateFeedConfig(typeId: string, raw: unknown): FeedConfig {
   return { session_id: sessionId, metadata: raw.metadata };
 }
 
-/** Register one owned feed trigger type and return its emitter. */
+/** Register one owned feed trigger type and its observable function; return its emitter. */
 export function createFeed(
   iii: IIIClient,
-  opts: { id: string; source: string; description: string },
+  opts: { id: string; observableId: string; source: string; description: string },
 ): Feed {
   const bindings = new Map<string, Binding>();
   const sequenceBySession = new Map<string, SequenceState>();
@@ -138,6 +179,52 @@ export function createFeed(
     },
   );
 
+  const forbidden = `${opts.observableId} is an event source: observe it (iii.observe({ function_id: '${opts.observableId}', args: { session_id } }, target)); only the cursor worker emits its events`;
+
+  // The iii 0.25 observable function next to the trigger type: owner-delivered,
+  // its observers filed in the same bindings map (keyed apart from binding ids),
+  // so one emit reaches bindings and observers alike. Events are routed
+  // in-process, never through the function: invoking it is refused.
+  iii.registerFunction(
+    opts.observableId,
+    async () => {
+      throw new InvocationError({
+        code: 'FORBIDDEN',
+        message: forbidden,
+        function_id: opts.observableId,
+      });
+    },
+    {
+      description: `${opts.description} Observe with iii.observe({ function_id: '${opts.observableId}', args: { session_id } }, target) (iii 0.25); invoking it is refused with FORBIDDEN.`,
+      observe: {
+        delivery: 'owner',
+        args_format: FEED_ARGS_FORMAT,
+        async onObserverAdded(obs) {
+          let config: FeedConfig;
+          try {
+            config = validateFeedConfig(opts.observableId, obs.args);
+          } catch (error) {
+            throw new ObserveRejection(
+              'INVALID_ARGS',
+              error instanceof Error ? error.message : String(error),
+            );
+          }
+          const key = observerKey(obs.id);
+          if (!bindings.has(key) && bindings.size >= MAX_BINDINGS) {
+            throw new ObserveRejection(
+              'BINDING_LIMIT',
+              `${opts.observableId}: binding limit (${MAX_BINDINGS}) reached`,
+            );
+          }
+          bindings.set(key, { id: key, function_id: obs.target, config, observer: obs });
+        },
+        async onObserverRemoved(obs) {
+          bindings.delete(observerKey(obs.id));
+        },
+      },
+    },
+  );
+
   async function emit(sessionId: string, event: unknown, stableEventId?: string): Promise<boolean> {
     const state = sequenceBySession.get(sessionId) ?? { generation: randomUUID(), sequence: 0 };
     sequenceBySession.set(sessionId, { ...state, sequence: state.sequence + 1 });
@@ -154,6 +241,19 @@ export function createFeed(
     let delivered = 0;
     for (const binding of Array.from(bindings.values())) {
       if (binding.config.session_id !== sessionId) continue;
+      if (binding.observer) {
+        try {
+          await binding.observer.call(payload);
+          delivered++;
+        } catch (error) {
+          const code = (error as { code?: unknown } | null)?.code;
+          if (code === 'FILTERS_NOT_MATCHED' || code === 'OBSERVER_NOT_ACTIVE') continue;
+          console.warn(
+            `${opts.observableId}: delivery to ${binding.function_id} failed for ${sessionId}: ${safeError(error)}`,
+          );
+        }
+        continue;
+      }
       const metadata = binding.config.metadata ?? binding.metadata;
       try {
         await iii.trigger({
@@ -176,16 +276,18 @@ export function createFeed(
   return { emit, bindingCount: () => bindings.size };
 }
 
-/** The worker's two feeds, each with its own per-session sequence. */
+/** The worker's two feeds, each with its own per-session sequence and binding table (bindings and observers). */
 export function createAgentFeeds(iii: IIIClient): { emit: FeedEmit; emitRaw: FeedEmit } {
   const agent = createFeed(iii, {
     id: AGENT_EVENT_TRIGGER_TYPE,
+    observableId: AGENT_EVENT_OBSERVABLE,
     source: FEED_SOURCE,
     description:
       'Normalized AgentEvent frames of one Cursor session. Config: { session_id, metadata? }. Payload: { session_id, event_id, seq, epoch, source, event }. Ephemeral: not stored or replayed.',
   });
   const raw = createFeed(iii, {
     id: RAW_EVENT_TRIGGER_TYPE,
+    observableId: RAW_EVENT_OBSERVABLE,
     source: FEED_SOURCE,
     description:
       'Raw Cursor ACP / SDK Bridge frames of one session, unchanged. Config: { session_id, metadata? }. Payload: { session_id, event_id, seq, epoch, source, event }. Ephemeral: not stored or replayed.',

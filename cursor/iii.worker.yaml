@@ -5,7 +5,7 @@ deploy: bundle
 manifest: package.json
 license: Apache-2.0
 tags: [llm, provider, coding-agent, cursor, acp, bridge, local-agent, cloud-agent]
-description: Cursor as a login-backed, text-only LLM Router provider and coding-agent worker through official CLI ACP, with optional sdk.v1 Bridge sessions.
+description: Cursor as a login-backed, text-only LLM Router provider and coding-agent worker through official CLI ACP, with optional sdk.v1 Bridge sessions; publishes AgentEvent frames on the cursor::agent-event trigger type and raw frames on cursor::raw-event, also observable as cursor::on-agent-event and cursor::on-raw-event (iii 0.25).
 
 runtime:
   kind: javascript
