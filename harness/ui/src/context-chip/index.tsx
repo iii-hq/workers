@@ -3,8 +3,9 @@
  * matching the console's ContextUsage aesthetic (`ctx` label, bar, `12.3k/200k`
  * counts). Hydrates from the stored snapshot (`state::get` on
  * `harness_context/<session id>`) on mount and per session change; stays live
- * over the state worker's own `state` trigger for that key (Message-path
- * binding, GC'd with the tab), which fires on every generate step. Click opens
+ * by observing the state worker's `state::on-changed` for that key (an
+ * observer GC'd with the tab), which the harness's write calls on every
+ * generate step. Click opens
  * the breakdown — a `Dialog` on desktop, a `BottomSheet` on phones — with the
  * window (stacked bar, legend, last step), the conversation's usage from
  * `harness::metrics` (plus a with-sub-agents column when it spawned any),
@@ -93,6 +94,8 @@ import { TONE_COLOR, toneFor } from '../lib/tone'
 
 /** Per-tab handler id (host.iii.on namespaces it `::<browserId>`). */
 const STATE_FN = 'iii::harness-ui::ctx-state'
+/** The state worker's change event; the chip observes it per session key. */
+const STATE_ON_CHANGED_FN = 'state::on-changed'
 const METRICS_FN = 'harness::metrics'
 /** `harness::metrics` re-reads every transcript of the tree: a 179-session
     tree took over 30 s. Past this the skeleton gives way to the error and its
@@ -107,8 +110,8 @@ export interface SessionChipProps {
   contextWindow?: number
 }
 
-/** The message a `state` function trigger delivers per write (the state
-    worker's own streaming trigger type — no polling anywhere). */
+/** What `state::on-changed` returns per write, delivered as the observed
+    output — no polling anywhere. */
 interface StateEvent {
   type?: string
   event_type?: string
@@ -182,7 +185,7 @@ function useConversationMetrics(
       // or siblings) and no trace scan: on a 179-session root both cost
       // more than everything else. A harness without these options ignores
       // them, returns the whole tree, and `conversationTree` cuts it.
-      .trigger(
+      .call(
         METRICS_FN,
         { session_id: sessionId, subtree: true, omit_traces: true },
         { timeoutMs: METRICS_TIMEOUT_MS },
@@ -1329,7 +1332,7 @@ export function createContextChip(host: Host) {
         }
       : undefined
 
-    // Both the hydration read and the streamed trigger write this state;
+    // Both the hydration read and the observed changes write this state;
     // keep whichever snapshot is newest so a slow state::get can never
     // overwrite a fresher streamed step.
     const acceptNewer = (value: ContextSnapshot) =>
@@ -1342,7 +1345,7 @@ export function createContextChip(host: Host) {
       setSnapshot(null)
       setOpen(false)
       host.iii
-        .trigger('state::get', { scope: 'harness_context', key: sessionId })
+        .call('state::get', { scope: 'harness_context', key: sessionId })
         .then((value) => {
           if (cancelled) return
           if (isSnapshot(value) && value.session_id === sessionId)
@@ -1354,16 +1357,16 @@ export function createContextChip(host: Host) {
       }
     }, [host, sessionId])
 
-    // Snapshots are written after every generate step; the state worker's
-    // `state` trigger streams each write (engine-side scope/key filter), so
+    // Snapshots are written after every generate step; observing
+    // `state::on-changed` (filtered on scope and key) delivers each write, so
     // long multi-step turns tick live without any polling.
     useEffect(() => {
-      // The id carries the session, because the engine-side filter is keyed to
-      // one: two chips mounted at once (two sessions visible, or an unmount
-      // racing the next mount) would otherwise register conflicting filters
-      // under one id, and either teardown would take the other's stream with
-      // it. `on()` appends `::<browserId>` itself, so the trigger repeats it
-      // to address the same handler.
+      // The id carries the session, because the observer's filters are keyed
+      // to one: two chips mounted at once (two sessions visible, or an unmount
+      // racing the next mount) would otherwise share one handler id, and either
+      // teardown would take the other's stream with it. `on()` appends
+      // `::<browserId>` itself, so the observer's target repeats it to address
+      // the same handler.
       const eventFn = `${STATE_FN}::${sessionId}`
       const offHandler = host.iii.on<StateEvent>(eventFn, (event) => {
         if (!event || event.key !== sessionId) return
@@ -1374,13 +1377,18 @@ export function createContextChip(host: Host) {
         )
           acceptNewer(event.new_value)
       })
-      const offTrigger = host.iii.registerTrigger({
-        type: 'state',
-        function_id: `${eventFn}::${host.iii.browserId}`,
-        config: { scope: 'harness_context', key: sessionId },
-      })
+      const offObserver = host.iii.observe(
+        {
+          function_id: STATE_ON_CHANGED_FN,
+          filters: {
+            'input.scope': { $eq: 'harness_context' },
+            'input.key': { $eq: sessionId },
+          },
+        },
+        `${eventFn}::${host.iii.browserId}`,
+      )
       return () => {
-        offTrigger()
+        offObserver()
         offHandler()
       }
     }, [host, sessionId])

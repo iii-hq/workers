@@ -1,6 +1,6 @@
 /**
- * Injected function-trigger message renderer for `harness::metrics` —
- * registered through `host.functionTriggers`, so it dispatches BEFORE the
+ * Injected function-call message renderer for `harness::metrics` —
+ * registered through `host.functionCalls`, so it dispatches BEFORE the
  * console's built-in families and replaces the raw JSON card in chat and
  * traces with a totals strip plus a compact per-session table (depth-indented
  * ids, turn/token/cost columns, and a mini context-usage bar when the
@@ -10,8 +10,8 @@
 
 import {
   Badge,
-  type FunctionTriggerMessage,
-  type FunctionTriggerRenderer,
+  type FunctionCallMessage,
+  type FunctionCallRenderer,
   MetaRow,
   type MetaRowItem,
   Table,
@@ -125,11 +125,11 @@ function MetricsCard({ metrics }: { metrics: MetricsResponse }) {
   )
 }
 
-export function createMetricsRenderer(): FunctionTriggerRenderer {
+export function createMetricsRenderer(): FunctionCallRenderer {
   return {
     id: 'harness/page.js#metrics',
     isMatch: (functionId) => functionId === METRICS_ID,
-    tryRender: (message: FunctionTriggerMessage) => {
+    tryRender: (message: FunctionCallMessage) => {
       const metrics = parseMetrics(message.output)
       if (!metrics) return null
       return <MetricsCard metrics={metrics} />

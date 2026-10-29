@@ -18,7 +18,7 @@
  * result is already on record.
  */
 
-import type { FunctionTriggerMessage } from '@iii-dev/console-ui'
+import type { FunctionCallMessage } from '@iii-dev/console-ui'
 import { unwrapEnvelope } from '@iii-dev/console-ui/format'
 
 export interface AskOptionView {
@@ -86,7 +86,7 @@ function parseQuestion(value: unknown): AskQuestionView | null {
  * unknown `details.status`, or malformed ids or questions.
  */
 export function parseAsk(
-  message: Pick<FunctionTriggerMessage, 'output'>,
+  message: Pick<FunctionCallMessage, 'output'>,
 ): AskView | null {
   const { output } = message
   if (!isRecord(output) || 'error' in output) return null
