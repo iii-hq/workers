@@ -6,7 +6,7 @@ manifest: Cargo.toml
 license: Apache-2.0
 bin: ide
 tags: [ide, shell, exec, filesystem, bash, terminal]
-description: Unix shell + filesystem worker — exec with denylist/timeout/output caps and background jobs; fs::ls|stat|mkdir|rm|chmod|mv|grep|sed|read|write with host jail, denylist, size caps, and sandbox-target forwarding
+description: Unix shell + filesystem worker — exec with denylist/timeout/output caps and background jobs; fs::ls|stat|mkdir|rm|chmod|mv|grep|sed|read|write with host jail, denylist, size caps, and sandbox-target forwarding. Registers the `shell::changed`, `shell::git-changed`, `shell::job-finished` and `shell::turns::changed` trigger types and, next to them, the observable functions `shell::on-changed`, `shell::on-git-changed`, `shell::on-job-finished` and `shell::on-turns-changed` (iii 0.25).
 
 # POSIX-only: src/fs/host.rs uses std::os::unix::fs::PermissionsExt / chown /
 # OpenOptionsExt directly, so the Windows triples cannot compile.

@@ -24,6 +24,10 @@
 //! One watch per path, shared by its bindings and torn down with the last.
 //! Delivery mirrors [`crate::events`]: `Void` routing, each fire on its own
 //! task, the binding's `metadata` and `namespace` passed through.
+//!
+//! Next to the trigger type, `shell::on-git-changed` (iii 0.25) is the
+//! observable function with the same config as args: an observer joins the
+//! watch on its path like a binding and receives the same batch event.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -35,7 +39,9 @@ use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
+use iii_sdk::{
+    IIIClient, ObserveHandler, ObserveRejection, Observer, RegisterTriggerType, TriggerAction,
+};
 use notify::{RecursiveMode, Watcher};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -46,9 +52,19 @@ use tokio::sync::mpsc::Sender;
 use crate::code::path::PathResolver;
 use crate::code::state::ResolverCell;
 use crate::events::is_noise_kind;
+use crate::observable::{codes, observer_key, register_observable, EventObserver};
 
 /// The trigger type a surface binds to follow a repository's state.
 pub const GIT_CHANGED: &str = "shell::git-changed";
+/// The observable function next to it (iii 0.25).
+pub const ON_GIT_CHANGED: &str = "shell::on-git-changed";
+const ON_GIT_CHANGED_DESC: &str =
+    "The git repository a directory sits in changed state. Observe it with args { path } \
+     naming any directory in the worktree (jail-checked like every coder::* path). One event \
+     per ~200 ms batch, { path, worktree?, git_dir?, common_dir?, changes }, where changes \
+     lists head, index, refs, worktrees and repository (re-read everything). Worktree file \
+     edits are not reported here: observe shell::on-changed for those. Only the ide worker \
+     emits it: invoking it directly is refused (FORBIDDEN).";
 
 /// Batching window, as `shell::changed`'s: a `git commit` writes the index,
 /// a ref, a reflog and HEAD's log in a few milliseconds — one event.
@@ -76,7 +92,7 @@ pub struct GitChangedConfig {
 
 /// One batch of repository changes. Lean like [`crate::events::ChangedEvent`]:
 /// a subscriber that wants the new state asks git.
-#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct GitChangedEvent {
     /// The watched directory: the binding's `path`, canonical.
     pub path: String,
@@ -362,12 +378,15 @@ pub(crate) fn fold(
     (changes, rebuild)
 }
 
-/// How one binding's events reach its function.
+/// How one binding's events reach its function, or one observer's.
 #[derive(Debug, Clone)]
 struct Delivery {
+    /// The bound function; an observer's target, for logs.
     function_id: String,
     metadata: Option<Value>,
     namespace: Option<String>,
+    /// An observer of `shell::on-git-changed`: events go through it.
+    observer: Option<Arc<dyn EventObserver>>,
 }
 
 impl Delivery {
@@ -376,6 +395,16 @@ impl Delivery {
             function_id: config.function_id.clone(),
             metadata: config.metadata.clone(),
             namespace: config.namespace.clone(),
+            observer: None,
+        }
+    }
+
+    fn from_observer(observer: Arc<dyn EventObserver>) -> Self {
+        Self {
+            function_id: observer.target().to_string(),
+            metadata: None,
+            namespace: None,
+            observer: Some(observer),
         }
     }
 
@@ -465,6 +494,10 @@ async fn pump(
         };
         let bound: Vec<Delivery> = lock(&subscribers).values().cloned().collect();
         for delivery in bound {
+            if let Some(observer) = &delivery.observer {
+                observer.deliver(payload.clone());
+                continue;
+            }
             let iii = iii.clone();
             let request = delivery.request(payload.clone());
             let function_id = delivery.function_id.clone();
@@ -540,6 +573,9 @@ fn watch_path(config: &Value, resolver: &PathResolver) -> Result<PathBuf, Error>
     Ok(canon)
 }
 
+/// Shared by the trigger type and the observable function: cheap to clone,
+/// every clone holds the same watches.
+#[derive(Clone)]
 struct GitChangedTriggerHandler {
     iii: IIIClient,
     watches: Arc<Mutex<HashMap<PathBuf, WatchEntry>>>,
@@ -554,16 +590,16 @@ impl GitChangedTriggerHandler {
             !subscribers.is_empty()
         });
     }
-}
 
-#[async_trait]
-impl TriggerHandler for GitChangedTriggerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
+    /// Join `id` (a binding or an observer) to the watch on the path its
+    /// `config` names, starting the watch for the first one.
+    async fn attach(&self, id: String, config: &Value, delivery: Delivery) -> Result<(), Error> {
         let resolver = self.resolver.read().await.clone();
-        let path = watch_path(&config.config, &resolver)?;
+        let path = watch_path(config, &resolver)?;
         let shown = path.display().to_string();
+        let function_id = delivery.function_id.clone();
         // A binding registered again (a reconnect) may name another path.
-        self.unbind(&config.id);
+        self.unbind(&id);
         let mut ready = {
             let mut watches = lock(&self.watches);
             // A pump that died must not swallow every later binding.
@@ -576,7 +612,7 @@ impl TriggerHandler for GitChangedTriggerHandler {
             let entry = watches.entry(path.clone()).or_insert_with(|| {
                 start_watch(self.iii.clone(), path, orphans.unwrap_or_default())
             });
-            lock(&entry.subscribers).insert(config.id.clone(), Delivery::from_config(&config));
+            lock(&entry.subscribers).insert(id.clone(), delivery);
             entry.ready.clone()
         };
         let failed = ready
@@ -584,19 +620,28 @@ impl TriggerHandler for GitChangedTriggerHandler {
             .await
             .is_ok_and(|started| *started == Some(false));
         if failed {
-            self.unbind(&config.id);
+            self.unbind(&id);
             return Err(Error::Handler(format!(
                 "shell::git-changed cannot watch {shown}: the watcher did not start"
             )));
         }
         tracing::info!(
             trigger_type = GIT_CHANGED,
-            id = %config.id,
-            function_id = %config.function_id,
+            id = %id,
+            function_id = %function_id,
             path = %shown,
             "git watch registered"
         );
         Ok(())
+    }
+}
+
+#[async_trait]
+impl TriggerHandler for GitChangedTriggerHandler {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
+        let delivery = Delivery::from_config(&config);
+        self.attach(config.id.clone(), &config.config, delivery)
+            .await
     }
 
     async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
@@ -606,9 +651,39 @@ impl TriggerHandler for GitChangedTriggerHandler {
     }
 }
 
-/// Register the trigger type. The SDK queues the registration and cannot
-/// report failure; a dead type surfaces as bindings that never fire.
+/// Files each observer of `shell::on-git-changed` on the watch of the path
+/// its args name, next to that path's bindings.
+struct GitChangedObserveHandler(GitChangedTriggerHandler);
+
+#[async_trait]
+impl ObserveHandler for GitChangedObserveHandler {
+    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
+        let delivery = Delivery::from_observer(Arc::new(obs.clone()));
+        self.0
+            .attach(observer_key(obs.id()), obs.args_value(), delivery)
+            .await
+            .map_err(|e| ObserveRejection::new(codes::INVALID_ARGS, e.to_string()))
+    }
+
+    async fn on_observer_removed(&self, obs: &Observer) {
+        tracing::info!(function_id = ON_GIT_CHANGED, id = %obs.id(), "git watch observer removed");
+        self.0.unbind(&observer_key(obs.id()));
+    }
+}
+
+/// Register the trigger type and, next to it, the observable
+/// `shell::on-git-changed`, both on the same watches. The SDK queues the
+/// registration and cannot report failure; a dead type surfaces as bindings
+/// that never fire.
 pub fn register_git_changed_trigger(iii: &IIIClient, resolver: ResolverCell) {
+    let handler = GitChangedTriggerHandler {
+        iii: iii.clone(),
+        watches: Arc::new(Mutex::new(HashMap::new())),
+        resolver,
+    };
+    // Kept for consumers that bind the trigger type, on 0.24 and 0.25
+    // engines alike.
+    #[allow(deprecated)]
     let _handle = iii.register_trigger_type(
         RegisterTriggerType::new(
             GIT_CHANGED,
@@ -621,11 +696,7 @@ pub fn register_git_changed_trigger(iii: &IIIClient, resolver: ResolverCell) {
              appeared, disappeared or moved — re-read everything). A path in no repository \
              fires repository once a .git appears in it. Worktree file edits are not \
              reported here: bind shell::changed for those.",
-            GitChangedTriggerHandler {
-                iii: iii.clone(),
-                watches: Arc::new(Mutex::new(HashMap::new())),
-                resolver,
-            },
+            handler.clone(),
         )
         .trigger_request_format::<GitChangedConfig>()
         .call_request_format::<GitChangedEvent>(),
@@ -633,6 +704,12 @@ pub fn register_git_changed_trigger(iii: &IIIClient, resolver: ResolverCell) {
     tracing::info!(
         trigger_type = GIT_CHANGED,
         "sent the trigger type registration; delivery is confirmed by the first subscription"
+    );
+    register_observable::<GitChangedConfig, GitChangedEvent, _>(
+        iii,
+        ON_GIT_CHANGED,
+        ON_GIT_CHANGED_DESC,
+        GitChangedObserveHandler(handler),
     );
 }
 
@@ -991,5 +1068,83 @@ mod tests {
         let debug = format!("{:?}", delivery.request(json!({ "changes": ["head"] })));
         assert!(debug.contains("__binding"), "{debug}");
         assert!(debug.contains("Void"), "{debug}");
+    }
+
+    /// An observer of `shell::on-git-changed` joins the watch its path's
+    /// bindings use, and receives the event they receive.
+    #[tokio::test]
+    async fn an_observer_receives_the_event_a_binding_receives() {
+        use crate::observable::testing::Recorder;
+        let (_tmp, root) = repo();
+        let handler = handler_at(&root);
+        handler
+            .register_trigger(binding("b1", &root))
+            .await
+            .unwrap();
+        let recorder = Recorder::new("o1");
+        handler
+            .attach(
+                observer_key("o1"),
+                &json!({ "path": root }),
+                Delivery::from_observer(recorder.clone()),
+            )
+            .await
+            .unwrap();
+        {
+            let watches = lock(&handler.watches);
+            assert_eq!(watches.len(), 1, "the observer shares the binding's watch");
+            let entry = watches.values().next().unwrap();
+            let mut bound: Vec<String> = lock(&entry.subscribers).keys().cloned().collect();
+            bound.sort();
+            assert_eq!(bound, ["b1", "observer:o1"]);
+            // The binding's delivery is the fire it always was.
+            assert!(lock(&entry.subscribers)["b1"].observer.is_none());
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        git(&root, &["symbolic-ref", "HEAD", "refs/heads/other"]);
+        let mut event = None;
+        for _ in 0..100 {
+            if let Some(seen) = recorder.seen().into_iter().find(|e| {
+                e["changes"]
+                    .as_array()
+                    .is_some_and(|c| c.contains(&json!(HEAD)))
+            }) {
+                event = Some(seen);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let event = event.expect("the observer receives the HEAD change");
+        assert_eq!(event["worktree"], json!(root.to_string_lossy()));
+
+        // Removing the observer keeps the binding's watch.
+        handler.unbind(&observer_key("o1"));
+        assert_eq!(lock(&handler.watches).len(), 1);
+        handler
+            .unregister_trigger(binding("b1", &root))
+            .await
+            .unwrap();
+        assert!(lock(&handler.watches).is_empty());
+    }
+
+    #[tokio::test]
+    async fn observer_args_follow_the_binding_config_rules() {
+        use crate::observable::testing::Recorder;
+        let (_tmp, root) = repo();
+        let handler = handler_at(&root);
+        let err = handler
+            .attach(
+                observer_key("o1"),
+                &json!({}),
+                Delivery::from_observer(Recorder::new("o1")),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("config.path"), "{err}");
+        assert!(lock(&handler.watches).is_empty());
+        let delivery = Delivery::from_observer(Recorder::new("o2"));
+        assert_eq!(delivery.function_id, "observer-target::o2");
+        assert!(delivery.metadata.is_none());
     }
 }
