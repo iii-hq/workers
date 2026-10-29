@@ -1,162 +1,48 @@
-//! The two custom trigger types this worker emits — `memory::item-changed`
-//! and `memory::bank-changed` — using the session-manager reactivity model:
-//! consumers bind handlers with the standard two-step pattern; the engine
-//! routes each registration to our [`TriggerHandler`]s; delivery is
-//! fire-and-forget (`TriggerAction::Void`), at-least-once, unordered. The
-//! console memory page live-refreshes off these.
+//! The two change events this worker hosts: `memory::on-item-changed` and
+//! `memory::on-bank-changed`.
+//!
+//! Each is a private function whose handler returns the event it is called
+//! with. The worker calls it when the change happens, fire-and-forget
+//! (`CallAction::Void`), and every observer whose filters match receives the
+//! event. Neither takes args: an observer selects changes with filters on the
+//! event (`input.bank`, `input.event_type`). The console memory page
+//! live-refreshes off both:
+//!
+//! ```text
+//! iii.observe(
+//!     Source::function("memory::on-item-changed")
+//!         .filters(json!({ "input.bank": { "$eq": "blog" } }))
+//!         .deliver(Deliver::Output),
+//!     "my-worker::on-memory-changed",
+//! )
+//! ```
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
+use iii_sdk::{CallAction, CallRequest, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::types::Memory;
 
-pub const ITEM_CHANGED: &str = "memory::item-changed";
-pub const ITEM_CHANGED_DESC: &str =
-    "A memory was created, updated, superseded, or deleted in a memory bank. \
-     Payload: { event_type, bank, memory, reason? } (reason on consolidation changes, and \
-     `redacted: <labels>` when secrets or invisible characters were removed on save/update). Bind \
-     console/live views here.";
+pub const ON_ITEM_CHANGED_FN: &str = "memory::on-item-changed";
+pub const ON_ITEM_CHANGED_DESC: &str =
+    "Called when a memory is created, updated, superseded, or deleted in a memory bank. \
+     Returns the event: { event_type, bank, memory, reason? } (reason on consolidation changes, \
+     and `redacted: <labels>` when secrets or invisible characters were removed on save/update). \
+     Observe it for console/live views; filter on input.bank or input.event_type.";
 
-pub const BANK_CHANGED: &str = "memory::bank-changed";
-pub const BANK_CHANGED_DESC: &str =
-    "A memory bank was created or trashed. Payload: { event_type, bank }.";
-
-/// Config accepted by both trigger types.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct BindingConfig {
-    /// Only deliver events for this bank.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bank: Option<String>,
-}
-
-/// `null` configs are treated as `{}`; unknown fields are rejected so a
-/// misspelled filter key fails at registration, not silently.
-pub fn parse_binding_config(raw: &Value) -> Result<BindingConfig, String> {
-    if raw.is_null() {
-        return Ok(BindingConfig::default());
-    }
-    serde_json::from_value(raw.clone()).map_err(|e| format!("invalid binding config: {e}"))
-}
-
-#[derive(Debug, Clone)]
-struct Binding {
-    function_id: String,
-    namespace: Option<String>,
-    filter: BindingConfig,
-}
-
-/// Thread-safe subscriber registry for one trigger type.
-#[derive(Clone)]
-pub struct SubscriberSet {
-    trigger_type: &'static str,
-    inner: Arc<Mutex<HashMap<String, Binding>>>,
-}
-
-impl SubscriberSet {
-    fn new(trigger_type: &'static str) -> Self {
-        Self {
-            trigger_type,
-            inner: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-
-    fn add(&self, config: TriggerConfig) -> Result<(), String> {
-        let filter = parse_binding_config(&config.config)?;
-        self.lock().insert(
-            config.id,
-            Binding {
-                function_id: config.function_id,
-                namespace: config.namespace,
-                filter,
-            },
-        );
-        Ok(())
-    }
-
-    fn remove(&self, id: &str) {
-        self.lock().remove(id);
-    }
-
-    fn snapshot(&self) -> Vec<Binding> {
-        self.lock().values().cloned().collect()
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Binding>> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-    }
-}
-
-#[derive(Clone)]
-pub struct TriggerSets {
-    pub items: SubscriberSet,
-    pub banks: SubscriberSet,
-}
-
-struct MemoryTriggerHandler {
-    set: SubscriberSet,
-}
-
-#[async_trait]
-impl TriggerHandler for MemoryTriggerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        let id = config.id.clone();
-        self.set.add(config).map_err(Error::Handler)?;
-        tracing::info!(trigger_type = self.set.trigger_type, id = %id, "trigger subscription registered");
-        Ok(())
-    }
-
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        self.set.remove(&config.id);
-        Ok(())
-    }
-}
-
-/// Register both trigger types with the engine. Must run **before**
-/// `functions::register_all` so handlers capture the subscriber sets they
-/// fan out to.
-pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
-    let sets = TriggerSets {
-        items: SubscriberSet::new(ITEM_CHANGED),
-        banks: SubscriberSet::new(BANK_CHANGED),
-    };
-    let _ = iii.register_trigger_type(
-        RegisterTriggerType::new(
-            ITEM_CHANGED,
-            ITEM_CHANGED_DESC,
-            MemoryTriggerHandler {
-                set: sets.items.clone(),
-            },
-        )
-        .trigger_request_format::<BindingConfig>(),
-    );
-    let _ = iii.register_trigger_type(
-        RegisterTriggerType::new(
-            BANK_CHANGED,
-            BANK_CHANGED_DESC,
-            MemoryTriggerHandler {
-                set: sets.banks.clone(),
-            },
-        )
-        .trigger_request_format::<BindingConfig>(),
-    );
-    tracing::info!(trigger_types = ?[ITEM_CHANGED, BANK_CHANGED], "registered trigger types");
-    sets
-}
+pub const ON_BANK_CHANGED_FN: &str = "memory::on-bank-changed";
+pub const ON_BANK_CHANGED_DESC: &str =
+    "Called when a memory bank is created or trashed, or its rules change. Returns the event: \
+     { event_type: created | trashed | rules-changed, bank }. Observe it; filter on input.bank \
+     or input.event_type.";
 
 /// Memory event kinds carried in `event_type`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
 pub enum ItemEvent {
     Created,
     Updated,
@@ -165,7 +51,7 @@ pub enum ItemEvent {
 }
 
 impl ItemEvent {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             ItemEvent::Created => "created",
             ItemEvent::Updated => "updated",
@@ -175,29 +61,74 @@ impl ItemEvent {
     }
 }
 
-/// The `memory::item-changed` payload: `{event_type, bank, memory, reason?}`
-/// — `reason` only when the change carries one.
-fn item_payload(event: ItemEvent, bank: &str, memory: &Memory, reason: Option<&str>) -> Value {
-    let mut payload = json!({
-        "event_type": event.as_str(),
-        "bank": bank,
-        "memory": memory,
-    });
-    if let Some(reason) = reason {
-        payload["reason"] = json!(reason);
-    }
-    payload
+/// What `memory::on-item-changed` returns and its observers receive.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ItemChangedEvent {
+    pub event_type: ItemEvent,
+    /// The bank the memory lives in.
+    pub bank: String,
+    /// The memory as stored after the change (a tombstone for `deleted`).
+    pub memory: Memory,
+    /// Why the change happened: `memory::supersede`'s reason, or
+    /// `redacted: <labels>` when a save or update removed secrets or
+    /// invisible characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
-/// Filtered fire-and-forget fan-out to every matching binding.
+/// What `memory::on-bank-changed` returns and its observers receive.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct BankChangedEvent {
+    /// `created`, `trashed` or `rules-changed`.
+    pub event_type: String,
+    pub bank: String,
+}
+
+/// Register both change functions. Each is private (only this worker calls
+/// it), takes no args, and returns the event it is called with.
+pub fn register_all(iii: &IIIClient) {
+    iii.register_function(
+        ON_ITEM_CHANGED_FN,
+        RegisterFunction::new(|event: ItemChangedEvent| Ok::<_, Error>(event))
+            .description(ON_ITEM_CHANGED_DESC)
+            .private(),
+    );
+    iii.register_function(
+        ON_BANK_CHANGED_FN,
+        RegisterFunction::new(|event: BankChangedEvent| Ok::<_, Error>(event))
+            .description(ON_BANK_CHANGED_DESC)
+            .private(),
+    );
+    tracing::info!(
+        functions = ?[ON_ITEM_CHANGED_FN, ON_BANK_CHANGED_FN],
+        "registered change functions"
+    );
+}
+
+/// The `memory::on-item-changed` event: `{event_type, bank, memory, reason?}`
+/// — `reason` only when the change carries one.
+fn item_event(
+    event: ItemEvent,
+    bank: &str,
+    memory: &Memory,
+    reason: Option<&str>,
+) -> ItemChangedEvent {
+    ItemChangedEvent {
+        event_type: event,
+        bank: bank.to_string(),
+        memory: memory.clone(),
+        reason: reason.map(str::to_string),
+    }
+}
+
+/// Calls the change functions when something observes them.
 pub struct Emitter {
-    sets: TriggerSets,
     iii: Arc<IIIClient>,
 }
 
 impl Emitter {
-    pub fn new(sets: TriggerSets, iii: Arc<IIIClient>) -> Self {
-        Self { sets, iii }
+    pub fn new(iii: Arc<IIIClient>) -> Self {
+        Self { iii }
     }
 
     pub async fn item(&self, event: ItemEvent, bank: &str, memory: &Memory) {
@@ -205,7 +136,7 @@ impl Emitter {
     }
 
     /// `item` plus the why (`memory::supersede`'s `reason`), carried on the
-    /// event so consumers can explain automatic changes.
+    /// event so observers can explain automatic changes.
     pub async fn item_with(
         &self,
         event: ItemEvent,
@@ -213,36 +144,45 @@ impl Emitter {
         memory: &Memory,
         reason: Option<&str>,
     ) {
-        let payload = item_payload(event, bank, memory, reason);
-        self.fan_out(&self.sets.items, bank, payload).await;
+        if !self.iii.is_observed(ON_ITEM_CHANGED_FN) {
+            return;
+        }
+        let payload = item_event(event, bank, memory, reason);
+        self.emit(ON_ITEM_CHANGED_FN, serde_json::to_value(payload))
+            .await;
     }
 
     pub async fn bank(&self, event_type: &str, bank: &str) {
-        let payload = json!({ "event_type": event_type, "bank": bank });
-        self.fan_out(&self.sets.banks, bank, payload).await;
+        if !self.iii.is_observed(ON_BANK_CHANGED_FN) {
+            return;
+        }
+        let payload = BankChangedEvent {
+            event_type: event_type.to_string(),
+            bank: bank.to_string(),
+        };
+        self.emit(ON_BANK_CHANGED_FN, serde_json::to_value(payload))
+            .await;
     }
 
-    async fn fan_out(&self, set: &SubscriberSet, bank: &str, payload: Value) {
-        for binding in set.snapshot() {
-            let matches = binding
-                .filter
-                .bank
-                .as_deref()
-                .is_none_or(|want| want == bank);
-            if !matches {
-                continue;
+    /// Fire-and-forget call of `function_id`: the write that produced the
+    /// change is not held by its observers, and a failure is logged and
+    /// swallowed.
+    async fn emit(&self, function_id: &str, payload: serde_json::Result<Value>) {
+        let payload = match payload {
+            Ok(payload) => payload,
+            Err(e) => {
+                tracing::warn!(function_id, error = %e, "change event did not serialize");
+                return;
             }
-            let request = TriggerRequest {
-                function_id: binding.function_id.clone(),
-                payload: payload.clone(),
-                action: Some(TriggerAction::Void),
-                timeout_ms: None,
-            };
-            let namespace = binding.namespace.as_deref().unwrap_or("default");
-            let res = self.iii.trigger(request.namespace(namespace)).await;
-            if let Err(e) = res {
-                tracing::warn!(function_id = %binding.function_id, error = %e, "void fan-out failed");
-            }
+        };
+        let request = CallRequest {
+            function_id: function_id.to_string(),
+            payload,
+            action: Some(CallAction::Void),
+            timeout_ms: None,
+        };
+        if let Err(e) = self.iii.call(request).await {
+            tracing::warn!(function_id, error = %e, "change call failed");
         }
     }
 }
@@ -250,40 +190,10 @@ impl Emitter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
-    #[test]
-    fn null_config_is_match_all() {
-        assert!(parse_binding_config(&Value::Null).unwrap().bank.is_none());
-    }
-
-    #[test]
-    fn unknown_config_fields_are_rejected() {
-        assert!(parse_binding_config(&json!({ "bnak": "typo" })).is_err());
-    }
-
-    #[test]
-    fn bank_filter_parses() {
-        let cfg = parse_binding_config(&json!({ "bank": "blog" })).unwrap();
-        assert_eq!(cfg.bank.as_deref(), Some("blog"));
-    }
-
-    #[test]
-    fn subscriber_preserves_target_namespace() {
-        let set = SubscriberSet::new(ITEM_CHANGED);
-        set.add(TriggerConfig {
-            id: "sub-1".into(),
-            function_id: "ui::refresh".into(),
-            config: json!({}),
-            metadata: None,
-            namespace: Some("project-a".into()),
-        })
-        .unwrap();
-        assert_eq!(set.snapshot()[0].namespace.as_deref(), Some("project-a"));
-    }
-
-    #[test]
-    fn item_payload_carries_reason_only_when_given() {
-        let m = Memory {
+    fn memory() -> Memory {
+        Memory {
             id: "fp1".into(),
             text: "t".into(),
             entities: vec![],
@@ -298,13 +208,52 @@ mod tests {
             superseded_by: None,
             revision: 0,
             stated_at: None,
-        };
-        let with = item_payload(ItemEvent::Superseded, "b", &m, Some("same fact"));
+        }
+    }
+
+    #[test]
+    fn item_event_carries_reason_only_when_given() {
+        let m = memory();
+        let with =
+            serde_json::to_value(item_event(ItemEvent::Superseded, "b", &m, Some("same fact")))
+                .unwrap();
         assert_eq!(with["event_type"], "superseded");
         assert_eq!(with["bank"], "b");
         assert_eq!(with["memory"]["id"], "fp1");
         assert_eq!(with["reason"], "same fact");
-        let without = item_payload(ItemEvent::Updated, "b", &m, None);
+        let without = serde_json::to_value(item_event(ItemEvent::Updated, "b", &m, None)).unwrap();
         assert!(without.get("reason").is_none());
+    }
+
+    #[test]
+    fn item_event_round_trips_through_the_handler_type() {
+        let event = item_event(ItemEvent::Deleted, "main", &memory(), Some("why"));
+        let wire = serde_json::to_value(&event).unwrap();
+        let back: ItemChangedEvent = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(back).unwrap(), wire);
+    }
+
+    #[test]
+    fn bank_event_shape() {
+        let event = BankChangedEvent {
+            event_type: "rules-changed".into(),
+            bank: "blog".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(event).unwrap(),
+            json!({ "event_type": "rules-changed", "bank": "blog" })
+        );
+    }
+
+    #[tokio::test]
+    async fn emitting_without_observers_sends_nothing() {
+        // `IIIClient::new` builds local state only; nothing observes the
+        // change functions, so both calls return before reaching the wire.
+        let iii = Arc::new(IIIClient::new("ws://127.0.0.1:1"));
+        let emitter = Emitter::new(iii.clone());
+        emitter.item(ItemEvent::Created, "main", &memory()).await;
+        emitter.bank("created", "main").await;
+        assert!(!iii.is_observed(ON_ITEM_CHANGED_FN));
+        assert!(!iii.is_observed(ON_BANK_CHANGED_FN));
     }
 }

@@ -1,5 +1,5 @@
-//! Harness integration: the `pre-generate` injection hook and the
-//! `turn-completed` extraction trigger.
+//! Harness integration: the `harness::hook::on-pre-generate` injection hook
+//! and the `harness::on-turn-completed` extraction pass.
 //!
 //! Injection contract (harness/src/hooks/runner.rs). The prefix a model
 //! reasoned under must never change mid-session (append-only), and every
@@ -11,8 +11,8 @@
 //! - recalled memories arrive as ONE APPENDED MESSAGE on a turn's first
 //!   step only (the persisted copy carries them through later steps).
 //!
-//! Both handlers are registered `internal` and the harness binding is
-//! `on_error: fail_open` — a memory failure must never block or fail a
+//! Both handlers are registered `internal` and the pre-generate observer
+//! takes `on_error: fail_open` — a memory failure must never block or fail a
 //! turn. Handlers are idempotent: redelivered steps re-run them safely.
 
 use std::collections::{HashMap, HashSet};
@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 
 use crate::config::WorkerConfig;
 use crate::deps::Deps;
@@ -100,7 +100,7 @@ impl HookResponse {
     }
 }
 
-/// `harness::turn-completed` payload (the fields this worker reads).
+/// The `harness::on-turn-completed` event (the fields this worker reads).
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct TurnCompletedInput {
     #[serde(default)]
@@ -1012,7 +1012,7 @@ pub async fn turn_completed(
         .unwrap_or_else(|| format!("t{}", now_ms()));
     let enqueued = deps
         .iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "engine::queue::enqueue".into(),
             payload: json!({
                 "queue": EXTRACTION_QUEUE,
@@ -1081,7 +1081,7 @@ pub async fn extract_job(deps: &Arc<Deps>, input: ExtractJobInput) -> Result<Ack
     Ok(AckResponse { ok: true })
 }
 
-/// `session::deleted` payload (the field this worker reads).
+/// The `session::on-deleted` event (the field this worker reads).
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct SessionDeletedInput {
     #[serde(default)]
@@ -1772,10 +1772,9 @@ Formal."
     /// nothing in `injection` reaches the client.
     fn offline_deps(dir: &std::path::Path, cfg: WorkerConfig) -> Deps {
         let iii = Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:1"));
-        let sets = crate::events::register_trigger_types(&iii);
         let store = crate::store::Store::open(dir.to_path_buf()).unwrap();
         Deps {
-            emitter: Arc::new(crate::events::Emitter::new(sets, iii.clone())),
+            emitter: Arc::new(crate::events::Emitter::new(iii.clone())),
             iii,
             store: Arc::new(tokio::sync::RwLock::new(Arc::new(store))),
             config: Arc::new(tokio::sync::RwLock::new(Arc::new(cfg))),

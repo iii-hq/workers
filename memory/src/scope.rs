@@ -20,7 +20,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
@@ -372,7 +372,7 @@ pub(crate) async fn session_meta(
     session_id: String,
 ) -> Result<Option<Value>, String> {
     let reply = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "session::get".into(),
             payload: json!({ "session_id": session_id }),
             action: None,

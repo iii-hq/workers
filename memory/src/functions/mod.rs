@@ -72,7 +72,7 @@ pub const SUPERSEDE_DESC: &str =
     "Retire one memory in favor of another: tombstone with a superseded_by pointer, never a \
      plain delete. The consolidation seam; pinned memories cannot be superseded. reinforce \
      makes it a merge (the non-pinned survivor absorbs the retired record's observations); \
-     reason is carried on the item-changed events.";
+     reason is carried on the memory::on-item-changed events.";
 
 pub const TAGS_ID: &str = "memory::tags";
 pub const TAGS_DESC: &str =

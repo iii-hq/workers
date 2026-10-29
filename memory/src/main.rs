@@ -10,13 +10,16 @@
 //!   4. Open the store. An unwritable data_dir is BOOT-FATAL: a memory
 //!      worker that silently runs in RAM and prints "persisted" is the
 //!      worst failure mode a memory product can have.
-//!   5. Register the two custom trigger types, then the `memory::*`
-//!      functions and the internal hook handlers.
-//!   6. Bind the harness seams best-effort (`harness::hook::pre-generate`
+//!   5. Register the two change functions (`memory::on-item-changed`,
+//!      `memory::on-bank-changed`), then the `memory::*` functions and the
+//!      internal hook handlers.
+//!   6. Observe the harness seams (`harness::hook::on-pre-generate`
 //!      fail-OPEN — memory must never block a turn — and
-//!      `harness::turn-completed` for extraction). In a deployment without
+//!      `harness::on-turn-completed` for extraction), `session::on-deleted`
+//!      and the extraction queue's `queue::on-message`. An observer stays
+//!      `pending` until its function registers, so in a deployment without
 //!      the harness the worker still boots and serves its RPCs.
-//!   7. Bind the `configuration` change trigger LAST.
+//!   7. Observe `configuration::on-updated` LAST.
 //!   8. Sleep on Ctrl+C, then `shutdown_async` cleanly. There is no
 //!      shutdown flush: every write was already fsynced at commit time.
 
@@ -24,9 +27,10 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
+use iii_sdk::{
+    register_worker, CallRequest, Deliver, IIIClient, InitOptions, RegisterFunction, Source,
+};
 use serde_json::json;
 use tokio::sync::RwLock;
 
@@ -67,58 +71,57 @@ fn worker_metadata() -> WorkerMetadata {
     }
 }
 
-/// Best-effort binding: in standalone deployments the harness's trigger
-/// types may not exist (yet); a failed binding must not prevent boot.
-fn bind_best_effort(
-    iii: &Arc<IIIClient>,
-    trigger_type: &str,
-    function_id: &str,
-    config: serde_json::Value,
-) {
-    let res = iii.register_trigger(RegisterTriggerInput::new(
-        trigger_type.to_string(),
-        function_id.to_string(),
-        config,
-    ));
-    match res {
-        Ok(_) => tracing::info!(trigger_type, function_id, "trigger binding requested"),
-        Err(e) => {
-            tracing::warn!(trigger_type, function_id, error = %e, "trigger binding failed (sibling absent?)")
-        }
-    }
-}
+/// The function `http::on-request` routes REST calls through.
+const HTTP_ON_REQUEST_FN: &str = "http::on-request";
 
-/// The bindings this worker needs, as (trigger_type, function_id, config).
-fn required_bindings() -> Vec<(&'static str, &'static str, serde_json::Value)> {
+/// The functions this worker observes, each with its target. Every observer
+/// stays `pending` until its function registers and its host accepts it, so
+/// the harness, session-manager and queue can boot in any order.
+fn seam_observers() -> Vec<(Source, &'static str)> {
     vec![
         (
-            "harness::hook::pre-generate",
+            Source::function("harness::hook::on-pre-generate").args(
+                json!({ "priority": 100, "timeout_ms": 3_000, "on_error": "fail_open" }),
+            ),
             hooks::PRE_GENERATE_FN,
-            json!({ "priority": 100, "timeout_ms": 3_000, "on_error": "fail_open" }),
         ),
         (
-            "harness::turn-completed",
+            Source::function("harness::on-turn-completed").deliver(Deliver::Output),
             hooks::TURN_COMPLETED_FN,
-            json!({}),
         ),
-        ("session::deleted", hooks::SESSION_DELETED_FN, json!({})),
         (
-            "durable:subscriber",
+            Source::function("session::on-deleted").deliver(Deliver::Output),
+            hooks::SESSION_DELETED_FN,
+        ),
+        (
+            Source::function("queue::on-message").args(json!({
+                "topic": hooks::EXTRACTION_QUEUE,
+                "max_retries": 3,
+                "backoff_ms": 2_000,
+            })),
             hooks::EXTRACT_JOB_FN,
-            json!({ "queue": hooks::EXTRACTION_QUEUE, "max_retries": 3, "backoff_ms": 2_000 }),
         ),
     ]
 }
 
-/// Ensure the extraction queue exists. Trigger parking covers the binds
-/// (recoverable triggers, iii #1962), but `queue::define` is an RPC the
-/// queue worker must be up to serve — enqueue rejects an undefined queue —
-/// so poll until the (idempotent) definition lands.
+/// The REST route of a public function: `POST /memory/...`, the function id
+/// with `::` as `/`.
+fn rest_route(function_id: &str) -> Source {
+    Source::function(HTTP_ON_REQUEST_FN).args(json!({
+        "method": "POST",
+        "path": format!("/{}", function_id.replace("::", "/")),
+    }))
+}
+
+/// Ensure the extraction queue exists. A pending observer covers the queue
+/// consumer, but `queue::define` is an RPC the queue worker must be up to
+/// serve — enqueue rejects an undefined queue — so poll until the
+/// (idempotent) definition lands.
 fn ensure_extraction_queue(iii: Arc<IIIClient>) {
     tokio::spawn(async move {
         loop {
             let defined = iii
-                .trigger(iii_sdk::protocol::TriggerRequest {
+                .call(CallRequest {
                     function_id: "queue::define".into(),
                     payload: json!({ "queue": hooks::EXTRACTION_QUEUE, "config": {} }),
                     action: None,
@@ -195,9 +198,9 @@ async fn main() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("opening the memory store: {e}"))?;
     let store_cell: StoreCell = Arc::new(RwLock::new(Arc::new(store)));
 
-    // Trigger types first: the handlers capture the subscriber sets.
-    let sets = events::register_trigger_types(&iii);
-    let emitter = Arc::new(Emitter::new(sets, iii.clone()));
+    // The change functions first: every write path calls them.
+    events::register_all(&iii);
+    let emitter = Arc::new(Emitter::new(iii.clone()));
 
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg.clone())));
     let deps = Arc::new(Deps {
@@ -215,14 +218,20 @@ async fn main() -> Result<()> {
     // clones the client into its hot-reload watcher task).
     memory::ui::register(&iii);
 
-    // Bind the harness/session/queue seams (injection fail-OPEN — a
+    // Observe the harness/session/queue seams (injection fail-OPEN — a
     // memory failure must never block a turn — plus turn-completed
-    // extraction, session GC, and the durable extraction consumer).
-    // One shot: if an owning sibling boots after this worker, the engine
-    // parks the binding and activates it when the trigger type registers
-    // (recoverable triggers, iii #1962).
-    for (trigger_type, function_id, config) in required_bindings() {
-        bind_best_effort(&iii, trigger_type, function_id, config);
+    // extraction, session GC, and the durable extraction consumer). If an
+    // owning sibling boots after this worker, its observer stays pending and
+    // becomes active once the sibling registers the function. The observers
+    // live as long as the worker's connection.
+    for (source, target) in seam_observers() {
+        let observer = iii.observe(source.clone(), target);
+        tracing::info!(
+            function_id = source.function_id(),
+            target,
+            observer_id = observer.id(),
+            "observing"
+        );
     }
     ensure_extraction_queue(iii.clone());
 
@@ -231,33 +240,23 @@ async fn main() -> Result<()> {
     memory::embed_client::backfill_all(deps.clone());
 
     // Reuse the http worker: every public function doubles as a REST
-    // route (`POST /memory/...`). Best-effort — without the http worker
-    // the bus surface still serves everything.
+    // route (`POST /memory/...`). Without the http worker the routes stay
+    // pending and the bus surface still serves everything.
     for spec in functions::catalog() {
-        let api_path = spec.function_id.replace("::", "/");
-        match iii.register_trigger(RegisterTriggerInput::new(
-            "http".to_string(),
-            spec.function_id.to_string(),
-            json!({ "api_path": api_path, "http_method": "POST" }),
-        )) {
-            Ok(_) => tracing::debug!(
-                function_id = spec.function_id,
-                api_path,
-                "http trigger registered"
-            ),
-            Err(e) => {
-                tracing::debug!(error = %e, function_id = spec.function_id, "http trigger registration failed")
-            }
-        }
+        let observer = iii.observe(rest_route(spec.function_id), spec.function_id);
+        tracing::debug!(
+            function_id = spec.function_id,
+            observer_id = observer.id(),
+            "REST route observed"
+        );
     }
 
-    // LAST: bind the configuration-change trigger so its handler closes
-    // over the fully-built cells.
-    configuration::register_config_trigger(&iii, cell, store_cell)
-        .context("registering the configuration change trigger")?;
+    // LAST: observe configuration changes so the handler closes over the
+    // fully-built cells.
+    configuration::observe_config_changes(&iii, cell, store_cell);
 
     tracing::info!(
-        "memory ready: 14 memory::* functions + 2 custom trigger types + REST via http worker"
+        "memory ready: 14 memory::* functions + 2 change functions + REST via http::on-request"
     );
 
     tokio::signal::ctrl_c().await?;
@@ -325,4 +324,48 @@ fn register_hook_functions(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         .description("Internal: session::deleted handler — drops the session's extraction cursor.")
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rest_routes_take_the_leading_slash() {
+        assert_eq!(
+            rest_route("memory::bank::create"),
+            Source::function("http::on-request")
+                .args(json!({ "method": "POST", "path": "/memory/bank/create" }))
+        );
+    }
+
+    #[test]
+    fn seams_observe_the_harness_session_and_queue_functions() {
+        let observed: Vec<(String, &str)> = seam_observers()
+            .into_iter()
+            .map(|(source, target)| (source.function_id().to_string(), target))
+            .collect();
+        assert_eq!(
+            observed,
+            vec![
+                ("harness::hook::on-pre-generate".to_string(), hooks::PRE_GENERATE_FN),
+                ("harness::on-turn-completed".to_string(), hooks::TURN_COMPLETED_FN),
+                ("session::on-deleted".to_string(), hooks::SESSION_DELETED_FN),
+                ("queue::on-message".to_string(), hooks::EXTRACT_JOB_FN),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_extraction_consumer_names_its_topic() {
+        let (queue, _) = seam_observers().pop().unwrap();
+        assert_eq!(
+            queue,
+            Source::function("queue::on-message").args(json!({
+                "topic": hooks::EXTRACTION_QUEUE,
+                "max_retries": 3,
+                "backoff_ms": 2_000,
+            }))
+        );
+    }
 }
