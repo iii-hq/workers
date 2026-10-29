@@ -62,13 +62,13 @@ const card = {
     },
   ],
 }
-type Engine = Pick<ExtensionIii, 'trigger'>
+type Engine = Pick<ExtensionIii, 'call'>
 const engine = (reply: unknown = card) => {
-  const trigger = vi.fn(async (_id: string, _payload?: Record<string, unknown>, _options?: { timeoutMs?: number }) => {
+  const call = vi.fn(async (_id: string, _payload?: Record<string, unknown>, _options?: { timeoutMs?: number }) => {
     if (reply instanceof Error) throw reply
     return reply
   })
-  return { trigger } as unknown as Engine & { trigger: typeof trigger }
+  return { call } as unknown as Engine & { call: typeof call }
 }
 
 let root: Root | undefined
@@ -97,7 +97,7 @@ describe('loadedModel', () => {
 describe('SemifConfigForm', () => {
   it('offers the model and reports where it runs', async () => {
     const { container, iii } = await mount({})
-    expect(iii.trigger).toHaveBeenCalledWith('judge-semif::models::list', { timeout_ms: 15_000 }, { timeoutMs: 20_000 })
+    expect(iii.call).toHaveBeenCalledWith('judge-semif::models::list', { timeout_ms: 15_000 }, { timeoutMs: 20_000 })
     const select = container.querySelector<HTMLSelectElement>('select[name="model"]')!
     expect([...select.options].map((o) => o.value)).toEqual(['', 'qwen3.5-4b'])
     expect(container.querySelector('[data-chip="success"]')?.textContent).toBe('Running qwen3.5-4b on AMD Radeon RX 6900 XT (Vulkan)')

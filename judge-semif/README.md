@@ -29,7 +29,7 @@ chosen device is logged at start as `selected inference device`.
 ## Install
 
 ```bash
-iii trigger compose::add worker=judge-semif
+iii call compose::add worker=judge-semif
 ```
 
 The functions register at start; the model loads on demand. While SemIf is
@@ -49,7 +49,7 @@ Air-gapped installs set `III_SEMIF_GGUF` to a local GGUF file.
 Make it the hub's default, then call the hub:
 
 ```bash
-iii trigger judge::evaluate --timeout-ms 65000 --json '{
+iii call judge::evaluate --timeout-ms 65000 --json '{
   "timeout_ms": 60000, "provider": "semif",
   "evaluations": [{
     "id": "ticket-4411",
