@@ -539,8 +539,16 @@ describe('per-session judge provider', () => {
     // A judge's settings changing is: a burst reads once.
     iii.state.models['judge-semif'] = 'qwen3.5-9b'
     await act(async () => {
-      iii.emit('configuration::on-updated', { type: 'configuration', event_type: 'configuration:updated', id: 'judge-semif' })
-      iii.emit('configuration::on-updated', { type: 'configuration', event_type: 'configuration:updated', id: 'judge-semif' })
+      iii.emit('configuration::on-updated', {
+        type: 'configuration',
+        event_type: 'configuration:updated',
+        id: 'judge-semif',
+      })
+      iii.emit('configuration::on-updated', {
+        type: 'configuration',
+        event_type: 'configuration:updated',
+        id: 'judge-semif',
+      })
     })
     await act(async () => {
       await vi.advanceTimersByTimeAsync(400)
