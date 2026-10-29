@@ -2,9 +2,9 @@
 name: harness
 description: >-
   The durable agent turn loop — kick off a turn with `harness::send`, render
-  it from session-manager transcript events, react to
-  `harness::turn-completed`, with deny-by-default tool dispatch and synchronous
-  hook extension points for policy siblings.
+  it from session-manager transcript events, observe
+  `harness::on-turn-completed`, with deny-by-default tool dispatch and
+  synchronous hook points for policy siblings.
 ---
 
 # harness
@@ -17,8 +17,9 @@ the session as it generates, so you watch the session, not the harness — there
 is no `agent::events` stream, and `harness::status` is a point-in-time recovery
 read, not a render feed.
 
-Every invocation is a trigger (`iii.trigger({ function_id, payload })`); there is
-no separate "call" verb. Tool dispatch is deny-by-default: a send with no
+Every invocation is a call (`iii.call({ function_id, payload })`), and every
+reaction is an observer (`iii.observe(source, target)`). Tool dispatch is
+deny-by-default: a send with no
 `options.functions.allow` is a plain chat loop and every model-requested call is
 refused until you allow globs per send. Sessions are minted by the harness
 (`s_<uuid>`) or supplied by you; a send into a running turn folds in as steering
@@ -48,7 +49,7 @@ is optional; without it no call is held and every allowed call runs un-gated.
 - Start or steer an agent turn and return immediately (`harness::send`).
 - Cancel an in-flight turn (`harness::stop`) or read coarse turn state for
   recovery and guards (`harness::status`).
-- Chain turns or react to outcomes by binding `harness::turn-completed`.
+- Chain turns or react to outcomes by observing `harness::on-turn-completed`.
 - Drive a turn from an arbitrary inbound event (cron tick, webhook, sensor) by
   translating it into a `harness::send`.
 
@@ -59,18 +60,16 @@ is optional; without it no call is held and every allowed call runs un-gated.
   `harness::status` for content.
 - Not the approvals engine. The harness ships only the gate mechanics; the
   policy, decision RPCs (`approval::resolve`), inbox (`approval::list-pending`),
-  and prompt triggers live in `approval-gate`.
+  and prompt events live in `approval-gate`.
 - Not a chain guard. `options.max_turns` bounds a single turn, not a
   send-completed-send loop; carry your own stop condition.
-- Do not trigger the internal functions (below) — they forge call ids and turn
+- Do not call the internal functions (below) — they forge call ids and turn
   progress, so calling them out of band corrupts the turn record.
 - An in-run agent cannot start turns: `send` / `run` / `turn` / `stop` are denied
-  to the model by policy. `harness::spawn` is the only turn-starter an agent calls
-  directly, and it self-enforces depth, fan-out, and policy subsetting. The other
-  path is event-driven: an agent binds `engine::register_trigger` straight to
-  `harness::spawn` (see Reactive triggers), with the spawn spec in the
-  registration `metadata`, and the engine spawns the sub-agent when the event
-  fires.
+  to the model by policy. `harness::spawn` is the only turn-starter an agent calls,
+  and it self-enforces depth, fan-out, and policy subsetting. An observer never
+  starts an agent: an agent observes with `harness::observe` to be woken (or to
+  have a plain function called), and spawns from the woken turn.
 
 ## Functions
 
@@ -81,21 +80,26 @@ Consumer-facing:
 - `harness::stop` — request cancellation of an in-flight turn; cascades to
   spawned children and kills the `shell::exec_bg` jobs the stopped sessions
   started through their own tool calls (the harness stamps those with the
-  session; jobs started by trigger deliveries or `fp::pipe` steps are unowned
+  session; jobs started by observer deliveries or `fp::pipe` steps are unowned
   and survive).
 - `harness::status` — read the current turn state for a session; `null` when no
   turn ever ran. For recovery and guards, not rendering.
 - `harness::spawn` — spawn a sub-agent in a child session. Model-facing (invoked
-  through `agent_trigger`), not a consumer entry point.
+  through `agent_call`), not a consumer entry point.
+- `harness::observe` / `harness::unobserve` — the agent's observe tools,
+  intercepted by the turn loop for the calling session (see Agent observers).
+- `harness::observers::list` / `harness::observers::dispose` — read and remove a
+  session's agent observers (in-turn calls default to the calling session).
 - `harness::ask` — put a decision with discrete options to the user as a
   clickable card (1–4 questions, 2–4 options each). Model-facing (invoked
-  through `agent_trigger`) and answered by the turn loop itself: the turn ends
+  through `agent_call`) and answered by the turn loop itself: the turn ends
   on the question and the answer arrives as the user's next message. Refused
   in sub-agents, structured-output turns, and for a second ask in one step.
 
-Internal — the harness drives these; never trigger them directly:
-`harness::turn` (the durable loop step), `harness::function::trigger` /
+Internal — the harness drives these; never call them directly:
+`harness::turn` (the durable loop step), `harness::function::call` /
 `harness::function::resolve` (dispatch and parked-call settle),
+`harness::observer::deliver` (the target of every agent observer),
 `harness::sweep-pending` (cron expiry), and `harness::on-config-change`
 (hot-reload).
 
@@ -122,85 +126,82 @@ Under `workspace`, an in-turn spawn's `options.filesystem_root` must lie
 inside the parent's root or grants. What an exec'd process itself writes is
 the `ide` worker's `fs.exec_confinement` switch.
 
-## Reactive triggers
+## Turn events
 
-The harness emits two async turn-boundary trigger types so consumers and siblings
-react without polling `harness::status`:
+The harness hosts private functions that consumers and siblings observe instead
+of polling `harness::status`. Each returns the event it is called with, so an
+observer with `deliver: 'output'` receives the event itself:
 
-- `harness::turn-started` — a turn began executing (first loop step).
-- `harness::turn-completed` — a turn reached a terminal status
+- `harness::on-turn-started` — a turn began executing (first loop step).
+- `harness::on-turn-completed` — a turn reached a terminal status
   (`completed` / `cancelled` / `failed`), carrying the result or error for
-  chaining, failure toasts, auto-titling, and result delivery.
+  chaining, failure toasts, auto-titling, and result delivery; `terminal` is
+  `false` while the session still owns an armed wake.
+- `harness::on-message-queued`, `harness::on-observers-changed`,
+  `harness::on-compaction`, `harness::on-session-tree-deletion` and
+  `harness::on-ready` — see the worker README for their events.
 
-Bind `turn-completed` for outcomes and to chain the next hop; bind `turn-started`
-only for observability. Delivery is fire-and-forget, at-least-once, and unordered
-— treat each event as an edge. Nothing replays on reconnect: re-seed with
-`harness::status` and `approval::list-pending`, then rebind. Do not bind these for
-live transcript rendering — that is `session-manager`'s job.
+None takes args: filter on `input.session_id`, or on
+`input.parent_session_id` / `input.parent.session_id` to watch the children a
+turn `spawn`s (in-turn spawns only — a direct `harness::spawn` call creates no
+parent link, so filter those by `input.session_id`). Observe
+`on-turn-completed` for outcomes and to chain the next hop; observe
+`on-turn-started` only for observability. Delivery is at-most-once and
+unordered — treat each event as an edge. Re-seed with `harness::status` and
+`approval::list-pending` after a reconnect. Do not observe these for live
+transcript rendering — that is `session-manager`'s job.
 
-Binding `config` filters delivery by `session_id`, or by `parent_session_id` to
-watch the children a turn `spawn`s (in-turn spawns only — a direct
-`harness::spawn` call creates no parent link, so filter those by `session_id`).
+```typescript
+iii.registerFunction('myapp::on-turn-done', handler)
+iii.observe(
+  {
+    function_id: 'harness::on-turn-completed',
+    filters: { 'input.session_id': { $eq: sessionId } },
+    deliver: 'output',
+  },
+  'myapp::on-turn-done',
+)
+```
 
-Bind an event to a sub-agent with one call — the spawn spec goes in the
-registration `metadata`; the fired event is appended to the task:
+`engine::functions::info { function_id }` returns each event's shape as its
+`response_format`.
+
+## Agent observers
+
+An in-run agent observes with `harness::observe`; the harness intercepts the
+call, owns the binding for the calling session, and creates the observer:
 
 ```json
-engine::register_trigger {
-  "trigger_type": "harness::turn-completed",
-  "config": { "session_id": "<child>" },
-  "function_id": "harness::spawn",
-  "metadata": { "task": "Summarize the completed run.", "once": true }
+harness::observe {
+  "function_id": "state::on-changed",
+  "filters": { "input.scope": { "$eq": "run-x" }, "input.key": { "$eq": "report" } },
+  "label": "report-ready",
+  "lifecycle": { "expires_in_ms": 600000 }
 }
 ```
 
-`model` defaults to the registering turn's model. A failed upstream turn
-does not fire the reaction unless `continue_on_error: true`. Reactive
-chains stop at depth 8. There is no fan-in join primitive — use the
-workflow worker to join parallel work.
+Omit `target` to be woken in this session; name `target: { function_id,
+payload?, event_into? }` to have a plain function called with the event
+(never `harness::*`). `harness::on-timer { at | in_ms }` is the one-shot
+deadline. Agents cannot observe the turn events: watch what the work writes. A
+wake is once by default, a call observer is standing; bound standing observers
+with `lifecycle` and remove them with `harness::unobserve { id }`. Nothing
+throttles an observer, and a cycle routed through a state write re-enters at
+depth 0 and every lap is a paid turn: design reactions acyclically. See
+`architecture/reactive-observers.md` for the full payload.
 
-An in-session registration that omits `model` also inherits its provider,
-when the spec pins none; raw engine-side registrations have no turn to
-inherit from and must pass one, and any supplied `model` must be a live id
-from `router::models::list` (validated at registration and again at fire
-time). Omit `parent_session_id` and the child nests under the registering
-session's root automatically; pin it only to choose a different REAL
-session (an invented id shows the children as disconnected roots). A
-trigger-fired spawn has no parent policy to inherit — it gets the harness's
-read-only `default_functions` baseline unless `options.functions` grants
-more (narrowing only, same as a direct `harness::spawn` call). Filter
-`turn-completed` only by session ids you know exist; registration returns a
-warning `note` when the filtered session doesn't. Self-edge drop and the
-depth cap are the ONLY loop breakers — still design filters so a reaction is
-not matched by its own subscription. A cycle routed through a state write (or
-any other hop that starts a fresh turn) re-enters at depth 0 and is NOT
-throttled: every lap around the cycle spawns another paid turn indefinitely.
-Design reaction graphs acyclically. This is the in-run agent's chaining path;
-the `registerFunction` recipe below is for workers.
+## Hooks (policy siblings only)
 
-### How to bind
-
-1. Register a handler: `registerFunction('myapp::on-turn-done', handler)`.
-2. Register the trigger:
-
-```typescript
-iii.registerTrigger({
-  type: 'harness::turn-completed',
-  function_id: 'myapp::on-turn-done',
-  config: { session_id: sessionId },
-})
-```
-
-For the event payload shape, call `get function info` on the trigger type.
-
-### Hooks (policy siblings only)
-
-The harness also registers five synchronous, in-path hook trigger types:
-`harness::hook::pre-turn`, `harness::hook::pre-generate`,
-`harness::hook::post-generate`, `harness::hook::pre-trigger`, and
-`harness::hook::post-trigger`. A bound hook runs in the turn's critical path and
-the harness acts on its return value (veto / hold / mutate) under a per-binding
-`timeout_ms` and `on_error` policy; `pre-trigger` / `post-trigger` bindings take a
-`functions` glob list to scope which calls they gate. These are for
-operator-trusted policy siblings (`approval-gate` binds `pre-trigger`); ordinary
-consumers do not bind hooks.
+The harness hosts six synchronous, in-path hook functions:
+`harness::hook::on-pre-turn`, `harness::hook::on-pre-generate`,
+`harness::hook::on-post-generate`, `harness::hook::on-pre-call`,
+`harness::hook::on-post-call`, and `harness::hook::on-post-turn`. A sibling
+observes one with args `{ functions?, sessions?, priority?, timeout_ms?,
+on_error?, inject_prompt?, ... }`; at each point the harness calls the function
+and its observers' targets run in `priority` order in the turn's critical path,
+where the harness acts on their answers (veto / hold / mutate).
+`on-pre-call` / `on-post-call` observers take a `functions` glob list to scope
+which calls they gate. These are for operator-trusted policy siblings
+(`approval-gate` observes `on-pre-call`); ordinary consumers do not observe
+hooks. An agent may observe `on-post-turn` for its own session, with a
+validator as the target.

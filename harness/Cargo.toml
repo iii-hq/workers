@@ -27,8 +27,8 @@ iii-sdk = "=0.26.0"
 iii-helpers = "=0.26.0"
 # Judge routing keys (`iii.judge.provider` baggage, provider-name check).
 judge-contract = { path = "../crates/judge-contract" }
-# Worker-side injectable console UI (content function + console:script/style
-# triggers + hot-reload watcher) — direct link, never published.
+# Worker-side injectable console UI (content function + `console::ui::asset`
+# observers + hot-reload watcher) — direct link, never published.
 iii-console-ui = { path = "../crates/console-ui" }
 # Compose-aware path resolution (III_COMPOSE_DIR, `~/`, absolute) for configured files.
 iii-worker-paths = { path = "../crates/worker-paths" }

@@ -13,7 +13,7 @@ rules:
   # Gate, state, auth, routing — agents must not call these directly.
   - '!approval::resolve'
   # Read-only verdict probe. The harness calls it worker-to-worker before
-  # binding a trigger to an ordinary function; an agent probing its own
+  # an observer calls an ordinary function; an agent probing its own
   # approval posture is reconnaissance, not a tool.
   - '!approval::evaluate'
   - '!hook-fanout::publish_collect'
@@ -196,26 +196,30 @@ rules:
   # harness: deny-by-default for in-run agents (harness.md § Agent exposure).
   # send/run let a model start arbitrary turns outside any max_turns guard;
   # compact rewrites a session's history (the console's control plane);
-  # turn is the internal loop step; function::trigger/resolve forge call ids
+  # turn is the internal loop step; function::call/resolve forge call ids
   # and parked results; stop cancels turns. harness::spawn is the only
   # model-reachable way to start new turns and is left at the needs_approval
   # default (the harness self-enforces depth/fan-out and walls spawned
   # children out of the control plane unless the spawn passes
-  # options.orchestrator). The internal config/cron/session-deleted hooks
-  # must never be agent-callable.
+  # options.orchestrator). The internal config/cron/session-deleted handlers
+  # and the observer delivery hop must never be agent-callable.
   - '!harness::send'
   - '!harness::compact'
   - '!harness::run'
   - '!harness::turn'
-  - '!harness::function::trigger'
+  - '!harness::function::call'
   - '!harness::function::resolve'
   - '!harness::stop'
   - '!harness::on-config-change'
   - '!harness::sweep-pending'
   - '!harness::on-session-deleted'
-  # Engine event handlers (worker connect/disconnect, compose operations) that
-  # drive binding expiry, orphaned-turn recovery and discovery instead of
-  # timers: invoked only by the engine's trigger dispatch.
+  # The target of every agent-created observer: iii delivers to it, agents
+  # never call it. Agents name their real target in harness::observe's
+  # `target`, which is checked against their own policy when they observe.
+  - '!harness::observer::deliver'
+  # The harness's observers of worker connect/disconnect and Compose
+  # operations, which drive binding expiry, orphaned-turn recovery and
+  # discovery: iii delivers to them, agents never call them.
   - '!harness::on-engine-change'
   - '!harness::on-compose-operation'
   # kanban: console asset delivery and the configuration reload sink are
@@ -277,11 +281,6 @@ rules:
   - 'sentinel::trace::get'
   - 'sentinel::logs::list'
   - 'sentinel::diagnosis::record'
-  # The shaping hop for a trigger bound to an ordinary function: the engine
-  # fires it, agents never call it. Agents name their real target in
-  # engine::register_trigger's `function_id`, which is checked against the
-  # registrant's own policy at registration.
-  - '!harness::trigger-call'
   - '!context::on-config-change'
   - '!approval::on-config-change'
   # browser: console-UI plumbing, never agent-callable. pick::* and hint are
@@ -423,37 +422,35 @@ rules:
   - router::models::supports
   - router::provider::list
   # harness::status is read-only (current turn status for a session), and
-  # harness::triggers::list is the matching read over a session's own trigger
-  # bindings. The teardown half (harness::triggers::unregister) is NOT listed:
-  # agents unregister through the intercepted engine::unregister_trigger,
-  # which enforces ownership; the standalone teardown stays behind the
+  # harness::observers::list is the matching read over a session's own
+  # observers. The teardown half (harness::observers::dispose) is NOT listed:
+  # agents remove observers through the intercepted harness::unobserve, which
+  # enforces ownership; the standalone teardown stays behind the
   # needs_approval default for the console's privileged path.
   - harness::status
   - eval::status
   - eval::result
   - eval::assert::exact
-  - harness::triggers::list
+  - harness::observers::list
   - oauth::anthropic::status
   - oauth::openai-codex::status
   - engine::functions::list
   - engine::functions::info
-  - engine::triggers::list
-  - engine::triggers::info
   - engine::workers::list
   - engine::workers::info
-  - engine::registered-triggers::list
-  - engine::registered-triggers::info
-  # Subscriptions: engine::register_trigger is intercepted by the harness and
-  # produces a binding that either WAKES the registering session or CALLS a
-  # plain function — a binding never starts an agent (`harness::spawn` is
-  # refused as a target, so nothing fires engine-side past this gate
-  # anymore). Call targets are checked at registration against the
-  # registrant's own policy AND the approval gate's verdict, so a binding
+  - engine::observers::list
+  - engine::observers::get
+  # Observers: harness::observe is intercepted by the harness and produces an
+  # observer that either WAKES the observing session or CALLS a plain
+  # function — an observer never starts an agent (`harness::spawn` is refused
+  # as a target). Call targets are checked when observing against the
+  # session's own policy AND the approval gate's verdict, so an observer
   # cannot grant an unattended call the session could not make itself.
-  # Bindings registered against the removed `harness::react` / spawn targets
-  # are purged on startup; register a wake and spawn directly instead.
-  - engine::register_trigger
-  - engine::unregister_trigger
+  # engine::observers::dispose stays denied to agents by the harness itself:
+  # the harness created every agent observer, so its authority would remove
+  # any session's.
+  - harness::observe
+  - harness::unobserve
   - worker::list
   # Public worker-registry catalogue reads — the system prompt's
   # search-before-build ladder starts here. worker::add stays approval-gated.
