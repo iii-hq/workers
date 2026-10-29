@@ -508,7 +508,7 @@ export async function listRuns(host: Host, filters: RunFilters): Promise<RunSumm
   if (filters.status) request.status = filters.status
 
   const response = record(
-    await withRpcTimeout(host.iii.trigger('security-scan::list', request), 'security-scan::list'),
+    await withRpcTimeout(host.iii.call('security-scan::list', request), 'security-scan::list'),
     'security-scan::list response',
   )
   if (!Array.isArray(response.runs)) throw new Error('run list was not an array')
@@ -517,7 +517,7 @@ export async function listRuns(host: Host, filters: RunFilters): Promise<RunSumm
 
 export async function readRun(host: Host, runId: string): Promise<SecurityRun | null> {
   const response = record(
-    await withRpcTimeout(host.iii.trigger('security-scan::read', { run_id: runId }), 'security-scan::read'),
+    await withRpcTimeout(host.iii.call('security-scan::read', { run_id: runId }), 'security-scan::read'),
     'security-scan::read response',
   )
   return response.run == null ? null : parseRun(response.run)
@@ -536,7 +536,7 @@ export async function readReconciliation(
   if (options.cursor) request.cursor = options.cursor
   if (options.limit != null) request.limit = options.limit
   const reconciliation = parseReconciliation(
-    await withRpcTimeout(host.iii.trigger('security-scan::reconciliation', request), 'security-scan::reconciliation'),
+    await withRpcTimeout(host.iii.call('security-scan::reconciliation', request), 'security-scan::reconciliation'),
   )
   if (reconciliation.run_id !== runId) {
     throw new Error('security-scan::reconciliation returned a different run id')
@@ -561,7 +561,7 @@ export async function loadScanFormDefaults(host: Host): Promise<ScanFormDefaults
   try {
     const response = record(
       await withRpcTimeout(
-        host.iii.trigger('configuration::get', { id: await resolveConfigurationId(host.iii, 'security-scan') }),
+        host.iii.call('configuration::get', { id: await resolveConfigurationId(host.iii, 'security-scan') }),
         'configuration::get',
       ),
       'configuration::get response',
@@ -590,7 +590,7 @@ export async function loadComposerModel(host: Host, conversationId: string | nul
   if (!sessionId) return null
   try {
     const response = await withRpcTimeout(
-      host.iii.trigger<{ meta?: { metadata?: Record<string, unknown> } } | null>('session::get', {
+      host.iii.call<{ meta?: { metadata?: Record<string, unknown> } } | null>('session::get', {
         session_id: sessionId,
       }),
       'session::get',
@@ -625,7 +625,7 @@ const MODELS_CHANGED_FN = 'security-scan-ui::models-changed'
 export async function loadModelCatalog(host: Host): Promise<CatalogModel[]> {
   try {
     const response = await withRpcTimeout(
-      host.iii.trigger<{ models?: unknown }>('router::models::list', {}),
+      host.iii.call<{ models?: unknown }>('router::models::list', {}),
       'router::models::list',
     )
     const rows = response?.models
@@ -655,21 +655,18 @@ export async function loadModelCatalog(host: Host): Promise<CatalogModel[]> {
 /**
  * Re-read the catalog when llm-router announces a provider reconcile
  * (credential added or removed, `refresh_models`, provider worker added or
- * removed). The trigger is the router's own fan-out type, so the picker never
- * polls for a catalog that changes only on operator action.
+ * removed). The page observes the router's own `router::models::on-changed`
+ * function, so the picker never polls for a catalog that changes only on
+ * operator action.
  */
 export function subscribeModelCatalog(host: Host, onChange: () => void): () => void {
   let offHandler: (() => void) | undefined
-  let offTrigger: (() => void) | undefined
+  let offObserver: (() => void) | undefined
   try {
     offHandler = host.iii.on(MODELS_CHANGED_FN, () => onChange())
-    offTrigger = host.iii.registerTrigger({
-      type: 'router::models::changed',
-      function_id: `${MODELS_CHANGED_FN}::${host.iii.browserId}`,
-      config: {},
-    })
+    offObserver = host.iii.observe('router::models::on-changed', `${MODELS_CHANGED_FN}::${host.iii.browserId}`)
   } catch {
-    offTrigger?.()
+    offObserver?.()
     offHandler?.()
     return () => {}
   }
@@ -677,7 +674,7 @@ export function subscribeModelCatalog(host: Host, onChange: () => void): () => v
   return () => {
     if (disposed) return
     disposed = true
-    offTrigger?.()
+    offObserver?.()
     offHandler?.()
   }
 }
@@ -700,7 +697,7 @@ export async function requestNewRun(
 ): Promise<RetryResult> {
   return parseRequestResponse(
     await withRpcTimeout(
-      host.iii.trigger('security-scan::request', {
+      host.iii.call('security-scan::request', {
         repository: request.repository,
         mode: request.mode,
         ...(request.target_sha ? { target_sha: request.target_sha } : {}),
@@ -727,7 +724,7 @@ export function retryRun(host: Host, run: RunSummary | SecurityRun): Promise<Ret
 
 export async function cancelRun(host: Host, runId: string): Promise<RetryResult> {
   return parseRequestResponse(
-    await withRpcTimeout(host.iii.trigger('security-scan::cancel', { run_id: runId }), 'security-scan::cancel'),
+    await withRpcTimeout(host.iii.call('security-scan::cancel', { run_id: runId }), 'security-scan::cancel'),
     'security-scan::cancel',
   )
 }
@@ -743,7 +740,7 @@ export async function requestFindingAction(
 ): Promise<ActionRequestResult> {
   const response = record(
     await withRpcTimeout(
-      host.iii.trigger('security-scan::action', {
+      host.iii.call('security-scan::action', {
         run_id: runId,
         finding_index: findingIndex,
         action,
@@ -768,7 +765,7 @@ export async function requestFindingAction(
 export async function readFindingAction(host: Host, actionId: string): Promise<SecurityAction | null> {
   const response = record(
     await withRpcTimeout(
-      host.iii.trigger('security-scan::action-read', { action_id: actionId }),
+      host.iii.call('security-scan::action-read', { action_id: actionId }),
       'security-scan::action-read',
     ),
     'security-scan::action-read response',
@@ -881,7 +878,7 @@ export async function listAnalysisConversations(host: Host, runId?: string): Pro
   const id = runId?.trim()
   const response = record(
     await withRpcTimeout(
-      host.iii.trigger('session::list', {
+      host.iii.call('session::list', {
         limit: ANALYSIS_SESSION_LIMIT,
         order: 'updated_desc',
         metadata: {
@@ -903,7 +900,7 @@ export async function analysisConversationRunId(host: Host, sessionId: string): 
   const id = sessionId.trim()
   if (!id) return null
   const response = await withRpcTimeout(
-    host.iii.trigger<{ meta?: unknown } | null>('session::get', { session_id: id }),
+    host.iii.call<{ meta?: unknown } | null>('session::get', { session_id: id }),
     'session::get',
   )
   if (!response?.meta) return null
@@ -917,7 +914,7 @@ export async function ensureAnalysisConversation(host: Host, runId: string): Pro
   if (existing[0]) return existing[0].sessionId
   const response = record(
     await withRpcTimeout(
-      host.iii.trigger('security-scan::analysis-chat', { run_id: id }),
+      host.iii.call('security-scan::analysis-chat', { run_id: id }),
       'security-scan::analysis-chat',
     ),
     'security-scan::analysis-chat response',

@@ -4,8 +4,8 @@
 //! Every outbound call this worker makes is tagged `iii.tag.hidden` so its
 //! own plumbing does not clutter the trace views it exists to serve, and
 //! every one of them remembers its trace id in the phantom ring — the calls
-//! *are* the traces that would otherwise tick the trigger that feeds this
-//! worker.
+//! *are* the traces that would otherwise tick `observability::on-span`, the
+//! source that feeds this worker.
 
 pub mod harness;
 
@@ -15,8 +15,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use iii_helpers::observability::{current_trace_id, run_with_baggage};
-use iii_sdk::protocol::{TriggerAction, TriggerRequest};
-use iii_sdk::IIIClient;
+use iii_sdk::{CallAction, CallRequest, IIIClient};
 use serde_json::{json, Value};
 use tokio::sync::OnceCell;
 
@@ -67,7 +66,7 @@ impl Runtime {
             if let Some(trace_id) = current_trace_id() {
                 ring.remember(&trace_id);
             }
-            iii.trigger(TriggerRequest {
+            iii.call(CallRequest {
                 function_id: function.clone(),
                 payload,
                 action: None,
@@ -614,10 +613,10 @@ impl IngestQueue {
             if let Some(trace_id) = current_trace_id() {
                 ring.remember(&trace_id);
             }
-            iii.trigger(TriggerRequest {
+            iii.call(CallRequest {
                 function_id: crate::functions::INGEST_ID.to_string(),
                 payload,
-                action: Some(TriggerAction::Enqueue {
+                action: Some(CallAction::Enqueue {
                     queue: QUEUE_NAME.to_string(),
                 }),
                 timeout_ms: Some(CALL_TIMEOUT_MS),

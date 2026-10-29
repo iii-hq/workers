@@ -5,23 +5,23 @@
 ## Install
 
 ```bash
-iii trigger compose::add worker=security-scan
+iii call compose::add worker=security-scan
 ```
 
 Analysis requires the Harness stack. GitHub issue and draft fix-PR actions also require `approval-gate` to be live; those mutations stay closed until a user approves each one.
 
 ```bash
-iii trigger compose::add worker=harness worker=approval-gate
+iii call compose::add worker=harness worker=approval-gate
 ```
 
-The worker composes existing iii infrastructure rather than implementing local substitutes: private compare-and-set records live in `state`, durable steps run through `queue`, exact checkouts come from `worktree`, configured schedules bind through the `cron` dependency, analysis runs through `harness`, and GitHub publication is held by `approval-gate`.
+The worker composes existing iii infrastructure rather than implementing local substitutes: private compare-and-set records live in `state`, durable steps run through `queue`, exact checkouts come from `worktree`, configured schedules observe the `cron` worker's `cron::on-tick`, analysis runs through `harness`, and GitHub publication is held by `approval-gate`.
 
 ## Quickstart
 
 Request a scan using a configured repository id and a full commit SHA:
 
 ```bash
-iii trigger security-scan::request \
+iii call security-scan::request \
   repository=iii-hq/iii \
   target_sha="$(git -C /srv/repos/iii rev-parse HEAD)" \
   mode=scan \
@@ -43,14 +43,14 @@ Submitting the same repository, commit, mode, and model again returns the same r
 Read the current status or completed report:
 
 ```bash
-iii trigger security-scan::read run_id=sec_...
+iii call security-scan::read run_id=sec_...
 ```
 
 Read the persisted GitHub reconciliation snapshot, or explicitly refresh it:
 
 ```bash
-iii trigger security-scan::reconciliation run_id=sec_...
-iii trigger security-scan::reconciliation run_id=sec_... refresh=true limit=50
+iii call security-scan::reconciliation run_id=sec_...
+iii call security-scan::reconciliation run_id=sec_... refresh=true limit=50
 ```
 
 The Harness count and GitHub alert counts answer different questions and are never added together. Harness findings are validated against the requested exact commit. Dependabot is a repository default-branch snapshot, while code scanning is a repository snapshot whose latest instances may refer to commits other than the requested SHA. A Harness count of 3 and GitHub source counts totaling 221 therefore remain 3 exact-commit findings and 221 GitHub records, not 224 unique findings.
@@ -62,16 +62,16 @@ The default `refresh=false` reads the last sanitized snapshot without calling Gi
 List recent runs, optionally filtered by repository or status:
 
 ```bash
-iii trigger security-scan::list repository=iii-hq/iii status=completed limit=50
+iii call security-scan::list repository=iii-hq/iii status=completed limit=50
 ```
 
 ## Console page
 
-When `security-scan` and Console are connected, open the `security-scan` page to browse persisted run history and inspect a selected report. The page shows the exact repository and commit, current pipeline status, evidence and remediation for each finding, and suggested patches in `suggest` mode. Suggested patches remain read-only until you explicitly create a draft fix PR and approve the GitHub mutation. The sidebar form reviews the full tree at the pasted SHA. Its analysis-model picker lists the live router catalog and pins one model for the scan; left on `follow chat` it takes the model selected in the open chat composer, and falls back to the operator `analysis.model` when that chat has none. The catalog is re-read on the router's `router::models::changed` fan-out, so a credential added or a provider removed updates the list without a reload.
+When `security-scan` and Console are connected, open the `security-scan` page to browse persisted run history and inspect a selected report. The page shows the exact repository and commit, current pipeline status, evidence and remediation for each finding, and suggested patches in `suggest` mode. Suggested patches remain read-only until you explicitly create a draft fix PR and approve the GitHub mutation. The sidebar form reviews the full tree at the pasted SHA. Its analysis-model picker lists the live router catalog and pins one model for the scan; left on `follow chat` it takes the model selected in the open chat composer, and falls back to the operator `analysis.model` when that chat has none. The page observes the router's `router::models::on-changed` and re-reads the catalog on each call, so a credential added or a provider removed updates the list without a reload.
 
 Each Harness finding can start an approval-gated GitHub issue. Completed `suggest` findings that include a patch can also start an isolated draft fix PR. GitHub reconciliation alerts are a separate snapshot and cannot start exact-commit Harness actions.
 
-Run updates arrive through the worker's own change trigger types (see [Change notifications](#change-notifications)). A notification is a refresh doorbell rather than the source of truth: each run or reconciliation change makes the page refetch `security-scan::list` (and with it the selected run through `security-scan::read`), and each action change re-reads that action through `security-scan::action-read`. The page binds first, then reads once. Nothing is polled. The page also re-reads when the socket reconnects and on the refresh control, and while live updates are unavailable it re-reads when the tab becomes visible again, so a missed notification delays convergence until the next event rather than stranding the view.
+Run updates arrive through the worker's own change functions (see [Change functions](#change-functions)). A change event is a refresh doorbell rather than the source of truth: each run or reconciliation change makes the page refetch `security-scan::list` (and with it the selected run through `security-scan::read`), and each action change re-reads that action through `security-scan::action-read`. The page observes first, then reads once. Nothing is polled. The page also re-reads when the socket reconnects and on the refresh control, and while live updates are unavailable it re-reads when the tab becomes visible again, so a missed event delays convergence until the next one rather than stranding the view.
 
 A completed report records coverage separately for vulnerabilities, dependencies, secrets, and supply-chain review. An area can be assessed, not assessed with a reason, or unknown for reports created before coverage tracking. Zero findings are never presented as proof that the code is vulnerability-free.
 
@@ -86,22 +86,35 @@ III_SECURITY_SCAN_UI_WATCH=security-scan/ui/dist cargo run --manifest-path secur
 
 The page header's standard settings control opens this worker in the Console's global Settings modal: the analysis budgets (`max_turns` and the token and cost ceilings), the operator `analysis.model`, and the repository allowlist all live there.
 
-## Change notifications
+## Change functions
 
-Runs, reconciliation snapshots, and finding actions are stored records owned by this worker (private `state` scopes written with compare-and-set). After a write commits, the worker fires one of these trigger types. Bind a function to them the same way you bind `cron` or `http` (trigger type id, target function, optional filter config):
+Runs, reconciliation snapshots, and finding actions are stored records owned by this worker (private `state` scopes written with compare-and-set). After a write commits, the worker calls one of these functions with a small event. Each is private (only this worker calls it), takes no args, and returns the event it is called with, which is what its observers observe. Select calls with filters on `input.repository` and `input.run_id`.
 
-| Trigger type | Fires after | Payload |
-| --- | --- | --- |
-| `security-scan::run-changed` | A run was created or changed | `{ run_id, repository, status, attempt, updated_at, completed_at }` |
-| `security-scan::reconciliation-changed` | A run's GitHub reconciliation snapshot was saved | `{ run_id, repository }` |
-| `security-scan::action-changed` | A finding action was created or changed | `{ action_id, run_id, repository, status, updated_at }` |
+| Function | Called after | Args | Event |
+| --- | --- | --- | --- |
+| `security-scan::on-run-changed` | A run was created or changed | none; filter on `input.repository`, `input.run_id` | `{ run_id, repository, status, attempt, updated_at, completed_at }` |
+| `security-scan::on-reconciliation-changed` | A run's GitHub reconciliation snapshot was saved | none; filter on `input.repository`, `input.run_id` | `{ run_id, repository }` |
+| `security-scan::on-action-changed` | A finding action was created or changed | none; filter on `input.repository`, `input.run_id` | `{ action_id, run_id, repository, status, updated_at }` |
 
-- The binding `config` accepts optional `repository` and `run_id` equality filters (1 to 256 bytes each). Unknown keys, blank values, and non-string values reject the binding at registration.
-- Payloads are small public projections. `updated_at` is the record's revision hint; ordering and contents come from re-reading the record, not from the notification.
-- Delivery is fire-and-forget to each matching binding in the binding's namespace, with its metadata. Each trigger type accepts at most 256 bindings, and at most 16 per target function.
-- Notifications are not replayed. A consumer binds first, then reads (`security-scan::list`, `security-scan::read`, `security-scan::reconciliation`, `security-scan::action-read`), treats a repeated or older notification as a reason to re-read at most, and reads again after it reconnects.
+```ts
+iii.observe(
+  { function_id: 'security-scan::on-run-changed', filters: { 'input.repository': { $eq: 'iii-hq/iii' } }, deliver: 'output' },
+  'audit::on-security-run',
+)
+```
 
-These trigger types replace the earlier stream-based doorbell, which is deprecated; the worker no longer depends on the stream worker.
+- Events are small public projections. `updated_at` is the record's revision hint; ordering and contents come from re-reading the record, not from the event.
+- iii delivers each call to every observer whose filters match it. The worker calls a function only while something observes it, fire-and-forget, so a slow consumer never holds a write.
+- Calls are not replayed. A consumer observes first, then reads (`security-scan::list`, `security-scan::read`, `security-scan::reconciliation`, `security-scan::action-read`), treats a repeated or older event as a reason to re-read at most, and reads again after it reconnects.
+
+## Observers
+
+| Function observed | Args, filters | Target | Purpose |
+| --- | --- | --- | --- |
+| `cron::on-tick` | args `{ expression }` of one configured schedule; observer metadata `{ repository }` | `security-scan::on-schedule` | Starts a scheduled scan (one observer per scheduled repository) |
+| `harness::on-turn-completed` | none | `security-scan::on-turn-completed` | Wakes the run or action whose Harness turn finished; a recovery sweep every 30 s covers missed events |
+
+Both take the event as output (`deliver: 'output'`). An observer stays `pending` while its function's worker is not running and becomes active when that worker registers it, so start order does not matter.
 
 ## Configuration
 
@@ -135,9 +148,9 @@ The shipped configuration leaves `analysis.model` empty and `repositories: []` u
 
 Each repository has at most one schedule, so the repository id is also its unique schedule identity. The expression must use six fields starting with seconds, with an optional seventh year field. Cron evaluation is UTC. Fires missed while `cron` or `security-scan` is stopped are skipped and are not replayed.
 
-At fire time the internal handler uses trigger metadata only to find this operator-owned configuration. It resolves `target_ref` with a bounded local `git rev-parse` call, does not fetch, requires one lowercase full 40-character commit SHA, and submits that SHA through the same `security-scan::request` path used manually. Repeated fires that resolve to the same repository, commit, and mode therefore return the existing run instead of creating duplicate work.
+At fire time the internal handler uses the observer's metadata (`{ repository }`) only to find this operator-owned configuration. It resolves `target_ref` with a bounded local `git rev-parse` call, does not fetch, requires one lowercase full 40-character commit SHA, and submits that SHA through the same `security-scan::request` path used manually. Repeated fires that resolve to the same repository, commit, and mode therefore return the existing run instead of creating duplicate work.
 
-Configuration is loaded at worker startup in this MVP. Restart `security-scan` after changing repositories, GitHub mappings, schedules, analysis settings, or archive settings. The worker manifest starts `github` and `cron` as dependencies. If a manually assembled stack starts `security-scan` before a cron trigger owner is available, manual scans remain available and the recovery loop binds each configured schedule once `cron` appears.
+Configuration is loaded at worker startup in this MVP. Restart `security-scan` after changing repositories, GitHub mappings, schedules, analysis settings, or archive settings. The worker manifest starts `github` and `cron` as dependencies. Each configured schedule is one `cron::on-tick` observer with args `{ expression }`; in a manually assembled stack that starts `security-scan` before `cron`, the observer stays pending until `cron` registers, and manual scans work throughout.
 
 ## Persistence
 
@@ -155,7 +168,7 @@ buckets:
     bucket: security-scan
 ```
 
-The local provider spawns a rustfs sidecar (`iii trigger compose::add worker=storage`). Set `$RUSTFS_BIN` or put `rustfs` on `PATH`. JSON copies are a backup; the Console Scan runs list still comes from `state`.
+The local provider spawns a rustfs sidecar (`iii call compose::add worker=storage`). Set `$RUSTFS_BIN` or put `rustfs` on `PATH`. JSON copies are a backup; the Console Scan runs list still comes from `state`.
 
 ## Safety boundary
 
@@ -165,6 +178,6 @@ Dependency sessions use private random identities rather than the public run id.
 
 GitHub issue and draft fix-PR actions use a separate Harness session after an explicit user request. Issue sessions may call only `github::issue::create`. Fix sessions use an exact-SHA worktree with scoped file writes, explicit git commands, and `github::pr::create`. Both require `approval::gate` to be live; GitHub publication, branch push, and PR creation stay held until the user approves them. Fix PRs open as drafts and never merge automatically.
 
-The public MVP exposes `security-scan::request`, `security-scan::read`, `security-scan::list`, `security-scan::reconciliation`, `security-scan::action`, and `security-scan::action-read`. `security-scan::execute`, `security-scan::action-execute`, `security-scan::on-turn-completed`, and `security-scan::on-schedule` are internal worker functions. Scan analysis still does not apply, commit, push, comment, review, merge, or dismiss alerts on its own.
+The public MVP exposes `security-scan::request`, `security-scan::read`, `security-scan::list`, `security-scan::reconciliation`, `security-scan::action`, and `security-scan::action-read`. `security-scan::execute`, `security-scan::action-execute`, `security-scan::on-turn-completed`, and `security-scan::on-schedule` are internal worker functions. The private change functions in [Change functions](#change-functions) are observable by anyone and called only by this worker. Scan analysis still does not apply, commit, push, comment, review, merge, or dismiss alerts on its own.
 
 This first phase is the bounded investigation layer. A later phase will feed it deterministic, pinned SAST, dependency, and secret-scanner candidates before Harness analysis, following the same candidate-discovery then evidence-review split used by DeepSec.

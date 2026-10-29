@@ -3,10 +3,10 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::runtime::FunctionRef;
-use iii_sdk::trigger::Trigger;
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{
+    Deliver, IIIClient, ObserverHandle, ObserverOptions, ObserverState, RegisterFunction, Source,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::process::Command;
@@ -18,68 +18,28 @@ use crate::{
     SecurityScanService, WorkerConfig,
 };
 
-const GIT_RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
-const CRON_PROBE_ATTEMPTS: u32 = 4;
-const CRON_PROBE_BACKOFF: Duration = Duration::from_millis(250);
+/// The cron worker's tick function, observed with args `{ expression }`.
+pub const ON_TICK_FN: &str = "cron::on-tick";
 
-/// Keeps the static handler and every successful cron binding registered until
-/// worker shutdown, while allowing missing bindings to recover later.
+const GIT_RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Keeps the static handler and one `cron::on-tick` observer per scheduled
+/// repository until worker shutdown. An observer stays `pending` while the
+/// cron worker is not running and becomes active once it registers its
+/// function, so start order does not matter.
 pub struct ScheduleHandles {
     _function: FunctionRef,
-    iii: Arc<IIIClient>,
-    config: Arc<WorkerConfig>,
-    triggers: HashMap<String, Trigger>,
+    observers: HashMap<String, ObserverHandle>,
 }
 
 impl ScheduleHandles {
-    pub fn bound_schedule_count(&self) -> usize {
-        self.triggers.len()
+    pub fn schedule_count(&self) -> usize {
+        self.observers.len()
     }
 
-    pub async fn recover_bindings(&mut self) {
-        let pending = pending_schedule_indices(&self.config, |repository| {
-            self.triggers.contains_key(repository)
-        });
-        if pending.is_empty() {
-            return;
-        }
-
-        if !wait_for_cron_owner(&self.iii).await {
-            tracing::warn!(
-                configured = pending.len(),
-                "cron trigger owner is unavailable; scheduled security scans will retry while manual scanning remains active"
-            );
-            return;
-        }
-
-        for index in pending {
-            let repository = &self.config.repositories[index];
-            let Some(schedule) = repository.schedule.as_ref() else {
-                continue;
-            };
-            match self.iii.register_trigger(RegisterTriggerInput {
-                trigger_type: "cron".into(),
-                function_id: ON_SCHEDULE_ID.into(),
-                config: json!({ "expression": schedule.expression }),
-                metadata: Some(json!({ "repository": repository.id })),
-                namespace: None,
-                trigger_namespace: None,
-            }) {
-                Ok(trigger) => {
-                    tracing::info!(
-                        repository = %repository.id,
-                        expression = %schedule.expression,
-                        "bound UTC security scan schedule"
-                    );
-                    self.triggers.insert(repository.id.clone(), trigger);
-                }
-                Err(error) => tracing::error!(
-                    repository = %repository.id,
-                    %error,
-                    "could not bind security scan schedule; recovery will retry while manual scanning remains active"
-                ),
-            }
-        }
+    /// The observer of one configured repository's schedule.
+    pub fn observer(&self, repository: &str) -> Option<&ObserverHandle> {
+        self.observers.get(repository)
     }
 }
 
@@ -89,7 +49,7 @@ struct ScheduleMetadataV1 {
     repository: String,
 }
 
-pub async fn register(
+pub fn register(
     iii: &Arc<IIIClient>,
     service: Arc<SecurityScanService<IiiRuntime>>,
     config: Arc<WorkerConfig>,
@@ -113,68 +73,59 @@ pub async fn register(
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
 
-    let mut handles = ScheduleHandles {
-        _function: function,
-        iii: iii.clone(),
-        config,
-        triggers: HashMap::new(),
-    };
-    handles.recover_bindings().await;
-    handles
-}
-
-fn pending_schedule_indices(config: &WorkerConfig, is_bound: impl Fn(&str) -> bool) -> Vec<usize> {
-    config
-        .repositories
-        .iter()
-        .enumerate()
-        .filter_map(|(index, repository)| {
-            (repository.schedule.is_some() && !is_bound(&repository.id)).then_some(index)
-        })
-        .collect()
-}
-
-async fn wait_for_cron_owner(iii: &IIIClient) -> bool {
-    for attempt in 1..=CRON_PROBE_ATTEMPTS {
-        match cron_owner_available(iii).await {
-            Ok(true) => return true,
-            Ok(false) if attempt < CRON_PROBE_ATTEMPTS => {}
-            Ok(false) => return false,
-            Err(error) if attempt < CRON_PROBE_ATTEMPTS => {
-                tracing::warn!(attempt, %error, "could not confirm cron trigger owner; retrying")
-            }
-            Err(error) => {
-                tracing::error!(%error, "could not confirm cron trigger owner");
-                return false;
-            }
-        }
-        tokio::time::sleep(CRON_PROBE_BACKOFF * attempt).await;
+    let mut observers = HashMap::new();
+    for repository in &config.repositories {
+        let Some(schedule) = repository.schedule.as_ref() else {
+            continue;
+        };
+        let handle = observe_schedule(iii, repository, schedule);
+        let (id, expression) = (repository.id.clone(), schedule.expression.clone());
+        let _ = handle.on_state_change(move |state, reason| match state {
+            ObserverState::Active => tracing::info!(
+                repository = %id,
+                %expression,
+                "observing UTC security scan schedule"
+            ),
+            ObserverState::Error => tracing::error!(
+                repository = %id,
+                %expression,
+                reason = ?reason,
+                "cron refused the security scan schedule; manual scanning remains active"
+            ),
+            _ => {}
+        });
+        observers.insert(repository.id.clone(), handle);
     }
-    false
+
+    ScheduleHandles {
+        _function: function,
+        observers,
+    }
 }
 
-async fn cron_owner_available(iii: &IIIClient) -> Result<bool, SecurityScanError> {
-    let response = iii
-        .trigger(TriggerRequest {
-            function_id: "engine::triggers::list".into(),
-            payload: json!({ "include_internal": true }),
-            action: None,
-            timeout_ms: Some(5_000),
-        })
-        .await
-        .map_err(|error| {
-            SecurityScanError::Dependency(format!(
-                "engine::triggers::list failed while probing cron: {error}"
-            ))
-        })?;
-    Ok(response
-        .get("triggers")
-        .and_then(Value::as_array)
-        .is_some_and(|triggers| {
-            triggers
-                .iter()
-                .any(|trigger| trigger.get("id").and_then(Value::as_str) == Some("cron"))
-        }))
+/// One `cron::on-tick` observer for a repository's schedule: the cron
+/// expression is the arg, the repository id rides as observer metadata (the
+/// target's metadata sidecar), and the target takes the tick as output.
+fn observe_schedule(
+    iii: &IIIClient,
+    repository: &RepositoryConfigV1,
+    schedule: &RepositoryScheduleV1,
+) -> ObserverHandle {
+    iii.observe_with(
+        schedule_source(schedule),
+        ON_SCHEDULE_ID,
+        ObserverOptions::default().metadata(schedule_metadata(repository)),
+    )
+}
+
+fn schedule_source(schedule: &RepositoryScheduleV1) -> Source {
+    Source::function(ON_TICK_FN)
+        .args(json!({ "expression": schedule.expression }))
+        .deliver(Deliver::Output)
+}
+
+fn schedule_metadata(repository: &RepositoryConfigV1) -> Value {
+    json!({ "repository": repository.id })
 }
 
 async fn handle_schedule(
@@ -304,7 +255,6 @@ async fn request_resolved_schedule<R: SecurityRuntime>(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
     use std::sync::Mutex;
 
     use async_trait::async_trait;
@@ -375,25 +325,49 @@ mod tests {
     }
 
     #[test]
-    fn late_cron_recovery_retries_only_unbound_schedules() {
+    fn a_schedule_observes_cron_with_its_expression_and_repository_metadata() {
         let config = config_with_schedule();
-        let mut bound = HashSet::new();
+        let repository = &config.repositories[0];
+        let schedule = repository.schedule.as_ref().unwrap();
 
         assert_eq!(
-            pending_schedule_indices(&config, |repository| bound.contains(repository)),
-            vec![0]
+            schedule_source(schedule),
+            Source::function("cron::on-tick")
+                .args(json!({ "expression": "0 0 3 * * *" }))
+                .deliver(Deliver::Output)
         );
-        // An unavailable owner or failed registration leaves the repository
-        // pending for the next recovery pass.
         assert_eq!(
-            pending_schedule_indices(&config, |repository| bound.contains(repository)),
-            vec![0]
+            schedule_metadata(repository),
+            json!({ "repository": "iii-hq/iii" })
         );
+    }
 
-        bound.insert("iii-hq/iii".to_string());
-        assert!(
-            pending_schedule_indices(&config, |repository| bound.contains(repository)).is_empty()
-        );
+    #[tokio::test]
+    async fn every_scheduled_repository_gets_one_pending_observer_without_cron() {
+        // `IIIClient::new` builds local state only: observers stay pending
+        // until a connection and the cron worker's function exist.
+        let iii = Arc::new(IIIClient::new("ws://127.0.0.1:1"));
+        let mut config = config_with_schedule();
+        config.repositories.push(RepositoryConfigV1 {
+            id: "iii-hq/manual".into(),
+            path: "/srv/repos/manual".into(),
+            github: None,
+            schedule: None,
+        });
+        let config = Arc::new(config);
+        let service = Arc::new(SecurityScanService::new(
+            Arc::new(IiiRuntime::new(iii.clone())),
+            config.as_ref().clone(),
+        ));
+
+        let handles = register(&iii, service, config);
+
+        assert_eq!(handles.schedule_count(), 1);
+        let observer = handles
+            .observer("iii-hq/iii")
+            .expect("scheduled repository");
+        assert_eq!(observer.state(), ObserverState::Pending);
+        assert!(handles.observer("iii-hq/manual").is_none());
     }
 
     #[derive(Default)]

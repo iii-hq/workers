@@ -1,5 +1,5 @@
-//! `approval::on-session-deleted` — bound to session-manager's
-//! `session::deleted` trigger type. Purges the session's settings record,
+//! `approval::on-session-deleted` — the target of this worker's observer of
+//! session-manager's `session::on-deleted`. Purges the session's settings record,
 //! every pending record, the filesystem-access-watch attempt counters, and the
 //! filesystem-access-watch denied-directory memory (the cascade the prior deployment
 //! lacked).
@@ -12,7 +12,7 @@ use crate::filesystem_access_state;
 use crate::settings;
 use crate::types::EventAck;
 
-/// `session::deleted` payload (only the field we read).
+/// `session::on-deleted` event (only the field we read).
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct SessionDeletedEvent {
     pub session_id: String,

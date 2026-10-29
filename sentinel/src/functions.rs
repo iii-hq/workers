@@ -1,6 +1,6 @@
 //! The registered function surface and its schema catalog.
 //!
-//! Internal handlers — the queue step, the trigger targets, the
+//! Internal handlers — the queue step, the observer targets, the
 //! configuration doorbell — carry `internal: true` so they stay off the
 //! catalog agents browse, and `trace_hidden: true` so their spans do not
 //! clutter the trace views of the very pipeline they observe
@@ -26,14 +26,14 @@ use crate::store::Store;
 use crate::{
     ids, Counters, DiagnosesListRequestV1, DiagnosesListResponseV1, DiagnosisRecordRequestV1,
     DiagnosisRecordResponseV1, DoorbellResponseV1, EvidenceGetRequestV1, EvidenceGetResponseV1,
-    GroupActionRequestV1, GroupChangedOpV1, GroupGetRequestV1, GroupGetResponseV1,
-    GroupHistoryRequestV1, GroupHistoryResponseV1, GroupStateResponseV1, GroupsListRequestV1,
-    GroupsListResponseV1, IgnoreRequestV1, InvestigateRequestV1, InvestigateResponseV1,
-    InvestigationCancelRequestV1, InvestigationGetRequestV1, InvestigationGetResponseV1,
-    InvestigationSummaryV1, InvestigationsListRequestV1, InvestigationsListResponseV1,
-    LogsListRequestV1, LogsListResponseV1, OccurrencesListRequestV1, OccurrencesListResponseV1,
-    ResolveRequestV1, StatusRequestV1, StatusResponseV1, TraceGetRequestV1, TraceGetResponseV1,
-    TurnCompletedEventV1,
+    GroupActionRequestV1, GroupChangedEventV1, GroupChangedOpV1, GroupGetRequestV1,
+    GroupGetResponseV1, GroupHistoryRequestV1, GroupHistoryResponseV1, GroupStateResponseV1,
+    GroupsListRequestV1, GroupsListResponseV1, IgnoreRequestV1, InvestigateRequestV1,
+    InvestigateResponseV1, InvestigationCancelRequestV1, InvestigationChangedEventV1,
+    InvestigationGetRequestV1, InvestigationGetResponseV1, InvestigationSummaryV1,
+    InvestigationsListRequestV1, InvestigationsListResponseV1, LogsListRequestV1,
+    LogsListResponseV1, OccurrencesListRequestV1, OccurrencesListResponseV1, ResolveRequestV1,
+    StatusRequestV1, StatusResponseV1, TraceGetRequestV1, TraceGetResponseV1, TurnCompletedEventV1,
 };
 
 pub const STATUS_ID: &str = "sentinel::status";
@@ -62,10 +62,10 @@ pub const INGEST_ID: &str = "sentinel::ingest";
 pub const INGEST_DESC: &str =
     "Internal durable queue step: reads one trace or log and records what failed.";
 pub const ON_TRACE_ACTIVITY_ID: &str = "sentinel::on-trace-activity";
-pub const ON_TRACE_ACTIVITY_DESC: &str =
-    "Internal handler for the engine's error-span trigger; queues the traces worth reading.";
+pub const ON_TRACE_ACTIVITY_DESC: &str = "Internal observer of observability::on-span; queues the traces worth reading, and the ingest records only those that hold an error.";
 pub const ON_LOG_ID: &str = "sentinel::on-log";
-pub const ON_LOG_DESC: &str = "Internal handler for the engine's ERROR-log trigger.";
+pub const ON_LOG_DESC: &str =
+    "Internal observer of observability::on-log, filtered to ERROR records and above.";
 pub const ON_TURN_COMPLETED_ID: &str = "sentinel::on-turn-completed";
 pub const ON_TURN_COMPLETED_DESC: &str =
     "Internal doorbell for a finished investigation turn; the status is re-read rather than trusted.";
@@ -101,14 +101,15 @@ pub const DIAGNOSIS_RECORD_DESC: &str = "Record what an investigation concluded 
 
 pub use crate::configuration::{CONFIG_CHANGE_DESC, CONFIG_CHANGE_ID};
 
-/// The tick the engine's `trace` trigger delivers: ids only, coalesced.
+/// The `observability::on-span` event, delivered as output: trace ids only,
+/// coalesced.
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct TraceActivityEventV1 {
     #[serde(default)]
     pub trace_ids: Vec<String>,
 }
 
-/// One ERROR log as the engine's `log` trigger delivers it.
+/// One ERROR log as `observability::on-log` delivers it, as output.
 ///
 /// Typed rather than taken as a free value: the published surface is what
 /// interface capture records, and an untyped request there tells a reader
@@ -499,7 +500,7 @@ async fn status<E: EngineRegistry>(deps: &Deps<E>) -> StatusResponseV1 {
 }
 
 /// The tick handler does as little as possible: the engine ignores its
-/// result, and anything slow here holds up the trigger's own loop.
+/// result, and anything slow here holds up the source's own loop.
 async fn on_trace_activity<E: EngineRegistry>(
     deps: &Deps<E>,
     event: TraceActivityEventV1,
@@ -623,9 +624,7 @@ pub async fn broadcast<E: EngineRegistry>(deps: &Arc<Deps<E>>, events: Vec<Annou
         match event {
             Announcement::Group(state) => announce(deps, &state).await,
             Announcement::Investigation(event) => {
-                if let Ok(payload) = serde_json::to_value(&event) {
-                    deps.emitter.investigation_changed(payload).await;
-                }
+                deps.emitter.investigation_changed(event).await;
             }
         }
     }
@@ -742,6 +741,14 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<iii_config_client::OnConfigChangeEvent, iii_config_client::OnConfigChangeResponse>(
             CONFIG_CHANGE_ID,
             CONFIG_CHANGE_DESC,
+        ),
+        spec::<GroupChangedEventV1, GroupChangedEventV1>(
+            crate::events::ON_GROUP_CHANGED_FN,
+            crate::events::ON_GROUP_CHANGED_DESC,
+        ),
+        spec::<InvestigationChangedEventV1, InvestigationChangedEventV1>(
+            crate::events::ON_INVESTIGATION_CHANGED_FN,
+            crate::events::ON_INVESTIGATION_CHANGED_DESC,
         ),
     ]
 }
