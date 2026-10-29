@@ -11,8 +11,9 @@ use email::triggers::new_mail::{
     codes, refuse_invocation, Handler, ObserveNewMail, NEW_MAIL_TRIGGER_TYPE, ON_NEW_MAIL_FN,
 };
 use email::triggers::registry::{NewMailObserver, TriggerRegistry};
-use email::triggers::Event;
+use email::triggers::{Event, NewMailEvent};
 use iii_sdk::errors::Error;
+use iii_sdk::iii::IntoSyncHandler;
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
 use serde_json::{json, Value};
 
@@ -97,9 +98,11 @@ fn on_new_mail_refuses_direct_invocation() {
     assert_eq!(NEW_MAIL_TRIGGER_TYPE, "email::new-mail");
     assert_eq!(ON_NEW_MAIL_FN, "email::on-new-mail");
     for payload in [
-        json!({}),
-        Value::Null,
-        json!({ "account": "support", "folder": "INBOX", "uid": 1 }),
+        event("support", "INBOX", 1).new_mail_event(),
+        serde_json::from_value::<NewMailEvent>(
+            json!({ "account": "support", "folder": "INBOX", "uid": 1 }),
+        )
+        .expect("the optional fields may be absent"),
     ] {
         let error = refuse_invocation(payload).unwrap_err();
         assert!(
@@ -108,6 +111,71 @@ fn on_new_mail_refuses_direct_invocation() {
             "{error:?}"
         );
     }
+}
+
+/// The request / response schemas `RegisterFunction::new` extracts from a
+/// sync handler, as the engine publishes them.
+fn formats_of<F: IntoSyncHandler<M>, M>(_handler: &F) -> (Option<Value>, Option<Value>) {
+    (F::request_format(), F::response_format())
+}
+
+fn is_typed(schema: &Value) -> bool {
+    [
+        "type",
+        "properties",
+        "$ref",
+        "allOf",
+        "anyOf",
+        "oneOf",
+        "enum",
+    ]
+    .iter()
+    .any(|k| schema.get(k).is_some())
+}
+
+/// `email::on-new-mail` publishes the event observers receive as its
+/// request schema, never an untyped (AnyValue / empty) one.
+#[test]
+fn on_new_mail_request_schema_is_the_typed_event() {
+    let (request, response) = formats_of(&refuse_invocation);
+    let request = request.expect("a request schema");
+    assert!(is_typed(&request), "untyped request schema: {request}");
+    let mut fields: Vec<&String> = request["properties"]
+        .as_object()
+        .expect("request properties")
+        .keys()
+        .collect();
+    fields.sort();
+    assert_eq!(
+        fields,
+        [
+            "account",
+            "folder",
+            "from",
+            "message_id",
+            "snippet",
+            "subject",
+            "ts",
+            "uid"
+        ]
+    );
+    let mut required: Vec<&str> = request["required"]
+        .as_array()
+        .expect("required fields")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    required.sort();
+    assert_eq!(required, ["account", "folder", "uid"]);
+    let response = response.expect("a response schema");
+    assert!(is_typed(&response), "untyped response schema: {response}");
+}
+
+#[test]
+fn the_payload_is_the_typed_event() {
+    let ev = event("support", "INBOX", 7);
+    let back: NewMailEvent = serde_json::from_value(ev.payload()).expect("payload parses");
+    assert_eq!(back, ev.new_mail_event());
 }
 
 #[tokio::test]

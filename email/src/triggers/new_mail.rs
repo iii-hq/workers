@@ -27,6 +27,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::registry::{NewMailObserver, TriggerRegistry};
+use super::NewMailEvent;
 
 /// The trigger type, kept for old consumers on 0.24 and 0.25 engines.
 pub const NEW_MAIL_TRIGGER_TYPE: &str = "email::new-mail";
@@ -128,8 +129,10 @@ pub fn register_on_new_mail(iii: &IIIClient, registry: Arc<TriggerRegistry>) -> 
     )
 }
 
-/// The function's handler: events only come from the IDLE dispatcher.
-pub fn refuse_invocation(_payload: Value) -> Result<(), Error> {
+/// The function's handler: events only come from the IDLE dispatcher. It
+/// takes the [`NewMailEvent`] observers receive, so the function publishes
+/// that event as its request schema.
+pub fn refuse_invocation(_event: NewMailEvent) -> Result<(), Error> {
     Err(Error::Remote {
         code: codes::FORBIDDEN.to_string(),
         message: format!(
