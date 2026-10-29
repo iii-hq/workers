@@ -1,7 +1,7 @@
 import type { Host } from '@iii-dev/console-ui'
 import { useEffect, useId, useState } from 'react'
 import {
-  FRAME_CHANGED_TRIGGER,
+  ON_FRAME_CHANGED_FUNCTION_ID,
   readFrame,
   startScreencast,
   stopScreencast,
@@ -11,13 +11,13 @@ import { createFrameFollower, parseFrameChange } from '../lib/frameFollower'
 
 /**
  * Live desktop for the selected session, notify-then-fetch: the worker keeps
- * only the newest frame per session and fires `computer::frame-changed`
- * (`{ session_id }` filter, small image-free payload) after each one; this
- * hook reads the frame with `computer::frame`. No polling.
+ * only the newest frame per session and calls `computer::on-frame-changed`
+ * (observed with args `{ session_id }`, small image-free event) after each
+ * one; this hook reads the frame with `computer::frame`. No polling.
  *
- * Order on open: bind first, `screencast::start`, then one `computer::frame`
+ * Order on open: observe first, `screencast::start`, then one `computer::frame`
  * read (the initial paint; notifications only cover frames produced after
- * the binding). A `computer::screenshot` is the last-resort first paint when
+ * the observer). A `computer::screenshot` is the last-resort first paint when
  * the screencast cannot start. Each notification marks the view dirty; the
  * follower runs at most one read at a time and skips intermediate frames, so
  * a slow tab never queues frames (see lib/frameFollower). After a
@@ -78,7 +78,7 @@ export function useLiveFrames(
       },
     })
 
-    // 1. Bind first, so no frame stored after the initial read is missed.
+    // 1. Observe first, so no frame stored after the initial read is missed.
     const offs: Array<() => void> = []
     const localFnId = `iii::computer-ui::frames::${instanceId}`
     try {
@@ -89,16 +89,19 @@ export function useLiveFrames(
         }),
       )
       offs.push(
-        host.iii.registerTrigger({
-          type: FRAME_CHANGED_TRIGGER,
-          function_id: `${localFnId}::${host.iii.browserId}`,
-          config: { session_id: sessionId },
-        }),
+        host.iii.observe(
+          {
+            function_id: ON_FRAME_CHANGED_FUNCTION_ID,
+            args: { session_id: sessionId },
+            deliver: 'output',
+          },
+          `${localFnId}::${host.iii.browserId}`,
+        ),
       )
     } catch (err) {
-      // Trigger type unavailable (worker restarting): the initial read is the
-      // only paint. Say so; a silent catch looks like a frozen desktop.
-      console.warn('[computer-ui] frame-changed binding failed', err)
+      // The observer could not be made: the initial read is the only paint.
+      // Say so; a silent catch looks like a frozen desktop.
+      console.warn('[computer-ui] frame observer failed', err)
     }
 
     // Recovery: notifications fired while disconnected are gone, the stored

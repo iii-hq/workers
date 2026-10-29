@@ -1,6 +1,6 @@
 /**
- * Injected function-trigger renderer for every `computer::*` call —
- * registered through `host.functionTriggers`, so it dispatches before the
+ * Injected function-call renderer for every `computer::*` call —
+ * registered through `host.functionCalls`, so it dispatches before the
  * console's built-in families and owns how computer calls render in chat and
  * in the traces span tab. Screenshots render inline (that image IS the
  * result), actions collapse to one line, and anything unrecognised falls back
@@ -8,8 +8,8 @@
  */
 
 import {
-  type FunctionTriggerMessage,
-  type FunctionTriggerRenderer,
+  type FunctionCallMessage,
+  type FunctionCallRenderer,
   type Host,
   JsonHighlight,
 } from '@iii-dev/console-ui'
@@ -46,7 +46,7 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
   )
 }
 
-function renderBody(message: FunctionTriggerMessage): React.ReactNode | null {
+function renderBody(message: FunctionCallMessage): React.ReactNode | null {
   const { input, output } = message
   switch (message.functionId) {
     case 'computer::sessions::start':
@@ -72,7 +72,7 @@ function ComputerCallView({
   message,
 }: {
   host: Host
-  message: FunctionTriggerMessage
+  message: FunctionCallMessage
 }) {
   const sessionId = sessionIdFromCall(message.input, message.output)
   const running = !!message.running
@@ -122,14 +122,14 @@ function ComputerCallView({
 
 function renderCall(
   host: Host,
-  message: FunctionTriggerMessage,
+  message: FunctionCallMessage,
 ): React.ReactNode | null {
   if (!isComputerFunction(message.functionId)) return null
   if (message.pendingApproval) return null
   return <ComputerCallView host={host} message={message} />
 }
 
-export function createComputerRenderer(host: Host): FunctionTriggerRenderer {
+export function createComputerRenderer(host: Host): FunctionCallRenderer {
   return {
     id: 'computer/page.js#calls',
     isMatch: isComputerFunction,

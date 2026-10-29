@@ -9,17 +9,16 @@
 //!   `computer_sessions`). On boot, [`Sessions::restore`] reconnects them
 //!   best-effort, so a worker restart does not lose live desktops.
 //! - **A live screen.** The screencast pump keeps exactly one frame per
-//!   session (the newest) in memory and fires the worker-owned
-//!   `computer::frame-changed` trigger type after each one (see
-//!   [`crate::frames`]); viewers read the frame with `computer::frame`.
+//!   session (the newest) in memory and calls the observable function
+//!   `computer::on-frame-changed` after each one (see [`crate::frames`]);
+//!   viewers read the frame with `computer::frame`.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
@@ -34,7 +33,7 @@ use crate::frames::{FrameChange, FrameChangeKind, FrameNotifier};
 const STATE_SCOPE: &str = "computer_sessions";
 /// Bus RPC timeout for the state side-writes.
 const SIDE_WRITE_TIMEOUT_MS: u64 = 5_000;
-/// How long a screencast runs with no `computer::frame-changed` binding
+/// How long a screencast runs with no `computer::on-frame-changed` observer
 /// before the pump stops itself (a console window closed without a stop).
 #[cfg(not(test))]
 const UNWATCHED_STOP: Duration = Duration::from_secs(10);
@@ -320,8 +319,8 @@ impl Session {
             if !self.screencast_active.load(Ordering::Relaxed) {
                 break;
             }
-            // A window that closed never says stop, but the engine drops its
-            // frame-changed binding: with nobody following for a while, stop.
+            // A window that closed never says stop, but the engine removes its
+            // frame observer: with nobody following for a while, stop.
             if self.frames.watching(&self.id) {
                 unwatched_since = None;
             } else if unwatched_since
@@ -371,7 +370,7 @@ impl Session {
     }
 
     /// Commit a new frame to the session's single slot (the previous frame is
-    /// released here), THEN tell `computer::frame-changed` bindings. A viewer
+    /// released here), THEN tell `computer::on-frame-changed` observers. A viewer
     /// that reads after the notification always finds this frame or a newer
     /// one.
     fn store_frame(&self, frame: Arc<LatestFrame>) {
@@ -391,7 +390,7 @@ impl Session {
     }
 
     /// Drop the stored frame (frees its buffer) and, when there was one, tell
-    /// bindings it is gone.
+    /// observers it is gone.
     fn clear_frame(&self) {
         let dropped = self
             .latest_frame
@@ -585,7 +584,6 @@ impl Sessions {
         self.emitter
             .emit(
                 EventKind::SessionStarted,
-                &id,
                 &SessionStartedEvent {
                     session_id: id.clone(),
                     endpoint: session.endpoint.clone(),
@@ -604,7 +602,6 @@ impl Sessions {
         self.emitter
             .emit(
                 EventKind::Activity,
-                id,
                 &crate::events::ActivityEvent {
                     session_id: id.to_string(),
                     function: function.to_string(),
@@ -635,7 +632,6 @@ impl Sessions {
                 self.emitter
                     .emit(
                         EventKind::SessionStopped,
-                        id,
                         &SessionStoppedEvent {
                             session_id: id.to_string(),
                             reason: reason.to_string(),
@@ -651,7 +647,7 @@ impl Sessions {
 
     /// Tear down local resources for every session on worker shutdown. Keeps
     /// the persisted records so [`restore`](Self::restore) can reconnect on
-    /// the next boot; does not emit stopped events (subscribers are gone).
+    /// the next boot; does not emit stopped events (observers are gone).
     pub async fn stop_all(&self) {
         let sessions: Vec<Arc<Session>> = {
             let mut map = self.map.lock().await;
@@ -821,7 +817,7 @@ impl Sessions {
     async fn list_records(&self) -> Result<Vec<SessionRecord>, String> {
         let listed = self
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "state::list".to_string(),
                 payload: json!({ "scope": STATE_SCOPE }),
                 action: None,
@@ -852,7 +848,7 @@ impl Sessions {
 /// Best-effort side-write onto the bus (state mutation). Returns the error
 /// string for the caller to log (durability writes are logged at warn).
 async fn side_write(iii: &IIIClient, function_id: &str, payload: Value) -> Result<(), String> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: function_id.to_string(),
         payload,
         action: None,
@@ -866,35 +862,46 @@ async fn side_write(iii: &IIIClient, function_id: &str, payload: Value) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frames::{FrameSink, FrameTarget};
+    use crate::frames::FrameTarget;
     use crate::functions::frame::read_latest;
     use crate::test_support::FakeDesktop;
     use async_trait::async_trait;
-    use iii_sdk::trigger::TriggerConfig;
     use std::sync::Weak;
 
-    /// Records every notification it receives, per target function.
+    /// Records every notification its observers receive, per observer id.
     #[derive(Default)]
     struct Viewers(StdMutex<Vec<(String, Value)>>);
 
+    /// One observer of `computer::on-frame-changed`, recording into
+    /// [`Viewers`].
+    struct Viewer {
+        id: String,
+        viewers: Arc<Viewers>,
+    }
+
     #[async_trait]
-    impl FrameSink for Viewers {
-        async fn deliver(&self, target: &FrameTarget, payload: Value) -> Result<(), String> {
-            self.0
+    impl FrameTarget for Viewer {
+        fn id(&self) -> &str {
+            &self.id
+        }
+
+        async fn deliver(&self, payload: Value) -> Result<(), String> {
+            self.viewers
+                .0
                 .lock()
                 .unwrap()
-                .push((target.function_id.clone(), payload));
+                .push((self.id.clone(), payload));
             Ok(())
         }
     }
 
     impl Viewers {
-        fn for_fn(&self, function_id: &str) -> Vec<Value> {
+        fn for_observer(&self, observer_id: &str) -> Vec<Value> {
             self.0
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|(f, _)| f == function_id)
+                .filter(|(id, _)| id == observer_id)
                 .map(|(_, p)| p.clone())
                 .collect()
         }
@@ -904,15 +911,16 @@ mod tests {
         crate::test_support::session_on(notifier, id, None)
     }
 
-    fn bind(notifier: &FrameNotifier, id: &str, session_id: &str) {
+    /// What the added hook does for an observer `id` of `session_id`.
+    fn observe(notifier: &FrameNotifier, viewers: &Arc<Viewers>, id: &str, session_id: &str) {
         notifier
-            .add(TriggerConfig {
-                id: id.to_string(),
-                function_id: format!("viewer::{id}"),
-                config: json!({ "session_id": session_id }),
-                metadata: None,
-                namespace: None,
-            })
+            .open(
+                session_id.to_string(),
+                Arc::new(Viewer {
+                    id: id.to_string(),
+                    viewers: viewers.clone(),
+                }),
+            )
             .unwrap();
     }
 
@@ -940,7 +948,7 @@ mod tests {
 
     #[tokio::test]
     async fn only_the_latest_frame_is_kept() {
-        let notifier = FrameNotifier::new(Arc::new(Viewers::default()));
+        let notifier = FrameNotifier::detached();
         let (s, _) = session("c1", &notifier);
         let mut previous: Option<Weak<LatestFrame>> = None;
         for seq in 1..=200 {
@@ -965,15 +973,15 @@ mod tests {
     #[tokio::test]
     async fn viewer_reads_the_initial_frame_then_follows_updates_for_its_session_only() {
         let viewers = Arc::new(Viewers::default());
-        let notifier = FrameNotifier::new(viewers.clone());
+        let notifier = FrameNotifier::detached();
         let (c1, _) = session("c1", &notifier);
         let (c2, _) = session("c2", &notifier);
 
         // A frame exists before anyone watches: only the initial read shows it.
         c1.start_screencast().await;
         wait_until("first c1 frame", || c1.latest_frame().is_some()).await;
-        bind(&notifier, "v1", "c1");
-        bind(&notifier, "v2", "c2");
+        observe(&notifier, &viewers, "v1", "c1");
+        observe(&notifier, &viewers, "v2", "c2");
         let initial = read_latest(&c1, None);
         assert!(initial.frame.is_some() && initial.frame_seq >= 1 && initial.active);
 
@@ -982,12 +990,12 @@ mod tests {
         let after = initial.frame_seq;
         wait_until("c1 notifications", || {
             viewers
-                .for_fn("viewer::v1")
+                .for_observer("v1")
                 .iter()
                 .any(|p| p["frame_seq"].as_u64().unwrap() > after + 2)
         })
         .await;
-        let n = viewers.for_fn("viewer::v1").last().cloned().unwrap();
+        let n = viewers.for_observer("v1").last().cloned().unwrap();
         assert_eq!(n["session_id"], "c1");
         assert_eq!(n["change"], "updated");
         assert_eq!(n["epoch"], c1.epoch);
@@ -998,20 +1006,20 @@ mod tests {
 
         // Filter by session: v1 never hears c2, v2 never hears c1.
         wait_until("c2 notifications", || {
-            !viewers.for_fn("viewer::v2").is_empty()
+            !viewers.for_observer("v2").is_empty()
         })
         .await;
         assert!(viewers
-            .for_fn("viewer::v1")
+            .for_observer("v1")
             .iter()
             .all(|p| p["session_id"] == "c1"));
         assert!(viewers
-            .for_fn("viewer::v2")
+            .for_observer("v2")
             .iter()
             .all(|p| p["session_id"] == "c2"));
         // Within one viewer, revisions only move forward.
         let seqs: Vec<u64> = viewers
-            .for_fn("viewer::v1")
+            .for_observer("v1")
             .iter()
             .map(|p| p["frame_seq"].as_u64().unwrap())
             .collect();
@@ -1024,9 +1032,9 @@ mod tests {
     #[tokio::test]
     async fn session_end_clears_the_frame_and_notifies_cleared() {
         let viewers = Arc::new(Viewers::default());
-        let notifier = FrameNotifier::new(viewers.clone());
+        let notifier = FrameNotifier::detached();
         let (s, desktop) = session("c1", &notifier);
-        bind(&notifier, "v", "c1");
+        observe(&notifier, &viewers, "v", "c1");
         s.start_screencast().await;
         wait_until("a frame", || s.latest_frame().is_some()).await;
         let resident = Arc::downgrade(&s.latest_frame().unwrap());
@@ -1038,7 +1046,7 @@ mod tests {
         assert!(out.frame.is_none() && !out.active && out.frame_seq == 0);
         wait_until("cleared notification", || {
             viewers
-                .for_fn("viewer::v")
+                .for_observer("v")
                 .last()
                 .is_some_and(|p| p["change"] == "cleared")
         })
@@ -1048,19 +1056,19 @@ mod tests {
 
         // The pump is really dead: no capture and no notification after stop.
         let shots = desktop.shots.load(Ordering::SeqCst);
-        let seen = viewers.for_fn("viewer::v").len();
+        let seen = viewers.for_observer("v").len();
         tokio::time::sleep(Duration::from_millis(40)).await;
         assert_eq!(desktop.shots.load(Ordering::SeqCst), shots);
-        assert_eq!(viewers.for_fn("viewer::v").len(), seen);
+        assert_eq!(viewers.for_observer("v").len(), seen);
         assert!(s.latest_frame().is_none());
     }
 
     #[tokio::test]
     async fn capture_failure_clears_the_frame() {
         let viewers = Arc::new(Viewers::default());
-        let notifier = FrameNotifier::new(viewers.clone());
+        let notifier = FrameNotifier::detached();
         let (s, desktop) = session("c1", &notifier);
-        bind(&notifier, "v", "c1");
+        observe(&notifier, &viewers, "v", "c1");
         s.start_screencast().await;
         wait_until("a frame", || s.latest_frame().is_some()).await;
         desktop.fail.store(true, Ordering::SeqCst);
@@ -1068,7 +1076,7 @@ mod tests {
         assert!(s.latest_frame().is_none());
         wait_until("cleared notification", || {
             viewers
-                .for_fn("viewer::v")
+                .for_observer("v")
                 .last()
                 .is_some_and(|p| p["change"] == "cleared")
         })
@@ -1078,9 +1086,10 @@ mod tests {
 
     #[tokio::test]
     async fn viewers_share_one_screencast_and_the_last_one_out_stops_it() {
-        let notifier = FrameNotifier::new(Arc::new(Viewers::default()));
+        let viewers = Arc::new(Viewers::default());
+        let notifier = FrameNotifier::detached();
         let (s, _) = session("c1", &notifier);
-        bind(&notifier, "page", "c1");
+        observe(&notifier, &viewers, "page", "c1");
         s.acquire_screencast().await; // the page
         s.acquire_screencast().await; // a corner preview in another window
         wait_until("a frame", || s.latest_frame().is_some()).await;
@@ -1100,14 +1109,15 @@ mod tests {
 
     #[tokio::test]
     async fn a_screencast_nobody_follows_stops_itself() {
-        let notifier = FrameNotifier::new(Arc::new(Viewers::default()));
+        let viewers = Arc::new(Viewers::default());
+        let notifier = FrameNotifier::detached();
         let (s, _) = session("c1", &notifier);
-        // A window joined, then closed: no frame-changed binding, no stop.
+        // A window joined, then closed: no frame observer, no stop.
         s.acquire_screencast().await;
         wait_until("pump stopped", || !s.screencast_active()).await;
         assert!(s.latest_frame().is_none());
         // Its count went with it: the next viewer's leave stops the pump.
-        bind(&notifier, "page", "c1");
+        observe(&notifier, &viewers, "page", "c1");
         s.acquire_screencast().await;
         assert!(s.screencast_active());
         s.release_screencast().await;
@@ -1117,19 +1127,19 @@ mod tests {
     #[tokio::test]
     async fn stopping_without_a_frame_sends_nothing() {
         let viewers = Arc::new(Viewers::default());
-        let notifier = FrameNotifier::new(viewers.clone());
+        let notifier = FrameNotifier::detached();
         let (s, _) = session("c1", &notifier);
-        bind(&notifier, "v", "c1");
+        observe(&notifier, &viewers, "v", "c1");
         s.stop_screencast().await;
         tokio::time::sleep(Duration::from_millis(20)).await;
-        assert!(viewers.for_fn("viewer::v").is_empty());
+        assert!(viewers.for_observer("v").is_empty());
     }
 
     #[tokio::test]
     async fn shutdown_closes_the_semantic_layer() {
         use crate::semantic::{fake::FakeTree, Code, Query, Scope, SemanticSession};
         let tree = Arc::new(FakeTree::new("App", 1));
-        let notifier = FrameNotifier::new(Arc::new(Viewers::default()));
+        let notifier = FrameNotifier::detached();
         let (s, _) = crate::test_support::session_on(
             &notifier,
             "c9",

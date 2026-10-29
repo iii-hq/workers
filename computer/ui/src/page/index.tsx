@@ -40,7 +40,7 @@ import {
   act,
   type ComputerDisplay,
   type ComputerSessionInfo,
-  LIFECYCLE_TRIGGERS,
+  LIFECYCLE_FUNCTION_IDS,
   listDisplays,
   listSessions,
   type StartSessionInput,
@@ -54,9 +54,6 @@ import { SessionRail } from './SessionRail'
 import { useLiveFrames } from './useLiveFrames'
 import { Viewport } from './Viewport'
 
-/** Poll cadence while the lifecycle trigger bindings are unavailable (SDK
- * hiccup, races around worker restart); skipped while the tab is hidden. */
-const SESSIONS_POLL_MS = 10_000
 const NO_SESSIONS: ComputerSessionInfo[] = []
 
 export function ComputerPage({
@@ -66,12 +63,12 @@ export function ComputerPage({
   panelContext,
   commands,
 }: { host: Host } & Partial<PageRenderProps>) {
-  // `computer::sessions::list`, re-read on session-started / session-stopped.
+  // `computer::sessions::list`, re-read on every call of
+  // computer::on-session-started / computer::on-session-stopped.
   const { data, loading, error, live, refresh } = useWorkerLive({
     iii: host.iii,
-    triggers: LIFECYCLE_TRIGGERS,
+    sources: LIFECYCLE_FUNCTION_IDS,
     fetch: () => listSessions(host.iii),
-    pollMs: SESSIONS_POLL_MS,
     handlerId: 'iii::computer-ui::lifecycle',
   })
   const sessions = data ?? NO_SESSIONS
@@ -269,8 +266,8 @@ export function ComputerPage({
             className="cp-ui-live"
             title={
               live
-                ? 'live — subscribed to the session lifecycle triggers; the rail updates as sessions start and stop'
-                : 'polling — lifecycle trigger bindings unavailable; the session list refreshes every 10s'
+                ? 'live — observing the session lifecycle functions; the rail updates as sessions start and stop'
+                : 'not live — the session lifecycle observers are unavailable; the session list refreshes when this tab is focused'
             }
           >
             <StatusDot tone={live ? 'ok' : 'ink'} pulse={live} aria-hidden />
