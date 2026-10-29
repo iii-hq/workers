@@ -8,8 +8,8 @@ import {
 
 vi.mock('@/lib/iii-client', () => ({ getIiiClient: vi.fn() }))
 it('uses read discovery/preview functions and imports only explicitly selected ids', async () => {
-  const trigger = vi.fn().mockResolvedValue({})
-  vi.mocked(getIiiClient).mockResolvedValue({ trigger } as never)
+  const call = vi.fn().mockResolvedValue({})
+  vi.mocked(getIiiClient).mockResolvedValue({ call } as never)
   await discoverConversations({
     source: 'codex',
     query: 'project',
@@ -17,7 +17,7 @@ it('uses read discovery/preview functions and imports only explicitly selected i
   })
   await previewConversation('claude-code', 'history-1')
   await importConversation('claude-code', 'history-1')
-  expect(trigger.mock.calls).toEqual([
+  expect(call.mock.calls).toEqual([
     [
       'console::conversations::discover',
       { source: 'codex', query: 'project', cursor: 'next' },
@@ -34,7 +34,7 @@ it('uses read discovery/preview functions and imports only explicitly selected i
 })
 
 it('keeps separate server IDs when importing the same source twice', async () => {
-  const trigger = vi
+  const call = vi
     .fn()
     .mockResolvedValueOnce({
       session_id: 'new-1',
@@ -46,27 +46,27 @@ it('keeps separate server IDs when importing the same source twice', async () =>
       imported_messages: 3,
       total_messages: 3,
     })
-  vi.mocked(getIiiClient).mockResolvedValue({ trigger } as never)
+  vi.mocked(getIiiClient).mockResolvedValue({ call } as never)
   const first = await importConversation('codex', 'same-source')
   const second = await importConversation('codex', 'same-source')
   expect(first.session_id).toBe('new-1')
   expect(second.session_id).toBe('new-2')
-  expect(trigger).toHaveBeenCalledTimes(2)
+  expect(call).toHaveBeenCalledTimes(2)
 })
 
 it('says a timed-out import may still be running instead of reporting a plain failure', async () => {
-  const trigger = vi
+  const call = vi
     .fn()
     .mockRejectedValue(
       new Error(
         'Invocation timeout after 300000ms: console::conversations::import',
       ),
     )
-  vi.mocked(getIiiClient).mockResolvedValue({ trigger } as never)
+  vi.mocked(getIiiClient).mockResolvedValue({ call } as never)
   await expect(importConversation('codex', 'big')).rejects.toThrow(
     /may still be running/,
   )
-  trigger.mockRejectedValue(new Error('permission denied'))
+  call.mockRejectedValue(new Error('permission denied'))
   await expect(importConversation('codex', 'big')).rejects.toThrow(
     'permission denied',
   )

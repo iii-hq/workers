@@ -11,10 +11,10 @@
  *   in place.
  * - An assistant entry splits per content block into segments with ids
  *   `<entry_id>:<block_index>` (thinking → thought, text → assistant,
- *   function_call → function-trigger row). Each `message-updated` snapshot
+ *   function_call → function-call row). Each `message-updated` snapshot
  *   re-derives the segment list wholesale and replaces the entry's range.
  * - `function_result` entries render no row of their own; they fill the
- *   `output` of the function-trigger row with the matching `functionTriggerId`.
+ *   `output` of the function-call row with the matching `functionCallId`.
  * - An `elided` item (a paged read left the inside of a long tool-call run
  *   out) produces the same rows with `unloaded: true` and no arguments or
  *   output; the whole entry from `session::messages-range` later replaces
@@ -38,18 +38,24 @@ import { parseSkillUpdate } from '@/lib/skill-update'
 import { parseSlashBlockHeader, slashChip } from '@/lib/slash-commands'
 import type {
   Attachment,
-  FunctionTriggerMessage,
+  FunctionCallMessage,
   Message,
   SystemMessage,
   SystemNoticeFailure,
   SystemNoticeTechnicalDetails,
-  TriggerFiredData,
+  ObserverFiredData,
   UserMessage,
 } from '@/types/chat'
+import {
+  isAgentCall,
+  isObserverFiredType,
+  OBSERVER_FIRED_CUSTOM_TYPE,
+  observerFiredOf,
+} from './stored-records'
 import type { AgentMessage, ContentBlock, TranscriptItem } from './types'
 
 export const COMPACTION_CUSTOM_TYPE = 'compaction'
-export const TRIGGER_FIRED_CUSTOM_TYPE = 'trigger_fired'
+export { OBSERVER_FIRED_CUSTOM_TYPE }
 /** Harness turn-failure record (`{ reason }`) — `finalize_failed`. */
 export const ERROR_CUSTOM_TYPE = 'error'
 /** Harness informational record (`{ reason, message }`) — e.g. max_turns. */
@@ -74,13 +80,14 @@ function customSegments(
   timestamp: number,
 ): Message[] | null {
   if (HIDDEN_CUSTOM_TYPES.has(customType)) return []
+  if (isObserverFiredType(customType)) {
+    return [observerFiredMessage(entryId, data, timestamp)]
+  }
   switch (customType) {
     case MODEL_NOTICE_CUSTOM_TYPE:
       return modelNotice(entryId, data, timestamp)
     case COMPACTION_CUSTOM_TYPE:
       return [compactionMarker(entryId, data, timestamp)]
-    case TRIGGER_FIRED_CUSTOM_TYPE:
-      return [triggerFiredMessage(entryId, data, timestamp)]
     // Harness failure/notice records: without these the turn can end in an
     // error the chat never shows (the session flips to "error" silently).
     case ERROR_CUSTOM_TYPE:
@@ -176,18 +183,18 @@ function customNotice(
   }
 }
 
-/** The trigger's display name: label, else state scope/key. */
-export function triggerFiredName(t: TriggerFiredData): string {
+/** The observer's display name: label, else state scope/key, else the observed function. */
+export function observerFiredName(t: ObserverFiredData): string {
   if (t.label) return t.label
   if (t.key) return t.scope ? `${t.scope}/${t.key}` : t.key
-  return t.trigger_type ?? 'trigger'
+  return t.function_id ?? 'observer'
 }
 
-/** The compact timeline copy: an explicit event action, then the binding's
- * existing display name for historical registrations. */
-export function triggerFiredEventText(t: TriggerFiredData): string {
+/** The compact timeline copy: an explicit event action, then the observer's
+ * display name for observers created without one. */
+export function observerFiredEventText(t: ObserverFiredData): string {
   const action = t.action?.trim()
-  return action || triggerFiredName(t)
+  return action || observerFiredName(t)
 }
 
 /**
@@ -197,15 +204,15 @@ export function triggerFiredEventText(t: TriggerFiredData): string {
  * `'spawn'` records (written before spawn stopped being a binding target)
  * rendering as they did.
  */
-export function triggerFiredSummary(t: TriggerFiredData): string {
-  const name = triggerFiredEventText(t)
+export function observerFiredSummary(t: ObserverFiredData): string {
+  const name = observerFiredEventText(t)
   const deliveredAction =
     t.target === 'spawn'
       ? `spawned${t.model ? ` ${t.model}` : ''}`
       : !t.target || t.target === 'notify' || t.target === 'harness::send'
         ? 'notified this chat'
         : `called ${t.target}`
-  const lifecycle = triggerLifecycleSummary(t)
+  const lifecycle = observerLifecycleSummary(t)
   // Lifecycle-only records did not attempt their target. Keeping a call or
   // notification verb in their fallback summary would invent a delivery.
   if (
@@ -213,7 +220,7 @@ export function triggerFiredSummary(t: TriggerFiredData): string {
     t.outcome === 'unregistered' ||
     t.outcome === 'invalidated'
   ) {
-    return `${name} · ${lifecycle ?? 'binding retired'}`
+    return `${name} · ${lifecycle ?? 'observer retired'}`
   }
   const action =
     t.outcome === 'skipped'
@@ -226,42 +233,42 @@ export function triggerFiredSummary(t: TriggerFiredData): string {
   return `${name} · ${action}${lifecycle ? ` · ${lifecycle}` : ''}`
 }
 
-function triggerLifecycleSummary(t: TriggerFiredData): string | null {
+function observerLifecycleSummary(t: ObserverFiredData): string | null {
   switch (t.retirement_reason) {
     case 'once_consumed':
       return 'once consumed'
     case 'max_fires':
       return 'delivery limit reached'
     case 'expired':
-      return 'binding expired'
+      return 'observer expired'
     case 'unregistered':
-      return 'binding manually removed'
+      return 'observer manually removed'
     case 'invalidated':
-      return 'binding invalidated'
+      return 'observer invalidated'
     case 'exhausted':
-      return 'binding exhausted'
+      return 'observer exhausted'
   }
   if (!t.retired) return null
   // Historical successful one-shot records predate the structured reason;
-  // "consumed" is accurate, while "unregistered" falsely implies a person.
+  // "consumed" is accurate, while "removed" falsely implies a person.
   if (t.once && (!t.outcome || t.outcome === 'delivered'))
     return 'once consumed'
-  return 'binding retired'
+  return 'observer retired'
 }
 
-function triggerFiredMessage(
+function observerFiredMessage(
   entryId: string,
   data: unknown,
   timestamp: number,
 ): SystemMessage {
-  const t = (data ?? {}) as TriggerFiredData
+  const t = observerFiredOf(data)
   return {
     id: entryId,
     role: 'system',
-    kind: 'trigger-fired',
-    content: triggerFiredSummary(t),
+    kind: 'observer-fired',
+    content: observerFiredSummary(t),
     tone: 'info',
-    trigger: t,
+    observer: t,
     createdAt: typeof t.fired_at === 'number' ? t.fired_at : timestamp,
   }
 }
@@ -404,8 +411,8 @@ function lifecycleNotice(
   return null
 }
 
-/** The harness wraps every tool call in agent_trigger; unwrap for display. */
-function unwrapFunctionTrigger(
+/** The harness wraps every tool call in agent_call; unwrap for display. */
+function unwrapFunctionCall(
   block: Extract<ContentBlock, { type: 'function_call' }>,
 ): {
   functionId: string
@@ -413,7 +420,7 @@ function unwrapFunctionTrigger(
   description?: string
   unresolvedTarget?: boolean
 } {
-  if (block.function_id === 'agent_trigger') {
+  if (isAgentCall(block.function_id)) {
     if (block.arguments && typeof block.arguments === 'object') {
       const args = block.arguments as {
         function?: unknown
@@ -465,7 +472,7 @@ function unwrapFunctionTrigger(
     }
     // Before the incremental parser has observed a non-empty target (or for
     // malformed provider output), render a placeholder instead of the literal
-    // `agent_trigger`; the next snapshot self-corrects as soon as a value is
+    // `agent_call`; the next snapshot self-corrects as soon as a value is
     // available.
     return {
       functionId: block.function_id,
@@ -693,7 +700,7 @@ function compactionMarker(
 
 /**
  * Derive the UI segments for one transcript item. `function_result` entries
- * return [] — they pair into an existing function-trigger row instead (see
+ * return [] — they pair into an existing function-call row instead (see
  * applyEntryUpsert).
  */
 export function entrySegments(
@@ -764,7 +771,7 @@ export function entrySegments(
         /^(?:e_notify_|e_fire_|e_expire_|e_stalespawn_|e_claimfail_|e_condfail_)/.test(
           item.entry_id,
         )
-      const triggerBindingId = isNotif
+      const observerId = isNotif
         ? notificationBindingId(item.entry_id, origin?.binding)
         : undefined
       // A react-fired task delivered into this session (origin on events;
@@ -789,7 +796,7 @@ export function entrySegments(
         createdAt: message.timestamp,
         ...(attachments.length > 0 ? { attachments } : {}),
         ...(isNotif ? { notification: true } : {}),
-        ...(triggerBindingId ? { triggerBindingId } : {}),
+        ...(observerId ? { observerId } : {}),
         ...(isReaction ? { reaction: true } : {}),
         ...(isSpawn ? { spawn: true } : {}),
         ...(isValidation ? { validation: true } : {}),
@@ -905,14 +912,14 @@ export function notificationBindingId(
 
 /**
  * The label an elided call keeps. `session::messages-tail` drops every call's
- * arguments except an `agent_trigger` wrapper's string `function` and
+ * arguments except an `agent_call` wrapper's string `function` and
  * `description`, so the placeholder row reads the same before and after the
  * whole entry is fetched.
  */
-function elidedTriggerLabel(
+function elidedCallLabel(
   block: Extract<ContentBlock, { type: 'function_call' }>,
 ): { functionId: string; description?: string; unresolvedTarget: boolean } {
-  if (block.function_id !== 'agent_trigger') {
+  if (!isAgentCall(block.function_id)) {
     return { functionId: block.function_id, unresolvedTarget: false }
   }
   const args =
@@ -938,22 +945,22 @@ function assistantSegments(
   for (const [i, block] of message.content.entries()) {
     const id = `${entryId}:${i}`
     // A placeholder call: the page kept the block's id and function id and
-    // dropped the arguments — except an `agent_trigger` wrapper's label
+    // dropped the arguments — except an `agent_call` wrapper's label
     // (`function` + `description`), which the row shows exactly as a whole
     // entry would. A wrapper whose target did not survive keeps the wrapper
     // name until its (elided) result names the real function.
     if (block.type === 'function_call' && elided) {
       const { functionId, description, unresolvedTarget } =
-        elidedTriggerLabel(block)
-      const msg: FunctionTriggerMessage = {
+        elidedCallLabel(block)
+      const msg: FunctionCallMessage = {
         id,
-        role: 'function-trigger',
+        role: 'function-call',
         functionId,
         ...(description ? { description } : {}),
         input: undefined,
         unloaded: true,
         ...(unresolvedTarget ? { unresolvedTarget: true } : {}),
-        functionTriggerId: block.id,
+        functionCallId: block.id,
         sessionId,
         createdAt: message.timestamp,
       }
@@ -984,15 +991,15 @@ function assistantSegments(
         break
       case 'function_call': {
         const { functionId, input, description, unresolvedTarget } =
-          unwrapFunctionTrigger(block)
-        const msg: FunctionTriggerMessage = {
+          unwrapFunctionCall(block)
+        const msg: FunctionCallMessage = {
           id,
-          role: 'function-trigger',
+          role: 'function-call',
           functionId,
           description,
           input,
           unresolvedTarget,
-          functionTriggerId: block.id,
+          functionCallId: block.id,
           sessionId,
           createdAt: message.timestamp,
         }
@@ -1037,16 +1044,16 @@ export function entryIdOfMessage(messageId: string): string {
   return colon === -1 ? messageId : messageId.slice(0, colon)
 }
 
-/** Patchable transient state for a function-trigger row. */
+/** Patchable transient state for a function-call row. */
 export type FcallPatch = Partial<
   Pick<
-    FunctionTriggerMessage,
+    FunctionCallMessage,
     | 'running'
     | 'pendingApproval'
     | 'output'
     | 'durationMs'
     | 'sessionId'
-    | 'functionTriggerId'
+    | 'functionCallId'
     | 'filesystemAccess'
     | 'functionId'
     | 'unresolvedTarget'
@@ -1056,30 +1063,27 @@ export type FcallPatch = Partial<
 >
 
 /**
- * A call whose result is on record. Approval triggers are delivered
+ * A call whose result is on record. Approval events are delivered
  * at-least-once with no order against the transcript's own events, so a
  * pending or "released, now running" notice can land after the result
  * did; a settled row must never be reopened or set spinning by one.
  */
-export function isCallSettled(row: FunctionTriggerMessage): boolean {
+export function isCallSettled(row: FunctionCallMessage): boolean {
   return row.output !== undefined || row.resultEntryId !== undefined
 }
 
 /**
- * Patch the function-trigger row matching `functionTriggerId`. Returns the same
+ * Patch the function-call row matching `functionCallId`. Returns the same
  * array when no row matched (caller may then append a fallback row).
  */
 export function applyFcallPatch(
   messages: Message[],
-  functionTriggerId: string,
-  patch: FcallPatch | ((row: FunctionTriggerMessage) => FcallPatch),
+  functionCallId: string,
+  patch: FcallPatch | ((row: FunctionCallMessage) => FcallPatch),
 ): { messages: Message[]; found: boolean } {
   let found = false
   const next = messages.map((m) => {
-    if (
-      m.role !== 'function-trigger' ||
-      m.functionTriggerId !== functionTriggerId
-    )
+    if (m.role !== 'function-call' || m.functionCallId !== functionCallId)
       return m
     found = true
     return {
@@ -1095,9 +1099,9 @@ export function applyFcallPatch(
  * - replaces the entry's existing segment range in place (or appends at the
  *   end — appends only ever happen at the active leaf);
  * - absorbs transient state (and locally-created duplicate rows) by
- *   `functionTriggerId`;
- * - pairs `function_result` entries into their function-trigger row;
- * - infers `running` for unpaired function triggers while the session is
+ *   `functionCallId`;
+ * - pairs `function_result` entries into their function-call row;
+ * - infers `running` for unpaired function calls while the session is
  *   `working` (the real backend emits no execution start/end events, so
  *   the transcript shape is the only in-flight signal).
  */
@@ -1111,7 +1115,7 @@ export function applyEntryUpsert(
     // An elided result settles the row without an output: the call is over
     // (not running, not held), and the body is a placeholder until a range
     // read brings the whole entry. The result's `function_id` is the real
-    // target — the harness resolves `agent_trigger` before recording it —
+    // target — the harness resolves `agent_call` before recording it —
     // so a wrapper-named placeholder learns its label here. A whole result
     // clears the flag once the arguments are here too: overlapping range
     // reads can land the result first, and a row without its `input` is
@@ -1124,7 +1128,7 @@ export function applyEntryUpsert(
       resultEntryId: item.entry_id,
     }
     const patch = elided
-      ? (row: FunctionTriggerMessage): FcallPatch =>
+      ? (row: FunctionCallMessage): FcallPatch =>
           // A re-read page elides a result this window already holds: the
           // output stays, and so does the settled label.
           row.output !== undefined
@@ -1135,7 +1139,7 @@ export function applyEntryUpsert(
                 functionId: result.function_id,
                 unresolvedTarget: false,
               }
-      : (row: FunctionTriggerMessage): FcallPatch =>
+      : (row: FunctionCallMessage): FcallPatch =>
           row.unloaded && row.input === undefined
             ? { ...settled, output: functionResultOutput(result) }
             : {
@@ -1150,16 +1154,16 @@ export function applyEntryUpsert(
     )
     if (found) return patched
     // Fallback (assistant snapshot lost): standalone row carrying the result.
-    const row: FunctionTriggerMessage = {
+    const row: FunctionCallMessage = {
       id: item.entry_id,
-      role: 'function-trigger',
+      role: 'function-call',
       functionId: result.function_id,
       input: undefined,
       ...(elided
         ? { unloaded: true }
         : { output: functionResultOutput(result) }),
       resultEntryId: item.entry_id,
-      functionTriggerId: result.function_call_id,
+      functionCallId: result.function_call_id,
       sessionId: opts?.sessionId,
       createdAt: result.timestamp,
     }
@@ -1168,17 +1172,17 @@ export function applyEntryUpsert(
 
   let segments = entrySegments(item, opts?.sessionId)
 
-  // Carry over transient/local state for function-trigger segments and drop the
+  // Carry over transient/local state for function-call segments and drop the
   // locally-created rows they replace (pending-approval fallback rows, which
   // have non-entry ids).
   const absorbedLocalIds = new Set<string>()
   segments = segments.map((segment) => {
-    if (segment.role !== 'function-trigger' || !segment.functionTriggerId)
+    if (segment.role !== 'function-call' || !segment.functionCallId)
       return segment
     const existing = messages.find(
-      (m): m is FunctionTriggerMessage =>
-        m.role === 'function-trigger' &&
-        m.functionTriggerId === segment.functionTriggerId,
+      (m): m is FunctionCallMessage =>
+        m.role === 'function-call' &&
+        m.functionCallId === segment.functionCallId,
     )
     if (!existing) return segment
     if (!belongsToEntry(existing.id, item.entry_id))
@@ -1210,7 +1214,7 @@ export function applyEntryUpsert(
       ...(stillUnloaded ? { unloaded: true } : {}),
       // A re-read placeholder keeps the label its result already resolved
       // when the page itself only knows the wrapper name.
-      ...(segment.unloaded && existing.functionId !== 'agent_trigger'
+      ...(segment.unloaded && !isAgentCall(existing.functionId)
         ? { functionId: existing.functionId, unresolvedTarget: false }
         : {}),
       description: segment.description ?? existing.description,
@@ -1224,7 +1228,7 @@ export function applyEntryUpsert(
   if (opts?.working) {
     segments = segments.map((segment) => {
       if (
-        segment.role !== 'function-trigger' ||
+        segment.role !== 'function-call' ||
         segment.running ||
         segment.pendingApproval ||
         segment.output !== undefined ||
@@ -1335,7 +1339,7 @@ export function clearTransientFlags(messages: Message[]): Message[] {
       changed = true
       return { ...m, streaming: false }
     }
-    if (m.role === 'function-trigger' && m.running) {
+    if (m.role === 'function-call' && m.running) {
       changed = true
       return { ...m, running: false }
     }

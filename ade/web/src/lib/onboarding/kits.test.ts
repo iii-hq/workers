@@ -10,7 +10,7 @@ const MISSING = { code: 'function_not_found' }
 
 vi.mock('@/lib/iii-client', () => ({
   getIiiClient: async () => ({
-    trigger: async (
+    call: async (
       fn: string,
       payload: { kit?: string },
       options?: { timeoutMs?: number },

@@ -1,7 +1,7 @@
 /**
  * `redact`, applied to one value — the identity function when `redact` is
  * absent (nothing claims the span's function id; see `spanRawRedactor` in
- * `functionTriggerFromSpan.ts`). The primitive both helpers below, and any
+ * `functionCallFromSpan.ts`). The primitive both helpers below, and any
  * tab reading a single ad-hoc field (`SpanErrorsTab`'s message/type/stack)
  * rather than a whole attribute bag, build on — one seam, so render and copy
  * can never disagree about what is safe to show.
@@ -19,8 +19,8 @@ export function redactValue(
  * and (for tags) their click-to-copy value through, so the two exits cannot
  * disagree about what is safe to show.
  *
- * Both tabs render the same span data `functionTriggerFromSpan.ts` reads to
- * build the info tab's `FunctionTriggerCard` (`iii.payload.json` event
+ * Both tabs render the same span data `functionCallFromSpan.ts` reads to
+ * build the info tab's `FunctionCallCard` (`iii.payload.json` event
  * attributes, `tool.arguments`) — so whenever that card's raw pane has a
  * redactor, these siblings need the identical one applied to their own
  * copies of the same data. `redact` is `undefined` when nothing claims the

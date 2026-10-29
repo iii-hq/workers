@@ -6,14 +6,11 @@ import {
   type ProgressEvent,
 } from './follow-operation'
 
-/** A bus that records bindings and lets a test deliver progress events. */
+/** A bus that records observers and lets a test deliver progress events. */
 function bus() {
   const log: string[] = []
   const handlers = new Map<string, (payload: unknown) => void>()
-  const bindings = new Map<
-    number,
-    { function_id: string; config: Record<string, unknown> }
-  >()
+  const observers = new Map<number, { target: string; operationId: string }>()
   let next = 0
   const iii = {
     browserId: 'console-test',
@@ -25,28 +22,29 @@ function bus() {
         handlers.delete(id)
       }
     }),
-    registerTrigger: vi.fn(
-      (input: {
-        type: string
-        function_id: string
-        config: Record<string, unknown>
-      }) => {
-        log.push(`bind ${input.type} ${String(input.config.operation_id)}`)
+    observe: vi.fn(
+      (
+        source: {
+          function_id: string
+          filters: { 'input.operation_id': { $eq: string } }
+        },
+        target: string,
+      ) => {
+        const operationId = source.filters['input.operation_id'].$eq
+        log.push(`observe ${source.function_id} ${operationId}`)
         const key = ++next
-        bindings.set(key, input)
+        observers.set(key, { target, operationId })
         return () => {
-          log.push(`unbind ${String(input.config.operation_id)}`)
-          bindings.delete(key)
+          log.push(`dispose ${operationId}`)
+          observers.delete(key)
         }
       },
     ),
   }
   const emit = (event: Partial<ProgressEvent> & { operation_id: string }) => {
-    for (const { function_id, config } of bindings.values()) {
-      if (config.operation_id !== event.operation_id) continue
-      const handler = handlers.get(
-        function_id.slice(0, -'::console-test'.length),
-      )
+    for (const { target, operationId } of observers.values()) {
+      if (operationId !== event.operation_id) continue
+      const handler = handlers.get(target.slice(0, -'::console-test'.length))
       handler?.({
         sequence: 1,
         phase: 'starting',
@@ -56,7 +54,7 @@ function bus() {
       })
     }
   }
-  return { iii, log, emit, bindings, handlers }
+  return { iii, log, emit, observers, handlers }
 }
 
 const snapshot = (
@@ -86,7 +84,7 @@ describe('followOperation', () => {
     expect(newOperationId()).toMatch(/^compose:[0-9a-f-]{36}$/)
   })
 
-  it('binds the progress before the mutation is submitted, under the id it passes', async () => {
+  it('observes the progress before the mutation is submitted, under the id it passes', async () => {
     const { iii, log, emit } = bus()
     const start = vi.fn(async (id: string) => {
       log.push(`start ${id}`)
@@ -97,7 +95,7 @@ describe('followOperation', () => {
     await flush()
     expect(log.slice(0, 3)).toEqual([
       expect.stringMatching(/^on iii::console::workers::operation::\d+$/),
-      'bind compose-operation compose:a',
+      'observe compose::on-operation-progress compose:a',
       'start compose:a',
     ])
     expect(read).toHaveBeenCalledTimes(1)
@@ -114,13 +112,13 @@ describe('followOperation', () => {
     await expect(done).resolves.toMatchObject({ status: 'succeeded' })
     expect(read).toHaveBeenCalledTimes(2)
     expect(log.slice(-2)).toEqual([
-      'unbind compose:a',
+      'dispose compose:a',
       expect.stringMatching(/^off /),
     ])
   })
 
-  it('settles from the catch-up read when the operation ended before the binding landed', async () => {
-    const { iii, bindings, handlers } = bus()
+  it('settles from the catch-up read when the operation ended before the observer was active', async () => {
+    const { iii, observers, handlers } = bus()
     const read = vi.fn(async (id: string) =>
       snapshot(id, {
         status: 'failed',
@@ -138,7 +136,7 @@ describe('followOperation', () => {
       last_event: { detail: 'no build' },
     })
     expect(read).toHaveBeenCalledTimes(1)
-    expect(bindings.size).toBe(0)
+    expect(observers.size).toBe(0)
     expect(handlers.size).toBe(0)
   })
 
@@ -195,8 +193,10 @@ describe('followOperation', () => {
       operationId: 'compose:mine',
     })
     await flush()
-    expect(log).toContain('bind compose-operation compose:daemon')
-    expect(log).toContain('unbind compose:mine')
+    expect(log).toContain(
+      'observe compose::on-operation-progress compose:daemon',
+    )
+    expect(log).toContain('dispose compose:mine')
     read.mockResolvedValueOnce(
       snapshot('compose:daemon', { status: 'succeeded' }),
     )
@@ -207,8 +207,8 @@ describe('followOperation', () => {
     })
   })
 
-  it('unbinds and settles with null when the page goes away', async () => {
-    const { iii, bindings, handlers } = bus()
+  it('disposes the observer and settles with null when the page goes away', async () => {
+    const { iii, observers, handlers } = bus()
     const controller = new AbortController()
     const done = followOperation({
       iii,
@@ -218,15 +218,15 @@ describe('followOperation', () => {
       signal: controller.signal,
     })
     await flush()
-    expect(bindings.size).toBe(1)
+    expect(observers.size).toBe(1)
     controller.abort()
     await expect(done).resolves.toBeNull()
-    expect(bindings.size).toBe(0)
+    expect(observers.size).toBe(0)
     expect(handlers.size).toBe(0)
   })
 
-  it('unbinds and rejects when the submission fails', async () => {
-    const { iii, bindings, handlers } = bus()
+  it('disposes the observer and rejects when the submission fails', async () => {
+    const { iii, observers, handlers } = bus()
     await expect(
       followOperation({
         iii,
@@ -236,7 +236,7 @@ describe('followOperation', () => {
         read: async (id) => snapshot(id),
       }),
     ).rejects.toThrow('WRONG_DAEMON')
-    expect(bindings.size).toBe(0)
+    expect(observers.size).toBe(0)
     expect(handlers.size).toBe(0)
   })
 })

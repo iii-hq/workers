@@ -432,7 +432,9 @@ describe('mergeConversationMeta', () => {
           metadata: { parent_session_id: 'console-parent', spawned_by: v },
         }),
       ).spawnedBy
-    expect(spawned('trigger')).toBe('trigger')
+    expect(spawned('observer')).toBe('observer')
+    // Sessions written before 0.26 name an observer's reaction `trigger`.
+    expect(spawned('trigger')).toBe('observer')
     expect(spawned('agent')).toBe('agent')
     // Unknown/absent values (pre-stamp sessions) stay undefined.
     expect(spawned('something-else')).toBeUndefined()
@@ -817,7 +819,7 @@ describe('mergeSessionListSnapshot', () => {
 
 describe('markBackgroundedStale', () => {
   // Regression: transcript events subscribe for the ACTIVE session only, so
-  // a session backgrounded mid-turn misses entry updates (a function trigger
+  // a session backgrounded mid-turn misses entry updates (a function call
   // freezes as `ƒ …` with empty request/response). Staling it on switch
   // makes re-activation re-hydrate from durable truth.
   it('marks hydrated backgrounded sessions stale, leaves the active one', () => {
@@ -1007,14 +1009,14 @@ describe('mergeHydratedTranscript', () => {
     expect(merged.map((m) => `${m.id}:${m.role}`)).toEqual([
       'e_a:0:thought',
       'e_a:1:assistant',
-      'e_a:2:function-trigger',
+      'e_a:2:function-call',
       'e_b:0:assistant',
     ])
     const call = merged[2]
-    expect(call.role === 'function-trigger' && call.output).toBeTruthy()
-    expect(
-      merged.some((m) => m.role === 'function-trigger' && m.unloaded),
-    ).toBe(false)
+    expect(call.role === 'function-call' && call.output).toBeTruthy()
+    expect(merged.some((m) => m.role === 'function-call' && m.unloaded)).toBe(
+      false,
+    )
   })
 
   it('lets the page stand for an entry it holds whole', () => {

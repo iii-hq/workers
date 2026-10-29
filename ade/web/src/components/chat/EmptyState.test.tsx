@@ -181,7 +181,7 @@ describe('EmptyState', () => {
   })
 
   it('leaves a session created elsewhere unselected', () => {
-    // An empty server session (created by a trigger, the API, another
+    // An empty server session (created by an observer, the API, another
     // client) is not a local draft: opening it must not pick a profile.
     const html = renderToStaticMarkup(
       <EmptyState

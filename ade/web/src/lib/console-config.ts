@@ -36,10 +36,10 @@ function isUnavailable(err: unknown): boolean {
 export async function fetchConsoleConfigValue(): Promise<ConsoleConfigValue | null> {
   try {
     const client = await getIiiClient()
-    const resp = await client.trigger<{ value?: unknown }>(
-      'configuration::get',
-      { id: await resolveConfigurationId(client, 'console'), raw: true },
-    )
+    const resp = await client.call<{ value?: unknown }>('configuration::get', {
+      id: await resolveConfigurationId(client, 'console'),
+      raw: true,
+    })
     const value = resp?.value
     return value && typeof value === 'object' && !Array.isArray(value)
       ? (value as ConsoleConfigValue)
@@ -55,7 +55,7 @@ export async function setConsoleConfigValue(
   value: ConsoleConfigValue,
 ): Promise<void> {
   const client = await getIiiClient()
-  await client.trigger('configuration::set', {
+  await client.call('configuration::set', {
     id: await resolveConfigurationId(client, 'console'),
     value,
   })

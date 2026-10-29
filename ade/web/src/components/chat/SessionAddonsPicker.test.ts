@@ -9,7 +9,7 @@ import {
 
 describe('session skill picker', () => {
   it('loads list metadata only and omits skills disabled for model invocation', async () => {
-    const trigger = vi.fn(async () => ({
+    const call = vi.fn(async () => ({
       skills: [
         {
           id: 'review',
@@ -30,14 +30,14 @@ describe('session skill picker', () => {
 
     expect(
       await loadSessionSkills({
-        trigger: trigger as unknown as <T>(
+        call: call as unknown as <T>(
           fn: string,
           payload?: object,
         ) => Promise<T>,
       } as unknown as IiiClient),
     ).toEqual([expect.objectContaining({ id: 'review' })])
-    expect(trigger).toHaveBeenCalledTimes(1)
-    expect(trigger).toHaveBeenCalledWith(
+    expect(call).toHaveBeenCalledTimes(1)
+    expect(call).toHaveBeenCalledWith(
       'directory::skills::list',
       { include_description: true },
       { timeoutMs: 10_000 },

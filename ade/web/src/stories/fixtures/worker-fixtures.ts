@@ -4,7 +4,7 @@ import type {
   JsonSchema,
   JsonValue,
 } from '@/pages/Configuration/tabs/WorkersTab/api'
-import type { FunctionTriggerMessage } from '@/types/chat'
+import type { FunctionCallMessage } from '@/types/chat'
 import { wrapHarness } from './sandbox-fixtures'
 
 const now = Date.now()
@@ -14,11 +14,11 @@ function base(
   functionId: string,
   input: unknown,
   output?: unknown,
-  extra?: Partial<FunctionTriggerMessage>,
-): FunctionTriggerMessage {
+  extra?: Partial<FunctionCallMessage>,
+): FunctionCallMessage {
   return {
     id,
-    role: 'function-trigger',
+    role: 'function-call',
     functionId,
     input,
     output,
@@ -96,7 +96,7 @@ export const workerStatusRunning = base(
       '[pdfkit] booting render pool',
       '[pdfkit] listening on :4101',
     ],
-    hint: 'worker is healthy; trigger it with `pdfkit::render`.',
+    hint: 'worker is healthy; call it with `pdfkit::render`.',
   }),
 )
 
@@ -316,7 +316,7 @@ export const workerStopGateError = base(
   {
     error: {
       kind: 'function_error',
-      message: 'trigger_failed: W104: ConsentRequired',
+      message: 'call_failed: W104: ConsentRequired',
       details: {
         schema_version: 1,
         status: 'denied',
@@ -327,7 +327,7 @@ export const workerStopGateError = base(
       content: [
         {
           type: 'text',
-          text: 'trigger_failed: destructive op requires yes=true',
+          text: 'call_failed: destructive op requires yes=true',
         },
       ],
     },

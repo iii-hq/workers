@@ -194,7 +194,7 @@ function WorkersPage({
   const api = useMemo(() => composeApi(iii, () => fileRef.current), [iii])
   const live = useWorkerLive<Snapshot>({
     iii,
-    triggers: ['console::compose::changed'],
+    sources: ['console::compose::on-changed'],
     handlerId: 'iii::console::workers::changed',
     fetch: api.snapshot,
   })
@@ -847,7 +847,7 @@ function WorkersPage({
                 <EmptyState
                   icon={Boxes}
                   title="Pick a worker"
-                  description="Its functions and trigger types show here."
+                  description="Its functions and observers show here."
                 />
               )}
             </PageMain>

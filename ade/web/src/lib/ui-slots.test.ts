@@ -10,20 +10,20 @@ import type {
   RegisteredOverlay,
   RegisteredProviderConfigForm,
   RegisteredSessionChip,
-  RegisteredTriggerActivityRenderer,
+  RegisteredObserverActivityRenderer,
 } from './ui-slots'
 import {
   getExtConfigForm,
   getExtOverlays,
   getExtProviderConfigForm,
   getExtSessionChips,
-  getExtTriggerActivityRenderers,
+  getExtObserverActivityRenderers,
   isExtConfigFormPending,
   registerExtConfigForm,
   registerExtOverlay,
   registerExtProviderConfigForm,
   registerExtSessionChip,
-  registerExtTriggerActivityRenderer,
+  registerExtObserverActivityRenderer,
 } from './ui-slots'
 
 function chip(id: string, path: string): RegisteredSessionChip {
@@ -146,11 +146,11 @@ describe('provider config form slot', () => {
   })
 })
 
-describe('trigger activity renderer slot', () => {
+describe('observer activity renderer slot', () => {
   function renderer(
     id: string,
     path: string,
-  ): RegisteredTriggerActivityRenderer {
+  ): RegisteredObserverActivityRenderer {
     return {
       path,
       scope: path.split('/')[0],
@@ -163,24 +163,24 @@ describe('trigger activity renderer slot', () => {
   }
 
   it('keeps registration order and removes exactly the disposed entry', () => {
-    const offA = registerExtTriggerActivityRenderer(
+    const offA = registerExtObserverActivityRenderer(
       renderer('first', 'first/page.js'),
     )
-    const offB = registerExtTriggerActivityRenderer(
+    const offB = registerExtObserverActivityRenderer(
       renderer('second', 'second/page.js'),
     )
 
     expect(
-      getExtTriggerActivityRenderers().map(({ renderer }) => renderer.id),
+      getExtObserverActivityRenderers().map(({ renderer }) => renderer.id),
     ).toEqual(['first', 'second'])
 
     offA()
     offA()
     expect(
-      getExtTriggerActivityRenderers().map(({ renderer }) => renderer.id),
+      getExtObserverActivityRenderers().map(({ renderer }) => renderer.id),
     ).toEqual(['second'])
 
     offB()
-    expect(getExtTriggerActivityRenderers()).toEqual([])
+    expect(getExtObserverActivityRenderers()).toEqual([])
   })
 })

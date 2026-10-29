@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { registrationFromCall } from '@/components/trigger-activity/model'
+import { registrationFromCall } from '@/components/observer-activity/model'
 import type {
   AssistantMessage,
   Attachment,
@@ -69,7 +69,7 @@ const assistantComplete: AssistantMessage = {
 
 three small steps, each independently revertible:
 
-1. register the trigger on engine startup.
+1. register the observer on engine startup.
 2. wire the callback through the dispatcher.
 3. add a smoke test that exercises the happy path.
 
@@ -100,15 +100,16 @@ const assistantThinking: AssistantMessage = {
   createdAt: Date.now(),
 }
 
-const triggerFiredCall: SystemMessage = {
-  id: 's_trig1',
+const observerFiredCall: SystemMessage = {
+  id: 's_obs1',
   role: 'system',
-  kind: 'trigger-fired',
+  kind: 'observer-fired',
   tone: 'info',
   content: 'orders watch · called example::check_completion',
-  trigger: {
-    subscription_id: 'sub_00000000000000000000000000000001',
-    trigger_id: '00000000-0000-4000-8000-000000000001',
+  observer: {
+    observer_id: 'obs_00000000000000000000000000000001',
+    function_id: 'database::on-row-changed',
+    args: { db: 'primary', table: 'orders' },
     target: 'example::check_completion',
     label: 'orders watch',
     action: 'order record changed',
@@ -128,17 +129,16 @@ const triggerFiredCall: SystemMessage = {
   createdAt: 1785948999879,
 }
 
-const triggerFiredOnce: SystemMessage = {
-  id: 'e_trigfired_sub_story_1',
+const observerFiredOnce: SystemMessage = {
+  id: 'e_obsfired_obs_story_1',
   role: 'system',
-  kind: 'trigger-fired',
+  kind: 'observer-fired',
   tone: 'info',
   content: 'daily report · notified this chat · once consumed',
-  trigger: {
-    subscription_id: 'sub_story',
-    trigger_id: 'trigger-story',
-    trigger_type: 'cron',
-    config: { expression: '0 30 9 * * *' },
+  observer: {
+    observer_id: 'obs_story',
+    function_id: 'cron::on-tick',
+    args: { expression: '0 30 9 * * * *' },
     target: 'harness::send',
     label: 'daily report',
     action: 'daily report became ready',
@@ -152,25 +152,25 @@ const triggerFiredOnce: SystemMessage = {
   createdAt: 1_785_948_999_879,
 }
 
-const triggerNotification: UserMessage = {
-  id: 'e_fire_sub_story_1',
+const observerNotification: UserMessage = {
+  id: 'e_fire_obs_story_1',
   role: 'user',
   content: '[notification] daily report: {"report_id":"rpt-42","rows":128}',
   notification: true,
-  triggerBindingId: 'sub_story',
+  observerId: 'obs_story',
   createdAt: 1_785_948_999_879,
 }
 
-const triggerConditionWaiting: SystemMessage = {
-  id: 'e_trigskip_sub_wave_condition_0123456789abcdef0123456789abcdef',
+const observerConditionWaiting: SystemMessage = {
+  id: 'e_obsskip_obs_wave_condition_0123456789abcdef0123456789abcdef',
   role: 'system',
-  kind: 'trigger-fired',
+  kind: 'observer-fired',
   tone: 'info',
   content: 'wave 1 · held by its condition',
-  trigger: {
-    subscription_id: 'sub_wave',
-    trigger_type: 'state',
-    config: { scope: 'run-r1-w1' },
+  observer: {
+    observer_id: 'obs_wave',
+    function_id: 'state::on-changed',
+    filters: { 'input.scope': { $eq: 'run-r1-w1' } },
     target: 'harness::send',
     label: 'run r1 w1',
     once: true,
@@ -183,16 +183,16 @@ const triggerConditionWaiting: SystemMessage = {
   createdAt: 1_785_949_049_879,
 }
 
-const triggerManuallyRemoved: SystemMessage = {
-  id: 'e_trigexpired_sub_manual',
+const observerManuallyRemoved: SystemMessage = {
+  id: 'e_obsexpired_obs_manual',
   role: 'system',
-  kind: 'trigger-fired',
+  kind: 'observer-fired',
   tone: 'info',
-  content: 'orders watch · binding manually removed',
-  trigger: {
-    subscription_id: 'sub_manual',
-    trigger_type: 'database::row-changed',
-    config: { database: 'primary', table: 'orders' },
+  content: 'orders watch · observer manually removed',
+  observer: {
+    observer_id: 'obs_manual',
+    function_id: 'database::on-row-changed',
+    args: { db: 'primary', table: 'orders' },
     target: 'orders::reindex',
     label: 'orders watch',
     once: false,
@@ -416,7 +416,7 @@ const noticeError: SystemMessage = {
   kind: 'notice',
   tone: 'error',
   content:
-    'could not unregister the trigger — subscription sub_00000000000000000000000000000001 not found',
+    'could not remove the observer — observer obs_00000000000000000000000000000001 not found',
   createdAt: 1_785_949_000_000,
 }
 
@@ -479,38 +479,38 @@ export const AssistantThinking: Story = {
   args: { message: assistantThinking },
 }
 
-export const TriggerFiredWithPayload: Story = {
-  name: 'system, trigger fired · ƒ-call with payload',
-  args: { message: triggerFiredCall },
+export const ObserverFiredWithPayload: Story = {
+  name: 'system, observer fired · ƒ-call with payload',
+  args: { message: observerFiredCall },
 }
 
-export const TriggerFiredOnceConsumed: Story = {
-  name: 'system, trigger fired · once consumed',
+export const ObserverFiredOnceConsumed: Story = {
+  name: 'system, observer fired · once consumed',
   args: {
-    message: triggerFiredOnce,
-    triggerNotification,
+    message: observerFiredOnce,
+    observerNotification,
     registration: registrationFromCall({
-      id: 'register-story',
-      subscriptionId: 'sub_story',
+      id: 'observe-story',
+      observerId: 'obs_story',
       effectiveOnce: true,
       input: {
-        trigger_type: 'cron',
-        config: { expression: '0 30 9 * * *' },
+        function_id: 'cron::on-tick',
+        args: { expression: '0 30 9 * * * *' },
         label: 'daily report',
-        metadata: { action: 'daily report became ready' },
+        action: 'daily report became ready',
       },
     }),
   },
 }
 
-export const TriggerConditionWaiting: Story = {
-  name: 'system, trigger fired · condition waiting (barrier not complete)',
-  args: { message: triggerConditionWaiting },
+export const ObserverConditionWaiting: Story = {
+  name: 'system, observer fired · condition waiting (barrier not complete)',
+  args: { message: observerConditionWaiting },
 }
 
-export const TriggerBindingManuallyRemoved: Story = {
-  name: 'system, trigger binding · manually removed',
-  args: { message: triggerManuallyRemoved },
+export const ObserverManuallyRemoved: Story = {
+  name: 'system, observer · manually removed',
+  args: { message: observerManuallyRemoved },
 }
 
 export const WorkingDirChanged: Story = {

@@ -107,7 +107,7 @@ describe('worker::status', () => {
       logs_dir: '/Users/anderson/.iii/logs/pdfkit',
       stderr_tail: [],
       stdout_tail: ['[pdfkit] listening on :4101'],
-      hint: 'worker is healthy; trigger it with `pdfkit::render`.',
+      hint: 'worker is healthy; call it with `pdfkit::render`.',
     }
     const parsed = safeParseResponse(workerStatusResponseSchema, wrap(outcome))
     expect(parsed).toMatchObject({

@@ -37,14 +37,14 @@ describe('parseFileMentions', () => {
 
 describe('expandFileMentions', () => {
   it('makes no read call for a whole-file mention — the token is the reference', async () => {
-    const trigger = vi.fn()
-    const out = await expandFileMentions('/w', [{ path: 'src/a.rs' }], trigger)
-    expect(trigger).not.toHaveBeenCalled()
+    const call = vi.fn()
+    const out = await expandFileMentions('/w', [{ path: 'src/a.rs' }], call)
+    expect(call).not.toHaveBeenCalled()
     expect(out).toEqual({ blocks: [], attachments: [], failures: [] })
   })
 
   it('reads a line window and labels the block with it', async () => {
-    const trigger = vi.fn().mockResolvedValue({
+    const call = vi.fn().mockResolvedValue({
       results: [
         {
           path: '/w/src/a.rs',
@@ -60,9 +60,9 @@ describe('expandFileMentions', () => {
     const out = await expandFileMentions(
       '/w',
       [{ path: 'src/a.rs', range: { from: 12, to: 13 } }],
-      trigger,
+      call,
     )
-    expect(trigger).toHaveBeenCalledWith(READ_FILE_FUNCTION_ID, {
+    expect(call).toHaveBeenCalledWith(READ_FILE_FUNCTION_ID, {
       paths: [{ path: 'src/a.rs', line_from: 12, line_to: 13 }],
       fs_scope: { root: '/w', boundary: 'workspace' },
     })
@@ -75,7 +75,7 @@ describe('expandFileMentions', () => {
   })
 
   it('turns per-window failures and binary files into placeholder blocks', async () => {
-    const trigger = vi.fn().mockResolvedValue({
+    const call = vi.fn().mockResolvedValue({
       results: [
         {
           path: 'gone.txt',
@@ -91,7 +91,7 @@ describe('expandFileMentions', () => {
         { path: 'gone.txt', range: { from: 1, to: 3 } },
         { path: 'pic.png', range: { from: 2, to: 2 } },
       ],
-      trigger,
+      call,
     )
     expect(out.blocks[0]).toBe(
       '<attached-file path="gone.txt:1-3" error="not found: gone.txt" />',
@@ -107,7 +107,7 @@ describe('expandFileMentions', () => {
   })
 
   it('reads only line windows — folders and whole files stay references', async () => {
-    const trigger = vi.fn().mockResolvedValue({
+    const call = vi.fn().mockResolvedValue({
       results: [
         { path: '/w/src/a.rs', success: true, content: 'x', is_utf8: true },
       ],
@@ -119,9 +119,9 @@ describe('expandFileMentions', () => {
         { path: 'src/b.rs' },
         { path: 'src/a.rs', range: { from: 3, to: 3 } },
       ],
-      trigger,
+      call,
     )
-    expect(trigger).toHaveBeenCalledWith(READ_FILE_FUNCTION_ID, {
+    expect(call).toHaveBeenCalledWith(READ_FILE_FUNCTION_ID, {
       paths: [{ path: 'src/a.rs', line_from: 3, line_to: 3 }],
       fs_scope: { root: '/w', boundary: 'workspace' },
     })
@@ -132,21 +132,21 @@ describe('expandFileMentions', () => {
   })
 
   it('makes no read call when only folders are mentioned', async () => {
-    const trigger = vi.fn()
-    const out = await expandFileMentions('/w', [{ path: 'src/' }], trigger)
-    expect(trigger).not.toHaveBeenCalled()
+    const call = vi.fn()
+    const out = await expandFileMentions('/w', [{ path: 'src/' }], call)
+    expect(call).not.toHaveBeenCalled()
     expect(out).toEqual({ blocks: [], attachments: [], failures: [] })
   })
 
   it('degrades every window to a failure when the batch call throws', async () => {
-    const trigger = vi.fn().mockRejectedValue(new Error('shell worker away'))
+    const call = vi.fn().mockRejectedValue(new Error('shell worker away'))
     const out = await expandFileMentions(
       '/w',
       [
         { path: 'a.txt', range: { from: 1, to: 2 } },
         { path: 'b.txt', range: { from: 5, to: 5 } },
       ],
-      trigger,
+      call,
     )
     expect(out.blocks).toHaveLength(2)
     expect(out.failures.map((f) => f.reason)).toEqual([

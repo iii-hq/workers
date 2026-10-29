@@ -21,7 +21,7 @@ interface GetConfigResponse {
 export async function getShellHostRoots(): Promise<string[]> {
   try {
     const client = await getIiiClient()
-    const res = await client.trigger<GetConfigResponse>('configuration::get', {
+    const res = await client.call<GetConfigResponse>('configuration::get', {
       id: await resolveConfigurationId(client, 'ide'),
       raw: false,
     })

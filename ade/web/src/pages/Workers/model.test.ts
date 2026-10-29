@@ -1034,13 +1034,13 @@ describe('entryYaml', () => {
 describe('parseLogLine', () => {
   it('splits a tracing line into local time, level, target and text', () => {
     const parts = parseLogLine(
-      '2026-10-01T00:22:53.685636Z  INFO llm_router::triggers: trigger subscription registered',
+      '2026-10-01T00:22:53.685636Z  INFO llm_router::observers: observer added',
     )
     const local = new Date('2026-10-01T00:22:53.685Z')
     expect(parts).toMatchObject({
       level: 'INFO',
-      target: 'llm_router::triggers',
-      text: 'trigger subscription registered',
+      target: 'llm_router::observers',
+      text: 'observer added',
       stamp: '2026-10-01T00:22:53.685636Z',
     })
     expect(parts?.time).toBe(

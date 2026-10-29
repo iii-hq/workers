@@ -29,7 +29,7 @@ function textFile(): Attachment {
   }
 }
 
-type TriggerFn = (
+type CallFn = (
   functionId: string,
   payload: Record<string, unknown>,
 ) => Promise<unknown>
@@ -39,9 +39,9 @@ type TriggerFn = (
  * it throws. The second element records call order, because "classify before
  * extracting, and skip extracting on a scan" is behaviour worth asserting.
  */
-function trigger(
+function call(
   responses: Record<string, unknown>,
-): [TriggerFn & { mock: { calls: unknown[][] } }, string[]] {
+): [CallFn & { mock: { calls: unknown[][] } }, string[]] {
   const calls: string[] = []
   const fn = vi.fn(
     async (functionId: string, _payload: Record<string, unknown>) => {
@@ -51,7 +51,7 @@ function trigger(
       return value
     },
   )
-  return [fn as unknown as TriggerFn & { mock: { calls: unknown[][] } }, calls]
+  return [fn as unknown as CallFn & { mock: { calls: unknown[][] } }, calls]
 }
 
 describe('isPdfAttachment', () => {
@@ -73,14 +73,14 @@ describe('isPdfAttachment', () => {
 
 describe('expandPdfAttachments', () => {
   it('does nothing when there are no PDFs', async () => {
-    const [fn] = trigger({})
+    const [fn] = call({})
     const result = await expandPdfAttachments([textFile()], fn)
     expect(result).toEqual({ blocks: [], read: [], failures: [] })
     expect(fn.mock.calls).toHaveLength(0)
   })
 
   it('classifies before extracting and inlines the markdown', async () => {
-    const [fn, calls] = trigger({
+    const [fn, calls] = call({
       [CLASSIFY_FUNCTION_ID]: {
         document_type: 'text_based',
         page_count: 8,
@@ -110,7 +110,7 @@ describe('expandPdfAttachments', () => {
    * because only the first is worth reporting back to the person.
    */
   it('says a scan was read and found unreadable, and skips extraction', async () => {
-    const [fn, calls] = trigger({
+    const [fn, calls] = call({
       [CLASSIFY_FUNCTION_ID]: {
         document_type: 'scanned',
         page_count: 3,
@@ -129,7 +129,7 @@ describe('expandPdfAttachments', () => {
   })
 
   it('reports truncation with the size it withheld', async () => {
-    const [fn] = trigger({
+    const [fn] = call({
       [CLASSIFY_FUNCTION_ID]: { document_type: 'text_based', page_count: 400 },
       [TO_MARKDOWN_FUNCTION_ID]: {
         body: {
@@ -150,7 +150,7 @@ describe('expandPdfAttachments', () => {
   })
 
   it('carries the per-page OCR verdict of a mixed document', async () => {
-    const [fn] = trigger({
+    const [fn] = call({
       [CLASSIFY_FUNCTION_ID]: {
         document_type: 'mixed',
         page_count: 10,
@@ -170,7 +170,7 @@ describe('expandPdfAttachments', () => {
 
   /** A missing worker is the failure a person can actually act on. */
   it('names the missing worker rather than surfacing a bus error', async () => {
-    const [fn] = trigger({
+    const [fn] = call({
       [CLASSIFY_FUNCTION_ID]: new Error(
         "remote error (NOT_FOUND): Function 'pdf::classify' is not registered.",
       ),
@@ -179,13 +179,13 @@ describe('expandPdfAttachments', () => {
     const { blocks, failures } = await expandPdfAttachments([pdf()], fn)
 
     expect(failures).toHaveLength(1)
-    expect(failures[0].reason).toContain('iii trigger compose::add worker=pdf')
+    expect(failures[0].reason).toContain('iii call compose::add worker=pdf')
     expect(blocks[0]).toContain('error=')
   })
 
   /** A failed read must still produce a block, so the send is never blocked. */
   it('turns a failure into a placeholder block instead of throwing', async () => {
-    const [fn] = trigger({
+    const [fn] = call({
       [CLASSIFY_FUNCTION_ID]: new Error('boom'),
     })
 
@@ -197,7 +197,7 @@ describe('expandPdfAttachments', () => {
   })
 
   it('reports the documents it dropped over the per-send cap', async () => {
-    const [fn] = trigger({
+    const [fn] = call({
       [CLASSIFY_FUNCTION_ID]: { document_type: 'text_based', page_count: 1 },
       [TO_MARKDOWN_FUNCTION_ID]: {
         body: { text: 'x', chars: 1, total_chars: 1 },
@@ -220,7 +220,7 @@ describe('expandPdfAttachments', () => {
    * Re-reading is not this function's job, and it must not error.
    */
   it('skips an attachment whose file is gone', async () => {
-    const [fn] = trigger({})
+    const [fn] = call({})
     const withoutFile: Attachment = {
       id: 'old',
       name: 'old.pdf',
@@ -238,7 +238,7 @@ describe('expandPdfAttachments', () => {
    * can see that the document was read.
    */
   it('reports what it made of the document, for the chip', async () => {
-    const [fn] = trigger({
+    const [fn] = call({
       [CLASSIFY_FUNCTION_ID]: {
         document_type: 'text_based',
         page_count: 8,
@@ -261,7 +261,7 @@ describe('expandPdfAttachments', () => {
   })
 
   it('summarizes a scan as unreadable rather than as zero characters', async () => {
-    const [fn] = trigger({
+    const [fn] = call({
       [CLASSIFY_FUNCTION_ID]: {
         document_type: 'scanned',
         page_count: 3,
@@ -275,7 +275,7 @@ describe('expandPdfAttachments', () => {
   })
 
   it('marks a truncated extract so the count is not read as the whole document', async () => {
-    const [fn] = trigger({
+    const [fn] = call({
       [CLASSIFY_FUNCTION_ID]: { document_type: 'text_based', page_count: 400 },
       [TO_MARKDOWN_FUNCTION_ID]: {
         body: { text: 'y', chars: 1, total_chars: 900_000, truncated: true },
@@ -290,7 +290,7 @@ describe('expandPdfAttachments', () => {
   })
 
   it('escapes quotes in a file name rather than breaking the header', async () => {
-    const [fn] = trigger({
+    const [fn] = call({
       [CLASSIFY_FUNCTION_ID]: { document_type: 'text_based', page_count: 1 },
       [TO_MARKDOWN_FUNCTION_ID]: {
         body: { text: 'x', chars: 1, total_chars: 1 },

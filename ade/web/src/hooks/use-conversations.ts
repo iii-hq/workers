@@ -3,9 +3,9 @@
  *
  * Sessions ARE the conversations: the sidebar lists `session::list`, the
  * transcript hydrates from `session::messages`, and live rendering
- * reconciles the six `session::*` trigger types (per
- * `session-manager/architecture/integration.md`). localStorage no longer
- * persists transcripts — only UI affordances (active id, last model).
+ * reconciles the six `session::on-*` event functions (per
+ * `session-manager/architecture/integration.md`). localStorage persists only
+ * UI affordances (active id, last model), never transcripts.
  *
  * Lifecycle:
  * - "new chat" is a LOCAL DRAFT (`draft: true`, id `console-<uuid>`); the
@@ -305,6 +305,16 @@ const SUBAGENT_COLOR_VALUES = new Set<SubagentColor>([
   'amber',
   'rose',
 ])
+
+/**
+ * Who started a child session, from `metadata.spawned_by`. Sessions written
+ * before 0.26 name an observer's reaction `trigger`.
+ */
+function spawnedByOf(value: unknown): Conversation['spawnedBy'] {
+  if (value === 'agent') return 'agent'
+  if (value === 'observer' || value === 'trigger') return 'observer'
+  return undefined
+}
 
 function decodeSubagentAppearance(
   value: unknown,
@@ -776,10 +786,7 @@ function conversationFromMeta(
     parentFunctionCallId:
       typeof md.function_call_id === 'string' ? md.function_call_id : undefined,
     depth: typeof md.depth === 'number' ? md.depth : undefined,
-    spawnedBy:
-      md.spawned_by === 'trigger' || md.spawned_by === 'agent'
-        ? md.spawned_by
-        : undefined,
+    spawnedBy: spawnedByOf(md.spawned_by),
     draftText:
       typeof meta.draft === 'string' && meta.draft.length > 0
         ? meta.draft
@@ -848,10 +855,7 @@ export function applyConversationMetadataEvent(
         ? md.function_call_id
         : conversation.parentFunctionCallId,
     depth: typeof md.depth === 'number' ? md.depth : conversation.depth,
-    spawnedBy:
-      md.spawned_by === 'trigger' || md.spawned_by === 'agent'
-        ? md.spawned_by
-        : conversation.spawnedBy,
+    spawnedBy: spawnedByOf(md.spawned_by) ?? conversation.spawnedBy,
     updatedAt: Math.max(conversation.updatedAt, event.timestamp),
   }
   return reconcileLegacySkillMigration(conversation, next)
@@ -954,7 +958,7 @@ export function resolveActiveConversationId(input: {
  * Mark every backgrounded server-backed conversation stale so the next
  * activation re-hydrates it. A transcript subscription exists only for the
  * ACTIVE session, so entry events emitted while a session is backgrounded
- * are lost — a function trigger caught mid-snapshot freezes as `ƒ …` with an
+ * are lost — a function call caught mid-snapshot freezes as `ƒ …` with an
  * empty request/response until durable truth is re-fetched. Returns the
  * same array when nothing changed.
  */
@@ -1336,7 +1340,7 @@ export function mergeHydratedTranscript(
     else liveByEntry.set(entryId, [m])
   }
   const isPlaceholder = (m: Message) =>
-    m.role === 'function-trigger' && m.unloaded === true
+    m.role === 'function-call' && m.unloaded === true
   // Window order of entries, for anchoring rows the page does not hold.
   const windowEntries: string[] = []
   for (const m of order) {
@@ -1852,7 +1856,7 @@ export function useConversations(
               [sessionId]: 'Unable to load this conversation.',
             }))
             // No session-manager registered: a timer will not bring it back,
-            // the `worker` lifecycle trigger re-enables the store when it
+            // the workers-changed observer re-enables the store when it
             // arrives. Retrying here only writes an engine error line every
             // 5 s for as long as the panel stays open.
             if (isFunctionNotFound(err)) return
@@ -1963,7 +1967,7 @@ export function useConversations(
             ),
           )
         }
-        // Session triggers are at-least-once but not replayed. Re-list after
+        // Session events are at-least-once but not replayed. Re-list after
         // reconnect so terminal child states missed while offline replace the
         // cached working rows instead of leaving false-active chips behind.
         void (async () => {

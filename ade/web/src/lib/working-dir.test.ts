@@ -12,10 +12,10 @@ import {
   workingDirRecoveryNotice,
 } from './working-dir'
 
-const triggerMock = vi.fn()
+const callMock = vi.fn()
 
 vi.mock('@/lib/iii-client', () => ({
-  getIiiClient: async () => ({ trigger: triggerMock }),
+  getIiiClient: async () => ({ call: callMock }),
 }))
 
 // The shell presence gate reads the function catalog through the same client;
@@ -25,7 +25,7 @@ vi.mock('@/lib/function-presence', () => ({
 }))
 
 beforeEach(() => {
-  triggerMock.mockReset()
+  callMock.mockReset()
   resetDefaultWorkingDirForTests()
 })
 
@@ -43,16 +43,16 @@ describe('errMsg', () => {
 
 describe('validateWorkspaceDir', () => {
   it('returns the worker-echoed canonical path', async () => {
-    triggerMock.mockResolvedValueOnce({ path: '/real/project' })
+    callMock.mockResolvedValueOnce({ path: '/real/project' })
     const res = await validateWorkspaceDir('/link/project')
     expect(res).toEqual({ ok: true, path: '/real/project' })
-    expect(triggerMock).toHaveBeenCalledWith(WORKSPACE_VALIDATE_FUNCTION_ID, {
+    expect(callMock).toHaveBeenCalledWith(WORKSPACE_VALIDATE_FUNCTION_ID, {
       path: '/link/project',
     })
   })
 
   it('maps a rejection to ok:false with the unwrapped message', async () => {
-    triggerMock.mockRejectedValueOnce({
+    callMock.mockRejectedValueOnce({
       message: 'handler error: {"code":"S212","message":"not a directory"}',
     })
     const res = await validateWorkspaceDir('/gone')
@@ -62,18 +62,18 @@ describe('validateWorkspaceDir', () => {
 
 describe('fetchDefaultWorkingDir', () => {
   it('resolves the harness default and stores the shell-canonical path', async () => {
-    triggerMock
+    callMock
       .mockResolvedValueOnce({ default_root: '/work/stack' })
       .mockResolvedValueOnce({ path: '/work/stack-canonical' })
     await expect(fetchDefaultWorkingDir()).resolves.toBe(
       '/work/stack-canonical',
     )
-    expect(triggerMock).toHaveBeenNthCalledWith(
+    expect(callMock).toHaveBeenNthCalledWith(
       1,
       HARNESS_FILESYSTEM_INFO_FUNCTION_ID,
       {},
     )
-    expect(triggerMock).toHaveBeenNthCalledWith(
+    expect(callMock).toHaveBeenNthCalledWith(
       2,
       WORKSPACE_VALIDATE_FUNCTION_ID,
       { path: '/work/stack' },
@@ -81,22 +81,22 @@ describe('fetchDefaultWorkingDir', () => {
   })
 
   it('caches the resolution for the page lifetime', async () => {
-    triggerMock
+    callMock
       .mockResolvedValueOnce({ default_root: '/work/stack' })
       .mockResolvedValueOnce({ path: '/work/stack' })
     await fetchDefaultWorkingDir()
     await fetchDefaultWorkingDir()
-    expect(triggerMock).toHaveBeenCalledTimes(2)
+    expect(callMock).toHaveBeenCalledTimes(2)
   })
 
   it('is null when the harness reports no default (defaulting off)', async () => {
-    triggerMock.mockResolvedValueOnce({ default_root: null })
+    callMock.mockResolvedValueOnce({ default_root: null })
     await expect(fetchDefaultWorkingDir()).resolves.toBeNull()
-    expect(triggerMock).toHaveBeenCalledTimes(1)
+    expect(callMock).toHaveBeenCalledTimes(1)
   })
 
   it('is null when the shell rejects the harness default', async () => {
-    triggerMock
+    callMock
       .mockResolvedValueOnce({ default_root: '/vm/only/path' })
       .mockRejectedValueOnce({
         message: 'handler error: {"code":"S212","message":"not a directory"}',
@@ -105,14 +105,14 @@ describe('fetchDefaultWorkingDir', () => {
   })
 
   it('is null when the harness function is missing (older harness)', async () => {
-    triggerMock.mockRejectedValueOnce({ message: 'function not found' })
+    callMock.mockRejectedValueOnce({ message: 'function not found' })
     await expect(fetchDefaultWorkingDir()).resolves.toBeNull()
   })
 })
 
 describe('fetchNewChatWorkingDir', () => {
   it('prefers the most recently used harness project, shell-canonical', async () => {
-    triggerMock
+    callMock
       .mockResolvedValueOnce({
         projects: [
           { path: '/work/latest', name: 'latest', last_used_at: 20 },
@@ -123,26 +123,26 @@ describe('fetchNewChatWorkingDir', () => {
     await expect(fetchNewChatWorkingDir()).resolves.toBe(
       '/work/latest-canonical',
     )
-    expect(triggerMock).toHaveBeenNthCalledWith(
+    expect(callMock).toHaveBeenNthCalledWith(
       1,
       HARNESS_PROJECTS_LIST_FUNCTION_ID,
       {},
     )
-    expect(triggerMock).toHaveBeenNthCalledWith(
+    expect(callMock).toHaveBeenNthCalledWith(
       2,
       WORKSPACE_VALIDATE_FUNCTION_ID,
       { path: '/work/latest' },
     )
-    expect(triggerMock).toHaveBeenCalledTimes(2)
+    expect(callMock).toHaveBeenCalledTimes(2)
   })
 
   it('falls back to the stack default when the catalog is empty', async () => {
-    triggerMock
+    callMock
       .mockResolvedValueOnce({ projects: [] })
       .mockResolvedValueOnce({ default_root: '/work/stack' })
       .mockResolvedValueOnce({ path: '/work/stack' })
     await expect(fetchNewChatWorkingDir()).resolves.toBe('/work/stack')
-    expect(triggerMock).toHaveBeenNthCalledWith(
+    expect(callMock).toHaveBeenNthCalledWith(
       2,
       HARNESS_FILESYSTEM_INFO_FUNCTION_ID,
       {},
@@ -150,7 +150,7 @@ describe('fetchNewChatWorkingDir', () => {
   })
 
   it('falls back to the stack default when the last-used project is gone', async () => {
-    triggerMock
+    callMock
       .mockResolvedValueOnce({
         projects: [{ path: '/work/gone', name: 'gone', last_used_at: 1 }],
       })
@@ -164,7 +164,7 @@ describe('fetchNewChatWorkingDir', () => {
   })
 
   it('falls back to the stack default when the catalog function is missing', async () => {
-    triggerMock
+    callMock
       .mockRejectedValueOnce({ message: 'function not found' })
       .mockResolvedValueOnce({ default_root: '/work/stack' })
       .mockResolvedValueOnce({ path: '/work/stack' })
@@ -174,17 +174,17 @@ describe('fetchNewChatWorkingDir', () => {
 
 describe('activateWorkingDir', () => {
   it('keeps a valid saved directory and its canonical path', async () => {
-    triggerMock.mockResolvedValueOnce({ path: '/real/project' })
+    callMock.mockResolvedValueOnce({ path: '/real/project' })
 
     await expect(activateWorkingDir('/link/project')).resolves.toEqual({
       status: 'valid',
       path: '/real/project',
     })
-    expect(triggerMock).toHaveBeenCalledTimes(1)
+    expect(callMock).toHaveBeenCalledTimes(1)
   })
 
   it('recovers a deleted saved directory to the live Harness default', async () => {
-    triggerMock
+    callMock
       .mockRejectedValueOnce({ code: 'S211', message: 'not found' })
       .mockResolvedValueOnce({ default_root: '/work/stack' })
       .mockResolvedValueOnce({ path: '/work/stack-canonical' })
@@ -196,7 +196,7 @@ describe('activateWorkingDir', () => {
   })
 
   it('clears the current scope when neither saved nor default path is usable', async () => {
-    triggerMock
+    callMock
       .mockRejectedValueOnce({ code: 'S211', message: 'not found' })
       .mockResolvedValueOnce({ default_root: null })
 
@@ -205,31 +205,31 @@ describe('activateWorkingDir', () => {
       path: null,
     })
     await expect(fetchDefaultWorkingDir()).resolves.toBeNull()
-    expect(triggerMock).toHaveBeenCalledTimes(2)
+    expect(callMock).toHaveBeenCalledTimes(2)
   })
 
   it('keeps the saved scope during a transient worker failure', async () => {
-    triggerMock.mockRejectedValueOnce({ message: 'worker disconnected' })
+    callMock.mockRejectedValueOnce({ message: 'worker disconnected' })
 
     await expect(activateWorkingDir('/work/project')).resolves.toEqual({
       status: 'unavailable',
       path: '/work/project',
     })
-    expect(triggerMock).toHaveBeenCalledTimes(1)
+    expect(callMock).toHaveBeenCalledTimes(1)
   })
 
   it('does not mistake a missing validation function for a missing directory', async () => {
-    triggerMock.mockRejectedValueOnce({ message: 'function not found' })
+    callMock.mockRejectedValueOnce({ message: 'function not found' })
 
     await expect(activateWorkingDir('/work/project')).resolves.toEqual({
       status: 'unavailable',
       path: '/work/project',
     })
-    expect(triggerMock).toHaveBeenCalledTimes(1)
+    expect(callMock).toHaveBeenCalledTimes(1)
   })
 
   it('keeps the saved scope when default resolution is temporarily unavailable', async () => {
-    triggerMock
+    callMock
       .mockRejectedValueOnce({ code: 'S211', message: 'not found' })
       .mockRejectedValueOnce({ message: 'harness disconnected' })
 
@@ -240,12 +240,12 @@ describe('activateWorkingDir', () => {
   })
 
   it('does not reuse a stale cached default during recovery', async () => {
-    triggerMock
+    callMock
       .mockResolvedValueOnce({ default_root: '/old/default' })
       .mockResolvedValueOnce({ path: '/old/default' })
     await expect(fetchDefaultWorkingDir()).resolves.toBe('/old/default')
 
-    triggerMock
+    callMock
       .mockRejectedValueOnce({
         code: 'S211',
         message: 'saved path was deleted',
@@ -258,7 +258,7 @@ describe('activateWorkingDir', () => {
       path: '/new/default',
     })
     await expect(fetchDefaultWorkingDir()).resolves.toBe('/new/default')
-    expect(triggerMock).toHaveBeenCalledTimes(5)
+    expect(callMock).toHaveBeenCalledTimes(5)
   })
 })
 

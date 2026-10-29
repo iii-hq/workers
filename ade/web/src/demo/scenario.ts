@@ -70,7 +70,7 @@ export type ChildEntry =
   | { role: 'thought'; content: string; durationMs: number }
   | { role: 'assistant'; content: string }
   | {
-      role: 'function-trigger'
+      role: 'function-call'
       functionId: string
       /** Worker that runs it — the child's `execute` span's service name. */
       worker: string
@@ -101,7 +101,7 @@ export interface ScenarioOptions {
    * approve/deny on the real card, or by the demo's own timeout. The demo
    * never denies; a deny resolves the same way so the card can't hang.
    */
-  gate: (functionTriggerId: string) => Promise<void>
+  gate: (functionCallId: string) => Promise<void>
 }
 
 /* ── span bookkeeping ─────────────────────────────────────────────────── */
@@ -201,7 +201,7 @@ interface CallOptions {
    * What the card and the span report, when that differs from how long the
    * demo dwells. An engine-local call really does finish in microseconds;
    * animating it that fast would make it invisible, and reporting the dwell
-   * instead would claim a trigger registration costs a third of a second.
+   * instead would claim an observe costs a third of a second.
    */
   reportedMs?: number
   parentSpan: string
@@ -209,8 +209,8 @@ interface CallOptions {
   /** Nested spans opened inside the call, as [name, service, share-of-runMs]. */
   inner?: Array<[string, string, number]>
   /** Hold the call in the approval gate before it executes. */
-  gate?: (functionTriggerId: string) => Promise<void>
-  functionTriggerId?: string
+  gate?: (functionCallId: string) => Promise<void>
+  functionCallId?: string
   callout?: Callout
 }
 
@@ -226,7 +226,7 @@ async function* call(opts: CallOptions): AsyncGenerator<DemoEvent> {
     signal,
     inner,
     gate,
-    functionTriggerId,
+    functionCallId,
     callout,
   } = opts
   const startedAt = Date.now()
@@ -238,17 +238,17 @@ async function* call(opts: CallOptions): AsyncGenerator<DemoEvent> {
     ...(gate
       ? {
           pendingApproval: true,
-          functionTriggerId,
+          functionCallId,
           sessionId: SESSION_ID,
         }
       : {}),
   }
   if (callout) yield { kind: 'demo-callout', callout }
 
-  if (gate && functionTriggerId) {
-    await gate(functionTriggerId)
+  if (gate && functionCallId) {
+    await gate(functionCallId)
     if (signal?.aborted) return
-    yield { kind: 'fcall-approval-cleared', functionTriggerId, running: true }
+    yield { kind: 'fcall-approval-cleared', functionCallId, running: true }
   }
 
   const execSpan = spanId('exec')
@@ -306,7 +306,7 @@ async function* call(opts: CallOptions): AsyncGenerator<DemoEvent> {
     kind: 'fcall-end',
     output,
     durationMs: reportedMs ?? Date.now() - startedAt,
-    ...(functionTriggerId ? { functionTriggerId } : {}),
+    ...(functionCallId ? { functionCallId } : {}),
   }
 }
 
@@ -441,7 +441,7 @@ async function* spawnFanOut(
     entry: ChildEntry,
   ): Generator<DemoEvent> {
     yield { kind: 'demo-session-msg', id: child.sessionId, entry }
-    if (entry.role !== 'function-trigger') return
+    if (entry.role !== 'function-call') return
     const callSpan = spanId('childcall')
     yield {
       kind: 'demo-span-open',
@@ -472,7 +472,7 @@ async function* spawnFanOut(
       kind: 'fcall-start',
       functionId: 'harness::spawn',
       input: spawnInput(child),
-      functionTriggerId: child.callId,
+      functionCallId: child.callId,
       sessionId: SESSION_ID,
       ...(child.gated ? { pendingApproval: true } : {}),
     }
@@ -496,7 +496,7 @@ async function* spawnFanOut(
     if (signal?.aborted) return
     yield {
       kind: 'fcall-approval-cleared',
-      functionTriggerId: child.callId,
+      functionCallId: child.callId,
       running: true,
     }
     yield* launch(child)
@@ -551,7 +551,7 @@ async function* spawnFanOut(
       kind: 'fcall-end',
       output: spawnResult(child),
       durationMs: Date.now() - startedAt,
-      functionTriggerId: child.callId,
+      functionCallId: child.callId,
     }
   }
 }
@@ -675,14 +675,7 @@ const DATABASE_INFO = () => ({
       description: 'Apply pending migrations.',
     },
   ],
-  trigger_types: [
-    {
-      id: 'database.row_changed',
-      worker_name: 'database',
-      description: 'Fires when a watched table changes.',
-    },
-  ],
-  registered_triggers: [],
+  observers: [],
 })
 
 /**
@@ -717,7 +710,7 @@ interface ChildBeat {
 /* The source the children write, shown by the coder card as they write it. */
 
 const CHARGE_RECORD_RS = `use crate::types::{Charge, Entry};
-use iii_sdk::{Error, IIIClient, RegisterFunction, TriggerRequest};
+use iii_sdk::{CallRequest, Error, IIIClient, RegisterFunction};
 use serde_json::json;
 
 /// A charge is two rows: debit the customer, credit the house account.
@@ -733,7 +726,7 @@ pub fn register(iii: &IIIClient) {
                     return Ok::<Entry, Error>(posted);
                 }
                 let rows = db
-                    .trigger(TriggerRequest {
+                    .call(CallRequest {
                         function_id: "database::transaction".into(),
                         payload: json!({ "statements": double_entry(&charge) }),
                         action: None,
@@ -748,7 +741,7 @@ pub fn register(iii: &IIIClient) {
 }`
 
 const CHARGE_REFUND_RS = `use crate::types::{Entry, Refund};
-use iii_sdk::{Error, IIIClient, RegisterFunction, TriggerRequest};
+use iii_sdk::{CallRequest, Error, IIIClient, RegisterFunction};
 use serde_json::json;
 
 /// A refund reverses a posted entry and can never exceed what is left of it.
@@ -762,7 +755,7 @@ pub fn register(iii: &IIIClient) {
                 let original = fetch_entry(&db, &refund.entry_id).await?;
                 guard_refundable(&original, &refund)?;
                 let rows = db
-                    .trigger(TriggerRequest {
+                    .call(CallRequest {
                         function_id: "database::transaction".into(),
                         payload: json!({ "statements": reversal(&original, &refund) }),
                         action: None,
@@ -777,7 +770,7 @@ pub fn register(iii: &IIIClient) {
 }`
 
 const WEBHOOK_STRIPE_RS = `use crate::types::{StripeEvent, WebhookAck};
-use iii_sdk::{Error, IIIClient, RegisterFunction, TriggerRequest};
+use iii_sdk::{CallRequest, Error, IIIClient, RegisterFunction};
 use serde_json::json;
 
 /// Stripe retries. \`charge::record\` already dedupes on the provider event
@@ -793,7 +786,7 @@ pub fn register(iii: &IIIClient) {
                     return Ok::<WebhookAck, Error>(WebhookAck::ignored(&event.kind));
                 };
                 let entry = engine
-                    .trigger(TriggerRequest {
+                    .call(CallRequest {
                         function_id: "payments::charge::record".into(),
                         payload: json!(charge),
                         action: None,
@@ -808,7 +801,7 @@ pub fn register(iii: &IIIClient) {
 }`
 
 const RECONCILE_RS = `use crate::types::{ReconcileReport, Window};
-use iii_sdk::{Error, IIIClient, RegisterFunction, TriggerRequest};
+use iii_sdk::{CallRequest, Error, IIIClient, RegisterFunction};
 use serde_json::json;
 
 /// Every account's entries must sum to its balance and every entry must have
@@ -821,7 +814,7 @@ pub fn register(iii: &IIIClient) {
             let db = db.clone();
             async move {
                 let rows = db
-                    .trigger(TriggerRequest {
+                    .call(CallRequest {
                         function_id: "database::query".into(),
                         payload: json!({ "sql": UNBALANCED, "params": [window.since] }),
                         action: None,
@@ -878,7 +871,7 @@ function writeFiles(
   durationMs: number,
 ): ChildEntry {
   return {
-    role: 'function-trigger',
+    role: 'function-call',
     functionId: 'coder::create-file',
     worker: 'coder',
     input: {
@@ -902,7 +895,7 @@ function createTable(
   durationMs: number,
 ): ChildEntry {
   return {
-    role: 'function-trigger',
+    role: 'function-call',
     functionId: 'database::create_table',
     worker: 'database',
     input: {
@@ -1104,7 +1097,7 @@ test schema_matches_migration ............ ok
 
 test result: ok. 11 passed; 0 failed; finished in 1.83s`
 
-const HTTP_TRIGGERS = [
+const HTTP_ROUTES = [
   ['payments::charge::record', 'POST', '/payments/charges'],
   ['payments::charge::refund', 'POST', '/payments/refunds'],
   ['payments::webhook::stripe', 'POST', '/payments/webhooks/stripe'],
@@ -1113,7 +1106,7 @@ const HTTP_TRIGGERS = [
 
 const FINAL_ANSWER = `\`payments-ledger\` is live on the engine and answering.
 
-| function | trigger | backed by |
+| function | route | backed by |
 | --- | --- | --- |
 | \`payments::charge::record\` | \`POST /payments/charges\` | \`database::transaction\` |
 | \`payments::charge::refund\` | \`POST /payments/refunds\` | \`database::transaction\` |
@@ -1254,29 +1247,27 @@ export async function* runScenario(
   )
   if (signal?.aborted) return
 
-  /* step 5 — one HTTP trigger per function, dispatched in a single step */
+  /* step 5 — one HTTP route per function, dispatched in a single step */
   yield* step(
     5,
     thought(
-      'Now the entry points. I can use the http worker and each function gets an HTTP trigger.',
+      'Now the entry points. I can use the http worker: each function observes http::on-request for its route.',
       signal,
     ),
     signal,
     async function* (stepSpan) {
-      for (const [fn, method, path] of HTTP_TRIGGERS) {
+      for (const [fn, method, path] of HTTP_ROUTES) {
         yield* call({
-          fn: 'engine::register_trigger',
-          worker: 'iii',
+          fn: 'harness::observe',
+          worker: 'harness',
           input: {
-            trigger_type: 'http',
-            function_id: fn,
-            config: { method, path },
+            function_id: 'http::on-request',
+            args: { method, path },
+            target: { function_id: fn },
           },
           output: {
-            id: `trg_${path.replace(/\W+/g, '_')}`,
-            trigger_type: 'http',
-            function_id: fn,
-            registered: true,
+            observer_id: `obs_${path.replace(/\W+/g, '_')}`,
+            once: false,
           },
           runMs: 320,
           reportedMs: 0.31,

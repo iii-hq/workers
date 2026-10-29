@@ -4,13 +4,13 @@ import { addHarnessToCompose } from './use-harness-status'
 
 describe('addHarnessToCompose', () => {
   it('adds harness through the Compose control plane', async () => {
-    const trigger = vi.fn().mockResolvedValue({ status: 'started' })
-    const client = { trigger } as unknown as Pick<IiiClient, 'trigger'>
+    const call = vi.fn().mockResolvedValue({ status: 'started' })
+    const client = { call } as unknown as Pick<IiiClient, 'call'>
 
     await addHarnessToCompose(client)
 
-    expect(trigger).toHaveBeenCalledOnce()
-    expect(trigger).toHaveBeenCalledWith('compose::add', {
+    expect(call).toHaveBeenCalledOnce()
+    expect(call).toHaveBeenCalledWith('compose::add', {
       workers: ['harness'],
     })
   })

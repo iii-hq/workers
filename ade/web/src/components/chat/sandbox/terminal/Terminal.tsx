@@ -30,7 +30,7 @@ export function Chip({ label, children, className }: ChipProps) {
 interface TerminalProps {
   /** Single-line command shown to the right of the `$` prompt. */
   command?: React.ReactNode
-  /** Pulsing prompt + `triggering…` shimmer in place of stdout. */
+  /** Pulsing prompt + `calling…` shimmer in place of stdout. */
   running?: boolean
   /** Optional chip row above the body. */
   chips?: React.ReactNode
@@ -77,7 +77,7 @@ export function Terminal({
 
       {running ? (
         <div className="bg-bg px-3 py-3 font-mono text-[12.5px] leading-[1.55] text-ink-faint italic">
-          triggering…
+          calling…
         </div>
       ) : (
         children

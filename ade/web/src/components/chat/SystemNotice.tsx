@@ -57,11 +57,11 @@ import {
 // not pane layout; see viewport-breakpoint-conformance.test.ts.
 
 /**
- * Every `role: 'system'` entry that is not a compaction marker or a trigger
- * fire. Three presentations, chosen by `kind`:
+ * Every `role: 'system'` entry that is not a compaction marker or an
+ * observer fire. Three presentations, chosen by `kind`:
  *
  * - `working-dir` — a session scope change, in the same activity-row grammar
- *   as function calls and trigger fires (status icon, kind trail, one line,
+ *   as function calls and observer fires (status icon, kind trail, one line,
  *   disclosure), with the folder mark in `workdir`.
  * - `skills` — the harness re-sent the model its skill index. Same grammar:
  *   one line saying the index moved and how many skills it holds, the list
@@ -318,12 +318,12 @@ function WorkingDirMarker({
         open={open}
         onOpenChange={setOpen}
         className={cn(
-          '@container trigger-activity-collapsible',
-          !open && 'trigger-activity-collapsible--compact',
+          '@container observer-activity-collapsible',
+          !open && 'observer-activity-collapsible--compact',
         )}
       >
         <CollapsibleCardTrigger
-          className="group trigger-activity-collapsible__trigger select-none"
+          className="group observer-activity-collapsible__trigger select-none"
           aria-label={`${open ? 'Hide' : 'Show'} working directory details`}
         >
           <div className="flex w-full min-w-0 items-center gap-2">
@@ -509,12 +509,12 @@ function SkillsMarker({
         open={open}
         onOpenChange={setOpen}
         className={cn(
-          '@container trigger-activity-collapsible',
-          !open && 'trigger-activity-collapsible--compact',
+          '@container observer-activity-collapsible',
+          !open && 'observer-activity-collapsible--compact',
         )}
       >
         <CollapsibleCardTrigger
-          className="group trigger-activity-collapsible__trigger select-none"
+          className="group observer-activity-collapsible__trigger select-none"
           aria-label={`${open ? 'Hide' : 'Show'} the skill index`}
         >
           <div className="flex w-full min-w-0 items-center gap-2">

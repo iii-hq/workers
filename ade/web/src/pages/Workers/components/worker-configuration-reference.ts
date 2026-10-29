@@ -63,7 +63,7 @@ export async function loadWorkerConfigurationReference(
   )
     return catalog('unverified')
   const client = await getIiiClient()
-  const identity = await client.trigger<{ id?: unknown } | null>(
+  const identity = await client.call<{ id?: unknown } | null>(
     advertised.function_id,
     {},
     { namespace },

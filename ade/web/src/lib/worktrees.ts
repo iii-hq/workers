@@ -5,7 +5,7 @@ import { getIiiClient } from '@/lib/iii-client'
  * Control plane for the optional `worktree` worker: typed wrappers over its
  * registry surface (list / claim / release / validate / get) plus parsers
  * and formatting helpers for the badge, the picker section, and the live
- * `worktree::landed` / `worktree::land-blocked` events. Everything here is
+ * `worktree::on-landed` / `worktree::on-land-blocked` events. Everything here is
  * gated by the caller on worktree presence (`use-worktree-status`).
  */
 
@@ -17,21 +17,21 @@ export const WORKTREE_VALIDATE_FUNCTION_ID = 'worktree::validate'
 export const WORKTREE_CLAIM_FUNCTION_ID = 'worktree::claim'
 export const WORKTREE_RELEASE_FUNCTION_ID = 'worktree::release'
 
-export const WORKTREE_CREATED_TRIGGER = 'worktree::created'
-export const WORKTREE_CLAIMED_TRIGGER = 'worktree::claimed'
-export const WORKTREE_RELEASED_TRIGGER = 'worktree::released'
-export const WORKTREE_REMOVED_TRIGGER = 'worktree::removed'
-export const WORKTREE_LANDED_TRIGGER = 'worktree::landed'
-export const WORKTREE_LAND_BLOCKED_TRIGGER = 'worktree::land-blocked'
+export const WORKTREE_ON_CREATED_FN = 'worktree::on-created'
+export const WORKTREE_ON_CLAIMED_FN = 'worktree::on-claimed'
+export const WORKTREE_ON_RELEASED_FN = 'worktree::on-released'
+export const WORKTREE_ON_REMOVED_FN = 'worktree::on-removed'
+export const WORKTREE_ON_LANDED_FN = 'worktree::on-landed'
+export const WORKTREE_ON_LAND_BLOCKED_FN = 'worktree::on-land-blocked'
 
-/** Every lifecycle trigger type the worker emits, in emission order. */
-export const WORKTREE_LIFECYCLE_TRIGGERS = [
-  WORKTREE_CREATED_TRIGGER,
-  WORKTREE_CLAIMED_TRIGGER,
-  WORKTREE_RELEASED_TRIGGER,
-  WORKTREE_REMOVED_TRIGGER,
-  WORKTREE_LANDED_TRIGGER,
-  WORKTREE_LAND_BLOCKED_TRIGGER,
+/** Every lifecycle event function the worker calls, in emission order. */
+export const WORKTREE_LIFECYCLE_FUNCTIONS = [
+  WORKTREE_ON_CREATED_FN,
+  WORKTREE_ON_CLAIMED_FN,
+  WORKTREE_ON_RELEASED_FN,
+  WORKTREE_ON_REMOVED_FN,
+  WORKTREE_ON_LANDED_FN,
+  WORKTREE_ON_LAND_BLOCKED_FN,
 ] as const
 
 export const WORKTREE_LIFECYCLES = [
@@ -227,7 +227,7 @@ export function formatLandedNotice(evt: WorktreeLandedEvent): string {
 
 export async function listWorktrees(): Promise<WorktreeInfo[]> {
   const client = await getIiiClient()
-  const res = await client.trigger<unknown>(WORKTREE_LIST_FUNCTION_ID, {
+  const res = await client.call<unknown>(WORKTREE_LIST_FUNCTION_ID, {
     include_status: true,
   })
   const parsed = listResultSchema.safeParse(res)
@@ -241,7 +241,7 @@ export async function getWorktree(
   worktreeId: string,
 ): Promise<WorktreeInfo | null> {
   const client = await getIiiClient()
-  const res = await client.trigger<unknown>(WORKTREE_GET_FUNCTION_ID, {
+  const res = await client.call<unknown>(WORKTREE_GET_FUNCTION_ID, {
     worktree_id: worktreeId,
   })
   return parseWorktreeInfo(res)
@@ -251,7 +251,7 @@ export async function validateWorktreePath(
   path: string,
 ): Promise<WorktreeValidateResult | null> {
   const client = await getIiiClient()
-  const res = await client.trigger<unknown>(WORKTREE_VALIDATE_FUNCTION_ID, {
+  const res = await client.call<unknown>(WORKTREE_VALIDATE_FUNCTION_ID, {
     path,
   })
   const parsed = validateResultSchema.safeParse(res)
@@ -263,7 +263,7 @@ export async function claimWorktree(
   sessionId: string,
 ): Promise<void> {
   const client = await getIiiClient()
-  await client.trigger(WORKTREE_CLAIM_FUNCTION_ID, {
+  await client.call(WORKTREE_CLAIM_FUNCTION_ID, {
     worktree_id: worktreeId,
     session_id: sessionId,
   })
@@ -274,7 +274,7 @@ export async function releaseWorktree(
   sessionId: string,
 ): Promise<void> {
   const client = await getIiiClient()
-  await client.trigger(WORKTREE_RELEASE_FUNCTION_ID, {
+  await client.call(WORKTREE_RELEASE_FUNCTION_ID, {
     worktree_id: worktreeId,
     session_id: sessionId,
   })

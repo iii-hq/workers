@@ -20,7 +20,7 @@ export function estimateMessageTokens(message: Message): number {
       return Math.ceil(message.content.length / CHARS_PER_TOKEN)
     case 'thought':
       return Math.ceil(message.content.length / CHARS_PER_TOKEN)
-    case 'function-trigger': {
+    case 'function-call': {
       const inChars = charsOf(message.input)
       const outChars = charsOf(message.output)
       return Math.ceil((inChars + outChars) / CHARS_PER_TOKEN)

@@ -10,8 +10,8 @@ import { formatRelative, formatTimestamp } from '../lib/traceUtils'
 interface SpanLogsTabProps {
   span: VisualizationSpan
   /**
-   * The span's function-trigger redactor (`spanRawRedactor` in
-   * functionTriggerFromSpan.ts). Event attributes — `iii.payload.json`
+   * The span's function-call redactor (`spanRawRedactor` in
+   * functionCallFromSpan.ts). Event attributes — `iii.payload.json`
    * chief among them — pretty-print into a `<pre>` below; that is the same
    * payload the info tab's card redacts, one tab-click away otherwise.
    */

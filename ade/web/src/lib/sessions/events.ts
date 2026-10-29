@@ -1,15 +1,14 @@
 /**
- * Live subscriptions to session-manager's six trigger types, following the
- * integration contract (register a browser-local handler, then bind a
- * trigger of that type to it). Delivery is at-least-once and unordered —
- * consumers reconcile by `revision` per entry and treat reads as the source
- * of truth.
+ * Live observers of session-manager's six event functions: register a
+ * browser-local handler, then observe the function with that handler as the
+ * target. Delivery is at-least-once and unordered — consumers reconcile by
+ * `revision` per entry and treat reads as the source of truth.
  *
  * Two granularities:
  * - `subscribeSessionDirectory`: sidebar-level events (created, meta-updated,
  *   status-changed, deleted) across ALL sessions.
  * - `subscribeSessionTranscript`: message-added / message-updated for ONE
- *   session (`config.session_id` filter applied engine-side).
+ *   session (an `input.session_id` filter iii applies before delivery).
  *
  * Handler ids carry the `iii::` prefix so delivery spans are tagged internal
  * and hidden from the Traces view (same convention as turn-events-live).
@@ -22,35 +21,34 @@ import type {
   MetaUpdatedEvent,
   SessionCreatedEvent,
   SessionDeletedEvent,
-  SessionTriggerType,
+  SessionFunction,
   StatusChangedEvent,
 } from './types'
 
 const HANDLER_BASE = 'iii::console::session'
 let transcriptSubscriptionSequence = 0
 
-type ClientSubset = Pick<IiiClient, 'browserId' | 'on' | 'registerTrigger'>
+type ClientSubset = Pick<IiiClient, 'browserId' | 'on' | 'observe'>
 
 function bind<P>(
   client: ClientSubset,
-  triggerType: SessionTriggerType,
-  config: Record<string, unknown>,
+  functionId: SessionFunction,
+  filters: Record<string, unknown> | undefined,
   onEvent: (payload: P) => void,
-  /** Distinguishes per-session bindings from the global ones. */
+  /** Distinguishes per-session observers from the global ones. */
   scope: string,
 ): () => void {
-  const localFnId = `${HANDLER_BASE}_${triggerType.replace(/::/g, '_')}_${scope}`
+  const localFnId = `${HANDLER_BASE}_${functionId.replace(/::/g, '_')}_${scope}`
   const offHandler = client.on(localFnId, (payload: unknown) => {
     if (payload && typeof payload === 'object') onEvent(payload as P)
   })
-  // `on()` registers under `<fn>::<browserId>`; the trigger must target that id.
-  let offTrigger: () => void
+  // `on()` registers under `<fn>::<browserId>`; the observer targets that id.
+  let offObserver: () => void
   try {
-    offTrigger = client.registerTrigger({
-      type: triggerType,
-      function_id: `${localFnId}::${client.browserId}`,
-      config,
-    })
+    offObserver = client.observe(
+      { function_id: functionId, ...(filters ? { filters } : {}) },
+      `${localFnId}::${client.browserId}`,
+    )
   } catch (error) {
     offHandler()
     throw error
@@ -58,7 +56,7 @@ function bind<P>(
   return () => {
     offHandler()
     try {
-      offTrigger()
+      offObserver()
     } catch {
       // SDK already disposed; nothing to do.
     }
@@ -79,26 +77,36 @@ export function subscribeSessionDirectory(
 ): () => void {
   const offs: Array<() => void> = []
   if (handlers.onCreated) {
-    offs.push(bind(client, 'session::created', {}, handlers.onCreated, 'dir'))
+    offs.push(
+      bind(client, 'session::on-created', undefined, handlers.onCreated, 'dir'),
+    )
   }
   if (handlers.onMetaUpdated) {
     offs.push(
-      bind(client, 'session::meta-updated', {}, handlers.onMetaUpdated, 'dir'),
+      bind(
+        client,
+        'session::on-meta-updated',
+        undefined,
+        handlers.onMetaUpdated,
+        'dir',
+      ),
     )
   }
   if (handlers.onStatusChanged) {
     offs.push(
       bind(
         client,
-        'session::status-changed',
-        {},
+        'session::on-status-changed',
+        undefined,
         handlers.onStatusChanged,
         'dir',
       ),
     )
   }
   if (handlers.onDeleted) {
-    offs.push(bind(client, 'session::deleted', {}, handlers.onDeleted, 'dir'))
+    offs.push(
+      bind(client, 'session::on-deleted', undefined, handlers.onDeleted, 'dir'),
+    )
   }
   return () => {
     for (const off of offs) off()
@@ -119,16 +127,16 @@ export function subscribeSessionTranscript(
   sessionId: string,
   handlers: SessionTranscriptHandlers,
 ): () => void {
-  const config = { session_id: sessionId }
+  const filters = { 'input.session_id': { $eq: sessionId } }
   // Several chat panels can observe different sessions at once. Handler ids
-  // must therefore be unique per binding; reusing the old `live` scope made
+  // must therefore be unique per observer; reusing one `live` scope made
   // the second subscription replace/collide with the first in the browser
-  // SDK even though their engine-side filters differed.
+  // SDK even though their filters differed.
   const scope = `live_${++transcriptSubscriptionSequence}`
   const guard =
     <P extends { session_id: string }>(fn: (event: P) => void) =>
     (event: P) => {
-      // Defense-in-depth: the trigger filter is already session-scoped.
+      // Defense-in-depth: the observer's filter is already session-scoped.
       if (event.session_id === sessionId) fn(event)
     }
   const offs: Array<() => void> = []
@@ -136,8 +144,8 @@ export function subscribeSessionTranscript(
     offs.push(
       bind(
         client,
-        'session::message-added',
-        config,
+        'session::on-message-added',
+        filters,
         guard(handlers.onMessageAdded),
         scope,
       ),
@@ -145,14 +153,14 @@ export function subscribeSessionTranscript(
     offs.push(
       bind(
         client,
-        'session::message-updated',
-        config,
+        'session::on-message-updated',
+        filters,
         guard(handlers.onMessageUpdated),
         scope,
       ),
     )
   } catch (error) {
-    // A failed second binding must not leak the first into every retry.
+    // A failed second observer must not leak the first into every retry.
     for (const off of offs) off()
     throw error
   }

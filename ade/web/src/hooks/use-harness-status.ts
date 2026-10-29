@@ -1,45 +1,42 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { z } from 'zod'
 import { getIiiClient, type IiiClient } from '@/lib/iii-client'
 import { normalizeErrorMessage } from '@/lib/providers'
-import { useWorkerLifecycle } from './use-worker-lifecycle'
+import { workerListed } from './use-worker-presence'
+import { useWorkersChanged } from './use-workers-changed'
 
 /**
  * Watches the engine for the `harness` worker and drives an in-app install of
- * it via `compose::add`, surfacing live progress.
+ * it via `compose::add`.
  *
  * Two signals feed `present`:
  *   1. An initial `engine::workers::list` read on mount.
- *   2. A real-time `worker` lifecycle trigger (operations: ['add']) so the UI
- *      reacts the instant harness is added — whether from the in-app CTA or a
- *      `iii trigger compose::add worker=harness` run in the operator's own terminal (this is the
- *      educational, "you can do this in the CLI too" angle).
+ *   2. Every worker join `engine::on-workers-changed` announces, which reads
+ *      the list again, so the UI reacts the instant harness connects —
+ *      whether from the in-app CTA or an `iii call compose::add` run in the
+ *      operator's own terminal (this is the educational, "you can do this in
+ *      the CLI too" angle).
  *
- * `install()` triggers `compose::add` for the registry `harness` worker. It
- * resolves with a terminal outcome, but the per-stage progress
- * (started -> downloading -> downloaded -> done) only arrives through the
- * `worker` trigger, so we render that as a small console. When the trigger type
- * isn't published (or no events arrive) we still resolve cleanly off the
- * `compose::add` result and a presence re-check — a graceful, progress-less
- * fallback.
+ * `install()` calls `compose::add` for the registry `harness` worker and
+ * resolves with a terminal outcome; the install console records the add's
+ * start and the moment harness connected.
  */
 
 /** Registry name + engine worker name for the harness meta-worker. */
 const HARNESS_WORKER_NAME = 'harness'
-/** Base id for the browser-local handler bound to the `worker` trigger. */
+/** Base id for the browser-local workers-changed handler. */
 const HARNESS_WATCH_FN = 'console::harness-watch'
 
-/** One line in the install console (mapped from a `worker` lifecycle event). */
+/** One line in the install console. */
 export interface InstallStage {
-  /** Lifecycle stage: started | downloading | downloaded | done | failed | … */
+  /** Lifecycle stage: started | done | failed */
   stage: string
-  /** Canonical worker name / source label carried by the event. */
+  /** The worker being added. */
   worker?: string
   /** Optional 0..1 download progress. */
   progress?: number
   /** Present when `stage === 'failed'`. */
   error?: { code?: string; message?: string }
-  /** Event timestamp (ms) or arrival time. */
+  /** When the stage was recorded (ms). */
   at: number
 }
 
@@ -60,77 +57,32 @@ export interface HarnessStatus {
   retry: () => void
 }
 
-/**
- * `WorkerCallRequest` — the payload bound functions receive on each `worker`
- * lifecycle transition. Parsed loosely: the engine is the source of truth and
- * we only read a handful of fields.
- */
-const workerEventSchema = z.object({
-  operation: z.string().optional(),
-  stage: z.string().optional(),
-  worker: z.string().nullable().optional(),
-  source: z.unknown().optional(),
-  version: z.string().nullable().optional(),
-  status: z.string().nullable().optional(),
-  progress: z.number().nullable().optional(),
-  timestamp_ms: z.number().nullable().optional(),
-  error: z
-    .object({
-      code: z.string().optional(),
-      message: z.string().optional(),
-    })
-    .nullable()
-    .optional(),
-})
-type WorkerEvent = z.infer<typeof workerEventSchema>
-
-function parseWorkerEvent(payload: unknown): WorkerEvent | null {
-  const parsed = workerEventSchema.safeParse(payload)
-  return parsed.success ? parsed.data : null
-}
-
-/** Loose match: is this lifecycle event about the harness worker? */
-function isHarnessEvent(evt: WorkerEvent): boolean {
-  const w = typeof evt.worker === 'string' ? evt.worker.toLowerCase() : ''
-  if (w === HARNESS_WORKER_NAME || w.includes(HARNESS_WORKER_NAME)) return true
-  if (evt.source != null) {
-    try {
-      if (
-        JSON.stringify(evt.source).toLowerCase().includes(HARNESS_WORKER_NAME)
-      ) {
-        return true
-      }
-    } catch {
-      // non-serialisable source; fall through
-    }
-  }
-  return false
-}
-
-function toStage(evt: WorkerEvent): InstallStage {
+function stageNow(stage: string, error?: InstallStage['error']): InstallStage {
   return {
-    stage: evt.stage ?? 'unknown',
-    worker: evt.worker ?? undefined,
-    progress: typeof evt.progress === 'number' ? evt.progress : undefined,
-    error: evt.error ?? undefined,
-    at: typeof evt.timestamp_ms === 'number' ? evt.timestamp_ms : Date.now(),
+    stage,
+    worker: HARNESS_WORKER_NAME,
+    ...(error ? { error } : {}),
+    at: Date.now(),
   }
+}
+
+/** Close a running add's console with `done`; any other console stays. */
+function finishStages(prev: InstallStage[]): InstallStage[] {
+  return prev.at(-1)?.stage === 'started' ? [...prev, stageNow('done')] : prev
 }
 
 async function checkHarnessPresent(client: IiiClient): Promise<boolean> {
-  const res = await client.trigger<{ workers?: Array<{ name?: unknown }> }>(
-    'engine::workers::list',
-    {},
+  return workerListed(
+    await client.call('engine::workers::list', {}),
+    HARNESS_WORKER_NAME,
   )
-  const workers = Array.isArray(res?.workers) ? res.workers : []
-  return workers.some((w) => w?.name === HARNESS_WORKER_NAME)
 }
 
 /** Add harness to the active Compose project and wait for reconciliation. */
 export async function addHarnessToCompose(
-  client: Pick<IiiClient, 'trigger'>,
+  client: Pick<IiiClient, 'call'>,
 ): Promise<void> {
-  await client.trigger('compose::add', {
+  await client.call('compose::add', {
     workers: [HARNESS_WORKER_NAME],
   })
 }
@@ -147,45 +99,31 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
   const [stages, setStages] = useState<InstallStage[]>([])
   const [error, setError] = useState<string | null>(null)
 
-  // Process a single inbound `worker` lifecycle event. Uses functional
-  // setState only so the handler has no reactive deps and stays stable.
-  const handleEvent = useCallback((payload: unknown) => {
-    const evt = parseWorkerEvent(payload)
-    if (!evt) return
-    if (evt.operation !== 'add' || !isHarnessEvent(evt)) return
-
-    setStages((prev) => [...prev, toStage(evt)])
-
-    if (evt.stage === 'failed') {
-      setError(
-        evt.error?.message
-          ? normalizeErrorMessage(evt.error)
-          : 'failed to add the harness worker',
-      )
-      setInstalling(false)
-    } else if (evt.stage === 'done') {
+  // A worker joined: read the list again. Uses functional setState only so
+  // the handler has no reactive deps and stays stable.
+  const handleChange = useCallback(() => {
+    void (async () => {
+      try {
+        const client = await getIiiClient()
+        if (!(await checkHarnessPresent(client))) return
+      } catch {
+        return
+      }
       setPresent(true)
       setInstalling(false)
-    } else {
-      // started / downloading / downloaded — make sure the console is shown
-      // even when the add was kicked off from the CLI rather than the CTA.
-      setInstalling(true)
-      setError(null)
-    }
+      setStages(finishStages)
+    })()
   }, [])
 
-  // Live `worker` add subscription for install progress + CLI detection.
-  // The shared hook always sends a `stages` filter — omitting it matches no
-  // events (the engine filters on operations AND stages).
-  useWorkerLifecycle({
+  useWorkersChanged({
     enabled,
     fnId: HARNESS_WATCH_FN,
-    operations: ['add'],
-    onEvent: handleEvent,
+    events: ['worker_connected'],
+    onChange: handleChange,
   })
 
   // One-time presence probe on mount. Live changes — the in-app CTA or a CLI
-  // `iii trigger compose::add worker=harness` — arrive through the worker add trigger
+  // `iii call compose::add` — arrive through the workers-changed observer
   // above (the engine's push channel). No polling, no focus re-checks.
   useEffect(() => {
     if (!enabled) {
@@ -213,16 +151,18 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
   const install = useCallback(() => {
     if (!enabled) return
     setError(null)
-    setStages([])
+    setStages([stageNow('started')])
     setInstalling(true)
     void (async () => {
       const client = await getIiiClient()
       try {
         await addHarnessToCompose(client)
-        // Terminal success. Trigger events may have already flipped these, but
-        // setting them again is harmless and covers the no-events fallback.
+        // Terminal success. The workers-changed event may have already
+        // flipped these; setting them again is harmless and covers a missed
+        // event.
         setPresent(true)
         setInstalling(false)
+        setStages(finishStages)
       } catch (err) {
         setInstalling(false)
         // The add may have actually landed even though the call rejected
@@ -236,7 +176,9 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
         } catch {
           // ignore; fall through to the original error
         }
-        setError(normalizeErrorMessage(err))
+        const message = normalizeErrorMessage(err)
+        setStages((prev) => [...prev, stageNow('failed', { message })])
+        setError(message)
       }
     })()
   }, [enabled])
@@ -257,7 +199,7 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
 
 /**
  * Whether harness-owned bus functions (`router::models::list`, etc.) are
- * registered and safe to trigger. False during the initial presence probe and
+ * registered and safe to call. False during the initial presence probe and
  * while the worker is absent.
  *
  * NOTE: `approval::*` is NOT harness-owned — it lives on the standalone,

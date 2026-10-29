@@ -1,10 +1,10 @@
 import { Copy } from 'lucide-react'
 import { useMemo } from 'react'
-import { FunctionTriggerCard } from '@/components/function-trigger/FunctionTriggerCard'
+import { FunctionCallCard } from '@/components/function-call/FunctionCallCard'
 import { Badge } from '@/components/ui/Badge'
 import { Eyebrow } from '@/components/ui/Eyebrow'
 import { StatusDot } from '@/components/ui/StatusDot'
-import { functionTriggerFromSpan } from '../lib/functionTriggerFromSpan'
+import { functionCallFromSpan } from '../lib/functionCallFromSpan'
 import type { VisualizationSpan, WaterfallData } from '../lib/traceTransform'
 import {
   formatDuration,
@@ -36,7 +36,7 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
   const tone = statusTone(span.status)
 
   // All spans of the trace, for resolving a nested span's OWNING function
-  // via its ancestor chain (`trigger <fn>` / `call <fn>` invocation spans).
+  // via its ancestor chain (`call <fn>` / `execute <fn>` invocation spans).
   const spansById = useMemo(
     () => new Map((traceData?.spans ?? []).map((s) => [s.span_id, s] as const)),
     [traceData],
@@ -44,18 +44,18 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
 
   // Function-invocation spans get the same call card chat renders — the
   // adapter synthesizes its data shape from the span's attributes/events.
-  const functionTrigger = useMemo(
-    () => functionTriggerFromSpan(span, spansById),
+  const functionCall = useMemo(
+    () => functionCallFromSpan(span, spansById),
     [span, spansById],
   )
 
   return (
     <div className="p-5 space-y-5">
-      {/* Function trigger — read-only card (no approval handlers) */}
-      {functionTrigger && (
+      {/* Function call — read-only card (no approval handlers) */}
+      {functionCall && (
         <div>
-          <div className="iii-ui-eyebrow mb-2.5">function trigger</div>
-          <FunctionTriggerCard message={functionTrigger} defaultOpen />
+          <div className="iii-ui-eyebrow mb-2.5">function call</div>
+          <FunctionCallCard message={functionCall} defaultOpen />
         </div>
       )}
 

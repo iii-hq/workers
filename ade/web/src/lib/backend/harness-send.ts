@@ -3,10 +3,10 @@
  * `harness::stop`, `harness::status`. Shapes mirror the golden schemas in
  * `harness/tests/golden/schemas/harness.{send,stop,status}.json`.
  *
- * In the iii ecosystem every bus invocation is a *trigger*; these helpers go
- * through `IiiClient.trigger`. `harness::send` returns immediately after
- * persisting the user message and seeding (or merging into) the turn — the
- * transcript then streams via session-manager events, not from this response.
+ * These helpers go through `IiiClient.call`. `harness::send` returns
+ * immediately after persisting the user message and seeding (or merging
+ * into) the turn — the transcript then streams via session-manager events,
+ * not from this response.
  */
 
 import type { FileBlock } from '@/lib/attachments/store'
@@ -22,7 +22,7 @@ export type HarnessThinkingLevel =
   | 'xhigh'
 
 /** How allowed functions reach the model (harness.md § Exposure modes). */
-export type ExposeMode = 'agent_trigger' | 'native'
+export type ExposeMode = 'agent_call' | 'native'
 
 /**
  * Fail-closed dispatch policy. Absent (or with an empty `allow`) the harness
@@ -164,11 +164,13 @@ export interface HarnessChildRef {
   turn_id: string
 }
 
-/** One active wake subscription owned by the session. */
+/** One armed wake: an observer the session created that will notify it. */
 export interface HarnessArmedWake {
-  subscription_id: string
-  trigger_type?: string
-  config?: unknown
+  observer_id: string
+  /** The observed function and the observer's args and filters. */
+  function_id?: string
+  args?: unknown
+  filters?: unknown
   created_at: number
   expires_at?: number
 }
@@ -269,29 +271,29 @@ export function toSkillOptions(
 }
 
 /**
- * Trigger `harness::send`: persist the user message and seed (or merge into)
+ * Call `harness::send`: persist the user message and seed (or merge into)
  * the turn. Returns before the turn runs.
  */
 export function sendTurn(
-  client: Pick<IiiClient, 'trigger'>,
+  client: Pick<IiiClient, 'call'>,
   req: HarnessSendRequest,
 ): Promise<HarnessSendResponse> {
-  return client.trigger<HarnessSendResponse>(
+  return client.call<HarnessSendResponse>(
     'harness::send',
     req as unknown as Record<string, unknown>,
   )
 }
 
 /**
- * Trigger `harness::stop`: set the abort flag and `router::abort` any live
+ * Call `harness::stop`: set the abort flag and `router::abort` any live
  * stream. Omit `turnId` to stop the session's current turn.
  */
 export async function stopTurn(
-  client: Pick<IiiClient, 'trigger'>,
+  client: Pick<IiiClient, 'call'>,
   sessionId: string,
   turnId?: string,
 ): Promise<boolean> {
-  const res = await client.trigger<HarnessStopResponse>('harness::stop', {
+  const res = await client.call<HarnessStopResponse>('harness::stop', {
     session_id: sessionId,
     ...(turnId ? { turn_id: turnId } : {}),
   })
@@ -299,14 +301,14 @@ export async function stopTurn(
 }
 
 /**
- * Trigger `harness::status`: a point-in-time read of the session's turn
+ * Call `harness::status`: a point-in-time read of the session's turn
  * record. Returns `null` when no turn has ever run for the session.
  */
 export function getTurnStatus(
-  client: Pick<IiiClient, 'trigger'>,
+  client: Pick<IiiClient, 'call'>,
   sessionId: string,
 ): Promise<HarnessStatusReport | null> {
-  return client.trigger<HarnessStatusReport | null>('harness::status', {
+  return client.call<HarnessStatusReport | null>('harness::status', {
     session_id: sessionId,
     verbose: true,
   })

@@ -70,7 +70,7 @@ export function trailOf(path: string, root: string, depth: number): string[] {
 
 async function listDirs(dir: string): Promise<DirEntry[]> {
   const client = await getIiiClient()
-  const res = await client.trigger<{
+  const res = await client.call<{
     entries?: Array<DirEntry & { kind: string }>
   }>(WORKSPACE_LIST_FUNCTION_ID, { path: dir, page_size: 200 })
   return (res?.entries ?? [])
@@ -118,7 +118,7 @@ export function FolderBrowser({
     void (async () => {
       try {
         const client = await getIiiClient()
-        const info = await client.trigger<{ roots?: string[] }>(
+        const info = await client.call<{ roots?: string[] }>(
           WORKSPACE_ROOTS_FUNCTION_ID,
           {},
         )

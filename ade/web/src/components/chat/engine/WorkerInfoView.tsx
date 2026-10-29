@@ -49,7 +49,8 @@ export function WorkerInfoView({
   const resp = safeParseResponse(workerInfoResponseSchema, output)
   if (!resp) return null
 
-  const { worker, functions, trigger_types, registered_triggers } = resp
+  const { worker, functions } = resp
+  const observers = resp.observers ?? []
 
   return (
     <div className="border-t border-rule-2 bg-bg">
@@ -106,21 +107,12 @@ export function WorkerInfoView({
         }))}
       />
       <SubList
-        title="trigger types"
-        empty="no trigger types"
-        items={trigger_types.map((t) => ({
-          key: t.id,
-          left: t.id,
-          right: t.description,
-        }))}
-      />
-      <SubList
-        title="registered triggers"
-        empty="no registered triggers"
-        items={registered_triggers.map((t) => ({
-          key: t.id,
-          left: `${t.trigger_type} → ${t.function_id}`,
-          right: t.config_summary,
+        title="observers created"
+        empty="no observers"
+        items={observers.map((id) => ({
+          key: id,
+          left: id,
+          right: null,
         }))}
       />
     </div>

@@ -12,9 +12,9 @@ import {
 ;(
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true
-const mocks = vi.hoisted(() => ({ trigger: vi.fn() }))
+const mocks = vi.hoisted(() => ({ call: vi.fn() }))
 vi.mock('@/lib/iii-client', () => ({
-  getIiiClient: async () => ({ trigger: mocks.trigger }),
+  getIiiClient: async () => ({ call: mocks.call }),
 }))
 const item: ContextTrackingItem = {
   id: 'release-1',
@@ -33,7 +33,7 @@ const item: ContextTrackingItem = {
 let container: HTMLDivElement
 let root: Root
 beforeEach(() => {
-  mocks.trigger.mockReset()
+  mocks.call.mockReset()
   container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
@@ -99,7 +99,7 @@ describe('Context tracking body', () => {
       expect.stringContaining('Remove Context tracking'),
       false,
     )
-    expect(mocks.trigger).not.toHaveBeenCalled()
+    expect(mocks.call).not.toHaveBeenCalled()
   })
   it('supports loading, empty and retry while retaining previous snapshots', async () => {
     const retry = vi.fn()
@@ -169,22 +169,22 @@ function Probe({
   )
 }
 it('does not read while hidden, reloads at turn completion and ignores old-session responses', async () => {
-  mocks.trigger.mockResolvedValue({ items: [item] })
+  mocks.call.mockResolvedValue({ items: [item] })
   await render(<Probe sessionId="a" active={false} />)
-  expect(mocks.trigger).not.toHaveBeenCalled()
+  expect(mocks.call).not.toHaveBeenCalled()
   await render(<Probe sessionId="a" status="working" />)
   expect(container.textContent).toContain(item.title)
   await render(<Probe sessionId="a" status="idle" />)
-  expect(mocks.trigger).toHaveBeenCalledTimes(2)
+  expect(mocks.call).toHaveBeenCalledTimes(2)
   let resolveOld!: (value: unknown) => void
-  mocks.trigger.mockImplementationOnce(
+  mocks.call.mockImplementationOnce(
     () =>
       new Promise((resolve) => {
         resolveOld = resolve
       }),
   )
   await render(<Probe sessionId="old" />)
-  mocks.trigger.mockResolvedValueOnce({
+  mocks.call.mockResolvedValueOnce({
     items: [{ ...item, title: 'Current session' }],
   })
   await render(<Probe sessionId="new" />)

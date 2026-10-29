@@ -14,13 +14,14 @@
  * gated call's preview input can be a clipped `arguments_excerpt`.
  */
 import { z } from 'zod'
+import { AGENT_CALL, isAgentCall } from '@/lib/sessions/stored-records'
 import { unwrapEnvelope } from '@/components/chat/sandbox/parsers'
 
 export { unwrapEnvelope }
 
 /* Synthetic + namespaced harness tools. `submit_result` is the
    output-contract fallback the harness injects into a turn;
-   `harness::spawn` is the sub-agent pending trigger. */
+   `harness::spawn` is the sub-agent pending call. */
 export const HARNESS_FUNCTION_IDS = ['submit_result', 'harness::spawn'] as const
 export type HarnessFunctionId = (typeof HARNESS_FUNCTION_IDS)[number]
 
@@ -54,10 +55,18 @@ export const outputContractSchema = z.union([
 ])
 export type OutputContract = z.infer<typeof outputContractSchema>
 
+/** How allowed functions reach the model. Spawns recorded before 0.26 name
+ * the `agent_call` mode `agent_trigger`. */
+const exposeModeSchema = z.preprocess(
+  (value) =>
+    typeof value === 'string' && isAgentCall(value) ? AGENT_CALL : value,
+  z.enum(['agent_call', 'native']),
+)
+
 export const functionPolicySchema = z.object({
   allow: z.array(z.string()).optional(),
   deny: z.array(z.string()).optional(),
-  expose: z.enum(['agent_trigger', 'native']).optional(),
+  expose: exposeModeSchema.optional(),
 })
 export type FunctionPolicy = z.infer<typeof functionPolicySchema>
 
@@ -126,7 +135,7 @@ export type SpawnRequest = z.infer<typeof spawnRequestSchema>
 
 /* ---------------- response ---------------- */
 
-/** Direct-call acknowledgement. The common agent_trigger path instead
+/** Direct-call acknowledgement. The common agent_call path instead
     resolves to the child's raw result value (free-form) — no schema. */
 export const spawnResponseSchema = z.object({
   child_session_id: z.string(),

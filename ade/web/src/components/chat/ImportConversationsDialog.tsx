@@ -404,7 +404,7 @@ function CallRow({
         ƒ
       </span>
       <span className="min-w-0 flex-1 truncate">
-        {answered ? (failed ? 'Failed ' : 'Triggered ') : null}
+        {answered ? (failed ? 'Failed ' : 'Called ') : null}
         <span className="text-ink">{functionId}</span>
         {digest ? <span className="text-ink-ghost"> ({digest})</span> : null}
       </span>

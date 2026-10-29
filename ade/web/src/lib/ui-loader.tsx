@@ -2,10 +2,11 @@
  * The browser loader for injectable UI — Vite HMR semantics without Vite
  * (iii/tech-specs/2026-07-17-injectable-ui/hot-reload.md).
  *
- * Boot is one step: register a `console:assets` trigger whose function_id
- * is this tab's own handler. The console worker answers with a `sync` push
- * (the subscription IS the seed) and follows with incremental `set`/`delete`
- * pushes. The loader diffs every event against loaded state — new/changed
+ * Boot is one step: observe `console::ui::on-assets-changed` with this tab's
+ * own handler as the target. The console worker sends the new observer a
+ * `sync` event through itself (the observer IS the seed) and follows with
+ * incremental `set`/`delete` events. The loader diffs every event against
+ * loaded state — new/changed
  * hash ⇒ cache-busted import + `setup(host)` + atomic swap; missing path ⇒
  * dispose. Styles are `<link>` swaps; scripts are ES modules; modules are
  * only recorded, and imported when a script calls `host.importModule`.
@@ -44,7 +45,7 @@ import {
   registerExtRenderer,
   registerExtSessionChip,
   registerExtSessionTurnSummary,
-  registerExtTriggerActivityRenderer,
+  registerExtObserverActivityRenderer,
   setUiAssetsStatus,
 } from '@/lib/ui-slots'
 import { requestWorkingDirectoryChange } from '@/lib/working-directory-request'
@@ -62,12 +63,14 @@ import type {
   SetupFn,
   UiAssetKind,
   UiAssetRef,
-  UiAssetsPush,
+  UiAssetsEvent,
 } from '@/types/injectable-ui'
 
 /** The per-tab push handler id; `client.on` namespaces it `::<browserId>`.
  *  The `iii::` prefix keeps rebuild-loop pushes span-suppressed. */
 export const UI_ASSETS_FN = 'iii::console::ui-assets'
+/** The console worker's feed of asset changes this tab observes. */
+export const ON_ASSETS_CHANGED_FN = 'console::ui::on-assets-changed'
 
 interface LoadedScript {
   kind: 'script'
@@ -228,15 +231,15 @@ function makeHost(
         requestPaletteOpen(options)
       },
     },
-    functionTriggers: {
+    functionCalls: {
       register(renderer) {
         return track(registerExtRenderer({ renderer, scope, path }))
       },
     },
-    triggerRenderers: {
+    observerRenderers: {
       register(renderer) {
         return track(
-          registerExtTriggerActivityRenderer({ renderer, scope, path }),
+          registerExtObserverActivityRenderer({ renderer, scope, path }),
         )
       },
     },
@@ -474,7 +477,7 @@ export function startUiLoader(
   options: UiLoaderOptions = {},
 ): () => void {
   const loaded = new Map<string, Loaded>()
-  /** `console:module` hashes by path; never imported at mount. */
+  /** `module` asset hashes by path; never imported at mount. */
   const modules = new Map<string, string>()
   let active = true
   let receivedInitialSync = false
@@ -631,10 +634,10 @@ export function startUiLoader(
     })
   }
 
-  const offHandler = client.on<UiAssetsPush>(UI_ASSETS_FN, (payload) => {
+  const offHandler = client.on<UiAssetsEvent>(UI_ASSETS_FN, (payload) => {
     enqueue(() => {
       if (!payload || typeof payload !== 'object') return
-      switch (payload.event) {
+      switch (payload.op) {
         case 'sync':
           return applySync(
             Array.isArray(payload.assets) ? payload.assets : [],
@@ -643,7 +646,12 @@ export function startUiLoader(
             if (active) setUiAssetsStatus('ready')
           })
         case 'set':
-          return applySet(payload.path, payload.kind, payload.hash)
+          if (!payload.asset) return
+          return applySet(
+            payload.asset.path,
+            payload.asset.kind,
+            payload.asset.hash,
+          )
         case 'delete':
           return void dispose(payload.path)
         default:
@@ -652,18 +660,18 @@ export function startUiLoader(
     })
   })
 
-  const offTrigger = client.registerTrigger({
-    type: 'console:assets',
-    function_id: `${UI_ASSETS_FN}::${client.browserId}`,
-    config: {},
-  })
+  const offObserver = client.observe(
+    ON_ASSETS_CHANGED_FN,
+    `${UI_ASSETS_FN}::${client.browserId}`,
+  )
 
-  // With injectable UI disabled, the console intentionally does not own the
-  // `console:assets` trigger type, so no initial sync will arrive. The
-  // manifest remains registered specifically to expose that kill switch and
-  // lets built-in forms fall back instead of waiting forever.
+  // With injectable UI disabled, the console intentionally does not host
+  // `console::ui::on-assets-changed`, so the observer stays pending and no
+  // initial sync will arrive. The manifest remains registered specifically
+  // to expose that kill switch and lets built-in forms fall back instead of
+  // waiting forever.
   void client
-    .trigger<{ disabled?: boolean }>(
+    .call<{ disabled?: boolean }>(
       'console::ui-manifest',
       {},
       { timeoutMs: 5_000 },
@@ -681,7 +689,7 @@ export function startUiLoader(
 
   return () => {
     active = false
-    offTrigger()
+    offObserver()
     offHandler()
     for (const path of [...loaded.keys()]) dispose(path)
     setUiAssetsStatus('unavailable')

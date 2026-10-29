@@ -16,12 +16,12 @@ describe('chat screen activity', () => {
     },
   )
 
-  it('ignores old message flags, drafts and registered triggers', () => {
+  it('ignores old message flags, drafts and armed observers', () => {
     const session = {
       status: 'done',
       draftText: 'unsent',
       messages: [
-        { role: 'function-trigger', running: true, pendingApproval: true },
+        { role: 'function-call', running: true, pendingApproval: true },
       ],
     } as Conversation
     expect(hasWorkingConversation([session], true)).toBe(false)

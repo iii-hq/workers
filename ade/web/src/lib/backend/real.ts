@@ -4,11 +4,12 @@
  * structural floor from those rules on each send. The harness assembles the
  * identity prompt when `system_prompt` is omitted.
  *
- * Transcript content (tokens, message snapshots, function-trigger cards, results)
+ * Transcript content (tokens, message snapshots, function-call cards, results)
  * renders from session-manager events reconciled by the conversations layer
- * (lib/sessions/*). This stream carries only the ephemeral turn surface from
- * the harness/approval triggers: pending approvals (approval::pending-*),
- * stop-reason notices, and the turn-over signal (harness::turn-completed).
+ * (lib/sessions/*). This stream carries only the ephemeral turn surface the
+ * console observes from the harness and approval-gate: pending approvals
+ * (approval::on-pending-*), stop-reason notices, and the turn-over signal
+ * (harness::on-turn-completed).
  */
 
 import { parseCatalogModelKey } from '@/lib/catalog-model-key'
@@ -45,13 +46,13 @@ import {
   translateTurnSource,
 } from './translate'
 import {
-  listSessionTriggers,
-  type SessionTriggerInfo,
-  unregisterTrigger,
-} from './triggers'
+  disposeSessionObserver,
+  listSessionObservers,
+  type SessionObserverInfo,
+} from './observers'
 import {
+  startObserversChangedSubscription,
   startQueuedEventsSubscription,
-  startTriggersChangedSubscription,
   startTurnEventsSubscription,
 } from './turn-events-live'
 import type {
@@ -72,7 +73,7 @@ interface RunParams {
 
 /**
  * The chat composer is a general-purpose agent surface: expose the whole bus
- * via `agent_trigger`. When approval-gate configuration is unavailable, this
+ * via `agent_call`. When approval-gate configuration is unavailable, this
  * fallback keeps registration and other control-plane functions hidden while
  * allowing updates to already-registered configuration entries.
  */
@@ -85,7 +86,7 @@ export const FALLBACK_FUNCTION_POLICY: HarnessFunctionPolicy = {
     'configuration::ensure',
     'shell::workspace::*',
   ],
-  expose: 'agent_trigger',
+  expose: 'agent_call',
 }
 
 export function toHarnessSendError(err: unknown): Error {
@@ -257,7 +258,7 @@ async function buildSendRequest(
 }
 
 /**
- * Mid-stream send (MOT-3837): the turn is already streaming, so just trigger
+ * Mid-stream send (MOT-3837): the turn is already streaming, so just call
  * `harness::send` — the harness queues the message and delivers it after the
  * stream ends. No second stream loop: the live one keeps rendering, and the
  * queued row lands via session events on drain.
@@ -356,8 +357,8 @@ async function* realStream(
   const sessionId = opts?.sessionId ?? newSessionId()
   const messageId = opts?.messageId ?? newMessageId()
   // The `approval::*` functions live on the optional standalone approval-gate
-  // worker. When it's absent, skip every approval subscription / read so we
-  // don't register triggers for unknown types or call missing functions.
+  // worker. When it's absent, skip every approval observer / read so we
+  // don't observe or call functions nobody hosts.
   const approvalGateAvailable = opts?.approvalGateAvailable !== false
   const approvalSessionMatcher =
     opts?.approvalSessionMatcher ?? ((event) => event.session_id === sessionId)
@@ -378,14 +379,14 @@ async function* realStream(
   }
 
   // Dedupe pending approvals seen by both the catch-up read and the live
-  // trigger (at-least-once, and the two can race on start).
+  // observer (at-least-once, and the two can race on start).
   const seenPending = new Set<string>()
   const pushPending = (
     approvalSessionId: string,
-    functionTriggerId: string,
+    functionCallId: string,
     event: TurnSourceEvent,
   ) => {
-    const key = `${approvalSessionId}:${functionTriggerId}`
+    const key = `${approvalSessionId}:${functionCallId}`
     if (seenPending.has(key)) return
     seenPending.add(key)
     push(event)
@@ -494,7 +495,7 @@ async function* realStream(
 /**
  * The session's server-side message queue: `harness::status` → `queued` rows
  * mapped to previews keyed by their eventual transcript entry id. Includes
- * messages queued by other tabs and subagent/subscription notifications.
+ * messages queued by other tabs and subagent/observer notifications.
  */
 async function realListQueued(
   sessionId: string,
@@ -537,7 +538,7 @@ async function realRemoveQueued(
   entryId: string,
 ): Promise<void> {
   const client = await getIiiClient()
-  await client.trigger('harness::unqueue', {
+  await client.call('harness::unqueue', {
     session_id: sessionId,
     entry_id: entryId,
   })
@@ -559,7 +560,7 @@ async function realEditQueued(
   },
 ): Promise<void> {
   const client = await getIiiClient()
-  await client.trigger('harness::edit_queued', {
+  await client.call('harness::edit_queued', {
     session_id: sessionId,
     entry_id: entryId,
     message: buildMessageInput(
@@ -572,7 +573,7 @@ async function realEditQueued(
 }
 
 /**
- * `harness::message-queued` subscription: fires when any client's message
+ * `harness::on-message-queued` observer: called when any client's message
  * parks in the queue mid-stream. Sync-return unsubscribe over the async
  * client bootstrap — if disposed before the client resolves, never binds.
  */
@@ -595,14 +596,14 @@ function realOnQueuedMessage(
 }
 
 /**
- * `harness::triggers-changed` subscription: the doorbell to refetch
- * `listTriggers`. Same sync-return-over-async-bootstrap shape as
- * `realOnQueuedMessage`, plus a reconnect reseed: the SDK replays trigger
- * registrations on reconnect, but doorbells rung during the outage are gone,
- * so every `connected` transition fires one catch-up event (the same repair
- * TracesV2 uses).
+ * `harness::on-observers-changed` observer: the doorbell to refetch
+ * `listObservers`. Same sync-return-over-async-bootstrap shape as
+ * `realOnQueuedMessage`, plus a reconnect reseed: the SDK replays observers
+ * on reconnect, but doorbells rung during the outage are gone, so every
+ * `connected` transition fires one catch-up event (the same repair TracesV2
+ * uses).
  */
-function realOnTriggersChanged(
+function realOnObserversChanged(
   sessionId: string,
   onEvent: () => void,
 ): () => void {
@@ -612,7 +613,9 @@ function realOnTriggersChanged(
   getIiiClient()
     .then((client) => {
       if (disposed) return
-      off = startTriggersChangedSubscription(client, sessionId, () => onEvent())
+      off = startObserversChangedSubscription(client, sessionId, () =>
+        onEvent(),
+      )
       offConn = client.addConnectionStateListener((state) => {
         if (state === 'connected') onEvent()
       })
@@ -625,19 +628,19 @@ function realOnTriggersChanged(
   }
 }
 
-async function realListTriggers(
+async function realListObservers(
   sessionId: string,
-): Promise<SessionTriggerInfo[]> {
+): Promise<SessionObserverInfo[]> {
   const client = await getIiiClient()
-  return listSessionTriggers(client, sessionId)
+  return listSessionObservers(client, sessionId)
 }
 
-async function realUnregisterTrigger(
-  subscriptionId: string,
+async function realDisposeObserver(
+  observerId: string,
   sessionId: string,
 ): Promise<void> {
   const client = await getIiiClient()
-  await unregisterTrigger(client, subscriptionId, sessionId)
+  await disposeSessionObserver(client, observerId, sessionId)
 }
 
 /** `state::get` non-null → the key exists; errors → null (unknown). */
@@ -647,7 +650,7 @@ async function realStateKeyExists(
 ): Promise<boolean | null> {
   const client = await getIiiClient()
   try {
-    const value = await client.trigger<unknown>('state::get', {
+    const value = await client.call<unknown>('state::get', {
       scope: scope ?? 'global',
       key,
     })
@@ -659,14 +662,14 @@ async function realStateKeyExists(
 
 async function realResolveApproval(
   sessionId: string,
-  functionTriggerId: string,
+  functionCallId: string,
   decision: 'allow' | 'deny',
   opts?: { accessDuration?: 'once' | 'session' | 'always' },
 ): Promise<void> {
   const client = await getIiiClient()
-  await client.trigger('approval::resolve', {
+  await client.call('approval::resolve', {
     session_id: sessionId,
-    function_call_id: functionTriggerId,
+    function_call_id: functionCallId,
     decision,
     // Only ride `access_duration` on filesystem_access resolutions.
     ...(opts?.accessDuration ? { access_duration: opts.accessDuration } : {}),
@@ -696,7 +699,7 @@ async function realPreviewModelSwitch(
     )
   }
   const { provider, model: id } = resolveRunParams(model)
-  const policy = await client.trigger<{ allow_prune?: unknown }>(
+  const policy = await client.call<{ allow_prune?: unknown }>(
     'harness::context-policy',
     { model: id },
   )
@@ -707,7 +710,7 @@ async function realPreviewModelSwitch(
   }
   const [items, prompt] = await Promise.all([
     fetchTranscript(sessionId, { includeImageData: true }),
-    client.trigger<{ parts: Array<{ body: string }> }>(
+    client.call<{ parts: Array<{ body: string }> }>(
       'harness::system-prompt::get',
       { session_id: sessionId },
     ),
@@ -717,7 +720,7 @@ async function realPreviewModelSwitch(
   if (!window.length) return { needsCompaction: false, tokens: 0, usable: 0 }
   const categories = status?.context?.categories
   const knownThinkingLevels = ['minimal', 'low', 'medium', 'high', 'xhigh']
-  const preview = await client.trigger<{
+  const preview = await client.call<{
     token_count: number
     usable: number
     model_resolved: string
@@ -789,7 +792,7 @@ async function realCompactSession(
   const guidance = instructions?.trim()
   try {
     const client = await getIiiClient()
-    const outcome = await client.trigger<HarnessCompactOutcome>(
+    const outcome = await client.call<HarnessCompactOutcome>(
       'harness::compact',
       {
         session_id: sessionId,
@@ -843,7 +846,7 @@ async function realSendCompactCommand(
 ): Promise<void> {
   const { provider, model: modelId } = resolveRunParams(model)
   const client = await getIiiClient()
-  await client.trigger('harness::send', {
+  await client.call('harness::send', {
     session_id: sessionId,
     message: text,
     model: modelId,
@@ -861,9 +864,9 @@ export const realBackend: ChatBackend = {
   removeQueued: realRemoveQueued,
   editQueued: realEditQueued,
   onQueuedMessage: realOnQueuedMessage,
-  listTriggers: realListTriggers,
-  onTriggersChanged: realOnTriggersChanged,
-  unregisterTrigger: realUnregisterTrigger,
+  listObservers: realListObservers,
+  onObserversChanged: realOnObserversChanged,
+  disposeObserver: realDisposeObserver,
   stateKeyExists: realStateKeyExists,
   watchApprovals: realWatchApprovals,
   resolveApproval: realResolveApproval,

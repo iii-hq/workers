@@ -1,7 +1,7 @@
 import type { ExtensionIii } from '@/types/injectable-ui'
 import type { Accepted, OperationSnapshot } from './compose-api'
 
-/** One `compose-operation` delivery (iii-compose `ProgressEvent`). */
+/** One `compose::on-operation-progress` event (iii-compose `ProgressEvent`). */
 export type ProgressEvent = {
   sequence: number
   operation_id: string
@@ -14,10 +14,10 @@ export type ProgressEvent = {
   terminal: boolean
 }
 
-export type OperationBus = Pick<
-  ExtensionIii,
-  'on' | 'registerTrigger' | 'browserId'
->
+export type OperationBus = Pick<ExtensionIii, 'on' | 'observe' | 'browserId'>
+
+/** The function iii-compose calls with each progress event of an operation. */
+export const OPERATION_PROGRESS_FN = 'compose::on-operation-progress'
 
 export type FollowOptions = {
   iii: OperationBus
@@ -27,7 +27,7 @@ export type FollowOptions = {
   read: (operationId: string) => Promise<OperationSnapshot>
   /** The operation while it runs: the accept, then each progress event. */
   onProgress?: (snapshot: OperationSnapshot, operationId: string) => void
-  /** Aborting unbinds and settles with `null`: the page went away. */
+  /** Aborting disposes the observer and settles with `null`: the page went away. */
   signal?: AbortSignal
   /** Tests pin the id; the page lets this module choose one. */
   operationId?: string
@@ -42,10 +42,11 @@ let handlerSeq = 0
 
 /**
  * Follow a compose mutation by its pushed progress, never by polling: the
- * `compose-operation` binding goes in BEFORE the mutation is submitted, under
- * an id chosen here. `compose::operation` is read exactly twice at most — once
- * right after the accept (an operation that finished before the binding
- * landed is settled there), and once when the terminal event arrives, for the
+ * observer of `compose::on-operation-progress`, filtered on the operation id,
+ * goes in BEFORE the mutation is submitted, under an id chosen here.
+ * `compose::operation` is read exactly twice at most — once right after the
+ * accept (an operation that finished before the observer became active is
+ * settled there), and once when the terminal event arrives, for the
  * final status the event does not carry. Resolves with the final snapshot, or
  * `null` when aborted.
  */
@@ -70,13 +71,13 @@ export function followOperation({
   let lastSequence = 0
   let settled = false
   let ending = false
-  let offTrigger: (() => void) | null = null
+  let offObserver: (() => void) | null = null
   let offHandler: (() => void) | null = null
 
   return new Promise<OperationSnapshot | null>((resolve, reject) => {
     const unbind = () => {
       try {
-        offTrigger?.()
+        offObserver?.()
       } catch {
         // already gone
       }
@@ -85,7 +86,7 @@ export function followOperation({
       } catch {
         // already gone
       }
-      offTrigger = null
+      offObserver = null
       offHandler = null
     }
     const settle = (outcome: OperationSnapshot | null, error?: unknown) => {
@@ -99,15 +100,17 @@ export function followOperation({
     const abort = () => settle(null)
     const bind = (operation: string) => {
       try {
-        offTrigger?.()
+        offObserver?.()
       } catch {
         // already gone
       }
-      offTrigger = iii.registerTrigger({
-        type: 'compose-operation',
-        function_id: `${handlerId}::${iii.browserId}`,
-        config: { operation_id: operation },
-      })
+      offObserver = iii.observe(
+        {
+          function_id: OPERATION_PROGRESS_FN,
+          filters: { 'input.operation_id': { $eq: operation } },
+        },
+        `${handlerId}::${iii.browserId}`,
+      )
     }
     /** The final status: the terminal event says only that it ended. */
     const finish = () => {
@@ -169,8 +172,8 @@ export function followOperation({
           bind(id)
         }
         onProgress?.(current, id)
-        // The catch-up read: an operation that ended before the binding was
-        // in place sends nothing more.
+        // The catch-up read: an operation that ended before the observer was
+        // active sends nothing more.
         read(id).then(
           (snapshot) => {
             if (settled || ending) return

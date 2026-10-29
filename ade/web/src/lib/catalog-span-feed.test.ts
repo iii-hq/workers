@@ -42,9 +42,9 @@ type Responder = (fn: string, payload: Record<string, unknown>) => unknown
 
 function fakeBus(respond: Responder) {
   const handlers = new Map<string, (payload: unknown) => void>()
-  const triggers: { type: string; function_id: string; config: unknown }[] = []
+  const observers: { source: unknown; target: string }[] = []
   const calls: { fn: string; payload: Record<string, unknown> }[] = []
-  let unregistered = 0
+  let disposed = 0
   let connection: ((state: unknown) => void) | undefined
   const bus = {
     browserId: 'console-tab1',
@@ -52,17 +52,13 @@ function fakeBus(respond: Responder) {
       handlers.set(id, handler)
       return () => handlers.delete(id)
     },
-    registerTrigger(input: {
-      type: string
-      function_id: string
-      config: unknown
-    }) {
-      triggers.push(input)
+    observe(source: unknown, target: string) {
+      observers.push({ source, target })
       return () => {
-        unregistered += 1
+        disposed += 1
       }
     },
-    async trigger(fn: string, payload: Record<string, unknown> = {}) {
+    async call(fn: string, payload: Record<string, unknown> = {}) {
       calls.push({ fn, payload })
       return respond(fn, payload)
     },
@@ -76,13 +72,13 @@ function fakeBus(respond: Responder) {
   return {
     bus: bus as unknown as SpanFeedBus,
     handlers,
-    triggers,
+    observers,
     calls,
     tick: (traceIds: unknown) =>
       handlers.get('iii::console-catalog::spans-1')?.({ trace_ids: traceIds }),
     connection: (state: unknown) => connection?.(state),
-    get unregistered() {
-      return unregistered
+    get disposed() {
+      return disposed
     },
   }
 }
@@ -173,17 +169,20 @@ describe('startSpanFeed', () => {
     return Object.assign(fake, { batches, stop })
   }
 
-  it('binds the engine trace trigger, not a stream', () => {
+  it('observes the engine span source, not a stream', () => {
     const feed = start(() => ({ spans: [] }))
-    expect(feed.triggers).toEqual([
+    expect(feed.observers).toEqual([
       {
-        type: 'trace',
-        function_id: 'iii::console-catalog::spans-1::console-tab1',
-        config: {},
+        source: {
+          function_id: 'observability::on-span',
+          namespace: 'default',
+          deliver: 'output',
+        },
+        target: 'iii::console-catalog::spans-1::console-tab1',
       },
     ])
     feed.stop()
-    expect(feed.unregistered).toBe(1)
+    expect(feed.disposed).toBe(1)
     expect(feed.handlers.size).toBe(0)
   })
 
@@ -275,12 +274,12 @@ describe('startSpanFeed', () => {
     feed.stop()
   })
 
-  it('survives a failed read and a missing trigger type', async () => {
+  it('survives a failed read and a refused observer', async () => {
     const fake = fakeBus(() => {
       throw new Error('memory_exporter_not_enabled')
     })
-    fake.bus.registerTrigger = () => {
-      throw new Error('trigger type not found')
+    fake.bus.observe = () => {
+      throw new Error('observe refused')
     }
     const batches: SpanEvent[][] = []
     const stop = startSpanFeed(fake.bus, (spans) => batches.push(spans), {
