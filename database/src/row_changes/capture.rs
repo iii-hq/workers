@@ -269,7 +269,7 @@ impl NativeCapture {
 
     /// Validates `args` against the live config and, on a native database,
     /// installs capture for the table (once per `(db, table)`). Returns the
-    /// `(db, table)` the observer now holds, to release on removal.
+    /// `(db, table)` whose capture the observer holds, to release on removal.
     pub async fn admit(
         &self,
         args: &RowChangedArgs,
