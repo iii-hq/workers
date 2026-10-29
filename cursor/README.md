@@ -134,7 +134,7 @@ rpc_timeout_ms: 60000
 max_frame_bytes: 16777216
 ```
 
-The event feeds are fixed trigger types, not configuration. The former `events_stream` / `raw_events_stream` keys are accepted and ignored so stored configurations keep loading.
+The event feeds are fixed trigger types (also observable functions on iii 0.25), not configuration. The former `events_stream` / `raw_events_stream` keys are accepted and ignored so stored configurations keep loading.
 
 Login-backed local sessions run in Cursor's `ask` mode, and the worker cancels every permission request. Cursor ACP does not provide an enforceable per-request tool-list control, so explicit `tools` values, including `tools: []`, are rejected. Omit `tools` for CLI ACP. Start a new session when changing backend; legacy Bridge session IDs are never loaded as CLI ACP sessions.
 
