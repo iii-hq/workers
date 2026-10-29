@@ -54,13 +54,13 @@ Feature: context::count-tokens — estimate token usage for a message set
     And the response field "by_role.user" is 0
     And the response field "by_role.assistant" is 0
 
-  # Prevents: invocation schemas (the agent_trigger entry) being
+  # Prevents: invocation schemas (the agent_call entry) being
   # invisible to the budget — tool schemas can be thousands of tokens.
   Scenario: tools add to the total without polluting role buckets
     Given an empty history
     When I count tokens with model "any-model" and tools:
       """
-      [{ "name": "agent_trigger", "description": "Invoke any allowed iii function.",
+      [{ "name": "agent_call", "description": "Invoke any allowed iii function.",
          "parameters": { "type": "object", "properties": { "function": { "type": "string" } } } }]
       """
     Then the call succeeds
@@ -98,7 +98,7 @@ Feature: context::count-tokens — estimate token usage for a message set
     Given an empty history
     When I count tokens with model "any-model" and tools:
       """
-      [{ "name": "agent_trigger", "description": "Invoke any allowed iii function.",
+      [{ "name": "agent_call", "description": "Invoke any allowed iii function.",
          "parameters": { "type": "object", "properties": { "function": { "type": "string" } } } }]
       """
     Then the call succeeds

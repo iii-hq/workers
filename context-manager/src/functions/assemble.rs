@@ -932,7 +932,7 @@ mod tests {
         }))
         .unwrap();
         let tool: AgentFunction = serde_json::from_value(json!({
-            "name": "agent_trigger",
+            "name": "agent_call",
             "description": "Run an agent function",
             "parameters": {
                 "type": "object",
@@ -963,7 +963,7 @@ mod tests {
                 "limits": { "context_window": 1_000, "max_output_tokens": 100 }
             },
             "tools": [{
-                "name": "agent_trigger",
+                "name": "agent_call",
                 "description": "Run an agent function",
                 "parameters": { "type": "object" }
             }],
