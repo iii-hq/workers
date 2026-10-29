@@ -1,7 +1,11 @@
-import type { ISdk } from 'iii-sdk';
+import type { IIIClient } from 'iii-sdk';
 import { describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../src/config.js';
-import { bindConfigTrigger, fetchRuntime, registerOpencodeConfig } from '../src/configuration.js';
+import {
+  fetchRuntime,
+  observeConfigChanges,
+  registerOpencodeConfig,
+} from '../src/configuration.js';
 import { fakeIii } from './_helpers/fake-iii.js';
 
 describe('configuration worker integration', () => {
@@ -25,25 +29,33 @@ describe('configuration worker integration', () => {
     expect(payload.initial_value?.iii_context).toBe(true);
   });
 
-  it('bindConfigTrigger runs onChange once and registers the change fn + trigger', async () => {
+  it('observeConfigChanges runs onChange once and observes configuration::on-updated', async () => {
     const fake = fakeIii();
     const onChange = vi.fn(async () => {});
-    await bindConfigTrigger(fake.iii, onChange);
+    await observeConfigChanges(fake.iii, onChange);
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(fake.registered.has('opencode::on-config-change')).toBe(true);
-    const trig = fake.calls.find(
-      (c) => c.function_id === 'engine::register-trigger' || c.function_id === undefined,
-    );
-    // the SDK records register_trigger via registerTrigger; assert the handler reloads
+    expect(fake.observed).toEqual([
+      {
+        source: {
+          function_id: 'configuration::on-updated',
+          filters: {
+            'input.id': { $eq: 'opencode' },
+            'input.event_type': { $eq: 'configuration:updated' },
+          },
+          deliver: 'output',
+        },
+        target: 'opencode::on-config-change',
+      },
+    ]);
     await fake.registered.get('opencode::on-config-change')?.({});
     expect(onChange).toHaveBeenCalledTimes(2);
-    void trig;
   });
 
   it('fetchRuntime returns the live value, null when unset', async () => {
     let namespace: string | undefined;
     const withValue = {
-      trigger: async (request: { namespace?: string }) => {
+      call: async (request: { namespace?: string }) => {
         namespace = request.namespace;
         return {
           value: {
@@ -55,10 +67,10 @@ describe('configuration worker integration', () => {
           },
         };
       },
-    } as unknown as ISdk;
+    } as unknown as IIIClient;
     await expect(fetchRuntime(withValue)).resolves.toMatchObject({ defaults: { model: 'm' } });
     expect(namespace).toBe('default');
-    const empty = { trigger: async () => ({ value: null }) } as unknown as ISdk;
+    const empty = { call: async () => ({ value: null }) } as unknown as IIIClient;
     await expect(fetchRuntime(empty)).resolves.toBeNull();
   });
 });

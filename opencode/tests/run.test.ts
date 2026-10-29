@@ -5,7 +5,7 @@ vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
 import { spawn } from 'node:child_process';
 import { type Config, loadConfig } from '../src/config.js';
 import { executeRun, RunPayloadSchema } from '../src/run.js';
-import { AGENT, boundFeeds, fakeIii, RAW } from './_helpers/fake-iii.js';
+import { AGENT, observedFeeds, fakeIii, RAW } from './_helpers/fake-iii.js';
 import { ev, fullTurn, newSpawnCapture, scriptedSpawn } from './_helpers/fake-opencode.js';
 
 const spawnMock = vi.mocked(spawn);
@@ -23,7 +23,7 @@ async function runTurn(
   const cfg = { ...(await baseConfig()), ...cfgOverrides };
   const capture = newSpawnCapture();
   spawnMock.mockImplementation(scriptedSpawn(events, capture) as never);
-  const { emit, emitRaw } = await boundFeeds(
+  const { emit, emitRaw } = await observedFeeds(
     fake,
     ...(typeof payload.session_id === 'string' ? [payload.session_id] : []),
   );
@@ -80,18 +80,16 @@ describe('executeRun', () => {
     }
   });
 
-  it('completes the turn when every feed delivery fails', async () => {
+  it('completes the turn when every feed call is refused', async () => {
     const fake = fakeIii();
-    const original = fake.iii.trigger.bind(fake.iii);
-    (fake.iii as { trigger: typeof fake.iii.trigger }).trigger = (async (req: {
-      function_id: string;
-    }) => {
-      if (req.function_id.startsWith('consumer::')) throw new Error('consumer gone');
+    const original = fake.iii.call.bind(fake.iii);
+    (fake.iii as { call: typeof fake.iii.call }).call = (async (req: { function_id: string }) => {
+      if (req.function_id === AGENT || req.function_id === RAW) throw new Error('OVERFLOW');
       return original(req as never);
-    }) as typeof fake.iii.trigger;
+    }) as typeof fake.iii.call;
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     spawnMock.mockImplementation(scriptedSpawn(fullTurn, newSpawnCapture()) as never);
-    const { emit, emitRaw } = await boundFeeds(fake, 's1');
+    const { emit, emitRaw } = await observedFeeds(fake, 's1');
     const result = await executeRun(
       fake.iii,
       await baseConfig(),
@@ -142,7 +140,7 @@ describe('executeRun', () => {
     const cfg = await baseConfig();
     const capture = newSpawnCapture();
     spawnMock.mockImplementation(scriptedSpawn(fullTurn, capture) as never);
-    const { emit, emitRaw } = await boundFeeds(fake, 's1');
+    const { emit, emitRaw } = await observedFeeds(fake, 's1');
     const result = await executeRun(
       fake.iii,
       cfg,
@@ -163,7 +161,7 @@ describe('executeRun', () => {
     spawnMock.mockImplementation(
       scriptedSpawn([ev.step_start()], capture, { code: 1, stderr: 'boom' }) as never,
     );
-    const { emit, emitRaw } = await boundFeeds(fake, 's1');
+    const { emit, emitRaw } = await observedFeeds(fake, 's1');
     const result = await executeRun(
       fake.iii,
       cfg,
@@ -195,7 +193,7 @@ describe('executeRun', () => {
     const cfg = await baseConfig();
     const capture = newSpawnCapture();
     spawnMock.mockImplementation(scriptedSpawn(fullTurn, capture, { hang: true }) as never);
-    const { emit, emitRaw } = await boundFeeds(fake, 'busy');
+    const { emit, emitRaw } = await observedFeeds(fake, 'busy');
     const first = executeRun(
       fake.iii,
       cfg,
