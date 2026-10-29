@@ -168,7 +168,7 @@ export function AddJudgePanel({ registered, adds, targets, onAdd, onConfigure }:
         )}
       </div>
       <p className="judge-ui-session-hint">
-        Adding a judge runs <code>compose::add</code>, the same as <code>iii trigger compose::add worker=…</code> in your
+        Adding a judge runs <code>compose::add</code>, the same as <code>iii call compose::add worker=…</code> in your
         terminal. A hosted judge still needs its key: configure it once it is added.
       </p>
     </>

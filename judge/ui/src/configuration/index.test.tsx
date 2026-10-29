@@ -68,13 +68,13 @@ const registry = {
     { function_id: 'judgemental::evaluate', namespace: 'my-project', worker_name: 'judgemental' },
   ],
 }
-type Engine = Pick<ExtensionIii, 'trigger'>
+type Engine = Pick<ExtensionIii, 'call'>
 const engine = (reply: unknown = registry) => {
-  const trigger = vi.fn(async (_id: string, _payload?: Record<string, unknown>, _options?: { timeoutMs?: number }) => {
+  const call = vi.fn(async (_id: string, _payload?: Record<string, unknown>, _options?: { timeoutMs?: number }) => {
     if (reply instanceof Error) throw reply
     return reply
   })
-  return { trigger } as unknown as Engine & { trigger: typeof trigger }
+  return { call } as unknown as Engine & { call: typeof call }
 }
 
 let root: Root | undefined
@@ -110,7 +110,7 @@ describe('listProviders', () => {
 describe('JudgeRoutingForm', () => {
   it('offers the registered providers, the built-in default, and marks the selection as registered', async () => {
     const { container, iii } = await mount({ provider: 'typesafe' })
-    expect(iii.trigger).toHaveBeenCalledWith(
+    expect(iii.call).toHaveBeenCalledWith(
       'engine::functions::list',
       { include_internal: true },
       { timeoutMs: 10_000 },
@@ -166,7 +166,7 @@ describe('JudgeRoutingForm', () => {
     expect(alert.textContent).toContain('engine offline')
     expect(container.querySelector<HTMLSelectElement>('select[name="provider"]')!.value).toBe('typesafe')
     await act(async () => alert.querySelector('button')!.click())
-    expect(iii.trigger).toHaveBeenCalledTimes(2)
+    expect(iii.call).toHaveBeenCalledTimes(2)
   })
 
   it('shows validation errors on the field and the rest in a panel', async () => {
@@ -183,7 +183,7 @@ describe('JudgeRoutingForm', () => {
     const { container, onChange, iii } = await mount('${JUDGE_CONFIGURATION}')
     expect(container.textContent).toContain('single value')
     expect(onChange).not.toHaveBeenCalled()
-    expect(iii.trigger).toHaveBeenCalledTimes(1)
+    expect(iii.call).toHaveBeenCalledTimes(1)
   })
 
   it('shows a provider known only by its configuration id as registered and toggles preload_all', async () => {
