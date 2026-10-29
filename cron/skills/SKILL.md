@@ -1,31 +1,26 @@
 ---
 name: cron
-tags: cron, scheduling, triggers, jobs
+tags: cron, scheduling, observers, jobs
 description: >-
-  Schedule any registered function on a 6- or 7-field cron expression with the
-  standalone cron worker. Its surface is the `cron` trigger type and, on iii
-  0.25 engines, the observable function `cron::on-tick`.
+  Run any registered function on a 6- or 7-field cron expression with the
+  standalone cron worker. A function runs on a schedule by observing
+  `cron::on-tick` with `{ expression }` as args.
 ---
 
 # cron
 
-The `cron` worker schedules registered functions to run on recurring cron
-expressions. It exposes no callable `cron::*` functions. Its surface is the
-`cron` trigger type, bound through a worker SDK trigger registration such as
-`iii.registerTrigger({ type: 'cron', function_id, config })`, and, on iii 0.25
-engines, the observable function `cron::on-tick`, observed with
-`iii.observe({ function_id: 'cron::on-tick', args: { expression } }, target)`.
+The `cron` worker runs registered functions on recurring cron expressions. A
+schedule is an observer of `cron::on-tick`: the args hold the expression, and
+the target is the function that runs on it:
+`iii.observe({ function_id: 'cron::on-tick', args: { expression }, deliver: 'output' }, target)`.
 
-Install it with `iii trigger compose::add worker=cron`. The legacy in-engine cron service must not
-run on the same engine because it also owns the `cron` trigger type. Remove the
-legacy built-in from the engine config before starting this worker; the standalone
-worker refuses to boot when the builtin is active.
+Install it with `iii call compose::add worker=cron`.
 
-On every firing, the worker optionally evaluates a condition function, acquires
-a lock through the configured backend, and invokes the target function with an
-event payload containing `trigger`, `job_id`, `scheduled_time`, and
-`actual_time`. `scheduled_time` and `actual_time` let handlers observe drift
-without querying the scheduler.
+The worker runs one job per distinct expression and calls `cron::on-tick`
+once per fire, with a tick holding `expression`, `scheduled_time`, and
+`actual_time`. Every observer of that expression receives the tick.
+`scheduled_time` and `actual_time` let handlers see drift without querying
+the scheduler.
 
 The schedule grammar is the Rust `cron` crate dialect: six or seven fields,
 `second minute hour day-of-month month day-of-week [year]`. The year field is
@@ -37,120 +32,89 @@ Write the day of week as a name: `Mon`, `Tue`, `Wed`, `Thu`, `Fri`, `Sat`,
 convention, so `0 0 9 * * 1` fires on Sunday and a `1` written for Monday
 fires a day early. Names avoid the whole question.
 
-Two lock backends govern duplicate firing. `local` is the default and is only
-process-local; every worker instance can fire the same job in a multi-instance
-deployment. `redis` uses Redis locking and is required for once-only firing
-across a fleet. The lock TTL is 30 seconds.
-
 ## When to Use
 
 - A function should run periodically without a separate scheduler process or
   system crontab entry.
 - You need recurring cleanup, reporting, maintenance, or batch jobs that should
   fire on UTC cron windows.
-- You need once-only firing across a fleet and can configure the `redis` lock
-  backend.
-- A scheduled job should be conditionally skipped by setting
-  `condition_function_id`, without putting the condition inside the handler.
+- One function should run on several schedules: observe `cron::on-tick` once
+  per expression with the same target.
+- A scheduled job should skip some fires: add `filters` on the tick's `input`
+  to the observer.
 
 ## Boundaries
 
-- No callable functions are exposed. Never invoke `cron::*` (invoking
-  `cron::on-tick` is refused with `FORBIDDEN`); bind the `cron` trigger type
-  to one of your own functions, or observe `cron::on-tick` on a 0.25 engine.
-- The default `local` backend is process-local. Do not rely on it for once-only
-  jobs in a multi-instance deployment.
+- Never call `cron::on-tick`: it is private to the cron worker, and a call from
+  another worker is refused with `FORBIDDEN`. Observe it with one of your own
+  functions as the target.
 - The worker does not catch up missed runs after downtime. It schedules the
   next upcoming UTC fire from the time it is running.
-- A condition function only blocks when it returns explicit JSON `false`.
-  Truthy, null, or missing results allow the fire; condition errors skip that
-  fire.
-- Five-field crontab expressions are not the intended format. Include the
-  seconds field.
+- Five-field crontab expressions are refused (`INVALID_CRON_EXPRESSION`).
+  Include the seconds field.
+- `cron::on-tick` has one host per namespace. A second instance of the worker
+  waits as a standby and takes over the schedules when the first one leaves,
+  so each expression fires once per scheduled time.
 - For data-change or stream-change reactions, use the relevant state, stream,
-  queue, or event worker instead; `cron` fires on the clock only.
+  queue, or database worker instead; `cron` fires on the clock only.
 
-## Reactive triggers
+## Running on a schedule
 
-Bind a `cron` trigger when a handler should run on a recurring schedule. The
-handler runs through the engine as a normal function invocation. With the
-`redis` backend, only one worker instance should own a scheduled fire across
-the fleet.
+Observe `cron::on-tick` when a handler should run on a recurring schedule. The
+handler runs as a normal function invocation for each fire.
 
 Reach for it when:
 
 - You need recurring execution such as cleanup, reports, or maintenance.
-- You want condition-gated firing: set `condition_function_id` and the worker
-  evaluates it before each run.
-- One function should be driven by multiple schedules; register multiple
-  triggers and branch on the `job_id` payload field.
+- A schedule should apply only to some fires: filter on the tick, e.g.
+  `{ 'input.scheduled_time': { $gte: '2026-11-01T00:00:00Z' } }`.
+- One function should be driven by several schedules; observe once per
+  expression and branch on the tick's `expression`.
 
-### How to bind
+### How to observe
 
 1. Register a handler: `iii.registerFunction('jobs::cleanup-old-data', handler)`.
-2. Register the trigger:
+2. Observe `cron::on-tick` with the expression as args:
 
 ```typescript
-iii.registerTrigger({
-  type: 'cron',
-  function_id: 'jobs::cleanup-old-data',
-  config: {
-    expression: '0 0 2 * * * *',  // sec min hour dom month dow [year]; daily at 02:00:00 UTC.
-    // condition_function_id is optional.
-  },
-})
-```
-
-`expression` is required and must parse. Bind one `function_id` to several
-triggers with distinct trigger ids to drive multiple schedules into one
-handler; the trigger id arrives as `job_id` in the event. The handler's return
-value is ignored.
-
-Event payload:
-
-```json
-{
-  "trigger": "cron",
-  "job_id": "<trigger-id>",
-  "scheduled_time": "2026-07-03T12:00:00+00:00",
-  "actual_time": "2026-07-03T12:00:00.123456789+00:00"
-}
-```
-
-### How to observe (iii 0.25)
-
-`registerTrigger` is deprecated in iii 0.25 and keeps working. On a 0.25
-engine, observe `cron::on-tick` instead:
-
-```typescript
-iii.registerFunction('jobs::cleanup-old-data', async ({ input }) => {
-  // input: { trigger: 'cron', expression, scheduled_time, actual_time }
+iii.registerFunction('jobs::cleanup-old-data', async (tick: CronTick) => {
+  // tick: { expression, scheduled_time, actual_time }
 })
 
 const cleanup = iii.observe(
-  { function_id: 'cron::on-tick', args: { expression: '0 0 2 * * *' } },
+  {
+    function_id: 'cron::on-tick',
+    args: { expression: '0 0 2 * * *' },  // sec min hour dom month dow [year]; daily at 02:00:00 UTC.
+    deliver: 'output',
+  },
   'jobs::cleanup-old-data',
 )
 await cleanup.ready()
+// later: await cleanup.dispose() stops the schedule
 ```
 
 `args` takes `expression` only; anything else fails `ready()` with
-`INVALID_ARGS`, and an expression that does not parse with
-`INVALID_CRON_EXPRESSION`. The tick has no `job_id` (the envelope's
-`observer_id` identifies the observer) and observers have no
-`condition_function_id`: use `filters` on the observer instead. Bindings and
-observers on the same expression share one job. Against a 0.24 engine,
-`observe` fails with `UNSUPPORTED`; bind the trigger type there.
+`INVALID_ARGS`, and an expression that does not parse fails it with
+`INVALID_CRON_EXPRESSION`. The handler's return value is ignored.
 
-Configure the lock backend through the central configuration entry for worker
-`cron`:
+With `deliver: 'output'` the handler receives the tick:
 
-```yaml
-adapter:
-  name: redis
-  config:
-    redis_url: redis://localhost:6379
+```json
+{
+  "expression": "0 0 2 * * *",
+  "scheduled_time": "2026-07-03T02:00:00+00:00",
+  "actual_time": "2026-07-03T02:00:00.123456789+00:00"
+}
 ```
 
-Use `adapter.name: local` for single-process development and
-`adapter.name: redis` for multi-instance once-only scheduling.
+Without it, the handler receives the `Observed` envelope: the tick is its
+`input` and `output`, and `observer_id` names the observer that fired. The
+observer's `metadata` arrives as each delivery's metadata sidecar.
+
+An agent schedules through the harness with `harness::observe`:
+
+```json
+{ "function_id": "cron::on-tick", "args": { "expression": "0 30 9 * * Mon" }, "label": "Monday standup notes", "once": false }
+```
+
+and retires a schedule with `harness::unobserve` and its `observer_id`.

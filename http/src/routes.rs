@@ -1,140 +1,56 @@
-//! Route table: registers `http` trigger instances and `http::on-request`
-//! observers as routes and matches incoming requests (method + path) against
-//! them, extracting path params.
+//! Route table: one route per `http::on-request` observer, matched against
+//! incoming requests (method + path) with path params extracted.
 //!
 //! Ported from the in-engine `iii-http` worker's `RestApiWorker`
 //! (`route_signature` / `register_router` conflict check in `api_core.rs`,
 //! `extract_path_params` in `views.rs`), adapted to a standalone, axum-free
-//! `RouteTable` keyed by trigger id or observer id.
+//! `RouteTable` keyed by observer id.
 
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
 
-use async_trait::async_trait;
 use colored::Colorize;
-use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{Doc, IIIClient, Observer};
-use serde_json::Value;
-use tokio::sync::RwLock;
 
-use crate::types::HttpTriggerConfig;
-
-/// Who bound a route, and so how its target is invoked. Everything else about
-/// a request (matching, middleware, condition, channels, response mapping)
-/// is the same for both.
-#[derive(Debug, Clone)]
-pub enum RouteSink {
-    /// An `http` trigger binding: the target is invoked with `iii.trigger`.
-    Trigger { trigger_id: String },
-    /// An observer of `http::on-request`: the target is invoked with
-    /// `obs.call`, through the engine as the observer's activation.
-    Observer(Observer),
-}
-
-/// A route's key in the [`RouteTable`]. Trigger ids and observer ids are
-/// kept apart, so one kind never replaces or removes the other.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum RouteKey {
-    Trigger(String),
-    Observer(String),
-}
-
-impl RouteSink {
-    fn key(&self) -> RouteKey {
-        match self {
-            RouteSink::Trigger { trigger_id } => RouteKey::Trigger(trigger_id.clone()),
-            RouteSink::Observer(obs) => RouteKey::Observer(obs.id().to_string()),
-        }
-    }
-
-    /// Whether `request` (the serialized [`crate::types::HttpRequest`]) may
-    /// reach the target: always for a trigger; for an observer, when its
-    /// filters accept it as `input`. Evaluated in-process, nothing is sent.
-    pub fn accepts(&self, request: &Value) -> bool {
-        match self {
-            RouteSink::Trigger { .. } => true,
-            RouteSink::Observer(obs) => obs.matches(&Doc {
-                input: Some(request),
-                ..Doc::default()
-            }),
-        }
-    }
-}
-
-/// A single registered HTTP route, derived from an `http` trigger instance
-/// or an `http::on-request` observer.
+/// A single registered HTTP route, declared by the args of one
+/// `http::on-request` observer.
 #[derive(Debug, Clone)]
 pub struct Route {
-    pub sink: RouteSink,
-    /// The target: the trigger's function, or the observer's target.
-    pub function_id: String,
+    /// The observer that declared the route. The server names it on each call
+    /// of `http::on-request`, whose deliver hook calls through it.
+    pub observer_id: String,
     pub http_path: String,
     pub http_method: String,
     pub public_webhook: bool,
-    pub condition_function_id: Option<String>,
     pub middleware_function_ids: Vec<String>,
 }
 
 impl Route {
-    /// The binding's id: its trigger id or its observer id.
+    /// The route's id: its observer's id.
     pub fn id(&self) -> &str {
-        match &self.sink {
-            RouteSink::Trigger { trigger_id } => trigger_id,
-            RouteSink::Observer(obs) => obs.id(),
-        }
-    }
-
-    /// Invokes the route's target with `payload` and returns its result (the
-    /// HTTP response, or `null` when it streamed): `iii.trigger` for a
-    /// trigger, `obs.call` for an observer. Both fail with the target's error,
-    /// or `Error::Timeout` after `timeout_ms`.
-    pub async fn call(
-        &self,
-        iii: &IIIClient,
-        payload: Value,
-        timeout_ms: u64,
-    ) -> Result<Value, Error> {
-        match &self.sink {
-            RouteSink::Trigger { .. } => {
-                iii.trigger(TriggerRequest {
-                    function_id: self.function_id.clone(),
-                    payload,
-                    action: None,
-                    timeout_ms: Some(timeout_ms),
-                })
-                .await
-            }
-            RouteSink::Observer(obs) => {
-                obs.call_with_timeout(payload, Duration::from_millis(timeout_ms))
-                    .await
-            }
-        }
+        &self.observer_id
     }
 }
 
 /// Same registration lines as the engine's builtin iii-http (api_core.rs).
-pub(crate) fn log_registered(route: &Route) {
+/// `target` is the observer's target, read from the observer at hand.
+pub(crate) fn log_registered(route: &Route, target: &str) {
     tracing::info!(
         "{} Endpoint {} → {}",
         "[REGISTERED]".green(),
         format!("{} {}", route.http_method, route.http_path)
             .bright_yellow()
             .bold(),
-        route.function_id.purple()
+        target.purple()
     );
 }
 
-pub(crate) fn log_unregistered(route: &Route) {
+pub(crate) fn log_unregistered(route: &Route, target: &str) {
     tracing::info!(
         "{} Endpoint {} → {}",
         "[UNREGISTERED]".yellow(),
         format!("{} {}", route.http_method, route.http_path)
             .bright_yellow()
             .bold(),
-        route.function_id.purple()
+        target.purple()
     );
 }
 
@@ -222,30 +138,26 @@ fn listener_path_params(
     Some(params)
 }
 
-/// Registry of routes, shared by `http` trigger bindings and
-/// `http::on-request` observers, keyed by trigger id or observer id so a
-/// binding can be removed by id alone. Rejects inserting a route whose
-/// method+path shape conflicts with another, differently-id'd route already
-/// registered, whichever kind registered either (same shape, different param
-/// names) -- matching it would be ambiguous. The later one is refused: a
-/// trigger registration fails, an observer is rejected with
-/// `HTTP_ROUTE_CONFLICT`. Re-inserting under the same id replaces the entry.
+/// Registry of routes, keyed by observer id so a route can be removed by id
+/// alone. Rejects inserting a route whose method+path shape conflicts with
+/// another observer's route already registered (same shape, different param
+/// names): matching it would be ambiguous. The later observer is rejected
+/// with `HTTP_ROUTE_CONFLICT`. Re-inserting under the same id replaces the
+/// entry.
 #[derive(Default)]
 pub struct RouteTable {
-    by_id: HashMap<RouteKey, Route>,
+    by_id: HashMap<String, Route>,
 }
 
 impl RouteTable {
-    /// Inserts or replaces a route. Fails if another trigger or observer
-    /// already owns a route with the same method+path signature.
+    /// Inserts or replaces a route. Fails if another observer already owns a
+    /// route with the same method+path signature.
     pub fn insert(&mut self, route: Route) -> Result<(), String> {
-        let key = route.sink.key();
         let signature = route_signature(&route.http_method, &route.http_path);
-        let conflict = self.by_id.iter().find(|(existing_key, existing)| {
-            **existing_key != key
+        let conflict = self.by_id.values().find(|existing| {
+            existing.observer_id != route.observer_id
                 && route_signature(&existing.http_method, &existing.http_path) == signature
         });
-        let conflict = conflict.map(|(_, existing)| existing);
         if let Some(existing) = conflict {
             return Err(format!(
                 "Route '{} {}' conflicts with already-registered route '{} {}': \
@@ -258,18 +170,18 @@ impl RouteTable {
             ));
         }
 
-        self.by_id.insert(key, route);
+        self.by_id.insert(route.observer_id.clone(), route);
         Ok(())
     }
 
-    /// Removes and returns the route the trigger `id` registered, if any.
-    pub fn remove_by_trigger_id(&mut self, id: &str) -> Option<Route> {
-        self.by_id.remove(&RouteKey::Trigger(id.to_string()))
+    /// Removes and returns the route the observer `id` declared, if any.
+    pub fn remove(&mut self, id: &str) -> Option<Route> {
+        self.by_id.remove(id)
     }
 
-    /// Removes and returns the route the observer `id` registered, if any.
-    pub fn remove_by_observer_id(&mut self, id: &str) -> Option<Route> {
-        self.by_id.remove(&RouteKey::Observer(id.to_string()))
+    /// The route the observer `id` declared, if any.
+    pub fn get(&self, id: &str) -> Option<&Route> {
+        self.by_id.get(id)
     }
 
     /// Finds the registered route whose method matches (case insensitive) and
@@ -345,79 +257,16 @@ impl RouteTable {
     }
 }
 
-/// Bridges the SDK's `TriggerHandler` callbacks to the [`RouteTable`]: turns
-/// `register_trigger`/`unregister_trigger` calls (issued by the engine when
-/// functions bind `http` triggers) into route inserts/removals.
-///
-/// Cheap to clone -- the table is shared via `Arc<RwLock<_>>` so the same
-/// handle can be handed to the server task that reads routes to match
-/// incoming requests.
-#[derive(Clone, Default)]
-pub struct HttpTriggerHandler {
-    pub routes: Arc<RwLock<RouteTable>>,
-}
-
-impl HttpTriggerHandler {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// A fresh, empty, shareable route table -- handed to both this handler
-    /// and the server task so they observe the same registrations.
-    pub fn shared_routes() -> Arc<RwLock<RouteTable>> {
-        Arc::new(RwLock::new(RouteTable::default()))
-    }
-}
-
-#[async_trait]
-impl TriggerHandler for HttpTriggerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        let tc: HttpTriggerConfig = serde_json::from_value(config.config.clone())
-            .map_err(|e| Error::Handler(format!("invalid http trigger config: {e}")))?;
-        let route = Route {
-            sink: RouteSink::Trigger {
-                trigger_id: config.id.clone(),
-            },
-            function_id: config.function_id.clone(),
-            http_path: tc.api_path,
-            http_method: tc.http_method.to_uppercase(),
-            public_webhook: tc.public_webhook,
-            condition_function_id: tc.condition_function_id,
-            middleware_function_ids: tc.middleware_function_ids,
-        };
-        self.routes
-            .write()
-            .await
-            .insert(route.clone())
-            .map_err(Error::Handler)?;
-        log_registered(&route);
-        Ok(())
-    }
-
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        // The SDK only populates `id` for unregister -- function_id/config
-        // are stubs -- so the table must be (and is) keyed by trigger id.
-        if let Some(route) = self.routes.write().await.remove_by_trigger_id(&config.id) {
-            log_unregistered(&route);
-        }
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn route(trigger_id: &str, method: &str, path: &str) -> Route {
+    fn route(observer_id: &str, method: &str, path: &str) -> Route {
         Route {
-            sink: RouteSink::Trigger {
-                trigger_id: trigger_id.to_string(),
-            },
-            function_id: format!("fn-{trigger_id}"),
+            observer_id: observer_id.to_string(),
             http_path: path.to_string(),
             http_method: method.to_string(),
             public_webhook: false,
-            condition_function_id: None,
             middleware_function_ids: Vec::new(),
         }
     }
@@ -588,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn insert_rejects_conflicting_signature_from_different_trigger() {
+    fn insert_rejects_conflicting_signature_from_different_observer() {
         let mut table = RouteTable::default();
         table.insert(route("t1", "GET", "/a/:x")).unwrap();
 
@@ -597,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn insert_allows_same_trigger_id_reinsert_as_replace() {
+    fn insert_allows_same_observer_id_reinsert_as_replace() {
         let mut table = RouteTable::default();
         table.insert(route("t1", "GET", "/a/:x")).unwrap();
 
@@ -626,160 +475,39 @@ mod tests {
     }
 
     #[test]
-    fn remove_by_trigger_id_removes_then_reports_false() {
+    fn remove_removes_then_reports_none() {
         let mut table = RouteTable::default();
         table.insert(route("t1", "GET", "/users/:id")).unwrap();
 
-        assert!(table.remove_by_trigger_id("t1").is_some());
-        assert!(table.remove_by_trigger_id("t1").is_none());
+        assert_eq!(
+            table.get("t1").map(|r| r.http_path.as_str()),
+            Some("/users/:id")
+        );
+        assert!(table.remove("t1").is_some());
+        assert!(table.remove("t1").is_none());
+        assert!(table.get("t1").is_none());
         assert!(table.match_route("GET", "/users/42").is_none());
     }
 
-    // =========================================================================
-    // HttpTriggerHandler
-    // =========================================================================
-
-    fn trigger_config(id: &str, function_id: &str, config: serde_json::Value) -> TriggerConfig {
-        TriggerConfig {
-            id: id.to_string(),
-            function_id: function_id.to_string(),
-            config,
-            metadata: None,
-            namespace: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn register_trigger_inserts_matchable_route() {
-        let handler = HttpTriggerHandler::new();
-        handler
-            .register_trigger(trigger_config(
+    #[test]
+    fn brace_and_colon_routes_share_a_shape() {
+        let mut table = RouteTable::default();
+        table
+            .insert(route(
                 "t1",
-                "fn.a",
-                serde_json::json!({"api_path": "/a", "http_method": "POST"}),
+                "GET",
+                &crate::types::normalize_api_path("/tasks/{tid}"),
             ))
-            .await
             .unwrap();
-
-        let routes = handler.routes.read().await;
-        let (matched, _) = routes.match_route("POST", "/a").unwrap();
-        assert_eq!(matched.function_id, "fn.a");
-        assert_eq!(matched.id(), "t1");
-    }
-
-    #[tokio::test]
-    async fn register_trigger_rejects_invalid_config() {
-        let handler = HttpTriggerHandler::new();
-        let result = handler
-            .register_trigger(trigger_config("t1", "fn.a", serde_json::json!({})))
-            .await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn unregister_trigger_removes_route_using_only_id_stub() {
-        let handler = HttpTriggerHandler::new();
-        handler
-            .register_trigger(trigger_config(
-                "t1",
-                "fn.a",
-                serde_json::json!({"api_path": "/a", "http_method": "post"}),
-            ))
-            .await
-            .unwrap();
-
-        // The SDK passes a stub on unregister: only `id` is populated.
-        handler
-            .unregister_trigger(trigger_config("t1", "", serde_json::Value::Null))
-            .await
-            .unwrap();
-
-        let routes = handler.routes.read().await;
-        assert!(routes.match_route("POST", "/a").is_none());
-    }
-
-    #[tokio::test]
-    async fn register_trigger_with_brace_parameters_normalizes_and_matches() {
-        let handler = HttpTriggerHandler::new();
-        handler
-            .register_trigger(trigger_config(
-                "t1",
-                "fn.tasks",
-                serde_json::json!({"api_path": "/tasks/{tid}", "http_method": "GET"}),
-            ))
-            .await
-            .unwrap();
-
-        let routes = handler.routes.read().await;
-        let (matched, params) = routes.match_route("GET", "/tasks/123").unwrap();
-        assert_eq!(matched.function_id, "fn.tasks");
+        let (matched, params) = table.match_route("GET", "/tasks/123").unwrap();
         assert_eq!(matched.http_path, "/tasks/:tid");
         assert_eq!(params.get("tid"), Some(&"123".to_string()));
-    }
-
-    #[tokio::test]
-    async fn register_trigger_with_multiple_brace_parameters_extracts_all_params() {
-        let handler = HttpTriggerHandler::new();
-        handler
-            .register_trigger(trigger_config(
-                "t1",
-                "fn.user_tasks",
-                serde_json::json!({
-                    "api_path": "/users/{userId}/tasks/{tid}",
-                    "http_method": "GET"
-                }),
-            ))
-            .await
-            .unwrap();
-
-        let routes = handler.routes.read().await;
-        let (matched, params) = routes.match_route("GET", "/users/alice/tasks/42").unwrap();
-        assert_eq!(matched.function_id, "fn.user_tasks");
-        assert_eq!(matched.http_path, "/users/:userId/tasks/:tid");
-        assert_eq!(params.get("userId"), Some(&"alice".to_string()));
-        assert_eq!(params.get("tid"), Some(&"42".to_string()));
-    }
-
-    #[tokio::test]
-    async fn register_trigger_brace_and_colon_routes_conflict() {
-        let handler = HttpTriggerHandler::new();
-        handler
-            .register_trigger(trigger_config(
-                "t1",
-                "fn.a",
-                serde_json::json!({"api_path": "/tasks/:tid", "http_method": "GET"}),
-            ))
-            .await
-            .unwrap();
-
-        let result = handler
-            .register_trigger(trigger_config(
+        assert!(table
+            .insert(route(
                 "t2",
-                "fn.b",
-                serde_json::json!({"api_path": "/tasks/{otherId}", "http_method": "GET"}),
+                "GET",
+                &crate::types::normalize_api_path("/tasks/{other}")
             ))
-            .await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn register_trigger_with_brace_parameters_unregisters_cleanly() {
-        let handler = HttpTriggerHandler::new();
-        handler
-            .register_trigger(trigger_config(
-                "t1",
-                "fn.tasks",
-                serde_json::json!({"api_path": "/tasks/{tid}", "http_method": "GET"}),
-            ))
-            .await
-            .unwrap();
-
-        handler
-            .unregister_trigger(trigger_config("t1", "", serde_json::Value::Null))
-            .await
-            .unwrap();
-
-        let routes = handler.routes.read().await;
-        assert!(routes.match_route("GET", "/tasks/123").is_none());
+            .is_err());
     }
 }

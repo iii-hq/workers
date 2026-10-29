@@ -9,9 +9,9 @@ import {
   StatusDot,
 } from '@iii-dev/console-ui'
 import { useState } from 'react'
-import type { SessionCronTask, SystemCronBinding } from '../lib/api'
+import type { SessionCronTask, SystemCronObserver } from '../lib/api'
 import { describeCron, nextCronRun, untilLabel } from '../lib/cron'
-import { cadenceLabel } from './rows'
+import { cadenceLabel, observerStateView } from './rows'
 import { statusView } from './status'
 
 function formatTimestamp(value: number): string {
@@ -81,8 +81,8 @@ export function TaskDetail({
         </DetailRow>
         {task.expiresAt !== undefined ? <DetailRow label="Expires">{formatTimestamp(task.expiresAt)}</DetailRow> : null}
         <DetailRow label="Created">{formatTimestamp(task.createdAt)}</DetailRow>
-        <DetailRow label="Subscription" mono>
-          {task.subscriptionId}
+        <DetailRow label="Observer" mono>
+          {task.observerId}
         </DetailRow>
       </dl>
 
@@ -104,15 +104,15 @@ export function TaskDetail({
           Replace…
         </Button>
         <Button variant="primary" onClick={() => setConfirming(true)}>
-          Unregister
+          Remove
         </Button>
       </footer>
 
       <Dialog open={confirming} onOpenChange={setConfirming}>
         <DialogContent>
-          <DialogTitle>Unregister this schedule?</DialogTitle>
+          <DialogTitle>Remove this schedule?</DialogTitle>
           <DialogDescription>
-            {task.label ?? task.subscriptionId} stops firing immediately. This cannot be undone; the schedule has to be
+            {task.label ?? task.observerId} stops firing immediately. This cannot be undone; the schedule has to be
             created again.
           </DialogDescription>
           <div className="cron-ui-detail-actions">
@@ -126,7 +126,7 @@ export function TaskDetail({
                 onRemove()
               }}
             >
-              Unregister
+              Remove
             </Button>
           </div>
         </DialogContent>
@@ -135,40 +135,44 @@ export function TaskDetail({
   )
 }
 
-export function BindingDetail({ binding, now }: { binding: SystemCronBinding; now: Date }) {
-  const next = nextCronRun(binding.expression, now)
+export function ObserverDetail({ observer, now }: { observer: SystemCronObserver; now: Date }) {
+  const next = nextCronRun(observer.expression, now)
+  const view = observerStateView(observer.state)
   return (
     <div className="cron-ui-detail">
       <header className="cron-ui-detail-head">
-        <h2 className="cron-ui-detail-title">{binding.functionId}</h2>
+        <h2 className="cron-ui-detail-title">{observer.functionId}</h2>
         <span className="cron-ui-status">
-          <StatusDot tone="accent" aria-hidden />
-          <span>Active</span>
+          <StatusDot tone={view.tone} aria-hidden />
+          <span>{view.label}</span>
         </span>
       </header>
 
       <dl className="cron-ui-fields">
-        <DetailRow label="Owner">{binding.workerName}</DetailRow>
+        <DetailRow label="Owner">{observer.workerName}</DetailRow>
         <DetailRow label="Next run">
           {next ? `${formatTimestamp(next.getTime())} · ${untilLabel(next, now)}` : 'Not scheduled'}
         </DetailRow>
-        <DetailRow label="Cadence">{describeCron(binding.expression) ?? binding.expression}</DetailRow>
+        <DetailRow label="Cadence">{describeCron(observer.expression) ?? observer.expression}</DetailRow>
         <DetailRow label="Cron expression" mono>
-          {binding.expression}
+          {observer.expression}
         </DetailRow>
         <DetailRow label="Timezone">UTC</DetailRow>
-        {binding.conditionFunctionId ? (
-          <DetailRow label="Condition" mono>
-            {binding.conditionFunctionId}
-          </DetailRow>
-        ) : null}
-        <DetailRow label="Trigger" mono>
-          {binding.id}
+        <DetailRow label="Runs">{observer.fires}</DetailRow>
+        <DetailRow label="Observer" mono>
+          {observer.id}
         </DetailRow>
       </dl>
 
+      {observer.filters ? (
+        <section className="cron-ui-detail-section">
+          <h3 className="cron-ui-detail-subtitle">Filters</h3>
+          <JsonHighlight code={JSON.stringify(observer.filters, null, 2)} wrap />
+        </section>
+      ) : null}
+
       <p className="cron-ui-detail-note">
-        This binding belongs to the {binding.workerName} worker. It is shown so the schedule is visible in one place;
+        This observer belongs to the {observer.workerName} worker. It is shown so the schedule is visible in one place;
         change it where the worker declares it.
       </p>
     </div>

@@ -60,7 +60,7 @@ use tower_http::{
 use crate::config::RestApiConfig;
 use crate::configuration::ConfigCell;
 use crate::handler::{self, AppState};
-use crate::trigger::RouteTable;
+use crate::routes::RouteTable;
 
 /// Sentinel meaning "any origin" in CORS config.
 const ALLOW_ORIGIN_ANY: &str = "*";

@@ -1,7 +1,7 @@
 //! Loopback coverage of `http::on-request`: the fake engine plays the observer
-//! lifecycle (`observeradded` / `observerack` / `observerremoved`), routes are
-//! served next to `http` trigger bindings from the same table, and each
-//! observer's target is reached with `obs.call`. Never an external engine.
+//! lifecycle (`observeradded` / `observerack` / `observerremoved`), the server
+//! calls `http::on-request` for each matched request, and its deliver hook
+//! reaches the route's target through the observer. Never an external engine.
 mod common;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -15,12 +15,11 @@ use iii_http::on_request::ON_REQUEST_FN;
 use iii_http::types::HttpRequest;
 use iii_sdk::channel::ChannelWriter;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::RegisterFunction;
 use serde_json::{json, Value};
 
 async fn start() -> (FakeEngine, BootHandle) {
-    let engine = FakeEngine::start_with_observe().await;
+    let engine = FakeEngine::start().await;
     let config = RestApiConfig {
         host: "127.0.0.1".into(),
         port: 0,
@@ -62,7 +61,6 @@ fn register_echo(engine: &FakeEngine, id: &str) -> Arc<AtomicUsize> {
                         "path_params": req.path_params,
                         "query_params": req.query_params,
                         "body": req.body,
-                        "trigger": req.trigger,
                     }
                 }))
             }
@@ -72,7 +70,7 @@ fn register_echo(engine: &FakeEngine, id: &str) -> Arc<AtomicUsize> {
 }
 
 /// Plays `iii.observe({ function_id: 'http::on-request', args, filters }, target)`
-/// and returns the owner's rejection, if any.
+/// and returns the host's rejection, if any.
 async fn observe(
     engine: &FakeEngine,
     id: &str,
@@ -86,15 +84,6 @@ async fn observe(
             json!({ "id": id, "target": target, "args": args, "filters": filters }),
         )
         .await
-}
-
-/// An old consumer's binding: `registerTrigger({ type: 'http', ... })`.
-#[allow(deprecated)] // an old consumer: binds the `http` trigger type
-fn bind_trigger(engine: &FakeEngine, function_id: &str, config: Value) {
-    engine
-        .iii
-        .register_trigger(RegisterTriggerInput::new("http", function_id, config))
-        .unwrap();
 }
 
 #[tokio::test]
@@ -135,11 +124,6 @@ async fn an_observer_route_serves_its_targets_result() {
     assert_eq!(body["method"], "GET");
     assert_eq!(body["path"], "/new/ping");
     assert_eq!(body["query_params"]["q"], "1");
-    // Same payload as an `http` trigger's function receives.
-    assert_eq!(
-        body["trigger"],
-        json!({"type": "http", "path": "/new/ping", "method": "GET"})
-    );
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
     let resp = http
@@ -154,7 +138,7 @@ async fn an_observer_route_serves_its_targets_result() {
     assert_eq!(body["path_params"]["id"], "42");
     assert_eq!(body["body"], json!({"name": "ada"}));
 
-    // Same matching rules as trigger routes: 405 with Allow, then 404.
+    // A known path with another method is a 405 with Allow; an unknown one a 404.
     let resp = http
         .get(format!("http://{addr}/new/users/42"))
         .send()
@@ -174,99 +158,74 @@ async fn an_observer_route_serves_its_targets_result() {
 }
 
 #[tokio::test]
-async fn trigger_and_observer_responses_are_mapped_the_same_way() {
+async fn a_targets_response_keeps_its_status_headers_and_content_type() {
     let (engine, boot) = start().await;
-    for id in ["test::text-legacy", "test::text-new"] {
-        engine.iii.register_function(
-            id.to_string(),
-            RegisterFunction::new_async(|_req: HttpRequest| async move {
-                Ok::<Value, Error>(json!({
-                    "status_code": 202,
-                    "headers": ["Content-Type: text/plain", "X-Kind: same"],
-                    "body": "plain text",
-                }))
-            }),
-        );
-    }
-    bind_trigger(
-        &engine,
-        "test::text-legacy",
-        json!({"api_path": "/legacy/text", "http_method": "GET"}),
+    engine.iii.register_function(
+        "test::text".to_string(),
+        RegisterFunction::new_async(|_req: HttpRequest| async move {
+            Ok::<Value, Error>(json!({
+                "status_code": 202,
+                "headers": ["Content-Type: text/plain", "X-Kind: same"],
+                "body": "plain text",
+            }))
+        }),
     );
-    common::wait_for_route(&boot.routes, "GET", "/legacy/text").await;
     assert!(observe(
         &engine,
         "obs-text",
-        "test::text-new",
+        "test::text",
         json!({"method": "GET", "path": "/new/text"}),
         json!({}),
     )
     .await
     .is_none());
 
-    let http = client();
-    let mut seen = Vec::new();
-    for path in ["/legacy/text", "/new/text"] {
-        let resp = http
-            .get(format!("http://{}{path}", boot.local_addr))
-            .send()
-            .await
-            .unwrap();
-        let status = resp.status();
-        let content_type = resp.headers()["content-type"].clone();
-        let kind = resp.headers()["x-kind"].clone();
-        seen.push((status, content_type, kind, resp.text().await.unwrap()));
-    }
-    assert_eq!(seen[0].0, 202);
-    assert_eq!(seen[0].3, "plain text");
-    assert_eq!(seen[0], seen[1]);
+    let resp = client()
+        .get(format!("http://{}/new/text", boot.local_addr))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+    assert_eq!(resp.headers()["content-type"], "text/plain");
+    assert_eq!(resp.headers()["x-kind"], "same");
+    assert_eq!(resp.text().await.unwrap(), "plain text");
 
     boot.shutdown().await;
     engine.shutdown().await;
 }
 
 #[tokio::test]
-async fn an_observer_targets_error_maps_like_a_trigger_targets_error() {
+async fn a_targets_error_is_a_500_with_its_code_and_message() {
     let (engine, boot) = start().await;
-    for id in ["test::boom-legacy", "test::boom-new"] {
-        engine.iii.register_function(
-            id.to_string(),
-            RegisterFunction::new_async(|_req: HttpRequest| async move {
-                Err::<Value, Error>(Error::Remote {
-                    code: "CUSTOM_BOOM".to_string(),
-                    message: "backend exploded".to_string(),
-                    stacktrace: None,
-                })
-            }),
-        );
-    }
-    bind_trigger(
-        &engine,
-        "test::boom-legacy",
-        json!({"api_path": "/legacy/boom", "http_method": "GET"}),
+    engine.iii.register_function(
+        "test::boom".to_string(),
+        RegisterFunction::new_async(|_req: HttpRequest| async move {
+            Err::<Value, Error>(Error::Remote {
+                code: "CUSTOM_BOOM".to_string(),
+                message: "backend exploded".to_string(),
+                stacktrace: None,
+            })
+        }),
     );
-    common::wait_for_route(&boot.routes, "GET", "/legacy/boom").await;
     assert!(observe(
         &engine,
         "obs-boom",
-        "test::boom-new",
+        "test::boom",
         json!({"method": "GET", "path": "/new/boom"}),
         json!({}),
     )
     .await
     .is_none());
 
-    for path in ["/legacy/boom", "/new/boom"] {
-        let resp = client()
-            .get(format!("http://{}{path}", boot.local_addr))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), 500, "{path}");
-        let body: Value = resp.json().await.unwrap();
-        assert_eq!(body["error"]["code"], "CUSTOM_BOOM", "{path}");
-        assert_eq!(body["error"]["message"], "backend exploded", "{path}");
-    }
+    let resp = client()
+        .get(format!("http://{}/new/boom", boot.local_addr))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 500);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "CUSTOM_BOOM");
+    assert_eq!(body["error"]["message"], "backend exploded");
 
     boot.shutdown().await;
     engine.shutdown().await;
@@ -458,22 +417,24 @@ async fn invalid_args_are_rejected_and_add_no_route() {
 }
 
 #[tokio::test]
-async fn a_route_shape_belongs_to_whichever_binding_claimed_it_first() {
+async fn a_route_shape_belongs_to_the_observer_that_claimed_it_first() {
     let (engine, boot) = start().await;
-    let legacy = register_echo(&engine, "test::dup-legacy");
-    let new = register_echo(&engine, "test::dup-new");
+    let first = register_echo(&engine, "test::dup-first");
+    let second = register_echo(&engine, "test::dup-second");
 
-    // A trigger binding first: a later observer of the same shape is rejected.
-    bind_trigger(
+    assert!(observe(
         &engine,
-        "test::dup-legacy",
-        json!({"api_path": "/dup/:a", "http_method": "GET"}),
-    );
-    common::wait_for_route(&boot.routes, "GET", "/dup/1").await;
+        "obs-dup-first",
+        "test::dup-first",
+        json!({"method": "GET", "path": "/dup/:a"}),
+        json!({}),
+    )
+    .await
+    .is_none());
     let rejection = observe(
         &engine,
-        "obs-dup",
-        "test::dup-new",
+        "obs-dup-second",
+        "test::dup-second",
         json!({"method": "GET", "path": "/dup/{b}"}),
         json!({}),
     )
@@ -484,45 +445,27 @@ async fn a_route_shape_belongs_to_whichever_binding_claimed_it_first() {
         .as_str()
         .unwrap()
         .contains("conflicts with already-registered route 'GET /dup/:a'"));
-
-    // An observer first: a later trigger binding of the same shape fails.
-    assert!(observe(
-        &engine,
-        "obs-first",
-        "test::dup-new",
-        json!({"method": "POST", "path": "/dup2"}),
-        json!({}),
-    )
-    .await
-    .is_none());
-    bind_trigger(
-        &engine,
-        "test::dup-legacy",
-        json!({"api_path": "/dup2", "http_method": "POST"}),
-    );
-    common::settle().await;
     assert_eq!(
         boot.routes
             .read()
             .await
-            .match_route("POST", "/dup2")
+            .match_route("GET", "/dup/1")
             .unwrap()
             .0
             .id(),
-        "obs-first"
+        "obs-dup-first"
     );
 
-    let http = client();
-    http.get(format!("http://{}/dup/1", boot.local_addr))
+    let resp = client()
+        .get(format!("http://{}/dup/1", boot.local_addr))
         .send()
         .await
         .unwrap();
-    http.post(format!("http://{}/dup2", boot.local_addr))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(legacy.load(Ordering::SeqCst), 1);
-    assert_eq!(new.load(Ordering::SeqCst), 1);
+    assert_eq!(resp.status(), 201);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["path_params"]["a"], "1");
+    assert_eq!(first.load(Ordering::SeqCst), 1);
+    assert_eq!(second.load(Ordering::SeqCst), 0);
 
     boot.shutdown().await;
     engine.shutdown().await;
@@ -549,7 +492,7 @@ async fn removing_an_observer_removes_its_route() {
     assert_eq!(client().get(&url).send().await.unwrap().status(), 404);
     assert!(!boot.on_request.is_observed());
 
-    // The path is free again, for either kind of binding.
+    // The path is free again.
     assert!(observe(
         &engine,
         "obs-back",
@@ -609,21 +552,30 @@ async fn the_restricted_listener_serves_only_public_webhook_observers() {
 }
 
 #[tokio::test]
-async fn invoking_on_request_directly_is_forbidden() {
+async fn on_request_registers_as_a_private_event_source_with_route_args() {
     let (engine, boot) = start().await;
-    let result = engine
-        .iii
-        .trigger(TriggerRequest {
-            function_id: ON_REQUEST_FN.to_string(),
-            payload: json!({"method": "GET", "path": "/new/ping"}),
-            action: None,
-            timeout_ms: Some(5000),
-        })
-        .await;
-    match result {
-        Err(Error::Remote { code, .. }) => assert_eq!(code, "FORBIDDEN"),
-        other => panic!("expected FORBIDDEN, got {other:?}"),
-    }
+    // Registered once the engine advertised observe.v2.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while engine.registration(ON_REQUEST_FN).is_none() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("registerfunction for http::on-request");
+    let frame = engine.registration(ON_REQUEST_FN).unwrap();
+    assert_eq!(frame["private"], true);
+    let mut required: Vec<&str> = frame["args_format"]["required"]
+        .as_array()
+        .expect("args_format")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    required.sort_unstable();
+    assert_eq!(required, ["method", "path"]);
+    // Observers observe the request: the handler returns its input.
+    assert_eq!(frame["request_format"], frame["response_format"]);
+    assert!(frame["request_format"]["properties"]["path_params"].is_object());
+    assert_eq!(engine.on_request_registrations(), 1);
 
     boot.shutdown().await;
     engine.shutdown().await;

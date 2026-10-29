@@ -1,20 +1,16 @@
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions};
 
-use iii_cron::config::CronConfig;
-use iii_cron::configuration;
-
 #[derive(Parser, Debug)]
 #[command(name = "cron", about = "Cron scheduler worker for iii.")]
 struct Cli {
-    /// Optional seed config.yaml. This seeds the configuration entry only when
-    /// nothing is stored yet; thereafter the configuration worker is the
-    /// authoritative source and `--config` is ignored for the stored value.
-    #[arg(long)]
+    /// The engine passes a worker's `config:` block as `--config <file>`. The
+    /// cron worker has no settings and does not read the file.
+    #[arg(long, hide = true)]
     config: Option<String>,
     #[arg(long, env = "III_URL", default_value = "ws://127.0.0.1:49134")]
     url: String,
@@ -48,23 +44,9 @@ async fn main() -> Result<()> {
         );
         return Ok(());
     }
-
-    let seed: Option<CronConfig> = match cli.config.as_deref() {
-        Some(path) => match std::fs::read_to_string(path)
-            .map_err(|e| e.to_string())
-            .and_then(|s| serde_yaml::from_str::<CronConfig>(&s).map_err(|e| e.to_string()))
-        {
-            Ok(c) => {
-                tracing::info!(path = %path, "loaded seed config");
-                Some(c.normalized())
-            }
-            Err(e) => {
-                tracing::warn!(path = %path, error = %e, "failed to load --config seed; continuing without seed");
-                None
-            }
-        },
-        None => None,
-    };
+    if let Some(path) = cli.config.as_deref() {
+        tracing::info!(path = %path, "the cron worker has no settings; --config is not read");
+    }
 
     let iii = Arc::new(register_worker(
         &cli.url,
@@ -74,21 +56,8 @@ async fn main() -> Result<()> {
         },
     ));
 
-    configuration::register_config(&iii, seed.as_ref())
-        .await
-        .map_err(anyhow::Error::msg)
-        .context("registering cron configuration schema")?;
-    let config = configuration::fetch_config(&iii)
-        .await
-        .map_err(anyhow::Error::msg)
-        .context("loading cron configuration")?;
-
-    let boot = iii_cron::boot::start(iii.clone(), config).await?;
+    let boot = iii_cron::boot::start(iii.clone());
     tracing::info!("iii-cron ready");
-
-    configuration::register_config_trigger(&iii, boot.parts())
-        .map_err(anyhow::Error::msg)
-        .context("binding configuration trigger")?;
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("iii-cron shutting down");
