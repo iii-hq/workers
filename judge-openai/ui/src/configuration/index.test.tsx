@@ -123,13 +123,13 @@ const catalog = {
   models: [{ name: 'gpt-6-luna', description: 'OpenAI Decisions (beta)', release_date: '2026-09-14' }],
 }
 const emptyCatalog = { status: 'ok', models: [] }
-type Engine = Pick<ExtensionIii, 'trigger'>
+type Engine = Pick<ExtensionIii, 'call'>
 const engine = (reply: unknown = catalog) => {
-  const trigger = vi.fn(async (_id: string, _payload?: Record<string, unknown>, _options?: { timeoutMs?: number }) => {
+  const call = vi.fn(async (_id: string, _payload?: Record<string, unknown>, _options?: { timeoutMs?: number }) => {
     if (reply instanceof Error) throw reply
     return reply
   })
-  return { trigger } as unknown as Engine & { trigger: typeof trigger }
+  return { call } as unknown as Engine & { call: typeof call }
 }
 
 // Effects never run here, so the catalog stays in its "checking" state.
@@ -311,7 +311,7 @@ describe('OpenAiConfigForm', () => {
 describe('OpenAiConfigForm catalog', () => {
   it('lists the catalog the worker answers, keeps the stored model selectable, and reports the key as accepted', async () => {
     const { container, iii } = await mount({ model: 'gpt-6-luna-2026-10-01' })
-    expect(iii.trigger).toHaveBeenCalledWith(
+    expect(iii.call).toHaveBeenCalledWith(
       'judge-openai::models::list',
       { timeout_ms: 15_000 },
       { timeoutMs: 20_000 },
@@ -372,13 +372,13 @@ describe('OpenAiConfigForm catalog', () => {
     expect(alert.textContent).toContain('Could not list models')
     expect(container.querySelector<HTMLSelectElement>('select[name="model"]')!.value).toBe('gpt-6-luna-2026-10-01')
     await act(async () => alert.querySelector('button')!.click())
-    expect(iii.trigger).toHaveBeenCalledTimes(2)
+    expect(iii.call).toHaveBeenCalledTimes(2)
   })
 
   it('checks again on retry instead of reporting the model as not visible', async () => {
     const iii = engine({ status: 'error', code: 'http' })
     const { container } = await mount({}, iii)
-    iii.trigger.mockImplementation(() => new Promise<never>(() => {}))
+    iii.call.mockImplementation(() => new Promise<never>(() => {}))
     const alert = container.querySelector('[role="alert"][data-variant="warn"]')!
     await act(async () => alert.querySelector('button')!.click())
     expect(container.querySelector('[data-chip="warning"]')).toBeNull()
@@ -389,29 +389,32 @@ describe('OpenAiConfigForm catalog', () => {
     vi.useFakeTimers()
     try {
       const handlers = new Map<string, (event: { id?: unknown }) => void>()
-      const registerTrigger = vi.fn(() => vi.fn())
+      const observe = vi.fn(() => vi.fn())
       const iii = Object.assign(engine({ status: 'error', code: 'missing_key' }), {
         browserId: 'b1',
-        registerTrigger,
+        observe,
         on: (id: string, handler: (event: { id?: unknown }) => void) => {
           handlers.set(id, handler)
           return () => handlers.delete(id)
         },
       })
       const { container } = await mount({}, iii)
-      expect(registerTrigger).toHaveBeenCalledWith(expect.objectContaining({ type: 'configuration', config: {} }))
+      expect(observe).toHaveBeenCalledWith(
+        { function_id: 'configuration::on-updated', filters: { 'input.id': { $eq: 'judge-openai' } } },
+        expect.stringMatching(/^iii::judge-openai-ui::configuration-\d+::b1$/),
+      )
       const [notify] = handlers.values()
-      iii.trigger.mockResolvedValue(catalog)
+      iii.call.mockResolvedValue(catalog)
       await act(async () => {
         notify({ id: 'other-entry' })
         await vi.runAllTimersAsync()
       })
-      expect(iii.trigger).toHaveBeenCalledTimes(1)
+      expect(iii.call).toHaveBeenCalledTimes(1)
       await act(async () => {
         notify({ id: 'judge-openai' })
         await vi.runAllTimersAsync()
       })
-      expect(iii.trigger).toHaveBeenCalledTimes(2)
+      expect(iii.call).toHaveBeenCalledTimes(2)
       expect(container.querySelector('[data-chip="success"]')?.textContent).toBe('Key accepted · 1 models')
     } finally {
       vi.useRealTimers()
