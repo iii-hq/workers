@@ -29,6 +29,7 @@ use iii_sdk::{
     RegisterTriggerType,
 };
 use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::sync::Mutex;
 
@@ -236,10 +237,21 @@ pub fn forbidden(function_id: &str) -> Error {
     }
 }
 
-/// The handler of a `sentinel::on-*` function: refuses any input with
-/// [`forbidden`], before and regardless of its shape.
-pub fn refuse_invocation(function_id: &str, _input: Value) -> Result<(), Error> {
+/// The body of a `sentinel::on-*` function: refuses every event handed to
+/// it with [`forbidden`]. Its parameter is the event its observers receive,
+/// so the published request schema documents the delivered shape (an input
+/// that does not even parse as that event is refused by the SDK with a
+/// deserialization error before reaching here).
+pub fn refuse_invocation<Event>(function_id: &str, _event: Event) -> Result<(), Error> {
     Err(forbidden(function_id))
+}
+
+/// The handler registered for a `sentinel::on-*` function: typed on the
+/// delivered `Event` (request schema) and `()` (response schema).
+pub fn observable_handler<Event>(
+    function_id: &'static str,
+) -> impl Fn(Event) -> Result<(), Error> + Send + Sync + 'static {
+    move |event: Event| refuse_invocation(function_id, event)
 }
 
 /// One observable function's wire surface.
@@ -280,15 +292,20 @@ pub fn observable_catalog() -> Vec<ObservableSpec> {
 }
 
 /// Registers one owner-delivered `sentinel::on-*` function whose observers
-/// share `table` with the trigger type next to it. On an engine without
-/// observe it registers as a plain function and its hooks never run.
-fn register_observable(iii: &IIIClient, spec: ObservableSpec, table: Table) {
+/// share `table` with the trigger type next to it. Its request schema
+/// (derived from the handler's `Event` parameter, equal to
+/// `spec.event_schema`) documents the event its observers receive. On an
+/// engine without observe it registers as a plain function and its hooks
+/// never run.
+fn register_observable<Event>(iii: &IIIClient, spec: ObservableSpec, table: Table)
+where
+    Event: DeserializeOwned + JsonSchema + Send + 'static,
+{
     let function_id = spec.function_id;
     iii.register_function(
         function_id,
-        RegisterFunction::new(move |input: Value| refuse_invocation(function_id, input))
+        RegisterFunction::new(observable_handler::<Event>(function_id))
             .description(spec.description)
-            .request_format(spec.event_schema)
             .observe(
                 Observe::owner()
                     .args_format_value(spec.args_schema)
@@ -325,12 +342,14 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>, subscribers: &Subscribers) {
         .call_request_format::<Value>(),
     );
 
-    let tables = [
-        subscribers.groups.clone(),
-        subscribers.investigations.clone(),
-    ];
-    for (spec, table) in observable_catalog().into_iter().zip(tables) {
-        register_observable(iii, spec, table);
+    let mut catalog = observable_catalog().into_iter();
+    if let (Some(group), Some(investigation)) = (catalog.next(), catalog.next()) {
+        register_observable::<GroupChangedEventV1>(iii, group, subscribers.groups.clone());
+        register_observable::<InvestigationChangedEventV1>(
+            iii,
+            investigation,
+            subscribers.investigations.clone(),
+        );
     }
 }
 
@@ -643,24 +662,38 @@ mod tests {
         }
     }
 
+    fn assert_forbidden(function_id: &str, result: Result<(), Error>) {
+        match result {
+            Err(Error::Remote { code, message, .. }) => {
+                assert_eq!(code, observe_codes::FORBIDDEN);
+                assert_eq!(code, "FORBIDDEN");
+                assert!(message.contains(function_id), "{message}");
+            }
+            other => panic!("expected FORBIDDEN, got {other:?}"),
+        }
+    }
+
     #[test]
     fn each_on_function_refuses_direct_invocation() {
-        for function_id in [ON_GROUP_CHANGED, ON_INVESTIGATION_CHANGED] {
-            for input in [
-                Value::Null,
-                json!({}),
-                json!({ "group_id": "grp_1", "op": "status" }),
-            ] {
-                match refuse_invocation(function_id, input) {
-                    Err(Error::Remote { code, message, .. }) => {
-                        assert_eq!(code, observe_codes::FORBIDDEN);
-                        assert_eq!(code, "FORBIDDEN");
-                        assert!(message.contains(function_id), "{message}");
-                    }
-                    other => panic!("expected FORBIDDEN, got {other:?}"),
-                }
-            }
+        let group = observable_handler::<GroupChangedEventV1>(ON_GROUP_CHANGED);
+        for op in [
+            GroupChangedOpV1::Created,
+            GroupChangedOpV1::Occurrence,
+            GroupChangedOpV1::Status,
+        ] {
+            assert_forbidden(ON_GROUP_CHANGED, group(event("grp_1", op)));
         }
+        let investigation =
+            observable_handler::<InvestigationChangedEventV1>(ON_INVESTIGATION_CHANGED);
+        let changed = InvestigationChangedEventV1 {
+            op: crate::InvestigationChangedOpV1::Created,
+            investigation_id: "inv_1".into(),
+            group_id: "grp_1".into(),
+            session_id: "s_1".into(),
+            status: crate::InvestigationStatusV1::Running,
+            error: None,
+        };
+        assert_forbidden(ON_INVESTIGATION_CHANGED, investigation(changed));
     }
 
     #[test]
