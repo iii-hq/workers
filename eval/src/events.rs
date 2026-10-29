@@ -267,18 +267,12 @@ pub fn forbidden() -> Error {
     }
 }
 
-/// The handler of `eval::on-completed`: refuses any input with
-/// [`forbidden`], before and regardless of its shape.
-pub fn refuse_invocation(_input: Value) -> Result<(), Error> {
+/// The handler of `eval::on-completed`: refuses every invocation with
+/// [`forbidden`]. Its input type is the [`CompletedEventV1`] observers
+/// receive, so the function publishes the delivered event as its typed
+/// request schema (and `()` as its response).
+pub fn refuse_invocation(_event: CompletedEventV1) -> Result<(), Error> {
     Err(forbidden())
-}
-
-/// JSON Schema of `T`, generated as iii-sdk does at registration.
-fn schema_value<T: JsonSchema>() -> Value {
-    let schema = schemars::r#gen::SchemaSettings::draft07()
-        .into_generator()
-        .into_root_schema_for::<T>();
-    serde_json::to_value(schema).unwrap_or(Value::Null)
 }
 
 #[derive(Clone)]
@@ -311,7 +305,6 @@ impl EvalEvents {
             ON_COMPLETED,
             RegisterFunction::new(refuse_invocation)
                 .description(ON_COMPLETED_DESCRIPTION)
-                .request_format(schema_value::<CompletedEventV1>())
                 .observe(
                     Observe::owner()
                         .args_format::<CompletedBindingConfigV1>()
@@ -435,13 +428,60 @@ mod tests {
 
     #[test]
     fn on_completed_refuses_direct_invocation() {
-        match refuse_invocation(json!({ "evaluation_id": "ev-1", "status": "completed" })) {
+        let event = CompletedEventV1 {
+            evaluation_id: "ev-1".into(),
+            status: EvalStatusV1::Completed,
+            timestamp: 1_700_000_000_000,
+        };
+        match refuse_invocation(event) {
             Err(Error::Remote { code, message, .. }) => {
                 assert_eq!(code, observe_codes::FORBIDDEN);
                 assert!(message.contains(ON_COMPLETED));
             }
             other => panic!("expected FORBIDDEN, got {other:?}"),
         }
+    }
+
+    /// Schemas iii-sdk derives from a handler's input and output types.
+    fn handler_schemas<I: JsonSchema, O: JsonSchema>(
+        _handler: fn(I) -> Result<O, Error>,
+    ) -> (Value, Value) {
+        (
+            serde_json::to_value(schemars::schema_for!(I)).unwrap(),
+            serde_json::to_value(schemars::schema_for!(O)).unwrap(),
+        )
+    }
+
+    fn is_typed(schema: &Value) -> bool {
+        [
+            "type",
+            "properties",
+            "$ref",
+            "allOf",
+            "anyOf",
+            "oneOf",
+            "enum",
+        ]
+        .iter()
+        .any(|key| schema.get(key).is_some())
+    }
+
+    #[test]
+    fn on_completed_handler_publishes_typed_schemas() {
+        let (request, response) = handler_schemas(refuse_invocation);
+        assert!(
+            is_typed(&request),
+            "{ON_COMPLETED} request untyped: {request}"
+        );
+        assert!(
+            is_typed(&response),
+            "{ON_COMPLETED} response untyped: {response}"
+        );
+        assert_eq!(request["title"], "CompletedEventV1");
+        assert_eq!(
+            request["required"],
+            json!(["evaluation_id", "status", "timestamp"])
+        );
     }
 
     #[test]
