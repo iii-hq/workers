@@ -1,90 +1,36 @@
-//! `shell::turns::changed` — the session change history moved.
+//! `shell::turns::on-changed` — the session change history moved.
 //!
 //! The IDE's Timeline lists a session's turns with `shell::turns::list`. It
 //! used to ask again every 1.5 s while a turn ran, since the record grows
-//! with every write the turn makes. Now the turn log says so instead: every
-//! time a session's record is stored, bindings on that session are woken
-//! with `{ session_id }`, at most once per `COALESCE_MS` per session (an
-//! agent writing four hundred files is one wake per window, not four
-//! hundred), and the subscriber reads the list once.
+//! with every write the turn makes. The turn log calls this function each
+//! time a session's record is stored, with `{ session_id }`, at most once per
+//! `COALESCE_MS` per session (an agent writing four hundred files is one
+//! call per window, not four hundred), and the consumer reads the list once.
 //!
-//! Delivery mirrors [`crate::job_events`]: `Void` routing, each fire on its
-//! own task, the binding's `metadata` and `namespace` passed through.
+//! The function takes no args: a consumer selects its session with a filter
+//! on `input.session_id`. Nothing is scheduled while nobody observes it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
+use iii_sdk::{CallAction, CallRequest, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-/// The trigger type a surface binds to follow a session's change history.
-pub const TURNS_CHANGED: &str = "shell::turns::changed";
+/// The function a surface observes to follow a session's change history.
+pub const ON_TURNS_CHANGED_FN: &str = "shell::turns::on-changed";
 
-/// Folds a burst of record writes into one wake.
+/// Folds a burst of record writes into one call.
 const COALESCE_MS: u64 = 200;
 
-/// Bind with `{ session_id }` for one session; omit it for every session.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-pub struct TurnsChangedConfig {
-    /// The top-level session to follow. A sub-agent's changes are recorded
-    /// under the session that spawned it, so they wake this binding too.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
-}
-
 /// What changed: a session's record. Ask `shell::turns::list` for it.
-#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct TurnsChangedEvent {
+    /// The top-level session whose record was stored. A sub-agent's changes
+    /// are recorded under the session that spawned it.
     pub session_id: String,
-}
-
-#[derive(Debug, Clone)]
-struct Subscriber {
-    function_id: String,
-    metadata: Option<Value>,
-    namespace: Option<String>,
-    session_id: Option<String>,
-}
-
-impl Subscriber {
-    fn from_config(config: &TriggerConfig) -> Result<Self, Error> {
-        let filter: TurnsChangedConfig = serde_json::from_value(config.config.clone())
-            .map_err(|e| Error::Handler(format!("invalid {TURNS_CHANGED} config: {e}")))?;
-        Ok(Self {
-            function_id: config.function_id.clone(),
-            metadata: config.metadata.clone(),
-            namespace: config.namespace.clone(),
-            session_id: filter.session_id,
-        })
-    }
-
-    fn wants(&self, session_id: &str) -> bool {
-        self.session_id.as_deref().is_none_or(|id| id == session_id)
-    }
-
-    fn request(&self, payload: Value) -> iii_sdk::protocol::TriggerRequestWithMetadata {
-        let mut request: iii_sdk::protocol::TriggerRequestWithMetadata = TriggerRequest {
-            function_id: self.function_id.clone(),
-            payload,
-            action: Some(TriggerAction::Void),
-            timeout_ms: None,
-        }
-        .into();
-        if let Some(metadata) = &self.metadata {
-            request = request.metadata(metadata.clone());
-        }
-        if let Some(namespace) = &self.namespace {
-            request = request.namespace(namespace.clone());
-        }
-        request
-    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -93,34 +39,44 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// The bindings, and the sessions with a wake already scheduled.
+/// The sessions with a call already scheduled.
 pub struct TurnsChanged {
-    /// `None` in unit tests: fires are recorded, not sent.
+    /// `None` in unit tests: calls are recorded, not sent.
     iii: Option<IIIClient>,
-    subscribers: Mutex<HashMap<String, Subscriber>>,
     pending: Mutex<HashSet<String>>,
     #[cfg(test)]
-    fired: Mutex<Vec<(String, TurnsChangedEvent)>>,
+    observed: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    fired: Mutex<Vec<TurnsChangedEvent>>,
 }
 
 impl TurnsChanged {
     pub fn new(iii: Option<IIIClient>) -> Arc<Self> {
         Arc::new(Self {
             iii,
-            subscribers: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashSet::new()),
+            #[cfg(test)]
+            observed: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             fired: Mutex::new(Vec::new()),
         })
     }
 
-    /// The record of `session_id` was stored. Schedules one wake for the
+    /// Whether anyone observes the function: one atomic load.
+    fn is_observed(&self) -> bool {
+        #[cfg(test)]
+        if self.iii.is_none() {
+            return self.observed.load(std::sync::atomic::Ordering::Relaxed);
+        }
+        self.iii
+            .as_ref()
+            .is_some_and(|iii| iii.is_observed(ON_TURNS_CHANGED_FN))
+    }
+
+    /// The record of `session_id` was stored. Schedules one call for the
     /// session unless one is already due; never blocks the writer.
     pub fn notify(self: &Arc<Self>, session_id: &str) {
-        if !lock(&self.subscribers)
-            .values()
-            .any(|s| s.wants(session_id))
-        {
+        if !self.is_observed() {
             return;
         }
         if !lock(&self.pending).insert(session_id.to_string()) {
@@ -130,197 +86,112 @@ impl TurnsChanged {
         let session_id = session_id.to_string();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(COALESCE_MS)).await;
-            // Cleared before the read: a write landing meanwhile schedules
-            // the next wake, so none is lost.
+            // Cleared before the call: a write landing meanwhile schedules
+            // the next one, so none is lost.
             lock(&this.pending).remove(&session_id);
             this.fire(&session_id);
         });
     }
 
     fn fire(&self, session_id: &str) {
-        let targets: Vec<Subscriber> = lock(&self.subscribers)
-            .values()
-            .filter(|s| s.wants(session_id))
-            .cloned()
-            .collect();
+        if !self.is_observed() {
+            return;
+        }
         let event = TurnsChangedEvent {
             session_id: session_id.to_string(),
         };
         #[cfg(test)]
-        for target in &targets {
-            lock(&self.fired).push((target.function_id.clone(), event.clone()));
-        }
+        lock(&self.fired).push(event.clone());
         let Some(iii) = &self.iii else {
             return;
         };
         let Ok(payload) = serde_json::to_value(&event) else {
             return;
         };
-        for target in targets {
-            let iii = iii.clone();
-            let request = target.request(payload.clone());
-            let function_id = target.function_id;
-            tokio::spawn(async move {
-                if let Err(e) = iii.trigger(request).await {
-                    tracing::warn!(function_id = %function_id, error = %e, "{TURNS_CHANGED} fan-out failed");
-                }
-            });
-        }
+        let iii = iii.clone();
+        let request = CallRequest {
+            function_id: ON_TURNS_CHANGED_FN.to_string(),
+            payload,
+            action: Some(CallAction::Void),
+            timeout_ms: None,
+        };
+        tokio::spawn(async move {
+            if let Err(e) = iii.call(request).await {
+                tracing::warn!(error = %e, "{ON_TURNS_CHANGED_FN} call failed");
+            }
+        });
     }
 }
 
 #[cfg(test)]
 impl TurnsChanged {
-    /// Bind `probe::<id>` as the trigger handler would.
-    pub(crate) fn bind_for_test(&self, id: &str, session_id: Option<&str>) {
-        lock(&self.subscribers).insert(
-            id.to_string(),
-            Subscriber {
-                function_id: format!("probe::{id}"),
-                metadata: None,
-                namespace: None,
-                session_id: session_id.map(str::to_string),
-            },
-        );
+    /// Stand in for an observer of the function.
+    pub(crate) fn observe_for_test(&self) {
+        self.observed
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// The sessions woken so far, in order.
+    /// The sessions called so far, in order.
     pub(crate) fn fired_sessions(&self) -> Vec<String> {
         lock(&self.fired)
             .iter()
-            .map(|(_, event)| event.session_id.clone())
+            .map(|event| event.session_id.clone())
             .collect()
     }
 }
 
-struct TurnsChangedTriggerHandler(Arc<TurnsChanged>);
-
-#[async_trait]
-impl TriggerHandler for TurnsChangedTriggerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        let subscriber = Subscriber::from_config(&config)?;
-        tracing::info!(
-            trigger_type = TURNS_CHANGED,
-            id = %config.id,
-            session_id = ?subscriber.session_id,
-            "turn history watch registered"
-        );
-        lock(&self.0.subscribers).insert(config.id, subscriber);
-        Ok(())
-    }
-
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        lock(&self.0.subscribers).remove(&config.id);
-        Ok(())
-    }
-}
-
-/// Register the trigger type; the returned feed is what the turn log
-/// notifies on every stored record.
-pub fn register_turns_changed_trigger(iii: &IIIClient) -> Arc<TurnsChanged> {
-    let feed = TurnsChanged::new(Some(iii.clone()));
-    let _handle = iii.register_trigger_type(
-        RegisterTriggerType::new(
-            TURNS_CHANGED,
-            "Fires when a session's change history (shell::turns::list) changes: a turn \
-             opened or closed, a file change recorded, a snapshot taken. Bind with config: \
-             { session_id } for one top-level session, or omit it for every session. At \
-             most one event per session per ~200 ms, carrying { session_id }; read the \
-             turns with shell::turns::list.",
-            TurnsChangedTriggerHandler(feed.clone()),
-        )
-        .trigger_request_format::<TurnsChangedConfig>()
-        .call_request_format::<TurnsChangedEvent>(),
+/// Register `shell::turns::on-changed`; the returned feed is what the turn
+/// log notifies on every stored record.
+pub fn register_turns_changed(iii: &IIIClient) -> Arc<TurnsChanged> {
+    iii.register_function(
+        ON_TURNS_CHANGED_FN,
+        RegisterFunction::new(|event: TurnsChangedEvent| Ok::<_, Error>(event))
+            .description(
+                "Called when a session's change history (shell::turns::list) changes: a turn \
+                 opened or closed, a file change recorded, a snapshot taken. Observers \
+                 receive { session_id }, at most once per session per ~200 ms; filter on \
+                 input.session_id for one top-level session, and read the turns with \
+                 shell::turns::list.",
+            )
+            .private(),
     );
-    feed
+    TurnsChanged::new(Some(iii.clone()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-
-    fn binding(id: &str, session_id: Option<&str>) -> TriggerConfig {
-        TriggerConfig {
-            id: id.into(),
-            function_id: format!("probe::{id}"),
-            config: session_id.map_or(json!({}), |s| json!({ "session_id": s })),
-            metadata: Some(json!({ "__binding": id })),
-            namespace: None,
-        }
-    }
-
-    fn fired(feed: &TurnsChanged) -> Vec<(String, String)> {
-        let mut out: Vec<(String, String)> = lock(&feed.fired)
-            .iter()
-            .map(|(f, e)| (f.clone(), e.session_id.clone()))
-            .collect();
-        out.sort();
-        out
-    }
 
     #[tokio::test(start_paused = true)]
-    async fn a_burst_of_writes_is_one_wake_per_session_and_binding() {
+    async fn a_burst_of_writes_is_one_call_per_session() {
         let feed = TurnsChanged::new(None);
-        let handler = TurnsChangedTriggerHandler(feed.clone());
-        handler
-            .register_trigger(binding("mine", Some("s1")))
-            .await
-            .unwrap();
-        handler
-            .register_trigger(binding("all", None))
-            .await
-            .unwrap();
+        feed.observe_for_test();
         for _ in 0..50 {
             feed.notify("s1");
         }
         feed.notify("s2");
         tokio::time::sleep(Duration::from_millis(COALESCE_MS + 50)).await;
-        assert_eq!(
-            fired(&feed),
-            [
-                ("probe::all".to_string(), "s1".to_string()),
-                ("probe::all".to_string(), "s2".to_string()),
-                ("probe::mine".to_string(), "s1".to_string()),
-            ]
-        );
-        // The next write after the window is a new wake.
+        let mut fired = feed.fired_sessions();
+        fired.sort();
+        assert_eq!(fired, ["s1", "s2"]);
+        // The next write after the window is a new call.
         feed.notify("s1");
         tokio::time::sleep(Duration::from_millis(COALESCE_MS + 50)).await;
-        assert_eq!(fired(&feed).len(), 5);
+        assert_eq!(feed.fired_sessions().len(), 3);
     }
 
     #[tokio::test(start_paused = true)]
-    async fn nothing_is_scheduled_without_a_binding_and_unbinding_stops_wakes() {
+    async fn nothing_is_scheduled_while_nobody_observes() {
         let feed = TurnsChanged::new(None);
         feed.notify("s1");
         assert!(lock(&feed.pending).is_empty());
-        let handler = TurnsChangedTriggerHandler(feed.clone());
-        handler
-            .register_trigger(binding("b", Some("s1")))
-            .await
-            .unwrap();
-        feed.notify("s2");
-        assert!(lock(&feed.pending).is_empty(), "another session's write");
-        handler
-            .unregister_trigger(binding("b", Some("s1")))
-            .await
-            .unwrap();
-        feed.notify("s1");
         tokio::time::sleep(Duration::from_millis(COALESCE_MS + 50)).await;
-        assert!(fired(&feed).is_empty());
+        assert!(feed.fired_sessions().is_empty());
     }
 
-    #[tokio::test]
-    async fn a_bad_config_is_refused() {
-        let handler = TurnsChangedTriggerHandler(TurnsChanged::new(None));
-        let err = handler
-            .register_trigger(TriggerConfig {
-                config: json!({ "session_id": 7 }),
-                ..binding("b", None)
-            })
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("invalid"), "{err}");
+    #[test]
+    fn the_event_is_the_session_id() {
+        let schema = serde_json::to_value(schemars::schema_for!(TurnsChangedEvent)).unwrap();
+        assert_eq!(schema["required"], serde_json::json!(["session_id"]));
     }
 }

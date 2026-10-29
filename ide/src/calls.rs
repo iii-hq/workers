@@ -1,23 +1,23 @@
-//! Shared `iii.trigger` indirection. Both `fs::sandbox::SandboxFsBackend`
-//! and `exec::sandbox::SandboxExecBackend` (landing in T6) consume
-//! `Arc<dyn TriggerFwd>` so unit tests can inject a stub. The production
-//! wiring is `IiiTriggerFwd` wrapping a real `iii_sdk::IIIClient`.
+//! Shared `iii.call` indirection. Both `fs::sandbox::SandboxFsBackend`
+//! and `exec::sandbox::SandboxExecBackend` consume `Arc<dyn CallFwd>` so
+//! unit tests can inject a stub. The production wiring is `IiiCallFwd`
+//! wrapping a real `iii_sdk::IIIClient`.
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use serde_json::Value;
 
 #[async_trait]
-pub trait TriggerFwd: Send + Sync {
-    async fn trigger(&self, function_id: &str, payload: Value) -> Result<Value, Error>;
+pub trait CallFwd: Send + Sync {
+    async fn call(&self, function_id: &str, payload: Value) -> Result<Value, Error>;
 }
 
-pub struct IiiTriggerFwd {
+pub struct IiiCallFwd {
     iii: iii_sdk::IIIClient,
 }
 
-impl IiiTriggerFwd {
+impl IiiCallFwd {
     pub fn new(iii: iii_sdk::IIIClient) -> Self {
         Self { iii }
     }
@@ -49,17 +49,17 @@ fn forward_namespace<'a>(function_id: &str, fs_namespace: &'a str) -> Option<&'a
 }
 
 #[async_trait]
-impl TriggerFwd for IiiTriggerFwd {
-    async fn trigger(&self, function_id: &str, payload: Value) -> Result<Value, Error> {
-        let request = TriggerRequest {
+impl CallFwd for IiiCallFwd {
+    async fn call(&self, function_id: &str, payload: Value) -> Result<Value, Error> {
+        let request = CallRequest {
             function_id: function_id.to_string(),
             payload,
             action: None,
             timeout_ms: None,
         };
         match forward_namespace(function_id, &SANDBOX_FS_NAMESPACE) {
-            Some(namespace) => self.iii.trigger(request.namespace(namespace)).await,
-            None => self.iii.trigger(request).await,
+            Some(namespace) => self.iii.call(request.namespace(namespace)).await,
+            None => self.iii.call(request).await,
         }
     }
 }
@@ -105,8 +105,8 @@ mod tests {
     }
 
     #[async_trait]
-    impl TriggerFwd for CountingFwd {
-        async fn trigger(&self, _fid: &str, _payload: Value) -> Result<Value, Error> {
+    impl CallFwd for CountingFwd {
+        async fn call(&self, _fid: &str, _payload: Value) -> Result<Value, Error> {
             *self.count.lock().unwrap() += 1;
             Ok(json!({"ok": true}))
         }
@@ -117,9 +117,9 @@ mod tests {
         let stub = Arc::new(CountingFwd {
             count: Mutex::new(0),
         });
-        let fwd: Arc<dyn TriggerFwd> = stub.clone();
-        fwd.trigger("x::y", json!({})).await.unwrap();
-        fwd.trigger("x::y", json!({})).await.unwrap();
+        let fwd: Arc<dyn CallFwd> = stub.clone();
+        fwd.call("x::y", json!({})).await.unwrap();
+        fwd.call("x::y", json!({})).await.unwrap();
         // Asserting the side effect the stub records is what makes this
         // a runtime test and not just a compile-time object-safety check.
         assert_eq!(*stub.count.lock().unwrap(), 2);

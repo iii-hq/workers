@@ -199,7 +199,7 @@ fn search_example_round_trips() {
 #[test]
 fn search_regex_example_round_trips() {
     let input: ide::code::functions::search::SearchInput = example_as("coder::search", 1);
-    assert_eq!(input.query, "registerTrigger|registerFunction");
+    assert_eq!(input.query, "observe|registerFunction");
     assert!(input.regex, "second example demonstrates regex: true");
     assert_eq!(input.path, "src");
     assert!(!input.search_paths);

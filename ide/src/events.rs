@@ -1,21 +1,25 @@
-//! `shell::changed` — a system-level workspace watch, owned by this worker.
+//! `shell::on-changed` — a system-level workspace watch, owned by this worker.
 //!
-//! A subscriber binds the trigger type with `config: { path }` and the
-//! worker puts an OS file watcher (FSEvents on macOS, inotify on Linux)
-//! on that directory tree. Every change fans out as one event — whoever
-//! made it: a harness agent calling `coder::*`, a `shell::exec` command's
-//! side effects, or an editor outside the engine entirely. No harness
-//! coupling, no polling.
+//! An observer passes `args: { path }` and the worker puts an OS file
+//! watcher (FSEvents on macOS, inotify on Linux) on that directory tree.
+//! Every change is one call of the function, whoever made it: a harness
+//! agent calling `coder::*`, a `shell::exec` command's side effects, or an
+//! editor outside the engine entirely. No harness coupling, no polling.
 //!
-//! One watcher per root (and `include_ignored`), shared by its bindings and
-//! torn down when the last unregisters (the console page binds per open
-//! pane; the binding is GC'd with the pane). Raw OS events storm, so each
-//! watcher coalesces per path in a short window before emitting. Emission
-//! is best-effort: a slow or absent subscriber must never delay anything.
+//! One watcher per root (and `include_ignored`), shared by its observers and
+//! torn down when the last is removed (the console page observes per open
+//! pane and disposes the observer with the pane). Raw OS events storm, so
+//! each watcher coalesces per path in a short window before calling.
+//! Calls are best-effort: a slow or absent target must never delay anything.
+//!
+//! The function's match hook files each observer under the key of its watch,
+//! `<root>|<include_ignored>`, and each call carries the key of the watch
+//! that produced it in its metadata, so an observer hears its own watch and
+//! no other.
 //!
 //! The watch is bounded (`DirWatch`): set up off the runtime, one
 //! non-recursive inotify watch per directory, `.git`, symlinks and — unless
-//! the binding sets `include_ignored` — gitignored trees left out. A root
+//! the observer sets `include_ignored` — gitignored trees left out. A root
 //! with more such directories than `CHANGED_WATCH_BUDGET` (or the host's
 //! share) is watched breadth-first up to it, never refused. On macOS one
 //! recursive FSEvents watch covers the root instead.
@@ -28,37 +32,62 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
+use iii_sdk::{
+    AddedHook, Call, CallAction, CallRequest, IIIClient, Keys, Match, ObserveRejection, Observer,
+    RegisterFunction, RemovedHook,
+};
 use notify::{RecursiveMode, Watcher};
 use schemars::JsonSchema;
-use serde::Serialize;
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::Sender;
 
 use crate::code::path::PathResolver;
 use crate::code::state::ResolverCell;
 
-/// The trigger type a surface binds to watch a directory change.
-pub const CHANGED: &str = "shell::changed";
+/// The function a surface observes to watch a directory change.
+pub const ON_CHANGED_FN: &str = "shell::on-changed";
 
-/// How long a watcher batches raw OS events before fanning out — long
-/// enough to fold an editor's write-rename dance into one event, short
-/// enough to read as live.
+/// The call metadata field naming the watch that produced a call.
+const WATCH_META: &str = "watch";
+
+/// `args.path` cannot be watched: outside the jail, denied, missing, or not
+/// a directory.
+pub const INVALID_PATH: &str = "INVALID_PATH";
+/// The OS watcher did not start.
+pub const WATCH_FAILED: &str = "WATCH_FAILED";
+
+/// How long a watcher batches raw OS events before calling — long enough
+/// to fold an editor's write-rename dance into one event, short enough to
+/// read as live.
 const COALESCE_MS: u64 = 200;
-/// Directories one `shell::changed` watch may hold, one inotify watch each,
-/// out of a per-user budget shared with editors and every other watcher:
-/// a sixteenth of the 524288 many distributions set, and `host_budget` cuts
-/// it to a sixteenth of a smaller limit. A tree with more is watched
-/// breadth-first from the root up to it (VS Code and JetBrains degrade the
-/// same way), and the log says so once.
+/// Directories one `shell::on-changed` watch may hold, one inotify watch
+/// each, out of a per-user budget shared with editors and every other
+/// watcher: a sixteenth of the 524288 many distributions set, and
+/// `host_budget` cuts it to a sixteenth of a smaller limit. A tree with more
+/// is watched breadth-first from the root up to it (VS Code and JetBrains
+/// degrade the same way), and the log says so once.
 const CHANGED_WATCH_BUDGET: usize = 32_768;
 
-/// What changed. Lean by design: a subscriber that wants content asks
+/// An observer's args: the directory to watch.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ChangedArgs {
+    /// The directory to watch, jail-checked like every `coder::*` path.
+    pub path: String,
+    /// Also deliver paths the root ignores (git-ignored, or the built-in
+    /// engine-owned set outside a repository) and watch inside ignored
+    /// trees. Off by default: an observer of a project root would otherwise
+    /// hear the engine's own `data/observability` and `data/session-manager`
+    /// writes, its own transcript. The workspace UI turns it on to count
+    /// them.
+    #[serde(default)]
+    pub include_ignored: bool,
+}
+
+/// What changed. Lean by design: a consumer that wants content asks
 /// `coder::read-file`; one that wants the diff asks git.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ChangedEvent {
     /// Path relative to `root`.
     pub path: String,
@@ -66,9 +95,8 @@ pub struct ChangedEvent {
     pub kind: String,
     /// The watched directory this event is relative to.
     pub root: String,
-    /// True when the path is a directory — a subscriber that opens
-    /// files must skip these. Deleted paths can't be probed and report
-    /// false.
+    /// True when the path is a directory — a consumer that opens files
+    /// must skip these. Deleted paths can't be probed and report false.
     pub dir: bool,
     /// True when git ignores the path under `root` — build output, a
     /// dependency tree, a worker's own store. A root that is not a
@@ -76,12 +104,25 @@ pub struct ChangedEvent {
     pub ignored: bool,
 }
 
-/// The bindings one watch serves: binding id → its function and delivery.
-type Subscribers = Arc<Mutex<HashMap<String, (String, Delivery)>>>;
+/// The match key of the watch on `root` with `include_ignored`.
+fn watch_key(root: &Path, include_ignored: bool) -> String {
+    format!("{}|{include_ignored}", root.display())
+}
 
-/// One watch, shared by every binding on its root and `include_ignored`.
+/// The key of the watch that made `call`, from its metadata.
+fn call_watch_key(call: &Call) -> Option<&str> {
+    call.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get(WATCH_META))
+        .and_then(Value::as_str)
+}
+
+/// The observers one watch serves, by id.
+type Members = Arc<Mutex<HashSet<String>>>;
+
+/// One watch, shared by every observer on its root and `include_ignored`.
 struct WatchEntry {
-    subscribers: Subscribers,
+    observers: Members,
     /// `Some(started)` once the setup is over.
     ready: tokio::sync::watch::Receiver<Option<bool>>,
     task: tokio::task::JoinHandle<()>,
@@ -93,11 +134,15 @@ impl Drop for WatchEntry {
     }
 }
 
-/// The `shell::changed` trigger type: the first binding on a root (and
-/// `include_ignored`) starts its watch, the last to unregister stops it.
-struct ChangedTriggerHandler {
+/// `shell::on-changed`'s hooks: an observer's first on a root (and
+/// `include_ignored`) starts its watch, the last to go stops it.
+#[derive(Clone)]
+struct ChangedSource {
     iii: IIIClient,
     watches: Arc<Mutex<HashMap<(PathBuf, bool), WatchEntry>>>,
+    /// The watch key of each accepted observer, by observer id: what the
+    /// match hook files it under.
+    keys: Arc<Mutex<HashMap<String, String>>>,
     /// The coder surface's path policy — a watch is a read of every
     /// filename under a tree, so it obeys the SAME jail and denylist as
     /// `coder::*`/`shell::fs::*` (hot-reload aware through the cell).
@@ -106,32 +151,33 @@ struct ChangedTriggerHandler {
     budget: usize,
 }
 
-/// The map is plain data: a panic elsewhere must not silently drop a
-/// registration (an entry's Drop aborts its pump) while we still return Ok.
+/// The maps are plain data: a panic elsewhere must not silently drop an
+/// observer (an entry's Drop aborts its pump) while we still accept it.
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Resolve and validate the watched directory out of a binding's config —
+/// Resolve and validate the watched directory of an observer's args —
 /// through the shared path policy: jail containment, operator denylist,
 /// canonicalization. Watching `/` or a denied tree fails exactly like
 /// reading it would.
-fn watch_root(config: &Value, resolver: &PathResolver) -> Result<PathBuf, Error> {
-    let Some(path) = config.get("path").and_then(Value::as_str) else {
-        return Err(Error::Handler(
-            "shell::changed needs config.path — the directory to watch".into(),
-        ));
-    };
-    let canon = resolver
-        .resolve(path)
-        .map_err(|e| Error::Handler(format!("shell::changed cannot watch {path}: {e}")))?;
+fn watch_root(path: &str, resolver: &PathResolver) -> Result<PathBuf, ObserveRejection> {
+    let canon = resolver.resolve(path).map_err(|e| {
+        ObserveRejection::new(
+            INVALID_PATH,
+            format!("{ON_CHANGED_FN} cannot watch {path}: {e}"),
+        )
+    })?;
     if !canon.is_dir() {
-        return Err(Error::Handler(format!(
-            "shell::changed config.path is not a directory: {}",
-            canon.display()
-        )));
+        return Err(ObserveRejection::new(
+            INVALID_PATH,
+            format!(
+                "{ON_CHANGED_FN} args.path is not a directory: {}",
+                canon.display()
+            ),
+        ));
     }
     Ok(canon)
 }
@@ -269,7 +315,7 @@ pub(crate) struct DirWatch {
     pub(crate) watched: HashSet<PathBuf>,
     /// How many directories `watched` may hold.
     budget: usize,
-    /// Gitignored trees are watched too (a binding's `include_ignored`).
+    /// Gitignored trees are watched too (an observer's `include_ignored`).
     all: bool,
     /// The budget ran out once, and the log said so.
     spent: bool,
@@ -559,74 +605,23 @@ fn rel_to(root: &Path, path: &Path) -> Option<String> {
     Some(s.into_owned())
 }
 
-/// How one binding's events reach its function: the registration's stored
-/// `metadata` and `namespace`, echoed on every fire exactly like the engine
-/// does for its own trigger types, plus whether ignored paths are delivered.
-///
-/// The metadata is not optional plumbing. The harness binds every agent wake
-/// as `harness::trigger::deliver` with `metadata: { "__binding": <id> }` and
-/// DROPS any fire that arrives without it. Delivering the bare payload made
-/// every `shell::changed` wake in a live run expire "unfired" while this
-/// worker logged 34 000 successful deliveries (MOT-4719).
-#[derive(Debug, Clone, Default)]
-struct Delivery {
-    metadata: Option<Value>,
-    namespace: Option<String>,
-    /// Deliver paths the root ignores (git-ignored, or the built-in
-    /// engine-owned set outside a repository). Off by default: a wake armed on
-    /// a project root would otherwise fire on the engine's own
-    /// `data/observability` and `data/session-manager` writes — the
-    /// subscriber's own transcript. The workspace UI opts in to count them.
-    include_ignored: bool,
-}
-
-impl Delivery {
-    fn from_config(config: &TriggerConfig) -> Self {
-        Self {
-            metadata: config.metadata.clone(),
-            namespace: config.namespace.clone(),
-            include_ignored: config
-                .config
-                .get("include_ignored")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-        }
-    }
-
-    /// The fire for one event: the bound function, the event, `Void` routing
-    /// (fire-and-forget), and the binding's metadata/namespace passed through.
-    fn request(
-        &self,
-        function_id: &str,
-        payload: Value,
-    ) -> iii_sdk::protocol::TriggerRequestWithMetadata {
-        let mut request: iii_sdk::protocol::TriggerRequestWithMetadata = TriggerRequest {
-            function_id: function_id.to_string(),
-            payload,
-            action: Some(TriggerAction::Void),
-            timeout_ms: None,
-        }
-        .into();
-        if let Some(metadata) = &self.metadata {
-            request = request.metadata(metadata.clone());
-        }
-        if let Some(namespace) = &self.namespace {
-            request = request.namespace(namespace.clone());
-        }
-        request
-    }
-}
-
-/// Consume raw watcher events, coalesce per path, fan out to each bound
-/// function. Owns the watcher: aborting this task tears the watch down.
+/// Consume raw watcher events, coalesce per path, and call the function once
+/// per change, carrying this watch's key. Owns the watcher: aborting this
+/// task tears the watch down.
 async fn pump(
     iii: IIIClient,
     root: PathBuf,
+    include_ignored: bool,
     mut watch: DirWatch,
     mut rx: tokio::sync::mpsc::Receiver<notify::Event>,
-    subscribers: Subscribers,
 ) {
     let root_str = root.to_string_lossy().into_owned();
+    let key = watch_key(&root, include_ignored);
+    let metadata = json!({ WATCH_META: key });
+    let probe = Call {
+        metadata: Some(metadata.clone()),
+        ..Call::default()
+    };
     loop {
         let Some(first) = rx.recv().await else {
             return; // channel closed — the watch is gone
@@ -674,6 +669,11 @@ async fn pump(
             return;
         };
         watch = grown;
+        // The watch lives as long as its observers; between the last going
+        // and the watch closing there is nobody to build events for.
+        if !iii.is_observed_for(ON_CHANGED_FN, &probe) {
+            continue;
+        }
         for rel in found
             .iter()
             .filter(|p| !is_own_temp(p))
@@ -683,14 +683,20 @@ async fn pump(
             batch.insert(rel, "created");
         }
         let ignored_paths = ignored_under(&root, batch.keys()).await;
-        let bound: Vec<(String, Delivery)> = lock(&subscribers).values().cloned().collect();
         for (path, kind) in batch.drain() {
             let on_disk = root.join(&path).exists();
             let Some(kind) = resolve_kind(kind, on_disk, born.contains(&path)) else {
                 continue;
             };
-            let dir = kind != "deleted" && root.join(&path).is_dir();
             let ignored = ignored_paths.contains(&path);
+            if ignored && !include_ignored {
+                tracing::debug!(
+                    path = %path,
+                    "{ON_CHANGED_FN} skipped an ignored path (observe with include_ignored: true to receive it)"
+                );
+                continue;
+            }
+            let dir = kind != "deleted" && root.join(&path).is_dir();
             let event = ChangedEvent {
                 path,
                 kind: kind.to_string(),
@@ -702,52 +708,36 @@ async fn pump(
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            for (function_id, delivery) in &bound {
-                if ignored && !delivery.include_ignored {
-                    tracing::debug!(
-                        function_id = %function_id,
-                        path = %event.path,
-                        "shell::changed skipped an ignored path (bind with include_ignored: true to receive it)"
-                    );
-                    continue;
+            // Calls ride their own tasks: awaiting them here would let one
+            // hung call stop the pump from draining `rx`, fill the channel,
+            // and silently drop distinct events.
+            let iii = iii.clone();
+            let request = CallRequest::new(ON_CHANGED_FN, payload)
+                .metadata(metadata.clone())
+                .action(CallAction::Void);
+            tokio::spawn(async move {
+                if let Err(e) = iii.call(request).await {
+                    tracing::warn!(error = %e, path = %event.path, "{ON_CHANGED_FN} call failed");
+                } else {
+                    tracing::debug!(path = %event.path, kind = %event.kind, "{ON_CHANGED_FN} called");
                 }
-                // Deliveries ride their own tasks: awaiting them here would
-                // let one hung send stop the pump from draining `rx`, fill
-                // the channel, and silently drop distinct events — the exact
-                // "slow subscriber never delays anything" violation.
-                let iii = iii.clone();
-                let function_id = function_id.clone();
-                let request = delivery.request(&function_id, payload.clone());
-                let (path, kind) = (event.path.clone(), event.kind.clone());
-                tokio::spawn(async move {
-                    if let Err(e) = iii.trigger(request).await {
-                        tracing::warn!(function_id = %function_id, error = %e, "shell::changed fan-out failed");
-                    } else {
-                        tracing::info!(
-                            function_id = %function_id,
-                            path = %path,
-                            kind = %kind,
-                            "shell::changed delivered"
-                        );
-                    }
-                });
-            }
+            });
         }
     }
 }
 
-/// Start the watch a first binding on `root` needs. The walk and the
-/// watches go on a blocking thread: the SDK runs every handler on one
-/// runtime thread. The caller puts the entry in the map before the walk
-/// ends, so an unregister landing meanwhile drops the watch too.
+/// Start the watch a first observer on `root` needs. The walk and the
+/// watches go on a blocking thread: the SDK runs every hook on one runtime
+/// thread. The caller puts the entry in the map before the walk ends, so a
+/// removal landing meanwhile drops the watch too.
 fn start_watch(
     iii: IIIClient,
     root: PathBuf,
-    subscribers: Subscribers,
+    include_ignored: bool,
+    observers: Members,
     open: impl FnOnce(&Path, Sender<notify::Event>) -> Option<DirWatch> + Send + 'static,
 ) -> WatchEntry {
     let (started, ready) = tokio::sync::watch::channel(None);
-    let bound = subscribers.clone();
     let task = tokio::spawn(async move {
         let (tx, rx) = tokio::sync::mpsc::channel::<notify::Event>(1024);
         let walk_root = root.clone();
@@ -757,120 +747,153 @@ fn start_watch(
             return;
         };
         started.send_replace(Some(true));
-        pump(iii, root, watch, rx, bound).await;
+        pump(iii, root, include_ignored, watch, rx).await;
     });
     WatchEntry {
-        subscribers,
+        observers,
         ready,
         task,
     }
 }
 
 #[async_trait]
-impl TriggerHandler for ChangedTriggerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        let (budget, all) = (self.budget, Delivery::from_config(&config).include_ignored);
-        self.subscribe(config, move |root, tx| {
+impl AddedHook for ChangedSource {
+    async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
+        let args: ChangedArgs = obs.args()?;
+        let (budget, all) = (self.budget, args.include_ignored);
+        self.add(obs.id(), &args, move |root, tx| {
             DirWatch::open(root, tx, budget, all)
         })
         .await
     }
+}
 
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        tracing::info!(trigger_type = CHANGED, id = %config.id, "watch unregistered");
-        self.unbind(&config.id);
-        Ok(())
+#[async_trait]
+impl RemovedHook for ChangedSource {
+    async fn on_removed(&self, obs: Observer) {
+        tracing::info!(function_id = ON_CHANGED_FN, observer_id = %obs.id(), "watch released");
+        self.release(obs.id());
     }
 }
 
-impl ChangedTriggerHandler {
-    /// Take a binding off its watch, and the watch down with its last.
-    fn unbind(&self, id: &str) {
+impl ChangedSource {
+    /// Take an observer off its watch, and the watch down with its last.
+    fn release(&self, id: &str) {
+        lock(&self.keys).remove(id);
         lock(&self.watches).retain(|_, entry| {
-            let mut subscribers = lock(&entry.subscribers);
-            subscribers.remove(id);
-            !subscribers.is_empty()
+            let mut observers = lock(&entry.observers);
+            observers.remove(id);
+            !observers.is_empty()
         });
     }
 
-    /// `register_trigger` with the watch setup handed in.
-    async fn subscribe(
+    /// The match key `id` is filed under: its watch's.
+    fn key_of(&self, id: &str) -> Option<String> {
+        lock(&self.keys).get(id).cloned()
+    }
+
+    /// The added hook with the watch setup handed in: resolve the root,
+    /// join or start its watch, and wait for the watch to start.
+    async fn add(
         &self,
-        config: TriggerConfig,
+        id: &str,
+        args: &ChangedArgs,
         open: impl FnOnce(&Path, Sender<notify::Event>) -> Option<DirWatch> + Send + 'static,
-    ) -> Result<(), Error> {
+    ) -> Result<(), ObserveRejection> {
         let resolver = self.resolver.read().await.clone();
-        let root = watch_root(&config.config, &resolver)?;
+        let root = watch_root(&args.path, &resolver)?;
         let shown = root.display().to_string();
-        let delivery = Delivery::from_config(&config);
-        // A binding registered again (a reconnect) may name another root.
-        self.unbind(&config.id);
+        let include_ignored = args.include_ignored;
+        // An observer added again (its args changed) may name another root.
+        self.release(id);
         let mut ready = {
             let mut watches = lock(&self.watches);
-            let key = (root.clone(), delivery.include_ignored);
-            // A pump that died (a panic) must not swallow every later binding:
-            // its replacement serves the bindings it had too.
+            let key = (root.clone(), include_ignored);
+            // A pump that died (a panic) must not swallow every later
+            // observer: its replacement serves the observers it had too.
             let orphans = match watches.get(&key) {
                 Some(entry) if entry.task.is_finished() => {
-                    watches.remove(&key).map(|e| e.subscribers.clone())
+                    watches.remove(&key).map(|e| e.observers.clone())
                 }
                 _ => None,
             };
             let entry = watches.entry(key).or_insert_with(|| {
-                start_watch(self.iii.clone(), root, orphans.unwrap_or_default(), open)
+                start_watch(
+                    self.iii.clone(),
+                    root.clone(),
+                    include_ignored,
+                    orphans.unwrap_or_default(),
+                    open,
+                )
             });
-            lock(&entry.subscribers)
-                .insert(config.id.clone(), (config.function_id.clone(), delivery));
+            lock(&entry.observers).insert(id.to_string());
             entry.ready.clone()
         };
-        // An unregister landing mid-setup drops the sender: not a failure.
+        // A removal landing mid-setup drops the sender: not a failure.
         let failed = ready
             .wait_for(Option::is_some)
             .await
             .is_ok_and(|started| *started == Some(false));
         if failed {
-            self.unbind(&config.id);
-            return Err(Error::Handler(format!(
-                "shell::changed cannot watch {shown}: the watcher did not start"
-            )));
+            self.release(id);
+            return Err(ObserveRejection::new(
+                WATCH_FAILED,
+                format!("{ON_CHANGED_FN} cannot watch {shown}: the watcher did not start"),
+            ));
         }
+        lock(&self.keys).insert(id.to_string(), watch_key(&root, include_ignored));
         tracing::info!(
-            trigger_type = CHANGED,
-            id = %config.id,
-            function_id = %config.function_id,
+            function_id = ON_CHANGED_FN,
+            observer_id = %id,
             root = %shown,
-            "watch registered"
+            include_ignored,
+            "watch observed"
         );
         Ok(())
     }
 }
 
-/// Register the trigger type. The SDK queues the registration and cannot
-/// report failure; a dead type surfaces as bindings that never fire.
-pub fn register_changed_trigger(iii: &IIIClient, resolver: ResolverCell) {
-    let _handle = iii.register_trigger_type(RegisterTriggerType::new(
-        CHANGED,
-        format!(
-            "Fires when anything under the watched directory changes, whoever changed \
-             it — bind with config: {{ path }} naming the directory (jail-checked like \
-             every coder::* path). Ignored paths (git-ignored; outside a repository \
-             data/, config/, .iii/, node_modules/) are skipped unless config also sets \
-             include_ignored: true, which also watches inside ignored trees. Symlinks \
-             are not followed. A tree holding more than {CHANGED_WATCH_BUDGET} \
-             directories (fewer on a host with a low inotify limit) is watched \
-             breadth-first from the top for that many: changes deeper down go \
-             unreported."
-        ),
-        ChangedTriggerHandler {
-            iii: iii.clone(),
-            watches: Arc::new(Mutex::new(HashMap::new())),
-            resolver,
-            budget: CHANGED_WATCH_BUDGET,
-        },
-    ));
+/// Register `shell::on-changed` and its hooks. The hooks are set by id
+/// before the function is registered, so they run for every observer.
+pub fn register_changed(iii: &IIIClient, resolver: ResolverCell) {
+    let source = ChangedSource {
+        iii: iii.clone(),
+        watches: Arc::new(Mutex::new(HashMap::new())),
+        keys: Arc::new(Mutex::new(HashMap::new())),
+        resolver,
+        budget: CHANGED_WATCH_BUDGET,
+    };
+    let keys = source.clone();
+    iii.on_observer_added_for(ON_CHANGED_FN, source.clone())
+        .on_observer_removed_for(ON_CHANGED_FN, source)
+        .on_observer_match_for(
+            ON_CHANGED_FN,
+            Match::keys(
+                move |obs| Keys::from(keys.key_of(obs.id())),
+                |call| Keys::from(call_watch_key(call)),
+            ),
+        );
+    iii.register_function(
+        ON_CHANGED_FN,
+        RegisterFunction::new(|event: ChangedEvent| Ok::<_, Error>(event))
+            .description(format!(
+                "Called once for each change under a watched directory, whoever made it; \
+                 observers receive the change {{ path, kind, root, dir, ignored }}. Observe \
+                 with args {{ path }} naming the directory (jail-checked like every coder::* \
+                 path; INVALID_PATH otherwise, WATCH_FAILED when the watcher does not \
+                 start). Ignored paths (git-ignored; outside a repository data/, config/, \
+                 .iii/, node_modules/) are skipped unless args also set include_ignored: \
+                 true, which also watches inside ignored trees. Symlinks are not followed. \
+                 A tree holding more than {CHANGED_WATCH_BUDGET} directories (fewer on a \
+                 host with a low inotify limit) is watched breadth-first from the top for \
+                 that many: changes deeper down go unreported."
+            ))
+            .args_format::<ChangedArgs>()
+            .private(),
+    );
     tracing::info!(
-        trigger_type = CHANGED,
-        "sent the trigger type registration; delivery is confirmed by the first subscription"
+        function_id = ON_CHANGED_FN,
+        "registered the workspace change feed"
     );
 }
 
@@ -1070,40 +1093,30 @@ mod tests {
         assert!(rel_to(root, Path::new("/elsewhere/b.rs")).is_none());
     }
 
-    /// Prevents: the wake that never fires — the harness binds
-    /// `harness::trigger::deliver` with `metadata: { "__binding": id }` and
-    /// drops a fire without it; the pump used to send the bare payload
-    /// (MOT-4719, 34k deliveries logged here, 0 fires counted there).
     #[test]
-    fn deliveries_echo_the_binding_metadata_and_namespace() {
-        let config = TriggerConfig {
-            id: "b1".into(),
-            function_id: "harness::trigger::deliver".into(),
-            config: json!({ "path": "/tmp/x" }),
-            metadata: Some(json!({ "__binding": "sub_abc" })),
-            namespace: Some("project".into()),
-        };
-        let delivery = Delivery::from_config(&config);
-        assert!(!delivery.include_ignored, "ignored paths are opt-in");
-        let request = delivery.request("harness::trigger::deliver", json!({ "path": "a.rs" }));
-        let debug = format!("{request:?}");
-        assert!(debug.contains("__binding"), "{debug}");
-        assert!(debug.contains("sub_abc"), "{debug}");
-        assert!(debug.contains("project"), "{debug}");
-        assert!(debug.contains("Void"), "{debug}");
+    fn args_need_a_path_and_include_ignored_is_opt_in() {
+        let args: ChangedArgs = serde_json::from_value(json!({ "path": "/tmp/x" })).unwrap();
+        assert!(!args.include_ignored, "ignored paths are opt-in");
+        assert!(serde_json::from_value::<ChangedArgs>(json!({})).is_err());
+        let schema = serde_json::to_value(schemars::schema_for!(ChangedArgs)).unwrap();
+        assert_eq!(schema["required"], json!(["path"]));
+    }
 
-        // A legacy binding without metadata still fires, without inventing any.
-        let bare = Delivery::from_config(&TriggerConfig {
-            id: "b2".into(),
-            function_id: "probe::on_change".into(),
-            config: json!({ "path": "/tmp/x", "include_ignored": true }),
-            metadata: None,
-            namespace: None,
-        });
-        assert!(bare.include_ignored);
-        let debug = format!("{:?}", bare.request("probe::on_change", json!({})));
-        assert!(debug.contains("metadata: None"), "{debug}");
-        assert!(debug.contains("namespace: None"), "{debug}");
+    /// Two watches on one root, one with include_ignored, both see a plain
+    /// change: each call names the watch that made it, so an observer hears
+    /// its own watch's calls once and never the other's.
+    #[test]
+    fn a_call_names_the_watch_that_made_it() {
+        let root = Path::new("/w");
+        let (plain, all) = (watch_key(root, false), watch_key(root, true));
+        assert_eq!(plain, "/w|false");
+        assert_ne!(plain, all);
+        let call = Call {
+            metadata: Some(json!({ WATCH_META: plain })),
+            ..Call::default()
+        };
+        assert_eq!(call_watch_key(&call), Some("/w|false"));
+        assert_eq!(call_watch_key(&Call::default()), None);
     }
 
     fn resolver_rooted_at(root: &Path) -> PathResolver {
@@ -1174,7 +1187,7 @@ mod tests {
         let made = HashMap::from([(repo.join("src"), true)]);
         let (_, found) = watch_new_dirs(&repo, watch, made).await.unwrap();
         assert_eq!(found, [repo.join("src/a.rs")]);
-        // Bound with include_ignored: ignored trees too, never .git or a symlink.
+        // With include_ignored: ignored trees too, never .git or a symlink.
         let (watch, _rx) = open_watch(&repo, 64, true);
         assert_eq!(
             watched_dirs(&watch, &repo),
@@ -1201,9 +1214,9 @@ mod tests {
         );
     }
 
-    /// The IDE page binds with include_ignored to follow build output and
-    /// dependency trees: its watch must reach inside them, at bind time and
-    /// for directories made there later. A plain binding's must not.
+    /// The IDE page observes with include_ignored to follow build output and
+    /// dependency trees: its watch must reach inside them, when it starts and
+    /// for directories made there later. A plain observer's must not.
     #[tokio::test]
     #[cfg_attr(target_os = "macos", ignore = "FSEvents watches the root recursively")]
     async fn only_an_include_ignored_watch_sees_inside_ignored_trees() {
@@ -1281,31 +1294,44 @@ mod tests {
         assert_eq!(host_budget(64, None), 64);
     }
 
-    fn handler_at(root: &Path, budget: usize) -> ChangedTriggerHandler {
-        ChangedTriggerHandler {
+    fn source_at(root: &Path, budget: usize) -> ChangedSource {
+        ChangedSource {
             iii: IIIClient::new("ws://127.0.0.1:1"),
             watches: Default::default(),
+            keys: Default::default(),
             resolver: Arc::new(tokio::sync::RwLock::new(Arc::new(resolver_rooted_at(root)))),
             budget,
         }
     }
 
-    fn binding(id: &str, path: &Path, include_ignored: bool) -> TriggerConfig {
-        TriggerConfig {
-            id: id.into(),
-            function_id: format!("probe::{id}"),
-            config: json!({ "path": path, "include_ignored": include_ignored }),
-            metadata: None,
-            namespace: None,
+    fn args(path: &Path, include_ignored: bool) -> ChangedArgs {
+        ChangedArgs {
+            path: path.to_string_lossy().into_owned(),
+            include_ignored,
         }
     }
 
+    /// What the added hook does for observer `id` with these args.
+    async fn observe(
+        source: &ChangedSource,
+        id: &str,
+        path: &Path,
+        all: bool,
+    ) -> Result<(), ObserveRejection> {
+        let budget = source.budget;
+        source
+            .add(id, &args(path, all), move |root, tx| {
+                DirWatch::open(root, tx, budget, all)
+            })
+            .await
+    }
+
     /// A tree past the budget is watched from its top down as far as the
-    /// budget goes — what a file tree shows first — and its binding is
+    /// budget goes — what a file tree shows first — and its observer is
     /// accepted: refusing it left the page with no live updates at all.
     #[tokio::test]
     #[cfg_attr(target_os = "macos", ignore = "FSEvents watches the root recursively")]
-    async fn a_root_past_the_budget_keeps_its_top_and_is_still_bound() {
+    async fn a_root_past_the_budget_keeps_its_top_and_is_still_observed() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
         for sub in ["a/b/c", "e", "f"] {
@@ -1319,11 +1345,9 @@ mod tests {
         let (watch, _) = watch_new_dirs(&root, watch, made).await.unwrap();
         assert!(!watch.watched.contains(&root.join("g")));
 
-        let handler = handler_at(&root, 4);
-        handler
-            .register_trigger(binding("b1", &root, false))
-            .await
-            .unwrap();
+        let source = source_at(&root, 4);
+        observe(&source, "o1", &root, false).await.unwrap();
+        assert_eq!(source.key_of("o1"), Some(watch_key(&root, false)));
     }
 
     /// A directory whose create event found the channel full is kept for
@@ -1350,75 +1374,66 @@ mod tests {
         assert!(!missed().contains(&root.join(".git")), "{:?}", missed());
     }
 
-    /// A watch whose pump died is replaced on the next binding, and the
-    /// replacement keeps serving every binding the dead one had.
+    /// A watch whose pump died is replaced on the next observer, and the
+    /// replacement keeps serving every observer the dead one had.
     #[tokio::test]
-    async fn a_replaced_watch_keeps_the_bindings_of_the_dead_one() {
+    async fn a_replaced_watch_keeps_the_observers_of_the_dead_one() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
-        let handler = handler_at(&root, 64);
-        handler
-            .register_trigger(binding("b1", &root, false))
-            .await
-            .unwrap();
-        lock(&handler.watches)
+        let source = source_at(&root, 64);
+        observe(&source, "o1", &root, false).await.unwrap();
+        lock(&source.watches)
             .values()
             .for_each(|entry| entry.task.abort());
-        while lock(&handler.watches)
+        while lock(&source.watches)
             .values()
             .any(|entry| !entry.task.is_finished())
         {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        handler
-            .register_trigger(binding("b2", &root, false))
-            .await
-            .unwrap();
-        let watches = lock(&handler.watches);
+        observe(&source, "o2", &root, false).await.unwrap();
+        let watches = lock(&source.watches);
         assert_eq!(watches.len(), 1);
         let entry = watches.values().next().unwrap();
         assert!(!entry.task.is_finished());
-        let mut bound: Vec<String> = lock(&entry.subscribers).keys().cloned().collect();
-        bound.sort();
-        assert_eq!(bound, ["b1", "b2"]);
+        let mut served: Vec<String> = lock(&entry.observers).iter().cloned().collect();
+        served.sort();
+        assert_eq!(served, ["o1", "o2"]);
     }
 
-    /// Every open pane binds its root: one watch per root (and
+    /// Every open pane observes its root: one watch per root (and
     /// include_ignored) serves them all, and lives until the last goes.
+    /// Each observer is filed under its own watch's key.
     #[tokio::test]
-    async fn bindings_on_one_root_share_one_watch_until_the_last_goes() {
+    async fn observers_of_one_root_share_one_watch_until_the_last_goes() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
         std::fs::create_dir(root.join("src")).unwrap();
-        let handler = handler_at(&root, 64);
-        for (id, all) in [("b1", false), ("b2", false), ("b3", true)] {
-            handler
-                .register_trigger(binding(id, &root, all))
-                .await
-                .unwrap();
+        let source = source_at(&root, 64);
+        for (id, all) in [("o1", false), ("o2", false), ("o3", true)] {
+            observe(&source, id, &root, all).await.unwrap();
+            assert_eq!(source.key_of(id), Some(watch_key(&root, all)), "{id}");
         }
         let live = || {
-            let watches = handler.watches.lock().unwrap();
+            let watches = source.watches.lock().unwrap();
             watches.values().filter(|w| !w.task.is_finished()).count()
         };
         assert_eq!(live(), 2, "one watch per root and include_ignored");
-        for (id, all, left) in [("b1", false, 2), ("b2", false, 1), ("b3", true, 0)] {
-            handler
-                .unregister_trigger(binding(id, &root, all))
-                .await
-                .unwrap();
-            assert_eq!(live(), left, "after unregistering {id}");
+        for (id, left) in [("o1", 2), ("o2", 1), ("o3", 0)] {
+            source.release(id);
+            assert_eq!(live(), left, "after removing {id}");
+            assert_eq!(source.key_of(id), None, "{id}");
         }
     }
 
-    /// The SDK runs every handler on one current-thread runtime, as this
-    /// test does: the walk must not hold it, and an unregister landing
-    /// mid-walk drops the watch instead of leaking it.
+    /// The SDK runs every hook on one current-thread runtime, as this
+    /// test does: the walk must not hold it, and a removal landing mid-walk
+    /// drops the watch instead of leaking it.
     #[tokio::test]
-    async fn a_binding_sets_its_watch_up_off_the_runtime() {
+    async fn an_observer_sets_its_watch_up_off_the_runtime() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
-        let handler = handler_at(&root, 64);
+        let source = source_at(&root, 64);
         let (started, walking) = tokio::sync::oneshot::channel::<()>();
         let (release, gate) = std::sync::mpsc::channel::<()>();
         let open = move |root: &Path, tx| {
@@ -1427,55 +1442,61 @@ mod tests {
             DirWatch::open(root, tx, 64, false)
         };
         let begun = std::time::Instant::now();
-        let (registered, ()) = tokio::join!(
-            handler.subscribe(binding("b1", &root, false), open),
-            async {
-                walking.await.unwrap();
-                handler
-                    .unregister_trigger(binding("b1", &root, false))
-                    .await
-                    .unwrap();
-                release.send(()).unwrap();
-            }
-        );
-        registered.unwrap();
+        let observed = args(&root, false);
+        let (added, ()) = tokio::join!(source.add("o1", &observed, open), async {
+            walking.await.unwrap();
+            source.release("o1");
+            release.send(()).unwrap();
+        });
+        added.unwrap();
         assert!(
             begun.elapsed() < Duration::from_secs(5),
             "the walk held the runtime"
         );
-        assert!(handler.watches.lock().unwrap().is_empty());
+        assert!(source.watches.lock().unwrap().is_empty());
     }
 
     #[test]
-    fn watch_root_validates_shape_existence_and_jail() {
+    fn watch_root_validates_existence_kind_and_jail() {
         let tmp = tempfile::tempdir().unwrap();
         let jail = tmp.path().canonicalize().unwrap();
         let resolver = resolver_rooted_at(&jail);
 
-        let err = watch_root(&json!({}), &resolver).unwrap_err();
-        assert!(err.to_string().contains("config.path"), "{err}");
-        let err =
-            watch_root(&json!({ "path": "/definitely/not/here-xyz" }), &resolver).unwrap_err();
-        assert!(err.to_string().contains("cannot watch"), "{err}");
+        let err = watch_root("/definitely/not/here-xyz", &resolver).unwrap_err();
+        assert_eq!(err.code, INVALID_PATH);
+        assert!(err.message.contains("cannot watch"), "{err}");
 
         let sub = jail.join("watched");
         std::fs::create_dir(&sub).unwrap();
-        let ok = watch_root(&json!({ "path": sub.to_string_lossy() }), &resolver).unwrap();
+        let ok = watch_root(&sub.to_string_lossy(), &resolver).unwrap();
         assert!(ok.is_dir());
 
         let file = jail.join("f.txt");
         std::fs::write(&file, "x").unwrap();
-        let err = watch_root(&json!({ "path": file.to_string_lossy() }), &resolver).unwrap_err();
-        assert!(err.to_string().contains("not a directory"), "{err}");
+        let err = watch_root(&file.to_string_lossy(), &resolver).unwrap_err();
+        assert_eq!(err.code, INVALID_PATH);
+        assert!(err.message.contains("not a directory"), "{err}");
 
         // The jail holds: an existing directory OUTSIDE the allowed root
         // is refused exactly like reading it would be.
         let outside = tempfile::tempdir().unwrap();
-        let err = watch_root(
-            &json!({ "path": outside.path().to_string_lossy() }),
-            &resolver,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("cannot watch"), "{err}");
+        let err = watch_root(&outside.path().to_string_lossy(), &resolver).unwrap_err();
+        assert_eq!(err.code, INVALID_PATH);
+        assert!(err.message.contains("cannot watch"), "{err}");
+    }
+
+    /// A rejected observer is not filed and holds no watch.
+    #[tokio::test]
+    async fn a_rejected_observer_holds_no_watch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let source = source_at(&root, 64);
+        let err = source
+            .add("o1", &args(&root, false), |_, _| None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, WATCH_FAILED);
+        assert_eq!(source.key_of("o1"), None);
+        assert!(source.watches.lock().unwrap().is_empty());
     }
 }
